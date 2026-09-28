@@ -304,8 +304,8 @@
         "STUDY_PROFILE_COVERAGE_ENABLED": "true",
         "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
-        // Preserve the rewards activation already serving on staging.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // Keep rewards off outside an approved staging run.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
