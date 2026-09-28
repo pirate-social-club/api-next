@@ -155,9 +155,16 @@ const PUBLIC_SELECT = `
      AND post.post_type = 'song'
      AND post.status = 'published'
      AND post.visibility = 'public'
+    LEFT JOIN media_publication_projections AS publication
+      ON publication.community_id = head.community_id
+     AND publication.post_id = head.post_id
+     AND publication.media_kind = 'song'
+     AND publication.audio_revision = head.audio_revision
+     AND publication.visibility = 'public'
     LEFT JOIN media_song_canonical_timings AS timing
       ON timing.song_post_id = head.post_id
      AND timing.audio_revision = head.audio_revision
+     AND timing.canonical_audio_sha256 = publication.canonical_audio_sha256
      AND timing.state = 'ready'
    WHERE head.community_id = $1
      AND head.post_id = $2`;

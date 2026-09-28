@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneSongOwnerPolicyRepository } from "./song-owner-video-policy-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -175,7 +178,7 @@ async function currentPolicy(admin: Client, postId: string): Promise<PolicyRow> 
 
 suite("song owner derivative-video policy persistence", () => {
   test("publication creates one exact owner policy with license-derived defaults", async () => {
-    await withSchema(async (admin) => {
+    await withSchema(async (admin, scopedUrl) => {
       await seedIdentity(admin);
       await seedSong(admin, "remix", "commercial-remix");
       await seedSong(admin, "noncommercial", "non-commercial");
@@ -198,6 +201,18 @@ suite("song owner derivative-video policy persistence", () => {
            FROM song_owner_policies`,
       );
       expect(counts.rows[0]).toEqual({ heads: "3", revisions: "3" });
+      const policy = await Effect.runPromise(
+        Effect.provide(makeDirectPostgresControlPlaneLayer(scopedUrl))(
+          makeControlPlaneSongOwnerPolicyRepository({ getReady: async () => null }).getPublic({
+            communityId: "community-1",
+            postId: "song-remix",
+            accountId: "owner-account",
+            personaId: "owner-persona",
+          }),
+        ),
+      );
+      expect(policy.post_id).toBe("song-remix");
+      expect(policy.video_ready).toBe(false);
     });
   });
 
