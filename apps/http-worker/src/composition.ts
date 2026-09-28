@@ -177,8 +177,6 @@ import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
-import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/reward-sponsored-send-repository";
-import { makeRewardSponsoredSendService } from "@pirate/platform-cf/reward-sponsored-send-service";
 import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
 import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
@@ -230,6 +228,9 @@ import {
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
+import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
+import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
 import { Effect, Redacted, Schema } from "effect";
 import {
   makeTelegramServices,
@@ -303,6 +304,7 @@ import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
@@ -436,9 +438,14 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
   readonly PRIVY_SPONSORED_SEND_ENABLED?: string;
+  readonly PERSONA_WALLET_BASE_RPC_URL?: string;
   readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT?: string;
   readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT?: string;
   readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". Every new video
@@ -656,9 +663,15 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
     PRIVY_SPONSORED_SEND_ENABLED: bindings.PRIVY_SPONSORED_SEND_ENABLED,
+    PERSONA_WALLET_BASE_RPC_URL: bindings.PERSONA_WALLET_BASE_RPC_URL,
     PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
     PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
     PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: bindings.PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI:
+      bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
   };
 }
 
@@ -673,7 +686,13 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
     // Malformed or partial gas top-up limits fail closed here; absent limits
     // leave top-ups disabled.
     parseRewardGasTopupConfig(config);
-    parseSponsoredSendConfig(config);
+    const sponsorship = parseSponsoredSendConfig(config);
+    if (sponsorship !== null) {
+      const rpcUrl = Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL);
+      if (!rpcUrl.startsWith("https://")) {
+        throw new Error("enabled Wallet sponsorship requires an HTTPS RPC binding");
+      }
+    }
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -1558,6 +1577,26 @@ export async function createProductionHttpWorker(
   const platformPirateHandleHandlers = makePlatformPirateHandleHandlers(
     makeControlPlanePlatformPirateHandleStore(controlPlane),
   );
+  const sponsoredLimits = parseSponsoredSendConfig(config);
+  const walletSponsoredSendHandlers = makeWalletSponsoredSendHandlers(
+    sponsoredLimits === null
+      ? null
+      : makeWalletSponsoredSendService({
+          store: makeControlPlaneSponsoredSendStore(controlPlane, sponsoredLimits),
+          appId: config.PRIVY_APP_ID,
+          appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+          chain: makeWalletSponsoredChain(
+            Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL),
+            84_532,
+          ),
+          eligibleAsset: {
+            chainId: 84_532,
+            tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+          },
+          requiredConfirmations: 3,
+          ids: () => crypto.randomUUID().replaceAll("-", ""),
+        }),
+  );
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? makeLazySongRewardOfferHandlers(async () => {
@@ -1608,28 +1647,6 @@ export async function createProductionHttpWorker(
                   ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
                 })
               : null;
-          const sponsoredLimits = parseSponsoredSendConfig(config);
-          const sponsoredChain = makeRewardWinnerSendChain(rpc);
-          const sponsoredSends =
-            sponsoredLimits === null || candidate.chainId !== REWARD_WINNER_SEND_CHAIN_ID
-              ? null
-              : makeRewardSponsoredSendService({
-                  store: makeControlPlaneSponsoredSendStore(controlPlane, sponsoredLimits),
-                  appId: config.PRIVY_APP_ID,
-                  appSecret: Redacted.value(config.PRIVY_APP_SECRET),
-                  chain: {
-                    readReceipt: async (transactionHash) => {
-                      const receipt = await Effect.runPromise(
-                        sponsoredChain.readReceipt(transactionHash),
-                      );
-                      return receipt === null || !receipt.canonical ? null : receipt;
-                    },
-                    readHead: () => Effect.runPromise(sponsoredChain.readHead()),
-                    readFinalizedHead: () => Effect.runPromise(sponsoredChain.readFinalizedHead()),
-                  },
-                  requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
-                  ids: () => crypto.randomUUID().replaceAll("-", ""),
-                });
           return makeSongRewardOfferHandlers({
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
@@ -1645,7 +1662,6 @@ export async function createProductionHttpWorker(
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,
             winnerSends,
-            sponsoredSends,
             funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,
@@ -1791,6 +1807,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...mediaHandlers,
       ...videoAccessHandlers,

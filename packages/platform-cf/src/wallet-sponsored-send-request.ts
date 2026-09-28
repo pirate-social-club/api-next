@@ -5,22 +5,21 @@ import {
 } from "./privy-sponsored-transaction.ts";
 
 /** Values loaded from a durable, account-scoped reservation, never from the browser's submit body. */
-export type RewardSponsoredSendReservation = Readonly<{
+export type WalletSponsoredSendReservation = Readonly<{
   walletId: string;
   chainId: 8453 | 84532;
   senderAddress: string;
   tokenAddress: string;
   recipientAddress: string;
   amountAtomic: bigint;
-  paidAtomic: bigint;
   referenceId: string;
   idempotencyKey: string;
   expiresAtMs: number;
 }>;
 
-/** Format the one USDC transfer the winner authorized and the server reserved. */
-export function prepareRewardSponsoredSendRequest(
-  reservation: RewardSponsoredSendReservation,
+/** Format the eligible Wallet transfer the persona wallet authorized. */
+export function prepareWalletSponsoredSendRequest(
+  reservation: WalletSponsoredSendReservation,
   appId: string,
   nowMs: number,
 ): PreparedPrivySponsoredEvmCall {
@@ -33,10 +32,9 @@ export function prepareRewardSponsoredSendRequest(
     recipient === sender ||
     recipient === token ||
     reservation.amountAtomic <= 0n ||
-    reservation.amountAtomic > reservation.paidAtomic ||
     reservation.amountAtomic >= 1n << 256n
   ) {
-    throw new Error("invalid sponsored reward transfer");
+    throw new Error("invalid sponsored Wallet transfer");
   }
   return preparePrivySponsoredEvmCall(
     {
