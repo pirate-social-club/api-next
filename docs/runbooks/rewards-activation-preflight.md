@@ -7,7 +7,7 @@ the HTTP and jobs Workers use, and `CONTROL_PLANE_POSTGRES_ADMIN_URL` for a
 read-only migration-ledger check. An operator may instead supply
 `RUNTIME_POSTGRES_URL` and `ADMIN_POSTGRES_URL` for an isolated stack. The
 command opens read-only transactions, issues no grants, and refuses any missing
-or excessive privilege in its reviewed claim and Wallet send contract. It
+or excessive privilege in its reviewed rewards and Wallet send contract. It
 also requires the database migration filenames and checksums to match the
 release source exactly, with no pending migration. Run it after migrations and
 before the first flag change. Save its JSON result with the deployment record.
@@ -20,11 +20,12 @@ guard must repeat it if either changes before activation. If HTTP and jobs use
 different database roles, run the privilege check once for each role and
 require both to pass.
 
-When a claim or Wallet send repository starts using another table or routine,
+When a reward, Megapot or Wallet repository starts using another table or routine,
 extend `RUNTIME_RELEASE_PRIVILEGES` in
-`scripts/runtime-role-release-preflight.ts`. Its test inventories the direct
-table operations in the claim and sponsored-send repositories. Review any
-new routine calls as well. Do not grant broad table writes merely to make the
+`scripts/runtime-role-release-preflight.ts`. Its test discovers every matching
+repository under `packages/platform-cf/src` and inventories direct table
+operations against the generated schema. SQL built dynamically and routine
+calls still need manual review. Do not grant broad table writes merely to make the
 gate pass: keep claim writes inside the claim routine and keep DELETE denied
 on `wallet_sponsored_sends`.
 

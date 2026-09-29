@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readdir } from "node:fs/promises";
 
 import {
   assertMainLedger,
@@ -15,30 +16,56 @@ const facts = RUNTIME_RELEASE_PRIVILEGES.map((requirement) => ({
 }));
 
 describe("runtime role release preflight", () => {
-  test("covers every direct table operation in the claim and sponsored-send repositories", async () => {
+  test("covers direct table operations in every reward, Megapot and Wallet repository", async () => {
     const covered = new Set(
       RUNTIME_RELEASE_PRIVILEGES.filter((requirement) => requirement.allowed).map(
         (requirement) => `${requirement.object}:${requirement.privilege}`,
       ),
     );
-    for (const source of [
-      "megapot-claim-repository.ts",
-      "reward-claim-verification-intent.ts",
+    const schema = await Bun.file(new URL("../db/postgres/schema.sql", import.meta.url)).text();
+    const tables = new Set(
+      [
+        ...schema.matchAll(
+          /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:api_next\.)?"?([a-z][a-z0-9_]*)"?/giu,
+        ),
+      ].map((match) => match[1]),
+    );
+    expect(tables.has("wallet_sponsored_sends")).toBe(true);
+    const directory = new URL("../packages/platform-cf/src/", import.meta.url);
+    const repositories = (await readdir(directory, { recursive: true }))
+      .filter((source) => /(?:^|\/)(reward|megapot|wallet)-.*-repository\.ts$/u.test(source))
+      .sort();
+    for (const required of [
+      "megapot-purchase-repository.ts",
+      "megapot-sweep-repository.ts",
+      "reward-gas-topup-repository.ts",
+      "reward-payout-repository.ts",
+      "reward-refund-repository.ts",
       "wallet-sponsored-send-repository.ts",
     ]) {
-      const body = await Bun.file(
-        new URL(`../packages/platform-cf/src/${source}`, import.meta.url),
-      ).text();
-      for (const match of body.matchAll(/\b(FROM|JOIN|UPDATE|INTO)\s+([a-z][a-z0-9_]*)\b/gu)) {
+      expect(repositories).toContain(required);
+    }
+    const sources = [...repositories, "reward-claim-verification-intent.ts"];
+    const missing = new Set<string>();
+    for (const source of sources) {
+      const body = await Bun.file(new URL(source, directory)).text();
+      for (const match of body.matchAll(
+        /\b(FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+([a-z][a-z0-9_]*)\b/gu,
+      )) {
+        const table = match[2];
+        if (!table || !tables.has(table)) continue;
         const operation =
           match[1] === "FROM" || match[1] === "JOIN"
             ? "SELECT"
             : match[1] === "INTO"
               ? "INSERT"
-              : "UPDATE";
-        expect(covered.has(`${match[2]}:${operation}`)).toBe(true);
+              : match[1]?.startsWith("DELETE")
+                ? "DELETE"
+                : "UPDATE";
+        if (!covered.has(`${table}:${operation}`)) missing.add(`${source}: ${table}:${operation}`);
       }
     }
+    expect([...missing].sort()).toEqual([]);
   });
 
   test("accepts the reviewed claim and Wallet privilege contract", () => {
