@@ -1,6 +1,6 @@
 # Rewards runtime brake
 
-Migration 0229 seeds an environment as paused. Routine Worker deployments do not
+Migration 0230 seeds an environment as paused. Routine Worker deployments do not
 change this database control. The deployment binding must stay on while any
 credit, refund, reserved budget or ambiguous chain effect is outstanding. It
 may be turned off only after a fresh inventory proves nothing owed and no
@@ -116,6 +116,15 @@ comparison and a historical winning-ticket simulation remain unproved.
 An old claim that succeeds at a pinned head establishes claimability at that
 age. It cannot exclude a longer finite deadline. Repeat verification against
 the selected, independently attested Base mainnet contract and its calculator
-before approving production claim-pause policy. The current production record
+before approving production claim-pause policy. Read-only checks also confirmed
+that the parked Base mainnet candidate at
+0x3bae643002069dbcbcd62b1a4eb4c4a397d042a2 still matches its pinned runtime hash
+0x597f3a8e9360fbfc2e623243507ee9e8a66609003078ffc33d9013cb0607002d
+at block 51,963,965. Historical ticket logs were retrieved on both chains.
+Owner reads for sampled positive-payout tickets mostly reverted with
+0xceea21b6; rate-limit failures also occurred. No unclaimed winner was
+successfully simulated. These reads do not establish claim expiry or
+claimability. No claim was submitted.
+The current production record
 still selects no activated mainnet attestation; the parked candidate does not
 supply that approval.

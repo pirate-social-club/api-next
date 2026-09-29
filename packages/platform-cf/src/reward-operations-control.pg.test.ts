@@ -43,7 +43,7 @@ suite("runtime reward admission trigger", () => {
       await admin.query(
         await Bun.file(
           new URL(
-            "../../../db/postgres/migrations/0229_reward_operations_control.sql",
+            "../../../db/postgres/migrations/0230_reward_operations_control.sql",
             import.meta.url,
           ),
         ).text(),
