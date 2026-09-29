@@ -10,7 +10,7 @@ type Requirement = Readonly<{
   allowed: boolean;
 }>;
 
-/** Keep allowed operations in sync with direct SQL in reward, Megapot and Wallet repositories. */
+/** Keep allowed operations in sync with direct SQL in reward, Megapot, custody and Wallet repositories. */
 export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "wallet_sponsored_sends", privilege: "SELECT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "INSERT", allowed: true },
@@ -125,6 +125,18 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "song_reward_offers", privilege: "UPDATE", allowed: true },
   { object: "sponsor_daily_ticket_totals", privilege: "INSERT", allowed: true },
   { object: "sponsor_daily_ticket_totals", privilege: "UPDATE", allowed: true },
+  { object: "activity_registry", privilege: "SELECT", allowed: true },
+  { object: "communities", privilege: "SELECT", allowed: true },
+  { object: "media_publication_projections", privilege: "SELECT", allowed: true },
+  { object: "policy_versions", privilege: "INSERT", allowed: true },
+  { object: "reward_uniqueness_authorities", privilege: "INSERT", allowed: true },
+  { object: "song_owner_policies", privilege: "SELECT", allowed: true },
+  { object: "song_owner_policy_revisions", privilege: "SELECT", allowed: true },
+  { object: "song_reward_offer_actions", privilege: "INSERT", allowed: true },
+  { object: "song_reward_offer_actions", privilege: "SELECT", allowed: true },
+  { object: "song_reward_offer_legs", privilege: "INSERT", allowed: true },
+  { object: "song_reward_offers", privilege: "INSERT", allowed: true },
+  { object: "custody_solvency_observations", privilege: "INSERT", allowed: true },
   {
     object: "accept_megapot_participant_claim_v1(text,text)",
     privilege: "EXECUTE",

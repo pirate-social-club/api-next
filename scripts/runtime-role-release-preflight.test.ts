@@ -16,7 +16,7 @@ const facts = RUNTIME_RELEASE_PRIVILEGES.map((requirement) => ({
 }));
 
 describe("runtime role release preflight", () => {
-  test("covers direct table operations in every reward, Megapot and Wallet repository", async () => {
+  test("covers direct table operations in reward, Megapot, custody and Wallet repositories", async () => {
     const covered = new Set(
       RUNTIME_RELEASE_PRIVILEGES.filter((requirement) => requirement.allowed).map(
         (requirement) => `${requirement.object}:${requirement.privilege}`,
@@ -33,14 +33,18 @@ describe("runtime role release preflight", () => {
     expect(tables.has("wallet_sponsored_sends")).toBe(true);
     const directory = new URL("../packages/platform-cf/src/", import.meta.url);
     const repositories = (await readdir(directory, { recursive: true }))
-      .filter((source) => /(?:^|\/)(reward|megapot|wallet)-.*-repository\.ts$/u.test(source))
+      .filter((source) =>
+        /(?:^|\/)(?:reward|megapot|wallet|song-reward|custody)-.*-repository\.ts$/u.test(source),
+      )
       .sort();
     for (const required of [
+      "custody-solvency-repository.ts",
       "megapot-purchase-repository.ts",
       "megapot-sweep-repository.ts",
       "reward-gas-topup-repository.ts",
       "reward-payout-repository.ts",
       "reward-refund-repository.ts",
+      "song-reward-offer-repository.ts",
       "wallet-sponsored-send-repository.ts",
     ]) {
       expect(repositories).toContain(required);
