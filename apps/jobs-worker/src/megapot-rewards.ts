@@ -3,36 +3,19 @@ import {
   type AlertSink,
   deriveBaseSepoliaMegapotAddress,
   type MegapotCommitmentBucket,
-  makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
-  makeControlPlaneCustodySolvencyStore,
   makeControlPlaneMegapotAllocationStore,
-  makeControlPlaneMegapotApprovalStore,
-  makeControlPlaneMegapotClaimStore,
-  makeControlPlaneMegapotCommitmentStore,
   makeControlPlaneMegapotCutoffStore,
   makeControlPlaneMegapotDrawingObservationStore,
-  makeControlPlaneMegapotPurchaseStore,
-  makeControlPlaneMegapotSweepStore,
   makeControlPlaneMegapotWorkStore,
+  makeControlPlaneRewardEffectAttestationStore,
   makeControlPlaneRewardGasTopupSendStore,
   makeControlPlaneRewardOfferTerminalStore,
   makeControlPlaneRewardPayoutStore,
   makeControlPlaneRewardRefundStore,
-  makeCustodySolvencyCoordinator,
   makeMegapotAllocationCoordinator,
-  makeMegapotApprovalCoordinator,
-  makeMegapotClaimCoordinator,
-  makeMegapotCommitmentCoordinator,
   makeMegapotCutoffCoordinator,
-  makeMegapotDrawingObserver,
-  makeMegapotPurchaseCoordinator,
-  makeMegapotSweepCoordinator,
-  makeMegapotV2RpcClient,
-  makeR2MegapotCommitmentPublisher,
   makeRewardGasTopupCoordinator,
-  makeRewardPayoutCoordinator,
-  makeRewardRefundCoordinator,
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 import {
@@ -43,11 +26,19 @@ import {
   type MegapotRewardsRuntime,
   megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
-  observeMegapotDrawingForCycle,
   resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
+import {
+  MegapotRewardRoutingRejected,
+  makeMegapotCustodyKeyResolver,
+  makeMegapotRewardsRouting,
+} from "./megapot-rewards-routing.ts";
+import {
+  makeMegapotAttestationRuntime,
+  makeMegapotAttestedRpc,
+} from "./megapot-rewards-runtime.ts";
 import {
   defaultRetrySchedule,
   JobContext,
@@ -116,6 +107,7 @@ const MEGAPOT_REWARDS_WRITES = MEGAPOT_REWARDS_READS.filter(
 ) satisfies readonly TableKey[];
 
 const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
+  "MegapotRewardRoutingRejected",
   "CustodySolvencyCoordinatorFailed",
   "CustodySolvencyRejected",
   "CustodySolvencyStorageFailed",
@@ -168,6 +160,7 @@ export type MegapotRewardsJobOptions = Readonly<{
   attestationId: string;
   rpcUrl: string;
   custodyPrivateKey: string;
+  retainedCustodyPrivateKeys?: string;
   /** Null when MEGAPOT_GAS_TOPUP_PRIVATE_KEY is unset; the top-up step is then skipped. */
   gasTopupPrivateKey: string | null;
   commitmentBucket: MegapotCommitmentBucket;
@@ -194,84 +187,38 @@ export function makeMegapotRewardsJob(
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
     const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
-    const deployment = yield* observationStore.loadCandidate(options.attestationId);
-    const rpc = makeMegapotV2RpcClient({
-      rpcUrl: options.rpcUrl,
-      reuseSuccessfulAttestation: true,
-      minimumRequestIntervalMs: 250,
-      attestation: {
-        attestationId: deployment.attestationId,
-        environment: deployment.environment,
-        chainId: deployment.chainId,
-        jackpotAddress: deployment.jackpotAddress,
-        ticketNftAddress: deployment.ticketNftAddress,
-        usdcAddress: deployment.usdcAddress,
-        custodyAddress: deployment.custodyAddress,
-        referrerAddress: deployment.referrerAddress,
-        jackpotCodeHash: deployment.jackpotCodeHash,
-        ticketNftCodeHash: deployment.ticketNftCodeHash,
-        usdcCodeHash: deployment.usdcCodeHash,
-      },
+    const resolveCustodyKey = yield* Effect.try({
+      try: () =>
+        makeMegapotCustodyKeyResolver(
+          options.custodyPrivateKey,
+          options.retainedCustodyPrivateKeys,
+        ),
+      catch: () => new MegapotRewardRoutingRejected({ reason: "invalid-config" }),
     });
-    const transactionSigner = makeBaseSepoliaMegapotV2PrivateKeySigner({
-      privateKey: options.custodyPrivateKey,
-      expectedAddress: deployment.custodyAddress,
-    });
-    const commitmentSigner = makeBaseSepoliaMegapotCommitmentSigner({
-      privateKey: options.custodyPrivateKey,
-      expectedAddress: deployment.custodyAddress,
-    });
-    const commitmentPublisher = makeR2MegapotCommitmentPublisher({
-      bucket: options.commitmentBucket,
-      publicOrigin: options.commitmentPublicOrigin,
-    });
-    const approval = makeMegapotApprovalCoordinator({
-      store: makeControlPlaneMegapotApprovalStore(controlPlane),
-      rpc,
-      signer: transactionSigner,
-      requiredConfirmations: options.requiredConfirmations,
-      gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-      nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-    });
-    const purchase = makeMegapotPurchaseCoordinator({
-      store: makeControlPlaneMegapotPurchaseStore(controlPlane),
-      rpc,
-      signer: transactionSigner,
-      options: {
-        requiredConfirmations: options.requiredConfirmations,
-        purchaseSafetyMarginSeconds: options.purchaseSafetyMarginSeconds,
-        gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-        nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-      },
-    });
-    const claim = makeMegapotClaimCoordinator({
-      store: makeControlPlaneMegapotClaimStore(controlPlane),
-      rpc,
-      signer: transactionSigner,
-      requiredConfirmations: options.requiredConfirmations,
-      gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-      nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-    });
-    const payout = makeRewardPayoutCoordinator({
-      store: makeControlPlaneRewardPayoutStore(controlPlane),
-      rpc,
-      signer: transactionSigner,
-      requiredConfirmations: options.requiredConfirmations,
-      gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-      nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-    });
-    const refund = makeRewardRefundCoordinator({
-      store: makeControlPlaneRewardRefundStore(controlPlane),
-      rpc,
-      signer: transactionSigner,
-      requiredConfirmations: options.requiredConfirmations,
-      gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-      nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
+    const payoutStore = makeControlPlaneRewardPayoutStore(controlPlane);
+    const refundStore = makeControlPlaneRewardRefundStore(controlPlane);
+    const effectAttestations = makeControlPlaneRewardEffectAttestationStore(controlPlane);
+    const routing = makeMegapotRewardsRouting({
+      activeAttestationId: options.attestationId,
+      environment: options.environment,
+      loadDeployment: observationStore.loadCandidate,
+      loadEffectAttestation: effectAttestations.load,
+      loadPayoutAuthority: payoutStore.loadAuthority,
+      loadRefundAuthority: refundStore.loadAuthority,
+      makeRuntime: (deployment) =>
+        makeMegapotAttestationRuntime({
+          deployment,
+          controlPlane,
+          options,
+          resolveCustodyKey,
+        }),
     });
     const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
     let gasTopups: MegapotRewardsRuntime["gasTopups"] = null;
     const gasTopupPrivateKey = options.gasTopupPrivateKey;
     if (gasTopupPrivateKey !== null) {
+      const deployment = yield* observationStore.loadCandidate(options.attestationId);
+      const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl);
       // The gas signer must be the registered active gas wallet, never custody.
       const resolved = yield* resolveGasTopupRuntime({
         loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
@@ -304,33 +251,12 @@ export function makeMegapotRewardsJob(
       }
     }
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
-    const observer = makeMegapotDrawingObserver({
-      store: observationStore,
-      rpc,
-      observationTtlMs: options.observationTtlMs,
-    });
-    const solvencyStore = makeControlPlaneCustodySolvencyStore(controlPlane);
-    const solvency = makeCustodySolvencyCoordinator({
-      store: solvencyStore,
-      rpc,
-      requiredConfirmations: options.requiredConfirmations,
-    });
     const cutoff = makeMegapotCutoffCoordinator({
       store: makeControlPlaneMegapotCutoffStore(controlPlane),
       externalSponsorDailyTicketCeiling: options.externalSponsorDailyTicketCeiling,
       externalSponsorDailySpendCeilingAtomic: options.externalSponsorDailySpendCeilingAtomic,
       sharedSponsorDailyTicketCeiling: options.sharedSponsorDailyTicketCeiling,
       sharedSponsorDailySpendCeilingAtomic: options.sharedSponsorDailySpendCeilingAtomic,
-    });
-    const commitment = makeMegapotCommitmentCoordinator({
-      store: makeControlPlaneMegapotCommitmentStore(controlPlane),
-      signer: commitmentSigner,
-      publisher: commitmentPublisher,
-    });
-    const sweep = makeMegapotSweepCoordinator({
-      store: makeControlPlaneMegapotSweepStore(controlPlane),
-      rpc,
-      requiredConfirmations: options.requiredConfirmations,
     });
     const allocation = makeMegapotAllocationCoordinator({
       store: makeControlPlaneMegapotAllocationStore(controlPlane),
@@ -339,52 +265,22 @@ export function makeMegapotRewardsJob(
     const summary = yield* runMegapotRewardsCycle({
       work: makeControlPlaneMegapotWorkStore(controlPlane),
       runtime: {
-        reconcile: (work) => {
-          switch (work.effectKind) {
-            case "usdc_approval":
-              return approval.reconcile(work.effectId);
-            case "ticket_purchase":
-              return purchase.reconcile(work.effectId);
-            case "winnings_claim":
-              return claim.reconcile(work.effectId);
-            case "reward_payout":
-              return payout.reconcile(work.effectId);
-            case "reward_refund":
-              return refund.reconcile(work.effectId);
-          }
-        },
+        reconcile: routing.reconcile,
         observeDrawing: () =>
-          observeMegapotDrawingForCycle(observer.observe(options.attestationId)),
+          routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
         observeSolvency: () =>
-          solvencyStore
-            .listTokenAddresses(options.attestationId)
-            .pipe(
-              Effect.flatMap((tokenAddresses) =>
-                Effect.forEach(
-                  tokenAddresses,
-                  (tokenAddress) => solvency.observe(options.attestationId, tokenAddress),
-                  { concurrency: 1 },
-                ),
-              ),
-            ),
+          routing.active().pipe(Effect.flatMap((runtime) => runtime.observeSolvency())),
         freezeDue: (limit) => cutoff.freezeDue({ limit }),
-        publishCommitment: (work) =>
-          commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
-        approve: (work) =>
-          approval.approve({
-            attestationId: work.attestationId,
-            minimumAllowanceAtomic: work.ticketPriceAtomic,
-            approvedAmountAtomic: options.approvedAllowanceAtomic,
-          }),
-        purchase: (work) =>
-          purchase.purchase({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
-        sweep: (work) => sweep.sweep({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
-        claim: (work) => claim.claim({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+        publishCommitment: routing.publishCommitment,
+        approve: routing.approve,
+        purchase: routing.purchase,
+        sweep: routing.sweep,
+        claim: routing.claim,
         allocate: (work) =>
           allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
         closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
-        refund: (fundingEffectId) => refund.refund(fundingEffectId),
-        payout: (creditId) => payout.payout(creditId),
+        refund: routing.refund,
+        payout: routing.payout,
         gasTopups,
       },
     });

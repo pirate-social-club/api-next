@@ -228,9 +228,7 @@ describe("Megapot rewards scheduled cycle", () => {
       "claim",
       "allocate",
       "close-expired",
-      "observe-solvency",
       "refund",
-      "observe-solvency",
       "payout",
       "load-aged-pending",
     ]);

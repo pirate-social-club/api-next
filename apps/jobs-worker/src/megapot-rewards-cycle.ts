@@ -401,21 +401,13 @@ export function runMegapotRewardsCycle(input: {
     const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);
 
     const refunds = yield* input.work.loadRefunds(limit);
-    const [refundFailures, refunded] = yield* partition(refunds, (fundingEffectId) =>
-      Effect.gen(function* () {
-        yield* input.runtime.observeSolvency();
-        return yield* input.runtime.refund(fundingEffectId);
-      }),
-    );
+    // Settlement callbacks refresh the immutable obligation's attestation/token,
+    // rather than the active deployment's custody balance.
+    const [refundFailures, refunded] = yield* partition(refunds, input.runtime.refund);
     recordFailures(refundFailures);
 
     const credits = yield* input.work.loadCredits(limit);
-    const [payoutFailures, paid] = yield* partition(credits, (creditId) =>
-      Effect.gen(function* () {
-        yield* input.runtime.observeSolvency();
-        return yield* input.runtime.payout(creditId);
-      }),
-    );
+    const [payoutFailures, paid] = yield* partition(credits, input.runtime.payout);
     recordFailures(payoutFailures);
 
     let gasTopups = 0;
