@@ -10,6 +10,7 @@ import {
 export type CloudConvertRenderObservation =
   | Readonly<{ status: "pending" }>
   | Readonly<{ status: "refused"; reason: "provider_failed" }>
+  | Readonly<{ status: "operator_reconciliation"; reason: "provider_wait_expired" }>
   | Readonly<{ status: "verified"; jobId: string; master: VerifiedCloudConvertMaster }>;
 
 /**
@@ -20,6 +21,8 @@ export type CloudConvertRenderObservation =
 export async function reconcileCloudConvertRender(
   input: Readonly<{
     tag: string;
+    nowMs: number;
+    providerWaitDeadlineMs: number;
     expectedSamples: number;
     expectedPcmSha256: string;
     jobs: Readonly<{
@@ -29,18 +32,29 @@ export async function reconcileCloudConvertRender(
     fetch: (url: string, init: RequestInit) => Promise<Response>;
   }>,
 ): Promise<CloudConvertRenderObservation> {
+  if (
+    !Number.isSafeInteger(input.nowMs) ||
+    !Number.isSafeInteger(input.providerWaitDeadlineMs) ||
+    input.providerWaitDeadlineMs <= 0
+  ) {
+    throw new TypeError("invalid CloudConvert provider wait clock");
+  }
+  const stillWaiting = (): CloudConvertRenderObservation =>
+    input.nowMs >= input.providerWaitDeadlineMs
+      ? { status: "operator_reconciliation", reason: "provider_wait_expired" }
+      : { status: "pending" };
   const job = await input.jobs.findByTag(input.tag);
-  if (job === null) return { status: "pending" };
+  if (job === null) return stillWaiting();
   if (job.tag !== input.tag) throw new Error("CloudConvert attempt tag mismatch");
   if (job.status === "error") return { status: "refused", reason: "provider_failed" };
-  if (job.status !== "finished") return { status: "pending" };
+  if (job.status !== "finished") return stillWaiting();
 
   const observed = await input.jobs.show(job.id);
   if (observed.id !== job.id || observed.tag !== input.tag) {
     throw new Error("CloudConvert job identity changed");
   }
   if (observed.status === "error") return { status: "refused", reason: "provider_failed" };
-  if (observed.status !== "finished") return { status: "pending" };
+  if (observed.status !== "finished") return stillWaiting();
   if (observed.exportUrl === null) throw new Error("CloudConvert finished without export");
   const master = await verifyCloudConvertExport({
     exportUrl: observed.exportUrl,

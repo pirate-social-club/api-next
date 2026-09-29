@@ -16,6 +16,8 @@ describe("CloudConvert render reconciliation", () => {
     let shows = 0;
     const result = await reconcileCloudConvertRender({
       tag,
+      nowMs: 1_000,
+      providerWaitDeadlineMs: 2_000,
       expectedSamples: 150_000,
       expectedPcmSha256,
       jobs: {
@@ -36,10 +38,61 @@ describe("CloudConvert render reconciliation", () => {
     expect(shows).toBe(0);
   });
 
+  test("an absent tag becomes operator reconciliation at its persisted wait deadline", async () => {
+    let shows = 0;
+    const result = await reconcileCloudConvertRender({
+      tag,
+      nowMs: 2_000,
+      providerWaitDeadlineMs: 2_000,
+      expectedSamples: 150_000,
+      expectedPcmSha256,
+      jobs: {
+        findByTag: async () => null,
+        show: async () => {
+          shows += 1;
+          throw new Error("unexpected show");
+        },
+      },
+      fetch: async () => {
+        throw new Error("unexpected download");
+      },
+    });
+    expect(result).toEqual({
+      status: "operator_reconciliation",
+      reason: "provider_wait_expired",
+    });
+    expect(shows).toBe(0);
+  });
+
+  test("a processing job cannot remain pending beyond its wait deadline", async () => {
+    const result = await reconcileCloudConvertRender({
+      tag,
+      nowMs: 2_001,
+      providerWaitDeadlineMs: 2_000,
+      expectedSamples: 150_000,
+      expectedPcmSha256,
+      jobs: {
+        findByTag: async () => ({ id: "job-1", tag, status: "processing" }),
+        show: async () => {
+          throw new Error("unexpected show");
+        },
+      },
+      fetch: async () => {
+        throw new Error("unexpected download");
+      },
+    });
+    expect(result).toEqual({
+      status: "operator_reconciliation",
+      reason: "provider_wait_expired",
+    });
+  });
+
   test("the exact finished job yields only a strictly verified master", async () => {
     const bytes = await fixture();
     const result = await reconcileCloudConvertRender({
       tag,
+      nowMs: 1_000,
+      providerWaitDeadlineMs: 2_000,
       expectedSamples: 150_000,
       expectedPcmSha256,
       jobs: {
@@ -59,6 +112,8 @@ describe("CloudConvert render reconciliation", () => {
     expect(
       await reconcileCloudConvertRender({
         tag,
+        nowMs: 1_000,
+        providerWaitDeadlineMs: 2_000,
         expectedSamples: 150_000,
         expectedPcmSha256,
         jobs: {
@@ -78,6 +133,8 @@ describe("CloudConvert render reconciliation", () => {
     await expect(
       reconcileCloudConvertRender({
         tag,
+        nowMs: 1_000,
+        providerWaitDeadlineMs: 2_000,
         expectedSamples: 150_000,
         expectedPcmSha256,
         jobs: {
