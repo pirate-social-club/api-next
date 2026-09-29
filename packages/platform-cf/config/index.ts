@@ -256,6 +256,9 @@ export const JobsWorkerConfig = Config.all({
   MEGAPOT_CUSTODY_PRIVATE_KEY: secret("MEGAPOT_CUSTODY_PRIVATE_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),
+  MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS: secret("MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
   MEGAPOT_GAS_TOPUP_PRIVATE_KEY: secret("MEGAPOT_GAS_TOPUP_PRIVATE_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),

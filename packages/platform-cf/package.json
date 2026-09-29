@@ -132,6 +132,8 @@
     "./megapot-purchase-repository": "./src/megapot-purchase-repository.ts",
     "./megapot-purchase-coordinator": "./src/megapot-purchase-coordinator.ts",
     "./megapot-work-repository": "./src/megapot-work-repository.ts",
+    "./reward-refund-repository": "./src/reward-refund-repository.ts",
+    "./reward-refund-coordinator": "./src/reward-refund-coordinator.ts",
     "./reward-gas-topup-coordinator": "./src/reward-gas-topup-coordinator.ts",
     "./reward-gas-topup-repository": "./src/reward-gas-topup-repository.ts",
     "./reward-payout-coordinator": "./src/reward-payout-coordinator.ts",

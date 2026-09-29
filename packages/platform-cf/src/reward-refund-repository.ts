@@ -13,6 +13,8 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
+import type { RewardObligationAuthority } from "./reward-obligation-authority.ts";
+
 type Row = Readonly<Record<string, unknown>>;
 
 const storage = (reason: RewardRefundStorageFailed["reason"]) =>
@@ -539,8 +541,33 @@ function reserveNonceIn(
   });
 }
 
+export type RewardRefundRoutingStore = RewardRefundStore &
+  Readonly<{
+    loadAuthority: (
+      fundingEffectId: string,
+    ) => Effect.Effect<RewardObligationAuthority, RewardRefundFailure>;
+  }>;
+
 export function makeControlPlaneRewardRefundRepository() {
   return {
+    loadAuthority: (fundingEffectId: string) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "reward-refund.authority.read",
+          text: `${CANDIDATE_SELECT} WHERE allocation.funding_effect_id=$1`,
+          values: [fundingEffectId],
+          readonly: true,
+        });
+        if (result.rows.length !== 1) return yield* rejected("attestation-lineage-missing");
+        return yield* Effect.try({
+          try: () => ({
+            attestationId: text(result.rows[0] as Row, "attestation_id"),
+            tokenAddress: text(result.rows[0] as Row, "token_address"),
+          }),
+          catch: () => storage("invalid-row"),
+        });
+      }).pipe(mapped),
     loadCandidate: (fundingEffectId: string) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -853,11 +880,12 @@ export function makeControlPlaneRewardRefundRepository() {
 
 export const makeControlPlaneRewardRefundStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): RewardRefundStore => {
+): RewardRefundRoutingStore => {
   const repository = makeControlPlaneRewardRefundRepository();
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {
+    loadAuthority: (fundingEffectId) => provide(repository.loadAuthority(fundingEffectId)),
     loadCandidate: (fundingEffectId) => provide(repository.loadCandidate(fundingEffectId)),
     findProgress: (effectId) => provide(repository.findProgress(effectId)),
     reserveNonce: (input) => provide(repository.reserveNonce(input)),

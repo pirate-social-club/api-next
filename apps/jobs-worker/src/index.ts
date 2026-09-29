@@ -154,6 +154,7 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEGAPOT_CUSTODY_PRIVATE_KEY?: string;
+  readonly MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS?: string;
   readonly MEGAPOT_GAS_TOPUP_PRIVATE_KEY?: string;
   readonly MEGAPOT_COMMITMENT_PUBLIC_ORIGIN?: string;
   readonly MEGAPOT_OBSERVATION_TTL_SECONDS?: string;
@@ -184,6 +185,7 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
       MEGAPOT_ATTESTATION_ID: env.MEGAPOT_ATTESTATION_ID,
       MEGAPOT_REQUIRED_CONFIRMATIONS: env.MEGAPOT_REQUIRED_CONFIRMATIONS,
       MEGAPOT_CUSTODY_PRIVATE_KEY: env.MEGAPOT_CUSTODY_PRIVATE_KEY,
+      MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS: env.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS,
       MEGAPOT_GAS_TOPUP_PRIVATE_KEY: env.MEGAPOT_GAS_TOPUP_PRIVATE_KEY,
       MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: env.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN,
       MEGAPOT_OBSERVATION_TTL_SECONDS: env.MEGAPOT_OBSERVATION_TTL_SECONDS,
@@ -266,6 +268,7 @@ function makeMegapotOptions(
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
     custodyPrivateKey,
+    retainedCustodyPrivateKeys: Redacted.value(config.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS),
     gasTopupPrivateKey: gasTopupPrivateKey.length === 0 ? null : gasTopupPrivateKey,
     commitmentBucket: env.MEGAPOT_COMMITMENTS,
     commitmentPublicOrigin,

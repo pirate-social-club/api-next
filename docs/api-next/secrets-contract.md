@@ -1137,3 +1137,24 @@ decision retains their custody pending upstream rotation. Inventory admission
 does not restore confidentiality or lift the provisioning record's prohibition
 on reusing the disclosed pair in a wallet ceremony. No credential was read,
 rotated, deleted or synchronized by this contract change.
+
+## Retained testnet reward custody keys
+
+The jobs Worker accepts the optional redacted secret
+`MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS` for obligations originating under retired
+Base Sepolia attestations. Its value is a JSON object mapping each lowercase
+custody address to its matching lowercase hexadecimal private key. The map is
+bounded to 32 entries and 8,192 characters. The primary
+`MEGAPOT_CUSTODY_PRIVATE_KEY` remains available alongside these retained keys.
+Malformed maps and address/key mismatches fail with a sanitized configuration
+error; missing historical authority holds the affected item before nonce
+reservation while other candidates continue.
+
+Staging `/services/api-next` admits this optional name. It is never a public
+variable, database field, commitment artifact or log value. A separately
+authorized rotation provisions the jobs-only binding and declares the installed
+secret in the Worker configuration and names-only inventory. This implementation
+does not provision keys or alter any deployment. Development and production
+Infisical inventories do not admit this testnet secret. Retain each key until
+its original attestation has no outstanding liabilities or pending chain effects
+and its operator closeout has been verified.
