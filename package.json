@@ -54,6 +54,7 @@
     "hns:emit-authority-successor": "bun apps/hns-observer-driver/src/authority-successor-main.ts",
     "hns:provision-authority-root": "bun apps/hns-authority-provisioner/src/main.ts",
     "db:preflight:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-preflight.ts",
+    "db:preflight:reward-activation": "bun scripts/runtime-role-release-preflight.ts",
     "prove:megapot-controlled-win:local": "bun infra/megapot/controlled-win-fixture/prove-rpc.ts",
     "plan:megapot-controlled-win:workers": "bun infra/megapot/controlled-win-fixture/plan-workers.ts",
     "plan:megapot-controlled-win:grants": "bun infra/megapot/controlled-win-fixture/mirror-runtime-grants.ts",
