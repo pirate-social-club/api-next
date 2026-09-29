@@ -12330,7 +12330,6 @@ BEGIN
      OR chain_record.receipt_block_hash <> NEW.block_hash
      OR chain_record.receipt_hash <> NEW.receipt_hash
      OR chain_record.confirmations <> NEW.confirmations
-     OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> chain_record.chain_id
      OR attestation_record.custody_address <> NEW.sender_address
      OR NOT EXISTS (
@@ -12600,7 +12599,6 @@ BEGIN
      OR chain_record.chain_id <> credit_record.chain_id
      OR chain_record.signer_address <> attestation_record.custody_address
      OR chain_record.target_address <> credit_record.token_address
-     OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> credit_record.chain_id
      OR credit_record.account_id <> NEW.account_id
      OR credit_record.payout_persona_id <> NEW.payout_persona_id
@@ -12717,7 +12715,6 @@ BEGIN
      OR NEW.amount_atomic <> expected_amount
      OR NEW.pro_rata_numerator_atomic <> funding_record.confirmed_amount_atomic
      OR NEW.pro_rata_denominator_atomic <> confirmed_total
-     OR attestation_record.status <> 'active'
      OR attestation_record.chain_id <> leg_record.chain_id
      OR solvency_record.attestation_id <> NEW.attestation_id
      OR solvency_record.chain_id <> leg_record.chain_id

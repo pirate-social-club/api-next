@@ -41,6 +41,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
   type MegapotRewardsRuntime,
+  megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
   resolveGasTopupRuntime,
@@ -399,6 +400,10 @@ export function makeMegapotRewardsJob(
     );
     for (const alert of megapotRewardsLivenessAlerts(summary.agedPending)) {
       yield* collector.emit(alert);
+    }
+    const drawingObservationAlert = megapotRewardsDrawingObservationAlert(summary);
+    if (drawingObservationAlert !== null) {
+      yield* collector.emit(drawingObservationAlert);
     }
     if (summary.failures.length > 0) {
       yield* collector.emit({
