@@ -147,6 +147,7 @@
     "MEDIA_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "false",
         "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
         "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",
@@ -160,6 +161,7 @@
       },
       "secrets": {
         "required": [
+          "CLOUDCONVERT_RENDER_API_KEY",
           "VIDEO_WORKFLOW_READ_TOKEN",
           "VIDEO_STREAM_API_TOKEN",
           "ACRCLOUD_ACCESS_KEY",

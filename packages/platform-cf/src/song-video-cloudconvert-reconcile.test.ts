@@ -12,6 +12,52 @@ const fixture = async () =>
   );
 
 describe("CloudConvert render reconciliation", () => {
+  test("a lookup that crosses the deadline cannot leave a processing job pending", async () => {
+    let nowMs = 1_000;
+    expect(
+      await reconcileCloudConvertRender({
+        tag,
+        nowMs,
+        now: () => nowMs,
+        providerWaitDeadlineMs: 2_000,
+        expectedSamples: 150_000,
+        expectedPcmSha256,
+        jobs: {
+          findByTag: async () => {
+            nowMs = 2_000;
+            return { id: "job-1", tag, status: "processing" };
+          },
+          show: async () => {
+            throw new Error("unexpected show");
+          },
+        },
+        fetch: async () => {
+          throw new Error("unexpected download");
+        },
+      }),
+    ).toEqual({ status: "operator_reconciliation", reason: "provider_wait_expired" });
+  });
+
+  test("a processing job before its deadline stays pending without downloading", async () => {
+    const result = await reconcileCloudConvertRender({
+      tag,
+      nowMs: 1_000,
+      providerWaitDeadlineMs: 2_000,
+      expectedSamples: 150_000,
+      expectedPcmSha256,
+      jobs: {
+        findByTag: async () => ({ id: "job-1", tag, status: "processing" }),
+        show: async () => {
+          throw new Error("unexpected show");
+        },
+      },
+      fetch: async () => {
+        throw new Error("unexpected download");
+      },
+    });
+    expect(result).toEqual({ status: "pending" });
+  });
+
   test("an absent tag remains pending and never creates a job", async () => {
     let shows = 0;
     const result = await reconcileCloudConvertRender({

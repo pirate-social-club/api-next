@@ -106,7 +106,10 @@ const STAGING_RUNTIME_SUPPORT_SECRET_NAMES = [
 ] as const;
 // The Stream token's operator copy is retained while the shared runtime copy
 // is used by the staging video path. Both copies remain staging-only.
-const STAGING_VIDEO_OPERATOR_SECRET_NAMES = ["VIDEO_STREAM_API_TOKEN"] as const;
+const STAGING_VIDEO_OPERATOR_SECRET_NAMES = [
+  "VIDEO_STREAM_API_TOKEN",
+  "CLOUDCONVERT_API_KEY",
+] as const;
 // Isolated staging HNS onboarding custody (api-hns-staging-enablement): scoped
 // staging Cloudflare credentials, the operator database identity used once for
 // grants, the gateway database and outbound Solid Access pair, the Solid API and
@@ -195,6 +198,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
+      "CLOUDCONVERT_RENDER_API_KEY",
       ...STAGING_RUNTIME_SUPPORT_SECRET_NAMES,
       "TELEGRAM_CREDENTIAL_KEYS_JSON",
     ],

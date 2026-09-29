@@ -19,6 +19,8 @@ export async function verifyCloudConvertExport(
     expectedSamples: number;
     expectedPcmSha256: string;
     fetch: (url: string, init: RequestInit) => Promise<Response>;
+    deadlineMs?: number;
+    now?: () => number;
   }>,
 ): Promise<VerifiedCloudConvertMaster> {
   const downloaded = await downloadSongVideoCloudConvertMaster(input);

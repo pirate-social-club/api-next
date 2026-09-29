@@ -97,6 +97,8 @@ export type MediaProcessorRuntimeEnv = MediaProcessorWorkerEnv &
     readonly OPENROUTER_API_KEY?: string;
     readonly QENCODE_API_KEY?: string;
     readonly VIDEO_SOURCE_GATEWAY_ORIGIN?: string;
+    readonly VIDEO_CLOUDCONVERT_RENDER_ENABLED?: string;
+    readonly CLOUDCONVERT_RENDER_API_KEY?: string;
     readonly DATA_REGISTRATION_ENABLED?: string;
     readonly DATA_REGISTRATION_CHAIN_ID?: string;
     readonly VIDEO_ANALYSIS_ENABLED?: string;
@@ -530,6 +532,32 @@ export function makeMediaProcessorComposition(
                 requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS"),
               ),
               transactionSearchPath: CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+              ...(env.VIDEO_CLOUDCONVERT_RENDER_ENABLED === "true"
+                ? {
+                    cloudConvert: {
+                      bucket: requiredBinding(
+                        env.MEDIA_IMMUTABLE_ORIGINALS,
+                        "MEDIA_IMMUTABLE_ORIGINALS",
+                      ),
+                      apiKey: requiredText(
+                        env.CLOUDCONVERT_RENDER_API_KEY,
+                        "CLOUDCONVERT_RENDER_API_KEY",
+                      ),
+                      gatewayOrigin: requiredText(
+                        env.VIDEO_SOURCE_GATEWAY_ORIGIN,
+                        "VIDEO_SOURCE_GATEWAY_ORIGIN",
+                      ),
+                      sourceGrants: makeVideoSourceGrantIssuer(
+                        runtime,
+                        requiredText(
+                          env.VIDEO_SOURCE_GATEWAY_ORIGIN,
+                          "VIDEO_SOURCE_GATEWAY_ORIGIN",
+                        ),
+                        "cloudconvert",
+                      ),
+                    },
+                  }
+                : {}),
             }),
           },
           videoAnalysis: {

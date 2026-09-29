@@ -23,6 +23,7 @@ export async function reconcileCloudConvertRender(
   input: Readonly<{
     tag: string;
     nowMs: number;
+    now?: () => number;
     providerWaitDeadlineMs: number;
     expectedSamples: number;
     expectedPcmSha256: string;
@@ -44,12 +45,18 @@ export async function reconcileCloudConvertRender(
     return { status: "operator_reconciliation", reason: "provider_wait_expired" };
   }
   const job = await input.jobs.findByTag(input.tag);
+  if ((input.now?.() ?? input.nowMs) >= input.providerWaitDeadlineMs) {
+    return { status: "operator_reconciliation", reason: "provider_wait_expired" };
+  }
   if (job === null) return { status: "pending" };
   if (job.tag !== input.tag) throw new Error("CloudConvert attempt tag mismatch");
   if (job.status === "error") return { status: "refused", reason: "provider_failed" };
   if (job.status !== "finished") return { status: "pending" };
 
   const observed = await input.jobs.show(job.id);
+  if ((input.now?.() ?? input.nowMs) >= input.providerWaitDeadlineMs) {
+    return { status: "operator_reconciliation", reason: "provider_wait_expired" };
+  }
   if (observed.id !== job.id || observed.tag !== input.tag) {
     throw new Error("CloudConvert job identity changed");
   }
@@ -61,6 +68,12 @@ export async function reconcileCloudConvertRender(
     expectedSamples: input.expectedSamples,
     expectedPcmSha256: input.expectedPcmSha256,
     fetch: input.fetch,
+    ...(input.now === undefined
+      ? {}
+      : { now: input.now, deadlineMs: input.providerWaitDeadlineMs }),
   });
+  if ((input.now?.() ?? input.nowMs) >= input.providerWaitDeadlineMs) {
+    return { status: "operator_reconciliation", reason: "provider_wait_expired" };
+  }
   return { status: "verified", jobId: job.id, master };
 }
