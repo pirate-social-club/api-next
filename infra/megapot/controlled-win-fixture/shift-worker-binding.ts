@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import pg from "pg";
+import { runRuntimeRoleReleasePreflight } from "../../../scripts/runtime-role-release-preflight.ts";
 
 const accountId = "08a4c22cf52e2ecae883e36f80a33f4a";
 const wrangler = `${import.meta.dir}/../../../node_modules/.bin/wrangler`;
@@ -190,11 +191,24 @@ if (bindingValue(before, transition.name) !== transition.before ||
 if (phase === "select-r2" && bindingValue(other, "MEGAPOT_REWARDS_ENABLED") !== "false") {
   throw new Error("both Workers must have rewards off before selecting r2");
 }
+let releasePreflight: Awaited<ReturnType<typeof runRuntimeRoleReleasePreflight>> | null = null;
 if (phase === "enable") {
   if (bindingValue(other, "MEGAPOT_ATTESTATION_ID") !== newAttestation) {
     throw new Error("both Workers must point at r2 before activation");
   }
   await requireR2Database();
+  const runtimeConnectionString = process.env.MEGAPOT_E2E_RUNTIME_POSTGRES_URL;
+  const adminConnectionString = process.env.MEGAPOT_E2E_ADMIN_POSTGRES_URL;
+  if (!runtimeConnectionString || !adminConnectionString) {
+    throw new Error("isolated runtime and admin database URLs required before activation");
+  }
+  releasePreflight = await runRuntimeRoleReleasePreflight({
+    runtimeConnectionString,
+    // This pinned fixture source predates the applied sponsorship migrations.
+    // The attestation-rotation guard checks those exact isolated migrations;
+    // a later main-source release still requires a clean database rebuild.
+    requireMainLedger: false,
+  });
 }
 const changed = before.bindings.map((item) => item.name === transition.name
   ? { ...item, text: transition.after } : item);
@@ -211,6 +225,7 @@ const plan = { worker, phase, version: before.version, scriptEtag: before.etag,
   beforeValue: transition.before, afterValue: transition.after,
   beforeSettingsHash: settingsFingerprint(before.settings),
   afterSettingsHash: settingsFingerprint(expectedSettings),
+  releasePreflight,
   patchHash: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
 if (!execute) {
   console.log(JSON.stringify({ action: "dry-run", ...plan }));

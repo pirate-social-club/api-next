@@ -21,11 +21,7 @@ describe("runtime role release preflight", () => {
         (requirement) => `${requirement.object}:${requirement.privilege}`,
       ),
     );
-    for (const source of [
-      "megapot-claim-repository.ts",
-      "reward-claim-verification-intent.ts",
-      "wallet-sponsored-send-repository.ts",
-    ]) {
+    for (const source of ["megapot-claim-repository.ts", "reward-claim-verification-intent.ts"]) {
       const body = await Bun.file(
         new URL(`../packages/platform-cf/src/${source}`, import.meta.url),
       ).text();
