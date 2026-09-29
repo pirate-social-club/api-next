@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import {
   type GatewayPostgresPool,
   makeGatewayPooledPostgresClientFactory,
@@ -17,14 +18,14 @@ describe("gateway read-only PostgreSQL pool scopes", () => {
     let acquisitions = 0;
     let queries = 0;
     const releases: boolean[] = [];
-    const backend = {
+    const backend = Object.assign(new EventEmitter(), {
       connection: { stream: { destroyed: false, destroy: () => undefined } },
       query: async () => {
         queries += 1;
         return { rows: [], rowCount: 0 };
       },
       release: (destroy = false) => releases.push(destroy),
-    };
+    });
     const pool: GatewayPostgresPool = {
       connect: async () => {
         acquisitions += 1;
@@ -43,6 +44,7 @@ describe("gateway read-only PostgreSQL pool scopes", () => {
       queries: 2,
       releases: [false, false],
     });
+    expect(backend.listenerCount("error")).toBe(0);
   });
 
   test("discards a connection acquired after its scope is canceled", async () => {
@@ -52,10 +54,12 @@ describe("gateway read-only PostgreSQL pool scopes", () => {
     const scope = await makeGatewayPooledPostgresClientFactory(pool)("postgresql://unused", {});
     const connecting = scope.connect();
     await scope.end();
-    pending.resolve({
-      query: async () => ({ rows: [], rowCount: 0 }),
-      release: (destroy = false) => releases.push(destroy),
-    });
+    pending.resolve(
+      Object.assign(new EventEmitter(), {
+        query: async () => ({ rows: [], rowCount: 0 }),
+        release: (destroy = false) => releases.push(destroy),
+      }),
+    );
     await expect(connecting).rejects.toThrow("closed during acquisition");
     expect(releases).toEqual([true]);
   });
@@ -69,16 +73,36 @@ describe("gateway read-only PostgreSQL pool scopes", () => {
       },
     };
     const pool: GatewayPostgresPool = {
-      connect: async () => ({
-        connection: { stream },
-        query: async () => ({ rows: [], rowCount: 0 }),
-        release: (destroy = false) => releases.push(destroy),
-      }),
+      connect: async () =>
+        Object.assign(new EventEmitter(), {
+          connection: { stream },
+          query: async () => ({ rows: [], rowCount: 0 }),
+          release: (destroy = false) => releases.push(destroy),
+        }),
     };
     const scope = await makeGatewayPooledPostgresClientFactory(pool)("postgresql://unused", {});
     await scope.connect();
     scope.connection?.stream?.destroy();
     await scope.end();
     expect(releases).toEqual([true]);
+  });
+
+  test("contains a borrowed-client disconnect and discards that client", async () => {
+    const releases: boolean[] = [];
+    const client = Object.assign(new EventEmitter(), {
+      connection: { stream: { destroyed: false, destroy: () => undefined } },
+      query: async () => ({ rows: [], rowCount: 0 }),
+      release: (destroy = false) => releases.push(destroy),
+    });
+    const pool: GatewayPostgresPool = { connect: async () => client };
+    const scope = await makeGatewayPooledPostgresClientFactory(pool)("postgresql://unused", {});
+    await scope.connect();
+    expect(client.listenerCount("error")).toBe(1);
+    expect(() =>
+      client.emit("error", new Error("connection terminated unexpectedly")),
+    ).not.toThrow();
+    await scope.end();
+    expect(releases).toEqual([true]);
+    expect(client.listenerCount("error")).toBe(0);
   });
 });
