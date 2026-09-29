@@ -27,6 +27,7 @@ import { seedActivitySong } from "./activity-participation-composed-song.pg-fixt
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneRewardEffectAttestationStore } from "./reward-effect-attestation-repository.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 import { makeControlPlaneRewardRefundStore } from "./reward-refund-repository.ts";
@@ -433,6 +434,18 @@ suite("Reward obligation attestation pinning", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      // Routing authority must be readable before any balance observation exists.
+      const payoutRouting = makeControlPlaneRewardPayoutStore(layer);
+      expect(await run(payoutRouting.loadAuthority("pin-credit-retired"))).toEqual({
+        attestationId: RETIRED_ATTESTATION,
+        tokenAddress: SETTLEMENT_TOKEN,
+      });
+      await expect(run(payoutRouting.loadAuthority("pin-credit-orphan"))).rejects.toMatchObject({
+        reason: "attestation-lineage-missing",
+      });
+      await expect(run(payoutRouting.loadAuthority("pin-credit-mismatched"))).rejects.toMatchObject(
+        { reason: "attestation-lineage-missing" },
+      );
       const solvency = makeControlPlaneCustodySolvencyStore(layer);
       const retiredSolvency = await run(
         solvency.record({
@@ -458,6 +471,11 @@ suite("Reward obligation attestation pinning", () => {
       await terminalizeLeg(admin, bonus.legId);
       await confirmFunding(admin, "pin-funding-retired", "22");
       await confirmFunding(admin, "pin-funding-bonus", "23");
+      expect(await run(payoutRouting.loadAuthority("pin-credit-bonus"))).toEqual({
+        attestationId: RETIRED_ATTESTATION,
+        tokenAddress: bonus.token,
+      });
+
       await admin.query(
         `INSERT INTO song_reward_leg_funding_effects (
            funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
@@ -486,6 +504,24 @@ suite("Reward obligation attestation pinning", () => {
         personaId: successor.persona_id,
         amountAtomic: "701",
         attestationId: ACTIVE_ATTESTATION,
+      });
+
+      const refundRouting = makeControlPlaneRewardRefundStore(layer);
+      expect(await run(refundRouting.loadAuthority("pin-funding-active"))).toEqual({
+        attestationId: ACTIVE_ATTESTATION,
+        tokenAddress: SETTLEMENT_TOKEN,
+      });
+      expect(await run(refundRouting.loadAuthority("pin-funding-retired"))).toEqual({
+        attestationId: RETIRED_ATTESTATION,
+        tokenAddress: SETTLEMENT_TOKEN,
+      });
+      expect(await run(refundRouting.loadAuthority("pin-funding-bonus"))).toEqual({
+        attestationId: RETIRED_ATTESTATION,
+        tokenAddress: bonus.token,
+      });
+      expect(await run(payoutRouting.loadAuthority("pin-credit-active"))).toEqual({
+        attestationId: ACTIVE_ATTESTATION,
+        tokenAddress: SETTLEMENT_TOKEN,
       });
 
       const activeSolvency = await run(
@@ -544,6 +580,16 @@ suite("Reward obligation attestation pinning", () => {
         }),
       );
       expect(reserved.nonce).toBe(9n);
+      const effectAttestations = makeControlPlaneRewardEffectAttestationStore(layer);
+      expect(await run(effectAttestations.load("pin-payout-retired", "reward_payout"))).toBe(
+        RETIRED_ATTESTATION,
+      );
+      await expect(
+        run(effectAttestations.load("pin-payout-retired", "reward_refund")),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
+      await expect(
+        run(effectAttestations.load("missing-effect", "reward_payout")),
+      ).rejects.toMatchObject({ reason: "invalid-row" });
       const activeCandidate = await run(payout.loadCandidate("pin-credit-active"));
       expect(activeCandidate.attestationId).toBe(ACTIVE_ATTESTATION);
       expect(activeCandidate.custodyAddress).toBe(ACTIVE_CUSTODY);
@@ -585,6 +631,20 @@ suite("Reward obligation attestation pinning", () => {
       expect(activeRefund.attestationId).toBe(ACTIVE_ATTESTATION);
       expect(activeRefund.custodyAddress).toBe(ACTIVE_CUSTODY);
       expect(activeRefund.amountAtomic).toBe(100000n);
+      const refundReserved = await run(
+        refund.reserveNonce({
+          candidate: activeRefund,
+          effectId: "pin-refund-active",
+          observedPendingNonce: 0n,
+          observedBlockNumber: 902n,
+          observedBlockHash: bytes32("8"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      expect(refundReserved.nonce).toBe(0n);
+      expect(await run(effectAttestations.load("pin-refund-active", "reward_refund"))).toBe(
+        ACTIVE_ATTESTATION,
+      );
       const retiredBonusRefund = await run(refund.loadCandidate("pin-funding-bonus"));
       expect(retiredBonusRefund.attestationId).toBe(RETIRED_ATTESTATION);
       expect(retiredBonusRefund.custodyAddress).toBe(RETIRED_CUSTODY);

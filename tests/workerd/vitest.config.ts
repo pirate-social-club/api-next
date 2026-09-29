@@ -1,10 +1,12 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import { unstable_readConfig } from "wrangler";
+import { rewardsPlatformAliases } from "../rewards-platform-aliases.ts";
 
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  ...rewardsPlatformAliases,
   "@pirate/application/avatars/ports": new URL(
     "../../packages/application/src/avatars/ports.ts",
     import.meta.url,
