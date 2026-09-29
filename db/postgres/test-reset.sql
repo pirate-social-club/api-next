@@ -259,6 +259,7 @@ TRUNCATE TABLE
   "media_song_lyrics_revisions",
   "media_song_stems",
   "media_song_video_accepted_masters",
+  "media_song_video_excerpt_grants",
   "media_song_video_masters",
   "media_song_video_pcm_references",
   "media_song_video_render_attempts",

@@ -40,7 +40,7 @@ export type VideoSourceGrant = Readonly<{
     version: string;
     etag: string;
     size: number;
-    contentType: "video/mp4" | "video/quicktime";
+    contentType: "video/mp4" | "video/quicktime" | "audio/wav";
     canonicalSha256: string;
   }>;
 }>;

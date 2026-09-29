@@ -54,6 +54,7 @@ type SourceBindingFailure =
   | { readonly kind: "output_not_verified"; readonly reason: string }
   | { readonly kind: "output_changed_during_seal"; readonly objectKey: string }
   | { readonly kind: "soundtrack_not_canonical"; readonly planId: string }
+  | { readonly kind: "provider_wait_expired"; readonly attemptId: string }
   | { readonly kind: "sealed_source_absent"; readonly immutableRef: string }
   | {
       readonly kind: "sealed_source_digest_mismatch";
@@ -119,7 +120,10 @@ export type SongVideoSoundtrackVerifier = {
     readonly clipDurationSamples: number;
   }) => Promise<string | null>;
   /** The master's audio track, decoded; null when it cannot be decoded. */
-  readonly decodedSoundtrackDigest: (masterBytes: Uint8Array) => Promise<string | null>;
+  readonly decodedSoundtrackDigest: (
+    masterBytes: Uint8Array,
+    expectedSamples: number,
+  ) => Promise<string | null>;
 };
 
 /** Persists the plan frozen at reservation. Containment is enforced by the schema. */
@@ -361,7 +365,10 @@ export async function verifyAndSealMaster(
         clipStartSamples: Number(boundRow.clip_start_samples),
         clipDurationSamples: Number(boundRow.clip_duration_samples),
       }),
-      dependencies.soundtrack.decodedSoundtrackDigest(reread),
+      dependencies.soundtrack.decodedSoundtrackDigest(
+        reread,
+        Number(boundRow.clip_duration_samples),
+      ),
     ]);
     if (
       expectedSoundtrack === null ||
@@ -431,6 +438,12 @@ export async function verifyAndSealMaster(
     return { sealed: true, masterRevisionId: request.masterRevisionId };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
+    if (error instanceof Error && error.message === "song-video provider wait deadline expired") {
+      return {
+        sealed: false,
+        failure: { kind: "provider_wait_expired", attemptId: request.attempt.attemptId },
+      };
+    }
     throw error;
   }
 }

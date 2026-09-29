@@ -338,6 +338,13 @@ const requiredNamesFor = (
     if (environment.vars.SONG_SOURCE_RECORDING_ENABLED === "true") {
       required.push("SONG_SOURCE_RECORDING_ENABLED", ...SONG_SOURCE_RECORDING_REQUIRED);
     }
+    if (environment.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED === "true") {
+      required.push(
+        "CLOUDCONVERT_RENDER_API_KEY",
+        "VIDEO_SOURCE_GATEWAY_ORIGIN",
+        "MEDIA_IMMUTABLE_ORIGINALS",
+      );
+    }
     return required;
   }
   if (worker === "jobs") {
@@ -508,6 +515,23 @@ describe("source-to-Wrangler binding contract", () => {
   const ratchet = (actual: readonly string[], known: readonly string[]) => ({
     unexpected: actual.filter((violation) => !known.includes(violation)),
     resolved: known.filter((violation) => !actual.includes(violation)),
+  });
+
+  test("CloudConvert is disabled in staging and its key belongs only to the media Worker", () => {
+    const staging = declaredEnvironment(configs.media, "staging");
+    expect(staging.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("false");
+    expect(staging.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
+    for (const environment of ["development", "production"] as const) {
+      expect(declaredEnvironment(configs.media, environment).secrets).not.toContain(
+        "CLOUDCONVERT_RENDER_API_KEY",
+      );
+      expect(
+        declaredEnvironment(configs.media, environment).vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED,
+      ).toBeUndefined();
+    }
+    expect(declaredEnvironment(configs.http, "staging").secrets).not.toContain(
+      "CLOUDCONVERT_RENDER_API_KEY",
+    );
   });
 
   test("declared config has no junk and matches var/secret classification", () => {
