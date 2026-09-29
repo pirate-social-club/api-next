@@ -7,6 +7,7 @@ import {
 } from "./song-video-worker-render.ts";
 
 const request = {
+  attemptId: "plan:submission:g1",
   outputObjectKey: "media://immutable/song-video-masters/plan:submission/g1",
   source: {
     immutableRef: "media://immutable/op/video/1",
@@ -46,14 +47,20 @@ describe("worker song-video renderer", () => {
         output: { kind: "output", sha256: "c".repeat(64), byteLength: 2_048 },
       }),
     );
-    expect(await renderer.observe({ outputObjectKey: "refused" })).toEqual({
+    expect(
+      await renderer.observe({ attemptId: request.attemptId, outputObjectKey: "refused" }),
+    ).toEqual({
       status: "refused",
       reason: "master_not_exact",
     });
     // A recorded output is not the Worker's to verify: only the accepted master
     // completes the stage, and the workflow checks that before observing.
-    expect(await renderer.observe({ outputObjectKey: "output" })).toEqual({ status: "pending" });
-    expect(await renderer.observe({ outputObjectKey: "absent" })).toEqual({ status: "pending" });
+    expect(
+      await renderer.observe({ attemptId: request.attemptId, outputObjectKey: "output" }),
+    ).toEqual({ status: "pending" });
+    expect(
+      await renderer.observe({ attemptId: request.attemptId, outputObjectKey: "absent" }),
+    ).toEqual({ status: "pending" });
   });
 });
 

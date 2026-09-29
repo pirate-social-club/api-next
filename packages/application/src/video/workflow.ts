@@ -633,6 +633,7 @@ export async function runVideoAnalysisWorkflow(
           // continuation — the execution may have begun and is only observed.
           if (!(await render.store.beginExecution(attempt))) return "observe";
           const outcome = await render.renderer.submit({
+            attemptId: attempt.attemptId,
             outputObjectKey: attempt.outputObjectKey,
             source: {
               immutableRef: video.immutableRef,
@@ -663,6 +664,7 @@ export async function runVideoAnalysisWorkflow(
               const { record, plan } = await rendering();
               if ((await render.store.acceptedMaster(plan.planId)) !== null) return "completed";
               const outcome = await render.renderer.observe({
+                attemptId: attempt.attemptId,
                 outputObjectKey: attempt.outputObjectKey,
               });
               if (outcome.status === "completed") return "completed";
