@@ -61,6 +61,7 @@ export interface MegapotAttestationRuntime {
   readonly publishCommitment: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly approve: MegapotRewardsRuntime["approve"];
   readonly purchase: MegapotRewardsRuntime["purchase"];
+  readonly closeUnavailablePurchase: MegapotRewardsRuntime["closeUnavailablePurchase"];
   readonly sweep: MegapotRewardsRuntime["sweep"];
   readonly claim: MegapotRewardsRuntime["claim"];
   readonly refund: MegapotRewardsRuntime["refund"];
@@ -119,6 +120,8 @@ export function makeMegapotRewardsRouting(input: {
       drawing(work, (runtime) => runtime.publishCommitment(work)),
     approve: (work: MegapotDrawingWork) => drawing(work, (runtime) => runtime.approve(work)),
     purchase: (work: MegapotDrawingWork) => drawing(work, (runtime) => runtime.purchase(work)),
+    closeUnavailablePurchase: (work: MegapotDrawingWork) =>
+      drawing(work, (runtime) => runtime.closeUnavailablePurchase(work)),
     sweep: (work: MegapotDrawingWork) => drawing(work, (runtime) => runtime.sweep(work)),
     claim: (work: MegapotDrawingWork) => drawing(work, (runtime) => runtime.claim(work)),
     refund: Effect.fn("MegapotRewardsRouting.refund")(function* (id: string) {

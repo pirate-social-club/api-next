@@ -275,6 +275,7 @@ export function makeMegapotRewardsJob(
         publishCommitment: routing.publishCommitment,
         approve: routing.approve,
         purchase: routing.purchase,
+        closeUnavailablePurchase: routing.closeUnavailablePurchase,
         sweep: routing.sweep,
         claim: routing.claim,
         allocate: (work) =>

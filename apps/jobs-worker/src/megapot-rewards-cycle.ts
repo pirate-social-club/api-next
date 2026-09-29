@@ -35,6 +35,7 @@ export interface MegapotRewardsRuntime {
   readonly approve: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
+  readonly closeUnavailablePurchase: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly purchase: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
@@ -377,8 +378,23 @@ export function runMegapotRewardsCycle(input: {
     const committedDrawings = yield* input.work.loadDrawings({ statuses: ["committed"], limit });
     const [purchaseFailures, purchaseResults] = yield* partition(committedDrawings, (work) =>
       Effect.gen(function* () {
-        const approval = yield* input.runtime.approve(work);
-        if (approval.kind !== "not_required" && approval.kind !== "confirmed") return false;
+        const approval = yield* input.runtime.approve(work).pipe(
+          Effect.catch((failure) =>
+            input.runtime.closeUnavailablePurchase(work).pipe(
+              Effect.catch((cleanupFailure) => {
+                // A normal pause cannot conceal a failed custody/window observation.
+                if (failureTag(failure) === "RewardOperationsPaused")
+                  recordFailures([cleanupFailure]);
+                return Effect.succeed(null);
+              }),
+              Effect.andThen(Effect.fail(failure)),
+            ),
+          ),
+        );
+        if (approval.kind !== "not_required" && approval.kind !== "confirmed") {
+          yield* input.runtime.closeUnavailablePurchase(work);
+          return false;
+        }
         const purchase = yield* input.runtime.purchase(work);
         return purchase.kind !== "closed";
       }),

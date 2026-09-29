@@ -65,15 +65,17 @@ control and event trail through an independent connection before taking over.
 No failure path restores running. A readback failure can mean the pause already
 committed. Resume always requires a separate explicit command and current
 revision, with an incident-owner reason. Its operator authorization must include
-any outstanding winnings-claim deadline; this implementation does not establish
-that an indefinite claim pause is safe.
+the contract identities and any outstanding winnings-claim deadline. The
+contract evidence below applies only to the exact deployments checked.
 
 ## Drawing and refund behavior
 
 When a paused drawing passes its purchase window, a proven unsent committed
 purchase closes as closed_purchase_unavailable through the existing prebroadcast
-closure. It releases reserved ticket budget and does not project a purchased
-ticket. Existing offer expiry rules preserve remaining leg funding and create
+closure. The cycle performs this cleanup even when approval is paused or
+pending. Cleanup never reserves, signs or resumes a transaction and leaves any
+existing purchase progress for reconciliation. It releases reserved ticket
+budget and does not project a purchased ticket. Existing offer expiry rules preserve remaining leg funding and create
 refund liability when appropriate; refund sends wait until resume.
 
 An admitted or ambiguous purchase must reconcile before its budget is released.

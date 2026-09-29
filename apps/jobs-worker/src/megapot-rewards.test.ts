@@ -45,6 +45,7 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     freezeDue: () => call("cutoff").pipe(Effect.as([{}])),
     publishCommitment: () => call("commitment"),
     approve: () => call("approval").pipe(Effect.as({ kind: approvalKind })),
+    closeUnavailablePurchase: () => call("purchase-window").pipe(Effect.as(null)),
     purchase: () => call("purchase").pipe(Effect.as({ kind: "submitted" })),
     sweep: () => call("sweep"),
     claim: () => call("claim"),
@@ -659,4 +660,24 @@ test("a paused cycle records holds, keeps reconciling and does not report storag
   expect(result.failures).toEqual([]);
   expect(result.failureDiagnostics).toEqual([]);
   expect(calls).toContain("reconcile");
+});
+
+test("a paused approval still runs proven-unsent purchase-window cleanup", async () => {
+  const { runtime, work, calls } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime: {
+        ...runtime,
+        approve: () => Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+        closeUnavailablePurchase: () =>
+          Effect.sync(() => calls.push("closed_purchase_unavailable")),
+      },
+    }),
+  );
+  expect(calls).toContain("closed_purchase_unavailable");
+  expect(calls).not.toContain("purchase");
+  expect(result.purchased).toBe(0);
+  expect(result.pausedHolds).toBe(1);
+  expect(result.failures).toEqual([]);
 });
