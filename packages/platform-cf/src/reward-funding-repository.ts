@@ -104,8 +104,17 @@ const INTENT_SELECT = `
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
     JOIN megapot_deployment_attestations attestation
-      ON attestation.chain_id=leg.chain_id AND attestation.environment=asset.environment
-     AND attestation.status='active'`;
+      ON attestation.environment=asset.environment
+     AND attestation.chain_id=leg.chain_id
+     AND (
+       (leg.kind='megapot_pool' AND attestation.attestation_id=leg.attestation_id)
+       OR (
+         leg.kind='asset_bonus'
+         AND attestation.custody_address=funding.recipient_address
+         AND attestation.verified_at <= funding.created_at
+         AND (attestation.retired_at IS NULL OR attestation.retired_at >= funding.created_at)
+       )
+     )`;
 
 function intentFromRow(row: Row): RewardFundingIntent {
   const state = text(row, "state");
@@ -167,7 +176,16 @@ function readIntent(
       values: [fundingEffectId],
       readonly: true,
     });
-    if (result.rows.length === 0) return null;
+    if (result.rows.length === 0) {
+      const exists = yield* db.execute<Row>({
+        label: "reward-funding.intent-exists.read",
+        text: "SELECT funding_effect_id FROM song_reward_leg_funding_effects WHERE funding_effect_id=$1",
+        values: [fundingEffectId],
+        readonly: true,
+      });
+      if (exists.rows.length !== 0) return yield* storage("invalid-row");
+      return null;
+    }
     if (result.rows.length !== 1) return yield* storage("invalid-row");
     return yield* Effect.try({
       try: () => intentFromRow(result.rows[0] as Row),
@@ -197,15 +215,33 @@ export function makeControlPlaneRewardFundingRepository() {
                          ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
                         AND asset.status='active'
                        JOIN megapot_deployment_attestations attestation
-                         ON attestation.chain_id=leg.chain_id
-                        AND attestation.environment=asset.environment
-                        AND attestation.status='active'
+                         ON attestation.status='active'
+                        AND (
+                          (leg.kind='megapot_pool'
+                           AND attestation.attestation_id=leg.attestation_id)
+                          OR (leg.kind='asset_bonus'
+                           AND attestation.chain_id=leg.chain_id
+                           AND attestation.environment=asset.environment)
+                        )
                       WHERE leg.leg_id=$1 AND leg.kind IN ('megapot_pool','asset_bonus')
                         FOR SHARE OF leg, attestation`,
               values: [input.legId],
               readonly: false,
             });
-            if (authority.rows.length === 0) return yield* rejected("not-found");
+            if (authority.rows.length === 0) {
+              const leg = yield* transaction.execute<Row>({
+                label: "reward-funding.leg-exists.read",
+                text: `SELECT leg.leg_id, leg.kind, attestation.status AS attestation_status
+                         FROM song_reward_offer_legs leg
+                         LEFT JOIN megapot_deployment_attestations attestation
+                           ON attestation.attestation_id=leg.attestation_id
+                        WHERE leg.leg_id=$1 AND leg.kind IN ('megapot_pool','asset_bonus')`,
+                values: [input.legId],
+                readonly: true,
+              });
+              if (leg.rows.length === 1) return yield* rejected("funding-not-allowed");
+              return yield* rejected("not-found");
+            }
             if (authority.rows.length !== 1) return yield* storage("invalid-row");
             const row = authority.rows[0] as Row;
             if (

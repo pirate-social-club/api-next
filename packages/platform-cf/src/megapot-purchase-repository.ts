@@ -199,7 +199,6 @@ function loadCandidateIn(
               WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
                 AND drawing.status='committed'
                 AND leg.status='active' AND leg.kind='megapot_pool'
-                AND attestation.status='active'
                 AND observation.ticket_price_atomic <= drawing.reserved_ticket_cost_atomic
                 AND observation.ticket_price_atomic <= drawing.ticket_price_ceiling_atomic
                 AND (leg.funding_source='shared_sponsor_budget'

@@ -119,7 +119,7 @@ function loadCandidateIn(
     const result = yield* transaction.execute<Row>({
       label: "megapot-approval.candidate.read",
       text: `${CANDIDATE_SELECT}
-              WHERE attestation.attestation_id=$1 AND attestation.status='active'
+              WHERE attestation.attestation_id=$1
               ${lock ? "FOR SHARE OF attestation" : ""}`,
       values: [attestationId],
       readonly: !lock,

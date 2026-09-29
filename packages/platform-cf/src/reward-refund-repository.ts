@@ -131,28 +131,30 @@ const CANDIDATE_SELECT = `
            sum(basis.base_amount) OVER (PARTITION BY basis.leg_id) AS base_total
       FROM allocation_basis basis
   )
-  SELECT allocation.funding_effect_id, allocation.leg_id,
-         allocation.funder_account_id, allocation.destination_address,
-         allocation.pro_rata_numerator_atomic, allocation.pro_rata_denominator_atomic,
-         allocation.base_amount + CASE
-           WHEN allocation.remainder_rank <= allocation.refundable_total-allocation.base_total
-           THEN 1 ELSE 0 END AS amount_atomic,
-         observation.observation_id AS solvency_observation_id,
-         observation.balance_atomic AS custody_balance_before_atomic,
-         observation.expires_at AS solvency_expires_at, observation.solvent,
-         allocation.token_address,
-         attestation.attestation_id, attestation.environment, attestation.chain_id,
-         attestation.usdc_address, attestation.custody_address,
-         attestation.jackpot_address, attestation.ticket_nft_address,
-         attestation.referrer_address, attestation.jackpot_code_hash,
-         attestation.usdc_code_hash, attestation.ticket_nft_code_hash
-    FROM allocations allocation
-    JOIN reward_asset_whitelist asset
-      ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
-    JOIN megapot_deployment_attestations attestation
-      ON attestation.chain_id=allocation.chain_id
-     AND attestation.environment=asset.environment
-     AND attestation.status='active'
+   SELECT allocation.funding_effect_id, allocation.leg_id,
+          allocation.funder_account_id, allocation.destination_address,
+          allocation.pro_rata_numerator_atomic, allocation.pro_rata_denominator_atomic,
+          allocation.base_amount + CASE
+            WHEN allocation.remainder_rank <= allocation.refundable_total-allocation.base_total
+            THEN 1 ELSE 0 END AS amount_atomic,
+          observation.observation_id AS solvency_observation_id,
+          observation.balance_atomic AS custody_balance_before_atomic,
+          observation.expires_at AS solvency_expires_at, observation.solvent,
+          allocation.token_address,
+          attestation.attestation_id, attestation.environment, attestation.chain_id,
+          attestation.usdc_address, attestation.custody_address,
+          attestation.jackpot_address, attestation.ticket_nft_address,
+          attestation.referrer_address, attestation.jackpot_code_hash,
+          attestation.usdc_code_hash, attestation.ticket_nft_code_hash
+     FROM allocations allocation
+     JOIN reward_asset_whitelist asset
+       ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
+     JOIN megapot_deployment_attestations attestation
+       ON allocation.attestation_id IS NOT NULL
+      AND attestation.attestation_id=allocation.attestation_id
+      AND attestation.environment=asset.environment
+      AND attestation.chain_id=allocation.chain_id
+      AND attestation.usdc_address=allocation.token_address
     LEFT JOIN LATERAL (
       SELECT observation_id, balance_atomic, expires_at, solvent
         FROM custody_solvency_observations
@@ -232,13 +234,19 @@ function loadCandidateIn(
     if (result.rows.length === 0) {
       const exists = yield* transaction.execute<Row>({
         label: "reward-refund.contribution-exists.read",
-        text: "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id=$1",
+        text: `SELECT funding.state, leg.attestation_id
+                 FROM song_reward_leg_funding_effects funding
+                 JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+                WHERE funding.funding_effect_id=$1`,
         values: [input.fundingEffectId],
         readonly: true,
       });
-      return yield* rejected(
-        exists.rows.length === 0 ? "not-found" : "contribution-not-refundable",
-      );
+      if (exists.rows.length === 0) return yield* rejected("not-found");
+      if (exists.rows.length !== 1) return yield* storage("invalid-row");
+      if (nullableText(exists.rows[0] as Row, "attestation_id") === null) {
+        return yield* rejected("attestation-lineage-missing");
+      }
+      return yield* rejected("contribution-not-refundable");
     }
     if (result.rows.length !== 1) return yield* storage("invalid-row");
     const row = result.rows[0] as Row;

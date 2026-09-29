@@ -6,6 +6,7 @@ export class RewardPayoutStorageFailed extends Data.TaggedError("RewardPayoutSto
 
 export class RewardPayoutRejected extends Data.TaggedError("RewardPayoutRejected")<{
   readonly reason:
+    | "attestation-lineage-missing"
     | "credit-not-payable"
     | "effect-conflict"
     | "not-found"
