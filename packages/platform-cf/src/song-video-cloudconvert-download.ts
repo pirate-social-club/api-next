@@ -17,7 +17,8 @@ export async function downloadSongVideoCloudConvertMaster(
   }
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "storage.cloudconvert.com" ||
+    (url.hostname !== "storage.cloudconvert.com" &&
+      url.hostname !== "us-east.storage.cloudconvert.com") ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== "" ||
