@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -60,6 +61,8 @@ class SecondaryReleaseTests(unittest.TestCase):
             "Mounts": [
                 {"Source": str(verifier.CURRENT / "config/pdns.conf"),
                  "Destination": "/etc/powerdns/pdns.conf", "RW": False, "Type": "bind"},
+                {"Source": str(verifier.PRIVATE),
+                 "Destination": "/etc/powerdns/private", "RW": False, "Type": "bind"},
                 {"Source": str(verifier.DATA), "Destination": "/var/lib/powerdns",
                  "RW": True, "Type": "bind"}
             ]
@@ -127,7 +130,8 @@ class SecondaryReleaseTests(unittest.TestCase):
             lambda s: s["Config"].update(Cmd=["--api=yes"]),
             lambda s: s["Config"].update(Entrypoint=["/bin/other"]),
             lambda s: s["Mounts"][0].update(RW=True),
-            lambda s: s["Mounts"][1].update(Source="/tmp/ephemeral-dns")
+            lambda s: s["Mounts"][1].update(RW=True),
+            lambda s: s["Mounts"][2].update(Source="/tmp/ephemeral-dns")
         ]
         for mutate in mutations:
             state = copy.deepcopy(self.state)
@@ -136,6 +140,27 @@ class SecondaryReleaseTests(unittest.TestCase):
                 verifier.verify_container(state, "a" * 64, "a" * 64)
         with self.assertRaisesRegex(verifier.Refusal, "mounted_config_mismatch"):
             verifier.verify_container(self.state, "b" * 64, "a" * 64)
+
+    def test_private_api_key_config_is_pinned_and_never_printed(self):
+        private = self.root / "private"
+        private.mkdir(mode=0o750)
+        key_file = private / "api-key.conf"
+        key_file.write_bytes(b"api-key=$scrypt$" + b"a" * 64 + b"\n")
+        key_file.chmod(0o640)
+        anchor = self.root / "api-key.sha256"
+        expected = verifier.digest(key_file.read_bytes())
+        anchor.write_text(expected + "\n")
+        owner = (os.getuid(), os.getgid())
+        verifier.verify_private_config(private, anchor, expected, *owner)
+        with self.assertRaisesRegex(verifier.Refusal, "private_config_digest_mismatch"):
+            verifier.verify_private_config(private, anchor, "0" * 64, *owner)
+        (private / "unreviewed.conf").write_text("api=yes\n")
+        with self.assertRaisesRegex(verifier.Refusal, "private_config_files_mismatch"):
+            verifier.verify_private_config(private, anchor, expected, *owner)
+        (private / "unreviewed.conf").unlink()
+        key_file.chmod(0o644)
+        with self.assertRaisesRegex(verifier.Refusal, "private_config_mode_mismatch"):
+            verifier.verify_private_config(private, anchor, expected, *owner)
 
 
 if __name__ == "__main__":

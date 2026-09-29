@@ -141,6 +141,12 @@ import {
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
+import {
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
+} from "./wallet-sponsored-send.ts";
 
 export const registry = {
   ReserveAvatarUpload,
@@ -248,6 +254,10 @@ export const registry = {
   AttachRewardWinnerSendTransaction,
   CancelRewardWinnerSend,
   GetRewardWinnerSend,
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,

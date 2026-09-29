@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.100.0",
+  "sourceBranch": "feat/persona-privy-gas-sponsorship",
+  "sourceBase": "9f5b9252",
+  "validatedSourceCommit": null,
+  "pullRequest": 485,
+  "wireContract": "A signed-in user may reserve and authorize a server-gated Base Sepolia USDC send from an assigned persona wallet, regardless of where the wallet's USDC originated. Reads and replay use the durable wallet send record. Sponsorship is disabled by default and production activation remains blocked.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.100.0.tgz",
+    "sha256": "337dc7ada21a5ea407a7b4c5d705e831318f32ef512d8e8987396a8c415a4e39"
+  },
+  "validation": {
+    "status": "Local review and full gates pending",
+    "passed": ["TypeScript worker and repository checks", "PostgreSQL 17 Wallet sponsored send suite"],
+    "remaining": ["Full local and hosted checks", "Privy client HTTP bypass refusal", "Zero-ETH live sponsored send and replay", "Solid Wallet integration"],
+    "operationalBoundary": "No registry publication, Worker deploy, production sponsorship activation, or live sponsored transaction has occurred."
+  }
+}

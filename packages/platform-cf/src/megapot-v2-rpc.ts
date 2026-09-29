@@ -608,12 +608,21 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       if (result === null) return null;
       const receipt = object(result);
       const receiptTransactionHash = canonicalHash(receipt.transactionHash);
+      if (receiptTransactionHash !== transactionHash.toLowerCase()) {
+        throw new MegapotV2RpcFailed("invalid-response");
+      }
+      // Some Base RPCs expose a preconfirmed receipt before its block is
+      // sealed. A zero or absent block hash cannot prove canonical inclusion.
+      // Leave the effect submitted and read the receipt again on the next pass.
+      if (
+        receipt.blockHash === null ||
+        receipt.blockHash === undefined ||
+        (typeof receipt.blockHash === "string" && /^0x0{64}$/iu.test(receipt.blockHash))
+      )
+        return null;
       const blockHash = canonicalHash(receipt.blockHash);
       const blockNumber = quantity(receipt.blockNumber);
-      if (
-        receiptTransactionHash !== transactionHash.toLowerCase() ||
-        !Array.isArray(receipt.logs)
-      ) {
+      if (!Array.isArray(receipt.logs)) {
         throw new MegapotV2RpcFailed("invalid-response");
       }
       const logs = receipt.logs.map((value) => {

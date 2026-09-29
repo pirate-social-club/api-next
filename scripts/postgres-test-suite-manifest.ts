@@ -37,6 +37,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/reward-claim-verification-intent.pg.test.ts",
   "packages/platform-cf/src/reward-gas-topup.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send.pg.test.ts",
+  "packages/platform-cf/src/wallet-sponsored-send.pg.test.ts",
   "packages/platform-cf/src/rewards-composed-settlement.pg.test.ts",
   "packages/platform-cf/src/avatars.pg.test.ts",
   "packages/platform-cf/src/activity-participation-authority.pg.test.ts",
@@ -80,6 +81,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/hns-root-import-lifecycle.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-lifecycle-migration.pg.test.ts",
   "packages/platform-cf/src/hns-root-import-lifecycle-privileges.pg.test.ts",
+  "packages/platform-cf/src/hns-production-import-privileges.pg.test.ts",
   // Both create their own schema and run every migration, so they classify
   // with the fresh-schema suites rather than the baseline-reusing ones.
   "packages/platform-cf/src/hns-root-import-lifecycle-transition.pg.test.ts",

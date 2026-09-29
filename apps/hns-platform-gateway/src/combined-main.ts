@@ -153,15 +153,9 @@ export function assembleHnsCommunityAppHandleGatewayRuntime(input: {
   const fetchImpl = input.fetch_impl ?? ((request, init) => fetch(request, init));
   const authority = (
     input.authority_factory ?? makePostgresHnsCommunityAppHandleGatewayAuthorityV1
-  )(
-    input.configuration.authority_database_url,
-    input.configuration.manifest.schema === HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA
-      ? {
-          resolutionDeadlineMs:
-            input.configuration.manifest.private_authority_deadline_milliseconds,
-        }
-      : undefined,
-  );
+  )(input.configuration.authority_database_url, {
+    resolutionDeadlineMs: input.configuration.manifest.private_authority_deadline_milliseconds,
+  });
   const common = {
     gateway_deployment_reference: input.configuration.gateway_deployment_reference,
     solid_origin: input.configuration.manifest.solid_origin,

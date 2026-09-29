@@ -289,13 +289,6 @@ export const makeControlPlaneKaraokeRepository = () => ({
             if (clock.rows.length > 1) return yield* failed("invalid-row");
             const pinnedTimezone =
               clock.rows.length === 0 ? null : text(clock.rows[0] as Row, "timezone");
-            if (
-              pinnedTimezone !== null &&
-              input.timezone !== null &&
-              input.timezone !== pinnedTimezone
-            ) {
-              return yield* rejected("invalid-input");
-            }
             const timezone = pinnedTimezone ?? input.timezone ?? "UTC";
             if (pinnedTimezone === null) {
               yield* transaction.execute({

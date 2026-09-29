@@ -6,6 +6,7 @@ import { HnsAuthorityDiagnostic, withHnsAuthoritySpan } from "./hns-authority-di
 import {
   makeDirectPostgresControlPlaneLayer,
   makeReadOnlyPostgresControlPlaneLayer,
+  makeReadOnlyPostgresGatewayAuthorityLayer,
 } from "./postgres";
 import type { WorkerDiagnosticFields } from "./worker-request-diagnostics.ts";
 
@@ -211,6 +212,62 @@ suite("Postgres 17 control-plane harness", () => {
     completedTestCount += 1;
   });
 
+  test("uses the direct gateway startup settings without weakening PostgreSQL read-only mode", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const admin = new Client({ connectionString });
+    const rejectedId = runId("gateway_direct_readonly");
+    try {
+      await admin.connect();
+      await admin.query(`
+        CREATE TABLE IF NOT EXISTS api_next_pg17_abort_probe (
+          run_id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `);
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            const settings = yield* db.execute<{
+              transaction_read_only: string;
+              search_path: string;
+            }>({
+              label: "gateway.direct-settings",
+              text: "SELECT current_setting('transaction_read_only') AS transaction_read_only, current_setting('search_path') AS search_path",
+              values: [],
+              readonly: true,
+            });
+            const insertion = yield* Effect.flip(
+              db.execute({
+                label: "gateway.direct-mislabeled-write",
+                text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+                values: [rejectedId, "must-not-write"],
+                readonly: true,
+              }),
+            );
+            return { settings, insertion };
+          }).pipe(Effect.provide(makeReadOnlyPostgresGatewayAuthorityLayer(connectionString))),
+        ),
+      );
+      expect(result.settings.rows).toEqual([
+        { transaction_read_only: "on", search_path: "api_next,pg_catalog" },
+      ]);
+      expect(result.insertion).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        outcomeCertainty: "completed",
+      });
+      expect(await queryProbe(admin, rejectedId)).toEqual([]);
+    } finally {
+      await admin.query({
+        text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = $1",
+        values: [rejectedId],
+      });
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
   test("caller abort terminates the authority backend and records correlated cancellation", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const admin = new Client({ connectionString });
@@ -283,7 +340,7 @@ suite("Postgres 17 control-plane harness", () => {
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 3) {
+    if (connectionString !== undefined && completedTestCount === 4) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

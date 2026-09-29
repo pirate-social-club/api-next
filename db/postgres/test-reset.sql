@@ -459,7 +459,8 @@ TRUNCATE TABLE
   "used_action_grants",
   "users",
   "verification_completion_attempts",
-  "verification_start_reservations"
+  "verification_start_reservations",
+  "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
 
 SET LOCAL session_replication_role = replica;

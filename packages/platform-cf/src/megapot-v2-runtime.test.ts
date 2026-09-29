@@ -528,6 +528,49 @@ describe("Megapot v2 Worker runtime adapters", () => {
     await expect(receiptClient.readReceipt(hash("7"))).rejects.toMatchObject({ reason: "reorg" });
   });
 
+  test("waits for a canonical receipt hash instead of treating a provisional one as a reorg", async () => {
+    const blockHashes: readonly unknown[] = [hash("0"), null, hash("8")];
+    let read = 0;
+    const receiptClient = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        return rpcResponse(request.id, {
+          transactionHash: hash("7"),
+          from: address("4"),
+          to: address("1"),
+          status: "0x1",
+          blockNumber: "0x64",
+          blockHash: blockHashes[read++],
+          logs: [],
+        });
+      },
+    });
+    expect(await receiptClient.readReceipt(hash("7"))).toBeNull();
+    expect(await receiptClient.readReceipt(hash("7"))).toBeNull();
+    expect(await receiptClient.readReceipt(hash("7"))).toMatchObject({
+      transactionHash: hash("7"),
+      blockHash: hash("8"),
+      blockNumber: 100n,
+    });
+    expect(read).toBe(3);
+  });
+
+  test("does not hide a mismatched transaction behind a provisional block hash", async () => {
+    const receiptClient = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        return rpcResponse(request.id, { transactionHash: hash("6"), blockHash: hash("0") });
+      },
+    });
+    await expect(receiptClient.readReceipt(hash("7"))).rejects.toMatchObject({
+      reason: "invalid-response",
+    });
+  });
+
   test("signs exact EIP-1559 bytes only for the attested Base Sepolia custody key", async () => {
     const privateKey = generatePrivateKey();
     const account = privateKeyToAccount(privateKey);

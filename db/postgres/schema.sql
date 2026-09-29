@@ -14585,6 +14585,110 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_wallet_send_mode() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    NEW.chain_id::text || ':' || NEW.sender_address, 0));
+  IF TG_TABLE_NAME = 'reward_winner_sends' THEN
+    IF EXISTS (
+      SELECT 1 FROM wallet_sponsored_sends
+       WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+         AND status IN ('reserved', 'submitting', 'submitted', 'held')
+    ) THEN
+      RAISE EXCEPTION 'a wallet with an open sponsored send cannot start a direct send';
+    END IF;
+  ELSIF EXISTS (
+    SELECT 1 FROM reward_winner_sends
+     WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+       AND status IN ('retryable', 'pending', 'settled_unverified')
+  ) THEN
+    RAISE EXCEPTION 'a wallet with an open direct send cannot start a sponsored send';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_wallet_sponsored_send() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'a sponsored Wallet send is never deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'reserved' OR NEW.provider_transaction_id IS NOT NULL
+       OR NEW.user_operation_hash IS NOT NULL OR NEW.transaction_hash IS NOT NULL THEN
+      RAISE EXCEPTION 'a sponsored Wallet send begins without provider evidence';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM persona_wallet_assignments wallet
+      JOIN personas persona ON persona.persona_id=wallet.persona_id
+       AND persona.account_id=wallet.account_id
+      WHERE wallet.assignment_id=NEW.wallet_assignment_id
+        AND wallet.account_id=NEW.account_id
+        AND wallet.persona_id=NEW.persona_id
+        AND wallet.chain_account_kind='evm'
+        AND wallet.status='active'
+        AND persona.status='active'
+        AND wallet.privy_wallet_id=NEW.privy_wallet_id
+        AND wallet.address=NEW.sender_address
+    ) THEN
+      RAISE EXCEPTION 'a sponsored send requires an active assigned persona wallet';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(
+    NEW.send_id, NEW.account_id, NEW.persona_id,
+    NEW.wallet_assignment_id, NEW.privy_wallet_id, NEW.chain_id,
+    NEW.sender_address, NEW.token_address, NEW.recipient_address,
+    NEW.amount_atomic, NEW.gas_budget_wei, NEW.reference_id, NEW.idempotency_key,
+    NEW.provider_idempotency_key, NEW.request_expires_at, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.send_id, OLD.account_id, OLD.persona_id,
+    OLD.wallet_assignment_id, OLD.privy_wallet_id, OLD.chain_id,
+    OLD.sender_address, OLD.token_address, OLD.recipient_address,
+    OLD.amount_atomic, OLD.gas_budget_wei, OLD.reference_id, OLD.idempotency_key,
+    OLD.provider_idempotency_key, OLD.request_expires_at, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'a sponsored Wallet send request is immutable';
+  END IF;
+  IF OLD.status IN ('confirmed', 'reverted', 'abandoned') THEN
+    RAISE EXCEPTION 'a sponsored Wallet send is terminal';
+  END IF;
+  IF NEW.status <> OLD.status THEN
+    IF NOT (
+      (OLD.status = 'reserved' AND NEW.status IN ('submitting', 'abandoned')) OR
+      (OLD.status = 'submitting' AND NEW.status IN ('submitted', 'held')) OR
+      (OLD.status = 'submitted' AND NEW.status IN ('held', 'confirmed', 'reverted')) OR
+      (OLD.status = 'held' AND NEW.status IN ('confirmed', 'reverted'))
+    ) THEN
+      RAISE EXCEPTION 'invalid sponsored Wallet send transition';
+    END IF;
+  END IF;
+  IF NEW.status = 'abandoned' AND clock_timestamp() < OLD.request_expires_at THEN
+    RAISE EXCEPTION 'an unsubmitted sponsored send can be abandoned only after expiry';
+  END IF;
+  IF NEW.provider_transaction_id IS DISTINCT FROM OLD.provider_transaction_id
+     AND OLD.provider_transaction_id IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send provider transaction ID is immutable';
+  END IF;
+  IF NEW.user_operation_hash IS DISTINCT FROM OLD.user_operation_hash
+     AND OLD.user_operation_hash IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send user operation hash is immutable';
+  END IF;
+  IF NEW.transaction_hash IS DISTINCT FROM OLD.transaction_hash
+     AND OLD.transaction_hash IS NOT NULL THEN
+    RAISE EXCEPTION 'a sponsored send transaction hash is immutable';
+  END IF;
+  IF NEW.status IN ('confirmed', 'reverted') AND NEW.transaction_hash IS NULL THEN
+    RAISE EXCEPTION 'a final sponsored send requires a transaction hash';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION handle_spaces_membership_policy_hash_v1(input_policy_id text, input_policy_revision bigint, input_requirement_id text, input_requirement_revision bigint, input_source_revision bigint, input_source_hash text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT
     AS $$
@@ -15832,6 +15936,74 @@ CREATE FUNCTION is_spaces_handle_recipient_live_v1(input_account_id text, input_
           AND assignment.bitcoin_network = input_network
           AND assignment.output_script_hex = input_script_pubkey_hex
      )
+$$;
+
+CREATE FUNCTION lock_hns_root_import_lifecycle_job_v1(input_job_id bigint, input_session_id text, input_job_kind text, input_executor_id text, input_lease_fence bigint) RETURNS TABLE(lifecycle_job_id bigint, created_at timestamp with time zone)
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT job.lifecycle_job_id, job.created_at
+  FROM hns_root_import_lifecycle_jobs AS job
+  WHERE job.lifecycle_job_id = input_job_id
+    AND job.root_import_session_id = input_session_id
+    AND job.job_kind = input_job_kind
+    AND job.state = 'leased'
+    AND job.leased_by = input_executor_id
+    AND job.lease_fence = input_lease_fence
+    AND job.lease_expires_at > clock_timestamp()
+  FOR UPDATE
+$$;
+
+CREATE TABLE hns_root_import_lifecycle (
+    root_import_session_id text NOT NULL,
+    root_label text NOT NULL,
+    phase text NOT NULL,
+    revision bigint NOT NULL,
+    generation bigint NOT NULL,
+    plan_exposed_at timestamp with time zone,
+    publication_deadline_at timestamp with time zone,
+    first_current_observation_at timestamp with time zone,
+    finality_deadline_at timestamp with time zone,
+    readiness_observed_at timestamp with time zone,
+    pending_reason text,
+    next_check_at timestamp with time zone,
+    observation_count bigint DEFAULT 0 NOT NULL,
+    consecutive_operational_failures bigint DEFAULT 0 NOT NULL,
+    last_useful_error text,
+    last_useful_error_at timestamp with time zone,
+    terminal_decided_at timestamp with time zone,
+    policy_name text NOT NULL,
+    policy_digest text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    plan_encoded_resource_sha256 text,
+    last_observation_view text,
+    last_observation_resource_sha256 text,
+    last_observation_tip_height bigint,
+    last_observation_update_inclusion_height bigint,
+    last_observation_commitment_height bigint,
+    last_observation_at timestamp with time zone,
+    last_observation_recorded_at timestamp with time zone,
+    readiness_accepted_at timestamp with time zone,
+    synthetic boolean DEFAULT false NOT NULL,
+    CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
+    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
+    CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
+    CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
+    CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_root_import_lifecycle_revision_check CHECK ((revision > 0))
+);
+
+CREATE FUNCTION lock_hns_root_import_lifecycle_v1(input_session_id text) RETURNS SETOF hns_root_import_lifecycle
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT lifecycle.*
+  FROM hns_root_import_lifecycle AS lifecycle
+  WHERE lifecycle.root_import_session_id = input_session_id
+  FOR UPDATE
 $$;
 
 CREATE FUNCTION lock_hns_root_zone_mutation_v1(input_root_label text, input_challenge_txt_value text, input_teardown boolean, input_job_id text, input_executor_id text, input_lease_fence bigint) RETURNS boolean
@@ -31000,48 +31172,6 @@ CREATE TABLE hns_root_import_activation_operations (
     CONSTRAINT hns_root_import_activation_operations_origin_check CHECK ((((origin_kind = 'creation_intent'::text) AND (creation_intent_id IS NOT NULL) AND (attachment_intent_id IS NULL)) OR ((origin_kind = 'community_attachment'::text) AND (creation_intent_id IS NULL) AND (attachment_intent_id IS NOT NULL))))
 );
 
-CREATE TABLE hns_root_import_lifecycle (
-    root_import_session_id text NOT NULL,
-    root_label text NOT NULL,
-    phase text NOT NULL,
-    revision bigint NOT NULL,
-    generation bigint NOT NULL,
-    plan_exposed_at timestamp with time zone,
-    publication_deadline_at timestamp with time zone,
-    first_current_observation_at timestamp with time zone,
-    finality_deadline_at timestamp with time zone,
-    readiness_observed_at timestamp with time zone,
-    pending_reason text,
-    next_check_at timestamp with time zone,
-    observation_count bigint DEFAULT 0 NOT NULL,
-    consecutive_operational_failures bigint DEFAULT 0 NOT NULL,
-    last_useful_error text,
-    last_useful_error_at timestamp with time zone,
-    terminal_decided_at timestamp with time zone,
-    policy_name text NOT NULL,
-    policy_digest text NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    plan_encoded_resource_sha256 text,
-    last_observation_view text,
-    last_observation_resource_sha256 text,
-    last_observation_tip_height bigint,
-    last_observation_update_inclusion_height bigint,
-    last_observation_commitment_height bigint,
-    last_observation_at timestamp with time zone,
-    last_observation_recorded_at timestamp with time zone,
-    readiness_accepted_at timestamp with time zone,
-    synthetic boolean DEFAULT false NOT NULL,
-    CONSTRAINT hns_root_import_lifecycle_consecutive_operational_failure_check CHECK ((consecutive_operational_failures >= 0)),
-    CONSTRAINT hns_root_import_lifecycle_generation_check CHECK ((generation > 0)),
-    CONSTRAINT hns_root_import_lifecycle_observation_count_check CHECK ((observation_count >= 0)),
-    CONSTRAINT hns_root_import_lifecycle_observation_shape CHECK (((num_nulls(last_observation_view, last_observation_resource_sha256, last_observation_tip_height, last_observation_at, last_observation_recorded_at) = ANY (ARRAY[0, 5])) AND ((last_observation_view IS NULL) OR (last_observation_view = ANY (ARRAY['current'::text, 'safe'::text]))) AND ((last_observation_resource_sha256 IS NULL) OR (last_observation_resource_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((last_observation_tip_height IS NULL) OR ((last_observation_tip_height > 0) AND (last_observation_tip_height <= '9007199254740991'::bigint))) AND ((last_observation_update_inclusion_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_update_inclusion_height > 0) AND (last_observation_update_inclusion_height <= last_observation_tip_height))) AND ((last_observation_commitment_height IS NULL) OR ((last_observation_tip_height IS NOT NULL) AND (last_observation_commitment_height > 0) AND (last_observation_commitment_height <= last_observation_tip_height))))),
-    CONSTRAINT hns_root_import_lifecycle_phase_check CHECK ((phase = ANY (ARRAY['preparing'::text, 'awaiting_publication'::text, 'checking_publication'::text, 'waiting_safe_commitment'::text, 'checking_authority'::text, 'ready'::text, 'activated'::text, 'recovery_required'::text, 'failed'::text]))),
-    CONSTRAINT hns_root_import_lifecycle_phase_deadline_shape CHECK ((((phase = 'awaiting_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL) AND (first_current_observation_at IS NULL) AND (finality_deadline_at IS NULL)) OR ((phase = 'checking_publication'::text) AND (plan_exposed_at IS NOT NULL) AND (publication_deadline_at IS NOT NULL)) OR ((phase = ANY (ARRAY['waiting_safe_commitment'::text, 'checking_authority'::text])) AND (first_current_observation_at IS NOT NULL) AND (finality_deadline_at IS NOT NULL)) OR ((phase = 'ready'::text) AND (readiness_observed_at IS NOT NULL)) OR ((phase = 'activated'::text) AND (readiness_observed_at IS NOT NULL)) OR (phase = ANY (ARRAY['preparing'::text, 'recovery_required'::text, 'failed'::text])))),
-    CONSTRAINT hns_root_import_lifecycle_plan_digest_shape CHECK (((plan_encoded_resource_sha256 IS NULL) OR (plan_encoded_resource_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT hns_root_import_lifecycle_revision_check CHECK ((revision > 0))
-);
-
 CREATE TABLE hns_root_import_lifecycle_history (
     history_id bigint NOT NULL,
     root_import_session_id text NOT NULL,
@@ -36353,6 +36483,53 @@ CREATE TABLE verification_start_reservations (
     CONSTRAINT verification_start_reservations_state_check CHECK ((state = ANY (ARRAY['acquired'::text, 'released'::text, 'finalized'::text])))
 );
 
+CREATE TABLE wallet_sponsored_sends (
+    send_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    wallet_assignment_id text NOT NULL,
+    privy_wallet_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    sender_address text NOT NULL,
+    token_address text NOT NULL,
+    recipient_address text NOT NULL,
+    amount_atomic numeric(78,0) NOT NULL,
+    reference_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    provider_idempotency_key text NOT NULL,
+    request_expires_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    provider_transaction_id text,
+    user_operation_hash text,
+    transaction_hash text,
+    block_number bigint,
+    block_hash text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    gas_budget_wei numeric(78,0) NOT NULL,
+    CONSTRAINT reward_sponsored_send_addresses CHECK (((sender_address <> token_address) AND (recipient_address <> sender_address) AND (recipient_address <> token_address))),
+    CONSTRAINT reward_sponsored_send_provider_shape CHECK ((((status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'abandoned'::text])) AND (provider_transaction_id IS NULL) AND (user_operation_hash IS NULL) AND (transaction_hash IS NULL)) OR ((status = 'submitted'::text) AND ((provider_transaction_id IS NOT NULL) OR (user_operation_hash IS NOT NULL) OR (transaction_hash IS NOT NULL))) OR (status = ANY (ARRAY['held'::text, 'confirmed'::text, 'reverted'::text])))),
+    CONSTRAINT reward_sponsored_send_receipt_shape CHECK ((((status = ANY (ARRAY['confirmed'::text, 'reverted'::text])) AND (transaction_hash IS NOT NULL) AND (block_number IS NOT NULL) AND (block_hash IS NOT NULL)) OR ((status <> ALL (ARRAY['confirmed'::text, 'reverted'::text])) AND (block_number IS NULL) AND (block_hash IS NULL)))),
+    CONSTRAINT reward_sponsored_send_time_order CHECK (((updated_at >= created_at) AND (request_expires_at > created_at) AND (request_expires_at <= (created_at + '00:05:00'::interval)))),
+    CONSTRAINT reward_sponsored_sends_amount_atomic_check CHECK ((amount_atomic > (0)::numeric)),
+    CONSTRAINT reward_sponsored_sends_block_hash_check CHECK (((block_hash IS NULL) OR ((block_hash ~ '^0x[0-9a-f]{64}$'::text) AND (block_hash <> ('0x'::text || repeat('0'::text, 64)))))),
+    CONSTRAINT reward_sponsored_sends_block_number_check CHECK (((block_number IS NULL) OR (block_number >= 0))),
+    CONSTRAINT reward_sponsored_sends_chain_id_check CHECK ((chain_id = ANY (ARRAY[(8453)::bigint, (84532)::bigint]))),
+    CONSTRAINT reward_sponsored_sends_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT reward_sponsored_sends_privy_wallet_id_check CHECK (((btrim(privy_wallet_id) <> ''::text) AND (privy_wallet_id = btrim(privy_wallet_id)) AND (octet_length(privy_wallet_id) <= 256))),
+    CONSTRAINT reward_sponsored_sends_provider_idempotency_key_check CHECK ((provider_idempotency_key ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
+    CONSTRAINT reward_sponsored_sends_provider_transaction_id_check CHECK (((provider_transaction_id IS NULL) OR ((btrim(provider_transaction_id) <> ''::text) AND (octet_length(provider_transaction_id) <= 256)))),
+    CONSTRAINT reward_sponsored_sends_recipient_address_check CHECK (((recipient_address ~ '^0x[0-9a-f]{40}$'::text) AND (recipient_address <> '0x0000000000000000000000000000000000000000'::text))),
+    CONSTRAINT reward_sponsored_sends_reference_id_check CHECK ((reference_id ~ '^[A-Za-z0-9_-]{16,64}$'::text)),
+    CONSTRAINT reward_sponsored_sends_send_id_check CHECK (((btrim(send_id) <> ''::text) AND (send_id = btrim(send_id)) AND (octet_length(send_id) <= 128))),
+    CONSTRAINT reward_sponsored_sends_sender_address_check CHECK ((sender_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_sponsored_sends_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'submitted'::text, 'held'::text, 'confirmed'::text, 'reverted'::text, 'abandoned'::text]))),
+    CONSTRAINT reward_sponsored_sends_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_sponsored_sends_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT reward_sponsored_sends_user_operation_hash_check CHECK (((user_operation_hash IS NULL) OR (user_operation_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT wallet_sponsored_sends_gas_budget_wei_check CHECK ((gas_budget_wei > (0)::numeric))
+);
+
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
@@ -38682,6 +38859,18 @@ ALTER TABLE ONLY reward_refund_effects
 ALTER TABLE ONLY reward_signer_nonces
     ADD CONSTRAINT reward_signer_nonces_pkey PRIMARY KEY (chain_id, signer_address);
 
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_pkey PRIMARY KEY (send_id);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_provider_idempotency_key_key UNIQUE (provider_idempotency_key);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_reference_id_key UNIQUE (reference_id);
+
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_campaign_subject_unique UNIQUE (campaign_id, subject_key_id);
 
@@ -39600,6 +39789,12 @@ CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created
 
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
 
+CREATE INDEX reward_sponsored_sends_account_day_idx ON wallet_sponsored_sends USING btree (account_id, created_at);
+
+CREATE INDEX reward_sponsored_sends_day_idx ON wallet_sponsored_sends USING btree (created_at);
+
+CREATE INDEX reward_sponsored_sends_wallet_day_idx ON wallet_sponsored_sends USING btree (wallet_assignment_id, created_at);
+
 CREATE INDEX reward_winner_send_transactions_attempt_idx ON reward_winner_send_transactions USING btree (send_id, attempt, created_at);
 
 CREATE INDEX reward_winner_sends_account_idx ON reward_winner_sends USING btree (account_id, created_at);
@@ -39699,6 +39894,8 @@ CREATE INDEX verification_completion_attempts_session_state_idx ON verification_
 CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON verification_start_reservations USING btree (actor_id, creation_intent_id, creation_requirement_kind, client_idempotency_key) WHERE (creation_intent_id IS NOT NULL);
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
+
+CREATE UNIQUE INDEX wallet_sponsored_sends_open_wallet_uidx ON wallet_sponsored_sends USING btree (chain_id, sender_address) WHERE (status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'submitted'::text, 'held'::text]));
 
 CREATE OR REPLACE VIEW retained_comment_rating_base_v1 AS
  SELECT c.community_id,
@@ -40810,6 +41007,8 @@ CREATE TRIGGER reward_winner_send_attempts_append_only BEFORE DELETE OR UPDATE O
 
 CREATE TRIGGER reward_winner_send_attempts_guard BEFORE INSERT ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_attempt();
 
+CREATE TRIGGER reward_winner_send_mode_guard BEFORE INSERT ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_send_mode();
+
 CREATE TRIGGER reward_winner_send_outcomes_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_outcomes FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_winner_send_outcomes_guard BEFORE INSERT ON reward_winner_send_outcomes FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send_outcome();
@@ -41011,6 +41210,10 @@ CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status O
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+CREATE TRIGGER wallet_sponsored_send_mode_guard BEFORE INSERT ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_send_mode();
+
+CREATE TRIGGER wallet_sponsored_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_sponsored_send();
 
 ALTER TABLE ONLY account_age_verification_current
     ADD CONSTRAINT account_age_verification_current_account_id_intent_id_fkey FOREIGN KEY (account_id, intent_id) REFERENCES age_verification_requirement_states(actor_id, intent_id);
@@ -43312,6 +43515,15 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_solvency_observation_fk FOREIGN KEY (solvency_observation_id) REFERENCES custody_solvency_observations(observation_id);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY wallet_sponsored_sends
+    ADD CONSTRAINT reward_sponsored_sends_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_binding_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);

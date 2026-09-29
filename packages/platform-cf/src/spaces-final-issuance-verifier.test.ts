@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { SpacesVerificationTargetV1 } from "@pirate/application";
 import { Effect } from "effect";
 import { makeSpacesFinalIssuanceVerifier } from "./spaces-final-issuance-verifier.ts";
@@ -34,7 +34,7 @@ describe("Spaces final issuance verifier adapter", () => {
     const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url, init) => {
       expect(url).toBe("https://spaces-verifier.pirate.sc/v1/verify-name");
       expect(init.method).toBe("POST");
-      expect(init.redirect).toBe("error");
+      expect(init.redirect).toBe("manual");
       expect(init.headers).toMatchObject({
         "CF-Access-Client-Id": credentials.accessClientId,
         authorization: `Bearer ${credentials.bearerToken}`,
@@ -157,5 +157,74 @@ describe("Spaces final issuance verifier adapter", () => {
     expect(Effect.runPromise(verifier.verify({ ...target, network: "regtest" }))).rejects.toThrow(
       "Spaces final verification unavailable",
     );
+  });
+
+  test("classifies redirects as refused responses without following them", async () => {
+    const warnings: unknown[][] = [];
+    const logger = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    try {
+      const verifyRedirect = makeSpacesFinalIssuanceVerifier(credentials, async (_url, init) => {
+        expect(init.redirect).toBe("manual");
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://untrusted.example/login" },
+        });
+      });
+      expect(Effect.runPromise(verifyRedirect.verify(target))).rejects.toThrow(
+        "Spaces final verification unavailable",
+      );
+      const verifier = makeSpacesFinalIssuanceVerifier(credentials, async (url, init) => {
+        expect(init.redirect).toBe("manual");
+        return url.endsWith("/v1/verify-name")
+          ? new Response(null, { status: 409 })
+          : new Response(null, {
+              status: 302,
+              headers: { location: "https://untrusted.example/login" },
+            });
+      });
+      expect(Effect.runPromise(verifier.verify(target))).rejects.toThrow(
+        "Spaces final verification unavailable",
+      );
+    } finally {
+      logger.mockRestore();
+    }
+    expect(warnings).toEqual([
+      ["spaces.final_issuance.verifier_retry", { phase: "verify_response", status: 302 }],
+      ["spaces.final_issuance.verifier_retry", { phase: "observe_response", status: 302 }],
+    ]);
+  });
+
+  test("classifies an Access refusal without logging the name, script or credentials", async () => {
+    const warnings: unknown[][] = [];
+    const logger = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    try {
+      const verifier = makeSpacesFinalIssuanceVerifier(
+        credentials,
+        async () => new Response("private upstream body", { status: 403 }),
+      );
+      expect(Effect.runPromise(verifier.verify(target))).rejects.toThrow(
+        "Spaces final verification unavailable",
+      );
+    } finally {
+      logger.mockRestore();
+    }
+    expect(warnings).toEqual([
+      ["spaces.final_issuance.verifier_retry", { phase: "verify_response", status: 403 }],
+    ]);
+    const text = JSON.stringify(warnings);
+    for (const forbidden of [
+      target.handle_label,
+      target.script_pubkey_hex,
+      credentials.accessClientId,
+      credentials.accessClientSecret,
+      credentials.bearerToken,
+      "private upstream body",
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
   });
 });

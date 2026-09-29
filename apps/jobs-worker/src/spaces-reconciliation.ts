@@ -49,6 +49,14 @@ const runSpacesReconciliationCycle = Effect.fn("runSpacesReconciliationCycle")(f
     const result = yield* Effect.result(
       verifier.verify(target).pipe(Effect.timeout(VERIFY_TIMEOUT)),
     );
+    if (Result.isFailure(result)) {
+      // The adapter logs safe HTTP/transport phases. An outer timeout or
+      // interruption can happen without reaching its catch handler.
+      console.warn("spaces.final_issuance.verifier_retry", {
+        phase: "effect_failure_or_timeout",
+        status: null,
+      });
+    }
     if (Result.isFailure(result) || result.success.kind === "pending") {
       yield* store.retryLater(target);
       continue;
