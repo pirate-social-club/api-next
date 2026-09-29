@@ -7,6 +7,7 @@ import {
 } from "../packages/platform-cf/src/megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
 import { normalizePostgresConnectionString } from "./postgres-migrations.ts";
+import { runRuntimeRoleReleasePreflight } from "./runtime-role-release-preflight.ts";
 
 const Address = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u));
 const Hash = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u));
@@ -330,6 +331,21 @@ export async function runMegapotBaseSepoliaPreflight(
   return result;
 }
 
+/** The release gate checks the runtime role and exact schema before chain readiness. */
+export async function runMegapotActivationPreflight(
+  input: MegapotBaseSepoliaPreflightInput,
+  adminConnectionString: string,
+  dependencies: MegapotBaseSepoliaPreflightDependencies = defaultDependencies,
+  checkRuntime: typeof runRuntimeRoleReleasePreflight = runRuntimeRoleReleasePreflight,
+): Promise<MegapotBaseSepoliaPreflightResult> {
+  await checkRuntime({
+    runtimeConnectionString: input.runtimeConnectionString,
+    adminConnectionString,
+    requireMainLedger: true,
+  });
+  return runMegapotBaseSepoliaPreflight(input, dependencies);
+}
+
 function integerSetting(value: string | undefined, name: string): number {
   if (value === undefined || !/^[1-9][0-9]*$/u.test(value)) {
     throw new MegapotBaseSepoliaPreflightFailed("invalid-config", `${name} is required.`);
@@ -362,7 +378,7 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
       "The Base Sepolia preflight is refused unless API_NEXT_ENV=staging.",
     );
   }
-  const result = await runMegapotBaseSepoliaPreflight({
+  const input = {
     runtimeConnectionString: process.env.CONTROL_PLANE_POSTGRES_RUNTIME_URL ?? "",
     rpcUrl: process.env.MEGAPOT_V2_RPC_URL ?? "",
     attestationId: process.env.MEGAPOT_ATTESTATION_ID ?? "",
@@ -375,17 +391,24 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
       "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI",
     ),
     requireReady: args.includes("--require-ready"),
-  });
+  };
+  const result = input.requireReady
+    ? await runMegapotActivationPreflight(input, process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL ?? "")
+    : await runMegapotBaseSepoliaPreflight(input);
   console.log(JSON.stringify(result, null, 2));
 }
 
 if (import.meta.main) {
   await main().catch((error: unknown) => {
-    console.error(
-      error instanceof MegapotBaseSepoliaPreflightFailed
+    const safeMessage =
+      error instanceof MegapotBaseSepoliaPreflightFailed ||
+      (error instanceof Error &&
+        /^(?:runtime privilege preflight refused|release migration ledger|admin URL required)/u.test(
+          error.message,
+        ))
         ? error.message
-        : "Base Sepolia Megapot preflight failed.",
-    );
+        : "Base Sepolia Megapot preflight failed.";
+    console.error(safeMessage);
     process.exitCode = 1;
   });
 }
