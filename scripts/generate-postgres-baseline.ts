@@ -26,6 +26,7 @@ const baselineSeedTables = [
   "handle_spaces_membership_source_revisions",
   "hns_control_observer_configurations",
   "hns_lifecycle_schema_cutover",
+  "media_song_video_pcm_admission_policy",
   "moderation_platform_floor_category_decisions",
   "moderation_platform_floor_current",
   "moderation_platform_floor_revisions",

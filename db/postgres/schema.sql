@@ -10282,6 +10282,51 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_song_pcm_source_grant() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'song PCM source grants are retained'; END IF;
+  IF ROW(NEW.capability_sha256,NEW.admission_id,NEW.object_key,NEW.object_version,NEW.object_etag,
+         NEW.source_sha256,NEW.byte_length,NEW.content_type,NEW.identity_kind,NEW.expires_at,NEW.created_at)
+     IS DISTINCT FROM ROW(OLD.capability_sha256,OLD.admission_id,OLD.object_key,OLD.object_version,OLD.object_etag,
+         OLD.source_sha256,OLD.byte_length,OLD.content_type,OLD.identity_kind,OLD.expires_at,OLD.created_at)
+     OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at)
+  THEN RAISE EXCEPTION 'song PCM source authority is immutable'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_song_video_pcm_admission() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.state <> 'pending' OR NEW.provider_create_started_at IS NOT NULL
+       OR NEW.provider_job_id IS NOT NULL OR NEW.cleanup_completed_at IS NOT NULL
+    THEN RAISE EXCEPTION 'song PCM admission must begin pending'; END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'song PCM admission evidence is retained'; END IF;
+  IF ROW(NEW.admission_id,NEW.song_post_id,NEW.song_community_id,NEW.audio_revision,
+         NEW.canonical_audio_sha256,NEW.audio_asset_ref,NEW.requested_at)
+     IS DISTINCT FROM
+     ROW(OLD.admission_id,OLD.song_post_id,OLD.song_community_id,OLD.audio_revision,
+         OLD.canonical_audio_sha256,OLD.audio_asset_ref,OLD.requested_at)
+     OR (OLD.provider_create_started_at IS NOT NULL AND ROW(NEW.provider_create_started_at,NEW.provider_wait_deadline)
+         IS DISTINCT FROM ROW(OLD.provider_create_started_at,OLD.provider_wait_deadline))
+     OR (OLD.provider_job_id IS NOT NULL AND NEW.provider_job_id IS DISTINCT FROM OLD.provider_job_id)
+     OR (OLD.cleanup_completed_at IS NOT NULL AND NEW.cleanup_completed_at IS DISTINCT FROM OLD.cleanup_completed_at)
+     OR (OLD.state = 'admitted' AND NEW.state <> 'admitted')
+     OR (OLD.state IN ('refused','reconciliation') AND NEW.state NOT IN ('refused','reconciliation'))
+  THEN RAISE EXCEPTION 'song PCM admission identity and provider evidence are immutable'; END IF;
+  IF NEW.state = 'admitted' AND OLD.state <> 'admitted' AND
+     (OLD.state <> 'processing' OR NEW.provider_wait_deadline <= clock_timestamp())
+  THEN RAISE EXCEPTION 'song PCM admission expired or inactive'; END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_song_video_pcm_reference() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -18818,6 +18863,29 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION request_media_song_video_pcm_admission() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM media_song_video_pcm_admission_policy WHERE enabled)
+     OR NEW.media_kind <> 'song' OR NEW.visibility <> 'public' OR EXISTS (
+    SELECT 1 FROM media_song_video_pcm_references r
+     WHERE r.song_post_id=NEW.post_id AND r.audio_revision=NEW.audio_revision
+       AND r.canonical_audio_sha256=NEW.canonical_audio_sha256
+  ) THEN RETURN NULL; END IF;
+  INSERT INTO media_song_video_pcm_admissions
+    (admission_id,song_post_id,song_community_id,audio_revision,canonical_audio_sha256,audio_asset_ref)
+  VALUES ('song-pcm-' || encode(sha256(convert_to(NEW.post_id || ':' || NEW.audio_revision::text,'UTF8')),'hex'),
+    NEW.post_id,NEW.community_id,NEW.audio_revision,NEW.canonical_audio_sha256,NEW.audio_asset_ref)
+  ON CONFLICT (song_post_id,audio_revision) DO NOTHING;
+  INSERT INTO media_song_canonical_timings
+    (song_post_id,song_community_id,audio_revision,canonical_audio_sha256,state)
+  VALUES (NEW.post_id,NEW.community_id,NEW.audio_revision,NEW.canonical_audio_sha256,'pending')
+  ON CONFLICT (song_post_id,audio_revision) DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19087,6 +19155,41 @@ BEGIN
      ) THEN RETURN NEW;
   END IF;
   RAISE EXCEPTION 'DATA workflow revision ceiling requires an exact operator action';
+END;
+$$;
+
+CREATE FUNCTION require_media_song_pcm_atomic_admission() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM media_song_canonical_timings t JOIN media_song_video_pcm_references r
+      USING (song_post_id,audio_revision,canonical_audio_sha256,duration_samples)
+     WHERE t.song_post_id=NEW.song_post_id AND t.audio_revision=NEW.audio_revision
+       AND t.canonical_audio_sha256=NEW.canonical_audio_sha256 AND t.state='ready'
+       AND t.prober_identity='cloudconvert-song-pcm-s16le-48000-stereo-v1'
+       AND r.decoder_recipe=t.prober_identity AND r.duration_samples <= 11520000
+  ) THEN RAISE EXCEPTION 'song PCM admission requires matching timing and reference'; END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_media_song_pcm_atomic_timing() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE target media_song_video_pcm_admissions;
+BEGIN
+  SELECT * INTO target FROM media_song_video_pcm_admissions
+    WHERE song_post_id=NEW.song_post_id AND audio_revision=NEW.audio_revision;
+  IF target.admission_id IS NULL THEN RETURN NULL; END IF;
+  IF target.state <> 'admitted' OR NEW.prober_identity <> 'cloudconvert-song-pcm-s16le-48000-stereo-v1'
+     OR NEW.canonical_audio_sha256 <> target.canonical_audio_sha256 OR NOT EXISTS (
+       SELECT 1 FROM media_song_video_pcm_references r
+        WHERE r.song_post_id=NEW.song_post_id AND r.audio_revision=NEW.audio_revision
+          AND r.canonical_audio_sha256=NEW.canonical_audio_sha256 AND r.duration_samples=NEW.duration_samples
+          AND r.decoder_recipe=NEW.prober_identity
+     ) THEN RAISE EXCEPTION 'automatic song timing and PCM must be admitted atomically'; END IF;
+  RETURN NULL;
 END;
 $$;
 
@@ -32323,6 +32426,55 @@ CREATE TABLE media_song_video_masters (
     CONSTRAINT song_video_master_within_ceiling CHECK ((master_byte_length <= master_ceiling_bytes))
 );
 
+CREATE TABLE media_song_video_pcm_admission_policy (
+    singleton boolean DEFAULT true NOT NULL,
+    enabled boolean DEFAULT false NOT NULL,
+    CONSTRAINT media_song_video_pcm_admission_policy_singleton_check CHECK (singleton)
+);
+
+CREATE TABLE media_song_video_pcm_admissions (
+    admission_id text NOT NULL,
+    song_post_id text NOT NULL,
+    song_community_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    canonical_audio_sha256 text NOT NULL,
+    audio_asset_ref text NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    provider_create_started_at timestamp with time zone,
+    provider_wait_deadline timestamp with time zone,
+    provider_job_id text,
+    cleanup_completed_at timestamp with time zone,
+    claim_owner text,
+    claim_fence bigint DEFAULT 0 NOT NULL,
+    claim_until timestamp with time zone,
+    failure_code text,
+    requested_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_pcm_admission_provider_create_started_at_check CHECK (isfinite(provider_create_started_at)),
+    CONSTRAINT media_song_video_pcm_admissions_admission_id_check CHECK ((admission_id ~ '^song-pcm-[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_pcm_admissions_audio_asset_ref_check CHECK ((audio_asset_ref ~~ 'media://immutable/%'::text)),
+    CONSTRAINT media_song_video_pcm_admissions_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT media_song_video_pcm_admissions_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_pcm_admissions_check CHECK (((claim_owner IS NULL) = (claim_until IS NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_check1 CHECK (((provider_create_started_at IS NULL) = (provider_wait_deadline IS NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_check2 CHECK ((provider_wait_deadline > provider_create_started_at)),
+    CONSTRAINT media_song_video_pcm_admissions_check3 CHECK (((provider_job_id IS NULL) OR (provider_create_started_at IS NOT NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_check4 CHECK (((state <> ALL (ARRAY['processing'::text, 'admitted'::text])) OR (provider_create_started_at IS NOT NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_check5 CHECK (((state <> 'admitted'::text) OR (provider_job_id IS NOT NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_check6 CHECK (((cleanup_completed_at IS NULL) OR (state = ANY (ARRAY['admitted'::text, 'refused'::text, 'reconciliation'::text])))),
+    CONSTRAINT media_song_video_pcm_admissions_check7 CHECK (((state = ANY (ARRAY['refused'::text, 'reconciliation'::text])) = (failure_code IS NOT NULL))),
+    CONSTRAINT media_song_video_pcm_admissions_claim_fence_check CHECK ((claim_fence >= 0)),
+    CONSTRAINT media_song_video_pcm_admissions_claim_owner_check CHECK ((btrim(claim_owner) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_admissions_claim_until_check CHECK (isfinite(claim_until)),
+    CONSTRAINT media_song_video_pcm_admissions_cleanup_completed_at_check CHECK (isfinite(cleanup_completed_at)),
+    CONSTRAINT media_song_video_pcm_admissions_failure_code_check CHECK ((btrim(failure_code) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_admissions_provider_job_id_check CHECK ((btrim(provider_job_id) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_admissions_provider_wait_deadline_check CHECK (isfinite(provider_wait_deadline)),
+    CONSTRAINT media_song_video_pcm_admissions_requested_at_check CHECK (isfinite(requested_at)),
+    CONSTRAINT media_song_video_pcm_admissions_song_community_id_check CHECK ((btrim(song_community_id) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_admissions_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_admissions_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'processing'::text, 'admitted'::text, 'refused'::text, 'reconciliation'::text])))
+);
+
 CREATE TABLE media_song_video_pcm_references (
     song_post_id text NOT NULL,
     audio_revision bigint NOT NULL,
@@ -32352,6 +32504,33 @@ CREATE TABLE media_song_video_pcm_references (
     CONSTRAINT media_song_video_pcm_references_sample_format_check CHECK ((sample_format = 's16le'::text)),
     CONSTRAINT media_song_video_pcm_references_sample_rate_hz_check CHECK ((sample_rate_hz = 48000)),
     CONSTRAINT media_song_video_pcm_references_song_post_id_check CHECK ((btrim(song_post_id) <> ''::text))
+);
+
+CREATE TABLE media_song_video_pcm_source_grants (
+    capability_sha256 text NOT NULL,
+    admission_id text NOT NULL,
+    object_key text NOT NULL,
+    object_version text NOT NULL,
+    object_etag text NOT NULL,
+    source_sha256 text NOT NULL,
+    byte_length bigint NOT NULL,
+    content_type text NOT NULL,
+    identity_kind text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_song_video_pcm_source_grants_byte_length_check CHECK (((byte_length >= 1) AND (byte_length <= 67108864))),
+    CONSTRAINT media_song_video_pcm_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_pcm_source_grants_check CHECK (((expires_at > created_at) AND (expires_at <= (created_at + '00:15:00'::interval)))),
+    CONSTRAINT media_song_video_pcm_source_grants_content_type_check CHECK ((content_type = 'audio/mpeg'::text)),
+    CONSTRAINT media_song_video_pcm_source_grants_created_at_check CHECK (isfinite(created_at)),
+    CONSTRAINT media_song_video_pcm_source_grants_expires_at_check CHECK (isfinite(expires_at)),
+    CONSTRAINT media_song_video_pcm_source_grants_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
+    CONSTRAINT media_song_video_pcm_source_grants_object_etag_check CHECK ((btrim(object_etag) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_source_grants_object_key_check CHECK ((object_key ~~ 'immutable/%'::text)),
+    CONSTRAINT media_song_video_pcm_source_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
+    CONSTRAINT media_song_video_pcm_source_grants_revoked_at_check CHECK (isfinite(revoked_at)),
+    CONSTRAINT media_song_video_pcm_source_grants_source_sha256_check CHECK ((source_sha256 ~ '^[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE media_song_video_render_attempts (
@@ -36637,6 +36816,8 @@ INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 
 
 INSERT INTO hns_lifecycle_schema_cutover VALUES ('0169', '{pirate-hns-authority-provisioner-v2}', '{hns-lifecycle-job-envelope-v1,hns-root-observation-envelope-v1}', '2000-01-01 00:00:00+00');
 
+INSERT INTO media_song_video_pcm_admission_policy VALUES (true, false);
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -38244,11 +38425,26 @@ ALTER TABLE ONLY media_song_video_masters
 ALTER TABLE ONLY media_song_video_masters
     ADD CONSTRAINT media_song_video_masters_plan_key UNIQUE (master_revision_id, plan_id);
 
+ALTER TABLE ONLY media_song_video_pcm_admission_policy
+    ADD CONSTRAINT media_song_video_pcm_admission_policy_pkey PRIMARY KEY (singleton);
+
+ALTER TABLE ONLY media_song_video_pcm_admissions
+    ADD CONSTRAINT media_song_video_pcm_admissions_pkey PRIMARY KEY (admission_id);
+
+ALTER TABLE ONLY media_song_video_pcm_admissions
+    ADD CONSTRAINT media_song_video_pcm_admissions_provider_job_id_key UNIQUE (provider_job_id);
+
+ALTER TABLE ONLY media_song_video_pcm_admissions
+    ADD CONSTRAINT media_song_video_pcm_admissions_song_post_id_audio_revision_key UNIQUE (song_post_id, audio_revision);
+
 ALTER TABLE ONLY media_song_video_pcm_references
     ADD CONSTRAINT media_song_video_pcm_referenc_pcm_object_key_pcm_object_ver_key UNIQUE (pcm_object_key, pcm_object_version);
 
 ALTER TABLE ONLY media_song_video_pcm_references
     ADD CONSTRAINT media_song_video_pcm_references_pkey PRIMARY KEY (song_post_id, audio_revision);
+
+ALTER TABLE ONLY media_song_video_pcm_source_grants
+    ADD CONSTRAINT media_song_video_pcm_source_grants_pkey PRIMARY KEY (capability_sha256);
 
 ALTER TABLE ONLY media_song_video_render_attempts
     ADD CONSTRAINT media_song_video_render_attem_attempt_id_plan_id_generation_key UNIQUE (attempt_id, plan_id, generation);
@@ -39741,6 +39937,8 @@ CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts US
 
 CREATE INDEX media_song_canonical_timings_pending_idx ON media_song_canonical_timings USING btree (requested_at) WHERE (state = 'pending'::text);
 
+CREATE INDEX media_song_video_pcm_admissions_due ON media_song_video_pcm_admissions USING btree (requested_at) WHERE (cleanup_completed_at IS NULL);
+
 CREATE INDEX media_song_video_render_attempt_dispatch_idx ON media_song_video_render_attempts USING btree (plan_id) WHERE ((state = 'started'::text) AND (execution_claim_id IS NULL));
 
 CREATE INDEX media_song_video_render_attempts_plan_idx ON media_song_video_render_attempts USING btree (plan_id, state);
@@ -40757,6 +40955,8 @@ CREATE CONSTRAINT TRIGGER media_publication_projection_video_decision_anchor AFT
 
 CREATE TRIGGER media_publication_song_owner_policy_initialize AFTER INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1();
 
+CREATE TRIGGER media_publication_song_pcm_admission AFTER INSERT OR UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION request_media_song_video_pcm_admission();
+
 CREATE CONSTRAINT TRIGGER media_reference_binding_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_reference_binding();
 
 CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON media_reference_evidence FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
@@ -40771,6 +40971,12 @@ CREATE TRIGGER media_song_lyrics_append_only BEFORE DELETE OR UPDATE ON media_so
 
 CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
 
+CREATE CONSTRAINT TRIGGER media_song_pcm_atomic_admission AFTER INSERT OR UPDATE ON media_song_video_pcm_admissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.state = 'admitted'::text)) EXECUTE FUNCTION require_media_song_pcm_atomic_admission();
+
+CREATE CONSTRAINT TRIGGER media_song_pcm_atomic_timing AFTER INSERT OR UPDATE ON media_song_canonical_timings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.state = 'ready'::text)) EXECUTE FUNCTION require_media_song_pcm_atomic_timing();
+
+CREATE TRIGGER media_song_pcm_source_grant_guard BEFORE DELETE OR UPDATE ON media_song_video_pcm_source_grants FOR EACH ROW EXECUTE FUNCTION guard_media_song_pcm_source_grant();
+
 CREATE TRIGGER media_song_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.media_kind = 'song'::text)) EXECUTE FUNCTION guard_media_reservation_update();
 
 CREATE TRIGGER media_song_stem_insert_guard BEFORE INSERT ON media_song_stems FOR EACH ROW EXECUTE FUNCTION validate_media_song_stem_insert();
@@ -40778,6 +40984,8 @@ CREATE TRIGGER media_song_stem_insert_guard BEFORE INSERT ON media_song_stems FO
 CREATE TRIGGER media_song_stems_append_only BEFORE DELETE OR UPDATE ON media_song_stems FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_song_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN (((old.media_kind = 'song'::text) AND (NOT (new.current_lyrics_revision IS DISTINCT FROM old.current_lyrics_revision)) AND (NOT (new.workflow_replacement_sequence IS DISTINCT FROM old.workflow_replacement_sequence)) AND (NOT (((old.status = 'processing'::text) AND (old.phase = 'awaiting_upload'::text) AND (new.status = 'processing'::text) AND (new.phase = 'finalize'::text)) OR ((old.status = 'processing'::text) AND (old.phase = 'finalize'::text) AND (new.status = 'processing'::text) AND (new.phase = 'analysis'::text) AND (new.audio_revision = (old.audio_revision + 1))))))) EXECUTE FUNCTION guard_media_submission_update_rating_v2();
+
+CREATE TRIGGER media_song_video_pcm_admission_guard BEFORE INSERT OR DELETE OR UPDATE ON media_song_video_pcm_admissions FOR EACH ROW EXECUTE FUNCTION guard_media_song_video_pcm_admission();
 
 CREATE TRIGGER media_song_video_pcm_reference_guard BEFORE DELETE OR UPDATE ON media_song_video_pcm_references FOR EACH ROW EXECUTE FUNCTION guard_media_song_video_pcm_reference();
 
@@ -42910,6 +43118,9 @@ ALTER TABLE ONLY media_song_video_masters
 
 ALTER TABLE ONLY media_song_video_masters
     ADD CONSTRAINT media_song_video_masters_verified_object_key_fkey FOREIGN KEY (verified_object_key) REFERENCES media_song_video_render_attempts(dispatch_output_key) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_pcm_source_grants
+    ADD CONSTRAINT media_song_video_pcm_source_grants_admission_id_fkey FOREIGN KEY (admission_id) REFERENCES media_song_video_pcm_admissions(admission_id);
 
 ALTER TABLE ONLY media_song_video_render_attempts
     ADD CONSTRAINT media_song_video_render_attempts_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES media_song_video_render_plans(plan_id) ON DELETE RESTRICT;
