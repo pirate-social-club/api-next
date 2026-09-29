@@ -20,10 +20,11 @@ guard must repeat it if either changes before activation. If HTTP and jobs use
 different database roles, run the privilege check once for each role and
 require both to pass.
 
-When a reward, Megapot or Wallet repository starts using another table or routine,
+When a reward, Megapot, custody or Wallet repository starts using another table or routine,
 extend `RUNTIME_RELEASE_PRIVILEGES` in
 `scripts/runtime-role-release-preflight.ts`. Its test discovers every matching
-repository under `packages/platform-cf/src` and inventories direct table
+`reward-*`, `song-reward-*`, `megapot-*`, `custody-*` and `wallet-*` repository
+under `packages/platform-cf/src` and inventories direct table
 operations against the generated schema. SQL built dynamically and routine
 calls still need manual review. Do not grant broad table writes merely to make the
 gate pass: keep claim writes inside the claim routine and keep DELETE denied
