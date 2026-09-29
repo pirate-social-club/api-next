@@ -5,6 +5,8 @@ export async function downloadSongVideoCloudConvertMaster(
   input: Readonly<{
     exportUrl: string;
     fetch: (url: string, init: RequestInit) => Promise<Response>;
+    deadlineMs?: number;
+    now?: () => number;
   }>,
 ): Promise<Readonly<{ bytes: Uint8Array; sha256: string }>> {
   let url: URL;
@@ -24,7 +26,11 @@ export async function downloadSongVideoCloudConvertMaster(
     throw new Error("invalid CloudConvert export URL");
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120_000);
+  const remaining =
+    input.deadlineMs === undefined ? 120_000 : input.deadlineMs - (input.now ?? Date.now)();
+  if (!Number.isFinite(remaining) || remaining <= 0)
+    throw new Error("CloudConvert export deadline expired");
+  const timer = setTimeout(() => controller.abort(), Math.min(120_000, remaining));
   try {
     const response = await input.fetch(input.exportUrl, {
       method: "GET",

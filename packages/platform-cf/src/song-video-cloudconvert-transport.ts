@@ -123,6 +123,8 @@ function record(value: unknown): Record<string, unknown> {
 export function makeSongVideoCloudConvertTransport(
   input: Readonly<{
     apiKey: string;
+    deadlineMs?: number;
+    now?: () => number;
     fetch: (url: string, init: RequestInit) => Promise<Response>;
   }>,
 ) {
@@ -135,7 +137,11 @@ export function makeSongVideoCloudConvertTransport(
     body?: unknown,
   ): Promise<unknown> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
+    const remaining =
+      input.deadlineMs === undefined ? 30_000 : input.deadlineMs - (input.now ?? Date.now)();
+    if (!Number.isFinite(remaining) || remaining <= 0)
+      throw new CloudConvertTransportError("uncertain");
+    const timer = setTimeout(() => controller.abort(), Math.min(30_000, remaining));
     try {
       const response = await send(`${API}${path}`, {
         method,
@@ -147,6 +153,10 @@ export function makeSongVideoCloudConvertTransport(
         redirect: "manual",
         signal: controller.signal,
       });
+      if (method === "DELETE" && response.status === 404) {
+        await response.body?.cancel();
+        return null;
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new CloudConvertTransportError(
@@ -168,7 +178,28 @@ export function makeSongVideoCloudConvertTransport(
     }
   }
 
+  const findAllByTag = async (tag: string): Promise<CloudConvertJob[]> => {
+    if (!TAG.test(tag)) throw new TypeError("invalid CloudConvert job tag");
+    const found = new Map<string, CloudConvertJob>();
+    for (let page = 1; page <= 10; page++) {
+      const payload = record(
+        await request(
+          `/jobs?filter%5Btag%5D=${encodeURIComponent(tag)}&per_page=100&page=${page}`,
+          "GET",
+        ),
+      );
+      if (!Array.isArray(payload.data) || payload.data.length > 100)
+        throw new CloudConvertTransportError("uncertain");
+      for (const candidate of payload.data) {
+        const job = parseJob(candidate);
+        if (job.tag === tag) found.set(job.id, job);
+      }
+      if (payload.data.length < 100) return [...found.values()];
+    }
+    throw new CloudConvertTransportError("uncertain");
+  };
   return {
+    findAllByTag,
     async create(job: Readonly<{ tag: string; tasks: unknown }>): Promise<CloudConvertJob> {
       if (!TAG.test(job.tag)) throw new TypeError("invalid CloudConvert job tag");
       const payload = record(await request("/jobs", "POST", job));
@@ -178,28 +209,9 @@ export function makeSongVideoCloudConvertTransport(
     },
     /** Null is inconclusive and must never authorize another create request. */
     async findByTag(tag: string): Promise<CloudConvertJob | null> {
-      if (!TAG.test(tag)) throw new TypeError("invalid CloudConvert job tag");
-      // A bounded page size and a hard page cap prevent a malformed provider
-      // response from turning reconciliation into an unbounded Worker loop.
-      let found: CloudConvertJob | null = null;
-      for (let page = 1; page <= 10; page++) {
-        const payload = record(
-          await request(
-            `/jobs?filter%5Btag%5D=${encodeURIComponent(tag)}&per_page=100&page=${page}`,
-            "GET",
-          ),
-        );
-        if (!Array.isArray(payload.data) || payload.data.length > 100)
-          throw new CloudConvertTransportError("uncertain");
-        for (const candidate of payload.data) {
-          const job = parseJob(candidate);
-          if (job.tag !== tag) continue;
-          if (found !== null) throw new CloudConvertTransportError("uncertain");
-          found = job;
-        }
-        if (payload.data.length < 100) return found;
-      }
-      throw new CloudConvertTransportError("uncertain");
+      const found = await findAllByTag(tag);
+      if (found.length > 1) throw new CloudConvertTransportError("uncertain");
+      return found[0] ?? null;
     },
     async show(id: string): Promise<CloudConvertJobObservation> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");

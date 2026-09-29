@@ -135,6 +135,8 @@ export interface SongVideoOutputWriter {
 export interface SongVideoRenderer {
   readonly identity: string;
   readonly policyRevision: number;
+  /** Persist uncertainty and reconcile provider resources when the wait expires. */
+  readonly reconcile?: (attemptId: string) => Promise<void>;
   /**
    * Starts rendering the interval of the canonical song over the capture's
    * picture into `outputObjectKey`. Called at most once per attempt. A refusal

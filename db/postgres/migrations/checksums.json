@@ -228,6 +228,7 @@
     "0225_hns_import_runtime_function_grants.sql": "53ac22007721dbde05f6ce961f8386405ed6436081f3003fd34c1c362ba63882",
     "0226_reward_sponsored_send_reservations.sql": "2b8f5e021da82a1d174f8664d5835b0da6ca84bb85a61b5812a4e94e75ebfbc3",
     "0227_wallet_sponsored_send_scope.sql": "a0ec95711d39f612b0e415f54e472b21fa3ee315265387355054be40e290b9e4",
-    "0228_reward_obligation_attestation_pinning.sql": "f574633c1d279f4f37b592de58e87cb3e7519f0e899d1ce01ac31e76e4412a30"
+    "0228_reward_obligation_attestation_pinning.sql": "f574633c1d279f4f37b592de58e87cb3e7519f0e899d1ce01ac31e76e4412a30",
+    "0229_song_video_cloudconvert_attempts.sql": "9d24271f5d322b8d3cc8ed88ae9bf9c05e9b68128b00508743d444c75958d62f"
   }
 }

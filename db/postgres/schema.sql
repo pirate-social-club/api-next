@@ -13467,6 +13467,41 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_video_excerpt_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(NEW.capability_sha256,NEW.attempt_id,NEW.object_key,NEW.object_version,NEW.object_etag,
+         NEW.wav_sha256,NEW.byte_length,NEW.expires_at)
+     IS DISTINCT FROM ROW(OLD.capability_sha256,OLD.attempt_id,OLD.object_key,OLD.object_version,OLD.object_etag,
+         OLD.wav_sha256,OLD.byte_length,OLD.expires_at)
+     OR OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at THEN
+    RAISE EXCEPTION 'song-video excerpt identity and revocation are immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_song_video_provider_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.state='sealed' AND OLD.state='started' AND NEW.provider_wait_deadline IS NOT NULL
+    AND (clock_timestamp() >= NEW.provider_wait_deadline OR NEW.provider_reconciliation_required_at IS NOT NULL) THEN
+    RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='song-video provider wait deadline expired';
+  END IF;
+  IF OLD.provider_wait_deadline IS NOT NULL AND NEW.provider_wait_deadline IS DISTINCT FROM OLD.provider_wait_deadline
+    OR OLD.provider_create_started_at IS NOT NULL AND NEW.provider_create_started_at IS DISTINCT FROM OLD.provider_create_started_at
+    OR OLD.provider_job_id IS NOT NULL AND NEW.provider_job_id IS DISTINCT FROM OLD.provider_job_id
+    OR OLD.provider_pcm_sha256 IS NOT NULL AND NEW.provider_pcm_sha256 IS DISTINCT FROM OLD.provider_pcm_sha256
+    OR OLD.provider_reconciliation_required_at IS NOT NULL AND NEW.provider_reconciliation_required_at IS DISTINCT FROM OLD.provider_reconciliation_required_at
+    OR OLD.provider_cleanup_completed_at IS NOT NULL AND NEW.provider_cleanup_completed_at IS DISTINCT FROM OLD.provider_cleanup_completed_at THEN
+    RAISE EXCEPTION 'song-video provider identity and terminal evidence are immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_song_video_render_attempt_execution() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19098,6 +19133,26 @@ BEGIN
     RAISE EXCEPTION 'a song-reference video projection requires its song edge';
   END IF;
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_song_video_provider_seal_deadline() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE attempt media_song_video_render_attempts%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT attempt FROM media_song_video_render_attempts
+    WHERE attempt_id=NEW.attempt_id FOR UPDATE;
+  IF attempt.provider_wait_deadline IS NOT NULL AND
+    (clock_timestamp() >= attempt.provider_wait_deadline OR attempt.provider_reconciliation_required_at IS NOT NULL) THEN
+    RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='song-video provider wait deadline expired';
+  END IF;
+  IF attempt.dispatch_renderer_identity='cloudconvert-song-video-pcm-v1' AND
+    (attempt.provider_wait_deadline IS NULL OR attempt.provider_job_id IS NULL OR
+     attempt.provider_pcm_sha256 IS DISTINCT FROM NEW.soundtrack_sha256) THEN
+    RAISE EXCEPTION 'song-video provider seal lacks bound verification evidence';
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -32198,6 +32253,25 @@ CREATE TABLE media_song_video_accepted_masters (
     CONSTRAINT media_song_video_accepted_masters_accepted_at_check CHECK (isfinite(accepted_at))
 );
 
+CREATE TABLE media_song_video_excerpt_grants (
+    capability_sha256 text NOT NULL,
+    attempt_id text NOT NULL,
+    object_key text NOT NULL,
+    object_version text NOT NULL,
+    object_etag text NOT NULL,
+    wav_sha256 text NOT NULL,
+    byte_length bigint NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT media_song_video_excerpt_grants_byte_length_check CHECK (((byte_length >= 576044) AND (byte_length <= 2880044))),
+    CONSTRAINT media_song_video_excerpt_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_song_video_excerpt_grants_expires_at_check CHECK (isfinite(expires_at)),
+    CONSTRAINT media_song_video_excerpt_grants_object_etag_check CHECK ((btrim(object_etag) <> ''::text)),
+    CONSTRAINT media_song_video_excerpt_grants_object_key_check CHECK ((object_key ~~ 'song-video-excerpts/%'::text)),
+    CONSTRAINT media_song_video_excerpt_grants_object_version_check CHECK ((btrim(object_version) <> ''::text)),
+    CONSTRAINT media_song_video_excerpt_grants_wav_sha256_check CHECK ((wav_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE media_song_video_masters (
     master_revision_id text NOT NULL,
     plan_id text NOT NULL,
@@ -32297,9 +32371,18 @@ CREATE TABLE media_song_video_render_attempts (
     execution_refusal_reason text,
     execution_claim_id text,
     execution_claimed_at timestamp with time zone,
+    provider_wait_deadline timestamp with time zone,
+    provider_create_started_at timestamp with time zone,
+    provider_job_id text,
+    provider_reconciliation_required_at timestamp with time zone,
+    provider_cleanup_completed_at timestamp with time zone,
+    provider_pcm_sha256 text,
     CONSTRAINT media_song_video_render_atte_dispatch_renderer_policy_rev_check CHECK ((dispatch_renderer_policy_revision >= 0)),
+    CONSTRAINT media_song_video_render_atte_provider_cleanup_completed_a_check CHECK (((provider_cleanup_completed_at IS NULL) OR isfinite(provider_cleanup_completed_at))),
+    CONSTRAINT media_song_video_render_atte_provider_reconciliation_requ_check CHECK (((provider_reconciliation_required_at IS NULL) OR isfinite(provider_reconciliation_required_at))),
     CONSTRAINT media_song_video_render_attem_expected_output_byte_length_check CHECK (((expected_output_byte_length IS NULL) OR (expected_output_byte_length > 0))),
     CONSTRAINT media_song_video_render_attemp_dispatch_renderer_identity_check CHECK ((btrim(dispatch_renderer_identity) <> ''::text)),
+    CONSTRAINT media_song_video_render_attemp_provider_create_started_at_check CHECK (((provider_create_started_at IS NULL) OR isfinite(provider_create_started_at))),
     CONSTRAINT media_song_video_render_attempt_claim_shape CHECK (((execution_claim_id IS NULL) = (execution_claimed_at IS NULL))),
     CONSTRAINT media_song_video_render_attempt_execution_shape CHECK (((execution_phase = 'recorded'::text) = (execution_started_at IS NULL))),
     CONSTRAINT media_song_video_render_attempt_outcome_shape CHECK ((((expected_output_sha256 IS NULL) = (expected_output_byte_length IS NULL)) AND ((execution_refusal_reason IS NULL) OR (expected_output_sha256 IS NULL)))),
@@ -32313,8 +32396,12 @@ CREATE TABLE media_song_video_render_attempts (
     CONSTRAINT media_song_video_render_attempts_execution_started_at_check CHECK (((execution_started_at IS NULL) OR isfinite(execution_started_at))),
     CONSTRAINT media_song_video_render_attempts_expected_output_sha256_check CHECK (((expected_output_sha256 IS NULL) OR (expected_output_sha256 ~ '^[a-f0-9]{64}$'::text))),
     CONSTRAINT media_song_video_render_attempts_generation_check CHECK ((generation >= 1)),
+    CONSTRAINT media_song_video_render_attempts_provider_job_id_check CHECK (((provider_job_id IS NULL) OR (provider_job_id ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,191}$'::text))),
+    CONSTRAINT media_song_video_render_attempts_provider_pcm_sha256_check CHECK (((provider_pcm_sha256 IS NULL) OR (provider_pcm_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_song_video_render_attempts_provider_wait_deadline_check CHECK (((provider_wait_deadline IS NULL) OR isfinite(provider_wait_deadline))),
     CONSTRAINT media_song_video_render_attempts_started_at_check CHECK (isfinite(started_at)),
-    CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text])))
+    CONSTRAINT media_song_video_render_attempts_state_check CHECK ((state = ANY (ARRAY['started'::text, 'sealed'::text, 'accepted'::text, 'loser'::text, 'abandoned'::text]))),
+    CONSTRAINT song_video_provider_create_deadline CHECK (((provider_create_started_at IS NULL) OR ((provider_wait_deadline IS NOT NULL) AND (provider_create_started_at < provider_wait_deadline))))
 );
 
 CREATE TABLE media_song_video_render_plans (
@@ -32841,7 +32928,7 @@ CREATE TABLE media_video_source_grants (
     CONSTRAINT media_video_source_grants_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT media_video_source_grants_check CHECK ((isfinite(expires_at) AND (expires_at > issued_at))),
     CONSTRAINT media_video_source_grants_check1 CHECK (((revoked_at IS NULL) OR (isfinite(revoked_at) AND (revoked_at >= issued_at)))),
-    CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text]))),
+    CONSTRAINT media_video_source_grants_consumer_check CHECK ((consumer = ANY (ARRAY['qencode'::text, 'stream'::text, 'cloudconvert'::text]))),
     CONSTRAINT media_video_source_grants_content_type_check CHECK ((content_type = ANY (ARRAY['video/mp4'::text, 'video/quicktime'::text]))),
     CONSTRAINT media_video_source_grants_etag_check CHECK ((btrim(etag) <> ''::text)),
     CONSTRAINT media_video_source_grants_identity_kind_check CHECK ((identity_kind = ANY (ARRAY['upload_version'::text, 'content_etag'::text]))),
@@ -38139,6 +38226,12 @@ ALTER TABLE ONLY media_song_video_accepted_masters
 ALTER TABLE ONLY media_song_video_accepted_masters
     ADD CONSTRAINT media_song_video_accepted_masters_pkey PRIMARY KEY (plan_id);
 
+ALTER TABLE ONLY media_song_video_excerpt_grants
+    ADD CONSTRAINT media_song_video_excerpt_grants_object_key_key UNIQUE (object_key);
+
+ALTER TABLE ONLY media_song_video_excerpt_grants
+    ADD CONSTRAINT media_song_video_excerpt_grants_pkey PRIMARY KEY (capability_sha256);
+
 ALTER TABLE ONLY media_song_video_masters
     ADD CONSTRAINT media_song_video_masters_attempt_id_key UNIQUE (attempt_id);
 
@@ -39820,6 +39913,10 @@ CREATE INDEX song_streak_days_recompute_idx ON song_streak_days USING btree (acc
 
 CREATE INDEX song_streaks_live_leaderboard_idx ON song_streaks USING btree (community_id, post_id, current_count DESC, best_count DESC, started_day, account_id, active_until_at);
 
+CREATE INDEX song_video_excerpt_grants_attempt ON media_song_video_excerpt_grants USING btree (attempt_id);
+
+CREATE UNIQUE INDEX song_video_provider_job_identity ON media_song_video_render_attempts USING btree (provider_job_id) WHERE (provider_job_id IS NOT NULL);
+
 CREATE UNIQUE INDEX spaces_driver_root_enablement_live_uidx ON spaces_issuance_driver_root_enablements USING btree (network, canonical_root) WHERE (status = 'enabled'::text);
 
 CREATE INDEX spaces_issuance_verifications_due_idx ON spaces_issuance_verifications USING btree (next_verification_at, claim_id) WHERE (status = 'pending'::text);
@@ -41055,6 +41152,12 @@ CREATE TRIGGER song_streak_day_activities_change_guard BEFORE DELETE OR UPDATE O
 CREATE TRIGGER song_streak_days_append_only BEFORE DELETE OR UPDATE ON song_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
 
 CREATE TRIGGER song_streaks_change_guard BEFORE DELETE OR UPDATE ON song_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
+
+CREATE TRIGGER song_video_excerpt_identity_guard BEFORE UPDATE ON media_song_video_excerpt_grants FOR EACH ROW EXECUTE FUNCTION guard_song_video_excerpt_identity();
+
+CREATE TRIGGER song_video_provider_identity_guard BEFORE UPDATE ON media_song_video_render_attempts FOR EACH ROW EXECUTE FUNCTION guard_song_video_provider_identity();
+
+CREATE TRIGGER song_video_provider_seal_deadline BEFORE INSERT ON media_song_video_masters FOR EACH ROW EXECUTE FUNCTION require_song_video_provider_seal_deadline();
 
 CREATE TRIGGER spaces_activation_owner_proof_fresh_guard BEFORE INSERT ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION guard_spaces_activation_owner_proof_fresh_v1();
 
@@ -42789,6 +42892,9 @@ ALTER TABLE ONLY media_song_stems
 
 ALTER TABLE ONLY media_song_video_accepted_masters
     ADD CONSTRAINT media_song_video_accepted_maste_master_revision_id_plan_id_fkey FOREIGN KEY (master_revision_id, plan_id) REFERENCES media_song_video_masters(master_revision_id, plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_song_video_excerpt_grants
+    ADD CONSTRAINT media_song_video_excerpt_grants_attempt_id_fkey FOREIGN KEY (attempt_id) REFERENCES media_song_video_render_attempts(attempt_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_song_video_masters
     ADD CONSTRAINT media_song_video_masters_attempt_id_plan_id_attempt_genera_fkey FOREIGN KEY (attempt_id, plan_id, attempt_generation) REFERENCES media_song_video_render_attempts(attempt_id, plan_id, generation) ON DELETE RESTRICT;

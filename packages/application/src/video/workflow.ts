@@ -696,6 +696,7 @@ export async function runVideoAnalysisWorkflow(
             // uncertain. It stays pending for reconciliation and is never
             // rendered again; the submission cannot be retried until then.
             await step.do("render-reconciliation-required", async () => {
+              await render.renderer.reconcile?.(attempt.attemptId);
               const { record } = await rendering();
               await renderFailure(
                 record,

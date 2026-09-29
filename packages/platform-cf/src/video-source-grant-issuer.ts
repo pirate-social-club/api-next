@@ -8,7 +8,7 @@ import { makeVideoSourceUrl } from "./video-source-gateway.ts";
 export function makeVideoSourceGrantIssuer(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   origin: string,
-  consumer: "qencode" | "stream",
+  consumer: "qencode" | "stream" | "cloudconvert",
 ): QencodeSourceGrantIssuer {
   // Validate before any effect. The placeholder is not a capability that can be issued.
   makeVideoSourceUrl(origin, "a".repeat(43));
