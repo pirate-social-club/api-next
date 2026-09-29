@@ -8,6 +8,8 @@ import type {
 
 type BorrowedClient = Readonly<{
   connection?: { readonly stream?: { readonly destroyed?: boolean; destroy: () => unknown } };
+  on: (event: "error", listener: (error: Error) => void) => unknown;
+  off: (event: "error", listener: (error: Error) => void) => unknown;
   query: (config: { text: string; values: unknown[] }) => Promise<PostgresQueryResponse>;
   release: (destroy?: boolean) => void;
 }>;
@@ -26,6 +28,8 @@ export function makeGatewayPooledPostgresClientFactory(
 ): PostgresClientFactory {
   return () => {
     let borrowed: BorrowedClient | null = null;
+    let borrowedErrorListener: ((error: Error) => void) | null = null;
+    let borrowedFailed = false;
     let closed = false;
     return {
       get connection() {
@@ -38,6 +42,14 @@ export function makeGatewayPooledPostgresClientFactory(
           client.release(true);
           throw new Error("gateway pool scope closed during acquisition");
         }
+        // pg-pool listens for idle-client errors, but removes that listener
+        // while a client is checked out. A terminated borrowed connection must
+        // not become an uncaught EventEmitter error that exits the gateway.
+        const onError = () => {
+          borrowedFailed = true;
+        };
+        client.on("error", onError);
+        borrowedErrorListener = onError;
         borrowed = client;
       },
       query: (config: PostgresQueryConfig) => {
@@ -53,7 +65,8 @@ export function makeGatewayPooledPostgresClientFactory(
         const client = borrowed;
         borrowed = null;
         if (client !== null) {
-          client.release(client.connection?.stream?.destroyed === true);
+          if (borrowedErrorListener !== null) client.off("error", borrowedErrorListener);
+          client.release(borrowedFailed || client.connection?.stream?.destroyed === true);
         }
       },
     } satisfies PostgresClientLike;
