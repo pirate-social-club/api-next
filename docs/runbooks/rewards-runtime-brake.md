@@ -104,27 +104,23 @@ criteria; local tests do not claim a live rehearsal or a closed production gate.
 
 ## Contract verification boundary
 
-The public Base Sepolia RPC returned 23,614 bytes for the pinned Jackpot
-0x465da3c859f193a3807386387bee941b2a4c3279. Their keccak256 matches manifest hash
-0x8d3104deb8a3fb663c67f8d4a2da43a15aaf5ad8b0e1d303ceed09f582dd4bc9.
-The runtime metadata identifies Solidity 0.8.28 and IPFS metadata CID
-QmYhi81fHfpM3eJU2ni5nV2qJUia7LbFvwqBgcsijchGKV. This establishes code identity,
-not a match to the public audit source. Explorer and metadata-gateway reads did
-not yield the build metadata. A matching source/compiler/settings/immutables
-comparison and a historical winning-ticket simulation remain unproved.
+The source-verification route is complete for the pinned Sepolia deployment and
+the parked Base mainnet candidate. Independent Solidity 0.8.28 builds of both
+Jackpots, both ticket NFTs and both payout calculators matched their public RPC
+runtime bytecode at pinned blocks. Immutable Jackpot addresses were accounted
+for explicitly. Both current drawings use the calculators checked. Historical
+drawing 1 payouts remain stored on both chains.
 
-An old claim that succeeds at a pinned head establishes claimability at that
-age. It cannot exclude a longer finite deadline. Repeat verification against
-the selected, independently attested Base mainnet contract and its calculator
-before approving production claim-pause policy. Read-only checks also confirmed
-that the parked Base mainnet candidate at
-0x3bae643002069dbcbcd62b1a4eb4c4a397d042a2 still matches its pinned runtime hash
-0x597f3a8e9360fbfc2e623243507ee9e8a66609003078ffc33d9013cb0607002d
-at block 51,963,965. Historical ticket logs were retrieved on both chains.
-Owner reads for sampled positive-payout tickets mostly reverted with
-0xceea21b6; rate-limit failures also occurred. No unclaimed winner was
-successfully simulated. These reads do not establish claim expiry or
-claimability. No claim was submitted.
-The current production record
-still selects no activated mainnet attestation; the parked candidate does not
-supply that approval.
+The matching claim, ownership/burn and tier-payout source has no time-based
+claim deadline. Holding claims during a pause does not hit a protocol claim
+expiry in these exact deployments. Recheck identities and each obligation's
+calculator for the attestation chosen at activation; this does not choose or
+approve the production attestation or signing backend.
+
+The compilation inputs came from Sourcify's v2 endpoint. The public audit
+checkout differed from the deployed source. Fingerprints, pinned blocks,
+immutable references, primary URLs and reproduction steps are in
+[the contract verification evidence](../evidence/rewards-runtime-brake/README.md).
+The separate historical-winning-ticket probe did not find a successfully
+simulated unclaimed winner. No transaction was sent and no behavioural success
+is claimed. The live brake rehearsal remains open.

@@ -730,7 +730,11 @@ describe("song reward offer HTTP handlers", () => {
 
   test("keeps participant standing and reward credits authenticated and no-store", async () => {
     const headers = { authorization: "Bearer test" };
-    const standing = await fixture().request(`/reward-offer-legs/${leg.legId}/standing`, {
+    const standing = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    }).request(`/reward-offer-legs/${leg.legId}/standing`, {
       headers,
     });
     expect(standing.status).toBe(200);
@@ -743,7 +747,11 @@ describe("song reward offer HTTP handlers", () => {
       },
     });
 
-    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    const credits = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    }).request("/rewards/credits?limit=25", { headers });
     expect(credits.status).toBe(200);
     expect(credits.headers.get("cache-control")).toBe("no-store");
     expect(await credits.json()).toMatchObject({
@@ -947,7 +955,12 @@ describe("song reward offer HTTP handlers", () => {
       get: (input) => own(input.accountId, input.sendId),
       getByCredit: (input) => own(input.accountId, input.creditId),
     };
-    const worker = fixture(intent, { winnerSends });
+    const worker = fixture(intent, {
+      winnerSends,
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    });
     const headers = { "content-type": "application/json", authorization: "Bearer test" };
     const post = (path: string, body: unknown, authorized = true) =>
       worker.request(path, {
