@@ -40,6 +40,7 @@ describe("CloudConvert render reconciliation", () => {
 
   test("an absent tag becomes operator reconciliation at its persisted wait deadline", async () => {
     let shows = 0;
+    let searches = 0;
     const result = await reconcileCloudConvertRender({
       tag,
       nowMs: 2_000,
@@ -47,7 +48,10 @@ describe("CloudConvert render reconciliation", () => {
       expectedSamples: 150_000,
       expectedPcmSha256,
       jobs: {
-        findByTag: async () => null,
+        findByTag: async () => {
+          searches += 1;
+          return null;
+        },
         show: async () => {
           shows += 1;
           throw new Error("unexpected show");
@@ -61,10 +65,12 @@ describe("CloudConvert render reconciliation", () => {
       status: "operator_reconciliation",
       reason: "provider_wait_expired",
     });
+    expect(searches).toBe(0);
     expect(shows).toBe(0);
   });
 
-  test("a processing job cannot remain pending beyond its wait deadline", async () => {
+  test("a late finished job cannot revive an expired attempt", async () => {
+    let searches = 0;
     const result = await reconcileCloudConvertRender({
       tag,
       nowMs: 2_001,
@@ -72,7 +78,10 @@ describe("CloudConvert render reconciliation", () => {
       expectedSamples: 150_000,
       expectedPcmSha256,
       jobs: {
-        findByTag: async () => ({ id: "job-1", tag, status: "processing" }),
+        findByTag: async () => {
+          searches += 1;
+          return { id: "job-1", tag, status: "finished" };
+        },
         show: async () => {
           throw new Error("unexpected show");
         },
@@ -85,6 +94,7 @@ describe("CloudConvert render reconciliation", () => {
       status: "operator_reconciliation",
       reason: "provider_wait_expired",
     });
+    expect(searches).toBe(0);
   });
 
   test("the exact finished job yields only a strictly verified master", async () => {
