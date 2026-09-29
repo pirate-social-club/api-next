@@ -331,7 +331,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     await admin.connect();
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
-    await applyPostgresTestBaselineConnection({ connectionString: scoped });
+    await applyPostgresTestBaselineConnection({ rewardsRunning: true, connectionString: scoped });
     await seedPrerequisites(admin);
     layer = makeDirectPostgresControlPlaneLayer(scoped);
     let sequence = 0;
@@ -456,6 +456,16 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
   test("sends requested -> nonce_reserved -> prepared -> broadcast -> confirmed with evidence", async () => {
     const topupId = topups.w1 as string;
     const effectId = deriveRewardGasTopupEffectId(topupId);
+    await admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,TRUE,'gas_pause_test') FROM reward_operations_control WHERE singleton",
+    );
+    expect(await Effect.runPromise(Effect.flip(coordinator().send(topupId)))).toMatchObject({
+      _tag: "RewardOperationsPaused",
+    });
+    expect(chain.sent).toHaveLength(0);
+    await admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,FALSE,'gas_resume_test') FROM reward_operations_control WHERE singleton",
+    );
     expect(
       await Effect.runPromise(Effect.flip(coordinator(offlineSigner).send(topupId))),
     ).toMatchObject({ _tag: "RewardGasTopupCoordinatorFailed", phase: "prepare" });
@@ -478,7 +488,13 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
       },
     ]);
 
+    await admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,TRUE,'admitted_retry_test') FROM reward_operations_control WHERE singleton",
+    );
     expect((await Effect.runPromise(coordinator().send(topupId))).kind).toBe("submitted");
+    await admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,FALSE,'retry_test_complete') FROM reward_operations_control WHERE singleton",
+    );
     expect(await topupRow(topupId)).toMatchObject({ status: "broadcast" });
     expect(chain.sent).toHaveLength(1);
     const hash = keccak256(chain.sent[0] as Hex);

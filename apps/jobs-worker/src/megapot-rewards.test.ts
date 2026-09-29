@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MegapotDrawingObservationRejected } from "@pirate/application";
+import { MegapotDrawingObservationRejected, RewardOperationsPaused } from "@pirate/application";
 import {
   MegapotWorkStorageFailed,
   type MegapotWorkStore,
@@ -637,4 +637,26 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(result.refunded).toBe(1);
     expect(calls).toContain("close-expired");
   });
+});
+
+test("a paused cycle records holds, keeps reconciling and does not report storage failures", async () => {
+  const { runtime, work, calls } = fixture("confirmed");
+  const hold = () => Effect.fail(new RewardOperationsPaused({ reason: "paused" }));
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime: {
+        ...runtime,
+        approve: hold,
+        purchase: hold,
+        claim: hold,
+        refund: hold,
+        payout: hold,
+      },
+    }),
+  );
+  expect(result.pausedHolds).toBeGreaterThan(0);
+  expect(result.failures).toEqual([]);
+  expect(result.failureDiagnostics).toEqual([]);
+  expect(calls).toContain("reconcile");
 });

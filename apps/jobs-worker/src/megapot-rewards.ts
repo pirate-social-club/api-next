@@ -137,6 +137,7 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "RewardGasTopupRejected",
   "RewardGasTopupStorageFailed",
   "RewardPayoutCoordinatorFailed",
+  "RewardOperationsPaused",
   "RewardPayoutRejected",
   "RewardPayoutStorageFailed",
   "RewardOfferTerminalStorageFailed",

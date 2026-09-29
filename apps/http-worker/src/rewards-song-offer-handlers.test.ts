@@ -18,6 +18,7 @@ import {
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
+import { ProviderUnavailable } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
@@ -121,6 +122,7 @@ const claimCalls: { accountId: string; creditId: string }[] = [];
 function fixture(
   fundingIntent: RewardFundingIntent = intent,
   options: {
+    requireRewardOperationsRunning?: () => Promise<void>;
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
@@ -310,6 +312,8 @@ function fixture(
     },
   };
   const handlers = makeSongRewardOfferHandlers({
+    requireRewardOperationsRunning:
+      options.requireRewardOperationsRunning ?? (async () => undefined),
     rewardCatalogAuthority: options.production
       ? null
       : { environment: "test", attestationId: "attestation_1" },
@@ -1115,4 +1119,38 @@ describe("song reward offer HTTP handlers", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ funding: { status: "reverted" } });
   });
+});
+
+test("paused rewards refuse offers and fresh instructions but expose already recorded funding", async () => {
+  const paused = {
+    requireRewardOperationsRunning: async () => {
+      throw new ProviderUnavailable({ message: "Rewards are paused" });
+    },
+  };
+  const worker = fixture(intent, paused);
+  const headers = { authorization: "Bearer test", "content-type": "application/json" };
+  expect(
+    (
+      await worker.request("/communities/community_1/posts/post_1/reward-offers", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "open_1",
+          persona_id: "persona_1",
+          starts_at: now,
+          ends_at: "2026-09-26T12:00:00.000Z",
+        }),
+      })
+    ).status,
+  ).toBe(502);
+  const path = `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`;
+  expect((await worker.request(path, { headers })).status).toBe(502);
+  expect(
+    (
+      await fixture({ ...intent, state: "confirming", transactionHash: hash("8") }, paused).request(
+        path,
+        { headers },
+      )
+    ).status,
+  ).toBe(200);
 });

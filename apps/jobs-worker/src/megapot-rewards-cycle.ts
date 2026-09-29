@@ -102,6 +102,7 @@ export type MegapotRewardsCycleSummary = Readonly<{
   refunded: number;
   paid: number;
   gasTopups: number;
+  pausedHolds?: number;
   failures: readonly string[];
   failureDiagnostics: readonly string[];
   agedPending: readonly MegapotAgedPending[] | null;
@@ -231,6 +232,7 @@ export function writeMegapotRewardsCycleSnapshot(
       refunded_count: summary.refunded,
       paid_count: summary.paid,
       gas_topup_count: summary.gasTopups,
+      paused_hold_count: summary.pausedHolds ?? 0,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
       failure_diagnostics: summary.failureDiagnostics,
@@ -312,10 +314,16 @@ export function runMegapotRewardsCycle(input: {
     }
     const failures: string[] = [];
     const failureDiagnostics: string[] = [];
+    let pausedHolds = 0;
     const recordFailures = (values: readonly unknown[]) => {
-      failures.push(...values.map(failureTag));
+      const failuresOnly = values.filter((error) => {
+        if (failureTag(error) !== "RewardOperationsPaused") return true;
+        pausedHolds += 1;
+        return false;
+      });
+      failures.push(...failuresOnly.map(failureTag));
       failureDiagnostics.push(
-        ...values.flatMap((error) => {
+        ...failuresOnly.flatMap((error) => {
           const diagnostic = failureDiagnostic(error);
           return diagnostic === null ? [] : [diagnostic];
         }),
@@ -446,6 +454,7 @@ export function runMegapotRewardsCycle(input: {
       refunded: refunded.length,
       paid: paid.length,
       gasTopups,
+      ...(pausedHolds > 0 ? { pausedHolds } : {}),
       failures,
       failureDiagnostics,
       agedPending,

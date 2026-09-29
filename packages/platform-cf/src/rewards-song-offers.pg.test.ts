@@ -68,11 +68,25 @@ async function withSchema<A>(
     use: async ({ admin, schema }) => {
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
       await applyPostgresTestBaselineConnection({
+        rewardsRunning: true,
         connectionString: connectionForSchema(connectionString, schema),
       });
       return await use(admin, connectionForSchema(connectionString, schema));
     },
   });
+}
+
+async function assertPausedReservation<A, E>(admin: Client, reserve: () => Effect.Effect<A, E>) {
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,TRUE,'reservation_pause_test') FROM reward_operations_control WHERE singleton",
+  );
+  expect(await Effect.runPromise(Effect.flip(reserve()))).toMatchObject({
+    _tag: "RewardOperationsPaused",
+    reason: "paused",
+  });
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'reservation_resume_test') FROM reward_operations_control WHERE singleton",
+  );
 }
 
 type SeedIdentity = Readonly<{
@@ -2147,6 +2161,17 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          ) VALUES ($1,$2,9,8,110,$3,clock_timestamp() - interval '1 second')`,
         [candidate.chainId, candidate.custodyAddress, bytes32("7")],
       );
+      await assertPausedReservation(admin, () =>
+        store.reserveNonce({
+          candidate,
+          effectId: "purchase-effect-101",
+          ticket: { normals: [1, 2, 3, 4, 5], bonusball: 6 },
+          observedPendingNonce: 9n,
+          observedBlockNumber: 111n,
+          observedBlockHash: bytes32("8"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
@@ -2325,6 +2350,18 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         expectedReferralAccrualAtomic: 100n,
         expectedNetWinningsAtomic: 901n,
       });
+      await assertPausedReservation(admin, () =>
+        claimStore.reserveNonce({
+          candidate: claimCandidate,
+          effectId: "claim-effect-101",
+          custodyBalanceBeforeAtomic: 20_000n,
+          referralBalanceBeforeAtomic: 1_000n,
+          observedPendingNonce: 10n,
+          observedBlockNumber: 121n,
+          observedBlockHash: bytes32("d"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const claimReservation = await Effect.runPromise(
         claimStore.reserveNonce({
           candidate: claimCandidate,
@@ -2584,6 +2621,16 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
       const payoutCandidate = await Effect.runPromise(payoutStore.loadCandidate(creditId));
+      await assertPausedReservation(admin, () =>
+        payoutStore.reserveNonce({
+          candidate: payoutCandidate,
+          effectId: "payout-effect-101",
+          observedPendingNonce: 11n,
+          observedBlockNumber: 123n,
+          observedBlockHash: bytes32("f"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const payoutReservation = await Effect.runPromise(
         payoutStore.reserveNonce({
           candidate: payoutCandidate,
@@ -2752,6 +2799,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       const store = makeControlPlaneMegapotPurchaseStore(layer);
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'paused_drawing_cutoff') FROM reward_operations_control WHERE singleton",
       );
       await Effect.runPromise(
         store.closePreBroadcast({
@@ -3034,6 +3084,19 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          ) VALUES ($1,$2,12,11,119,$3,clock_timestamp() - interval '1 second')`,
         [candidate.chainId, candidate.custodyAddress, bytes32("b")],
       );
+      await assertPausedReservation(admin, () =>
+        store.reserveNonce({
+          candidate,
+          effectId: "approval-effect-100000",
+          allowanceBeforeAtomic: 0n,
+          minimumAllowanceAtomic: 10_000n,
+          approvedAmountAtomic: 100_000n,
+          observedPendingNonce: 12n,
+          observedBlockNumber: 120n,
+          observedBlockHash: bytes32("c"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
@@ -3282,6 +3345,16 @@ suite("Postgres 17 Megapot rewards persistence", () => {
             ),
           ).rejects.toMatchObject({ _tag: "RewardRefundRejected", reason: "effect-conflict" });
         }
+        await assertPausedReservation(admin, () =>
+          refundStore.reserveNonce({
+            candidate,
+            effectId: input.effectId,
+            observedPendingNonce: input.blockNumber,
+            observedBlockNumber: input.blockNumber,
+            observedBlockHash: bytes32(input.hashByte),
+            observedAt: new Date().toISOString(),
+          }),
+        );
         const reservation = await Effect.runPromise(
           refundStore.reserveNonce({
             candidate,
