@@ -354,25 +354,22 @@ class PostgresSession {
         session.inTransaction = true;
       });
       yield* session.executeInternal({
-        label: "control-plane.transaction.statement-timeout",
-        text: "SELECT set_config('statement_timeout', $1, true)",
-        values: [`${session.statementTimeoutMs}ms`],
+        label: "control-plane.transaction.configure",
+        // Settings are independent and transaction-local. Await their single
+        // parameterized statement before admitting any application query.
+        text:
+          "SELECT pg_catalog.set_config('statement_timeout', $1, true), " +
+          "pg_catalog.set_config('idle_in_transaction_session_timeout', $2, true)" +
+          (session.transactionSearchPath === undefined
+            ? ""
+            : ", pg_catalog.set_config('search_path', $3, true)"),
+        values: [
+          `${session.statementTimeoutMs}ms`,
+          `${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`,
+          ...(session.transactionSearchPath === undefined ? [] : [session.transactionSearchPath]),
+        ],
         readonly: false,
       });
-      yield* session.executeInternal({
-        label: "control-plane.transaction.idle-timeout",
-        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
-        readonly: false,
-      });
-      if (session.transactionSearchPath !== undefined) {
-        yield* session.executeInternal({
-          label: "control-plane.transaction.search-path",
-          text: "SELECT set_config('search_path', $1, true)",
-          values: [session.transactionSearchPath],
-          readonly: false,
-        });
-      }
       return new PostgresTransaction(session);
     });
   }

@@ -29,6 +29,10 @@ const statement = {
   readonly: true,
 } as const;
 
+const timeoutSetupSql =
+  "SELECT pg_catalog.set_config('statement_timeout', $1, true), pg_catalog.set_config('idle_in_transaction_session_timeout', $2, true)";
+const schemaSetupSql = `${timeoutSetupSql}, pg_catalog.set_config('search_path', $3, true)`;
+
 class FakePostgresClient implements PostgresClientLike {
   readonly events: string[] = [];
   readonly queries: PostgresQueryConfig[] = [];
@@ -197,12 +201,11 @@ describe("Postgres control-plane adapter", () => {
       { text: statement.text, values: statement.values },
       { text: "BEGIN", values: [] },
       {
-        text: "SELECT set_config('statement_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
-      },
-      {
-        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
+        text: timeoutSetupSql,
+        values: [
+          `${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`,
+          `${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`,
+        ],
       },
       { text: statement.text, values: statement.values },
       { text: "COMMIT", values: [] },
@@ -252,16 +255,12 @@ describe("Postgres control-plane adapter", () => {
     expect(hyperdriveClient.queries.map(({ text, values }) => ({ text, values }))).toEqual([
       { text: "BEGIN", values: [] },
       {
-        text: "SELECT set_config('statement_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
-      },
-      {
-        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
-        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
-      },
-      {
-        text: "SELECT set_config('search_path', $1, true)",
-        values: [CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH],
+        text: schemaSetupSql,
+        values: [
+          `${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`,
+          `${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`,
+          CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+        ],
       },
       { text: statement.text, values: statement.values },
       { text: "COMMIT", values: [] },
@@ -294,8 +293,12 @@ describe("Postgres control-plane adapter", () => {
 
     expect(client.queries.filter(({ text }) => text.includes("set_config('search_path'"))).toEqual([
       {
-        text: "SELECT set_config('search_path', $1, true)",
-        values: [CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH],
+        text: schemaSetupSql,
+        values: [
+          `${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`,
+          `${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`,
+          CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+        ],
       },
     ]);
     expect(client.queries.at(-1)).toEqual({ text: "COMMIT", values: [] });
@@ -329,8 +332,12 @@ describe("Postgres control-plane adapter", () => {
     expect(receivedConfig?.connectionTimeoutMillis).toBe(2_000);
     expect(receivedConfig?.statement_timeout).toBe(2_000);
     expect(client.queries).toContainEqual({
-      text: "SELECT set_config('statement_timeout', $1, true)",
-      values: ["2000ms"],
+      text: schemaSetupSql,
+      values: [
+        "2000ms",
+        `${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`,
+        CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+      ],
     });
     expect(receivedConfig?.options).toBe("-c default_transaction_read_only=on");
     expect(client.queries.at(-2)).toEqual({ text: statement.text, values: statement.values });
@@ -355,6 +362,93 @@ describe("Postgres control-plane adapter", () => {
       outcomeCertainty: "not-started",
     });
     expect(client.queries.some(({ text }) => text.startsWith("DELETE"))).toBe(false);
+  });
+
+  test("does not run the transaction body when configuration fails", async () => {
+    const client = new FakePostgresClient();
+    const query = client.query.bind(client);
+    client.query = (config) => {
+      if (config.text.includes("set_config")) {
+        client.queries.push(config);
+        return Promise.reject(Object.assign(new Error("private setup failure"), { code: "22023" }));
+      }
+      return query(config);
+    };
+    let bodyRan = false;
+    const error = await Effect.runPromise(
+      Effect.flip(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.withTransaction(() =>
+              Effect.sync(() => {
+                bodyRan = true;
+              }),
+            );
+          }).pipe(
+            Effect.provide(
+              makeHyperdriveControlPlaneLayer(
+                { connectionString: "postgres://hyperdrive.invalid/control" },
+                { clientFactory: () => client, logger: silentLogger },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(bodyRan).toBe(false);
+    expect(error).toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      label: "control-plane.transaction.configure",
+      sqlState: "22023",
+    });
+    expect(client.queries.map(({ text }) => text)).toEqual(["BEGIN", schemaSetupSql]);
+    expect(client.events).toEqual(["connect", "end"]);
+  });
+
+  test("fences the session when transaction configuration times out", async () => {
+    const client = new FakePostgresClient();
+    const query = client.query.bind(client);
+    client.query = (config) =>
+      query(config.text.includes("set_config") ? { ...config, text: "SELECT stall" } : config);
+    let bodyRan = false;
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const fiber = yield* Effect.flip(
+          db.withTransaction(() =>
+            Effect.sync(() => {
+              bodyRan = true;
+            }),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(CONTROL_PLANE_STATEMENT_TIMEOUT_MS + 1);
+        const timeout = yield* Fiber.join(fiber);
+        const fenced = yield* Effect.flip(db.execute(statement));
+        return { timeout, fenced };
+      }).pipe(
+        Effect.provide(
+          makeHyperdriveControlPlaneLayer(
+            { connectionString: "postgres://hyperdrive.invalid/control" },
+            { clientFactory: () => client, logger: silentLogger },
+          ),
+        ),
+      ),
+    ).pipe(Effect.provide(TestClock.layer()));
+    const result = await Effect.runPromise(program);
+    expect(bodyRan).toBe(false);
+    expect(result.timeout).toMatchObject({
+      _tag: "ControlPlaneOperationTimedOut",
+      label: "control-plane.transaction.configure",
+      outcomeCertainty: "aborted",
+    });
+    expect(result.fenced).toMatchObject({
+      _tag: "ControlPlaneOperationTimedOut",
+      outcomeCertainty: "aborted",
+    });
+    expect(client.queries.some(({ text }) => text === statement.text)).toBe(false);
+    expect(client.events.indexOf("destroy")).toBeLessThan(client.events.indexOf("end"));
   });
 
   test("direct gateway authority uses one read-only SELECT with startup search path", async () => {

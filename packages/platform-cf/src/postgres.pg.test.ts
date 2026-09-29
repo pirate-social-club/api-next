@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { HnsAuthorityDiagnostic, withHnsAuthoritySpan } from "./hns-authority-diagnostics.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
+  makeHyperdriveControlPlaneLayer,
   makeReadOnlyPostgresControlPlaneLayer,
   makeReadOnlyPostgresGatewayAuthorityLayer,
 } from "./postgres";
@@ -187,7 +188,7 @@ suite("Postgres 17 control-plane harness", () => {
           const insertion = yield* Effect.flip(
             db.execute({
               label: "gateway.mislabeled-write",
-              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              text: "INSERT INTO public.api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
               values: [rejectedId, "must-not-write"],
               readonly: true,
             }),
@@ -199,6 +200,7 @@ suite("Postgres 17 control-plane harness", () => {
       expect(result.mode.rows).toEqual([{ transaction_read_only: "on" }]);
       expect(result.insertion).toMatchObject({
         _tag: "ControlPlaneStatementFailed",
+        sqlState: "25006",
         outcomeCertainty: "completed",
       });
       expect(await queryProbe(admin, rejectedId)).toEqual([]);
@@ -241,7 +243,7 @@ suite("Postgres 17 control-plane harness", () => {
             const insertion = yield* Effect.flip(
               db.execute({
                 label: "gateway.direct-mislabeled-write",
-                text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+                text: "INSERT INTO public.api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
                 values: [rejectedId, "must-not-write"],
                 readonly: true,
               }),
@@ -255,6 +257,7 @@ suite("Postgres 17 control-plane harness", () => {
       ]);
       expect(result.insertion).toMatchObject({
         _tag: "ControlPlaneStatementFailed",
+        sqlState: "25006",
         outcomeCertainty: "completed",
       });
       expect(await queryProbe(admin, rejectedId)).toEqual([]);
@@ -263,6 +266,85 @@ suite("Postgres 17 control-plane harness", () => {
         text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = $1",
         values: [rejectedId],
       });
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
+  test("transaction setup applies before the body and resets after commit and rollback", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    try {
+      await admin.query("CREATE SCHEMA IF NOT EXISTS api_next");
+      for (const rollback of [false, true]) {
+        let client: Client | undefined;
+        let baseline: Record<string, unknown> | undefined;
+        let observed: Record<string, unknown> | undefined;
+        const settingsSql =
+          "SELECT current_setting('statement_timeout') AS statement_timeout, current_setting('idle_in_transaction_session_timeout') AS idle_timeout, current_setting('search_path') AS search_path, current_schema() AS schema";
+        const layer = makeHyperdriveControlPlaneLayer(
+          { connectionString },
+          {
+            statementTimeoutMs: 2_500,
+            clientFactory: (_url, config) => {
+              const session = new Client(config);
+              client = session;
+              return {
+                connect: async () => {
+                  await session.connect();
+                  await session.query(
+                    "SELECT pg_catalog.set_config('statement_timeout', '11s', false), pg_catalog.set_config('idle_in_transaction_session_timeout', '12s', false), pg_catalog.set_config('search_path', 'public,pg_catalog', false)",
+                  );
+                  baseline = (await session.query(settingsSql)).rows[0];
+                },
+                query: ({ text, values }) => session.query({ text, values: [...(values ?? [])] }),
+                // Retain this real test session solely to inspect settings after
+                // the adapter scope closes; the test closes it below.
+                end: async () => {},
+              };
+            },
+          },
+        );
+        const program = Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.withTransaction((tx) =>
+              Effect.gen(function* () {
+                const settings = yield* tx.execute<Record<string, unknown>>({
+                  label: "harness.transaction-settings",
+                  text: settingsSql,
+                  values: [],
+                  readonly: true,
+                });
+                observed = settings.rows[0];
+                if (rollback) return yield* Effect.fail("expected rollback");
+              }),
+            );
+          }).pipe(Effect.provide(layer)),
+        );
+        try {
+          if (rollback) await expect(Effect.runPromise(program)).rejects.toBe("expected rollback");
+          else await Effect.runPromise(program);
+          expect(observed).toEqual({
+            statement_timeout: "2500ms",
+            idle_timeout: "30s",
+            search_path: "api_next,pg_catalog",
+            schema: "api_next",
+          });
+          if (client === undefined) throw new Error("adapter never opened the test session");
+          expect(baseline).toEqual({
+            statement_timeout: "11s",
+            idle_timeout: "12s",
+            search_path: "public,pg_catalog",
+            schema: "public",
+          });
+          expect((await client.query(settingsSql)).rows[0]).toEqual(baseline);
+        } finally {
+          await client?.end();
+        }
+      }
+    } finally {
       await admin.end();
     }
     completedTestCount += 1;
@@ -340,7 +422,7 @@ suite("Postgres 17 control-plane harness", () => {
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 4) {
+    if (connectionString !== undefined && completedTestCount === 5) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
