@@ -100,6 +100,7 @@ export interface SongVideoRenderStore extends SongVideoExecutionEvidenceStore {
 }
 
 export type SongVideoRenderRequest = Readonly<{
+  attemptId: string;
   outputObjectKey: string;
   source: Readonly<{ immutableRef: string; sha256: string; byteLength: number }>;
   song: Readonly<{ assetRef: string; sha256: string; durationSamples: number }>;
@@ -148,7 +149,7 @@ export interface SongVideoRenderer {
    * refused, or neither yet. An absent output is pending, never a refusal.
    */
   readonly observe: (
-    input: Readonly<{ outputObjectKey: string }>,
+    input: Readonly<{ attemptId: string; outputObjectKey: string }>,
   ) => Promise<
     | Readonly<{ status: "completed" }>
     | Readonly<{ status: "pending" }>
