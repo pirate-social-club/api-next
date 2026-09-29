@@ -43,6 +43,21 @@ describe("CloudConvert transport", () => {
     expect(calls).toBe(1);
   });
 
+  test("malformed or oversized create acknowledgement is uncertain", async () => {
+    for (const response of [
+      json({ data: { id: "not a job", tag: job.tag, status: "processing" } }),
+      new Response("{}", { status: 201, headers: { "content-length": "262145" } }),
+    ]) {
+      const transport = makeSongVideoCloudConvertTransport({
+        apiKey: "private-key",
+        fetch: async () => response,
+      });
+      await expect(transport.create({ tag: job.tag, tasks: {} })).rejects.toMatchObject({
+        outcome: "uncertain",
+      });
+    }
+  });
+
   test("reconciles one exact tag and refuses duplicate jobs", async () => {
     const responses = [json({ data: [job] }), json({ data: [job, { ...job, id: "job-2" }] })];
     const transport = makeSongVideoCloudConvertTransport({
@@ -62,6 +77,67 @@ describe("CloudConvert transport", () => {
       },
     });
     expect(await transport.findByTag(job.tag)).toBeNull();
+  });
+
+  test("accepts exactly the finished master export from the provider's storage host", async () => {
+    const transport = makeSongVideoCloudConvertTransport({
+      apiKey: "private-key",
+      fetch: async () =>
+        json({
+          data: {
+            ...job,
+            status: "finished",
+            tasks: [
+              {
+                name: "export-master",
+                operation: "export/url",
+                status: "finished",
+                result: {
+                  files: [
+                    {
+                      filename: "master.mp4",
+                      url: "https://storage.cloudconvert.com/job-1/master.mp4?token=x",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+    });
+    expect((await transport.show(job.id)).exportUrl).toBe(
+      "https://storage.cloudconvert.com/job-1/master.mp4?token=x",
+    );
+  });
+
+  test("refuses a finished job with a missing, extra or foreign export", async () => {
+    for (const tasks of [
+      [],
+      [
+        {
+          name: "export-master",
+          operation: "export/url",
+          status: "finished",
+          result: { files: [] },
+        },
+      ],
+      [
+        {
+          name: "export-master",
+          operation: "export/url",
+          status: "finished",
+          result: {
+            files: [{ filename: "master.mp4", url: "https://elsewhere.example/master.mp4" }],
+          },
+        },
+      ],
+    ]) {
+      const transport = makeSongVideoCloudConvertTransport({
+        apiKey: "private-key",
+        fetch: async () => json({ data: { ...job, status: "finished", tasks } }),
+      });
+      await expect(transport.show(job.id)).rejects.toMatchObject({ outcome: "uncertain" });
+    }
   });
 
   test("rejects HTTP rejection but treats server errors as uncertain", async () => {

@@ -5,6 +5,8 @@ export type CloudConvertJob = Readonly<{
   status: "waiting" | "processing" | "finished" | "error";
 }>;
 
+export type CloudConvertJobObservation = CloudConvertJob & Readonly<{ exportUrl: string | null }>;
+
 export class CloudConvertTransportError extends Error {
   constructor(
     readonly outcome: "rejected" | "uncertain",
@@ -21,7 +23,8 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,191}$/u;
 const TAG = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/u;
 
 function parseJob(value: unknown): CloudConvertJob {
-  if (typeof value !== "object" || value === null) throw new Error("invalid job");
+  if (typeof value !== "object" || value === null)
+    throw new CloudConvertTransportError("uncertain");
   const job = value as Record<string, unknown>;
   if (
     typeof job.id !== "string" ||
@@ -30,13 +33,53 @@ function parseJob(value: unknown): CloudConvertJob {
     !TAG.test(job.tag) ||
     !["waiting", "processing", "finished", "error"].includes(String(job.status))
   ) {
-    throw new Error("invalid job");
+    throw new CloudConvertTransportError("uncertain");
   }
   return {
     id: job.id,
     tag: job.tag,
     status: job.status as CloudConvertJob["status"],
   };
+}
+
+function parseObservation(value: unknown): CloudConvertJobObservation {
+  const job = parseJob(value);
+  if (job.status !== "finished") return { ...job, exportUrl: null };
+  const tasks = record(value).tasks;
+  if (!Array.isArray(tasks)) throw new CloudConvertTransportError("uncertain");
+  const exports = tasks.filter(
+    (task) =>
+      typeof task === "object" &&
+      task !== null &&
+      (task as Record<string, unknown>).name === "export-master",
+  );
+  if (exports.length !== 1) throw new CloudConvertTransportError("uncertain");
+  const task = record(exports[0]);
+  if (task.operation !== "export/url" || task.status !== "finished")
+    throw new CloudConvertTransportError("uncertain");
+  const files = record(task.result).files;
+  if (!Array.isArray(files) || files.length !== 1)
+    throw new CloudConvertTransportError("uncertain");
+  const file = record(files[0]);
+  if (file.filename !== "master.mp4" || typeof file.url !== "string")
+    throw new CloudConvertTransportError("uncertain");
+  let url: URL;
+  try {
+    url = new URL(file.url);
+  } catch {
+    throw new CloudConvertTransportError("uncertain");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "storage.cloudconvert.com" ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== ""
+  ) {
+    throw new CloudConvertTransportError("uncertain");
+  }
+  return { ...job, exportUrl: file.url };
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -72,7 +115,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("invalid provider response");
+    throw new CloudConvertTransportError("uncertain");
   return value as Record<string, unknown>;
 }
 
@@ -133,6 +176,7 @@ export function makeSongVideoCloudConvertTransport(
       if (created.tag !== job.tag) throw new CloudConvertTransportError("uncertain");
       return created;
     },
+    /** Null is inconclusive and must never authorize another create request. */
     async findByTag(tag: string): Promise<CloudConvertJob | null> {
       if (!TAG.test(tag)) throw new TypeError("invalid CloudConvert job tag");
       // A bounded page size and a hard page cap prevent a malformed provider
@@ -157,9 +201,9 @@ export function makeSongVideoCloudConvertTransport(
       }
       throw new CloudConvertTransportError("uncertain");
     },
-    async show(id: string): Promise<CloudConvertJob> {
+    async show(id: string): Promise<CloudConvertJobObservation> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
-      return parseJob(record(await request(`/jobs/${id}`, "GET")).data);
+      return parseObservation(record(await request(`/jobs/${id}`, "GET")).data);
     },
     async remove(id: string): Promise<void> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
