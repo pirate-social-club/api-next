@@ -42,7 +42,7 @@ function parseJob(value: unknown): CloudConvertJob {
   };
 }
 
-function parseObservation(value: unknown): CloudConvertJobObservation {
+function parseObservation(value: unknown, exportKind: "video" | "pcm"): CloudConvertJobObservation {
   const job = parseJob(value);
   if (job.status !== "finished") return { ...job, exportUrl: null };
   const tasks = record(value).tasks;
@@ -51,7 +51,8 @@ function parseObservation(value: unknown): CloudConvertJobObservation {
     (task) =>
       typeof task === "object" &&
       task !== null &&
-      (task as Record<string, unknown>).name === "export-master",
+      (task as Record<string, unknown>).name ===
+        (exportKind === "pcm" ? "export-pcm" : "export-master"),
   );
   if (exports.length !== 1) throw new CloudConvertTransportError("uncertain");
   const task = record(exports[0]);
@@ -61,7 +62,10 @@ function parseObservation(value: unknown): CloudConvertJobObservation {
   if (!Array.isArray(files) || files.length !== 1)
     throw new CloudConvertTransportError("uncertain");
   const file = record(files[0]);
-  if (file.filename !== "master.mp4" || typeof file.url !== "string")
+  if (
+    file.filename !== (exportKind === "pcm" ? "song.pcm" : "master.mp4") ||
+    typeof file.url !== "string"
+  )
     throw new CloudConvertTransportError("uncertain");
   let url: URL;
   try {
@@ -125,6 +129,7 @@ export function makeSongVideoCloudConvertTransport(
     apiKey: string;
     deadlineMs?: number;
     now?: () => number;
+    exportKind?: "video" | "pcm";
     fetch: (url: string, init: RequestInit) => Promise<Response>;
   }>,
 ) {
@@ -215,7 +220,10 @@ export function makeSongVideoCloudConvertTransport(
     },
     async show(id: string): Promise<CloudConvertJobObservation> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
-      return parseObservation(record(await request(`/jobs/${id}`, "GET")).data);
+      return parseObservation(
+        record(await request(`/jobs/${id}`, "GET")).data,
+        input.exportKind ?? "video",
+      );
     },
     async remove(id: string): Promise<void> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");

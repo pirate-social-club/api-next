@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
+  readStoredSongVideoPcm,
   SONG_VIDEO_PCM_MAX_BYTES,
   SONG_VIDEO_PCM_MAX_SAMPLES,
   transferSongVideoPcm,
@@ -38,6 +39,46 @@ const input = (value: Response) => ({
 });
 
 describe("whole-song PCM streaming in workerd", () => {
+  it("recovers a completed write by streaming the same immutable object", async () => {
+    const request = input(response(192_000));
+    const written = await transferSongVideoPcm(request);
+    expect(await readStoredSongVideoPcm(request)).toEqual(written);
+  });
+
+  it("returns pending for a missing recovery object", async () => {
+    expect(await readStoredSongVideoPcm(input(response(8)))).toBeNull();
+  });
+
+  it("refuses a recovery object bound to another source or recipe", async () => {
+    const request = input(response(8));
+    await transferSongVideoPcm(request);
+    await expect(
+      readStoredSongVideoPcm({
+        ...request,
+        canonicalAudioSha256: "b".repeat(64),
+      }),
+    ).rejects.toThrow("song PCM recovery identity refused");
+    await expect(
+      readStoredSongVideoPcm({
+        ...request,
+        decoderRecipe: "another-decoder",
+      }),
+    ).rejects.toThrow("song PCM recovery identity refused");
+  });
+
+  it("bounds a stalled recovery head by the deadline", async () => {
+    const request = input(response(8));
+    await expect(
+      readStoredSongVideoPcm({
+        ...request,
+        deadlineMs: Date.now() + 50,
+        bucket: {
+          head: () => new Promise<R2Object | null>(() => {}),
+          get: bucket.get.bind(bucket),
+        },
+      }),
+    ).rejects.toThrow("song PCM recovery expired");
+  });
   it("streams four minutes into R2 and verifies the complete readback", async () => {
     const request = input(response(SONG_VIDEO_PCM_MAX_BYTES));
     const result = await transferSongVideoPcm(request);
@@ -95,5 +136,19 @@ describe("whole-song PCM streaming in workerd", () => {
     await bucket.put(request.objectKey, new Uint8Array([1, 2, 3, 4]));
     await expect(transferSongVideoPcm(request)).rejects.toThrow();
     expect((await bucket.head(request.objectKey))?.size).toBe(4);
+  });
+
+  it("refuses a readback request that never returns before its deadline", async () => {
+    const request = {
+      ...input(response(8)),
+      deadlineMs: Date.now() + 100,
+      bucket: {
+        put: bucket.put.bind(bucket),
+        get: () => new Promise<R2ObjectBody | null>(() => {}),
+      },
+    };
+    await expect(transferSongVideoPcm(request)).rejects.toThrow(
+      "song PCM transfer deadline expired",
+    );
   });
 });

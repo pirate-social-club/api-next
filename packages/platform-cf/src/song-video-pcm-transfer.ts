@@ -49,7 +49,7 @@ function beforeAbort<A>(operation: Promise<A>, signal: AbortSignal): Promise<A> 
 export async function transferSongVideoPcm(
   input: Readonly<{
     response: Response;
-    bucket: R2Bucket;
+    bucket: Pick<R2Bucket, "put" | "get">;
     objectKey: string;
     canonicalAudioSha256: string;
     decoderRecipe: string;
@@ -127,9 +127,16 @@ export async function transferSongVideoPcm(
     );
     if (object.size !== byteLength || object.version.length === 0 || object.etag.length === 0)
       throw new Error("song PCM output identity refused");
-    const reread = await input.bucket.get(input.objectKey, {
+    const readbackRequest = input.bucket.get(input.objectKey, {
       onlyIf: { etagMatches: object.etag },
     });
+    void readbackRequest
+      .then((late) => {
+        if (controller.signal.aborted && late !== null && "body" in late)
+          void late.body.cancel().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    const reread = await beforeAbort(readbackRequest, controller.signal);
     if (reread === null || !("body" in reread)) throw new Error("song PCM readback unavailable");
     if (
       reread.version !== object.version ||
@@ -158,6 +165,72 @@ export async function transferSongVideoPcm(
       pcmSha256,
       byteLength,
       durationSamples: byteLength / 4,
+      decoderRecipe: input.decoderRecipe,
+    };
+  } catch (error) {
+    controller.abort(error);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Recover a completed immutable write after a lost admission acknowledgement. */
+export async function readStoredSongVideoPcm(
+  input: Readonly<{
+    bucket: Pick<R2Bucket, "head" | "get">;
+    objectKey: string;
+    canonicalAudioSha256: string;
+    decoderRecipe: string;
+    deadlineMs: number;
+  }>,
+) {
+  const controller = new AbortController();
+  const remaining = input.deadlineMs - Date.now();
+  if (remaining <= 0) throw new Error("song PCM recovery expired");
+  const timer = setTimeout(
+    () => controller.abort(new Error("song PCM recovery expired")),
+    remaining,
+  );
+  try {
+    const head = await beforeAbort(input.bucket.head(input.objectKey), controller.signal);
+    if (head === null) return null;
+    if (
+      head.size < 4 ||
+      head.size > SONG_VIDEO_PCM_MAX_BYTES ||
+      head.size % 4 !== 0 ||
+      head.customMetadata?.canonicalAudioSha256 !== input.canonicalAudioSha256 ||
+      head.customMetadata?.decoderRecipe !== input.decoderRecipe
+    )
+      throw new Error("song PCM recovery identity refused");
+    const get = input.bucket.get(input.objectKey, { onlyIf: { etagMatches: head.etag } });
+    void get
+      .then((late) => {
+        if (controller.signal.aborted && late !== null && "body" in late)
+          void late.body.cancel().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    const object = await beforeAbort(get, controller.signal);
+    if (object === null || !("body" in object)) throw new Error("song PCM recovery unavailable");
+    if (object.version !== head.version || object.etag !== head.etag || object.size !== head.size) {
+      await object.body.cancel();
+      throw new Error("song PCM recovery changed");
+    }
+    const digest = streamingDigest();
+    const read = object.body
+      .pipeThrough(countedStream(head.size, Date.now, input.deadlineMs))
+      .pipeTo(digest, { signal: controller.signal });
+    const [, pcmSha256] = await beforeAbort(
+      Promise.all([read, digest.digest.then(hex)]),
+      controller.signal,
+    );
+    return {
+      objectKey: input.objectKey,
+      objectVersion: head.version,
+      objectEtag: head.etag,
+      pcmSha256,
+      byteLength: head.size,
+      durationSamples: head.size / 4,
       decoderRecipe: input.decoderRecipe,
     };
   } catch (error) {
