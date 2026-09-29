@@ -7,6 +7,7 @@ import {
 import { Effect } from "effect";
 import {
   type MegapotRewardsRuntime,
+  megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
   resolveGasTopupRuntime,
@@ -62,6 +63,7 @@ describe("Megapot rewards scheduled cycle", () => {
       {
         reconciled: 1,
         observed: 1,
+        drawingObservationFailed: false,
         frozen: 0,
         committed: 0,
         purchased: 0,
@@ -130,6 +132,7 @@ describe("Megapot rewards scheduled cycle", () => {
         {
           reconciled: 0,
           observed: 0,
+          drawingObservationFailed: false,
           frozen: 0,
           committed: 0,
           purchased: 0,
@@ -168,6 +171,7 @@ describe("Megapot rewards scheduled cycle", () => {
         {
           reconciled: 0,
           observed: 0,
+          drawingObservationFailed: false,
           frozen: 0,
           committed: 0,
           purchased: 0,
@@ -233,6 +237,7 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(result).toMatchObject({
       reconciled: 1,
       observed: 1,
+      drawingObservationFailed: false,
       frozen: 1,
       committed: 1,
       purchased: 1,
@@ -539,5 +544,99 @@ describe("Megapot rewards scheduled cycle", () => {
       _tag: "MegapotDrawingObservationRejected",
       reason: "deployment-attestation-mismatch",
     });
+  });
+
+  test("continues owed work when the new drawing is malformed or unobservable", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          observeDrawing: () =>
+            Effect.sync(() => calls.push("observe-drawing")).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new MegapotDrawingObservationRejected({
+                    reason: "deployment-attestation-mismatch",
+                  }),
+                ),
+              ),
+            ),
+        },
+      }),
+    );
+
+    expect(result.observed).toBe(0);
+    expect(result.drawingObservationFailed).toBe(true);
+    expect(result.failures).toContain("MegapotDrawingObservationRejected");
+    expect(calls).toContain("reconcile");
+    expect(calls).toContain("observe-solvency");
+    expect(calls).toContain("close-expired");
+    expect(calls).toContain("refund");
+    expect(calls).toContain("payout");
+    expect(result.refunded).toBe(1);
+    expect(result.paid).toBe(1);
+    expect(
+      megapotRewardsDrawingObservationAlert({
+        drawingObservationFailed: result.drawingObservationFailed,
+      }),
+    ).toMatchObject({ key: "megapot-rewards:drawing-observation-failed" });
+  });
+
+  test("does not flag drawing observation when the rollover rejection closed a drawing", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          observeDrawing: () =>
+            observeMegapotDrawingForCycle(
+              Effect.sync(() => calls.push("observe-drawing")).pipe(
+                Effect.andThen(
+                  Effect.fail(new MegapotDrawingObservationRejected({ reason: "drawing-closed" })),
+                ),
+              ),
+            ),
+        },
+      }),
+    );
+
+    expect(result.drawingObservationFailed).toBe(false);
+    expect(result.failures).not.toContain("MegapotDrawingObservationRejected");
+    expect(megapotRewardsDrawingObservationAlert(result)).toBeNull();
+  });
+
+  test("records a solvency observation failure without stopping the cycle", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    let invocations = 0;
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          observeSolvency: () =>
+            Effect.sync(() => {
+              calls.push("observe-solvency");
+              invocations += 1;
+            }).pipe(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  invocations === 1
+                    ? Effect.fail(new Error("solvency rpc unavailable"))
+                    : Effect.void,
+                ),
+              ),
+            ),
+        },
+      }),
+    );
+
+    expect(result.drawingObservationFailed).toBe(false);
+    expect(result.failures).toContain("MegapotRewardsCycleExpectedFailure");
+    expect(result.paid).toBe(1);
+    expect(result.refunded).toBe(1);
+    expect(calls).toContain("close-expired");
   });
 });

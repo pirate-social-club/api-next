@@ -91,6 +91,7 @@ export function resolveGasTopupRuntime(input: {
 export type MegapotRewardsCycleSummary = Readonly<{
   reconciled: number;
   observed: number;
+  drawingObservationFailed: boolean;
   frozen: number;
   committed: number;
   purchased: number;
@@ -155,6 +156,17 @@ const AGED_PENDING_ALERT_COPY: Readonly<
     body: "Terminal reward legs retained refundable balances beyond the grace period.",
   },
 };
+
+export function megapotRewardsDrawingObservationAlert(
+  summary: Pick<MegapotRewardsCycleSummary, "drawingObservationFailed">,
+): Alert | null {
+  if (!summary.drawingObservationFailed) return null;
+  return {
+    key: "megapot-rewards:drawing-observation-failed",
+    severity: "high",
+    body: "New drawing observation failed; reconciliation of existing obligations continued without new drawings.",
+  };
+}
 
 function agedPendingCount(
   pending: readonly MegapotAgedPending[],
@@ -314,8 +326,34 @@ export function runMegapotRewardsCycle(input: {
     const [reconcileFailures, reconciled] = yield* partition(pending, input.runtime.reconcile);
     recordFailures(reconcileFailures);
 
-    const drawingObserved = yield* input.runtime.observeDrawing();
-    yield* input.runtime.observeSolvency();
+    // A malformed, uninitialized or unobservable new drawing must not stop
+    // reconciliation of already-created obligations: held credits never
+    // expire, and expiry, refunds and payouts only depend on their own
+    // custody and solvency gates, which every later step re-validates. The
+    // failure is recorded for the summary and alerts instead.
+    const drawingObservation = yield* input.runtime.observeDrawing().pipe(
+      Effect.map(
+        (observed): Readonly<{ observed: boolean; failure: unknown }> => ({
+          observed,
+          failure: null,
+        }),
+      ),
+      Effect.catch(
+        (failure): Effect.Effect<Readonly<{ observed: boolean; failure: unknown }>, never> =>
+          Effect.succeed({ observed: false, failure }),
+      ),
+    );
+    if (drawingObservation.failure !== null) {
+      recordFailures([drawingObservation.failure]);
+    }
+    const drawingObserved = drawingObservation.observed;
+    const solvencyFailure = yield* input.runtime.observeSolvency().pipe(
+      Effect.as(null),
+      Effect.catch((failure: unknown) => Effect.succeed(failure)),
+    );
+    if (solvencyFailure !== null) {
+      recordFailures([solvencyFailure]);
+    }
     const frozen = yield* input.runtime.freezeDue(limit);
 
     const frozenDrawings = yield* input.work.loadDrawings({
@@ -405,6 +443,7 @@ export function runMegapotRewardsCycle(input: {
     return {
       reconciled: reconciled.length,
       observed: drawingObserved ? 1 : 0,
+      drawingObservationFailed: drawingObservation.failure !== null,
       frozen: frozen.length,
       committed: committed.length,
       purchased: purchaseResults.filter(Boolean).length,
