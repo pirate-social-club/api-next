@@ -6,6 +6,7 @@ export class RewardRefundStorageFailed extends Data.TaggedError("RewardRefundSto
 
 export class RewardRefundRejected extends Data.TaggedError("RewardRefundRejected")<{
   readonly reason:
+    | "attestation-lineage-missing"
     | "contribution-not-refundable"
     | "effect-conflict"
     | "not-found"

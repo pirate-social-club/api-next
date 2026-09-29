@@ -35,6 +35,7 @@ export const freshSchemaPostgresTestSuites = [
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
   "packages/platform-cf/src/reward-claim-verification-intent.pg.test.ts",
+  "packages/platform-cf/src/reward-attestation-pinning.pg.test.ts",
   "packages/platform-cf/src/reward-gas-topup.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send.pg.test.ts",
   "packages/platform-cf/src/wallet-sponsored-send.pg.test.ts",

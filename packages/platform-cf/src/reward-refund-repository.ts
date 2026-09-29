@@ -102,8 +102,8 @@ const CANDIDATE_SELECT = `
     SELECT funding.funding_effect_id, funding.leg_id, funding.funder_account_id,
            funding.sender_address AS destination_address,
            funding.confirmed_amount_atomic AS pro_rata_numerator_atomic,
-           leg.funded_atomic AS pro_rata_denominator_atomic,
-           leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic AS refundable_total,
+            leg.funded_atomic AS pro_rata_denominator_atomic,
+            leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic AS refundable_total,
            floor(
              (leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic)
                * funding.confirmed_amount_atomic / leg.funded_atomic
@@ -112,7 +112,7 @@ const CANDIDATE_SELECT = `
              (leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic)
                * funding.confirmed_amount_atomic, leg.funded_atomic
            ) AS remainder_value,
-           leg.attestation_id, leg.chain_id, leg.token_address
+            leg.attestation_id, leg.chain_id, leg.token_address, leg.kind AS leg_kind
       FROM song_reward_leg_funding_effects funding
       JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
       JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
@@ -127,39 +127,63 @@ const CANDIDATE_SELECT = `
            row_number() OVER (
              PARTITION BY basis.leg_id
              ORDER BY basis.remainder_value DESC, basis.funding_effect_id
-           ) AS remainder_rank,
-           sum(basis.base_amount) OVER (PARTITION BY basis.leg_id) AS base_total
-      FROM allocation_basis basis
-  )
-  SELECT allocation.funding_effect_id, allocation.leg_id,
-         allocation.funder_account_id, allocation.destination_address,
-         allocation.pro_rata_numerator_atomic, allocation.pro_rata_denominator_atomic,
-         allocation.base_amount + CASE
-           WHEN allocation.remainder_rank <= allocation.refundable_total-allocation.base_total
-           THEN 1 ELSE 0 END AS amount_atomic,
-         observation.observation_id AS solvency_observation_id,
-         observation.balance_atomic AS custody_balance_before_atomic,
-         observation.expires_at AS solvency_expires_at, observation.solvent,
-         allocation.token_address,
-         attestation.attestation_id, attestation.environment, attestation.chain_id,
-         attestation.usdc_address, attestation.custody_address,
-         attestation.jackpot_address, attestation.ticket_nft_address,
-         attestation.referrer_address, attestation.jackpot_code_hash,
-         attestation.usdc_code_hash, attestation.ticket_nft_code_hash
-    FROM allocations allocation
-    JOIN reward_asset_whitelist asset
-      ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
-    JOIN megapot_deployment_attestations attestation
-      ON attestation.chain_id=allocation.chain_id
-     AND attestation.environment=asset.environment
-     AND attestation.status='active'
-    LEFT JOIN LATERAL (
-      SELECT observation_id, balance_atomic, expires_at, solvent
-        FROM custody_solvency_observations
-       WHERE attestation_id=attestation.attestation_id
-         AND token_address=allocation.token_address
-       ORDER BY block_number DESC, observation_id DESC LIMIT 1
-    ) observation ON true`;
+            ) AS remainder_rank,
+            sum(basis.base_amount) OVER (PARTITION BY basis.leg_id) AS base_total
+       FROM allocation_basis basis
+   )
+    SELECT allocation.funding_effect_id, allocation.leg_id,
+           allocation.funder_account_id, allocation.destination_address,
+           allocation.pro_rata_numerator_atomic, allocation.pro_rata_denominator_atomic,
+           allocation.base_amount + CASE
+             WHEN allocation.remainder_rank <= allocation.refundable_total-allocation.base_total
+             THEN 1 ELSE 0 END AS amount_atomic,
+           observation.observation_id AS solvency_observation_id,
+           observation.balance_atomic AS custody_balance_before_atomic,
+           observation.expires_at AS solvency_expires_at, observation.solvent,
+           allocation.token_address,
+           attestation.attestation_id, attestation.environment, attestation.chain_id,
+           attestation.usdc_address, attestation.custody_address,
+           attestation.jackpot_address, attestation.ticket_nft_address,
+           attestation.referrer_address, attestation.jackpot_code_hash,
+           attestation.usdc_code_hash, attestation.ticket_nft_code_hash
+      FROM allocations allocation
+      JOIN reward_asset_whitelist asset
+        ON asset.chain_id=allocation.chain_id AND asset.token_address=allocation.token_address
+      JOIN megapot_deployment_attestations attestation
+        ON attestation.environment=asset.environment
+       AND attestation.chain_id=allocation.chain_id
+       AND (
+             (allocation.leg_kind='megapot_pool'
+              AND allocation.attestation_id IS NOT NULL
+              AND attestation.attestation_id=allocation.attestation_id
+              AND attestation.usdc_address=allocation.token_address)
+          OR (allocation.leg_kind='asset_bonus'
+              AND attestation.custody_address IN (
+                   SELECT funding2.recipient_address
+                     FROM song_reward_leg_funding_effects funding2
+                    WHERE funding2.leg_id=allocation.leg_id
+                      AND funding2.state='confirmed'
+                 )
+              AND attestation.verified_at <= (
+                   SELECT min(funding2.created_at)
+                     FROM song_reward_leg_funding_effects funding2
+                    WHERE funding2.leg_id=allocation.leg_id
+                      AND funding2.state='confirmed'
+                 )
+              AND (attestation.retired_at IS NULL OR attestation.retired_at >= (
+                   SELECT max(funding2.created_at)
+                     FROM song_reward_leg_funding_effects funding2
+                    WHERE funding2.leg_id=allocation.leg_id
+                      AND funding2.state='confirmed'
+                 )))
+           )
+     LEFT JOIN LATERAL (
+       SELECT observation_id, balance_atomic, expires_at, solvent
+         FROM custody_solvency_observations
+        WHERE attestation_id=attestation.attestation_id
+          AND token_address=allocation.token_address
+        ORDER BY block_number DESC, observation_id DESC LIMIT 1
+     ) observation ON true`;
 
 function candidateFromRow(row: Row): RewardRefundCandidate {
   const environment = text(row, "environment");
@@ -232,13 +256,45 @@ function loadCandidateIn(
     if (result.rows.length === 0) {
       const exists = yield* transaction.execute<Row>({
         label: "reward-refund.contribution-exists.read",
-        text: "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id=$1",
+        text: `SELECT funding.state, leg.kind AS leg_kind, leg.attestation_id,
+                      EXISTS (
+                        SELECT 1 FROM megapot_deployment_attestations pin
+                         WHERE pin.custody_address IN (
+                              SELECT funding2.recipient_address
+                                FROM song_reward_leg_funding_effects funding2
+                               WHERE funding2.leg_id=leg.leg_id
+                                 AND funding2.state='confirmed'
+                            )
+                           AND pin.verified_at <= (
+                              SELECT min(funding2.created_at)
+                                FROM song_reward_leg_funding_effects funding2
+                               WHERE funding2.leg_id=leg.leg_id
+                                 AND funding2.state='confirmed'
+                            )
+                           AND (pin.retired_at IS NULL OR pin.retired_at >= (
+                              SELECT max(funding2.created_at)
+                                FROM song_reward_leg_funding_effects funding2
+                               WHERE funding2.leg_id=leg.leg_id
+                                 AND funding2.state='confirmed'
+                            ))
+                      ) AS bonus_lineage_resolves
+                 FROM song_reward_leg_funding_effects funding
+                 JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+                WHERE funding.funding_effect_id=$1`,
         values: [input.fundingEffectId],
         readonly: true,
       });
-      return yield* rejected(
-        exists.rows.length === 0 ? "not-found" : "contribution-not-refundable",
-      );
+      if (exists.rows.length === 0) return yield* rejected("not-found");
+      if (exists.rows.length !== 1) return yield* storage("invalid-row");
+      const existing = exists.rows[0] as Row;
+      if (
+        (text(existing, "leg_kind") === "megapot_pool" &&
+          nullableText(existing, "attestation_id") === null) ||
+        (text(existing, "leg_kind") === "asset_bonus" && !bool(existing, "bonus_lineage_resolves"))
+      ) {
+        return yield* rejected("attestation-lineage-missing");
+      }
+      return yield* rejected("contribution-not-refundable");
     }
     if (result.rows.length !== 1) return yield* storage("invalid-row");
     const row = result.rows[0] as Row;

@@ -132,7 +132,7 @@ function loadCandidateIn(
                 AND sweep.state='complete' AND sweep_evidence.tier_id NOT IN (0,2)
                 AND sweep_evidence.gross_winnings_atomic > 0
                 AND sweep_evidence.net_winnings_atomic > 0
-                AND ticket.status='custodied' AND attestation.status='active'
+                AND ticket.status='custodied'
               ${input.lock ? "FOR UPDATE OF drawing, ticket" : ""}`,
       values: [input.poolLegId, input.drawingId.toString()],
       readonly: !input.lock,
