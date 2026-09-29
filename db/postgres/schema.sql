@@ -12552,6 +12552,32 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_operations_control() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.paused AND NEW.revision=0
+     AND NEW.reason='environment_initially_paused' THEN RETURN NEW; END IF;
+  IF TG_OP <> 'UPDATE' OR NEW.singleton IS DISTINCT FROM OLD.singleton
+     OR NEW.revision <> OLD.revision+1 OR NEW.changed_at <= OLD.changed_at
+     OR NEW.paused = OLD.paused THEN
+    RAISE EXCEPTION 'invalid reward operations control transition' USING ERRCODE='PR002';
+  END IF;
+  INSERT INTO reward_operations_control_events(revision,paused,reason,operator_role,changed_at)
+  VALUES(NEW.revision,NEW.paused,NEW.reason,session_user,NEW.changed_at);
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_operations_control_event() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'reward operations control evidence is append-only';
+END
+$$;
+
 CREATE FUNCTION guard_reward_payout_effect() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12732,8 +12758,11 @@ END
 $$;
 
 CREATE FUNCTION guard_reward_signer_nonce() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
+DECLARE
+  operations_paused BOOLEAN;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'reward signer nonce fences cannot be deleted';
@@ -12745,6 +12774,12 @@ BEGIN
     OR NEW.observed_at < OLD.observed_at OR NEW.updated_at <= OLD.updated_at
   ) THEN
     RAISE EXCEPTION 'invalid reward signer nonce fence update';
+  END IF;
+  IF TG_OP = 'INSERT' OR NEW.next_nonce > OLD.next_nonce THEN
+    SELECT paused INTO operations_paused FROM reward_operations_control WHERE singleton FOR SHARE;
+    IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
+      RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+    END IF;
   END IF;
   RETURN NEW;
 END
@@ -20106,6 +20141,28 @@ BEGIN
   RETURN 'set';
 END;
 $_$;
+
+CREATE FUNCTION set_reward_operations_paused_v1(expected_revision bigint, requested_paused boolean, operator_reason text) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  control_record reward_operations_control%ROWTYPE;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR UPDATE;
+  IF NOT FOUND OR expected_revision IS NULL OR control_record.revision <> expected_revision
+     OR requested_paused IS NULL OR operator_reason IS NULL
+     OR octet_length(btrim(operator_reason)) NOT BETWEEN 1 AND 256 THEN
+    RAISE EXCEPTION 'reward operations control conflict' USING ERRCODE='PR002';
+  END IF;
+  IF control_record.paused = requested_paused THEN RETURN control_record.revision; END IF;
+  UPDATE reward_operations_control
+     SET paused=requested_paused, revision=revision+1, reason=btrim(operator_reason),
+         changed_at=clock_timestamp()
+   WHERE singleton;
+  RETURN control_record.revision+1;
+END
+$$;
 
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -34761,6 +34818,27 @@ CREATE TABLE reward_native_transfer_receipt_evidence (
     CONSTRAINT reward_native_transfer_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE reward_operations_control (
+    singleton boolean DEFAULT true NOT NULL,
+    paused boolean DEFAULT true NOT NULL,
+    revision bigint DEFAULT 0 NOT NULL,
+    reason text NOT NULL,
+    changed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_operations_control_reason_check CHECK (((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))),
+    CONSTRAINT reward_operations_control_revision_check CHECK ((revision >= 0)),
+    CONSTRAINT reward_operations_control_singleton_check CHECK (singleton)
+);
+
+CREATE TABLE reward_operations_control_events (
+    revision bigint NOT NULL,
+    paused boolean NOT NULL,
+    reason text NOT NULL,
+    operator_role text NOT NULL,
+    changed_at timestamp with time zone NOT NULL,
+    CONSTRAINT reward_operations_control_events_reason_check CHECK (((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))),
+    CONSTRAINT reward_operations_control_events_revision_check CHECK ((revision >= 0))
+);
+
 CREATE TABLE reward_payout_effects (
     payout_effect_id text NOT NULL,
     attestation_id text NOT NULL,
@@ -36663,6 +36741,10 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00');
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');
@@ -38934,6 +39016,12 @@ ALTER TABLE ONLY reward_ledger_credits
 ALTER TABLE ONLY reward_native_transfer_receipt_evidence
     ADD CONSTRAINT reward_native_transfer_receipt_evidence_pkey PRIMARY KEY (effect_id);
 
+ALTER TABLE ONLY reward_operations_control_events
+    ADD CONSTRAINT reward_operations_control_events_pkey PRIMARY KEY (revision);
+
+ALTER TABLE ONLY reward_operations_control
+    ADD CONSTRAINT reward_operations_control_pkey PRIMARY KEY (singleton);
+
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_credit_id_key UNIQUE (credit_id);
 
@@ -41085,11 +41173,15 @@ CREATE TRIGGER reward_native_transfer_receipt_evidence_append_only BEFORE DELETE
 
 CREATE TRIGGER reward_native_transfer_receipt_evidence_validate BEFORE INSERT ON reward_native_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION validate_reward_native_transfer_receipt_evidence();
 
+CREATE TRIGGER reward_operations_control_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_operations_control FOR EACH ROW EXECUTE FUNCTION guard_reward_operations_control();
+
+CREATE TRIGGER reward_operations_control_events_change_guard BEFORE DELETE OR UPDATE ON reward_operations_control_events FOR EACH ROW EXECUTE FUNCTION guard_reward_operations_control_event();
+
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
 CREATE TRIGGER reward_refund_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_refund_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_refund_effect();
 
-CREATE TRIGGER reward_signer_nonces_change_guard BEFORE DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
+CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 
 CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
