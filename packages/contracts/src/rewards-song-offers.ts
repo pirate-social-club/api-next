@@ -73,6 +73,7 @@ export const MegapotPoolLegStatusV1 = Schema.Literals([
   "operational_hold",
 ]);
 export const MegapotFundingStatusV1 = Schema.Literals([
+  "expired_unfunded",
   "planned",
   "confirming",
   "confirmed",

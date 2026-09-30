@@ -1,3 +1,60 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response GET /asset-bonus-legs/{legId}/funding/{fundingEffectId}: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "get_assetBonusLegsLegIdFundingFundingEffectId",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    },
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response GET /reward-offer-legs/{legId}/funding/{fundingEffectId}: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "get_rewardOfferLegsLegIdFundingFundingEffectId",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    },
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response POST /asset-bonus-legs/{legId}/funding/{fundingEffectId}/observations: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "post_assetBonusLegsLegIdFundingFundingEffectIdObservations",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    },
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response POST /reward-offer-legs/{legId}/funding/{fundingEffectId}/observations: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "post_rewardOfferLegsLegIdFundingFundingEffectIdObservations",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    },
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response POST /reward-offers/{offerId}/asset-bonus-legs status 201: enum value added: \"expired_unfunded\"",
+        "response POST /reward-offers/{offerId}/asset-bonus-legs: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "post_rewardOffersOfferIdAssetBonusLegs",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    },
+    {
+      "baselineSha": "781de7c238e6bb9e46c45e4a5b8b76d1f32353d4",
+      "expectedViolations": [
+        "response POST /reward-offers/{offerId}/megapot-pool-legs status 201: enum value added: \"expired_unfunded\"",
+        "response POST /reward-offers/{offerId}/megapot-pool-legs: enum value added: \"expired_unfunded\""
+      ],
+      "kind": "deprecation",
+      "operationId": "post_rewardOffersOfferIdMegapotPoolLegs",
+      "reason": "Owner-requested correction deprecates the false reverted response for an expired unbound funding instruction. Client 0.102.0 and the paired Solid release must handle expired_unfunded. Actual mined reverts and ambiguous hashes retain distinct semantics. No live API rollout before the paired consumer release. This exact baseline waiver covers only the new response enum value."
+    }
+  ]
 }
