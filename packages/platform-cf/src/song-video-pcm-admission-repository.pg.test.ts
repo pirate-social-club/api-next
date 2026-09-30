@@ -80,6 +80,132 @@ suite("automatic song timing and PCM admission", () => {
       (await client.query("SELECT enabled FROM media_song_video_pcm_admission_policy")).rows,
     ).toEqual([{ enabled: false }]);
   });
+  // Seed upstream publication facts with their unrelated causal triggers bypassed,
+  // while the admission trigger under test stays live in the same transaction.
+  async function publicationFixture(post: string, revision = 1) {
+    await client.query("SET session_replication_role=replica");
+    await client.query(
+      "ALTER TABLE media_publication_projections ENABLE ALWAYS TRIGGER media_publication_song_pcm_admission",
+    );
+    try {
+      await client.query("UPDATE media_song_video_pcm_admission_policy SET enabled=true");
+      await client.query(
+        `INSERT INTO media_publication_projections
+        (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,
+         audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,
+         audio_asset_ref,language_status,primary_language_bcp47,lyrics_explicitness,
+         alignment,data_registration,locked_delivery,author_persona_id,lyrics_status)
+        VALUES ($1,'crew','actor',$2,$3,1,$4,1,1,$5,'PCM fixture',
+          'media://immutable/source.mp3','ready','en','not_explicit','ready','registered',
+          'not_required','persona','no_lyrics')`,
+        [`submission-${post}`, `operation-${post}`, post, revision, sha],
+      );
+    } finally {
+      await client.query(
+        "ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_pcm_admission",
+      );
+      await client.query("SET session_replication_role=origin");
+    }
+  }
+
+  test("publication requests pending timing and PCM together, including rollback", async () => {
+    await client.query("BEGIN");
+    try {
+      await publicationFixture("rollback-publication");
+      expect(
+        (
+          await client.query(
+            "SELECT count(*)::int AS n FROM media_song_video_pcm_admissions WHERE song_post_id='rollback-publication'",
+          )
+        ).rows[0].n,
+      ).toBe(1);
+      expect(
+        (
+          await client.query(
+            "SELECT state FROM media_song_canonical_timings WHERE song_post_id='rollback-publication'",
+          )
+        ).rows,
+      ).toEqual([{ state: "pending" }]);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+    expect(
+      (
+        await client.query(
+          "SELECT count(*)::int AS n FROM media_song_video_pcm_admissions WHERE song_post_id='rollback-publication'",
+        )
+      ).rows[0].n,
+    ).toBe(0);
+    expect(
+      (
+        await client.query(
+          "SELECT count(*)::int AS n FROM media_song_canonical_timings WHERE song_post_id='rollback-publication'",
+        )
+      ).rows[0].n,
+    ).toBe(0);
+  });
+
+  test("repository admission commits exact timing and PCM for a current publication", async () => {
+    await publicationFixture("repository-atomic");
+    const id = (
+      await client.query(
+        "SELECT admission_id FROM media_song_video_pcm_admissions WHERE song_post_id='repository-atomic'",
+      )
+    ).rows[0].admission_id as string;
+    const claim = required(await repository.claim(id, "worker"));
+    const started = required(await repository.beginCreate(claim));
+    await repository.attachJob(started, "job-repository-atomic");
+    await repository.admit(started, {
+      objectKey: songPcmOutputKey(id),
+      objectVersion: "version",
+      objectEtag: "etag",
+      pcmSha256: "b".repeat(64),
+      byteLength: 1_920_000,
+      durationSamples: 480_000,
+      decoderRecipe: SONG_VIDEO_PCM_DECODER_RECIPE,
+    });
+    const admitted = required(await repository.get(id));
+    expect(admitted.state).toBe("admitted");
+    await repository.cleaned(admitted);
+    expect(
+      (
+        await client.query(`SELECT t.state,t.duration_samples::int,r.pcm_byte_length::int
+      FROM media_song_canonical_timings t JOIN media_song_video_pcm_references r
+      USING(song_post_id,audio_revision,canonical_audio_sha256,duration_samples)
+      WHERE t.song_post_id='repository-atomic'`)
+      ).rows,
+    ).toEqual([{ state: "ready", duration_samples: 480_000, pcm_byte_length: 1_920_000 }]);
+    await client.query("SET session_replication_role=replica");
+    await client.query(
+      "ALTER TABLE media_publication_projections ENABLE ALWAYS TRIGGER media_publication_song_pcm_admission",
+    );
+    try {
+      await client.query(
+        "UPDATE media_publication_projections SET audio_revision=2,canonical_audio_sha256=$1 WHERE post_id='repository-atomic'",
+        ["c".repeat(64)],
+      );
+    } finally {
+      await client.query(
+        "ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_pcm_admission",
+      );
+      await client.query("SET session_replication_role=origin");
+    }
+    expect(
+      (
+        await client.query(`SELECT count(*)::int AS n FROM media_publication_projections p
+      JOIN media_song_video_pcm_references r ON r.song_post_id=p.post_id
+       AND r.audio_revision=p.audio_revision AND r.canonical_audio_sha256=p.canonical_audio_sha256
+      WHERE p.post_id='repository-atomic'`)
+      ).rows[0].n,
+    ).toBe(0);
+    expect(
+      (
+        await client.query(
+          "SELECT state FROM media_song_canonical_timings WHERE song_post_id='repository-atomic' AND audio_revision=2",
+        )
+      ).rows,
+    ).toEqual([{ state: "pending" }]);
+  });
   test("a timing cannot become ready before its PCM and admission commit", async () => {
     await pending("alone");
     await expect(timing("alone")).rejects.toThrow("admitted atomically");
@@ -167,7 +293,7 @@ suite("automatic song timing and PCM admission", () => {
       "UPDATE media_song_video_pcm_admissions SET state='reconciliation',failure_code='fixture_expired' WHERE state='processing'",
     );
     await client.query(
-      "UPDATE media_song_video_pcm_admissions SET cleanup_completed_at=clock_timestamp() WHERE provider_create_started_at IS NOT NULL",
+      "UPDATE media_song_video_pcm_admissions SET cleanup_completed_at=clock_timestamp() WHERE provider_create_started_at IS NOT NULL AND cleanup_completed_at IS NULL",
     );
     const id = await pending("once");
     const a = required(await repository.claim(id, "worker"));
