@@ -22,12 +22,24 @@ an admission cut-over, not evidence that no more transactions can be sent.
 The jobs summary reports paused_hold_count separately from failure_count.
 Database outages remain failures rather than deliberate holds.
 
-HTTP refuses new offers, new legs and unbroadcast funding instructions. Its
-successful control reads expire five seconds after the read starts. An expired
-running value is never used after an error. Recorded funding observations and
-receipt status remain accessible, as do balances, held credits and claim status.
-Instructions already delivered to a browser cannot be recalled; a sponsor may
-still broadcast them. Observing that transfer must remain possible.
+Migration 0231 enforces new offer, leg and funding-effect INSERTs inside the
+database with the same control-row share lock. Both Megapot and asset-bonus
+creation refuse SQLSTATE PR001 after a committed pause. Their repositories map
+that refusal to HTTP 503 rewards_paused. The HTTP control read has a five-second
+local lifetime and improves error reporting; it is not admission authority.
+Production Hyperdrive can cache an older running read after a pause, but the
+creation write still executes the trigger against current database state.
+An unavailable control read remains provider_unavailable, distinct from a
+confirmed deliberate pause.
+
+Recorded funding observations and receipt updates continue while paused, as do
+balances, held credits and claim status. Insert guards do not revoke existing
+idempotent results or funding intents: instructions already delivered to a
+browser cannot be recalled, and the sponsor may still broadcast them. The
+funding store preserves exact replay and observes that transfer. HTTP creation
+and instruction reads may temporarily refuse those requests when their cached
+control read reports pause. This is not a promise that every instruction already
+issued has stopped being usable.
 
 User-owned persona-wallet transfers and their winner-send records remain
 outside this control. Privy Wallet sponsorship keeps its separate flag and
@@ -91,7 +103,13 @@ waits. A later queued reservation is refused after the first commits. Paused
 bookkeeping remains allowed. Missing control and forbidden runtime control
 writes fail closed. Existing production repository fixtures exercise pause
 holds for all six reservation paths, and an admitted gas top-up finishes while
-paused. The unsent drawing closure is exercised under pause.
+paused. The unsent drawing closure is exercised under pause. The refund test reserves
+a nonce, pauses, and runs the real retry coordinator through signing, submission
+and receipt validation against PostgreSQL, using isolated chain evidence. It
+confirms without advancing the nonce fence; a fresh reservation is refused.
+Full-schema HTTP tests deliberately supply a stale running read and verify that
+creation still rolls back. The forward-migration test checks restricted function
+execution separately, because the test baseline intentionally omits ACLs.
 
 A staging rehearsal still needs separate release and operator authorization.
 Apply the migration with its owner, run both runtime-role preflights, and deploy
@@ -125,4 +143,11 @@ immutable references, primary URLs and reproduction steps are in
 [the contract verification evidence](../evidence/rewards-runtime-brake/README.md).
 The separate historical-winning-ticket probe did not find a successfully
 simulated unclaimed winner. No transaction was sent and no behavioural success
-is claimed. The live brake rehearsal remains open.
+is claimed. The shared staging rehearsal on 2026-09-30 proved pause with active funding,
+pause survival across a same-source redeploy, held refund and full refund after
+resume. It ended paused with both bindings off and nothing owed. The receipt
+confirmed before the attempted tail pause, so it did not prove an admitted send
+finishing while paused. No drawing was created and the Worker first receipt-read
+gate remains open. The production gate also requires migration 0231 and the
+remaining production approvals. The sanitized rehearsal record lives in the
+control-plane archive rewards-handoff-review-2026-09-30/STAGING-BRAKE-RESULTS.md.

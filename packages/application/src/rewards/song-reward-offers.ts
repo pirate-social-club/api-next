@@ -3,6 +3,7 @@ import { Data, Effect } from "effect";
 import { Clock, IdGen } from "../ports.ts";
 import { canonicalBodyHash } from "../use-cases/content/common.ts";
 import type { RewardFundingIntent } from "./reward-funding.ts";
+import type { RewardOperationsPaused } from "./reward-operations.ts";
 
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
@@ -15,6 +16,7 @@ export {
   RewardGasTopupStorageFailed,
   type RewardGasTopupView,
 } from "./reward-gas-topup.ts";
+export { RewardOperationsPaused } from "./reward-operations.ts";
 export type {
   PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,
@@ -55,7 +57,10 @@ export class SongRewardOfferRejected extends Data.TaggedError("SongRewardOfferRe
     | "song-unavailable";
 }> {}
 
-export type SongRewardOfferFailure = SongRewardOfferRejected | SongRewardOfferStorageFailed;
+export type SongRewardOfferFailure =
+  | SongRewardOfferRejected
+  | SongRewardOfferStorageFailed
+  | RewardOperationsPaused;
 
 export type SongRewardOffer = Readonly<{
   offerId: string;

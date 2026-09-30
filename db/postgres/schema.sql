@@ -12503,6 +12503,21 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_http_admission() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operations_paused BOOLEAN;
+BEGIN
+  SELECT paused INTO operations_paused FROM reward_operations_control
+   WHERE singleton FOR SHARE;
+  IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_ledger_credit() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -41162,6 +41177,12 @@ CREATE TRIGGER reward_erc20_transfer_receipt_guard BEFORE INSERT OR DELETE OR UP
 CREATE TRIGGER reward_gas_topup_wallets_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_gas_topup_wallets FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_wallet();
 
 CREATE TRIGGER reward_gas_topups_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_gas_topups FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup();
+
+CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_offers FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
 
 CREATE CONSTRAINT TRIGGER reward_ledger_credit_source_pair AFTER INSERT ON reward_ledger_credits DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_ledger_credit_source();
 

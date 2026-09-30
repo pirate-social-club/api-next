@@ -12,6 +12,7 @@ import {
 import { AdmittedRewardAssetV1 } from "@pirate/contracts";
 import { VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
+import { mapRewardAdmissionFailure } from "./reward-operations-control.ts";
 import {
   decodeCurrentRewardQualificationPolicies,
   decodeRewardQualificationPolicies,
@@ -580,6 +581,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
             ? rejected("offer-conflict")
             : error,
         ),
+        Effect.mapError(mapRewardAdmissionFailure),
         mapped,
       ),
 
@@ -780,7 +782,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
             return { leg: yield* readLeg(transaction, input.legId), replayed: false };
           }),
         );
-      }).pipe(mapped),
+      }).pipe(Effect.mapError(mapRewardAdmissionFailure), mapped),
 
     addAssetBonusLeg: (input: Parameters<SongRewardOfferStore["addAssetBonusLeg"]>[0]) =>
       Effect.gen(function* () {
@@ -943,7 +945,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
             return { leg: yield* readAssetLeg(transaction, input.legId), replayed: false };
           }),
         );
-      }).pipe(mapped),
+      }).pipe(Effect.mapError(mapRewardAdmissionFailure), mapped),
 
     recordFundingObservation: (
       input: Parameters<SongRewardOfferStore["recordFundingObservation"]>[0],

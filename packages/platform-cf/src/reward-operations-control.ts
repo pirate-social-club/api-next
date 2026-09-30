@@ -1,4 +1,9 @@
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  ControlPlaneStatementFailed,
+  RewardOperationsPaused,
+} from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
 /** A missing row never authorizes admission. SQL errors remain failures. */
@@ -14,3 +19,12 @@ export const makeRewardOperationsRunningReader =
       });
       return result.rows.length === 1 && result.rows[0]?.paused === false;
     }).pipe(Effect.provide(layer));
+
+/** Preserve a database admission refusal before a repository maps storage errors. */
+export function mapRewardAdmissionFailure<E>(
+  error: E | ControlPlaneError,
+): E | ControlPlaneError | RewardOperationsPaused {
+  return error instanceof ControlPlaneStatementFailed && error.sqlState === "PR001"
+    ? new RewardOperationsPaused({ reason: "paused" })
+    : error;
+}
