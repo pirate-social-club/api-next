@@ -157,6 +157,34 @@ const tokens = (
     .filter((token) => token.length > 0 && !ignoredEnglishRecallTokens.has(token));
 };
 
+const englishRecallWordForms = (value: string, expand: (value: string) => string): string[] =>
+  rawTokens(value, "en", expand).filter((word) => {
+    const token = normalizeEnglishRecallToken(word);
+    return token.length > 0 && !ignoredEnglishRecallTokens.has(token);
+  });
+
+// A provider may change whitespace without changing any letters. Align those
+// adjacent spans before counting omitted/inserted words. Never join across a
+// negation or number: their existing meaning-changing guard must still see them.
+const joinedTokenSpan = (words: readonly string[], end: number, target: string): number => {
+  const normalizedTarget = normalizeEnglishRecallToken(target);
+  if (isMeaningChangingStudyToken(normalizedTarget)) return 0;
+  let joined = "";
+  for (let start = end - 1; start >= 0; start -= 1) {
+    const word = words[start] as string;
+    if (isMeaningChangingStudyToken(normalizeEnglishRecallToken(word))) return 0;
+    joined = word + joined;
+    // Only normalize an ending after assembling the span: normalizing "news"
+    // first would lose the internal s in "news paper" → "newspaper".
+    // Recall normalization removes at most two letters from a word's ending.
+    if (joined.length > normalizedTarget.length + 2) return 0;
+    if (end - start > 1 && normalizeEnglishRecallToken(joined) === normalizedTarget) {
+      return end - start;
+    }
+  }
+  return 0;
+};
+
 export const gradeTranscriptV2 = (
   reference: string,
   heardTranscript: string,
@@ -165,9 +193,15 @@ export const gradeTranscriptV2 = (
 ): StudyTranscriptGradeV2 => {
   const v3 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3;
   const v4 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V4;
+  const english = dominantLanguage?.split("-", 1)[0] === "en";
+  const alignWordBoundaries = v4 && english;
   const expand = v4 ? expandEnglishContractionsV4 : expandEnglishContractions;
   let expected = tokens(reference, dominantLanguage, expand);
   let actual = tokens(heardTranscript, dominantLanguage, expand);
+  const expectedForms = alignWordBoundaries ? englishRecallWordForms(reference, expand) : expected;
+  const actualForms = alignWordBoundaries
+    ? englishRecallWordForms(heardTranscript, expand)
+    : actual;
   // Revision v3 refuses vacuous comparisons: when article and stopword
   // filtering empties both sides, compare the unfiltered segmentation so an
   // article-only line versus silence is incorrect while the same article on
@@ -210,6 +244,26 @@ export const gradeTranscriptV2 = (
               row[right - 1] ?? 0,
               distance[left - 1]?.[right - 1] ?? 0,
             );
+      if (alignWordBoundaries) {
+        const joinedExpected = joinedTokenSpan(
+          expectedForms,
+          left,
+          actualForms[right - 1] as string,
+        );
+        const joinedActual = joinedTokenSpan(actualForms, right, expectedForms[left - 1] as string);
+        if (joinedExpected > 0) {
+          row[right] = Math.min(
+            row[right] as number,
+            distance[left - joinedExpected]?.[right - 1] ?? 0,
+          );
+        }
+        if (joinedActual > 0) {
+          row[right] = Math.min(
+            row[right] as number,
+            distance[left - 1]?.[right - joinedActual] ?? 0,
+          );
+        }
+      }
     }
   }
   const matched: StudyTokenPositionV2[] = [];
@@ -219,6 +273,30 @@ export const gradeTranscriptV2 = (
   let left = expected.length;
   let right = actual.length;
   while (left > 0 || right > 0) {
+    if (alignWordBoundaries && left > 0 && right > 0) {
+      const joinedExpected = joinedTokenSpan(expectedForms, left, actualForms[right - 1] as string);
+      const joinedActual = joinedTokenSpan(actualForms, right, expectedForms[left - 1] as string);
+      if (
+        joinedExpected > 0 &&
+        distance[left]?.[right] === distance[left - joinedExpected]?.[right - 1]
+      ) {
+        for (let position = left - 1; position >= left - joinedExpected; position -= 1) {
+          matched.push({ token: expected[position] as string, position });
+        }
+        left -= joinedExpected;
+        right -= 1;
+        continue;
+      }
+      if (
+        joinedActual > 0 &&
+        distance[left]?.[right] === distance[left - 1]?.[right - joinedActual]
+      ) {
+        matched.push({ token: expected[left - 1] as string, position: left - 1 });
+        left -= 1;
+        right -= joinedActual;
+        continue;
+      }
+    }
     if (
       left > 0 &&
       right > 0 &&
@@ -252,7 +330,6 @@ export const gradeTranscriptV2 = (
   extra.reverse();
   substituted.reverse();
   const exact = missing.length === 0 && extra.length === 0 && substituted.length === 0;
-  const english = dominantLanguage?.split("-", 1)[0] === "en";
   // Revisions v3 and v4 refuse phonetic acceptance when a negation or
   // numeric token was substituted, inserted or dropped: those changes alter
   // what the line says, and the phonetic budget must never absorb them.
