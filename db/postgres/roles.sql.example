@@ -118,8 +118,10 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
--- Migration 0234 installs this for the provisioner executor, not the HTTP role.
--- If the executor role is created later, apply this reviewed grant explicitly.
+-- Migration 0234 installs this for production's separate provisioner executor.
+-- A shared staging runtime login also needs this function: grant to the login
+-- observed on the provisioner during the approved release and read back
+-- has_function_privilege. See docs/hns-provisional-ownership-repair.md.
 DO $safe_ownership_executor_grant$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hns_root_import_executor_login_v1') THEN

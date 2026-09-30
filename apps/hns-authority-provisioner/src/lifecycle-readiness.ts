@@ -16,6 +16,13 @@ export class HnsLifecycleReadinessContextError extends Error {
   }
 }
 
+export class HnsOwnershipPreparationPermissionError extends Error {
+  override readonly name = "HnsOwnershipPreparationPermissionError";
+  constructor() {
+    super("HNS ownership preparation permission denied");
+  }
+}
+
 /**
  * One leased lifecycle readiness observation.
  *
@@ -54,6 +61,7 @@ export type HnsOwnershipPreparationResultV1 =
   | "pending"
   | "revision_conflict"
   | "stale_proof"
+  | "lease_conflict"
   | "refused";
 
 export type HnsLifecycleReadinessPortsV1 = Readonly<{
@@ -132,8 +140,11 @@ export async function runHnsRootImportReadinessOnce(
   };
   let prepared: HnsOwnershipPreparationResultV1;
   try {
-    prepared = (await ports.prepare_ownership?.(job, executorId)) ?? "ready";
+    prepared = ports.prepare_ownership ? await ports.prepare_ownership(job, executorId) : "ready";
   } catch (error) {
+    if (error instanceof HnsOwnershipPreparationPermissionError) {
+      return finalizeFailure("failed", "readiness_ownership_permission_denied");
+    }
     const invalid =
       error instanceof HnsLifecycleReadinessContextError ||
       (error instanceof HnsProvisionalOwnershipError && error.code === "invalid_context");
@@ -142,10 +153,20 @@ export async function runHnsRootImportReadinessOnce(
     return finalizeFailure(outcome, reason);
   }
   if (prepared !== "ready") {
-    return finalizeFailure(
-      prepared === "refused" ? "failed" : "retry",
-      `readiness_ownership_${prepared}`,
-    );
+    switch (prepared) {
+      case "pending":
+      case "revision_conflict":
+      case "stale_proof":
+      case "lease_conflict":
+        return finalizeFailure("retry", `readiness_ownership_${prepared}`);
+      default:
+        return finalizeFailure(
+          "failed",
+          prepared === "refused"
+            ? "readiness_ownership_refused"
+            : "readiness_ownership_invalid_outcome",
+        );
+    }
   }
 
   let context: HnsLifecycleReadinessContextV1 | null;

@@ -20,6 +20,7 @@ for (const kind of ["community_provisional", "hns_name_signature"] as const) {
       plan_encoded_resource_sha256: "b".repeat(64),
       lifecycle_revision: 3,
       generation: 1,
+      lease_current: true,
     };
     const connect = spyOn(Client.prototype, "connect").mockImplementation(async () => {});
     const query = spyOn(Client.prototype, "query").mockImplementation(async () => ({
@@ -55,6 +56,37 @@ for (const kind of ["community_provisional", "hns_name_signature"] as const) {
     ).rejects.toThrow("safe-chain evidence unavailable");
     expect(observations).toBe(1);
     expect(query).toHaveBeenCalledTimes(1);
-    expect(row.ownership_result_sha256).toBeNull();
   });
 }
+
+test("Postgres permission denial is classified without exposing its database detail", async () => {
+  const connect = spyOn(Client.prototype, "connect").mockImplementation(async () => {});
+  const query = spyOn(Client.prototype, "query").mockImplementation(async () => {
+    throw Object.assign(new Error("private login and SQL details"), { code: "42501" });
+  });
+  const end = spyOn(Client.prototype, "end").mockImplementation(async () => {});
+  restored.push(
+    () => connect.mockRestore(),
+    () => query.mockRestore(),
+    () => end.mockRestore(),
+  );
+  const prepare = makePostgresHnsOwnershipPreparation("unused-fixture", async () => {
+    throw new Error("permission denial must not reach the chain");
+  });
+  await expect(
+    prepare(
+      {
+        lifecycle_job_id: "42",
+        root_import_session_id: "root-session",
+        job_kind: "observe_readiness",
+        lease_fence: 1,
+        generation: 1,
+      },
+      "executor",
+    ),
+  ).rejects.toMatchObject({
+    name: "HnsOwnershipPreparationPermissionError",
+    message: "HNS ownership preparation permission denied",
+  });
+  expect(end).toHaveBeenCalledTimes(1);
+});

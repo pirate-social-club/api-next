@@ -9,6 +9,73 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 }
 const suite = connectionString ? describe : describe.skip;
 
+suite("staging shared HNS runtime privileges", () => {
+  test("requires an explicit release grant to the shared runtime login", async () => {
+    const suffix = randomUUID().replaceAll("-", "");
+    const schema = `hns_staging_acl_${suffix}`;
+    const sharedRuntime = `hns_staging_runtime_${suffix}`;
+    const admin = new Client({ connectionString });
+    const warnings: string[] = [];
+    admin.on("notice", (notice) => {
+      if (notice.severity === "WARNING" && notice.message) warnings.push(notice.message);
+    });
+    await admin.connect();
+    await admin.query("BEGIN");
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      await admin.query(`SET LOCAL search_path TO ${schema}, pg_temp`);
+      await admin.query(`CREATE ROLE ${sharedRuntime} NOLOGIN`);
+      await admin.query(`GRANT USAGE ON SCHEMA ${schema} TO ${sharedRuntime}`);
+      for (const migration of await loadPostgresMigrations()) await admin.query(migration.sql);
+      expect(warnings).toContain(
+        "HNS executor role absent: grant ownership-preparation EXECUTE to the observed provisioner login and verify its effective privilege before release",
+      );
+      const signature =
+        "enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)";
+      const privilege = async () =>
+        (
+          await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [
+            sharedRuntime,
+            signature,
+          ])
+        ).rows[0]?.allowed;
+      expect(await privilege()).toBe(false);
+      await admin.query(`SET LOCAL ROLE ${sharedRuntime}`);
+      await admin.query("SAVEPOINT before_grant");
+      await expect(
+        admin.query(
+          "SELECT * FROM enqueue_hns_safe_ownership_completion_v1('missing',1,'executor',1,NULL,NULL)",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await admin.query("ROLLBACK TO SAVEPOINT before_grant");
+      await admin.query("RESET ROLE");
+      // The release runs this as the function owner after observing the actual
+      // provisioner login; being an API login neither grants nor forbids access.
+      await admin.query(`GRANT EXECUTE ON FUNCTION ${signature} TO ${sharedRuntime}`);
+      expect(await privilege()).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT has_table_privilege($1,'hns_root_import_safe_ownership_proofs','INSERT,UPDATE,DELETE') AS writes",
+            [sharedRuntime],
+          )
+        ).rows,
+      ).toEqual([{ writes: false }]);
+      await admin.query(`SET LOCAL ROLE ${sharedRuntime}`);
+      expect(
+        (
+          await admin.query(
+            "SELECT * FROM enqueue_hns_safe_ownership_completion_v1('missing',1,'executor',1,NULL,NULL)",
+          )
+        ).rows,
+      ).toEqual([{ outcome: "invalid_proof" }]);
+    } finally {
+      await admin.query("ROLLBACK");
+      await admin.end();
+    }
+  }, 120_000);
+});
+
 suite("production HNS import runtime privileges", () => {
   test("grants fenced runtime access without direct lifecycle updates", async () => {
     const schema = `hns_production_acl_${randomUUID().replaceAll("-", "")}`;

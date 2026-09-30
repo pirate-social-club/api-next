@@ -34,9 +34,11 @@ safe observation passed. Queue identity and proof identity are replayable;
 publication continuation and activation remain distinct operations.
 
 Invalid context finalizes its lease with `readiness_context_invalid`.
-Storage outages record `readiness_context_unavailable` and retry, without
-printing private connection details. Failure to finalize must propagate rather
-than claim successful recording.
+Storage outages record a sanitized unavailable code and retry. Missing EXECUTE
+privilege is a configuration failure: it records the terminal code
+`readiness_ownership_permission_denied` rather than retrying indefinitely.
+Private connection details are not printed. Failure to finalize must propagate
+rather than claim successful recording.
 
 Regression coverage exercises provisional admission, plan exposure,
 current and safe lifecycle observations, safe TXT preparation, namespace
@@ -56,21 +58,46 @@ fp1c session and all transaction/click fences remain intact.
 Apply migration 0234 through the repository migration runner. Its guarded
 block installs EXECUTE on enqueue_hns_safe_ownership_completion_v1 for the
 existing hns_root_import_executor_login_v1 provisioner role, matching 0225.
-The HTTP role is not a caller and receives no grant for this routine. If the
-executor role is created after the migration, apply the reviewed example
-block and verify its effective privilege before starting the provisioner.
-Read the actual deployed role and its privileges during preflight; a source
-example is not an applied runtime grant. The privilege regression creates
-the production identities before migration replay, invokes the function as
-the executor and verifies it has no direct proof-table mutation privileges.
+If that role is absent, the migration emits a warning. Production uses a
+separate executor; the reviewer reported a staging catalog observation on
+2026-09-30 with lifecycle grants to shared Worker/runtime login
+pscale_api_gy9lze83nr29 and no executor role. The provisioner's connected login
+was not directly observed, so it still must be established during preflight.
+Being an API login does not disqualify the login actually used by the
+provisioner. Do not put an environment-specific staging role name in the
+migration or assume the production grant applies to staging.
+
+As the function owner/migrator, explicitly grant the function to the observed
+provisioner login during the approved release, then read its effective
+privilege before starting the repaired service. Reobserve the deployed login
+at execution time; do not rely on the historical staging catalog observation.
+With psql's provisioner_login variable set from that observation, the release
+statement and readback are:
+
+```sql
+GRANT EXECUTE ON FUNCTION enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)
+  TO :"provisioner_login";
+SELECT has_function_privilege(:'provisioner_login',
+  'enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)',
+  'EXECUTE') AS provisioner_can_prepare_ownership;
+```
+
+Require the readback to be true in the target schema. This source example is
+not an applied runtime grant. Privilege regressions cover production's
+separate executor and staging's shared login, including refusal before the
+explicit staging grant and no direct proof-table mutation privileges.
 
 Preparation runs its database read and enqueue on separate short-lived
 connections, closing the first before chain RPC. Unexpected SQL faults
 propagate as operational failures; only malformed input parsing and casting
 become invalid_proof. Revision conflicts and evidence that becomes stale
-between observation and SQL acceptance are distinct retry outcomes. The same
-readiness job is rescheduled without creating a replacement import or treating
-proof as an ownership result.
+between observation and SQL acceptance are distinct retry outcomes. Only
+pending, revision_conflict, stale_proof and lease_conflict retry; refused and
+unexpected preparation outcomes fail visibly. An expired lease still held at
+the same fence can reschedule its existing job. A reclaimed lease cannot
+finalize stale work. No replacement import or fabricated ownership is created.
+Both authorization kinds have mocked preparation coverage; the complete real
+PostgreSQL ceremony covers community_provisional, not signature admission.
 
 Before release, observe the actual staging HTTP Worker and verifier releases,
 ownership capabilities, scheduled publication continuation and database role.

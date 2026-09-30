@@ -3,6 +3,7 @@ import type { HnsLifecycleClaimV1 } from "./lifecycle-executor.ts";
 import {
   HnsLifecycleReadinessContextError,
   type HnsLifecycleReadinessContextV1,
+  HnsOwnershipPreparationPermissionError,
   runHnsRootImportReadinessOnce,
 } from "./lifecycle-readiness.ts";
 import { HnsRootReadinessObservationError } from "./observe-root.ts";
@@ -92,7 +93,7 @@ describe("the readiness performer", () => {
     expect(recorded).toHaveLength(0);
   });
 
-  for (const prepared of ["revision_conflict", "stale_proof"] as const) {
+  for (const prepared of ["revision_conflict", "stale_proof", "lease_conflict"] as const) {
     test(`transient ownership ${prepared} records a retry instead of killing readiness`, async () => {
       const {
         ports: configured,
@@ -115,6 +116,46 @@ describe("the readiness performer", () => {
     });
   }
 
+  for (const prepared of ["unknown_outcome", undefined, null]) {
+    test(`unexpected preparation ${String(prepared)} fails visibly instead of retrying`, async () => {
+      const {
+        ports: configured,
+        finalized,
+        recorded,
+      } = ports({
+        prepare_ownership: async () => prepared,
+      });
+      expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+        outcome: "failed",
+        reason: "readiness_ownership_invalid_outcome",
+      });
+      expect(finalized).toEqual([
+        { outcome: "failed", failureCode: "readiness_ownership_invalid_outcome" },
+      ]);
+      expect(recorded).toHaveLength(0);
+    });
+  }
+
+  test("a missed ownership grant records a distinct terminal failure", async () => {
+    const {
+      ports: configured,
+      finalized,
+      recorded,
+    } = ports({
+      prepare_ownership: async () => {
+        throw new HnsOwnershipPreparationPermissionError();
+      },
+    });
+    expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+      outcome: "failed",
+      reason: "readiness_ownership_permission_denied",
+    });
+    expect(finalized).toEqual([
+      { outcome: "failed", failureCode: "readiness_ownership_permission_denied" },
+    ]);
+    expect(recorded).toHaveLength(0);
+  });
+
   test("a lost lease cannot claim that its context failure was recorded", async () => {
     const { ports: configured } = ports({
       context: async () => {
@@ -125,6 +166,17 @@ describe("the readiness performer", () => {
     await expect(runHnsRootImportReadinessOnce(job, "executor-a", configured)).rejects.toThrow(
       "HNS readiness lease finalization refused",
     );
+  });
+
+  test("an ownership lease reclaimed by another executor cannot finalize its stale fence", async () => {
+    const { ports: configured, recorded } = ports({
+      prepare_ownership: async () => "lease_conflict",
+      finalize: async () => ({ outcome: "conflict" }),
+    });
+    await expect(runHnsRootImportReadinessOnce(job, "executor-a", configured)).rejects.toThrow(
+      "HNS readiness lease finalization refused",
+    );
+    expect(recorded).toHaveLength(0);
   });
 
   test("invalid context finalizes the claimed lease with a visible failure", async () => {

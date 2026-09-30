@@ -3,6 +3,7 @@ import { Client, type QueryResultRow } from "pg";
 import type { HnsLifecycleClaimV1 } from "./lifecycle-executor.ts";
 import {
   HnsLifecycleReadinessContextError,
+  HnsOwnershipPreparationPermissionError,
   type HnsOwnershipPreparationResultV1,
 } from "./lifecycle-readiness.ts";
 import { observeProvisionalSafeOwnership } from "./provisional-safe-ownership.ts";
@@ -22,6 +23,11 @@ async function queryOwnership<Row extends QueryResultRow>(
     const result = await client.query<Row>(query, values);
     if (disconnected) throw new Error("HNS ownership database connection lost");
     return result;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "42501") {
+      throw new HnsOwnershipPreparationPermissionError();
+    }
+    throw error;
   } finally {
     await client.end().catch(() => undefined);
   }
@@ -40,13 +46,13 @@ export function makePostgresHnsOwnershipPreparation(
       `SELECT
         s.root_import_session_id, s.namespace_session_id, s.root_label, s.challenge_txt_value,
         s.publish_plan_sha256, s.ownership_result_sha256, s.provision_authorization_kind,
-        l.plan_encoded_resource_sha256, l.revision AS lifecycle_revision, l.generation
+        l.plan_encoded_resource_sha256, l.revision AS lifecycle_revision, l.generation,
+        (j.state='leased' AND j.job_kind='observe_readiness'
+          AND j.leased_by=$3 AND j.lease_fence=$4 AND j.lease_expires_at>clock_timestamp()
+          AND j.generation=l.generation AND l.generation=$5) AS lease_current
         FROM hns_root_import_sessions s JOIN hns_root_import_lifecycle l USING(root_import_session_id)
         JOIN hns_root_import_lifecycle_jobs j USING(root_import_session_id)
         WHERE s.root_import_session_id=$1 AND j.lifecycle_job_id=$2
-          AND j.state='leased' AND j.job_kind='observe_readiness'
-          AND j.leased_by=$3 AND j.lease_fence=$4 AND j.lease_expires_at>clock_timestamp()
-          AND j.generation=l.generation AND l.generation=$5
           AND l.phase IN ('checking_authority','ready')`,
       [
         job.root_import_session_id,
@@ -59,6 +65,8 @@ export function makePostgresHnsOwnershipPreparation(
     if (result.rows.length !== 1) return "refused";
     const row = result.rows[0];
     if (row === undefined) return "refused";
+    if (row.lease_current === false) return "lease_conflict";
+    if (row.lease_current !== true) throw new HnsLifecycleReadinessContextError();
     if (
       typeof row.ownership_result_sha256 === "string" &&
       /^[0-9a-f]{64}$/u.test(row.ownership_result_sha256)
@@ -109,7 +117,8 @@ export function makePostgresHnsOwnershipPreparation(
     if (queued.rows[0]?.outcome === "ownership_ready") return "ready";
     if (
       queued.rows[0]?.outcome === "revision_conflict" ||
-      queued.rows[0]?.outcome === "stale_proof"
+      queued.rows[0]?.outcome === "stale_proof" ||
+      queued.rows[0]?.outcome === "lease_conflict"
     ) {
       return queued.rows[0].outcome;
     }

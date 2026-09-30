@@ -142,13 +142,15 @@ BEGIN
 END;
 $safe_ownership_search_path$;
 
--- Match the provisioner's executor identity already admitted by migration 0225.
--- The HTTP role does not call this preparatory routine.
+-- Match production's separate executor identity admitted by migration 0225.
+-- Shared runtime logins need an explicit environment-specific release grant.
 DO $safe_ownership_executor_grant$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hns_root_import_executor_login_v1') THEN
     GRANT EXECUTE ON FUNCTION enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)
       TO hns_root_import_executor_login_v1;
+  ELSE
+    RAISE WARNING 'HNS executor role absent: grant ownership-preparation EXECUTE to the observed provisioner login and verify its effective privilege before release';
   END IF;
 END;
 $safe_ownership_executor_grant$;

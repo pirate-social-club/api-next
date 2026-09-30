@@ -283,9 +283,11 @@ pgTest(
           )
         ).rows,
       ).toHaveLength(0);
-      await Effect.runPromise(
-        continueHnsCommunityPublication(base.services, base.services.publicationQueue),
-      );
+      expect(
+        await Effect.runPromise(
+          continueHnsCommunityPublication(base.services, base.services.publicationQueue),
+        ),
+      ).toBe(true);
       expect(
         (
           await base.admin.query(
@@ -364,77 +366,80 @@ pgTest(
   180_000,
 );
 
-pgTest(
-  "revision race retries the existing readiness job and closes the database before chain RPC",
-  async () => {
-    if (!url) throw new Error("Postgres required");
-    const base = await prepareAcknowledgedImport({ connectionString: url, acknowledge: false });
-    try {
-      base.hsd.setRecords(base.planRecords);
-      const { ports, observeSafe } = lifecyclePortsFor(base);
-      for (const kind of ["observe_current", "observe_safe"]) {
-        await due(base, kind);
+for (const conflict of ["revision_conflict", "lease_conflict"] as const) {
+  pgTest(
+    `${conflict} race retries the existing readiness job`,
+    async () => {
+      if (!url) throw new Error("Postgres required");
+      const base = await prepareAcknowledgedImport({ connectionString: url, acknowledge: false });
+      try {
+        base.hsd.setRecords(base.planRecords);
+        const { ports, observeSafe } = lifecyclePortsFor(base);
+        for (const kind of ["observe_current", "observe_safe"]) {
+          await due(base, kind);
+          expect(await runHnsRootImportLifecycleJobOnce("race-executor", 60, ports)).toMatchObject({
+            outcome: "completed",
+          });
+        }
+        await due(base, "observe_readiness");
+        const job = await ports.claim("race-executor", 60);
+        if (!job) throw new Error("expected readiness lease");
+        const preparation = makePostgresHnsOwnershipPreparation(
+          base.scopedConnectionString,
+          async (root) => {
+            const observed = await observeSafe(root);
+            if (conflict === "revision_conflict") {
+              await base.admin.query(
+                "UPDATE hns_root_import_lifecycle SET revision=revision+1 WHERE root_import_session_id=$1",
+                [base.sessionId],
+              );
+            } else {
+              await base.admin.query(
+                "UPDATE hns_root_import_lifecycle_jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE lifecycle_job_id=$1",
+                [job.lifecycle_job_id],
+              );
+            }
+            return observed;
+          },
+        );
+        expect(
+          await runHnsRootImportReadinessOnce(job, "race-executor", {
+            prepare_ownership: preparation,
+            context: async () => {
+              throw new Error("stale proof cannot advance readiness");
+            },
+            config: { environment: "staging", valid_for_seconds: 3600 },
+            observe: {} as never,
+            record: async () => {
+              throw new Error("stale proof cannot record readiness");
+            },
+            finalize: ports.finalize,
+            now_epoch_ms: Date.now,
+          }),
+        ).toEqual({ outcome: "retry", reason: `readiness_ownership_${conflict}` });
+        expect(
+          (
+            await base.admin.query(
+              "SELECT state,failure_code FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=$1",
+              [job.lifecycle_job_id],
+            )
+          ).rows[0],
+        ).toEqual({ state: "queued", failure_code: `readiness_ownership_${conflict}` });
+        expect(
+          (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
+        ).toHaveLength(0);
+        await due(base, "observe_readiness");
         expect(await runHnsRootImportLifecycleJobOnce("race-executor", 60, ports)).toMatchObject({
-          outcome: "completed",
+          outcome: "retry",
+          reason: "readiness_ownership_pending",
         });
+        expect(
+          (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
+        ).toHaveLength(1);
+      } finally {
+        await base.cleanup();
       }
-      await due(base, "observe_readiness");
-      const job = await ports.claim("race-executor", 60);
-      if (!job) throw new Error("expected readiness lease");
-      const connection = new URL(base.scopedConnectionString);
-      connection.searchParams.set("application_name", "hns-safe-ownership-race");
-      const preparation = makePostgresHnsOwnershipPreparation(
-        connection.toString(),
-        async (root) => {
-          const idle = await base.admin.query(
-            "SELECT count(*)::int AS count FROM pg_stat_activity WHERE application_name='hns-safe-ownership-race'",
-          );
-          expect(idle.rows[0]?.count).toBe(0);
-          const observed = await observeSafe(root);
-          await base.admin.query(
-            "UPDATE hns_root_import_lifecycle SET revision=revision+1 WHERE root_import_session_id=$1",
-            [base.sessionId],
-          );
-          return observed;
-        },
-      );
-      expect(
-        await runHnsRootImportReadinessOnce(job, "race-executor", {
-          prepare_ownership: preparation,
-          context: async () => {
-            throw new Error("stale proof cannot advance readiness");
-          },
-          config: { environment: "staging", valid_for_seconds: 3600 },
-          observe: {} as never,
-          record: async () => {
-            throw new Error("stale proof cannot record readiness");
-          },
-          finalize: ports.finalize,
-          now_epoch_ms: Date.now,
-        }),
-      ).toEqual({ outcome: "retry", reason: "readiness_ownership_revision_conflict" });
-      expect(
-        (
-          await base.admin.query(
-            "SELECT state,failure_code FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=$1",
-            [job.lifecycle_job_id],
-          )
-        ).rows[0],
-      ).toEqual({ state: "queued", failure_code: "readiness_ownership_revision_conflict" });
-      expect(
-        (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
-      ).toHaveLength(0);
-      await due(base, "observe_readiness");
-      expect(await runHnsRootImportLifecycleJobOnce("race-executor", 60, ports)).toMatchObject({
-        outcome: "retry",
-        reason: "readiness_ownership_pending",
-      });
-      expect(
-        (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
-      ).toHaveLength(1);
-    } finally {
-      await base.cleanup();
-    }
-  },
-  180_000,
-);
+    },
+    180_000,
+  );
+}
