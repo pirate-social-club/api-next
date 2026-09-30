@@ -6,6 +6,8 @@ import {
   verifyHnsStagingGatewayManifest,
 } from "./hns-staging-gateway-preflight.ts";
 
+import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -25,7 +27,11 @@ export type WorkerDeploymentReceipt = Readonly<{
 }>;
 
 type CommandResult = Readonly<{ exitCode: number; stdout: string; stderr: string }>;
-export type CommandRunner = (command: readonly string[], cwd: string) => Promise<CommandResult>;
+export type CommandRunner = (
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<CommandResult>;
 
 export type WorkerVersion = Readonly<{
   id: string;
@@ -127,13 +133,23 @@ export function findDeployedVersion(
   return candidates[0] as WorkerVersion;
 }
 
-async function runCommand(command: readonly string[], cwd: string): Promise<CommandResult> {
+async function runCommand(
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
   const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const abort = () => child.kill();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   const [stdout, stderr] = await Promise.all([
     child.stdout === null ? Promise.resolve("") : new Response(child.stdout).text(),
     child.stderr === null ? Promise.resolve("") : new Response(child.stderr).text(),
   ]);
-  return { exitCode: await child.exited, stdout, stderr };
+  const exitCode = await child.exited;
+  signal?.removeEventListener("abort", abort);
+  if (signal?.aborted) throw Error("reward shutdown control connection lost during deploy");
+  return { exitCode, stdout, stderr };
 }
 
 async function requiredOutput(
@@ -229,6 +245,7 @@ export async function deployWorkerWithProvenance(
   runner: CommandRunner = runCommand,
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
   readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
+  rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
@@ -255,19 +272,26 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "pre-deploy version listing"),
   );
 
-  const deployed = await runner(
-    [
-      "bunx",
-      "wrangler",
-      "deploy",
-      "--env",
-      input.environment,
-      "--config",
-      configPath,
-      "--message",
-      message,
-    ],
+  const deployed = await rewardDeploymentGuard(
     repositoryRoot,
+    configPath,
+    input.environment,
+    (signal) =>
+      runner(
+        [
+          "bunx",
+          "wrangler",
+          "deploy",
+          "--env",
+          input.environment,
+          "--config",
+          configPath,
+          "--message",
+          message,
+        ],
+        repositoryRoot,
+        signal,
+      ),
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);
