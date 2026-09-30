@@ -8,7 +8,11 @@ import {
   songPcmOutputKey,
 } from "./song-video-pcm-admission-repository.ts";
 import { makeSongVideoPcmJob, SONG_VIDEO_PCM_DECODER_RECIPE } from "./song-video-pcm-job.ts";
-import { readStoredSongVideoPcm, transferSongVideoPcm } from "./song-video-pcm-transfer.ts";
+import {
+  readStoredSongVideoPcm,
+  SongPcmTransferError,
+  transferSongVideoPcm,
+} from "./song-video-pcm-transfer.ts";
 import { videoSourceCapabilityDigest } from "./video-source-capability.ts";
 import { makeVideoSourceUrl } from "./video-source-gateway.ts";
 
@@ -222,11 +226,18 @@ export async function consumeSongPcmAdmission(
         event: "song_pcm_admission_observation_failed",
         admission_id: a.admission_id,
         phase,
+        ...(error instanceof SongPcmTransferError
+          ? { transfer_phase: error.phase, pending_transfer_phases: error.pendingPhases }
+          : {}),
         error_class:
-          error instanceof Error &&
-          ["Error", "TypeError", "RangeError", "AbortError", "TimeoutError"].includes(error.name)
-            ? error.name
-            : "Error",
+          error instanceof SongPcmTransferError
+            ? error.errorClass
+            : error instanceof Error &&
+                ["Error", "TypeError", "RangeError", "AbortError", "TimeoutError"].includes(
+                  error.name,
+                )
+              ? error.name
+              : "Error",
         ...(httpStatus === undefined ? {} : { http_status: httpStatus }),
       }),
     );
