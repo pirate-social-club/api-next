@@ -74,7 +74,8 @@ export function makeCloudConvertSongVideoRenderer(
   }>,
 ) {
   const now = input.now ?? Date.now;
-  const send = input.fetch ?? fetch;
+  const send: (url: string, init: RequestInit) => Promise<Response> =
+    input.fetch ?? ((url, init) => fetch(url, init));
   const jobs = makeSongVideoCloudConvertTransport({ apiKey: input.apiKey, fetch: send });
   const repo = input.repository;
   const output = makeR2SongVideoOutputStore(input.bucket, MAX_SONG_VIDEO_MASTER_BYTES);
