@@ -60,7 +60,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 22;
+const testCount = 23;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -1867,6 +1867,207 @@ suite("Spaces final issuance reconciliation", () => {
         }),
       );
       expect(publicGrant?.host).toEqual({ kind: "not_applicable" });
+    });
+    completed++;
+  }, 60_000);
+
+  test("keeps issued grants public and pending claims visible while anchor readiness pauses issuance", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: 3 });
+      const sales = salesStore(connection);
+      const reconciler = reconciliationStore(connection);
+      const issuedBuyer = await seedBuyer(admin, "visibility-issued-member");
+      for (const label of ["issuedfirst", "issuedsecond"]) {
+        const { reservation } = await reserved(sales, issuedBuyer, label, label);
+        await Effect.runPromise(sales.submitFreeClaim(claimInput(issuedBuyer, reservation, label)));
+      }
+      const issuedTargets = await Effect.runPromise(reconciler.leaseDue(8));
+      expect(issuedTargets).toHaveLength(2);
+      for (const target of issuedTargets) {
+        expect(await Effect.runPromise(reconciler.finalize(target, finalEvidence()))).toBe(
+          "issued",
+        );
+      }
+      const pending = await registryClaim(
+        admin,
+        connection,
+        "pendingvisible",
+        "visibility-pending",
+      );
+      const reservationBuyer = await seedBuyer(admin, "visibility-reservation-member");
+      const existing = await reserved(
+        sales,
+        reservationBuyer,
+        "reservedvisible",
+        "visibility-reserved",
+      );
+      const quoteBuyer = await seedBuyer(admin, "visibility-quote-member");
+      const priorQuote = await quoted(sales, quoteBuyer, "quotedvisible", "visibility-quoted");
+      const newBuyer = await seedBuyer(admin, "visibility-new-member");
+      await confirmLink(sales, newBuyer, "visibility-new");
+      const registry = registryStore(connection);
+      const { authenticated } = await registryCredential(connection);
+      const profileBefore = await Effect.runPromise(
+        sales.getPublicPersona({ personaId: issuedBuyer.personaId }),
+      );
+      const firstPage = await Effect.runPromise(
+        sales.listPersonaGrants({ personaId: issuedBuyer.personaId, limit: 1 }),
+      );
+      expect(firstPage.items).toHaveLength(1);
+      expect(firstPage.next_cursor).not.toBeNull();
+      if (firstPage.next_cursor === null) throw new Error("missing issued grant cursor");
+      const observe = async (anchorCoversRootOutpoint: boolean) =>
+        Effect.runPromise(
+          spacesStore(connection).recordRootObservation({
+            canonicalRoot: spacesRoot,
+            observerReference: "independent-node-1",
+            observedAt: new Date().toISOString(),
+            root: {
+              kind: "resolved",
+              outpoint: spacesOutpoint,
+              key: spacesKeyA,
+              anchoredAt: new Date(Date.now() - 60_000).toISOString(),
+              anchorCoversRootOutpoint,
+              publication: "verified",
+              delegationAddress: delegation,
+            },
+            commitmentHistory: {
+              kind: "verified",
+              commitmentCount: 3,
+              latestCommitmentRootHex: "e".repeat(64),
+            },
+            freshness: { observation_max_age_ms: 3_600_000, anchor_max_age_ms: 86_400_000 },
+          }),
+        );
+      expect(await observe(false)).toMatchObject({
+        drift: { kind: "anchor_lag" },
+        suspended: null,
+      });
+      expect(
+        (
+          await Effect.runPromise(
+            spacesStore(connection).getSaleNamespaceReadiness({
+              accountId: seller,
+              communityId,
+              activationId,
+            }),
+          )
+        )?.readiness,
+      ).toEqual({ kind: "not_ready_v1", reason: "anchor_pending" });
+      expect(
+        await Effect.runPromise(sales.getPublicPersona({ personaId: issuedBuyer.personaId })),
+      ).toEqual(profileBefore);
+      for (const label of ["issuedfirst", "issuedsecond"]) {
+        expect(
+          await Effect.runPromise(
+            sales.getPublicGrant({
+              family: "spaces",
+              namespaceRoot: spacesRoot,
+              handleLabel: label,
+            }),
+          ),
+        ).toMatchObject({
+          owner_persona: { persona_id: issuedBuyer.personaId },
+          host: { kind: "not_applicable" },
+        });
+      }
+      const secondPage = await Effect.runPromise(
+        sales.listPersonaGrants({
+          personaId: issuedBuyer.personaId,
+          limit: 1,
+          cursor: firstPage.next_cursor,
+        }),
+      );
+      expect(
+        [...firstPage.items, ...secondPage.items].map((grant) => grant.handle.handle_label),
+      ).toEqual(["issuedfirst", "issuedsecond"]);
+      expect(secondPage.next_cursor).toBeNull();
+      expect(
+        await Effect.runPromise(
+          sales.getClaim({ accountId: "registry-visibility-pending", claimId: pending.claim_id }),
+        ),
+      ).toEqual(pending);
+      expect(
+        await Effect.runPromise(
+          sales.getPublicGrant({
+            family: "spaces",
+            namespaceRoot: spacesRoot,
+            handleLabel: "pendingvisible",
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        await failureOf(sales.createQuote(quoteInput(newBuyer, "newvisible", "visibility-new"))),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.createReservation(reservationInput(quoteBuyer, priorQuote, "visibility-quoted")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.submitFreeClaim(
+            claimInput(reservationBuyer, existing.reservation, "visibility-reserved"),
+          ),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await Effect.runPromise(
+          registry.pending({
+            credential: authenticated,
+            space: { kind: "root", canonical_root: spacesRoot },
+            capacity: 10,
+          }),
+        ),
+      ).toEqual({ kind: "handles", handles: [] });
+      expect(await count(admin, "spaces_registry_deliveries")).toBe(0);
+      expect(await count(admin, "handle_claims")).toBe(3);
+      expect(await count(admin, "handle_reservations", "status='reserved'")).toBe(1);
+      const pausedVerification = await Effect.runPromise(reconciler.leaseDue(8));
+      expect(pausedVerification.map((target) => target.claim_id)).toEqual([pending.claim_id]);
+      const pendingTarget = pausedVerification[0];
+      if (pendingTarget === undefined) throw new Error("missing pending verification lease");
+      expect(await Effect.runPromise(reconciler.retryLater(pendingTarget))).toBe("scheduled");
+      expect(await count(admin, "handle_grants", "status='active'")).toBe(2);
+      expect(await observe(true)).toMatchObject({ drift: { kind: "current" }, suspended: null });
+      expect(
+        (
+          await Effect.runPromise(
+            spacesStore(connection).getSaleNamespaceReadiness({
+              accountId: seller,
+              communityId,
+              activationId,
+            }),
+          )
+        )?.readiness,
+      ).toEqual({ kind: "ready_v1" });
+      expect(
+        await Effect.runPromise(sales.getPublicPersona({ personaId: issuedBuyer.personaId })),
+      ).toEqual(profileBefore);
+      expect(
+        await Effect.runPromise(
+          sales.getClaim({ accountId: "registry-visibility-pending", claimId: pending.claim_id }),
+        ),
+      ).toEqual(pending);
+      const delivery = await Effect.runPromise(
+        registry.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      expect(delivery.kind).toBe("handles");
+      if (delivery.kind !== "handles") throw new Error("missing recovered registry delivery");
+      expect(delivery.handles).toHaveLength(1);
+      expect(await count(admin, "handle_grants", "status='active'")).toBe(2);
+      expect(await Effect.runPromise(reconciler.leaseDue(8))).toEqual([]);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.createQuote(quoteInput(newBuyer, "newvisible", "visibility-recovered")),
+          )
+        ).kind,
+      ).toBe("quoted");
     });
     completed++;
   }, 60_000);
