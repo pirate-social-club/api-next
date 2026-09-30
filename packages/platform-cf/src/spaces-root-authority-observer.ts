@@ -1,5 +1,8 @@
 import type { SpacesRootAuthorityObserver } from "./spaces-owner-proof-repository.ts";
-import { parseSpacesRootAuthorityEvidenceV1 } from "./spaces-root-authority-evidence.ts";
+import {
+  parseSpacesRootAuthorityEvidenceV1,
+  SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES,
+} from "./spaces-root-authority-evidence.ts";
 
 const URL = "https://spaces-verifier.pirate.sc/v1/observe-root-authority";
 
@@ -75,7 +78,10 @@ export function makeSpacesRootAuthorityObserver(
           const result = await reader.read();
           if (result.done) break;
           total += result.value.byteLength;
-          if (total > 65_536) throw new Error("Spaces root verifier response exceeds bound");
+          if (total > SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES) {
+            await reader.cancel();
+            throw new Error("Spaces root verifier response exceeds bound");
+          }
           chunks.push(result.value);
         }
       } finally {
