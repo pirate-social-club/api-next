@@ -19,9 +19,9 @@
     {
       "advisory": "GHSA-w5hq-g745-h8pq",
       "package": "uuid",
-      "reason": "The pinned upstream dependency requires uuid 9 and has no patched compatible release.",
-      "reachability": "@selfxyz/anon-aadhaar-core@0.0.1 imports and calls only v4(); the affected v3/v5/v6 buffer APIs are not referenced.",
-      "expires": "2026-09-30"
+      "reason": "Rechecked 2026-09-30: the pinned upstream dependency requires uuid ^9.0.0; the npm registry has no patched compatible release or newer parent release.",
+      "reachability": "Rechecked the lockfile-integrity-matching @selfxyz/anon-aadhaar-core@0.0.1 npm tarball on 2026-09-30: src/core.ts imports and calls only v4(), and dist/index.js calls only uuid.v4(); the affected v3/v5/v6 buffer APIs are not referenced.",
+      "expires": "2026-10-07"
     }
   ]
 }
