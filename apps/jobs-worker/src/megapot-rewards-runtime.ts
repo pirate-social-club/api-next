@@ -18,7 +18,10 @@ import { makeMegapotPurchaseCoordinator } from "@pirate/platform-cf/megapot-purc
 import { makeControlPlaneMegapotPurchaseStore } from "@pirate/platform-cf/megapot-purchase-repository";
 import { makeMegapotSweepCoordinator } from "@pirate/platform-cf/megapot-sweep-coordinator";
 import { makeControlPlaneMegapotSweepStore } from "@pirate/platform-cf/megapot-sweep-repository";
-import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
+import {
+  type MegapotReceiptReadObservation,
+  makeMegapotV2RpcClient,
+} from "@pirate/platform-cf/megapot-v2-rpc";
 import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
@@ -35,12 +38,36 @@ import {
   MegapotRewardRoutingRejected,
 } from "./megapot-rewards-routing.ts";
 
+/** Public receipt identifiers only. RPC adapters isolate any sink failure. */
+export function makeMegapotReceiptReadLogger(input: {
+  readonly log: (message: string) => void;
+  readonly attemptId: string;
+  readonly cycleStartedAt: string;
+  readonly environment: MegapotRewardsJobOptions["environment"];
+  readonly workerVersion: MegapotRewardsJobOptions["workerVersion"];
+}) {
+  return (receipt: MegapotReceiptReadObservation) =>
+    input.log(
+      JSON.stringify({
+        event: "megapot_receipt_read",
+        job: "megapot-rewards.cycle",
+        attemptId: input.attemptId,
+        cycleStartedAt: input.cycleStartedAt,
+        environment: input.environment,
+        workerVersion: input.workerVersion,
+        ...receipt,
+      }),
+    );
+}
+
 export function makeMegapotAttestedRpc(
   deployment: MegapotDrawingObserverCandidate,
   rpcUrl: string,
+  onReceiptRead?: (observation: MegapotReceiptReadObservation) => void,
 ) {
   return makeMegapotV2RpcClient({
     rpcUrl,
+    ...(onReceiptRead === undefined ? {} : { onReceiptRead }),
     reuseSuccessfulAttestation: true,
     minimumRequestIntervalMs: 250,
     attestation: {
@@ -64,10 +91,11 @@ export function makeMegapotAttestationRuntime(input: {
   readonly deployment: MegapotDrawingObserverCandidate;
   readonly controlPlane: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
   readonly options: MegapotRewardsJobOptions;
+  readonly onReceiptRead?: (observation: MegapotReceiptReadObservation) => void;
   readonly resolveCustodyKey: (address: string) => string;
 }): MegapotAttestationRuntime {
   const { deployment, controlPlane, options } = input;
-  const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl);
+  const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl, input.onReceiptRead);
   const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
   const observer = makeMegapotDrawingObserver({
     store: observationStore,
