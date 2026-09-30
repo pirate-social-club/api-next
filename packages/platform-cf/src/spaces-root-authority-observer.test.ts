@@ -9,6 +9,13 @@ const credentials = {
   bearerToken: "test-bearer",
 };
 
+const streamFetch = (stream: ReadableStream<Uint8Array>): typeof fetch =>
+  Object.assign(async () => new Response(stream), {
+    preconnect: () => {
+      throw new Error("Unexpected test preconnection");
+    },
+  });
+
 describe("Spaces root authority observer", () => {
   test("reads a production-sized receipt over multiple chunks", async () => {
     const cert = binary("r".repeat(224_079));
@@ -29,10 +36,7 @@ describe("Spaces root authority observer", () => {
         offset = next;
       },
     });
-    const observer = makeSpacesRootAuthorityObserver(
-      credentials,
-      (async () => new Response(stream)) as typeof fetch,
-    );
+    const observer = makeSpacesRootAuthorityObserver(credentials, streamFetch(stream));
     const result = await observer.observe({ canonicalRoot: "yahoo" });
     expect(result.kind).toBe("verified");
     if (result.kind === "verified") expect(result.bytes).toEqual(payload);
@@ -50,10 +54,7 @@ describe("Spaces root authority observer", () => {
         cancelled = true;
       },
     });
-    const observer = makeSpacesRootAuthorityObserver(
-      credentials,
-      (async () => new Response(stream)) as typeof fetch,
-    );
+    const observer = makeSpacesRootAuthorityObserver(credentials, streamFetch(stream));
     await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("bound");
     expect(cancelled).toBe(true);
     expect(reads).toBeLessThanOrEqual(18);
