@@ -349,12 +349,20 @@ const assetLeg = (value: AssetBonusLeg) => ({
   leg_terms_hash: value.legTermsHash,
 });
 
+// An ended, unbound instruction has no mined revert. Preserve ambiguity if a hash exists.
+const fundingStatus = (value: RewardFundingIntent) =>
+  value.state === "reclaimable_failed"
+    ? value.transactionHash === null
+      ? ("expired_unfunded" as const)
+      : ("reconciliation_required" as const)
+    : value.state;
+
 const funding = (value: RewardFundingIntent) => ({
   object: "megapot_pool_funding" as const,
   action: "fund_with_usdc" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
@@ -371,7 +379,7 @@ const assetFunding = (value: RewardFundingIntent) => ({
   action: "fund_with_asset" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals,

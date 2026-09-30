@@ -1128,13 +1128,34 @@ describe("song reward offer HTTP handlers", () => {
     expect(await response.json()).toMatchObject({ error: { code: "provider_unavailable" } });
   });
 
-  test("maps an internally reclaimable terminal plan to the stable wire status", async () => {
-    const response = await fixture({ ...intent, state: "reclaimable_failed" }).request(
-      `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`,
-      { headers: { authorization: "Bearer test" } },
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ funding: { status: "reverted" } });
+  test("reports expired unbound funding separately from a mined revert for both leg kinds", async () => {
+    for (const target of [intent, assetIntent]) {
+      const prefix = target.legKind === "megapot_pool" ? "reward-offer-legs" : "asset-bonus-legs";
+      const path = `/${prefix}/${target.legId}/funding/${target.fundingEffectId}`;
+      for (const state of [
+        "reclaimable_failed",
+        "confirmed",
+        "reverted",
+        "reconciliation_required",
+      ] as const) {
+        const response = await fixture({ ...target, state }).request(path, {
+          headers: { authorization: "Bearer test" },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          funding: { status: state === "reclaimable_failed" ? "expired_unfunded" : state },
+        });
+      }
+      const ambiguous = await fixture({
+        ...target,
+        state: "reclaimable_failed",
+        transactionHash: `0x${"a".repeat(64)}`,
+      }).request(path, { headers: { authorization: "Bearer test" } });
+      expect(ambiguous.status).toBe(200);
+      expect(await ambiguous.json()).toMatchObject({
+        funding: { status: "reconciliation_required" },
+      });
+    }
   });
 });
 

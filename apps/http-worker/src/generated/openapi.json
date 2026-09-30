@@ -160518,6 +160518,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -161091,6 +161092,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -161920,6 +161922,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -162517,6 +162520,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -172689,6 +172693,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -173237,6 +173242,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -174069,6 +174075,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
@@ -174669,6 +174676,7 @@
                         "status": {
                           "type": "string",
                           "enum": [
+                            "expired_unfunded",
                             "planned",
                             "confirming",
                             "confirmed",
