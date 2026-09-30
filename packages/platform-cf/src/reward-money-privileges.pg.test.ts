@@ -7,6 +7,8 @@ import {
   REWARDS_MONEY_TABLES,
 } from "../../../scripts/rewards-money-write-contract.ts";
 
+import { assertRuntimeMoneyInventory } from "../../../scripts/runtime-role-release-preflight.ts";
+
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
   throw Error("Test URL required");
@@ -76,6 +78,7 @@ suite("reviewed rewards money destructive privileges", () => {
       await writer.query(
         "INSERT INTO unrelated_retention VALUES('retained'); DELETE FROM unrelated_retention WHERE id='retained'",
       );
+      await expect(assertRuntimeMoneyInventory(writer, schema)).resolves.toBeUndefined();
       await admin.query("CREATE TABLE reward_unreviewed_fixture(id text)");
       expect(
         (
@@ -86,6 +89,15 @@ suite("reviewed rewards money destructive privileges", () => {
       ).toEqual([{ remove: true }]);
       expect(moneyTableInventoryViolations((await grants()).rows.map((row) => row.object))).toEqual(
         ["reward_unreviewed_fixture: money table unreviewed"],
+      );
+      await expect(assertRuntimeMoneyInventory(writer, schema)).rejects.toThrow(
+        "money table unreviewed",
+      );
+      await admin.query(
+        `DROP TABLE reward_unreviewed_fixture; GRANT CREATE ON SCHEMA "${schema}" TO "${runtime}"; ALTER TABLE reward_ledger_credits OWNER TO "${runtime}"; REVOKE DELETE,TRUNCATE ON reward_ledger_credits FROM "${runtime}"`,
+      );
+      await expect(assertRuntimeMoneyInventory(writer, schema)).rejects.toThrow(
+        "table-owner authority",
       );
     } finally {
       await writer.end();
