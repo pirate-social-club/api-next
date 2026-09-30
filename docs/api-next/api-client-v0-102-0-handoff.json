@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.102.0",
   "sourceBranch": "fix/rewards-expired-unfunded-status",
-  "sourceBase": "9af1c4fbd182d4ef5b4a1235a4b8a250e8f2dd8a",
+  "sourceBase": "8af1d5ad9541a654d26856094151dbf55e860bba",
   "validatedSourceCommit": null,
   "pullRequest": null,
   "wireContract": "Funding instruction expired_unfunded means an unbound planned instruction expired with no recorded transaction hash. Actual reverted and reconciliation_required remain distinct. A reclaimable instruction with a hash remains reconciliation_required; clients must preserve ambiguous wallet journals.",
