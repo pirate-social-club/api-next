@@ -35,6 +35,7 @@ export interface MegapotRewardsRuntime {
   readonly approve: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
+  readonly closeUnavailablePurchase: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly purchase: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
@@ -102,6 +103,7 @@ export type MegapotRewardsCycleSummary = Readonly<{
   refunded: number;
   paid: number;
   gasTopups: number;
+  pausedHolds?: number;
   failures: readonly string[];
   failureDiagnostics: readonly string[];
   agedPending: readonly MegapotAgedPending[] | null;
@@ -231,6 +233,7 @@ export function writeMegapotRewardsCycleSnapshot(
       refunded_count: summary.refunded,
       paid_count: summary.paid,
       gas_topup_count: summary.gasTopups,
+      paused_hold_count: summary.pausedHolds ?? 0,
       failure_count: summary.failures.length,
       failure_tags: summary.failures,
       failure_diagnostics: summary.failureDiagnostics,
@@ -312,10 +315,16 @@ export function runMegapotRewardsCycle(input: {
     }
     const failures: string[] = [];
     const failureDiagnostics: string[] = [];
+    let pausedHolds = 0;
     const recordFailures = (values: readonly unknown[]) => {
-      failures.push(...values.map(failureTag));
+      const failuresOnly = values.filter((error) => {
+        if (failureTag(error) !== "RewardOperationsPaused") return true;
+        pausedHolds += 1;
+        return false;
+      });
+      failures.push(...failuresOnly.map(failureTag));
       failureDiagnostics.push(
-        ...values.flatMap((error) => {
+        ...failuresOnly.flatMap((error) => {
           const diagnostic = failureDiagnostic(error);
           return diagnostic === null ? [] : [diagnostic];
         }),
@@ -369,8 +378,23 @@ export function runMegapotRewardsCycle(input: {
     const committedDrawings = yield* input.work.loadDrawings({ statuses: ["committed"], limit });
     const [purchaseFailures, purchaseResults] = yield* partition(committedDrawings, (work) =>
       Effect.gen(function* () {
-        const approval = yield* input.runtime.approve(work);
-        if (approval.kind !== "not_required" && approval.kind !== "confirmed") return false;
+        const approval = yield* input.runtime.approve(work).pipe(
+          Effect.catch((failure) =>
+            input.runtime.closeUnavailablePurchase(work).pipe(
+              Effect.catch((cleanupFailure) => {
+                // A normal pause cannot conceal a failed custody/window observation.
+                if (failureTag(failure) === "RewardOperationsPaused")
+                  recordFailures([cleanupFailure]);
+                return Effect.succeed(null);
+              }),
+              Effect.andThen(Effect.fail(failure)),
+            ),
+          ),
+        );
+        if (approval.kind !== "not_required" && approval.kind !== "confirmed") {
+          yield* input.runtime.closeUnavailablePurchase(work);
+          return false;
+        }
         const purchase = yield* input.runtime.purchase(work);
         return purchase.kind !== "closed";
       }),
@@ -446,6 +470,7 @@ export function runMegapotRewardsCycle(input: {
       refunded: refunded.length,
       paid: paid.length,
       gasTopups,
+      ...(pausedHolds > 0 ? { pausedHolds } : {}),
       failures,
       failureDiagnostics,
       agedPending,

@@ -133,7 +133,7 @@ suite("Composed current-policy Megapot settlement", () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await applyPostgresTestBaselineConnection({ rewardsRunning: true, connectionString: scoped });
       await admin.query("SET session_replication_role = replica");
       try {
         await seedActivitySong(admin);

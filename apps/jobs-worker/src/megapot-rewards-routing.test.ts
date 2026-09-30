@@ -94,6 +94,7 @@ function fixture(options: { missingRetiredKey?: boolean; failedRetiredBalance?: 
         publishCommitment: () => send("commitment"),
         approve: () => send("approve"),
         purchase: () => send("purchase"),
+        closeUnavailablePurchase: () => call("purchase-window").pipe(Effect.as(null)),
         sweep: () => call("sweep"),
         claim: () => send("claim"),
         refund: () => send("refund"),

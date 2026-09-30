@@ -3,7 +3,7 @@ import pg from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 import { loadPostgresMigrations } from "./postgres-migrations.ts";
 
-type Privilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "EXECUTE";
+type Privilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "EXECUTE";
 type Requirement = Readonly<{
   object: string;
   privilege: Privilege;
@@ -12,6 +12,19 @@ type Requirement = Readonly<{
 
 /** Keep allowed operations in sync with direct SQL in reward, Megapot, custody and Wallet repositories. */
 export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
+  ...["reward_operations_control", "reward_operations_control_events"].flatMap((object) => [
+    { object, privilege: "SELECT" as const, allowed: true },
+    ...(["INSERT", "UPDATE", "DELETE", "TRUNCATE"] as const).map((privilege) => ({
+      object,
+      privilege,
+      allowed: false,
+    })),
+  ]),
+  {
+    object: "set_reward_operations_paused_v1(bigint,boolean,text)",
+    privilege: "EXECUTE",
+    allowed: false,
+  },
   { object: "wallet_sponsored_sends", privilege: "SELECT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "INSERT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "UPDATE", allowed: true },

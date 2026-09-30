@@ -137,6 +137,7 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "RewardGasTopupRejected",
   "RewardGasTopupStorageFailed",
   "RewardPayoutCoordinatorFailed",
+  "RewardOperationsPaused",
   "RewardPayoutRejected",
   "RewardPayoutStorageFailed",
   "RewardOfferTerminalStorageFailed",
@@ -274,6 +275,7 @@ export function makeMegapotRewardsJob(
         publishCommitment: routing.publishCommitment,
         approve: routing.approve,
         purchase: routing.purchase,
+        closeUnavailablePurchase: routing.closeUnavailablePurchase,
         sweep: routing.sweep,
         claim: routing.claim,
         allocate: (work) =>

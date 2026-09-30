@@ -18,6 +18,7 @@ export const rewardsPlatformAliases = Object.fromEntries(
     "megapot-sweep-repository",
     "megapot-v2-rpc",
     "megapot-v2-signer",
+    "reward-operations-control",
     "reward-payout-coordinator",
     "reward-payout-repository",
     "reward-refund-coordinator",

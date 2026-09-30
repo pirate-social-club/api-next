@@ -374,3 +374,29 @@ describe("Megapot purchase coordinator", () => {
     expect(fixture.getSendCalls()).toBe(1);
   });
 });
+
+test("pause cleanup closes an unsent expired window without requiring allowance or reserving a nonce", async () => {
+  const fixture = harness({ currentDrawingId: 102n, allowance: 0n });
+  expect(
+    await Effect.runPromise(
+      fixture.coordinator.closeUnavailable({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+    ),
+  ).toEqual({ kind: "closed", reason: "drawing_rolled_over" });
+  expect(fixture.events).toEqual(["close:drawing_rolled_over"]);
+  expect(fixture.getSendCalls()).toBe(0);
+});
+
+test("pause cleanup preserves any already-admitted purchase and never resumes it", async () => {
+  const fixture = harness();
+  await Effect.runPromise(
+    fixture.coordinator.purchase({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+  );
+  const events = [...fixture.events];
+  expect(
+    await Effect.runPromise(
+      fixture.coordinator.closeUnavailable({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+    ),
+  ).toBeNull();
+  expect(fixture.events).toEqual(events);
+  expect(fixture.getSendCalls()).toBe(1);
+});
