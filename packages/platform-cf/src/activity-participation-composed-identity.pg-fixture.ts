@@ -182,6 +182,10 @@ export async function seedVeryRewardEvidence(
 export async function seedFundedAssetBonus(
   admin: Client,
 ): Promise<Readonly<{ readonly legId: string; readonly offerId: string; readonly token: string }>> {
+  // Admit fixture funding explicitly, then exercise qualification under pause.
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_funding_admission') FROM reward_operations_control WHERE singleton",
+  );
   const suffix = "composed-bonus";
   const offerId = `offer-${suffix}`;
   const legId = `leg-${suffix}`;
@@ -256,6 +260,9 @@ export async function seedFundedAssetBonus(
     `UPDATE song_reward_offer_legs SET status='active',activated_at=clock_timestamp(),
        updated_at=clock_timestamp() WHERE leg_id=$1`,
     [legId],
+  );
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
   );
   return { legId, offerId, token };
 }
