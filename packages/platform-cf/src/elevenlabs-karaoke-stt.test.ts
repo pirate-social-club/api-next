@@ -266,3 +266,61 @@ describe("ElevenLabs Karaoke realtime adapter", () => {
     expect(requests[1]?.headers.get("upgrade")).toBe("websocket");
   });
 });
+
+test("maps provider word endpoints through variable frame spans and pause boundaries", async () => {
+  const socket = new FakeSocket();
+  const messages: KaraokeSttAdapterMessage[] = [];
+  const adapter = new ElevenLabsKaraokeSttAdapter({
+    apiKey: "fixture",
+    connect: async () => socket,
+  });
+  await adapter.start({
+    attemptId: "attempt-1",
+    sessionId: "session-1",
+    initialSequence: 0,
+    onMessage: async (message) => {
+      messages.push(message);
+    },
+  });
+  await adapter.sendPcm16({ ...frame(3200, 1000), songEndMs: 1080 });
+  await adapter.sendPcm16({ ...frame(3200, 5000), songEndMs: 5100 });
+  socket.emit({
+    message_type: "committed_transcript_with_timestamps",
+    text: "before after",
+    words: [
+      { type: "word", text: "before", start: 0.05, end: 0.1 },
+      { type: "word", text: "after", start: 0.1, end: 0.15 },
+    ],
+  });
+  await Bun.sleep(0);
+  expect(messages[0]?.event.words.map(({ startMs, endMs }) => ({ startMs, endMs }))).toEqual([
+    { startMs: 1040, endMs: 1080 },
+    { startMs: 5000, endMs: 5050 },
+  ]);
+});
+
+test("does not grade a word whose endpoints cross a backward seek", async () => {
+  const socket = new FakeSocket();
+  const messages: KaraokeSttAdapterMessage[] = [];
+  const adapter = new ElevenLabsKaraokeSttAdapter({
+    apiKey: "fixture",
+    connect: async () => socket,
+  });
+  await adapter.start({
+    attemptId: "attempt-1",
+    sessionId: "session-1",
+    initialSequence: 0,
+    onMessage: async (message) => {
+      messages.push(message);
+    },
+  });
+  await adapter.sendPcm16(frame(3200, 5000));
+  await adapter.sendPcm16(frame(3200, 1000));
+  socket.emit({
+    message_type: "committed_transcript_with_timestamps",
+    text: "crossed",
+    words: [{ type: "word", text: "crossed", start: 0.05, end: 0.15 }],
+  });
+  await Bun.sleep(0);
+  expect(messages[0]?.event.words).toEqual([]);
+});
