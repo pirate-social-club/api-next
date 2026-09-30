@@ -92,6 +92,29 @@ describe("the readiness performer", () => {
     expect(recorded).toHaveLength(0);
   });
 
+  for (const prepared of ["revision_conflict", "stale_proof"] as const) {
+    test(`transient ownership ${prepared} records a retry instead of killing readiness`, async () => {
+      const {
+        ports: configured,
+        finalized,
+        recorded,
+      } = ports({
+        prepare_ownership: async () => prepared,
+        context: async () => {
+          throw new Error("stale preparation must not proceed to context");
+        },
+      });
+      expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+        outcome: "retry",
+        reason: `readiness_ownership_${prepared}`,
+      });
+      expect(finalized).toEqual([
+        { outcome: "retry", failureCode: `readiness_ownership_${prepared}` },
+      ]);
+      expect(recorded).toHaveLength(0);
+    });
+  }
+
   test("a lost lease cannot claim that its context failure was recorded", async () => {
     const { ports: configured } = ports({
       context: async () => {

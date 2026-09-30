@@ -53,12 +53,24 @@ fp1c session and all transaction/click fences remain intact.
 
 ## Reviewed release requirements
 
-Apply migration 0234 through the repository migration runner and grant the
-provisioner's runtime role EXECUTE on
-`enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)`
-before starting the repaired provisioner. The example role file declares
-this grant; changing that file does not apply any runtime privilege. No table
-write grant or browser credential is added.
+Apply migration 0234 through the repository migration runner. Its guarded
+block installs EXECUTE on enqueue_hns_safe_ownership_completion_v1 for the
+existing hns_root_import_executor_login_v1 provisioner role, matching 0225.
+The HTTP role is not a caller and receives no grant for this routine. If the
+executor role is created after the migration, apply the reviewed example
+block and verify its effective privilege before starting the provisioner.
+Read the actual deployed role and its privileges during preflight; a source
+example is not an applied runtime grant. The privilege regression creates
+the production identities before migration replay, invokes the function as
+the executor and verifies it has no direct proof-table mutation privileges.
+
+Preparation runs its database read and enqueue on separate short-lived
+connections, closing the first before chain RPC. Unexpected SQL faults
+propagate as operational failures; only malformed input parsing and casting
+become invalid_proof. Revision conflicts and evidence that becomes stale
+between observation and SQL acceptance are distinct retry outcomes. The same
+readiness job is rescheduled without creating a replacement import or treating
+proof as an ownership result.
 
 Before release, observe the actual staging HTTP Worker and verifier releases,
 ownership capabilities, scheduled publication continuation and database role.

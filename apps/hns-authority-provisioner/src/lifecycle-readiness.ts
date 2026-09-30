@@ -49,11 +49,18 @@ export type HnsLifecycleReadinessContextV1 = Readonly<{
   readonly expires_at: string;
 }>;
 
+export type HnsOwnershipPreparationResultV1 =
+  | "ready"
+  | "pending"
+  | "revision_conflict"
+  | "stale_proof"
+  | "refused";
+
 export type HnsLifecycleReadinessPortsV1 = Readonly<{
   readonly prepare_ownership?: (
     job: HnsLifecycleClaimV1,
     executorId: string,
-  ) => Promise<"ready" | "pending" | "refused">;
+  ) => Promise<HnsOwnershipPreparationResultV1>;
   readonly context: (rootImportSessionId: string) => Promise<HnsLifecycleReadinessContextV1 | null>;
   readonly observe: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
@@ -123,7 +130,7 @@ export async function runHnsRootImportReadinessOnce(
     if (finalized.outcome !== outcome) throw new Error("HNS readiness lease finalization refused");
     return { outcome, reason };
   };
-  let prepared: "ready" | "pending" | "refused";
+  let prepared: HnsOwnershipPreparationResultV1;
   try {
     prepared = (await ports.prepare_ownership?.(job, executorId)) ?? "ready";
   } catch (error) {
@@ -136,8 +143,8 @@ export async function runHnsRootImportReadinessOnce(
   }
   if (prepared !== "ready") {
     return finalizeFailure(
-      prepared === "pending" ? "retry" : "failed",
-      prepared === "pending" ? "readiness_ownership_pending" : "readiness_ownership_refused",
+      prepared === "refused" ? "failed" : "retry",
+      `readiness_ownership_${prepared}`,
     );
   }
 

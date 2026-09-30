@@ -82,7 +82,7 @@ BEGIN
       OR proof->>'root_import_session_id' IS DISTINCT FROM input_session_id
       OR proof->>'namespace_session_id' IS DISTINCT FROM session.namespace_session_id
       OR proof->>'root_label' IS DISTINCT FROM session.root_label
-      OR (proof->>'lifecycle_revision')::bigint IS DISTINCT FROM lifecycle.revision
+      OR jsonb_typeof(proof->'lifecycle_revision') IS DISTINCT FROM 'number'
       OR (proof->>'generation')::bigint IS DISTINCT FROM lifecycle.generation
       OR proof->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256
       OR proof->>'plan_encoded_resource_sha256' IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256
@@ -91,8 +91,6 @@ BEGIN
       OR jsonb_typeof(proof#>'{observation,commitment}') IS DISTINCT FROM 'object'
       OR jsonb_typeof(proof#>'{observation,records}') IS DISTINCT FROM 'array'
       OR observed_ms IS NULL OR observed_ms='NaN'::double precision
-      OR observed_ms > extract(epoch FROM database_now)*1000
-      OR observed_ms < extract(epoch FROM database_now)*1000-900000
       OR NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(proof#>'{observation,records}') record
         WHERE record->>'type'='TXT' AND
@@ -102,7 +100,15 @@ BEGIN
       ) THEN
       RETURN QUERY SELECT 'invalid_proof'::text; RETURN;
     END IF;
-  EXCEPTION WHEN others THEN
+    IF (proof->>'lifecycle_revision')::bigint IS DISTINCT FROM lifecycle.revision THEN
+      RETURN QUERY SELECT 'revision_conflict'::text; RETURN;
+    END IF;
+    IF observed_ms > extract(epoch FROM database_now)*1000
+      OR observed_ms < extract(epoch FROM database_now)*1000-900000 THEN
+      RETURN QUERY SELECT 'stale_proof'::text; RETURN;
+    END IF;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range
+    OR invalid_parameter_value OR character_not_in_repertoire OR untranslatable_character THEN
     RETURN QUERY SELECT 'invalid_proof'::text; RETURN;
   END;
   SELECT * INTO queued FROM hns_community_publication_jobs WHERE root_import_session_id=input_session_id FOR UPDATE;
@@ -135,3 +141,14 @@ BEGIN
     installed_schema);
 END;
 $safe_ownership_search_path$;
+
+-- Match the provisioner's executor identity already admitted by migration 0225.
+-- The HTTP role does not call this preparatory routine.
+DO $safe_ownership_executor_grant$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hns_root_import_executor_login_v1') THEN
+    GRANT EXECUTE ON FUNCTION enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)
+      TO hns_root_import_executor_login_v1;
+  END IF;
+END;
+$safe_ownership_executor_grant$;

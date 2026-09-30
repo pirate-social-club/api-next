@@ -30,6 +30,11 @@ suite("production HNS import runtime privileges", () => {
       const grants = await admin.query(
         `SELECT
           has_function_privilege($1,'commit_hns_root_import_activation_v1(text,bigint,bigint,bigint,text,text,text,timestamptz,text,boolean)','EXECUTE') AS api_activation,
+          has_function_privilege($2,'enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)','EXECUTE') AS executor_safe_ownership,
+          has_function_privilege($1,'enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)','EXECUTE') AS api_safe_ownership,
+          has_table_privilege($2,'hns_root_import_safe_ownership_proofs','INSERT') AS executor_proof_insert,
+          has_table_privilege($2,'hns_root_import_safe_ownership_proofs','UPDATE') AS executor_proof_update,
+          has_table_privilege($2,'hns_root_import_safe_ownership_proofs','DELETE') AS executor_proof_delete,
           has_function_privilege($2,'commit_hns_root_import_readiness_v1(text,bigint,text,bigint,bigint,bytea,text)','EXECUTE') AS executor_readiness,
           has_function_privilege($2,'lock_hns_root_import_lifecycle_v1(text)','EXECUTE') AS executor_lifecycle_lock,
           has_function_privilege($2,'lock_hns_root_import_lifecycle_job_v1(bigint,text,text,text,bigint)','EXECUTE') AS executor_job_lock,
@@ -42,6 +47,11 @@ suite("production HNS import runtime privileges", () => {
         {
           api_activation: true,
           executor_readiness: true,
+          executor_safe_ownership: true,
+          api_safe_ownership: false,
+          executor_proof_insert: false,
+          executor_proof_update: false,
+          executor_proof_delete: false,
           executor_lifecycle_lock: true,
           executor_job_lock: true,
           executor_read: true,
@@ -61,6 +71,13 @@ suite("production HNS import runtime privileges", () => {
           )
         ).rows,
       ).toEqual([]);
+      expect(
+        (
+          await admin.query(
+            "SELECT * FROM enqueue_hns_safe_ownership_completion_v1('missing',1,'executor',1,NULL,NULL)",
+          )
+        ).rows,
+      ).toEqual([{ outcome: "invalid_proof" }]);
       await admin.query("SAVEPOINT direct_update");
       await expect(
         admin.query("UPDATE hns_root_import_lifecycle SET generation = generation WHERE false"),
