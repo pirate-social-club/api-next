@@ -136,7 +136,7 @@ describe("the readiness performer", () => {
     });
   }
 
-  test("a missed ownership grant records a distinct terminal failure", async () => {
+  test("a missed ownership grant records a distinct retry without advancing readiness", async () => {
     const {
       ports: configured,
       finalized,
@@ -147,11 +147,11 @@ describe("the readiness performer", () => {
       },
     });
     expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
-      outcome: "failed",
+      outcome: "retry",
       reason: "readiness_ownership_permission_denied",
     });
     expect(finalized).toEqual([
-      { outcome: "failed", failureCode: "readiness_ownership_permission_denied" },
+      { outcome: "retry", failureCode: "readiness_ownership_permission_denied" },
     ]);
     expect(recorded).toHaveLength(0);
   });

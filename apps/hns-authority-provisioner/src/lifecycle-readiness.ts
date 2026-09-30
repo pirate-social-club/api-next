@@ -143,7 +143,7 @@ export async function runHnsRootImportReadinessOnce(
     prepared = ports.prepare_ownership ? await ports.prepare_ownership(job, executorId) : "ready";
   } catch (error) {
     if (error instanceof HnsOwnershipPreparationPermissionError) {
-      return finalizeFailure("failed", "readiness_ownership_permission_denied");
+      return finalizeFailure("retry", "readiness_ownership_permission_denied");
     }
     const invalid =
       error instanceof HnsLifecycleReadinessContextError ||

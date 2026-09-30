@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { continueHnsCommunityPublication } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import { Effect } from "effect";
@@ -361,6 +361,140 @@ pgTest(
       ).toBe(0);
     } finally {
       await base.cleanup();
+    }
+  },
+  180_000,
+);
+
+pgTest(
+  "a later ownership grant recovers the same readiness job after visible permission denial",
+  async () => {
+    if (!url) throw new Error("Postgres required");
+    const suffix = randomUUID().replaceAll("-", "");
+    const schema = `hns_grant_recovery_${suffix}`;
+    const login = `hns_grant_runtime_${suffix}`;
+    const base = await prepareAcknowledgedImport({
+      connectionString: url,
+      schema,
+      acknowledge: false,
+    });
+    const signature =
+      "enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)";
+    let roleCreated = false;
+    try {
+      await base.admin.query(`CREATE ROLE ${login} LOGIN PASSWORD 'hns-grant-recovery-fixture'`);
+      roleCreated = true;
+      await base.admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO ${login}`);
+      await base.admin.query(
+        `GRANT SELECT ON hns_root_import_sessions,hns_root_import_lifecycle,hns_root_import_lifecycle_jobs TO ${login}`,
+      );
+      // The schema baseline omits ACLs. Install the migration's PUBLIC revoke
+      // before exercising a runtime login that lacks its release grant.
+      await base.admin.query(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC`);
+      expect(
+        (
+          await base.admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [
+            login,
+            signature,
+          ])
+        ).rows[0]?.allowed,
+      ).toBe(false);
+      const runtimeUrl = new URL(base.scopedConnectionString);
+      runtimeUrl.username = login;
+      runtimeUrl.password = "hns-grant-recovery-fixture";
+      base.hsd.setRecords(base.planRecords);
+      const { ports, observeSafe } = lifecyclePortsFor(base);
+      for (const kind of ["observe_current", "observe_safe"]) {
+        await due(base, kind);
+        expect(await runHnsRootImportLifecycleJobOnce("grant-executor", 60, ports)).toMatchObject({
+          outcome: "completed",
+        });
+      }
+      const preparation = makePostgresHnsOwnershipPreparation(runtimeUrl.toString(), observeSafe);
+      const readiness = (job: Parameters<typeof runHnsRootImportReadinessOnce>[0]) =>
+        runHnsRootImportReadinessOnce(job, "grant-executor", {
+          prepare_ownership: preparation,
+          context: async () => {
+            throw new Error("unverified ownership must not advance readiness");
+          },
+          config: { environment: "staging", valid_for_seconds: 3600 },
+          observe: {} as never,
+          record: async () => {
+            throw new Error("unverified ownership must not record readiness");
+          },
+          finalize: ports.finalize,
+          now_epoch_ms: Date.now,
+        });
+      await due(base, "observe_readiness");
+      const deniedJob = await ports.claim("grant-executor", 60);
+      if (!deniedJob) throw new Error("expected readiness lease");
+      expect(await readiness(deniedJob)).toEqual({
+        outcome: "retry",
+        reason: "readiness_ownership_permission_denied",
+      });
+      expect(
+        (
+          await base.admin.query(
+            "SELECT state,failure_code,leased_by FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=$1",
+            [deniedJob.lifecycle_job_id],
+          )
+        ).rows[0],
+      ).toEqual({
+        state: "queued",
+        failure_code: "readiness_ownership_permission_denied",
+        leased_by: null,
+      });
+      expect(
+        (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
+      ).toHaveLength(0);
+      expect(
+        (await base.admin.query("SELECT * FROM hns_community_publication_jobs")).rows,
+      ).toHaveLength(0);
+      await base.admin.query(`GRANT EXECUTE ON FUNCTION ${signature} TO ${login}`);
+      expect(
+        (
+          await base.admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [
+            login,
+            signature,
+          ])
+        ).rows[0]?.allowed,
+      ).toBe(true);
+      await due(base, "observe_readiness");
+      const recoveredJob = await ports.claim("grant-executor", 60);
+      if (!recoveredJob) throw new Error("expected the retried readiness lease");
+      expect(recoveredJob.lifecycle_job_id).toBe(deniedJob.lifecycle_job_id);
+      expect(recoveredJob.lease_fence).toBeGreaterThan(deniedJob.lease_fence);
+      expect(await readiness(recoveredJob)).toEqual({
+        outcome: "retry",
+        reason: "readiness_ownership_pending",
+      });
+      expect(
+        (await base.admin.query("SELECT * FROM hns_root_import_safe_ownership_proofs")).rows,
+      ).toHaveLength(1);
+      expect(
+        (await base.admin.query("SELECT * FROM hns_community_publication_jobs")).rows,
+      ).toHaveLength(1);
+      expect(
+        (
+          await base.admin.query(
+            "SELECT ownership_result_sha256 FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+            [base.sessionId],
+          )
+        ).rows[0]?.ownership_result_sha256,
+      ).toBeNull();
+    } finally {
+      try {
+        if (roleCreated) {
+          await base.admin.query(`REVOKE ALL ON FUNCTION ${signature} FROM ${login}`);
+          await base.admin.query(
+            `REVOKE ALL ON hns_root_import_sessions,hns_root_import_lifecycle,hns_root_import_lifecycle_jobs FROM ${login}`,
+          );
+          await base.admin.query(`REVOKE ALL ON SCHEMA "${schema}" FROM ${login}`);
+          await base.admin.query(`DROP ROLE ${login}`);
+        }
+      } finally {
+        await base.cleanup();
+      }
     }
   },
   180_000,

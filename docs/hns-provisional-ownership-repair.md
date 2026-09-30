@@ -28,15 +28,16 @@ result to the import and advances the session to `observing`. No alternative
 provider signature, invented result hash, or serving shortcut is introduced.
 
 Readiness waits with a recorded ownership-pending code until that result
-exists, then retain the existing DNSSEC, DANE, full-resource and freshness
+exists, then retains the existing DNSSEC, DANE, full-resource and freshness
 checks. A changed current resource remains a refusal even when the preceding
 safe observation passed. Queue identity and proof identity are replayable;
 publication continuation and activation remain distinct operations.
 
 Invalid context finalizes its lease with `readiness_context_invalid`.
 Storage outages record a sanitized unavailable code and retry. Missing EXECUTE
-privilege is a configuration failure: it records the terminal code
-`readiness_ownership_permission_denied` rather than retrying indefinitely.
+privilege records `readiness_ownership_permission_denied` and retries the same
+job under the existing backoff. A later grant can recover that job without
+resetting it; permission denial does not admit proof or advance readiness.
 Private connection details are not printed. Failure to finalize must propagate
 rather than claim successful recording.
 
@@ -85,16 +86,21 @@ SELECT has_function_privilege(:'provisioner_login',
 Require the readback to be true in the target schema. This source example is
 not an applied runtime grant. Privilege regressions cover production's
 separate executor and staging's shared login, including refusal before the
-explicit staging grant and no direct proof-table mutation privileges.
+explicit staging grant and no direct proof-table mutation privileges. The
+approved release order is migration, grant, effective privilege readback, then
+provisioner deployment. A real PostgreSQL regression also denies preparation,
+records the named retry on the existing lifecycle job, applies the grant and
+reclaims that same job to retain safe proof and queue namespace completion.
 
 Preparation runs its database read and enqueue on separate short-lived
 connections, closing the first before chain RPC. Unexpected SQL faults
 propagate as operational failures; only malformed input parsing and casting
 become invalid_proof. Revision conflicts and evidence that becomes stale
-between observation and SQL acceptance are distinct retry outcomes. Only
-pending, revision_conflict, stale_proof and lease_conflict retry; refused and
-unexpected preparation outcomes fail visibly. An expired lease still held at
-the same fence can reschedule its existing job. A reclaimed lease cannot
+between observation and SQL acceptance are distinct retry outcomes. The
+preparation outcome allowlist is pending, revision_conflict, stale_proof and
+lease_conflict; refused and unexpected outcomes fail visibly. Permission
+errors separately retry with the named code above. An expired lease still held
+at the same fence can reschedule its existing job. A reclaimed lease cannot
 finalize stale work. No replacement import or fabricated ownership is created.
 Both authorization kinds have mocked preparation coverage; the complete real
 PostgreSQL ceremony covers community_provisional, not signature admission.
