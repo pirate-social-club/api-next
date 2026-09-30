@@ -154,6 +154,7 @@
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "true",
         "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "false",
         "ACRCLOUD_CONSOLE_ORIGIN": "",
         "ACRCLOUD_SOURCE_BUCKET_ID": "",
         "DATA_REGISTRATION_CHAIN_ID": "1315",

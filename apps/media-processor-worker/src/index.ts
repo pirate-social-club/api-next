@@ -28,10 +28,15 @@ import {
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import { handleMediaProcessingQueueBatch } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import { MediaSubmissionRepositoryError } from "../../../packages/platform-cf/src/media-submission-repository-error.ts";
+import {
+  consumeSongPcmAdmission,
+  type SongPcmAdmissionDependencies,
+} from "../../../packages/platform-cf/src/song-video-pcm-admission.ts";
 
 export type MediaProcessorWorkerEnv = Readonly<{
   readonly MEDIA_PROCESSING_ENABLED?: string;
   readonly SONG_SOURCE_RECORDING_ENABLED?: string;
+  readonly SONG_VIDEO_PCM_ADMISSION_ENABLED?: string;
 }>;
 
 export type MediaProcessorComposition = Readonly<{
@@ -42,6 +47,7 @@ export type MediaProcessorComposition = Readonly<{
   readonly videoEnrichmentWorkflow?: VideoEnrichmentServices;
   readonly workflow: MediaProcessingWorkflowDependencies;
   readonly sourceRecording?: SongSourceRecordingConsumerDependencies;
+  readonly songPcmAdmission?: SongPcmAdmissionDependencies;
 }>;
 
 export type ResolveMediaProcessorComposition<Env extends MediaProcessorWorkerEnv> = (
@@ -75,6 +81,20 @@ export function makeMediaProcessorQueueWorker<Env extends MediaProcessorWorkerEn
       const songMessages: (typeof batch.messages)[number][] = [];
       const videoMessages: (typeof batch.messages)[number][] = [];
       for (const message of batch.messages) {
+        if (
+          typeof message.body === "object" &&
+          message.body !== null &&
+          (message.body as { kind?: unknown }).kind === "song_pcm_admission"
+        ) {
+          const disposition =
+            env.SONG_VIDEO_PCM_ADMISSION_ENABLED === "true" &&
+            composition.songPcmAdmission !== undefined
+              ? await consumeSongPcmAdmission(message.body, composition.songPcmAdmission)
+              : "retry";
+          if (disposition === "ack") message.ack();
+          else message.retry({ delaySeconds: 30 });
+          continue;
+        }
         if (
           typeof message.body === "object" &&
           message.body !== null &&

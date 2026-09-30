@@ -5,7 +5,7 @@ import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
 import { HTTP_AVATAR_REQUIRED, HTTP_BINDING_KINDS } from "./http-binding-contract.ts";
 import { JOBS_BINDING_KINDS } from "./jobs-binding-contract.ts";
-import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
+import { MEDIA_BINDING_KINDS, mediaUsesCloudConvert } from "./media-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
@@ -338,7 +338,7 @@ const requiredNamesFor = (
     if (environment.vars.SONG_SOURCE_RECORDING_ENABLED === "true") {
       required.push("SONG_SOURCE_RECORDING_ENABLED", ...SONG_SOURCE_RECORDING_REQUIRED);
     }
-    if (environment.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED === "true") {
+    if (mediaUsesCloudConvert(environment.vars)) {
       required.push(
         "CLOUDCONVERT_RENDER_API_KEY",
         "VIDEO_SOURCE_GATEWAY_ORIGIN",

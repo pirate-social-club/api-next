@@ -18,6 +18,7 @@ import { makeVideoPublicationWakeupStore } from "@pirate/platform-cf/video-publi
 import type { Layer } from "effect";
 import type { MediaProcessingObserver } from "../../../packages/application/src/media/processing-contracts.ts";
 import { dispatchVideoEnrichment } from "../../../packages/application/src/video/enrichment-dispatch.ts";
+import { dispatchSongPcmAdmissions } from "../../../packages/platform-cf/src/song-video-pcm-dispatch.ts";
 import { makeVideoEnrichmentDispatchSource } from "../../../packages/platform-cf/src/video-enrichment-dispatch-source.ts";
 import {
   makeVideoReservationCleanup,
@@ -45,6 +46,7 @@ export type MediaJobsBindings = Readonly<{
   readonly VIDEO_ANALYSIS_ENABLED?: string;
   readonly VIDEO_DELIVERY_ENABLED?: string;
   readonly SONG_SOURCE_RECORDING_ENABLED?: string;
+  readonly SONG_VIDEO_PCM_ADMISSION_ENABLED?: string;
   readonly VIDEO_ANALYSIS_WORKFLOW?: VideoAnalysisWorkflowBinding;
   readonly VIDEO_WORKFLOW_ACCOUNT_ID?: string;
   readonly VIDEO_WORKFLOW_NAME?: string;
@@ -197,7 +199,7 @@ export function makeMediaMaintenance(
             }),
           );
         }
-        const [song, video, enrichment, sourceRecording] = await Promise.all([
+        const [song, video, enrichment, sourceRecording, pcm] = await Promise.all([
           dispatchEligibleMediaOutbox(source, queue),
           videoSource === null
             ? Promise.resolve({ selected: 0, sent: 0, failed: 0 })
@@ -217,11 +219,25 @@ export function makeMediaMaintenance(
                 }),
               )
             : Promise.resolve({ selected: 0, sent: 0, failed: 0 }),
+          env.SONG_VIDEO_PCM_ADMISSION_ENABLED === "true"
+            ? isolateMediaMaintenanceDispatch("song PCM admission dispatch", () =>
+                dispatchSongPcmAdmissions(runtime, {
+                  send: (message) =>
+                    queue.send(message as unknown as { readonly outbox_id: string }),
+                }),
+              )
+            : Promise.resolve({ selected: 0, sent: 0, failed: 0 }),
         ]);
         return Object.freeze({
-          selected: song.selected + video.selected + enrichment.selected + sourceRecording.selected,
-          sent: song.sent + video.sent + enrichment.sent + sourceRecording.sent,
-          failed: song.failed + video.failed + enrichment.failed + sourceRecording.failed,
+          selected:
+            song.selected +
+            video.selected +
+            enrichment.selected +
+            sourceRecording.selected +
+            pcm.selected,
+          sent: song.sent + video.sent + enrichment.sent + sourceRecording.sent + pcm.sent,
+          failed:
+            song.failed + video.failed + enrichment.failed + sourceRecording.failed + pcm.failed,
         });
       },
       sweep: () =>

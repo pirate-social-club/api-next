@@ -68,6 +68,7 @@ import { makeVideoSourceGrantIssuer } from "@pirate/platform-cf/video-source-gra
 import { makeVideoStageArtifactHead } from "@pirate/platform-cf/video-stage-artifact-head";
 import { makeControlPlaneVideoStageFactStore } from "@pirate/platform-cf/video-stage-fact-repository";
 import { Effect } from "effect";
+import { makeSongPcmAdmissionRepository } from "../../../packages/platform-cf/src/song-video-pcm-admission-repository.ts";
 import type { MediaProcessorComposition, MediaProcessorWorkerEnv } from "./index.ts";
 import { makeVideoDeliveryComposition } from "./video-delivery-composition.ts";
 
@@ -445,6 +446,31 @@ export function makeMediaProcessorComposition(
   }
 
   return {
+    ...(env.SONG_VIDEO_PCM_ADMISSION_ENABLED === "true"
+      ? {
+          songPcmAdmission: {
+            repository: makeSongPcmAdmissionRepository({
+              connect: async () => {
+                const { Client } = await import("pg");
+                const client = new Client({ connectionString: controlPlane.connectionString });
+                await client.connect();
+                return client;
+              },
+              transactionSearchPath: CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+            }),
+            bucket: requiredBinding(env.MEDIA_IMMUTABLE_ORIGINALS, "MEDIA_IMMUTABLE_ORIGINALS"),
+            apiKey: requiredOperationalSecret(
+              env.CLOUDCONVERT_RENDER_API_KEY,
+              "CLOUDCONVERT_RENDER_API_KEY",
+            ),
+            sourceGatewayOrigin: requiredText(
+              env.VIDEO_SOURCE_GATEWAY_ORIGIN,
+              "VIDEO_SOURCE_GATEWAY_ORIGIN",
+            ),
+            fetch: (url, init) => fetch(url, init),
+          },
+        }
+      : {}),
     queue: { store, workflow, workerId },
     ...(songSourceRecordingEnabled && songSourceCatalogBucketId !== undefined
       ? {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
@@ -23,6 +23,12 @@ import {
 import { makeVideoSourceGrantIssuer } from "../packages/platform-cf/src/video-source-grant-issuer.ts";
 import { makeVideoSourceGrantResolver } from "../packages/platform-cf/src/video-source-grant-resolver.ts";
 import { runPostgresMigrations } from "./postgres-migrations.ts";
+import {
+  assertRenderHostFixturePrivileges,
+  decodedSampleCount,
+  ffmpegTool,
+  grantRenderHostFixturePrivileges,
+} from "./song-video-render-host.pg-fixture.ts";
 
 /**
  * Exercises the actual host entry point against real PostgreSQL, real pinned
@@ -78,36 +84,6 @@ const CLIP_DURATION = 4 * 48_000;
 
 type StoredObject = { bytes: Uint8Array; etag: string; version: string };
 
-async function ffmpegTool(args: readonly string[]): Promise<void> {
-  const child = Bun.spawn(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", ...args], {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-  const stderr = await new Response(child.stderr).text();
-  if ((await child.exited) !== 0) throw new Error(`ffmpeg failed: ${stderr.slice(0, 200)}`);
-}
-
-async function decodedSampleCount(directory: string, bytes: Uint8Array): Promise<number> {
-  const input = join(directory, "measure.bin");
-  const output = `${input}.pcm`;
-  await writeFile(input, bytes);
-  await ffmpegTool([
-    "-y",
-    "-i",
-    input,
-    "-map",
-    "0:a:0",
-    "-af",
-    "aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo",
-    "-c:a",
-    "pcm_s16le",
-    "-f",
-    "s16le",
-    output,
-  ]);
-  return (await readFile(output)).byteLength / 4;
-}
-
 suite("song-video render host entry point", () => {
   const schema = `render_host_${crypto.randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString });
@@ -145,35 +121,7 @@ suite("song-video render host entry point", () => {
     await runPostgresMigrations({ connectionString: scoped.toString() });
     await admin.query(`CREATE ROLE "${hostRole}" LOGIN PASSWORD '${hostPassword}'`);
     await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${hostRole}"`);
-    await admin.query(
-      `GRANT SELECT ON
-         "${schema}".media_song_video_render_attempts,
-         "${schema}".media_song_video_render_plans,
-         "${schema}".media_post_submissions,
-         "${schema}".media_video_reservation_song_plans,
-         "${schema}".media_video_revisions,
-         "${schema}".media_immutable_objects,
-         "${schema}".media_song_video_masters,
-         "${schema}".media_song_video_accepted_masters,
-         "${schema}".media_publication_projections,
-         "${schema}".media_song_canonical_timings
-       TO "${hostRole}"`,
-    );
-    await admin.query(
-      `GRANT UPDATE ON
-         "${schema}".media_song_video_render_attempts,
-         "${schema}".media_song_canonical_timings
-       TO "${hostRole}"`,
-    );
-    await admin.query(
-      `GRANT UPDATE (etag) ON "${schema}".media_immutable_objects TO "${hostRole}"`,
-    );
-    await admin.query(
-      `GRANT INSERT ON
-         "${schema}".media_song_video_masters,
-         "${schema}".media_song_video_accepted_masters
-       TO "${hostRole}"`,
-    );
+    await grantRenderHostFixturePrivileges(admin, schema, hostRole);
     await client.connect();
     await seedVideoActors(admin);
     await seedSongOwner(admin);
@@ -834,33 +782,7 @@ suite("song-video render host entry point", () => {
   }, 600_000);
 
   test("the host role cannot rewrite a sealed immutable object", async () => {
-    const roleClient = new Client({ connectionString: roleScoped.toString() });
-    await roleClient.connect();
-    try {
-      const identity = await roleClient.query<{ current_user: string }>("SELECT current_user");
-      expect(identity.rows[0]?.current_user).toBe(hostRole);
-      const readObject = () =>
-        roleClient.query<{ object: Record<string, unknown> }>(
-          `SELECT to_jsonb(object) AS object FROM media_immutable_objects AS object
-            WHERE immutable_ref = $1`,
-          [`media://immutable/${operationId}/video/1`],
-        );
-      const before = await readObject();
-      expect(before.rows).toHaveLength(1);
-      // The column grant exists for the FOR SHARE lock the seal takes; the
-      // append-only trigger must still refuse any actual mutation.
-      await expect(
-        roleClient.query(
-          `UPDATE media_immutable_objects SET etag = etag || '-mutated'
-            WHERE immutable_ref = $1`,
-          [`media://immutable/${operationId}/video/1`],
-        ),
-      ).rejects.toThrow(/append-only/u);
-      const after = await readObject();
-      expect(after.rows).toEqual(before.rows);
-    } finally {
-      await roleClient.end();
-    }
+    await assertRenderHostFixturePrivileges(roleScoped.toString(), hostRole, operationId);
     completedTestCount += 1;
   }, 600_000);
 });
