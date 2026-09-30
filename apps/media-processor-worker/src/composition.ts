@@ -467,7 +467,7 @@ export function makeMediaProcessorComposition(
               env.VIDEO_SOURCE_GATEWAY_ORIGIN,
               "VIDEO_SOURCE_GATEWAY_ORIGIN",
             ),
-            fetch,
+            fetch: (url, init) => fetch(url, init),
           },
         }
       : {}),

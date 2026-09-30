@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { consumeSongPcmAdmission } from "../../packages/platform-cf/src/song-video-pcm-admission.ts";
 import {
   makeSongPcmAdmissionRepository,
@@ -148,5 +148,51 @@ describe("durable PCM admission observation", () => {
     ).toBe("retry");
     expect(f.row().state).toBe("processing");
     expect(f.events).toEqual(["release"]);
+  });
+
+  it("export fetch failure records only its phase and allowlisted class", async () => {
+    const f = fixture();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const outcome = await consumeSongPcmAdmission(
+        { admission_id: id },
+        dependencies(f, async (url) => {
+          if (url.includes("storage.cloudconvert.com"))
+            throw new TypeError("signed-url-secret-and-provider-body");
+          return Response.json({
+            data: {
+              ...job,
+              status: "finished",
+              tasks: [
+                {
+                  name: "export-pcm",
+                  operation: "export/url",
+                  status: "finished",
+                  result: {
+                    files: [
+                      {
+                        filename: "song.pcm",
+                        url: "https://us-east.storage.cloudconvert.com/song.pcm?secret=capability",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          });
+        }),
+      );
+      expect(outcome).toBe("retry");
+      expect(log).toHaveBeenCalledOnce();
+      expect(JSON.parse(log.mock.calls[0]?.[0] as string)).toEqual({
+        event: "song_pcm_admission_observation_failed",
+        admission_id: id,
+        phase: "export-fetch",
+        error_class: "TypeError",
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+    } finally {
+      log.mockRestore();
+    }
   });
 });

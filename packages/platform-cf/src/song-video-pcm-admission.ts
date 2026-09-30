@@ -35,12 +35,14 @@ export async function consumeSongPcmAdmission(
   )
     return "ack";
   const repo = deps.repository;
+  // Called unbound: workerd rejects native fetch invoked as an object method.
+  const send = deps.fetch;
   let a = await repo.claim(message.admission_id, crypto.randomUUID());
   if (a === null) return "ack"; // A scheduled scan will recover any expired claim.
   const transport = (deadlineMs?: number) =>
     makeSongVideoCloudConvertTransport({
       apiKey: deps.apiKey,
-      fetch: deps.fetch,
+      fetch: send,
       exportKind: "pcm",
       ...(deadlineMs === undefined ? {} : { deadlineMs }),
     });
@@ -78,12 +80,15 @@ export async function consumeSongPcmAdmission(
     );
     return (await cleanup(saved)) ? ("ack" as const) : ("retry" as const);
   }
+  let phase = "resume";
+  let httpStatus: number | undefined;
   try {
     if (a.state === "admitted" || a.state === "refused" || a.state === "reconciliation")
       return (await cleanup(a)) ? "ack" : "retry";
     if (a.provider_wait_deadline !== null && Date.now() >= a.provider_wait_deadline.getTime())
       return await refuse(a, "deadline_expired", true);
     if (a.provider_create_started_at === null) {
+      phase = "source-admission";
       const source = await repo.source(a);
       if (source === null) return await refuse(a, "source_refused");
       const head = await deps.bucket.head(source.objectKey);
@@ -130,6 +135,7 @@ export async function consumeSongPcmAdmission(
         return await refuse(a, "source_grant_refused");
       }
       try {
+        phase = "provider-create";
         const created = await transport(a.provider_wait_deadline?.getTime()).create(job);
         await repo.attachJob(a, created.id);
         a = { ...a, provider_job_id: created.id };
@@ -142,6 +148,7 @@ export async function consumeSongPcmAdmission(
     const deadlineMs = a.provider_wait_deadline?.getTime();
     if (deadlineMs === undefined || Date.now() >= deadlineMs)
       return await refuse(a, "deadline_expired", true);
+    phase = "provider-lookup";
     const provider = transport(deadlineMs);
     if (a.provider_job_id === null) {
       const found = await provider.findAllByTag(a.admission_id);
@@ -154,6 +161,7 @@ export async function consumeSongPcmAdmission(
     }
     if (Date.now() >= deadlineMs) return await refuse(a, "deadline_expired", true);
     // Recover a completed write without depending on the provider export's lifetime.
+    phase = "stored-readback";
     let facts = await readStoredSongVideoPcm({
       bucket: deps.bucket,
       objectKey: songPcmOutputKey(a.admission_id),
@@ -164,6 +172,7 @@ export async function consumeSongPcmAdmission(
     if (facts === null) {
       const jobId = a.provider_job_id;
       if (jobId === null) return "retry";
+      phase = "export-observation";
       const observation = await provider.show(jobId);
       if (observation.tag !== a.admission_id)
         return await refuse(a, "provider_identity_changed", true);
@@ -175,11 +184,14 @@ export async function consumeSongPcmAdmission(
       if (remaining <= 0) return await refuse(a, "deadline_expired", true);
       const timer = setTimeout(() => controller.abort(), remaining);
       try {
-        const response = await deps.fetch(observation.exportUrl, {
+        phase = "export-fetch";
+        const response = await send(observation.exportUrl, {
           method: "GET",
           redirect: "manual",
           signal: controller.signal,
         });
+        httpStatus = response.status;
+        phase = "pcm-transfer";
         facts = await transferSongVideoPcm({
           response,
           bucket: deps.bucket,
@@ -192,10 +204,12 @@ export async function consumeSongPcmAdmission(
         clearTimeout(timer);
       }
     }
+    phase = "admission-commit";
     await repo.admit(a, facts);
     const admitted = await repo.get(a.admission_id);
+    phase = "cleanup";
     return admitted !== null && (await cleanup(admitted)) ? "ack" : "retry";
-  } catch {
+  } catch (error) {
     // A lost database acknowledgement might already have committed admission.
     // Cleanup can never delete PCM until a fresh durable terminal state is read.
     const latest = await repo.get(a.admission_id).catch(() => null);
@@ -207,6 +221,13 @@ export async function consumeSongPcmAdmission(
       JSON.stringify({
         event: "song_pcm_admission_observation_failed",
         admission_id: a.admission_id,
+        phase,
+        error_class:
+          error instanceof Error &&
+          ["Error", "TypeError", "RangeError", "AbortError", "TimeoutError"].includes(error.name)
+            ? error.name
+            : "Error",
+        ...(httpStatus === undefined ? {} : { http_status: httpStatus }),
       }),
     );
     return "retry";
