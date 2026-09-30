@@ -12,12 +12,14 @@ import type {
 } from "@pirate/application/rewards/song-reward-offers";
 import {
   RewardGasTopupRejected,
+  RewardOperationsPaused,
   RewardProjectionRejected,
   RewardWinnerSendChainUnavailable,
   RewardWinnerSendRejected,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
+import { RewardsPaused } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
@@ -121,9 +123,11 @@ const claimCalls: { accountId: string; creditId: string }[] = [];
 function fixture(
   fundingIntent: RewardFundingIntent = intent,
   options: {
+    requireRewardOperationsRunning?: () => Promise<void>;
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
+    open?: SongRewardOfferStore["openOffer"];
     gasTopups?: RewardGasTopupRequester | null;
     winnerSends?: RewardWinnerSendService | null;
   } = {},
@@ -149,21 +153,23 @@ function fixture(
             },
           },
         ])),
-    openOffer: (input) =>
-      Effect.succeed({
-        replayed: false,
-        offer: {
-          offerId: "reward_offer_1",
-          communityId: input.communityId,
-          postId: input.postId,
-          audioRevision: 3,
-          createdByAccountId: input.accountId,
-          status: "draft",
-          startsAt: input.startsAt,
-          endsAt: input.endsAt,
-          termsHash: input.termsHash,
-        },
-      }),
+    openOffer:
+      options.open ??
+      ((input) =>
+        Effect.succeed({
+          replayed: false,
+          offer: {
+            offerId: "reward_offer_1",
+            communityId: input.communityId,
+            postId: input.postId,
+            audioRevision: 3,
+            createdByAccountId: input.accountId,
+            status: "draft",
+            startsAt: input.startsAt,
+            endsAt: input.endsAt,
+            termsHash: input.termsHash,
+          },
+        })),
     addMegapotPoolLeg: () => Effect.succeed({ leg, replayed: false }),
     addAssetBonusLeg: () => Effect.succeed({ leg: assetLeg, replayed: false }),
     recordFundingObservation: () => Effect.succeed({ replayed: false }),
@@ -310,6 +316,8 @@ function fixture(
     },
   };
   const handlers = makeSongRewardOfferHandlers({
+    requireRewardOperationsRunning:
+      options.requireRewardOperationsRunning ?? (async () => undefined),
     rewardCatalogAuthority: options.production
       ? null
       : { environment: "test", attestationId: "attestation_1" },
@@ -726,7 +734,11 @@ describe("song reward offer HTTP handlers", () => {
 
   test("keeps participant standing and reward credits authenticated and no-store", async () => {
     const headers = { authorization: "Bearer test" };
-    const standing = await fixture().request(`/reward-offer-legs/${leg.legId}/standing`, {
+    const standing = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new RewardsPaused({ message: "Rewards are paused" });
+      },
+    }).request(`/reward-offer-legs/${leg.legId}/standing`, {
       headers,
     });
     expect(standing.status).toBe(200);
@@ -739,7 +751,11 @@ describe("song reward offer HTTP handlers", () => {
       },
     });
 
-    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    const credits = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new RewardsPaused({ message: "Rewards are paused" });
+      },
+    }).request("/rewards/credits?limit=25", { headers });
     expect(credits.status).toBe(200);
     expect(credits.headers.get("cache-control")).toBe("no-store");
     expect(await credits.json()).toMatchObject({
@@ -943,7 +959,12 @@ describe("song reward offer HTTP handlers", () => {
       get: (input) => own(input.accountId, input.sendId),
       getByCredit: (input) => own(input.accountId, input.creditId),
     };
-    const worker = fixture(intent, { winnerSends });
+    const worker = fixture(intent, {
+      winnerSends,
+      requireRewardOperationsRunning: async () => {
+        throw new RewardsPaused({ message: "Rewards are paused" });
+      },
+    });
     const headers = { "content-type": "application/json", authorization: "Bearer test" };
     const post = (path: string, body: unknown, authorized = true) =>
       worker.request(path, {
@@ -1107,12 +1128,88 @@ describe("song reward offer HTTP handlers", () => {
     expect(await response.json()).toMatchObject({ error: { code: "provider_unavailable" } });
   });
 
-  test("maps an internally reclaimable terminal plan to the stable wire status", async () => {
-    const response = await fixture({ ...intent, state: "reclaimable_failed" }).request(
-      `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`,
-      { headers: { authorization: "Bearer test" } },
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ funding: { status: "reverted" } });
+  test("reports expired unbound funding separately from a mined revert for both leg kinds", async () => {
+    for (const target of [intent, assetIntent]) {
+      const prefix = target.legKind === "megapot_pool" ? "reward-offer-legs" : "asset-bonus-legs";
+      const path = `/${prefix}/${target.legId}/funding/${target.fundingEffectId}`;
+      for (const state of [
+        "reclaimable_failed",
+        "confirmed",
+        "reverted",
+        "reconciliation_required",
+      ] as const) {
+        const response = await fixture({ ...target, state }).request(path, {
+          headers: { authorization: "Bearer test" },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          funding: { status: state === "reclaimable_failed" ? "expired_unfunded" : state },
+        });
+      }
+      const ambiguous = await fixture({
+        ...target,
+        state: "reclaimable_failed",
+        transactionHash: `0x${"a".repeat(64)}`,
+      }).request(path, { headers: { authorization: "Bearer test" } });
+      expect(ambiguous.status).toBe(200);
+      expect(await ambiguous.json()).toMatchObject({
+        funding: { status: "reconciliation_required" },
+      });
+    }
+  });
+});
+
+test("paused rewards refuse offers and fresh instructions but expose already recorded funding", async () => {
+  const paused = {
+    requireRewardOperationsRunning: async () => {
+      throw new RewardsPaused({ message: "Rewards are paused" });
+    },
+  };
+  const worker = fixture(intent, paused);
+  const headers = { authorization: "Bearer test", "content-type": "application/json" };
+  expect(
+    (
+      await worker.request("/communities/community_1/posts/post_1/reward-offers", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "open_1",
+          persona_id: "persona_1",
+          starts_at: now,
+          ends_at: "2026-09-26T12:00:00.000Z",
+        }),
+      })
+    ).status,
+  ).toBe(503);
+  const path = `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`;
+  expect((await worker.request(path, { headers })).status).toBe(503);
+  expect(
+    (
+      await fixture({ ...intent, state: "confirming", transactionHash: hash("8") }, paused).request(
+        path,
+        { headers },
+      )
+    ).status,
+  ).toBe(200);
+});
+
+test("a cached running HTTP guard preserves the database pause as a declared 503", async () => {
+  const worker = fixture(intent, {
+    requireRewardOperationsRunning: async () => undefined,
+    open: () => Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+  });
+  const response = await worker.request("/communities/community_1/posts/post_1/reward-offers", {
+    method: "POST",
+    headers: { authorization: "Bearer test", "content-type": "application/json" },
+    body: JSON.stringify({
+      idempotency_key: "stale-running-open",
+      persona_id: "persona_1",
+      starts_at: now,
+      ends_at: "2026-09-26T12:00:00.000Z",
+    }),
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({
+    error: { code: "rewards_paused", message: "Rewards are paused", retryable: true },
   });
 });

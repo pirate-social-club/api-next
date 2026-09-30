@@ -12,7 +12,10 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { sha256, toBytes } from "viem";
-import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -25,6 +28,13 @@ const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
       mapMegapotStorageFailure<E, MegapotPurchaseStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, MegapotPurchaseStorageFailed>(error, storage),
     ),
   );
 
@@ -632,7 +642,7 @@ export function makeControlPlaneMegapotPurchaseRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));
-      }).pipe(mapped),
+      }).pipe(mappedReservation),
     prepare: (input: Parameters<MegapotPurchaseStore["prepare"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;

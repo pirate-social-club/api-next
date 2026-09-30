@@ -10,6 +10,15 @@ import {
   verifyDeploymentSource,
 } from "./deploy-worker-with-provenance";
 
+import type { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+
+const allowRewardDeployment: typeof withRewardsBindingDeployment = async (
+  _root,
+  _config,
+  _environment,
+  operation,
+) => operation();
+
 const sourceSha = "a".repeat(40);
 const input = {
   configPath: "apps/jobs-worker/wrangler.jsonc",
@@ -40,6 +49,31 @@ function queueRunner(
 }
 
 describe("Worker deployment provenance", () => {
+  test("both reward Workers refuse upload when the obligation guard refuses", async () => {
+    for (const configPath of [
+      "apps/http-worker/wrangler.jsonc",
+      "apps/jobs-worker/wrangler.jsonc",
+    ]) {
+      const release = { ...input, configPath, environment: "prod" };
+      const { runner, commands } = queueRunner([
+        { exitCode: 0, stdout: sourceSha },
+        { exitCode: 0 },
+        { exitCode: 0 },
+        { exitCode: 0 },
+        { exitCode: 0, stdout: configPath },
+        { exitCode: 0, stdout: "[]" },
+      ]);
+      const refuse: typeof withRewardsBindingDeployment = async (_root, config, environment) => {
+        expect(config).toBe(configPath);
+        expect(environment).toBe("prod");
+        throw Error("reward binding shutdown refused: unpaid_credits");
+      };
+      await expect(
+        deployWorkerWithProvenance("/repo", release, runner, undefined, undefined, refuse),
+      ).rejects.toThrow("unpaid_credits");
+      expect(commands.some((command) => command.includes("deploy"))).toBe(false);
+    }
+  });
   test("parses only the bounded deploy surface and rejects manual messages", () => {
     expect(
       parseWorkerDeploymentArgs([
@@ -172,7 +206,14 @@ describe("Worker deployment provenance", () => {
     const diagnostics: string[] = [];
 
     await expect(
-      deployWorkerWithProvenance("/repo", input, runner, (text) => diagnostics.push(text)),
+      deployWorkerWithProvenance(
+        "/repo",
+        input,
+        runner,
+        (text) => diagnostics.push(text),
+        undefined,
+        allowRewardDeployment,
+      ),
     ).resolves.toEqual({
       schema_version: 1,
       source_sha: sourceSha,
@@ -232,6 +273,7 @@ describe("Worker deployment provenance", () => {
         runner,
         () => undefined,
         async () => pin,
+        allowRewardDeployment,
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(commands[5]?.[0]).toBe("timeout");

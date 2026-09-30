@@ -230,6 +230,9 @@
     "0227_wallet_sponsored_send_scope.sql": "a0ec95711d39f612b0e415f54e472b21fa3ee315265387355054be40e290b9e4",
     "0228_reward_obligation_attestation_pinning.sql": "f574633c1d279f4f37b592de58e87cb3e7519f0e899d1ce01ac31e76e4412a30",
     "0229_song_video_cloudconvert_attempts.sql": "9d24271f5d322b8d3cc8ed88ae9bf9c05e9b68128b00508743d444c75958d62f",
-    "0230_song_video_pcm_admission.sql": "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca"
+    "0230_reward_operations_control.sql": "ebf1aa63689821c82c3389c635960c06ec59612fe7485d012fd9105d28ecff17",
+    "0231_reward_http_admission.sql": "a84b82b4e1ec503d8338686d2f1dff62980133b5d13148c69257f1507dd56b51",
+    "0232_reward_money_destructive_privileges.sql": "daa7ee36baf6a6408d65f0a9e56898d2d35948276f8d93ab37be3e629a8416c5",
+    "0233_song_video_pcm_admission.sql": "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca"
   }
 }

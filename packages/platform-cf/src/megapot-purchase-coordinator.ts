@@ -77,6 +77,13 @@ export type MegapotPurchaseCoordinatorOptions = Readonly<{
 }>;
 
 export interface MegapotPurchaseCoordinator {
+  readonly closeUnavailable: (command: {
+    readonly poolLegId: string;
+    readonly drawingId: bigint;
+  }) => Effect.Effect<
+    Extract<MegapotPurchaseCoordinatorResult, { readonly kind: "closed" }> | null,
+    MegapotPurchaseFailure | MegapotPurchaseCoordinatorFailed
+  >;
   readonly purchase: (input: {
     readonly poolLegId: string;
     readonly drawingId: bigint;
@@ -531,6 +538,43 @@ export function makeMegapotPurchaseCoordinator(input: {
     return yield* reconcilePrepared(progress);
   });
 
+  const checkPreBroadcastWindow = Effect.fn("MegapotPurchaseCoordinator.checkPreBroadcastWindow")(
+    function* (candidate: MegapotPurchaseCandidate) {
+      const preflight = yield* assertLivePurchase(candidate).pipe(
+        Effect.as({ ok: true as const }),
+        Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      );
+      if (!preflight.ok) {
+        const terminalReasons = new Set<MegapotPreBroadcastCloseReason>([
+          "cutoff_safety_margin",
+          "drawing_locked",
+          "drawing_rolled_over",
+        ]);
+        if (terminalReasons.has(preflight.error.reason as MegapotPreBroadcastCloseReason)) {
+          const reason = preflight.error.reason as MegapotPreBroadcastCloseReason;
+          yield* store.closePreBroadcast({
+            candidate,
+            reason,
+            failedAt: new Date(now()).toISOString(),
+          });
+          return { kind: "closed", reason } as const;
+        }
+        return yield* preflight.error;
+      }
+      return null;
+    },
+  );
+
+  /** Read-only chain checks plus proven-unsent closure; never reserves or resumes a send. */
+  const closeUnavailable = Effect.fn("MegapotPurchaseCoordinator.closeUnavailable")(
+    function* (command: { readonly poolLegId: string; readonly drawingId: bigint }) {
+      const effectId = deriveMegapotPurchaseEffectId(command.poolLegId, command.drawingId);
+      if ((yield* store.findProgress(effectId)) !== null) return null;
+      const candidate = yield* store.loadCandidate(command);
+      return yield* checkPreBroadcastWindow(candidate);
+    },
+  );
+
   const purchase = Effect.fn("MegapotPurchaseCoordinator.purchase")(function* (command: {
     readonly poolLegId: string;
     readonly drawingId: bigint;
@@ -539,27 +583,8 @@ export function makeMegapotPurchaseCoordinator(input: {
     const existing = yield* store.findProgress(effectId);
     if (existing !== null) return yield* resume(existing);
     const candidate = yield* store.loadCandidate(command);
-    const preflight = yield* assertLivePurchase(candidate).pipe(
-      Effect.as({ ok: true as const }),
-      Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
-    );
-    if (!preflight.ok) {
-      const terminalReasons = new Set<MegapotPreBroadcastCloseReason>([
-        "cutoff_safety_margin",
-        "drawing_locked",
-        "drawing_rolled_over",
-      ]);
-      if (terminalReasons.has(preflight.error.reason as MegapotPreBroadcastCloseReason)) {
-        const reason = preflight.error.reason as MegapotPreBroadcastCloseReason;
-        yield* store.closePreBroadcast({
-          candidate,
-          reason,
-          failedAt: new Date(now()).toISOString(),
-        });
-        return { kind: "closed", reason } as const;
-      }
-      return yield* preflight.error;
-    }
+    const closed = yield* checkPreBroadcastWindow(candidate);
+    if (closed !== null) return closed;
     const ticket = deriveMegapotTicket({
       effectId,
       drawingId: candidate.drawingId,
@@ -620,5 +645,5 @@ export function makeMegapotPurchaseCoordinator(input: {
     );
   });
 
-  return { purchase, reconcile };
+  return { purchase, reconcile, closeUnavailable };
 }

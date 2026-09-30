@@ -203,6 +203,12 @@ export function makeMegapotAttestationRuntime(input: {
           }),
         ),
       ),
+    closeUnavailablePurchase: (work) =>
+      signing().pipe(
+        Effect.flatMap(({ purchase }) =>
+          purchase.closeUnavailable({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+        ),
+      ),
     purchase: (work) =>
       signing().pipe(
         Effect.flatMap(({ purchase }) =>

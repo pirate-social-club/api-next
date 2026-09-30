@@ -1,4 +1,5 @@
 import { Data, type Effect } from "effect";
+import type { RewardOperationsPaused } from "./reward-operations.ts";
 
 export class MegapotClaimStorageFailed extends Data.TaggedError("MegapotClaimStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -12,7 +13,10 @@ export class MegapotClaimRejected extends Data.TaggedError("MegapotClaimRejected
     | "ticket-not-claimable";
 }> {}
 
-export type MegapotClaimFailure = MegapotClaimRejected | MegapotClaimStorageFailed;
+export type MegapotClaimFailure =
+  | MegapotClaimRejected
+  | MegapotClaimStorageFailed
+  | RewardOperationsPaused;
 
 export type MegapotClaimReviewReason = "no_tickets_to_claim" | "ticket_owner_mismatch";
 

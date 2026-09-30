@@ -12,6 +12,10 @@ import {
   type RewardRefundStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
 
 import type { RewardObligationAuthority } from "./reward-obligation-authority.ts";
 
@@ -21,31 +25,17 @@ const storage = (reason: RewardRefundStorageFailed["reason"]) =>
   new RewardRefundStorageFailed({ reason });
 const rejected = (reason: RewardRefundRejected["reason"]) => new RewardRefundRejected({ reason });
 
-function mapError(error: ControlPlaneError): RewardRefundStorageFailed {
-  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
-  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
-    return storage("outcome-unknown");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505") {
-    return storage("conflict");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState !== null) {
-    return storage("constraint");
-  }
-  return storage("unavailable");
-}
-
 const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
-      typeof error === "object" && error !== null && "_tag" in error
-        ? error._tag === "ControlPlaneAcquireFailed" ||
-          error._tag === "ControlPlaneOperationTimedOut" ||
-          error._tag === "ControlPlaneStatementFailed" ||
-          error._tag === "ControlPlaneTransactionOutcomeUnknown"
-          ? mapError(error as ControlPlaneError)
-          : (error as E)
-        : (error as E),
+      mapMegapotStorageFailure<E, RewardRefundStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, RewardRefundStorageFailed>(error, storage),
     ),
   );
 
@@ -593,7 +583,7 @@ export function makeControlPlaneRewardRefundRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));
-      }).pipe(mapped),
+      }).pipe(mappedReservation),
     prepare: (input: Parameters<RewardRefundStore["prepare"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;

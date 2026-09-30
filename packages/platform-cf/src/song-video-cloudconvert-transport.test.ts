@@ -79,36 +79,39 @@ describe("CloudConvert transport", () => {
     expect(await transport.findByTag(job.tag)).toBeNull();
   });
 
-  test("accepts exactly the finished master export from the provider's storage host", async () => {
-    const transport = makeSongVideoCloudConvertTransport({
-      apiKey: "private-key",
-      fetch: async () =>
-        json({
-          data: {
-            ...job,
-            status: "finished",
-            tasks: [
-              {
-                name: "export-master",
-                operation: "export/url",
-                status: "finished",
-                result: {
-                  files: [
-                    {
-                      filename: "master.mp4",
-                      url: "https://storage.cloudconvert.com/job-1/master.mp4?token=x",
-                    },
-                  ],
+  test.each(["storage.cloudconvert.com", "us-east.storage.cloudconvert.com"])(
+    "accepts exactly a finished master from %s",
+    async (host) => {
+      const transport = makeSongVideoCloudConvertTransport({
+        apiKey: "private-key",
+        fetch: async () =>
+          json({
+            data: {
+              ...job,
+              status: "finished",
+              tasks: [
+                {
+                  name: "export-master",
+                  operation: "export/url",
+                  status: "finished",
+                  result: {
+                    files: [
+                      {
+                        filename: "master.mp4",
+                        url: `https://${host}/job-1/master.mp4?token=x`,
+                      },
+                    ],
+                  },
                 },
-              },
-            ],
-          },
-        }),
-    });
-    expect((await transport.show(job.id)).exportUrl).toBe(
-      "https://storage.cloudconvert.com/job-1/master.mp4?token=x",
-    );
-  });
+              ],
+            },
+          }),
+      });
+      expect((await transport.show(job.id)).exportUrl).toBe(
+        `https://${host}/job-1/master.mp4?token=x`,
+      );
+    },
+  );
 
   test("refuses a finished job with a missing, extra or foreign export", async () => {
     for (const tasks of [

@@ -415,6 +415,13 @@ export class VerifierContractIncompatible extends Data.TaggedError(
   readonly retryable = false as const;
 }
 
+/** Deliberate operator pause; not an upstream provider failure. */
+export class RewardsPaused extends Data.TaggedError("RewardsPaused")<WireArgs> {
+  readonly status = 503 as const;
+  readonly code = "rewards_paused" as const;
+  readonly retryable = true as const;
+}
+
 export class ProviderUnavailable extends Data.TaggedError("ProviderUnavailable")<WireArgs> {
   readonly status = 502 as const;
   readonly code = "provider_unavailable" as const;
@@ -496,6 +503,7 @@ export type ApiError =
   | NamespaceUnavailable
   | StructuredSurfaceDisabled
   | VerifierContractIncompatible
+  | RewardsPaused
   | ProviderUnavailable
   | ProviderMisconfigured
   | FundingConfirmationTimeout

@@ -2,8 +2,13 @@
 import pg from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 import { loadPostgresMigrations } from "./postgres-migrations.ts";
+import {
+  moneyTableInventoryViolations,
+  REWARDS_MONEY_TABLE_PATTERN,
+  REWARDS_MONEY_TABLES,
+} from "./rewards-money-write-contract.ts";
 
-type Privilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "EXECUTE";
+type Privilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "EXECUTE";
 type Requirement = Readonly<{
   object: string;
   privilege: Privilege;
@@ -12,10 +17,26 @@ type Requirement = Readonly<{
 
 /** Keep allowed operations in sync with direct SQL in reward, Megapot, custody and Wallet repositories. */
 export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
+  ...REWARDS_MONEY_TABLES.flatMap((object) =>
+    (["DELETE", "TRUNCATE"] as const).map((privilege) => ({ object, privilege, allowed: false })),
+  ),
+  ...["reward_operations_control", "reward_operations_control_events"].flatMap((object) => [
+    { object, privilege: "SELECT" as const, allowed: true },
+    ...(["INSERT", "UPDATE"] as const).map((privilege) => ({
+      object,
+      privilege,
+      allowed: false,
+    })),
+  ]),
+  {
+    object: "set_reward_operations_paused_v1(bigint,boolean,text)",
+    privilege: "EXECUTE",
+    allowed: false,
+  },
+  { object: "guard_reward_http_admission()", privilege: "EXECUTE", allowed: false },
   { object: "wallet_sponsored_sends", privilege: "SELECT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "INSERT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "UPDATE", allowed: true },
-  { object: "wallet_sponsored_sends", privilege: "DELETE", allowed: false },
   { object: "persona_wallet_assignments", privilege: "SELECT", allowed: true },
   { object: "personas", privilege: "SELECT", allowed: true },
   { object: "reward_ledger_credits", privilege: "SELECT", allowed: true },
@@ -23,10 +44,8 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "megapot_participant_claims", privilege: "SELECT", allowed: true },
   { object: "megapot_participant_claims", privilege: "INSERT", allowed: false },
   { object: "megapot_participant_claims", privilege: "UPDATE", allowed: false },
-  { object: "megapot_participant_claims", privilege: "DELETE", allowed: false },
   { object: "megapot_participant_claim_guards", privilege: "INSERT", allowed: false },
   { object: "megapot_participant_claim_guards", privilege: "UPDATE", allowed: false },
-  { object: "megapot_participant_claim_guards", privilege: "DELETE", allowed: false },
   { object: "reward_winner_sends", privilege: "SELECT", allowed: true },
   { object: "reward_payout_effects", privilege: "SELECT", allowed: true },
   { object: "reward_chain_effects", privilege: "SELECT", allowed: true },
@@ -171,6 +190,22 @@ export function assertMainLedger(ledger: readonly LedgerRow[], plan: readonly Le
   }
 }
 
+/** Catalogue gate is shared with isolated PostgreSQL ownership and drift tests. */
+export async function assertRuntimeMoneyInventory(
+  runtime: pg.Client,
+  schema = "api_next",
+): Promise<void> {
+  const inventory = await runtime.query<{ object: string; owner_equivalent: boolean }>(
+    "SELECT c.relname AS object,pg_has_role(current_user,c.relowner,'USAGE') AS owner_equivalent FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND c.relname ~ $2 ORDER BY c.relname",
+    [schema, REWARDS_MONEY_TABLE_PATTERN],
+  );
+  if (inventory.rows.some((row) => row.owner_equivalent))
+    throw Error("runtime money preflight refused: table-owner authority");
+  const inventoryErrors = moneyTableInventoryViolations(inventory.rows.map((row) => row.object));
+  if (inventoryErrors.length)
+    throw Error(`runtime money inventory refused: ${inventoryErrors.join("; ")}`);
+}
+
 export async function runRuntimeRoleReleasePreflight(input: {
   runtimeConnectionString: string;
   adminConnectionString?: string;
@@ -194,6 +229,8 @@ export async function runRuntimeRoleReleasePreflight(input: {
     if (identity.rows.length !== 1 || !identity.rows[0]?.schema_usage) {
       throw new Error("runtime role lacks api_next schema USAGE");
     }
+    await assertRuntimeMoneyInventory(runtime);
+
     const tables = RUNTIME_RELEASE_PRIVILEGES.filter((item) => item.privilege !== "EXECUTE");
     const routines = RUNTIME_RELEASE_PRIVILEGES.filter((item) => item.privilege === "EXECUTE");
     const tableResult = await runtime.query<PrivilegeFact>(
