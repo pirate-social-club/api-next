@@ -528,6 +528,97 @@ describe("Megapot v2 Worker runtime adapters", () => {
     await expect(receiptClient.readReceipt(hash("7"))).rejects.toMatchObject({ reason: "reorg" });
   });
 
+  test("observes this client's first provider response and preserves RPC semantics when logging fails", async () => {
+    const observations: Array<import("./megapot-v2-rpc.ts").MegapotReceiptReadObservation> = [];
+    const responses = [
+      null,
+      { transactionHash: hash("7"), blockHash: hash("0"), blockNumber: "0x64" },
+      {
+        transactionHash: hash("7"),
+        blockHash: hash("8"),
+        blockNumber: "0x64",
+        status: "0x1",
+        from: address("4"),
+        to: address("1"),
+        logs: [],
+      },
+      { transactionHash: hash("6"), blockHash: hash("0") },
+    ];
+    let read = 0;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://credential.example.invalid/private-token",
+      attestation: attestation(),
+      onReceiptRead: (event) => {
+        observations.push(event);
+        throw new Error("sink unavailable");
+      },
+      fetcher: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        return rpcResponse(request.id, responses[read++]);
+      },
+    });
+    expect(await client.readReceipt(hash("7"))).toBeNull();
+    expect(await client.readReceipt(hash("7"))).toBeNull();
+    expect(await client.readReceipt(hash("7"))).toMatchObject({
+      blockHash: hash("8"),
+      blockNumber: 100n,
+    });
+    await expect(client.readReceipt(hash("7"))).rejects.toMatchObject({
+      reason: "invalid-response",
+    });
+    expect(observations.map((event) => event.result)).toEqual([
+      "not_found",
+      "provisional",
+      "receipt_candidate",
+      "invalid_response",
+    ]);
+    expect(observations.map((event) => event.transactionReadSequence)).toEqual([1, 2, 3, 4]);
+    expect(observations[1]).toMatchObject({
+      blockHash: hash("0"),
+      blockNumber: "100",
+      providerTransactionHash: hash("7"),
+      failureReason: null,
+    });
+    expect(observations[3]).toMatchObject({
+      requestedTransactionHash: hash("7"),
+      providerTransactionHash: hash("6"),
+      failureReason: "invalid-response",
+    });
+    expect(observations.every((event) => event.rpcClientId === observations[0]?.rpcClientId)).toBe(
+      true,
+    );
+    expect(JSON.stringify(observations)).not.toContain("private-token");
+    expect(JSON.stringify(observations)).not.toContain("logs");
+  });
+
+  test("records provider failures and tracks each requested transaction without claiming a global first read", async () => {
+    const observations: Array<import("./megapot-v2-rpc.ts").MegapotReceiptReadObservation> = [];
+    let unavailable = false;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      onReceiptRead: (event) => {
+        observations.push(event);
+      },
+      fetcher: async (_input, init) => {
+        if (unavailable) throw new Error("secret provider body");
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        return rpcResponse(request.id, null);
+      },
+    });
+    expect(await client.readReceipt(hash("7"))).toBeNull();
+    expect(await client.readReceipt(hash("8"))).toBeNull();
+    unavailable = true;
+    await expect(client.readReceipt(hash("7"))).rejects.toMatchObject({ reason: "unavailable" });
+    expect(observations.map((event) => event.clientReadSequence)).toEqual([1, 2, 3]);
+    expect(observations.map((event) => event.transactionReadSequence)).toEqual([1, 1, 2]);
+    expect(observations[2]).toMatchObject({
+      result: "provider_failure",
+      failureReason: "unavailable",
+    });
+    expect(JSON.stringify(observations)).not.toContain("secret provider body");
+  });
+
   test("waits for a canonical receipt hash instead of treating a provisional one as a reorg", async () => {
     const blockHashes: readonly unknown[] = [hash("0"), null, hash("8")];
     let read = 0;

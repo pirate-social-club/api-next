@@ -38,6 +38,7 @@ import {
 import {
   makeMegapotAttestationRuntime,
   makeMegapotAttestedRpc,
+  makeMegapotReceiptReadLogger,
 } from "./megapot-rewards-runtime.ts";
 import {
   defaultRetrySchedule,
@@ -184,6 +185,14 @@ export function makeMegapotRewardsJob(
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
     const startedAt = Date.now();
+    const job = yield* JobContext;
+    const onReceiptRead = makeMegapotReceiptReadLogger({
+      log: sink.log ?? console.info,
+      attemptId: job.attemptId,
+      cycleStartedAt: new Date(startedAt).toISOString(),
+      environment: options.environment,
+      workerVersion: options.workerVersion,
+    });
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
@@ -212,6 +221,7 @@ export function makeMegapotRewardsJob(
           controlPlane,
           options,
           resolveCustodyKey,
+          onReceiptRead,
         }),
     });
     const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
@@ -219,7 +229,7 @@ export function makeMegapotRewardsJob(
     const gasTopupPrivateKey = options.gasTopupPrivateKey;
     if (gasTopupPrivateKey !== null) {
       const deployment = yield* observationStore.loadCandidate(options.attestationId);
-      const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl);
+      const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl, onReceiptRead);
       // The gas signer must be the registered active gas wallet, never custody.
       const resolved = yield* resolveGasTopupRuntime({
         loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
