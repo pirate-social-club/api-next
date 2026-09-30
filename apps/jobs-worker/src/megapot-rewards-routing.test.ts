@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ControlPlaneDb, type MegapotDrawingObserverCandidate } from "@pirate/application";
 import { deriveBaseSepoliaMegapotAddress } from "@pirate/platform-cf/megapot-v2-signer";
 import type {
@@ -17,6 +17,7 @@ import {
 import {
   makeMegapotAttestationRuntime,
   makeMegapotAttestedRpc,
+  makeMegapotReceiptReadLogger,
 } from "./megapot-rewards-runtime.ts";
 
 // Public deterministic fixture keys, never funded or provisioned.
@@ -288,6 +289,74 @@ describe("attestation runtime construction", () => {
         ticketNftAddress: original.ticketNftAddress,
         custodyAddress: original.custodyAddress,
       });
+    }
+  });
+
+  test("routes active and retired provider receipt observations into identified Worker logs", async () => {
+    const messages: string[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(
+        async (...args: Parameters<typeof globalThis.fetch>) => {
+          const init = args[1];
+          const request: { id: unknown } = JSON.parse(String(init?.body));
+          return Response.json({ jsonrpc: "2.0", id: request.id, result: null });
+        },
+        { preconnect: globalThis.fetch.preconnect },
+      ),
+    );
+    try {
+      const observer = makeMegapotReceiptReadLogger({
+        log: (message) => {
+          messages.push(message);
+        },
+        attemptId: "attempt-public",
+        cycleStartedAt: "2026-09-30T00:00:00.000Z",
+        environment: options.environment,
+        workerVersion: options.workerVersion,
+      });
+      for (const id of ["active", "retired"]) {
+        const rpc = makeMegapotAttestedRpc(
+          deployment(id),
+          "https://secret-provider.example.invalid/token",
+          observer,
+        );
+        expect(await rpc.readReceipt(hash("a"))).toBeNull();
+      }
+      expect(messages).toHaveLength(2);
+      expect(JSON.parse(messages[0] ?? "null")).toMatchObject({
+        event: "megapot_receipt_read",
+        job: "megapot-rewards.cycle",
+        attemptId: "attempt-public",
+        environment: "staging",
+        attestationId: "active",
+        result: "not_found",
+        transactionReadSequence: 1,
+      });
+      expect(JSON.parse(messages[1] ?? "null")).toMatchObject({
+        attestationId: "retired",
+        result: "not_found",
+        transactionReadSequence: 1,
+      });
+      expect(JSON.parse(messages[0] ?? "null").rpcClientId).not.toBe(
+        JSON.parse(messages[1] ?? "null").rpcClientId,
+      );
+      expect(messages.join("")).not.toContain("secret-provider");
+      const broken = makeMegapotAttestedRpc(
+        deployment("active"),
+        options.rpcUrl,
+        makeMegapotReceiptReadLogger({
+          log: () => {
+            throw new Error("sink failed");
+          },
+          attemptId: "attempt-public",
+          cycleStartedAt: "2026-09-30T00:00:00.000Z",
+          environment: options.environment,
+          workerVersion: options.workerVersion,
+        }),
+      );
+      expect(await broken.readReceipt(hash("a"))).toBeNull();
+    } finally {
+      fetch.mockRestore();
     }
   });
 
