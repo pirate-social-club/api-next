@@ -459,16 +459,19 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("keeps wallet fixtures and Spaces verifier credentials only in staging operator custody", () => {
+  test("keeps optional wallet, Spaces member, prover and verifier credentials only in staging operator custody", () => {
     const names = [
       "PERSONA_WALLET_E2E_EMAIL",
       "PERSONA_WALLET_E2E_OTP",
+      "RUNPOD_API_KEY",
       "SPACES_TAPROOT_E2E_EMAIL",
       "SPACES_TAPROOT_E2E_OTP",
       "SPACES_VERIFIER_ACCESS_CLIENT_ID",
       "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
       "SPACES_VERIFIER_BEARER_TOKEN",
       "SPACES_VERIFIER_TUNNEL_TOKEN",
+      "SPACES_YAHOO_MEMBER_E2E_EMAIL",
+      "SPACES_YAHOO_MEMBER_E2E_OTP",
     ];
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);

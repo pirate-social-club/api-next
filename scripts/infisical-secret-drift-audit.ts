@@ -153,6 +153,12 @@ const STAGING_SPACES_TAPROOT_E2E_OPERATOR_SECRET_NAMES = [
   "SPACES_TAPROOT_E2E_EMAIL",
   "SPACES_TAPROOT_E2E_OTP",
 ] as const;
+// Optional member fixture and prover custody for supervised staging measurements.
+const STAGING_SPACES_MEMBER_OPERATOR_SECRET_NAMES = [
+  "SPACES_YAHOO_MEMBER_E2E_EMAIL",
+  "SPACES_YAHOO_MEMBER_E2E_OTP",
+  "RUNPOD_API_KEY",
+] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -218,6 +224,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_SPACES_VERIFIER_OPERATOR_SECRET_NAMES,
       ...STAGING_SPACES_TAPROOT_E2E_OPERATOR_SECRET_NAMES,
+      ...STAGING_SPACES_MEMBER_OPERATOR_SECRET_NAMES,
       ...STAGING_VIDEO_OPERATOR_SECRET_NAMES,
       ...STAGING_HNS_OPERATOR_SECRET_NAMES,
     ],
