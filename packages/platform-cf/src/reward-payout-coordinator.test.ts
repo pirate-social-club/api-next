@@ -231,4 +231,65 @@ describe("reward payout coordinator", () => {
     expect(state.sends()).toBe(1);
     expect(deriveRewardPayoutEffectId(candidate.creditId) as string).toBe(first.effectId);
   });
+  test("reconciles an admitted send after an absent receipt without broadcasting again", async () => {
+    const state = harness();
+    let available = false;
+    const rpc: MegapotV2RpcClient = {
+      ...state.rpc,
+      readReceipt: async () => (available ? receipt() : null),
+    };
+    const coordinator = makeRewardPayoutCoordinator({
+      store: state.store,
+      rpc,
+      signer: state.signer,
+      requiredConfirmations: 3,
+      gasLimitMultiplierBps: 12_000,
+      nativeGasReserveFloorWei: 1_000n,
+      now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+    });
+    const first = await Effect.runPromise(coordinator.payout(candidate.creditId));
+    expect(first.kind).toBe("submitted");
+    available = true;
+    const confirmed = await Effect.runPromise(coordinator.reconcile(first.effectId));
+    expect(confirmed).toMatchObject({ kind: "confirmed", creditId: candidate.creditId });
+    expect(state.sends()).toBe(1);
+  });
+
+  test("holds a noncanonical receipt with the family's reconciliation reason", async () => {
+    const state = harness();
+    const reasons: string[] = [];
+    const requireReconciliation = state.store.requireReconciliation;
+    const store: RewardPayoutStore = {
+      ...state.store,
+      requireReconciliation: (input) => {
+        reasons.push(input.reason);
+        return requireReconciliation(input);
+      },
+    };
+    const readBlock = state.rpc.readBlock;
+    let canonical = false;
+    const rpc: MegapotV2RpcClient = {
+      ...state.rpc,
+      readBlock: async (blockNumber) =>
+        !canonical && blockNumber === 200n
+          ? { blockNumber, blockHash: hash("d") }
+          : readBlock(blockNumber),
+    };
+    const coordinator = makeRewardPayoutCoordinator({
+      store,
+      rpc,
+      signer: state.signer,
+      requiredConfirmations: 3,
+      gasLimitMultiplierBps: 12_000,
+      nativeGasReserveFloorWei: 1_000n,
+      now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+    });
+    const first = await Effect.runPromise(coordinator.payout(candidate.creditId));
+    expect(first.kind).toBe("reconciliation_required");
+    expect(reasons).toEqual(["payout_receipt_reorg"]);
+    canonical = true;
+    const confirmed = await Effect.runPromise(coordinator.reconcile(first.effectId));
+    expect(confirmed).toMatchObject({ kind: "confirmed", creditId: candidate.creditId });
+    expect(state.sends()).toBe(1);
+  });
 });
