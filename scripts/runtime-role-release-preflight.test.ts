@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 
 import {
+  moneyTableInventoryViolations,
+  REWARDS_MONEY_TABLE_PATTERN,
+  REWARDS_MONEY_TABLES,
+} from "./rewards-money-write-contract.ts";
+
+import {
   assertMainLedger,
   privilegeViolations,
   RUNTIME_RELEASE_PRIVILEGES,
@@ -121,5 +127,48 @@ describe("runtime role release preflight", () => {
         plan,
       ),
     ).toThrow("mismatch at position 2");
+  });
+});
+
+describe("destructive money-table inventory", () => {
+  test("requires reviewed coverage of every matching schema table and the actual migration", async () => {
+    const schema = await Bun.file(new URL("../db/postgres/schema.sql", import.meta.url)).text();
+    const actual = [...schema.matchAll(/\bCREATE TABLE ([a-z][a-z0-9_]*) /gu)]
+      .map((match) => match[1])
+      .filter((table) => new RegExp(REWARDS_MONEY_TABLE_PATTERN).test(table));
+    expect(moneyTableInventoryViolations(actual)).toEqual([]);
+    const sql = await Bun.file(
+      new URL(
+        "../db/postgres/migrations/0232_reward_money_destructive_privileges.sql",
+        import.meta.url,
+      ),
+    ).text();
+    const array = sql.split("FOREACH table_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
+    expect([...array.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([
+      ...REWARDS_MONEY_TABLES,
+    ]);
+    const seen = new Set<string>();
+    for (const requirement of RUNTIME_RELEASE_PRIVILEGES) {
+      const key = `${requirement.object}:${requirement.privilege}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+    for (const table of REWARDS_MONEY_TABLES)
+      for (const privilege of ["DELETE", "TRUNCATE"] as const)
+        expect(
+          RUNTIME_RELEASE_PRIVILEGES.find(
+            (row) => row.object === table && row.privilege === privilege,
+          )?.allowed,
+        ).toBe(false);
+  });
+  test("refuses unknown or missing money tables instead of treating them as reviewed", () => {
+    expect(
+      moneyTableInventoryViolations([...REWARDS_MONEY_TABLES, "reward_future_ledger"]),
+    ).toEqual(["reward_future_ledger: money table unreviewed"]);
+    expect(
+      moneyTableInventoryViolations(
+        REWARDS_MONEY_TABLES.filter((table) => table !== "reward_ledger_credits"),
+      ),
+    ).toEqual(["reward_ledger_credits: money table missing"]);
   });
 });
