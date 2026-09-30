@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES } from "./spaces-root-authority-evidence.ts";
 import { makeSpacesRootAuthorityObserver } from "./spaces-root-authority-observer.ts";
+import { binary, bytes, fixture } from "./spaces-root-authority-test-fixture.ts";
 
 const credentials = {
   accessClientId: "test-id",
@@ -8,6 +10,55 @@ const credentials = {
 };
 
 describe("Spaces root authority observer", () => {
+  test("reads a production-sized receipt over multiple chunks", async () => {
+    const cert = binary("r".repeat(224_079));
+    const payload = bytes({
+      ...fixture(),
+      root_certificate_base64: cert.base64,
+      root_certificate_sha256_hex: cert.sha256,
+    });
+    let offset = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset === payload.length) {
+          controller.close();
+          return;
+        }
+        const next = Math.min(offset + 16_384, payload.length);
+        controller.enqueue(payload.slice(offset, next));
+        offset = next;
+      },
+    });
+    const observer = makeSpacesRootAuthorityObserver(
+      credentials,
+      (async () => new Response(stream)) as typeof fetch,
+    );
+    const result = await observer.observe({ canonicalRoot: "yahoo" });
+    expect(result.kind).toBe("verified");
+    if (result.kind === "verified") expect(result.bytes).toEqual(payload);
+  });
+
+  test("cancels an overflowing response instead of continuing to read", async () => {
+    let cancelled = false;
+    let reads = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        controller.enqueue(new Uint8Array(65_536));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const observer = makeSpacesRootAuthorityObserver(
+      credentials,
+      (async () => new Response(stream)) as typeof fetch,
+    );
+    await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("bound");
+    expect(cancelled).toBe(true);
+    expect(reads).toBeLessThanOrEqual(18);
+  });
+
   test("treats verifier 409 as pending without deriving a changed root", async () => {
     const mockFetch = (async (_input: unknown, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
@@ -29,7 +80,10 @@ describe("Spaces root authority observer", () => {
     expect(() => makeSpacesRootAuthorityObserver({ ...credentials, bearerToken: "" })).toThrow();
     const observer = makeSpacesRootAuthorityObserver(
       credentials,
-      (async () => new Response("a".repeat(65_537), { status: 200 })) as unknown as typeof fetch,
+      (async () =>
+        new Response("a".repeat(SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES + 1), {
+          status: 200,
+        })) as unknown as typeof fetch,
     );
     await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("bound");
   });

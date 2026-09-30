@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
 
+/** Bounds the complete JSON response, including base64 proof receipts. */
+export const SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES = 1_048_576;
+
 const hex64 = /^[0-9a-f]{64}$/u;
 const script = /^5120([0-9a-f]{64})$/u;
 const outpoint = /^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$/u;
@@ -73,7 +76,10 @@ export function parseSpacesRootAuthorityEvidenceV1(
   canonicalRoot: string,
   signatureExpected: boolean,
 ): SpacesRootAuthorityEvidenceV1 {
-  if (responseBytes.byteLength === 0 || responseBytes.byteLength > 65_536) {
+  if (
+    responseBytes.byteLength === 0 ||
+    responseBytes.byteLength > SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES
+  ) {
     throw new TypeError("Spaces root authority evidence is unavailable");
   }
   let evidence: SpacesRootAuthorityEvidenceV1;
