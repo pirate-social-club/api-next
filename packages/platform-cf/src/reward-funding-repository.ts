@@ -9,6 +9,8 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
+import { mapRewardAdmissionFailure } from "./reward-operations-control.ts";
+
 type Row = Readonly<Record<string, unknown>>;
 
 const storage = (reason: RewardFundingStorageFailed["reason"]) =>
@@ -292,7 +294,7 @@ export function makeControlPlaneRewardFundingRepository() {
             return created;
           }),
         );
-      }).pipe(mapped),
+      }).pipe(Effect.mapError(mapRewardAdmissionFailure), mapped),
     find: (fundingEffectId: string) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;

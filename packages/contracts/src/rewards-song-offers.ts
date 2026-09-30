@@ -9,6 +9,7 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  RewardsPaused,
 } from "./errors.ts";
 import { PersonaIdV1 } from "./personas.ts";
 import {
@@ -446,7 +447,7 @@ export const OpenSongRewardOffer = endpoint({
   },
   response: Schema.Struct({ offer: SongRewardOfferV1, replayed: Schema.Boolean }),
   successStatus: [200, 201],
-  errors: [...CommonErrors, ProviderUnavailable],
+  errors: [...CommonErrors, ProviderUnavailable, RewardsPaused],
 });
 
 export const AddMegapotPoolLeg = endpoint({
@@ -477,7 +478,7 @@ export const AddMegapotPoolLeg = endpoint({
     replayed: Schema.Boolean,
   }),
   successStatus: [200, 201],
-  errors: [...CommonErrors, ProviderUnavailable],
+  errors: [...CommonErrors, ProviderUnavailable, RewardsPaused],
 });
 
 export const AddAssetBonusLeg = endpoint({
@@ -508,7 +509,7 @@ export const AddAssetBonusLeg = endpoint({
     replayed: Schema.Boolean,
   }),
   successStatus: [200, 201],
-  errors: [...CommonErrors, ProviderUnavailable],
+  errors: [...CommonErrors, ProviderUnavailable, RewardsPaused],
 });
 
 export const ObserveMegapotPoolFunding = endpoint({
@@ -527,7 +528,7 @@ export const ObserveMegapotPoolFunding = endpoint({
     funding: MegapotFundingV1,
     replayed: Schema.Boolean,
   }),
-  errors: [...CommonErrors, RetryableConflict, ProviderUnavailable],
+  errors: [...CommonErrors, RetryableConflict, ProviderUnavailable, RewardsPaused],
 });
 
 export const GetMegapotPoolFunding = endpoint({
@@ -536,7 +537,7 @@ export const GetMegapotPoolFunding = endpoint({
   auth: Auth.user(),
   request: { path: FundingPath },
   response: Schema.Struct({ funding: MegapotFundingV1 }),
-  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable, RewardsPaused],
 });
 
 export const ObserveAssetBonusFunding = endpoint({
@@ -555,7 +556,7 @@ export const ObserveAssetBonusFunding = endpoint({
     funding: AssetBonusFundingV1,
     replayed: Schema.Boolean,
   }),
-  errors: [...CommonErrors, RetryableConflict, ProviderUnavailable],
+  errors: [...CommonErrors, RetryableConflict, ProviderUnavailable, RewardsPaused],
 });
 
 export const GetAssetBonusFunding = endpoint({
@@ -564,7 +565,7 @@ export const GetAssetBonusFunding = endpoint({
   auth: Auth.user(),
   request: { path: FundingPath },
   response: Schema.Struct({ funding: AssetBonusFundingV1 }),
-  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable],
+  errors: [AuthError, BadRequest, NotFound, InternalError, ProviderUnavailable, RewardsPaused],
 });
 
 export const GetSongMegapotPool = endpoint({
@@ -683,7 +684,15 @@ export const RequestRewardGasTopup = endpoint({
     topup_id: Schema.NullOr(Identifier),
     amount_wei: Schema.NullOr(AtomicAmount),
   }),
-  errors: [AuthError, BadRequest, Conflict, NotFound, InternalError, ProviderUnavailable],
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    NotFound,
+    InternalError,
+    ProviderUnavailable,
+    RewardsPaused,
+  ],
 });
 
 /** The caller's own gas top-up. released means nothing was or will be sent. */

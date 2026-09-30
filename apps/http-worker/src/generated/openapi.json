@@ -160022,6 +160022,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -160035,7 +160088,8 @@
           "Conflict",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -161670,6 +161724,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -161683,7 +161790,8 @@
           "Conflict",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -162252,6 +162360,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -162266,7 +162427,8 @@
           "NotFound",
           "InternalError",
           "RetryableConflict",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -162737,6 +162899,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -162749,7 +162964,8 @@
           "BadRequest",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -166922,6 +167138,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -166935,7 +167204,8 @@
           "Conflict",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -173603,6 +173873,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -173616,7 +173939,8 @@
           "Conflict",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -174188,6 +174512,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -174202,7 +174579,8 @@
           "NotFound",
           "InternalError",
           "RetryableConflict",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },
@@ -174676,6 +175054,59 @@
             "x-error-codes": [
               "provider_unavailable"
             ]
+          },
+          "503": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rewards_paused"
+            ]
           }
         },
         "x-auth": {
@@ -174688,7 +175119,8 @@
           "BadRequest",
           "NotFound",
           "InternalError",
-          "ProviderUnavailable"
+          "ProviderUnavailable",
+          "RewardsPaused"
         ]
       }
     },

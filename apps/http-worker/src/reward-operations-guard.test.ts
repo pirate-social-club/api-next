@@ -23,7 +23,9 @@ test("HTTP admission expires its running cache and fails closed without stale re
   expect(reads).toBe(1);
   time = REWARD_OPERATIONS_CACHE_MS;
   await expect(guard()).rejects.toMatchObject({
-    _tag: "ProviderUnavailable",
+    _tag: "RewardsPaused",
+    status: 503,
+    code: "rewards_paused",
     message: "Rewards are paused",
   });
   unavailable = true;
@@ -34,7 +36,9 @@ test("HTTP admission expires its running cache and fails closed without stale re
   });
   unavailable = false;
   await expect(guard()).rejects.toMatchObject({
-    _tag: "ProviderUnavailable",
+    _tag: "RewardsPaused",
+    status: 503,
+    code: "rewards_paused",
     message: "Rewards are paused",
   });
 });

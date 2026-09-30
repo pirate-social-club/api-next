@@ -1,4 +1,4 @@
-import { ProviderUnavailable } from "@pirate/contracts";
+import { ProviderUnavailable, RewardsPaused } from "@pirate/contracts";
 
 export const REWARD_OPERATIONS_CACHE_MS = 5_000;
 
@@ -20,8 +20,11 @@ export function makeRewardOperationsGuard(options: {
         throw new ProviderUnavailable({ message: "Rewards control is unavailable" });
       }
     }
-    if (!cached.running || now() >= cached.expiresAt) {
-      throw new ProviderUnavailable({ message: "Rewards are paused" });
+    if (now() >= cached.expiresAt) {
+      throw new ProviderUnavailable({ message: "Rewards control is unavailable" });
+    }
+    if (!cached.running) {
+      throw new RewardsPaused({ message: "Rewards are paused" });
     }
   };
 }

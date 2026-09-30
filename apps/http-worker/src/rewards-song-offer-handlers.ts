@@ -27,6 +27,7 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  RewardsPaused,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
@@ -192,6 +193,8 @@ function optionalAccountId(principal: Principal | null): string | null {
 
 function wireFailure(error: unknown): Error {
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  if (tagged._tag === "RewardOperationsPaused")
+    return new RewardsPaused({ message: "Rewards are paused" });
   if (tagged._tag === "SongRewardOfferRejected") {
     if (tagged.reason === "qualification-policy-changed")
       return new Conflict({ message: "Qualification policy changed; refresh reward terms" });

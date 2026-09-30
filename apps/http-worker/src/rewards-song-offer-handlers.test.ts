@@ -12,13 +12,14 @@ import type {
 } from "@pirate/application/rewards/song-reward-offers";
 import {
   RewardGasTopupRejected,
+  RewardOperationsPaused,
   RewardProjectionRejected,
   RewardWinnerSendChainUnavailable,
   RewardWinnerSendRejected,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
-import { ProviderUnavailable } from "@pirate/contracts";
+import { RewardsPaused } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
@@ -126,6 +127,7 @@ function fixture(
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
+    open?: SongRewardOfferStore["openOffer"];
     gasTopups?: RewardGasTopupRequester | null;
     winnerSends?: RewardWinnerSendService | null;
   } = {},
@@ -151,21 +153,23 @@ function fixture(
             },
           },
         ])),
-    openOffer: (input) =>
-      Effect.succeed({
-        replayed: false,
-        offer: {
-          offerId: "reward_offer_1",
-          communityId: input.communityId,
-          postId: input.postId,
-          audioRevision: 3,
-          createdByAccountId: input.accountId,
-          status: "draft",
-          startsAt: input.startsAt,
-          endsAt: input.endsAt,
-          termsHash: input.termsHash,
-        },
-      }),
+    openOffer:
+      options.open ??
+      ((input) =>
+        Effect.succeed({
+          replayed: false,
+          offer: {
+            offerId: "reward_offer_1",
+            communityId: input.communityId,
+            postId: input.postId,
+            audioRevision: 3,
+            createdByAccountId: input.accountId,
+            status: "draft",
+            startsAt: input.startsAt,
+            endsAt: input.endsAt,
+            termsHash: input.termsHash,
+          },
+        })),
     addMegapotPoolLeg: () => Effect.succeed({ leg, replayed: false }),
     addAssetBonusLeg: () => Effect.succeed({ leg: assetLeg, replayed: false }),
     recordFundingObservation: () => Effect.succeed({ replayed: false }),
@@ -732,7 +736,7 @@ describe("song reward offer HTTP handlers", () => {
     const headers = { authorization: "Bearer test" };
     const standing = await fixture(intent, {
       requireRewardOperationsRunning: async () => {
-        throw new ProviderUnavailable({ message: "Rewards are paused" });
+        throw new RewardsPaused({ message: "Rewards are paused" });
       },
     }).request(`/reward-offer-legs/${leg.legId}/standing`, {
       headers,
@@ -749,7 +753,7 @@ describe("song reward offer HTTP handlers", () => {
 
     const credits = await fixture(intent, {
       requireRewardOperationsRunning: async () => {
-        throw new ProviderUnavailable({ message: "Rewards are paused" });
+        throw new RewardsPaused({ message: "Rewards are paused" });
       },
     }).request("/rewards/credits?limit=25", { headers });
     expect(credits.status).toBe(200);
@@ -958,7 +962,7 @@ describe("song reward offer HTTP handlers", () => {
     const worker = fixture(intent, {
       winnerSends,
       requireRewardOperationsRunning: async () => {
-        throw new ProviderUnavailable({ message: "Rewards are paused" });
+        throw new RewardsPaused({ message: "Rewards are paused" });
       },
     });
     const headers = { "content-type": "application/json", authorization: "Bearer test" };
@@ -1137,7 +1141,7 @@ describe("song reward offer HTTP handlers", () => {
 test("paused rewards refuse offers and fresh instructions but expose already recorded funding", async () => {
   const paused = {
     requireRewardOperationsRunning: async () => {
-      throw new ProviderUnavailable({ message: "Rewards are paused" });
+      throw new RewardsPaused({ message: "Rewards are paused" });
     },
   };
   const worker = fixture(intent, paused);
@@ -1155,9 +1159,9 @@ test("paused rewards refuse offers and fresh instructions but expose already rec
         }),
       })
     ).status,
-  ).toBe(502);
+  ).toBe(503);
   const path = `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`;
-  expect((await worker.request(path, { headers })).status).toBe(502);
+  expect((await worker.request(path, { headers })).status).toBe(503);
   expect(
     (
       await fixture({ ...intent, state: "confirming", transactionHash: hash("8") }, paused).request(
@@ -1166,4 +1170,25 @@ test("paused rewards refuse offers and fresh instructions but expose already rec
       )
     ).status,
   ).toBe(200);
+});
+
+test("a cached running HTTP guard preserves the database pause as a declared 503", async () => {
+  const worker = fixture(intent, {
+    requireRewardOperationsRunning: async () => undefined,
+    open: () => Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+  });
+  const response = await worker.request("/communities/community_1/posts/post_1/reward-offers", {
+    method: "POST",
+    headers: { authorization: "Bearer test", "content-type": "application/json" },
+    body: JSON.stringify({
+      idempotency_key: "stale-running-open",
+      persona_id: "persona_1",
+      starts_at: now,
+      ends_at: "2026-09-26T12:00:00.000Z",
+    }),
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({
+    error: { code: "rewards_paused", message: "Rewards are paused", retryable: true },
+  });
 });
