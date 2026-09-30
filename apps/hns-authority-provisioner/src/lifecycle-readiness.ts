@@ -7,6 +7,14 @@ import {
   type HnsRootReadinessObservationPorts,
   observeHnsRootReadinessV1,
 } from "./observe-root.ts";
+import { HnsProvisionalOwnershipError } from "./provisional-safe-ownership.ts";
+
+export class HnsLifecycleReadinessContextError extends Error {
+  override readonly name = "HnsLifecycleReadinessContextError";
+  constructor() {
+    super("HNS lifecycle readiness read an invalid operation");
+  }
+}
 
 /**
  * One leased lifecycle readiness observation.
@@ -42,6 +50,10 @@ export type HnsLifecycleReadinessContextV1 = Readonly<{
 }>;
 
 export type HnsLifecycleReadinessPortsV1 = Readonly<{
+  readonly prepare_ownership?: (
+    job: HnsLifecycleClaimV1,
+    executorId: string,
+  ) => Promise<"ready" | "pending" | "refused">;
   readonly context: (rootImportSessionId: string) => Promise<HnsLifecycleReadinessContextV1 | null>;
   readonly observe: HnsRootReadinessObservationPorts;
   readonly config: HnsRootReadinessObservationConfig;
@@ -106,7 +118,38 @@ export async function runHnsRootImportReadinessOnce(
     return { outcome: "failed", reason: "not_a_readiness_job" };
   }
 
-  const context = await ports.context(job.root_import_session_id);
+  const finalizeFailure = async (outcome: "failed" | "retry", reason: string) => {
+    const finalized = await ports.finalize(job, executorId, outcome, reason);
+    if (finalized.outcome !== outcome) throw new Error("HNS readiness lease finalization refused");
+    return { outcome, reason };
+  };
+  let prepared: "ready" | "pending" | "refused";
+  try {
+    prepared = (await ports.prepare_ownership?.(job, executorId)) ?? "ready";
+  } catch (error) {
+    const invalid =
+      error instanceof HnsLifecycleReadinessContextError ||
+      (error instanceof HnsProvisionalOwnershipError && error.code === "invalid_context");
+    const reason = invalid ? "readiness_context_invalid" : "readiness_ownership_unavailable";
+    const outcome = invalid ? "failed" : "retry";
+    return finalizeFailure(outcome, reason);
+  }
+  if (prepared !== "ready") {
+    return finalizeFailure(
+      prepared === "pending" ? "retry" : "failed",
+      prepared === "pending" ? "readiness_ownership_pending" : "readiness_ownership_refused",
+    );
+  }
+
+  let context: HnsLifecycleReadinessContextV1 | null;
+  try {
+    context = await ports.context(job.root_import_session_id);
+  } catch (error) {
+    const invalid = error instanceof HnsLifecycleReadinessContextError;
+    const reason = invalid ? "readiness_context_invalid" : "readiness_context_unavailable";
+    const outcome = invalid ? "failed" : "retry";
+    return finalizeFailure(outcome, reason);
+  }
   if (context === null) {
     // No operation behind the job. Reported, never inferred.
     await ports.finalize(job, executorId, "failed", "lifecycle_absent");

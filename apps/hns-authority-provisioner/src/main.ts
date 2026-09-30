@@ -25,6 +25,7 @@ import {
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
 import type { HnsZoneMutationLease } from "./provision-root.ts";
+import { makePostgresHnsOwnershipPreparation } from "./provisional-ownership-queue.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "./queue.ts";
 import { makeFencedHnsRootZoneReconciler } from "./reconcile-zone.ts";
 import { runHnsRetentionReviewOnce } from "./retention-reviewer.ts";
@@ -609,7 +610,13 @@ async function main(serve: boolean): Promise<void> {
     readiness: (
       job: Parameters<typeof runHnsRootImportReadinessOnce>[0],
       readinessExecutorId: string,
-    ) => runHnsRootImportReadinessOnce(job, readinessExecutorId, readinessPorts),
+    ) =>
+      runHnsRootImportReadinessOnce(job, readinessExecutorId, {
+        ...readinessPorts,
+        prepare_ownership: makePostgresHnsOwnershipPreparation(connectionString, (root: string) =>
+          observeChain(root, "safe"),
+        ),
+      }),
   } as const;
 
   const runners: HnsExecutorRunnersV1 = {

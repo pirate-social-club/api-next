@@ -233,6 +233,7 @@
     "0230_reward_operations_control.sql": "ebf1aa63689821c82c3389c635960c06ec59612fe7485d012fd9105d28ecff17",
     "0231_reward_http_admission.sql": "a84b82b4e1ec503d8338686d2f1dff62980133b5d13148c69257f1507dd56b51",
     "0232_reward_money_destructive_privileges.sql": "daa7ee36baf6a6408d65f0a9e56898d2d35948276f8d93ab37be3e629a8416c5",
-    "0233_song_video_pcm_admission.sql": "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca"
+    "0233_song_video_pcm_admission.sql": "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca",
+    "0234_hns_safe_ownership_completion.sql": "6b2cd13795b86c3d704211dd7f26390fd97ca481d48dd5bd2b5b70b71bf4b6a7"
   }
 }

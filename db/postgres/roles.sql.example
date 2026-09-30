@@ -118,6 +118,9 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
+GRANT EXECUTE ON FUNCTION enqueue_hns_safe_ownership_completion_v1(
+  TEXT, BIGINT, TEXT, BIGINT, BYTEA, TEXT
+) TO api_next_app;
 -- The serving startup check: a pre-cutover schema is compatible with both
 -- bundles; after the cutover only the recorded service and job-envelope
 -- versions may claim work.
