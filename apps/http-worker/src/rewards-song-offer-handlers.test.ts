@@ -18,6 +18,7 @@ import {
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
+import { ProviderUnavailable } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
@@ -121,6 +122,7 @@ const claimCalls: { accountId: string; creditId: string }[] = [];
 function fixture(
   fundingIntent: RewardFundingIntent = intent,
   options: {
+    requireRewardOperationsRunning?: () => Promise<void>;
     catalog?: SongRewardOfferStore["listAdmittedAssets"];
     policies?: SongRewardOfferStore["qualificationPolicies"];
     production?: boolean;
@@ -310,6 +312,8 @@ function fixture(
     },
   };
   const handlers = makeSongRewardOfferHandlers({
+    requireRewardOperationsRunning:
+      options.requireRewardOperationsRunning ?? (async () => undefined),
     rewardCatalogAuthority: options.production
       ? null
       : { environment: "test", attestationId: "attestation_1" },
@@ -726,7 +730,11 @@ describe("song reward offer HTTP handlers", () => {
 
   test("keeps participant standing and reward credits authenticated and no-store", async () => {
     const headers = { authorization: "Bearer test" };
-    const standing = await fixture().request(`/reward-offer-legs/${leg.legId}/standing`, {
+    const standing = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    }).request(`/reward-offer-legs/${leg.legId}/standing`, {
       headers,
     });
     expect(standing.status).toBe(200);
@@ -739,7 +747,11 @@ describe("song reward offer HTTP handlers", () => {
       },
     });
 
-    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    const credits = await fixture(intent, {
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    }).request("/rewards/credits?limit=25", { headers });
     expect(credits.status).toBe(200);
     expect(credits.headers.get("cache-control")).toBe("no-store");
     expect(await credits.json()).toMatchObject({
@@ -943,7 +955,12 @@ describe("song reward offer HTTP handlers", () => {
       get: (input) => own(input.accountId, input.sendId),
       getByCredit: (input) => own(input.accountId, input.creditId),
     };
-    const worker = fixture(intent, { winnerSends });
+    const worker = fixture(intent, {
+      winnerSends,
+      requireRewardOperationsRunning: async () => {
+        throw new ProviderUnavailable({ message: "Rewards are paused" });
+      },
+    });
     const headers = { "content-type": "application/json", authorization: "Bearer test" };
     const post = (path: string, body: unknown, authorized = true) =>
       worker.request(path, {
@@ -1115,4 +1132,38 @@ describe("song reward offer HTTP handlers", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ funding: { status: "reverted" } });
   });
+});
+
+test("paused rewards refuse offers and fresh instructions but expose already recorded funding", async () => {
+  const paused = {
+    requireRewardOperationsRunning: async () => {
+      throw new ProviderUnavailable({ message: "Rewards are paused" });
+    },
+  };
+  const worker = fixture(intent, paused);
+  const headers = { authorization: "Bearer test", "content-type": "application/json" };
+  expect(
+    (
+      await worker.request("/communities/community_1/posts/post_1/reward-offers", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "open_1",
+          persona_id: "persona_1",
+          starts_at: now,
+          ends_at: "2026-09-26T12:00:00.000Z",
+        }),
+      })
+    ).status,
+  ).toBe(502);
+  const path = `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`;
+  expect((await worker.request(path, { headers })).status).toBe(502);
+  expect(
+    (
+      await fixture({ ...intent, state: "confirming", transactionHash: hash("8") }, paused).request(
+        path,
+        { headers },
+      )
+    ).status,
+  ).toBe(200);
 });

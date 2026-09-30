@@ -24,7 +24,10 @@ pgTest(
     const connection = `${url}${url?.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
     let server: ReturnType<typeof Bun.serve> | undefined;
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: connection });
+      await applyPostgresTestBaselineConnection({
+        rewardsRunning: true,
+        connectionString: connection,
+      });
       await admin.query(`SET search_path TO "${schema}"`);
       const fixture = await goldenRetryFixture(admin, connection);
       const requests: { path: string; body: unknown; status: number; replayed: unknown }[] = [];

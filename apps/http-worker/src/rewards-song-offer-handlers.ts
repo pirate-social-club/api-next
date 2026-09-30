@@ -33,6 +33,7 @@ import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
 
 export type SongRewardOfferHandlerServices = Readonly<{
+  requireRewardOperationsRunning: () => Promise<void>;
   rewardCatalogAuthority: Readonly<{
     environment: "test" | "staging";
     attestationId: string;
@@ -556,6 +557,7 @@ export function makeSongRewardOfferHandlers(
     },
     OpenSongRewardOffer: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly communityId: string; readonly postId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -581,6 +583,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddMegapotPoolLeg: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -636,6 +639,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddAssetBonusLeg: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -727,6 +731,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: funding(intent) };
     },
     ObserveAssetBonusFunding: async (request) => {
@@ -767,6 +772,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: assetFunding(intent) };
     },
     GetSongMegapotPool: async (request) => {
