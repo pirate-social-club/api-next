@@ -195,4 +195,63 @@ describe("durable PCM admission observation", () => {
       log.mockRestore();
     }
   });
+  it("logs transfer stages and preserves retry without leaking the failed response", async () => {
+    const f = fixture();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const outcome = await consumeSongPcmAdmission(
+        { admission_id: id },
+        dependencies(f, async (url) => {
+          if (url.includes("storage.cloudconvert.com"))
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(new TypeError("signed-url-secret-and-provider-body"));
+                },
+              }),
+              { headers: { "content-length": "8" } },
+            );
+          return Response.json({
+            data: {
+              ...job,
+              status: "finished",
+              tasks: [
+                {
+                  name: "export-pcm",
+                  operation: "export/url",
+                  status: "finished",
+                  result: {
+                    files: [
+                      {
+                        filename: "song.pcm",
+                        url: "https://us-east.storage.cloudconvert.com/song.pcm?secret=capability",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          });
+        }),
+      );
+      expect(outcome).toBe("retry");
+      expect(log).toHaveBeenCalledOnce();
+      const diagnostic = JSON.parse(log.mock.calls[0]?.[0] as string);
+      expect(diagnostic).toMatchObject({
+        event: "song_pcm_admission_observation_failed",
+        admission_id: id,
+        phase: "pcm-transfer",
+        http_status: 200,
+      });
+      expect(["stream", "upload", "hash-digest"]).toContain(diagnostic.transfer_phase);
+      expect(diagnostic.pending_transfer_phases).toContain("hash-digest");
+      expect(["Error", "TypeError"]).toContain(diagnostic.error_class);
+      expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+      expect(JSON.stringify(log.mock.calls)).not.toContain("https:");
+      expect(f.row().state).toBe("processing");
+      expect(f.events).toEqual(["release"]);
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
