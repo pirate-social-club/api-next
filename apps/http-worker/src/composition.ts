@@ -176,6 +176,7 @@ import { makeControlPlaneRewardClaimIntentResolver } from "@pirate/platform-cf/r
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
+import { makeRewardOperationsRunningReader } from "@pirate/platform-cf/reward-operations-control";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
 import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
 import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
@@ -274,6 +275,7 @@ import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handl
 import { makeProductHandlers } from "./product-handlers.ts";
 import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
+import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
 import {
   makeLazySongRewardOfferHandlers,
   makeSongRewardOfferHandlers,
@@ -1597,6 +1599,9 @@ export async function createProductionHttpWorker(
           ids: () => crypto.randomUUID().replaceAll("-", ""),
         }),
   );
+  const requireRewardOperationsRunning = makeRewardOperationsGuard({
+    readRunning: () => Effect.runPromise(makeRewardOperationsRunningReader(controlPlane)()),
+  });
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? makeLazySongRewardOfferHandlers(async () => {
@@ -1648,6 +1653,7 @@ export async function createProductionHttpWorker(
                 })
               : null;
           return makeSongRewardOfferHandlers({
+            requireRewardOperationsRunning,
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
                 ? null

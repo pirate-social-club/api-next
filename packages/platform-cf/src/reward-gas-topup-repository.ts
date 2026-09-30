@@ -15,6 +15,10 @@ import {
   type RewardGasTopupView,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -23,31 +27,17 @@ const storage = (reason: RewardGasTopupStorageFailed["reason"]) =>
 const rejected = (reason: RewardGasTopupRejected["reason"]) =>
   new RewardGasTopupRejected({ reason });
 
-function mapError(error: ControlPlaneError): RewardGasTopupStorageFailed {
-  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
-  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
-    return storage("outcome-unknown");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505") {
-    return storage("conflict");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState !== null) {
-    return storage("constraint");
-  }
-  return storage("unavailable");
-}
-
 const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
-      typeof error === "object" && error !== null && "_tag" in error
-        ? error._tag === "ControlPlaneAcquireFailed" ||
-          error._tag === "ControlPlaneOperationTimedOut" ||
-          error._tag === "ControlPlaneStatementFailed" ||
-          error._tag === "ControlPlaneTransactionOutcomeUnknown"
-          ? mapError(error as ControlPlaneError)
-          : (error as E)
-        : (error as E),
+      mapMegapotStorageFailure<E, RewardGasTopupStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, RewardGasTopupStorageFailed>(error, storage),
     ),
   );
 
@@ -936,7 +926,7 @@ export function makeControlPlaneRewardGasTopupSendRepository() {
         }),
       ),
     reserveNonce: (input: Parameters<RewardGasTopupSendStore["reserveNonce"]>[0]) =>
-      mapped(
+      mappedReservation(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));

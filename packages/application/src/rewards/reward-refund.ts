@@ -1,4 +1,5 @@
 import { Data, type Effect } from "effect";
+import type { RewardOperationsPaused } from "./reward-operations.ts";
 
 export class RewardRefundStorageFailed extends Data.TaggedError("RewardRefundStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -14,7 +15,10 @@ export class RewardRefundRejected extends Data.TaggedError("RewardRefundRejected
     | "solvency-insufficient";
 }> {}
 
-export type RewardRefundFailure = RewardRefundRejected | RewardRefundStorageFailed;
+export type RewardRefundFailure =
+  | RewardRefundRejected
+  | RewardRefundStorageFailed
+  | RewardOperationsPaused;
 
 export type RewardRefundCandidate = Readonly<{
   fundingEffectId: string;
