@@ -31,6 +31,7 @@ import {
 } from "../../hns-authority-provisioner/src/lifecycle-queue.ts";
 import { runHnsRootImportReadinessOnce } from "../../hns-authority-provisioner/src/lifecycle-readiness.ts";
 import type { HnsAuthorityZoneResult } from "../../hns-authority-provisioner/src/provision-root.ts";
+import { makePostgresHnsOwnershipPreparation } from "../../hns-authority-provisioner/src/provisional-ownership-queue.ts";
 import { makePostgresHnsAuthorityProvisionQueue } from "../../hns-authority-provisioner/src/queue.ts";
 import { attachmentObserverFixture } from "../../hns-owner-verifier/src/attachment-observer.fixture.ts";
 import { handleRequest, type Env as VerifierEnv } from "../../hns-owner-verifier/src/index.ts";
@@ -650,10 +651,17 @@ export function lifecyclePortsFor(base: AcknowledgedImport) {
     queue.finalize,
   );
   return {
+    observeSafe: (root: string) => observer(root, "safe"),
     ports: {
       ...queue,
       readiness: (job: Parameters<typeof runHnsRootImportReadinessOnce>[0], executorId: string) =>
-        runHnsRootImportReadinessOnce(job, executorId, readiness),
+        runHnsRootImportReadinessOnce(job, executorId, {
+          ...readiness,
+          prepare_ownership: makePostgresHnsOwnershipPreparation(
+            base.scopedConnectionString,
+            (root: string) => observer(root, "safe"),
+          ),
+        }),
     },
   };
 }

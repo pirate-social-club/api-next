@@ -222,6 +222,7 @@ TRUNCATE TABLE
   "hns_root_import_recovery_authorizations",
   "hns_root_import_recovery_findings",
   "hns_root_import_retention_reviews",
+  "hns_root_import_safe_ownership_proofs",
   "hns_root_import_separated_clocks_inventory",
   "hns_root_import_sessions",
   "hns_root_import_teardown_jobs",
