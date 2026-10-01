@@ -12,6 +12,7 @@ import type {
   HnsLifecycleReadinessContextV1,
   HnsLifecycleReadinessPortsV1,
 } from "./lifecycle-readiness.ts";
+import { HnsLifecycleReadinessContextError } from "./lifecycle-readiness.ts";
 import type {
   HnsRootReadinessObservationConfig,
   HnsRootReadinessObservationPorts,
@@ -525,7 +526,7 @@ export function makePostgresHnsLifecycleReadinessPorts(
           (await sha256Hex(publishPlanBytes)) !== publishPlanSha256 ||
           (await sha256Hex(provisionResultBytes)) !== provisionResultSha256
         ) {
-          throw new Error("HNS lifecycle readiness read an invalid operation");
+          throw new HnsLifecycleReadinessContextError();
         }
         const context: HnsLifecycleReadinessContextV1 = {
           lifecycle_revision: revision,

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { HnsLifecycleClaimV1 } from "./lifecycle-executor.ts";
 import {
+  HnsLifecycleReadinessContextError,
   type HnsLifecycleReadinessContextV1,
+  HnsOwnershipPreparationPermissionError,
   runHnsRootImportReadinessOnce,
 } from "./lifecycle-readiness.ts";
 import { HnsRootReadinessObservationError } from "./observe-root.ts";
@@ -72,6 +74,164 @@ function ports(overrides: Record<string, unknown> = {}) {
 }
 
 describe("the readiness performer", () => {
+  test("pending ownership finalizes a retry before reading the incomplete context", async () => {
+    const {
+      ports: configured,
+      finalized,
+      recorded,
+    } = ports({
+      prepare_ownership: async () => "pending",
+      context: async () => {
+        throw new Error("incomplete context must not be read");
+      },
+    });
+    expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+      outcome: "retry",
+      reason: "readiness_ownership_pending",
+    });
+    expect(finalized).toEqual([{ outcome: "retry", failureCode: "readiness_ownership_pending" }]);
+    expect(recorded).toHaveLength(0);
+  });
+
+  for (const prepared of ["revision_conflict", "stale_proof", "lease_conflict"] as const) {
+    test(`transient ownership ${prepared} records a retry instead of killing readiness`, async () => {
+      const {
+        ports: configured,
+        finalized,
+        recorded,
+      } = ports({
+        prepare_ownership: async () => prepared,
+        context: async () => {
+          throw new Error("stale preparation must not proceed to context");
+        },
+      });
+      expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+        outcome: "retry",
+        reason: `readiness_ownership_${prepared}`,
+      });
+      expect(finalized).toEqual([
+        { outcome: "retry", failureCode: `readiness_ownership_${prepared}` },
+      ]);
+      expect(recorded).toHaveLength(0);
+    });
+  }
+
+  for (const prepared of ["unknown_outcome", undefined, null]) {
+    test(`unexpected preparation ${String(prepared)} fails visibly instead of retrying`, async () => {
+      const {
+        ports: configured,
+        finalized,
+        recorded,
+      } = ports({
+        prepare_ownership: async () => prepared,
+      });
+      expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+        outcome: "failed",
+        reason: "readiness_ownership_invalid_outcome",
+      });
+      expect(finalized).toEqual([
+        { outcome: "failed", failureCode: "readiness_ownership_invalid_outcome" },
+      ]);
+      expect(recorded).toHaveLength(0);
+    });
+  }
+
+  test("a missed ownership grant records a distinct retry without advancing readiness", async () => {
+    const {
+      ports: configured,
+      finalized,
+      recorded,
+    } = ports({
+      prepare_ownership: async () => {
+        throw new HnsOwnershipPreparationPermissionError();
+      },
+    });
+    expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+      outcome: "retry",
+      reason: "readiness_ownership_permission_denied",
+    });
+    expect(finalized).toEqual([
+      { outcome: "retry", failureCode: "readiness_ownership_permission_denied" },
+    ]);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("a lost lease cannot claim that its context failure was recorded", async () => {
+    const { ports: configured } = ports({
+      context: async () => {
+        throw new HnsLifecycleReadinessContextError();
+      },
+      finalize: async () => ({ outcome: "conflict" }),
+    });
+    await expect(runHnsRootImportReadinessOnce(job, "executor-a", configured)).rejects.toThrow(
+      "HNS readiness lease finalization refused",
+    );
+  });
+
+  test("an ownership lease reclaimed by another executor cannot finalize its stale fence", async () => {
+    const { ports: configured, recorded } = ports({
+      prepare_ownership: async () => "lease_conflict",
+      finalize: async () => ({ outcome: "conflict" }),
+    });
+    await expect(runHnsRootImportReadinessOnce(job, "executor-a", configured)).rejects.toThrow(
+      "HNS readiness lease finalization refused",
+    );
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("invalid context finalizes the claimed lease with a visible failure", async () => {
+    const {
+      ports: configured,
+      finalized,
+      recorded,
+    } = ports({
+      context: async () => {
+        throw new HnsLifecycleReadinessContextError();
+      },
+      observe_readiness: async () => {
+        throw new Error("probe must not run");
+      },
+    });
+    expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+      outcome: "failed",
+      reason: "readiness_context_invalid",
+    });
+    expect(finalized).toEqual([{ outcome: "failed", failureCode: "readiness_context_invalid" }]);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("a context storage outage records a retry without disclosing the error", async () => {
+    const {
+      ports: configured,
+      finalized,
+      recorded,
+    } = ports({
+      context: async () => {
+        throw new Error("private connection details");
+      },
+    });
+    expect(await runHnsRootImportReadinessOnce(job, "executor-a", configured)).toEqual({
+      outcome: "retry",
+      reason: "readiness_context_unavailable",
+    });
+    expect(finalized).toEqual([{ outcome: "retry", failureCode: "readiness_context_unavailable" }]);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("a refused finalization is not reported as successfully recorded", async () => {
+    const { ports: configured } = ports({
+      context: async () => {
+        throw new HnsLifecycleReadinessContextError();
+      },
+      finalize: async () => {
+        throw new Error("finalization unavailable");
+      },
+    });
+    await expect(runHnsRootImportReadinessOnce(job, "executor-a", configured)).rejects.toThrow(
+      "finalization unavailable",
+    );
+  });
+
   test("accepts fresh readiness through the atomic writer", async () => {
     const { ports: configured, recorded } = ports();
     const result = await runHnsRootImportReadinessOnce(job, "executor-a", configured);
