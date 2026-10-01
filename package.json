@@ -62,6 +62,7 @@
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
     "deploy:worker": "bun scripts/deploy-worker-with-provenance.ts",
+    "check:staging:bindings": "bun scripts/check-staging-serving-bindings.ts",
     "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts",
     "test:video-workflow:postgres": "vitest run --config tests/workerd-video/vitest.config.ts --reporter=verbose",
     "avatars:remove": "bun scripts/remove-avatar.ts",

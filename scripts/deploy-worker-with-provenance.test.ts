@@ -10,6 +10,10 @@ import {
   verifyDeploymentSource,
 } from "./deploy-worker-with-provenance";
 
+import type { PrepareStagingBindingGuard } from "./staging-serving-bindings-preflight.ts";
+
+const allowStagingBindings: PrepareStagingBindingGuard = async () => null;
+
 import type { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 
 const allowRewardDeployment: typeof withRewardsBindingDeployment = async (
@@ -69,7 +73,15 @@ describe("Worker deployment provenance", () => {
         throw Error("reward binding shutdown refused: unpaid_credits");
       };
       await expect(
-        deployWorkerWithProvenance("/repo", release, runner, undefined, undefined, refuse),
+        deployWorkerWithProvenance(
+          "/repo",
+          release,
+          runner,
+          undefined,
+          undefined,
+          refuse,
+          allowStagingBindings,
+        ),
       ).rejects.toThrow("unpaid_credits");
       expect(commands.some((command) => command.includes("deploy"))).toBe(false);
     }
@@ -213,6 +225,7 @@ describe("Worker deployment provenance", () => {
         (text) => diagnostics.push(text),
         undefined,
         allowRewardDeployment,
+        allowStagingBindings,
       ),
     ).resolves.toEqual({
       schema_version: 1,
@@ -274,6 +287,7 @@ describe("Worker deployment provenance", () => {
         () => undefined,
         async () => pin,
         allowRewardDeployment,
+        allowStagingBindings,
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(commands[5]?.[0]).toBe("timeout");
