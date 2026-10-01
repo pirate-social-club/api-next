@@ -8,6 +8,7 @@ import {
   type CandidateBindings,
   compareServingBindings,
   type DriftContext,
+  digest,
   object,
   parseJson,
   parseServingDeployments,
@@ -76,6 +77,11 @@ async function readServing(
       runtime: runtime(resources.script_runtime),
     });
   }
+  const finalServing = parseServingDeployments(
+    await output(runner, ["bunx", "wrangler", "deployments", "list", ...target], root),
+  );
+  if (digest(finalServing) !== digest(serving))
+    throw Error("staging binding preflight: serving allocation changed during inventory read");
   return result;
 }
 

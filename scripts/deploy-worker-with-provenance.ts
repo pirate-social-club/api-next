@@ -311,9 +311,9 @@ export async function deployWorkerWithProvenance(
     input.environment,
     async (signal) => {
       if (bindingGuard !== null) {
+        await bindingGuard.recheck();
         const current = await verifyDeploymentSource(repositoryRoot, input, runner);
         if (current.sourceSha !== sourceSha) throw Error("deployment source changed before upload");
-        await bindingGuard.recheck();
       }
       if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
       return runner(
