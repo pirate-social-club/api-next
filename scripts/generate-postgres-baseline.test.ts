@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   assertPostgresBaselineSeedInventory,
   connectionForBaselineGeneration,
@@ -13,6 +16,81 @@ import {
   tableNamesFromFoundationCatalog,
   tableNamesFromPostgresBaseline,
 } from "./postgres-foundation-table-catalog.ts";
+
+describe("PostgreSQL baseline fixture lifecycle", () => {
+  for (const startupFailure of [true, false]) {
+    test(`removes owned anonymous storage after ${startupFailure ? "partial startup" : "database connection"} failure`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), "baseline-lifecycle-test-"));
+      const statePath = join(directory, "state.json");
+      try {
+        await writeFile(
+          statePath,
+          JSON.stringify({ containers: ["unrelated"], volumes: ["unrelated"] }),
+        );
+        const dockerPath = join(directory, "docker");
+        // Model Docker's anonymous-volume lifetime independently of --rm:
+        // explicit forced removal requires --volumes, even with AutoRemove.
+        await writeFile(
+          dockerPath,
+          `#!/usr/bin/env bun
+import { readFileSync, writeFileSync } from "node:fs";
+const path = process.env.BASELINE_LIFECYCLE_STATE;
+const state = JSON.parse(readFileSync(path, "utf8"));
+const args = process.argv.slice(2);
+if (args[0] === "run" && args.includes("--detach")) {
+  const name = args[args.indexOf("--name") + 1];
+  state.containers.push(name);
+  state.volumes.push(name);
+  writeFileSync(path, JSON.stringify(state));
+  if (process.env.BASELINE_LIFECYCLE_STARTUP_FAILURE === "1") {
+    console.error("injected startup failure after volume allocation");
+    process.exit(1);
+  }
+  console.log(name);
+} else if (args[0] === "logs") {
+  console.log("PostgreSQL init process complete");
+} else if (args[0] === "rm") {
+  const name = args.at(-1);
+  state.containers = state.containers.filter((item) => item !== name);
+  if (args.includes("--volumes") || args.includes("-v")) {
+    state.volumes = state.volumes.filter((item) => item !== name);
+  }
+  writeFileSync(path, JSON.stringify(state));
+}
+`,
+        );
+        await chmod(dockerPath, 0o700);
+        const environment = { ...process.env };
+        delete environment.CONTROL_PLANE_POSTGRES_GENERATOR_URL;
+        const child = Bun.spawn([process.execPath, "scripts/generate-postgres-baseline.ts"], {
+          cwd: new URL("../", import.meta.url).pathname,
+          env: {
+            ...environment,
+            PATH: `${directory}:${process.env.PATH}`,
+            TMPDIR: directory,
+            BASELINE_LIFECYCLE_STATE: statePath,
+            BASELINE_LIFECYCLE_STARTUP_FAILURE: startupFailure ? "1" : "0",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [exitCode, , stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        expect(exitCode).toBe(1);
+        expect(stderr).toContain(startupFailure ? "injected startup failure" : "ENOENT");
+        expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
+          containers: ["unrelated"],
+          volumes: ["unrelated"],
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
 
 describe("PostgreSQL baseline normalization", () => {
   test("preserves function search-path configuration without retaining the source schema", () => {
