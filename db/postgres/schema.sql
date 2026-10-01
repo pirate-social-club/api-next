@@ -35783,7 +35783,7 @@ CREATE TABLE spaces_namespace_authority_evidence (
     CONSTRAINT spaces_namespace_authority_evidence_anchor_height_check CHECK (((anchor_height >= 0) AND (anchor_height <= '9007199254740991'::bigint))),
     CONSTRAINT spaces_namespace_authority_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_identity_check CHECK ((is_handle_sales_identifier_v1(namespace_authority_reference, 512) AND ((namespace_authority_generation >= 1) AND (namespace_authority_generation <= '9007199254740991'::bigint)) AND is_community_route_root_label('spaces'::text, canonical_root) AND is_community_route_root_label_display(display_root) AND (canonical_root <> 'pirate'::text) AND is_handle_sales_identifier_v1(challenge_environment, 64))),
-    CONSTRAINT spaces_namespace_authority_evidence_raw_verifier_evidence_check CHECK (((octet_length(raw_verifier_evidence) >= 1) AND (octet_length(raw_verifier_evidence) <= 65536))),
+    CONSTRAINT spaces_namespace_authority_evidence_raw_verifier_evidence_check CHECK (((octet_length(raw_verifier_evidence) >= 1) AND (octet_length(raw_verifier_evidence) <= 1048576))),
     CONSTRAINT spaces_namespace_authority_evidence_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_time_order CHECK (((challenge_completed_at > key_last_changed_at) AND (publication_verified_at >= key_last_changed_at) AND (anchored_at <= observed_at) AND (challenge_completed_at <= recorded_at) AND (publication_verified_at <= recorded_at) AND (observed_at <= recorded_at) AND (fresh_until > observed_at)))
@@ -36002,7 +36002,7 @@ CREATE TABLE spaces_owner_proof_ceremonies (
     CONSTRAINT spaces_owner_proof_ceremonies_start_idempotency_key_check CHECK (is_handle_sales_identifier_v1(start_idempotency_key, 128)),
     CONSTRAINT spaces_owner_proof_ceremonies_start_request_bytes_check CHECK (((octet_length(start_request_bytes) >= 1) AND (octet_length(start_request_bytes) <= 2048))),
     CONSTRAINT spaces_owner_proof_ceremonies_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_bytes_check CHECK (((octet_length(start_verifier_bytes) >= 1) AND (octet_length(start_verifier_bytes) <= 65536))),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_bytes_check CHECK (((octet_length(start_verifier_bytes) >= 1) AND (octet_length(start_verifier_bytes) <= 1048576))),
     CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_sha256_hex_check CHECK ((start_verifier_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_owner_proof_ceremonies_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'verified'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text]))),
     CONSTRAINT spaces_owner_proof_ceremony_terminal CHECK ((((status = 'pending'::text) AND (terminal_response IS NULL)) OR ((status <> 'pending'::text) AND (terminal_response IS NOT NULL)))),
