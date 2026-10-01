@@ -45,6 +45,7 @@ function fixture(
     servingRace?: boolean;
     incomplete?: boolean;
     sourceRace?: boolean;
+    controlConnectionLost?: boolean;
   } = {},
 ) {
   const commands: string[][] = [];
@@ -52,6 +53,8 @@ function fixture(
   let allocations = 0;
   let sourceReads = 0;
   let uploaded = false;
+  let candidateReads = 0;
+  const cancellation = new AbortController();
   const runner: CommandRunner = async (command) => {
     commands.push([...command]);
     let stdout = "";
@@ -86,7 +89,10 @@ function fixture(
     return { exitCode: 0, stdout, stderr: "" };
   };
   const guard: PrepareStagingBindingGuard = (...args) =>
-    prepareStagingBindingGuard(...args, async () => candidate(options.text ?? "true"));
+    prepareStagingBindingGuard(...args, async () => {
+      if (++candidateReads > 1 && options.controlConnectionLost) cancellation.abort();
+      return candidate(options.text ?? "true");
+    });
   const execute = () =>
     deployWorkerWithProvenance(
       "/repo",
@@ -94,7 +100,9 @@ function fixture(
       runner,
       (text) => diagnostics.push(text),
       undefined,
-      allowRewards,
+      options.controlConnectionLost
+        ? async (_root, _config, _environment, operation) => operation(cancellation.signal)
+        : allowRewards,
       guard,
     );
   return { execute, commands, diagnostics };
@@ -129,6 +137,11 @@ describe("normal staging deployment binding preflight", () => {
   test("missing native inventory refuses before mutation", async () => {
     const run = fixture({ incomplete: true });
     await expect(run.execute()).rejects.toThrow("missing binding inventory");
+    expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
+  });
+  test("control connection loss during the fresh read refuses before upload", async () => {
+    const run = fixture({ controlConnectionLost: true });
+    await expect(run.execute()).rejects.toThrow("control connection lost before deploy");
     expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
   });
   test("source movement after initial review refuses before upload", async () => {

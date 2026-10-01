@@ -158,6 +158,7 @@ export async function runCommand(
   cwd: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (signal?.aborted) throw Error("deployment command interrupted");
   const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
@@ -314,6 +315,7 @@ export async function deployWorkerWithProvenance(
         if (current.sourceSha !== sourceSha) throw Error("deployment source changed before upload");
         await bindingGuard.recheck();
       }
+      if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
       return runner(
         [
           "bunx",
