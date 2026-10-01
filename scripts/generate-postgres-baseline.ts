@@ -190,7 +190,7 @@ async function startLocalPostgres(): Promise<{
     }
     throw new Error("Postgres container did not become ready within 30 seconds");
   } catch (error) {
-    await runCommand(["docker", "rm", "--force", container]);
+    await runCommand(["docker", "rm", "--force", "--volumes", container]);
     await removeSocketDirectory(socketDirectory);
     throw error;
   }
@@ -405,7 +405,7 @@ export async function generatePostgresBaseline(
     );
   } finally {
     if (container !== undefined) {
-      await runCommand(["docker", "rm", "--force", container]);
+      await runCommand(["docker", "rm", "--force", "--volumes", container]);
     }
     if (socketDirectory !== undefined) {
       await removeSocketDirectory(socketDirectory);
