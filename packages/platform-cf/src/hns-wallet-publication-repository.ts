@@ -49,13 +49,28 @@ export function makeControlPlaneHnsWalletPublicationStore(
             : Effect.fail(new Error("Invalid publication read outcome")),
         ),
       ),
-    command: (input) =>
-      query("SELECT * FROM command_hns_wallet_publication_v1($1,$2,$3,$4,$5::jsonb)", [
+    command: (input) => {
+      const secret =
+        input.command.command === "authorize_dispatch"
+          ? Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+              byte.toString(16).padStart(2, "0"),
+            ).join("")
+          : null;
+      return query("SELECT * FROM command_hns_wallet_publication_v1($1,$2,$3,$4,$5::jsonb,$6)", [
         input.actor_id,
         input.community_id,
         input.root_import_session_id,
         crypto.randomUUID(),
         JSON.stringify(input.command),
-      ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(HnsWalletPublicationResultV1))),
+        secret,
+      ]).pipe(
+        Effect.flatMap((row) =>
+          Schema.decodeUnknownEffect(HnsWalletPublicationResultV1)({
+            ...row,
+            dispatch_secret: row.outcome === "dispatch_authorized" ? secret : null,
+          }),
+        ),
+      );
+    },
   };
 }

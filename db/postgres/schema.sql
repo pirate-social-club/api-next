@@ -3374,10 +3374,10 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION command_hns_wallet_publication_v1(input_actor text, input_community text, input_session text, input_attempt_id text, input_command jsonb) RETURNS TABLE(outcome text, attempt jsonb)
+CREATE FUNCTION command_hns_wallet_publication_v1(input_actor text, input_community text, input_session text, input_attempt_id text, input_command jsonb, input_dispatch_secret text DEFAULT NULL::text) RETURNS TABLE(outcome text, attempt jsonb)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
-    AS $$
+    AS $_$
 DECLARE
   session hns_root_import_sessions%ROWTYPE;
   lifecycle hns_root_import_lifecycle%ROWTYPE;
@@ -3449,7 +3449,11 @@ BEGIN
         OR selected.resource_sha256 IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256 THEN
         RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
       END IF;
-      UPDATE hns_wallet_publication_attempts SET state='dispatch_authorized',dispatch_authorized_at=clock_timestamp()
+      IF input_dispatch_secret IS NULL OR input_dispatch_secret !~ '^[0-9a-f]{64}$' THEN
+        RETURN QUERY SELECT 'invalid_command'::text,NULL::jsonb; RETURN;
+      END IF;
+      UPDATE hns_wallet_publication_attempts SET state='dispatch_authorized',dispatch_authorized_at=clock_timestamp(),
+        dispatch_secret_sha256=encode(sha256(convert_to(input_dispatch_secret,'UTF8')),'hex')
        WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
       decision := 'dispatch_authorized';
     WHEN 'cancel' THEN
@@ -3460,6 +3464,12 @@ BEGIN
        WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
       decision := 'cancelled';
     WHEN 'report_txid' THEN
+      -- The same owner on another device cannot retire a paused dispatch by
+      -- reporting a manual transaction. Only the winning response holds this.
+      IF selected.dispatch_secret_sha256 IS NULL OR selected.dispatch_secret_sha256 IS DISTINCT FROM
+        encode(sha256(convert_to(input_command->>'dispatch_secret','UTF8')),'hex') THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
       IF selected.state NOT IN ('dispatch_authorized','sent','confirmed')
         OR (selected.txid IS NOT NULL AND selected.txid IS DISTINCT FROM input_command->>'txid') THEN
         RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
@@ -3484,7 +3494,7 @@ BEGIN
   END CASE;
   RETURN QUERY SELECT decision,hns_wallet_publication_snapshot_v1(selected);
 END;
-$$;
+$_$;
 
 CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -15470,6 +15480,7 @@ CREATE TABLE hns_wallet_publication_attempts (
     authority_generation bigint NOT NULL,
     reservation_key text NOT NULL,
     state text NOT NULL,
+    dispatch_secret_sha256 text,
     txid text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     dispatch_authorized_at timestamp with time zone,
@@ -15478,10 +15489,12 @@ CREATE TABLE hns_wallet_publication_attempts (
     confirmation_finding_id bigint,
     CONSTRAINT hns_wallet_publication_attempts_attempt_id_check CHECK (((octet_length(attempt_id) >= 1) AND (octet_length(attempt_id) <= 256))),
     CONSTRAINT hns_wallet_publication_attempts_authority_generation_check CHECK ((authority_generation > 0)),
-    CONSTRAINT hns_wallet_publication_attempts_check CHECK (((state = ANY (ARRAY['reserved'::text, 'cancelled'::text])) = (dispatch_authorized_at IS NULL))),
-    CONSTRAINT hns_wallet_publication_attempts_check1 CHECK (((state = ANY (ARRAY['confirmed'::text, 'cancelled'::text, 'retry_accepted'::text])) = (resolved_at IS NOT NULL))),
-    CONSTRAINT hns_wallet_publication_attempts_check2 CHECK (((state <> ALL (ARRAY['sent'::text, 'confirmed'::text])) OR (txid IS NOT NULL))),
-    CONSTRAINT hns_wallet_publication_attempts_check3 CHECK (((state = 'confirmed'::text) = (confirmation_finding_id IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check CHECK (((dispatch_authorized_at IS NULL) = (dispatch_secret_sha256 IS NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check1 CHECK (((state = ANY (ARRAY['reserved'::text, 'cancelled'::text])) = (dispatch_authorized_at IS NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check2 CHECK (((state = ANY (ARRAY['confirmed'::text, 'cancelled'::text, 'retry_accepted'::text])) = (resolved_at IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check3 CHECK (((state <> ALL (ARRAY['sent'::text, 'confirmed'::text])) OR (txid IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check4 CHECK (((state = 'confirmed'::text) = (confirmation_finding_id IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_dispatch_secret_sha256_check CHECK ((dispatch_secret_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT hns_wallet_publication_attempts_publish_plan_sha256_check CHECK ((publish_plan_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT hns_wallet_publication_attempts_reservation_key_check CHECK (((octet_length(reservation_key) >= 1) AND (octet_length(reservation_key) <= 256))),
     CONSTRAINT hns_wallet_publication_attempts_resource_sha256_check CHECK ((resource_sha256 ~ '^[0-9a-f]{64}$'::text)),

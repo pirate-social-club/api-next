@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.104.0",
+  "sourceBranch": "fix/hns-wallet-publication-reservations",
+  "sourceBase": "186bd2f2",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Winning dispatch secret required for transaction reporting; secret unavailable on reads or replay.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.104.0.tgz",
+    "sha256": "89d9c73839ac1ee12f01b9464ed9b86eae8c3b810ee31744df0e462c9b8ba14e"
+  },
+  "validation": {
+    "status": "Local review follow-up gates passed; unreleased",
+    "passed": [
+      "bun run check",
+      "bun run test: 5281 unit pass, one pre-existing skip, 22 Node and 213 workerd pass",
+      "PostgreSQL 17 connected suites: 54 pass, including 19 wallet reservation cases",
+      "Three mutation checks fail their matching regressions",
+      "Fresh migration baseline consistency"
+    ],
+    "remaining": [
+      "Full postgres17 gate",
+      "Hosted check/postgres17/secret-boundary gates",
+      "Independent follow-up review",
+      "Real Bob and safe-inclusion reader acceptance",
+      "Lost-original-authority recovery policy"
+    ],
+    "operationalBoundary": "Local work only; no publication, deployment, production read or real wallet operation."
+  }
+}

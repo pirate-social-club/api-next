@@ -11,7 +11,19 @@ that changes `reserved` to `dispatch_authorized` receives that outcome. A retry
 receives `already_authorized`; GET returns state only. Neither grants permission.
 The authorization transaction checks the active actor, community route grant,
 session revision, plan, authority generation and existing publication window.
+The HTTP runtime generates a 256-bit dispatch secret for authorization. PostgreSQL
+stores only its SHA256 hash, and only the winning response returns the secret.
+Reads and authorization replays never disclose it. `report_txid` requires that
+secret as well as the original owner authentication; a same-owner second device
+cannot substitute a manually published transaction. An invalid proof changes
+nothing, so it cannot poison the winner's later report.
+
 A lost winning response can result in zero sends. It must never cause a replay.
+
+The winner keeps the secret only in its call closure until Bob returns a valid
+txid. Then it persists the secret together with that txid for reporting after a
+reload. Pending or ambiguous local receipts contain no secret. This is scoped
+transaction-reporting proof, never application authentication or wallet authority.
 
 The client retains its local receipt and checks the response's attempt, root,
 session and plan before calling Bob once. Storage and Web Locks remain a local
@@ -26,6 +38,13 @@ sign-in and the matching API contract are prerequisites for automatic publicatio
 | confirmed | Acknowledge/check the import; do not offer another Bob send. |
 | cancelled | A new reservation may be requested within the publication window. |
 | retry_accepted | A new reservation may be requested; the previous sender may still run. |
+
+Cancel and risk acceptance remain available through the expired original session
+while its actor still has route authority. They do not reopen or extend the
+publication window. The UI retains expired imports with a publication plan so
+these actions remain reachable. Currency is checked immediately before dispatch
+authorization; a valid winning response is consumed once even if the UI unmounts
+while that request is in flight.
 
 No timeout, signing dismissal, unchanged tip, resource match or new session
 releases a dispatched attempt. The existing safe observation loop gathers the
@@ -65,3 +84,9 @@ session to isolate the reservation boundary; it does not prove retire/re-import.
 The launch still requires real Bob acceptance, independent transaction inclusion
 reader acceptance, ownership renewal/expiry/recovery, production sign-in and the
 reviewed guarded deployment. Local tests grant no release authority.
+
+If the original actor becomes inactive or loses route permission, ordinary
+commands remain refused and the root fence stays retained. There is no operator
+bypass or successor-owner override in this candidate. An audited recovery policy
+is an open product/security decision and a launch gate. The provisioner's real
+safe-inclusion reader also requires staging acceptance; mocks do not prove it.

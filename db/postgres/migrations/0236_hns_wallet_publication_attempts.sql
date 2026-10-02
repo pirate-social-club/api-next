@@ -14,6 +14,7 @@ CREATE TABLE hns_wallet_publication_attempts (
   state text NOT NULL CHECK (state IN (
     'reserved','dispatch_authorized','sent','confirmed','cancelled','retry_accepted'
   )),
+  dispatch_secret_sha256 text CHECK (dispatch_secret_sha256 ~ '^[0-9a-f]{64}$'),
   txid text CHECK (txid ~ '^[0-9a-f]{64}$'),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   dispatch_authorized_at timestamptz,
@@ -21,6 +22,7 @@ CREATE TABLE hns_wallet_publication_attempts (
   qualified_finding_id bigint REFERENCES hns_root_import_recovery_findings,
   confirmation_finding_id bigint REFERENCES hns_root_import_recovery_findings,
   UNIQUE (actor_id, root_import_session_id, reservation_key),
+  CHECK ((dispatch_authorized_at IS NULL) = (dispatch_secret_sha256 IS NULL)),
   CHECK ((state IN ('reserved','cancelled')) = (dispatch_authorized_at IS NULL)),
   CHECK ((state IN ('confirmed','cancelled','retry_accepted')) = (resolved_at IS NOT NULL)),
   CHECK (state NOT IN ('sent','confirmed') OR txid IS NOT NULL),
@@ -111,7 +113,7 @@ $$;
 REVOKE ALL ON FUNCTION read_hns_wallet_publication_v1(text,text,text) FROM PUBLIC;
 
 CREATE FUNCTION command_hns_wallet_publication_v1(
-  input_actor text, input_community text, input_session text, input_attempt_id text, input_command jsonb
+  input_actor text, input_community text, input_session text, input_attempt_id text, input_command jsonb, input_dispatch_secret text DEFAULT NULL
 ) RETURNS TABLE(outcome text, attempt jsonb)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE
@@ -185,7 +187,11 @@ BEGIN
         OR selected.resource_sha256 IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256 THEN
         RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
       END IF;
-      UPDATE hns_wallet_publication_attempts SET state='dispatch_authorized',dispatch_authorized_at=clock_timestamp()
+      IF input_dispatch_secret IS NULL OR input_dispatch_secret !~ '^[0-9a-f]{64}$' THEN
+        RETURN QUERY SELECT 'invalid_command'::text,NULL::jsonb; RETURN;
+      END IF;
+      UPDATE hns_wallet_publication_attempts SET state='dispatch_authorized',dispatch_authorized_at=clock_timestamp(),
+        dispatch_secret_sha256=encode(sha256(convert_to(input_dispatch_secret,'UTF8')),'hex')
        WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
       decision := 'dispatch_authorized';
     WHEN 'cancel' THEN
@@ -196,6 +202,12 @@ BEGIN
        WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
       decision := 'cancelled';
     WHEN 'report_txid' THEN
+      -- The same owner on another device cannot retire a paused dispatch by
+      -- reporting a manual transaction. Only the winning response holds this.
+      IF selected.dispatch_secret_sha256 IS NULL OR selected.dispatch_secret_sha256 IS DISTINCT FROM
+        encode(sha256(convert_to(input_command->>'dispatch_secret','UTF8')),'hex') THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
       IF selected.state NOT IN ('dispatch_authorized','sent','confirmed')
         OR (selected.txid IS NOT NULL AND selected.txid IS DISTINCT FROM input_command->>'txid') THEN
         RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
@@ -221,7 +233,7 @@ BEGIN
   RETURN QUERY SELECT decision,hns_wallet_publication_snapshot_v1(selected);
 END;
 $$;
-REVOKE ALL ON FUNCTION command_hns_wallet_publication_v1(text,text,text,text,jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION command_hns_wallet_publication_v1(text,text,text,text,jsonb,text) FROM PUBLIC;
 
 -- Pin definer lookups to the owning schema before pg_temp. Default privileges
 -- must not give existing application logins direct writes to the new ledger.

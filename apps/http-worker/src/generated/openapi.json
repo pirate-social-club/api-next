@@ -28840,12 +28840,16 @@
                       },
                       "txid": {
                         "type": "string"
+                      },
+                      "dispatch_secret": {
+                        "type": "string"
                       }
                     },
                     "required": [
                       "command",
                       "attempt_id",
-                      "txid"
+                      "txid",
+                      "dispatch_secret"
                     ],
                     "additionalProperties": false
                   },
@@ -28973,11 +28977,22 @@
                         "resolved_at"
                       ],
                       "additionalProperties": false
+                    },
+                    "dispatch_secret": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
                     "outcome",
-                    "attempt"
+                    "attempt",
+                    "dispatch_secret"
                   ],
                   "additionalProperties": false
                 }

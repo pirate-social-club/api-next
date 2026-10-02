@@ -50,6 +50,7 @@ export const HnsWalletPublicationCommandV1 = Schema.Union([
     command: Schema.Literal("report_txid"),
     attempt_id: BoundedIdentifier,
     txid: Sha256Hex,
+    dispatch_secret: Sha256Hex,
   }),
   Schema.Struct({
     command: Schema.Literal("accept_retry"),
@@ -72,6 +73,8 @@ export const HnsWalletPublicationResultV1 = Schema.Struct({
     "retry_accepted",
   ]),
   attempt: HnsWalletPublicationAttemptV1,
+  // Returned only by the authorization winner; never part of an observable attempt.
+  dispatch_secret: Schema.NullOr(Sha256Hex),
 });
 export type HnsWalletPublicationResultV1 = Schema.Schema.Type<typeof HnsWalletPublicationResultV1>;
 
