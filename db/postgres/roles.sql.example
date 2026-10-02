@@ -183,3 +183,15 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_recovery_v1(
 GRANT EXECUTE ON FUNCTION apply_hns_root_import_recovery_v1(
   TEXT, TEXT, BIGINT, TEXT, JSONB, INTEGER
 ) TO api_next_operator;
+
+-- Wallet publication: the HTTP role has commands, never direct attempt writes.
+REVOKE ALL ON hns_wallet_publication_attempts FROM api_next_app;
+GRANT EXECUTE ON FUNCTION read_hns_wallet_publication_v1(TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION command_hns_wallet_publication_v1(TEXT,TEXT,TEXT,TEXT,JSONB) TO api_next_app;
+-- Apply the following to the separately reviewed provisioner login at release:
+-- GRANT SELECT ON hns_wallet_publication_attempts TO <provisioner_role>;
+-- GRANT EXECUTE ON FUNCTION record_hns_root_import_recovery_finding_v1(
+--   TEXT,BIGINT,TEXT,TEXT,TEXT,TEXT,TEXT,BIGINT,TEXT,TEXT,TEXT,TEXT,BOOLEAN,BOOLEAN
+-- ) TO <provisioner_role>;
+-- GRANT EXECUTE ON FUNCTION observe_hns_wallet_publication_v1(BIGINT) TO <provisioner_role>;
+-- Do not grant recovery authorization or apply functions to that login.

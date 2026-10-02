@@ -1402,6 +1402,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_root_import_separated_clocks_inventory",
         "hns_root_import_sessions",
         "hns_root_import_teardown_jobs",
+        "hns_wallet_publication_attempts",
         "home_feed_projection",
         "identity_credentials",
         "karaoke_attempts",

@@ -106,6 +106,7 @@ import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/plat
 import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
 import { makeControlPlaneHnsTxtAttachmentStore } from "@pirate/platform-cf/hns-txt-attachment-repository";
+import { makeControlPlaneHnsWalletPublicationStore } from "@pirate/platform-cf/hns-wallet-publication-repository";
 import {
   makeControlPlaneCredentialCanonicalResolver,
   makeControlPlaneIdentityRegistrationStore,
@@ -266,6 +267,7 @@ import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-produc
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
+import { makeHnsWalletPublicationHandlers } from "./hns-wallet-publication-handlers.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
@@ -1797,6 +1799,11 @@ export async function createProductionHttpWorker(
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
       ...hnsCommunityRootImportHandlers,
+      ...(hnsCommunityServices === undefined
+        ? {}
+        : makeHnsWalletPublicationHandlers(
+            makeControlPlaneHnsWalletPublicationStore(controlPlane),
+          )),
       ...hnsTxtAttachmentHandlers,
       ...verificationHandlers,
       ...fundingHandlers,

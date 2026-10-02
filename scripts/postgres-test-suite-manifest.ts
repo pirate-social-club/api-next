@@ -52,6 +52,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/account-age-verification.pg.test.ts",
   "packages/platform-cf/src/comment-thread-repository.pg.test.ts",
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
+  "apps/http-worker/src/hns-wallet-publication.pg.test.ts",
   "apps/http-worker/src/hns-community-activation.pg.test.ts",
   "apps/http-worker/src/hns-community-activation-production-worker.pg.test.ts",
   "apps/http-worker/src/hns-community-joint-ceremony.pg.test.ts",

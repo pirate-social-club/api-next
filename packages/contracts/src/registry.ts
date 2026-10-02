@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
+import { CommandHnsWalletPublication, GetHnsWalletPublication } from "./hns-wallet-publication.ts";
 import { CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 
@@ -172,6 +173,8 @@ export const registry = {
   GetHnsRootImport,
   PollHnsRootImport,
   ActivateHnsRootImport,
+  GetHnsWalletPublication,
+  CommandHnsWalletPublication,
   StartHnsCommunityRootImport,
   GetHnsCommunityRootImport,
   GetCurrentHnsCommunityRootImport,

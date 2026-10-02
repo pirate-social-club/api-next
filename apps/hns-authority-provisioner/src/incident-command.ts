@@ -178,7 +178,7 @@ function planEncodedDigestFromBytes(bytes: Uint8Array): string | null {
  * path uses. No provider client here can mutate: HSD reads are name,
  * transaction and header lookups, and the PowerDNS read is a GET.
  */
-function makeHnsIncidentPortsFromConfigurationV1(
+export function makeHnsIncidentPortsFromConfigurationV1(
   env: Readonly<Record<string, string | undefined>>,
   query: IncidentQuery,
   fetcher: typeof fetch,

@@ -38,6 +38,7 @@ import {
 } from "./schema-compatibility.ts";
 import type { PowerDnsSecondaryAxfrConfig } from "./secondary-axfr.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
+import { makeHnsWalletPublicationObserver } from "./wallet-publication-observer.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
 // Handshake publication is block-bound: the legacy bounded 20-attempt
@@ -365,24 +366,26 @@ async function main(serve: boolean): Promise<void> {
   }
   const queue = makePostgresHnsAuthorityProvisionQueue(connectionString);
 
-  const observeChain = makeHsdRootResourceObserver(
-    {
-      rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
-      authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
-      chain_network: chainNetwork,
-      genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
-      // Handshake mainnet commits the Urkel tree every 36 blocks and HSD
-      // treats a commitment with more than 12 confirmations as safe.
-      tree_interval_blocks: chainInteger("HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", 1, 2_000),
-      safe_minimum_confirmations: chainInteger("HNS_AUTHORITY_SAFE_CONFIRMATIONS", 0, 1_000),
-      maximum_tip_age_seconds: chainInteger("HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", 60, 86_400),
-      maximum_future_tip_seconds: chainInteger(
-        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
-        0,
-        3_600,
-      ),
-    },
-    fetch,
+  const observeChain = makeHnsWalletPublicationObserver(
+    connectionString,
+    process.env,
+    makeHsdRootResourceObserver(
+      {
+        rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
+        authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
+        chain_network: chainNetwork,
+        genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
+        tree_interval_blocks: chainInteger("HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", 1, 2_000),
+        safe_minimum_confirmations: chainInteger("HNS_AUTHORITY_SAFE_CONFIRMATIONS", 0, 1_000),
+        maximum_tip_age_seconds: chainInteger("HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", 60, 86_400),
+        maximum_future_tip_seconds: chainInteger(
+          "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
+          0,
+          3_600,
+        ),
+      },
+      fetch,
+    ),
   );
   const powerDnsConfig: PowerDnsRootProvisionConfig = {
     nameservers,

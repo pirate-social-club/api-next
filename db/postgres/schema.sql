@@ -3374,6 +3374,118 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION command_hns_wallet_publication_v1(input_actor text, input_community text, input_session text, input_attempt_id text, input_command jsonb) RETURNS TABLE(outcome text, attempt jsonb)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  selected hns_wallet_publication_attempts%ROWTYPE;
+  operation text := input_command->>'command';
+  decision text;
+BEGIN
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id=input_session AND actor_id=input_actor AND community_id=input_community;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text,NULL::jsonb; RETURN; END IF;
+  -- Hold current authority through commit, including a concurrent revocation.
+  PERFORM 1 FROM communities community
+    JOIN community_route_authority_grants grant_row ON grant_row.community_id=community.community_id
+    JOIN users actor ON actor.user_id=grant_row.principal_user_id
+   WHERE community.community_id=input_community AND community.status='active'
+     AND actor.user_id=input_actor AND actor.status='active'
+     AND grant_row.authority='manage_routes' AND grant_row.status='active'
+   FOR SHARE OF community,grant_row,actor;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text,NULL::jsonb; RETURN; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('hns-root-import:' || session.root_label,0));
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle WHERE root_import_session_id=input_session FOR UPDATE;
+  SELECT * INTO session FROM hns_root_import_sessions WHERE root_import_session_id=input_session FOR UPDATE;
+  IF session.actor_id IS DISTINCT FROM input_actor OR session.community_id IS DISTINCT FROM input_community THEN
+    RETURN QUERY SELECT 'not_found'::text,NULL::jsonb; RETURN;
+  END IF;
+  IF operation IN ('reserve','authorize_dispatch') THEN
+    IF session.publish_plan_sha256 IS DISTINCT FROM input_command->>'publish_plan_sha256'
+      OR session.revision IS DISTINCT FROM (input_command->>'expected_revision')::bigint
+      OR lifecycle.plan_encoded_resource_sha256 IS NULL
+      OR NOT hns_root_import_publication_window_open_v1(input_session) THEN
+      RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+    END IF;
+  END IF;
+  IF operation='reserve' THEN
+    SELECT * INTO selected FROM hns_wallet_publication_attempts
+     WHERE actor_id=input_actor AND root_import_session_id=input_session
+       AND reservation_key=input_command->>'idempotency_key';
+    IF FOUND THEN
+      IF selected.publish_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256 THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
+      RETURN QUERY SELECT 'replayed'::text,hns_wallet_publication_snapshot_v1(selected); RETURN;
+    END IF;
+    IF EXISTS (SELECT 1 FROM hns_wallet_publication_attempts
+       WHERE root_label=session.root_label AND state IN ('reserved','dispatch_authorized','sent')) THEN
+      RETURN QUERY SELECT 'publication_unresolved'::text,NULL::jsonb; RETURN;
+    END IF;
+    INSERT INTO hns_wallet_publication_attempts (
+      attempt_id,root_import_session_id,community_id,actor_id,root_label,publish_plan_sha256,
+      resource_sha256,authority_generation,reservation_key,state
+    ) VALUES (
+      input_attempt_id,input_session,input_community,input_actor,session.root_label,session.publish_plan_sha256,
+      lifecycle.plan_encoded_resource_sha256,lifecycle.generation,input_command->>'idempotency_key','reserved'
+    ) RETURNING * INTO selected;
+    RETURN QUERY SELECT 'reserved'::text,hns_wallet_publication_snapshot_v1(selected); RETURN;
+  END IF;
+  SELECT * INTO selected FROM hns_wallet_publication_attempts
+   WHERE attempt_id=input_command->>'attempt_id' AND root_import_session_id=input_session
+     AND actor_id=input_actor AND community_id=input_community FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'not_found'::text,NULL::jsonb; RETURN; END IF;
+  CASE operation
+    WHEN 'authorize_dispatch' THEN
+      IF selected.state IN ('dispatch_authorized','sent','confirmed','retry_accepted') THEN
+        RETURN QUERY SELECT 'already_authorized'::text,hns_wallet_publication_snapshot_v1(selected); RETURN;
+      END IF;
+      IF selected.state<>'reserved'
+        OR selected.authority_generation<>lifecycle.generation
+        OR selected.publish_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256
+        OR selected.resource_sha256 IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256 THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
+      UPDATE hns_wallet_publication_attempts SET state='dispatch_authorized',dispatch_authorized_at=clock_timestamp()
+       WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
+      decision := 'dispatch_authorized';
+    WHEN 'cancel' THEN
+      IF selected.state NOT IN ('reserved','cancelled') THEN
+        RETURN QUERY SELECT 'publication_unresolved'::text,NULL::jsonb; RETURN;
+      END IF;
+      UPDATE hns_wallet_publication_attempts SET state='cancelled',resolved_at=COALESCE(resolved_at,clock_timestamp())
+       WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
+      decision := 'cancelled';
+    WHEN 'report_txid' THEN
+      IF selected.state NOT IN ('dispatch_authorized','sent','confirmed')
+        OR (selected.txid IS NOT NULL AND selected.txid IS DISTINCT FROM input_command->>'txid') THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
+      IF selected.state<>'confirmed' THEN
+        UPDATE hns_wallet_publication_attempts SET state='sent',txid=input_command->>'txid'
+         WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
+        -- The wallet report may follow an independently qualified inclusion.
+        PERFORM confirm_hns_wallet_publication_v1(selected.qualified_finding_id);
+        SELECT * INTO selected FROM hns_wallet_publication_attempts WHERE attempt_id=selected.attempt_id;
+      END IF;
+      decision := 'reported';
+    WHEN 'accept_retry' THEN
+      IF input_command->'accept_duplicate_or_late_publication' IS DISTINCT FROM 'true'::jsonb
+        OR selected.state NOT IN ('dispatch_authorized','sent','retry_accepted') THEN
+        RETURN QUERY SELECT 'stale'::text,NULL::jsonb; RETURN;
+      END IF;
+      UPDATE hns_wallet_publication_attempts SET state='retry_accepted',resolved_at=COALESCE(resolved_at,clock_timestamp())
+       WHERE attempt_id=selected.attempt_id RETURNING * INTO selected;
+      decision := 'retry_accepted';
+    ELSE RETURN QUERY SELECT 'invalid_command'::text,NULL::jsonb; RETURN;
+  END CASE;
+  RETURN QUERY SELECT decision,hns_wallet_publication_snapshot_v1(selected);
+END;
+$$;
+
 CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -3906,6 +4018,24 @@ CREATE FUNCTION community_moderation_policy_preimage_v1(input_community_id text,
     revision.revision,
     revision.platform_floor_revision_id,
     revision.platform_floor_hash;
+$$;
+
+CREATE FUNCTION confirm_hns_wallet_publication_v1(input_finding_id bigint) RETURNS void
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  UPDATE hns_wallet_publication_attempts AS attempt
+     SET state='confirmed', resolved_at=clock_timestamp(), confirmation_finding_id=finding.recovery_finding_id
+    FROM hns_root_import_recovery_findings AS finding
+   WHERE finding.recovery_finding_id=input_finding_id
+     AND attempt.root_import_session_id=finding.root_import_session_id
+     AND attempt.authority_generation=finding.authority_generation
+     AND attempt.qualified_finding_id=finding.recovery_finding_id
+     AND attempt.state='sent' AND attempt.txid=finding.inclusion_txid
+     AND finding.recorded_at>=attempt.dispatch_authorized_at
+     AND finding.classification='matching_authority_available'
+     AND finding.covenant_resource_sha256=attempt.resource_sha256
+     AND finding.plan_encoded_sha256=attempt.resource_sha256
 $$;
 
 CREATE FUNCTION content_rating_reconciliation_plan_v1(requested_limit integer) RETURNS jsonb
@@ -15329,6 +15459,50 @@ CREATE FUNCTION hns_root_import_session_clock_passed_v1(input_session_id text, i
   END
 $$;
 
+CREATE TABLE hns_wallet_publication_attempts (
+    attempt_id text NOT NULL,
+    root_import_session_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_id text NOT NULL,
+    root_label text NOT NULL,
+    publish_plan_sha256 text NOT NULL,
+    resource_sha256 text NOT NULL,
+    authority_generation bigint NOT NULL,
+    reservation_key text NOT NULL,
+    state text NOT NULL,
+    txid text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    dispatch_authorized_at timestamp with time zone,
+    resolved_at timestamp with time zone,
+    qualified_finding_id bigint,
+    confirmation_finding_id bigint,
+    CONSTRAINT hns_wallet_publication_attempts_attempt_id_check CHECK (((octet_length(attempt_id) >= 1) AND (octet_length(attempt_id) <= 256))),
+    CONSTRAINT hns_wallet_publication_attempts_authority_generation_check CHECK ((authority_generation > 0)),
+    CONSTRAINT hns_wallet_publication_attempts_check CHECK (((state = ANY (ARRAY['reserved'::text, 'cancelled'::text])) = (dispatch_authorized_at IS NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check1 CHECK (((state = ANY (ARRAY['confirmed'::text, 'cancelled'::text, 'retry_accepted'::text])) = (resolved_at IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check2 CHECK (((state <> ALL (ARRAY['sent'::text, 'confirmed'::text])) OR (txid IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_check3 CHECK (((state = 'confirmed'::text) = (confirmation_finding_id IS NOT NULL))),
+    CONSTRAINT hns_wallet_publication_attempts_publish_plan_sha256_check CHECK ((publish_plan_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_wallet_publication_attempts_reservation_key_check CHECK (((octet_length(reservation_key) >= 1) AND (octet_length(reservation_key) <= 256))),
+    CONSTRAINT hns_wallet_publication_attempts_resource_sha256_check CHECK ((resource_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT hns_wallet_publication_attempts_root_label_check CHECK (is_community_route_root_label('hns'::text, root_label)),
+    CONSTRAINT hns_wallet_publication_attempts_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'dispatch_authorized'::text, 'sent'::text, 'confirmed'::text, 'cancelled'::text, 'retry_accepted'::text]))),
+    CONSTRAINT hns_wallet_publication_attempts_txid_check CHECK ((txid ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE FUNCTION hns_wallet_publication_snapshot_v1(item hns_wallet_publication_attempts) RETURNS jsonb
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT jsonb_build_object(
+    'attempt_id', item.attempt_id, 'root_import_session_id', item.root_import_session_id,
+    'root_label', item.root_label, 'publish_plan_sha256', item.publish_plan_sha256,
+    'state', item.state, 'txid', item.txid,
+    'created_at', to_char(item.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'dispatch_authorized_at', to_char(item.dispatch_authorized_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'resolved_at', to_char(item.resolved_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  )
+$$;
+
 CREATE FUNCTION hold_hns_root_import_for_recovery_v1(input_session_id text, input_reason text, input_evidence_ref text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -16402,6 +16576,26 @@ CREATE FUNCTION moderation_policy_decision_severity_v1(input_decision text) RETU
     WHEN 'block' THEN 3
     ELSE NULL
   END;
+$$;
+
+CREATE FUNCTION observe_hns_wallet_publication_v1(input_finding_id bigint) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  UPDATE hns_wallet_publication_attempts AS attempt
+     SET qualified_finding_id=finding.recovery_finding_id
+    FROM hns_root_import_recovery_findings AS finding
+   WHERE finding.recovery_finding_id=input_finding_id
+     AND attempt.root_import_session_id=finding.root_import_session_id
+     AND attempt.authority_generation=finding.authority_generation
+     AND attempt.state IN ('dispatch_authorized','sent')
+     AND finding.recorded_at>=attempt.dispatch_authorized_at
+     AND finding.classification='matching_authority_available'
+     AND finding.covenant_resource_sha256=attempt.resource_sha256
+     AND finding.plan_encoded_sha256=attempt.resource_sha256;
+  PERFORM confirm_hns_wallet_publication_v1(input_finding_id);
+END;
 $$;
 
 CREATE TABLE song_derivative_video_policy_observations (
@@ -18108,6 +18302,31 @@ CREATE FUNCTION rating_reconciliation_held_v1(kind text, community text, target 
   SELECT EXISTS (SELECT 1 FROM content_rating_reconciliation_current c
     JOIN content_rating_reconciliation_events e USING(event_id)
     WHERE c.target_kind=kind AND c.community_id=community AND c.target_id=target AND e.outcome='held');
+$$;
+
+CREATE FUNCTION read_hns_wallet_publication_v1(input_actor text, input_community text, input_session text) RETURNS TABLE(outcome text, attempt jsonb)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  session hns_root_import_sessions%ROWTYPE;
+  selected hns_wallet_publication_attempts%ROWTYPE;
+BEGIN
+  SELECT * INTO session FROM hns_root_import_sessions
+   WHERE root_import_session_id=input_session AND actor_id=input_actor AND community_id=input_community;
+  IF NOT FOUND OR NOT has_community_route_authority(input_community,input_actor)
+    OR NOT EXISTS (SELECT 1 FROM users WHERE user_id=input_actor AND status='active')
+    OR NOT EXISTS (SELECT 1 FROM communities WHERE community_id=input_community AND status='active') THEN
+    RETURN QUERY SELECT 'not_found'::text,NULL::jsonb; RETURN;
+  END IF;
+  SELECT * INTO selected FROM hns_wallet_publication_attempts AS item
+   WHERE item.root_label=session.root_label AND item.actor_id=input_actor AND item.community_id=input_community
+     AND (item.root_import_session_id=input_session OR item.state IN ('reserved','dispatch_authorized','sent'))
+   ORDER BY (item.state IN ('reserved','dispatch_authorized','sent')) DESC,item.created_at DESC,item.attempt_id
+   LIMIT 1;
+  RETURN QUERY SELECT 'found'::text,CASE WHEN selected.attempt_id IS NULL THEN NULL::jsonb
+    ELSE hns_wallet_publication_snapshot_v1(selected) END;
+END;
 $$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
@@ -38390,6 +38609,12 @@ ALTER TABLE ONLY hns_root_import_teardown_jobs
 ALTER TABLE ONLY hns_root_import_teardown_jobs
     ADD CONSTRAINT hns_root_import_teardown_jobs_root_import_session_id_key UNIQUE (root_import_session_id);
 
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attemp_actor_id_root_import_session__key UNIQUE (actor_id, root_import_session_id, reservation_key);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_pkey PRIMARY KEY (attempt_id);
+
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_projection_pkey PRIMARY KEY (community_id, feed_item_id);
 
@@ -40139,6 +40364,10 @@ CREATE INDEX hns_root_import_retention_reviews_session_idx ON hns_root_import_re
 CREATE UNIQUE INDEX hns_root_import_sessions_active_root_unique ON hns_root_import_sessions USING btree (root_label) WHERE (status = ANY (ARRAY['provisioning'::text, 'awaiting_owner_update'::text, 'observing'::text, 'ready'::text, 'activated'::text]));
 
 CREATE INDEX hns_root_import_teardown_jobs_claim_idx ON hns_root_import_teardown_jobs USING btree (state, created_at, teardown_job_id);
+
+CREATE INDEX hns_wallet_publication_session ON hns_wallet_publication_attempts USING btree (root_import_session_id, created_at DESC);
+
+CREATE UNIQUE INDEX hns_wallet_publication_unresolved_root ON hns_wallet_publication_attempts USING btree (root_label) WHERE (state = ANY (ARRAY['reserved'::text, 'dispatch_authorized'::text, 'sent'::text]));
 
 CREATE UNIQUE INDEX home_feed_projection_post_unique ON home_feed_projection USING btree (community_id, post_id);
 
@@ -43086,6 +43315,21 @@ ALTER TABLE ONLY hns_root_import_sessions
 
 ALTER TABLE ONLY hns_root_import_teardown_jobs
     ADD CONSTRAINT hns_root_import_teardown_jobs_session_fk FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_confirmation_finding_id_fkey FOREIGN KEY (confirmation_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_qualified_finding_id_fkey FOREIGN KEY (qualified_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
+
+ALTER TABLE ONLY hns_wallet_publication_attempts
+    ADD CONSTRAINT hns_wallet_publication_attempts_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
