@@ -22,12 +22,15 @@ async function fixture() {
     authenticate: () => ({ kind: "user", subject: actor }),
     authorize: () => {},
   });
-  const path = `${f.sessionUrl}/publication-attempts`;
-  const call = (body?: HnsWalletPublicationCommandV1) =>
-    app.request(path, {
-      headers: { authorization: "test-account", "content-type": "application/json" },
-      ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
-    });
+  const callAt = (sessionId: string, body?: HnsWalletPublicationCommandV1) =>
+    app.request(
+      `${f.sessionUrl.slice(0, f.sessionUrl.lastIndexOf("/"))}/${sessionId}/publication-attempts`,
+      {
+        headers: { authorization: "test-account", "content-type": "application/json" },
+        ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+      },
+    );
+  const call = (body?: HnsWalletPublicationCommandV1) => callAt(f.sessionId, body);
   const reserve = (key = "reservation") =>
     call({
       command: "reserve",
@@ -54,6 +57,7 @@ async function fixture() {
   return {
     ...f,
     call,
+    callAt,
     reserve,
     authorize,
     reserved,
@@ -322,7 +326,7 @@ for (const reportFirst of [false, true]) {
 
 for (const observeFirst of [true, false]) {
   pgTest(
-    `same-owner second device cannot forge a report; observation first: ${observeFirst}`,
+    `same owner without the winning secret cannot forge a report; observation first: ${observeFirst}`,
     async () => {
       const f = await fixture();
       try {
@@ -376,71 +380,73 @@ for (const observeFirst of [true, false]) {
   );
 }
 
+async function seedSuccessor(f: Awaited<ReturnType<typeof fixture>>) {
+  // Seed a later retained session to isolate the root fence from import admission.
+  // Only the INSERT fixture guard is suspended; all reservation guards stay on.
+  // This does not prove the separate retire/re-import product journey.
+  const newId = `${f.sessionId}-successor`;
+  const originalPlan = JSON.parse(
+    (
+      await f.admin.query(
+        "SELECT publish_plan_bytes FROM hns_root_import_sessions WHERE root_import_session_id=$1",
+        [f.sessionId],
+      )
+    ).rows[0].publish_plan_bytes.toString("utf8"),
+  );
+  const extra = { type: "TXT", txt: ["successor-record"] };
+  const nextBytes = Buffer.from(
+    JSON.stringify({
+      ...originalPlan,
+      added_records: [...originalPlan.added_records, extra],
+      replacement_records: [...originalPlan.replacement_records, extra],
+    }),
+  );
+  const nextDigest = createHash("sha256").update(nextBytes).digest("hex");
+  expect(nextDigest).not.toBe(f.publishPlanSha256);
+
+  await f.admin.query(
+    "UPDATE hns_root_import_sessions SET status='expired',revision=revision+1 WHERE root_import_session_id=$1",
+    [f.sessionId],
+  );
+  await f.admin.query(
+    "ALTER TABLE hns_root_import_sessions DISABLE TRIGGER hns_root_import_sessions_insert_guard",
+  );
+  await f.admin.query(
+    `INSERT INTO hns_root_import_sessions SELECT (jsonb_populate_record(
+    NULL::hns_root_import_sessions,to_jsonb(s) || jsonb_build_object(
+      'root_import_session_id',$2::text,'namespace_session_id',$2::text,'provision_job_id',$2::text,
+      'publish_plan_sha256',$4::text,'publish_plan_bytes',$5::bytea,'start_idempotency_key',$2::text,'status','awaiting_owner_update','revision',$3::bigint))).* FROM hns_root_import_sessions s WHERE root_import_session_id=$1`,
+    [f.sessionId, newId, f.revision, nextDigest, nextBytes],
+  );
+  await f.admin.query(
+    "ALTER TABLE hns_root_import_sessions ENABLE TRIGGER hns_root_import_sessions_insert_guard",
+  );
+  await f.admin.query(
+    `INSERT INTO hns_root_import_lifecycle SELECT (jsonb_populate_record(
+    NULL::hns_root_import_lifecycle,to_jsonb(l) || jsonb_build_object('root_import_session_id',$2::text,'publish_plan_sha256',$3::text))).*
+    FROM hns_root_import_lifecycle l WHERE root_import_session_id=$1`,
+    [f.sessionId, newId, nextDigest],
+  );
+  await f.admin.query(
+    `INSERT INTO hns_root_import_publication_authorizations
+    SELECT (jsonb_populate_record(NULL::hns_root_import_publication_authorizations,
+      to_jsonb(a) || jsonb_build_object('root_import_session_id',$2::text,'namespace_session_id',$2::text,'publish_plan_sha256',$3::text))).*
+    FROM hns_root_import_publication_authorizations a WHERE root_import_session_id=$1`,
+    [f.sessionId, newId, nextDigest],
+  );
+  expect(
+    (await f.admin.query("SELECT hns_root_import_publication_window_open_v1($1) AS open", [newId]))
+      .rows[0].open,
+  ).toBe(true);
+  return { sessionId: newId, digest: nextDigest };
+}
+
 pgTest("an unresolved root attempt also fences a different session and plan", async () => {
   const f = await fixture();
   try {
     const id = await f.reserved();
     await f.authorize(id);
-    // Seed a later retained session to isolate the root fence from import admission.
-    // Only the INSERT fixture guard is suspended; all reservation guards stay on.
-    // This does not prove the separate retire/re-import product journey.
-    const newId = `${f.sessionId}-successor`;
-    const originalPlan = JSON.parse(
-      (
-        await f.admin.query(
-          "SELECT publish_plan_bytes FROM hns_root_import_sessions WHERE root_import_session_id=$1",
-          [f.sessionId],
-        )
-      ).rows[0].publish_plan_bytes.toString("utf8"),
-    );
-    const extra = { type: "TXT", txt: ["successor-record"] };
-    const nextBytes = Buffer.from(
-      JSON.stringify({
-        ...originalPlan,
-        added_records: [...originalPlan.added_records, extra],
-        replacement_records: [...originalPlan.replacement_records, extra],
-      }),
-    );
-    const nextDigest = createHash("sha256").update(nextBytes).digest("hex");
-    expect(nextDigest).not.toBe(f.publishPlanSha256);
-
-    await f.admin.query(
-      "UPDATE hns_root_import_sessions SET status='expired',revision=revision+1 WHERE root_import_session_id=$1",
-      [f.sessionId],
-    );
-    await f.admin.query(
-      "ALTER TABLE hns_root_import_sessions DISABLE TRIGGER hns_root_import_sessions_insert_guard",
-    );
-    await f.admin.query(
-      `INSERT INTO hns_root_import_sessions SELECT (jsonb_populate_record(
-      NULL::hns_root_import_sessions,to_jsonb(s) || jsonb_build_object(
-        'root_import_session_id',$2::text,'namespace_session_id',$2::text,'provision_job_id',$2::text,
-        'publish_plan_sha256',$4::text,'publish_plan_bytes',$5::bytea,'start_idempotency_key',$2::text,'status','awaiting_owner_update','revision',$3::bigint))).* FROM hns_root_import_sessions s WHERE root_import_session_id=$1`,
-      [f.sessionId, newId, f.revision, nextDigest, nextBytes],
-    );
-    await f.admin.query(
-      "ALTER TABLE hns_root_import_sessions ENABLE TRIGGER hns_root_import_sessions_insert_guard",
-    );
-    await f.admin.query(
-      `INSERT INTO hns_root_import_lifecycle SELECT (jsonb_populate_record(
-      NULL::hns_root_import_lifecycle,to_jsonb(l) || jsonb_build_object('root_import_session_id',$2::text,'publish_plan_sha256',$3::text))).*
-      FROM hns_root_import_lifecycle l WHERE root_import_session_id=$1`,
-      [f.sessionId, newId, nextDigest],
-    );
-    await f.admin.query(
-      `INSERT INTO hns_root_import_publication_authorizations
-      SELECT (jsonb_populate_record(NULL::hns_root_import_publication_authorizations,
-        to_jsonb(a) || jsonb_build_object('root_import_session_id',$2::text,'namespace_session_id',$2::text,'publish_plan_sha256',$3::text))).*
-      FROM hns_root_import_publication_authorizations a WHERE root_import_session_id=$1`,
-      [f.sessionId, newId, nextDigest],
-    );
-    expect(
-      (
-        await f.admin.query("SELECT hns_root_import_publication_window_open_v1($1) AS open", [
-          newId,
-        ])
-      ).rows[0].open,
-    ).toBe(true);
+    const { sessionId: newId, digest: nextDigest } = await seedSuccessor(f);
     const result = await f.admin.query(
       "SELECT * FROM command_hns_wallet_publication_v1($1,$2,$3,$4,$5::jsonb)",
       [
@@ -602,3 +608,113 @@ for (const command of ["cancel", "accept_retry"] as const) {
     },
   );
 }
+
+for (const command of ["cancel", "accept_retry"] as const) {
+  pgTest(
+    `${command} discovered through a successor resolves the original attempt and frees the root`,
+    async () => {
+      const f = await fixture();
+      try {
+        const id = await f.reserved();
+        if (command === "accept_retry") expect((await f.authorize(id)).status).toBe(200);
+        const next = await seedSuccessor(f);
+        const discovered = await f.callAt(next.sessionId);
+        expect(discovered.status).toBe(200);
+        const { attempt } = (await discovered.json()) as HnsWalletPublicationResultV1;
+        expect(attempt).toMatchObject({ attempt_id: id, root_import_session_id: f.sessionId });
+        const recovery: HnsWalletPublicationCommandV1 =
+          command === "cancel"
+            ? { command, attempt_id: id }
+            : { command, attempt_id: id, accept_duplicate_or_late_publication: true };
+        // Recovery targets the retained attempt's original session, not a rewritten identity.
+        expect((await f.callAt(next.sessionId, recovery)).status).toBe(404);
+        const resolved = await f.callAt(attempt.root_import_session_id, recovery);
+        expect(resolved.status).toBe(200);
+        expect(await resolved.json()).toMatchObject({
+          outcome: command === "cancel" ? "cancelled" : "retry_accepted",
+        });
+        expect(await (await f.callAt(next.sessionId)).json()).toEqual({ attempt: null });
+        expect(
+          (
+            await f.callAt(next.sessionId, {
+              command: "reserve",
+              idempotency_key: "successor",
+              expected_revision: f.revision,
+              publish_plan_sha256: next.digest,
+            })
+          ).status,
+        ).toBe(200);
+        expect((await f.reserve("old-session")).status).toBe(409);
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+}
+
+pgTest(
+  "the winning secret cannot change a recorded transaction before or after confirmation",
+  async () => {
+    const f = await fixture();
+    try {
+      const id = await f.reserved();
+      const permission = (await (await f.authorize(id)).json()) as HnsWalletPublicationResultV1;
+      const report = (txid: string) =>
+        f.call({
+          command: "report_txid",
+          attempt_id: id,
+          txid,
+          dispatch_secret: permission.dispatch_secret!,
+        });
+      const txid = "b".repeat(64);
+      expect((await report(txid)).status).toBe(200);
+      for (const state of ["sent", "confirmed"]) {
+        if (state === "confirmed")
+          await f.admin.query("SELECT observe_hns_wallet_publication_v1($1)", [
+            await finding(f, txid),
+          ]);
+        expect((await report("c".repeat(64))).status).toBe(409);
+        expect(await (await f.call()).json()).toMatchObject({ attempt: { state, txid } });
+        expect((await report(txid)).status).toBe(200);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+pgTest("one attempt's winning secret cannot report for another attempt", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.reserved();
+    const old = (await (await f.authorize(first)).json()) as HnsWalletPublicationResultV1;
+    expect(
+      (
+        await f.call({
+          command: "accept_retry",
+          attempt_id: first,
+          accept_duplicate_or_late_publication: true,
+        })
+      ).status,
+    ).toBe(200);
+    const second = (await (await f.reserve("next-attempt")).json()) as HnsWalletPublicationResultV1;
+    const current = (await (
+      await f.authorize(second.attempt.attempt_id)
+    ).json()) as HnsWalletPublicationResultV1;
+    expect(current.dispatch_secret).not.toBe(old.dispatch_secret);
+    const report = (dispatch_secret: string) =>
+      f.call({
+        command: "report_txid",
+        attempt_id: second.attempt.attempt_id,
+        txid: "b".repeat(64),
+        dispatch_secret,
+      });
+    expect((await report(old.dispatch_secret!)).status).toBe(409);
+    expect(await (await f.call()).json()).toMatchObject({
+      attempt: { state: "dispatch_authorized", txid: null },
+    });
+    expect((await report(current.dispatch_secret!)).status).toBe(200);
+  } finally {
+    await f.cleanup();
+  }
+});

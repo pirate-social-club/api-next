@@ -24,6 +24,8 @@ The winner keeps the secret only in its call closure until Bob returns a valid
 txid. Then it persists the secret together with that txid for reporting after a
 reload. Pending or ambiguous local receipts contain no secret. This is scoped
 transaction-reporting proof, never application authentication or wallet authority.
+The browser strips that proof after a successful report, or a status read showing
+the matching recorded txid. It retains the txid and send fence for acknowledgement.
 
 The client retains its local receipt and checks the response's attempt, root,
 session and plan before calling Bob once. Storage and Web Locks remain a local
@@ -45,6 +47,11 @@ publication window. The UI retains expired imports with a publication plan so
 these actions remain reachable. Currency is checked immediately before dispatch
 authorization; a valid winning response is consumed once even if the UI unmounts
 while that request is in flight.
+The successor session's status read can discover an unresolved attempt on its
+root. Recovery commands use the returned original session ID; rewriting that
+binding to the successor is refused. Recovery still requires the original actor's
+current authority. The expired-import card remains visible intentionally, while
+manual acknowledgement is disabled after the publication deadline.
 
 No timeout, signing dismissal, unchanged tip, resource match or new session
 releases a dispatched attempt. The existing safe observation loop gathers the
@@ -90,3 +97,10 @@ commands remain refused and the root fence stays retained. There is no operator
 bypass or successor-owner override in this candidate. An audited recovery policy
 is an open product/security decision and a launch gate. The provisioner's real
 safe-inclusion reader also requires staging acceptance; mocks do not prove it.
+
+Recorded mutation evidence is limited to the report-secret guard, session-window
+check and root unique index. Deterministic race, replay and stale-authorization
+tests are separate evidence, not a claim of mutation coverage for every guard.
+Migration 0236 was never applied to shared environments by this lane. Release
+preflight must inspect the target's ledger before applying it; if earlier bytes
+exist there, retain their checksum and use a forward migration instead.
