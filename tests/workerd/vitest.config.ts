@@ -7,6 +7,18 @@ import { rewardsPlatformAliases } from "../rewards-platform-aliases.ts";
 // program for both the worker main and the test modules.
 const alias = {
   ...rewardsPlatformAliases,
+  "@pirate/platform-cf/hns-active-lease-renewal-repository": new URL(
+    "../../packages/platform-cf/src/hns-active-lease-renewal-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-owner-active-lease-renewal-service-binding": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-owner-active-lease-renewal-service-binding.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/avatars/ports": new URL(
     "../../packages/application/src/avatars/ports.ts",
     import.meta.url,

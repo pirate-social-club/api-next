@@ -48,9 +48,12 @@ import {
   type DataRegistrationJobsBindings,
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
+import {
+  type HnsActiveLeaseRenewalBindings,
+  makeHnsActiveLeaseRenewalJob,
+} from "./hns-active-lease-renewal";
 import { makeHnsRootHealthRenewalJob } from "./hns-root-health-renewal";
 import {
-  type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
@@ -130,7 +133,7 @@ export interface JobsWorkerEnv
   extends AlertSinkBindings,
     DataRegistrationJobsBindings,
     DanceReferenceJobsBindings,
-    HnsRouteRevalidationBindings,
+    HnsActiveLeaseRenewalBindings,
     MediaJobsBindings,
     TelegramBindings,
     SpacesReconciliationBindings {
@@ -843,6 +846,8 @@ export default {
         : undefined,
       spacesReconciliation,
     );
+    const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
+    if (renewal !== null) declarations.push(renewal);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);

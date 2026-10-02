@@ -54,7 +54,7 @@ function timestampValue(row: Row, name: string): string | null {
   return new Date(Date.parse(raw)).toISOString();
 }
 
-const authoritySelect = `
+const eligibleAuthoritySelect = `
   SELECT
     c.community_id,
     b.route_binding_id,
@@ -147,8 +147,7 @@ const authoritySelect = `
      provider.provider_configuration_digest IS NULL
      OR configuration.provider_configuration_digest = provider.provider_configuration_digest
    )
- WHERE b.route_binding_id = $1
-   AND c.status = 'active'
+ WHERE c.status = 'active'
    AND b.family = 'hns'
    AND (
      provider.provider_configuration_digest IS NOT NULL
@@ -163,6 +162,65 @@ const authoritySelect = `
    AND e.path_segment = b.path_segment
    AND e.expires_at IS NOT NULL
    AND e.expires_at > clock_timestamp()`;
+
+const authoritySelect = `${eligibleAuthoritySelect} AND b.route_binding_id = $1`;
+
+export const HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL = `${eligibleAuthoritySelect}
+   AND provider.provider_configuration_kind = 'managed'
+   AND provider.provider_configuration_reference = $1
+   AND provider.provider_configuration_version = $2
+   AND provider.environment = $3
+   AND e.expires_at <= clock_timestamp() + ($4 * INTERVAL '1 second')
+   AND NOT EXISTS (
+     SELECT 1 FROM community_route_active_lease_renewals AS renewal
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND renewal.status <> 'pending'
+   )
+   AND NOT EXISTS (
+     SELECT 1 FROM community_route_active_lease_renewals AS renewal
+     JOIN community_route_active_lease_renewal_attempts AS attempt
+       USING (active_lease_renewal_id)
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND attempt.state = 'leased' AND attempt.lease_expires_at > clock_timestamp()
+   )
+   AND 3 > (
+     SELECT count(*) FROM community_route_active_lease_renewals AS renewal
+     JOIN community_route_active_lease_renewal_attempts AS attempt
+       USING (active_lease_renewal_id)
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND attempt.state = 'consumed'
+   )
+ ORDER BY e.expires_at, b.route_binding_id
+ LIMIT $5`;
+
+export const readHnsActiveLeaseRenewalCandidates = Effect.fn("readHnsActiveLeaseRenewalCandidates")(
+  function* (
+    input: Readonly<{
+      reference: string;
+      version: string;
+      environment: string;
+      leadSeconds: number;
+      limit: number;
+    }>,
+  ) {
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<Row>({
+      label: "hns-active-renewal.candidates",
+      text: HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL,
+      values: [input.reference, input.version, input.environment, input.leadSeconds, input.limit],
+      readonly: true,
+    });
+    return yield* Effect.forEach(result.rows, (row) => {
+      const candidate = authorityFromRow(row);
+      return candidate === null
+        ? Effect.fail(storageFailure())
+        : Effect.succeed(candidate.authority);
+    });
+  },
+);
 
 function authorityFromRow(row: Row): Readonly<{
   readonly authority: HnsActiveLeaseRenewalAuthorityV1;
