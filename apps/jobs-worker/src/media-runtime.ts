@@ -83,6 +83,9 @@ export const observeMediaWorkflowRecovery: MediaProcessingObserver = (observatio
       operation_id: observation.operationId,
       submission_id: observation.submissionId,
       workflow_revision: observation.workflowRevision,
+      ...(observation.recoveryFailure === undefined
+        ? {}
+        : { recovery_failure: observation.recoveryFailure }),
     }),
   );
 };
