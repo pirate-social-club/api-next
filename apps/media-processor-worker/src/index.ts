@@ -1,6 +1,7 @@
 import type { SongSourceRecordingConsumerDependencies } from "@pirate/platform-cf/song-source-recording-consumer";
 import { consumeSongSourceRecording } from "@pirate/platform-cf/song-source-recording-consumer";
 import { Effect } from "effect";
+import { AlignmentRecoveryLookupTerminalError } from "../../../packages/application/src/media/alignment-recovery-diagnostics.ts";
 import type {
   MediaProcessingEventType,
   MediaProcessingWorkflowPayload,
@@ -210,6 +211,7 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
     let payload = event.payload;
     let eventType: MediaProcessingEventType | null = null;
     let sequence = 0;
+    let recoveryLookupFailures = 0;
 
     while (true) {
       const execution: Readonly<{
@@ -264,6 +266,35 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
       );
       eventType = execution.eventType;
       const { result } = execution;
+      // Journaled pass outputs rebuild this streak after Workflow eviction.
+      if (result.outcome === "alignment_recovery_lookup_failed") recoveryLookupFailures += 1;
+      else recoveryLookupFailures = 0;
+      if (
+        result.outcome === "alignment_recovery_lookup_stale" ||
+        (result.outcome === "alignment_recovery_lookup_failed" && recoveryLookupFailures >= 3)
+      ) {
+        await step.do(
+          `media-processing-recovery-terminal-${sequence}`,
+          SONG_PIPELINE_WORKFLOW_STEP_OPTIONS,
+          async () => {
+            console.error("media_alignment_recovery_lookup_terminal", {
+              operationId: payload.operationId,
+              submissionId: payload.submissionId,
+              workflowRevision: payload.workflowRevision,
+              ...result,
+            });
+            return null;
+          },
+        );
+        // An unhandled error outside step.do ends the instance without step
+        // retries. NonRetryableError would discard our message in a fatal wrapper.
+        throw new AlignmentRecoveryLookupTerminalError(result);
+      }
+      if (result.outcome === "alignment_recovery_lookup_failed") {
+        await step.sleep(`media-processing-recovery-lookup-${sequence}`, "10 seconds");
+        sequence += 1;
+        continue;
+      }
       if (result.outcome === "waiting_for_provider") {
         await step.sleep(`media-processing-poll-${sequence}`, "10 seconds");
         sequence += 1;
