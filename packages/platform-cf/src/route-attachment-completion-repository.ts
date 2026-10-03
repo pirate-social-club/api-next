@@ -11,6 +11,7 @@ import {
 } from "@pirate/application";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { persistAttachmentHnsControlIdentity } from "./hns-attachment-control-identity.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 const exact = { onExcessProperty: "error" } as const;
@@ -474,7 +475,7 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                 label: "route-attachment.completion.lock-finalizer",
                 text: `SELECT attempt.*,ns.status AS session_status,ns.expected_revision,ns.generation,
             ns.requirement_hash,ns.provider_id,ns.provider_binding_hash,
-            ns.provider_configuration_version,ns.route_root_label,ns.expires_at AS session_expires_at,
+            ns.provider_configuration_version,ns.route_root_label,ns.upstream_session_ref,ns.expires_at AS session_expires_at,
             intent.status AS attachment_status,intent.revision AS attachment_revision,
             result.outcome_status AS prior_outcome,result.result_hash AS prior_result_hash
           FROM community_route_attachment_completion_attempts AS attempt
@@ -663,6 +664,16 @@ export function makeControlPlaneRouteAttachmentCompletionStore(
                   readonly: false,
                 });
                 if (evidence.rowCount !== 1) return yield* Effect.fail(failed());
+                const rootLabel = text(row, "route_root_label");
+                const upstreamSessionRef = text(row, "upstream_session_ref");
+                if (rootLabel === null || upstreamSessionRef === null)
+                  return yield* Effect.fail(failed());
+                yield* persistAttachmentHnsControlIdentity(tx, {
+                  evidence_ref: input.reservation.evidence_ref,
+                  root_label: rootLabel,
+                  upstream_session_ref: upstreamSessionRef,
+                  provider_result: input.provider_result,
+                });
               }
               const session = yield* tx.execute({
                 label: "route-attachment.completion.transition-session",
