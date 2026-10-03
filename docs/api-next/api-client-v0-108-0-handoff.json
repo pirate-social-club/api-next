@@ -4,13 +4,13 @@
   "package": "@pirate/api-client",
   "version": "0.108.0",
   "sourceBranch": "feat/telegram-practice-pilot",
-  "sourceBase": "f360e91155d9a70bfa8521af5d6e2a79c71b54e3",
+  "sourceBase": "aa0137fb2644857bfaaaa309367c78683e216a58",
   "validatedSourceCommit": null,
   "pullRequest": null,
   "wireContract": "Additive state-and-private-browser callback verification with exact account/session binding. Transient name/username confirmation display is returned only from verified login, never persisted. Independently proven identity conflicts return details.reason telegram_identity_already_linked_to_another_account; the client exports its exact constant. All other conflicts retain their meaning. No Telegram reward or money authority is added.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.108.0.tgz",
-    "sha256": "3e0e4c9ddf425888700ab4f7a7655eb52e33b3f15cdd183f094f23821ca3b978"
+    "sha256": "1f2c7042c40f57a33343d2946fa543c40e20739c342578bdbba6d3a35a54d9c3"
   },
   "validation": {
     "status": "Implementation checkpoint; full gates and integrated review pending",

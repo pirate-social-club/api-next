@@ -50,6 +50,7 @@ const textMessage = (text: string): TelegramMessage => ({
 });
 
 async function handle(services: TelegramServices, item: InboxRecord, record: IntegrationRecord) {
+  const study = services.study?.communityId === item.communityId ? services.study : undefined;
   const callback = object(item.update.callback_query);
   if (callback) {
     const callbackId =
@@ -78,18 +79,10 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     const data =
       typeof callback.data === "string" && callback.data.length <= 64 ? callback.data : "";
     if (
-      services.study &&
+      study &&
       (await services.store.privateChatStarted(item.communityId, item.botEpoch, senderId))
     )
-      await handleTelegramStudyChat(
-        services,
-        services.study,
-        item,
-        record,
-        senderId,
-        callbackMessage,
-        data,
-      );
+      await handleTelegramStudyChat(services, study, item, record, senderId, callbackMessage, data);
     else
       await reply(
         services,
@@ -188,7 +181,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         item,
         chatId,
         textMessage(
-          services.study
+          study
             ? "Welcome. Use /study for read-aloud practice with voice answers, /resume to continue, or /help. Practice only; no rewards are earned. The community owner can read your messages and voice notes."
             : "Welcome. Use /songs to discover community songs and available rewards, or /help. Study and karaoke open in Pirate.",
         ),
@@ -235,8 +228,8 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     );
     return;
   }
-  if (services.study) {
-    await handleTelegramStudyChat(services, services.study, item, record, userId, message);
+  if (study) {
+    await handleTelegramStudyChat(services, study, item, record, userId, message);
     return;
   }
   if (/^\/(?:help|cancel|study|resume|rewards)(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {

@@ -97,6 +97,7 @@ export interface TelegramStudyStore {
   cleanup(): Promise<void>;
 }
 export interface TelegramStudyServices {
+  readonly communityId: string;
   readonly store: TelegramStudyStore;
   readonly grant: (sender: TelegramStudySender) => Promise<TelegramStudyGrant | null>;
   readonly navigation: (sender: TelegramStudySender, postId: string) => Promise<string>;

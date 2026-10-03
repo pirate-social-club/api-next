@@ -84,6 +84,7 @@ export function makeTelegramStudyServices(
     return result.success;
   };
   return {
+    communityId,
     store,
     grant: (sender) =>
       links.resolveGrant(sender.communityId, sender.botId, sender.epoch, sender.telegramUserId),

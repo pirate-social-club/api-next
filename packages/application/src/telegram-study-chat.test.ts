@@ -178,6 +178,7 @@ function fixture() {
     wake: async () => {},
   };
   const study: TelegramStudyServices = {
+    communityId: integration.communityId,
     store: {
       claim: async (sender, token) => (busy ? null : { sender, token, state }),
       save: async (_lease, next) => {
@@ -505,4 +506,36 @@ test("reordered voice for an already graded prompt cannot grade the next card", 
   expect(f.counts().answers).toBe(1);
   expect(f.state().turn?.itemId).toBe("item-1");
   expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+});
+
+test("practice is unavailable in communities outside the admitted pilot", async () => {
+  const f = fixture();
+  f.services.study = { ...f.services.study!, communityId: "another-community" };
+  const item = {
+    ...inbox("outside"),
+    update: {
+      update_id: 1,
+      message: {
+        message_id: 1,
+        from: { id: 321, is_bot: false },
+        chat: { id: 321, type: "private" },
+        text: "/study",
+      },
+    },
+  };
+  let reply = "";
+  f.services.store = strictPort<TelegramStore>({
+    claimInbox: async () => item,
+    integration: async () => integration,
+    privateChatStarted: async () => true,
+    enqueueDelivery: async (input: { desired?: { text: string } | null }) => {
+      reply = input.desired?.text ?? "";
+    },
+    finishInbox: async (_item: InboxRecord, error: string | null) => {
+      expect(error).toBeNull();
+    },
+  });
+  await processTelegramInbox(f.services, "outside");
+  expect(reply).toContain("Native Study is not available");
+  expect(f.counts().starts).toBe(0);
 });
