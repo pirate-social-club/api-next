@@ -1,5 +1,6 @@
 import type { IncomingUpdate, TelegramStore } from "@pirate/application/telegram";
 import type { TelegramDatabase } from "./telegram-database.ts";
+import { cleanupTelegramStudyConversations } from "./telegram-study-store.ts";
 
 export function makeTelegramInboxStore(
   db: TelegramDatabase,
@@ -134,6 +135,7 @@ export function makeTelegramInboxStore(
       );
     },
     async cleanup() {
+      await cleanupTelegramStudyConversations(db);
       // Bounded private linking retention; migration admission precedes activation.
       await db.query(`DELETE FROM telegram_link_transactions WHERE transaction_id IN
         (SELECT transaction_id FROM telegram_link_transactions WHERE expires_at<=clock_timestamp() ORDER BY expires_at LIMIT 500)`);

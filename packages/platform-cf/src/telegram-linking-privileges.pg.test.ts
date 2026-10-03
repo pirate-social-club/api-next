@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { emptyTelegramStudyState } from "@pirate/application/telegram-study";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -256,7 +257,14 @@ suite("Telegram linking runtime privileges", () => {
         VALUES($1,'unlink-learner',$2,$3,'music','123','epoch','321','song','cancelled',clock_timestamp()-interval '1 second')`,
         ["t".repeat(43), "s".repeat(43), "b".repeat(43)],
       );
+      await admin.query(
+        `INSERT INTO telegram_study_conversations(community_id,bot_id,telegram_user_id,bot_epoch,state,updated_at) VALUES('music','123','321','epoch',$1::jsonb,clock_timestamp()-interval '25 hours')`,
+        [JSON.stringify({ ...emptyTelegramStudyState(), selectedPostId: "song" })],
+      );
       await inbox.cleanup();
+      expect((await admin.query("SELECT state FROM telegram_study_conversations")).rows).toEqual([
+        { state: emptyTelegramStudyState() },
+      ]);
       for (const table of [
         "telegram_link_transactions",
         "telegram_link_navigation",

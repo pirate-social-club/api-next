@@ -77,7 +77,6 @@ export async function makeTelegramServices(
 export async function runTelegramMaintenance(services: TelegramServices) {
   await configureTelegramBots(services);
   await services.store.cleanup();
-  await services.study?.store.cleanup();
   for (const candidate of await services.store.publicationCandidates())
     await reconcileTelegramPublication(services, candidate.communityId, candidate.postId);
   for (const work of await services.store.pendingWork()) await services.wake(work);

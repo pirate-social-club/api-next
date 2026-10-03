@@ -5,6 +5,7 @@ import {
   type PrepareStagingBindingGuard,
   prepareStagingBindingGuard,
 } from "./staging-serving-bindings-preflight.ts";
+import type { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
 import type { CandidateBindings } from "./worker-binding-drift.ts";
 
 const sourceSha = "a".repeat(40);
@@ -39,6 +40,12 @@ const allowRewards: typeof withRewardsBindingDeployment = async (
   operation,
 ) => operation();
 
+const allowTelegram: typeof withTelegramActivationDeployment = async (
+  _root,
+  _config,
+  _environment,
+  operation,
+) => operation();
 function fixture(
   options: {
     text?: string;
@@ -113,6 +120,7 @@ function fixture(
         ? async (_root, _config, _environment, operation) => operation(cancellation.signal)
         : allowRewards,
       guard,
+      allowTelegram,
     );
   return { execute, commands, diagnostics };
 }

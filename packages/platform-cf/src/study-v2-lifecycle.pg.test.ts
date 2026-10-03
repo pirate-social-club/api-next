@@ -399,7 +399,9 @@ suite("Study v2 spoken lifecycle", () => {
           if (reservation.state === "completed") {
             return { keys, reservation, result: reservation.result };
           }
-          const completion = study.completeSpokenAnswer({
+          const writer =
+            practiceOnly && attemptNumber === 2 ? makeControlPlaneStudyV2Repository() : study;
+          const completion = writer.completeSpokenAnswer({
             ...defaultStudySpokenEvidence,
             accountId: "study-account",
             acceptedAt: `2026-09-12T12:0${commandCounterNow}:00.000Z`,

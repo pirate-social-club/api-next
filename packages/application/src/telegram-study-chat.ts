@@ -104,7 +104,7 @@ export async function handleTelegramStudyChat(
     const item = session.items.find((row) => row.session_item_id === current.session_item_id);
     if (item?.presentation.kind !== "say_it_back")
       throw new TelegramFailure({ reason: "unavailable" });
-    observe("card", session.lesson.resolved_card_count, current.presentation_number);
+    observe("card", item.ordinal, current.presentation_number);
     state = {
       ...state,
       turn: {

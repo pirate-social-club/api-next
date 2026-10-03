@@ -152,14 +152,7 @@ export function makeTelegramStudyStore(
       const value = typeof raw === "string" && /^[1-9][0-9]{0,15}$/u.test(raw) ? Number(raw) : raw;
       return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
     },
-    async cleanup() {
-      await db.query(
-        `UPDATE telegram_study_conversations SET state=$1::jsonb,lease_token=NULL,lease_until=NULL
-        WHERE updated_at<clock_timestamp()-interval '24 hours' AND (lease_until IS NULL OR lease_until<clock_timestamp())
-          AND state<>$1::jsonb`,
-        [JSON.stringify(emptyTelegramStudyState())],
-      );
-    },
+    cleanup: () => cleanupTelegramStudyConversations(db),
     async expired(id) {
       const rows = await db.query(
         "SELECT expires_at<=clock_timestamp() AND status='active' AS expired FROM study_sessions_v2 WHERE session_id=$1",
@@ -168,4 +161,18 @@ export function makeTelegramStudyStore(
       return rows.length !== 1 || rows[0]?.expired === true;
     },
   };
+}
+
+/** Ordinary Telegram maintenance also runs this when practice is disabled. */
+export async function cleanupTelegramStudyConversations(db: TelegramDatabase) {
+  await db.query(
+    `UPDATE telegram_study_conversations SET state=$1::jsonb,lease_token=NULL,lease_until=NULL
+    WHERE (community_id,bot_id,telegram_user_id) IN (
+      SELECT community_id,bot_id,telegram_user_id FROM telegram_study_conversations
+      WHERE updated_at<clock_timestamp()-interval '24 hours'
+        AND (lease_until IS NULL OR lease_until<clock_timestamp()) AND state<>$1::jsonb
+      ORDER BY updated_at LIMIT 500 FOR UPDATE SKIP LOCKED
+    )`,
+    [JSON.stringify(emptyTelegramStudyState())],
+  );
 }

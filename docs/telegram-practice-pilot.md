@@ -107,13 +107,13 @@ default DELETE. This source authorizes no serving grants or revocations.
 
 ## Measurements and acceptance
 
-Chat state stores at most 64 stage observations with time, resolved-card count
+Chat state stores at most 64 stage observations with time, card ordinal
 and presentation number. It records selection, linking, prompts, completion,
 cancellation and unavailable grading. No voice inference, transcript, Telegram
 profile snapshot or recording is placed in those observations. Shared Study
 presentations and commands retain their existing timing and outcome evidence.
 Idle chat state, including temporary reply text, is cleared after twenty-four
-hours by maintenance; the consent history remains intact. Pilot feedback must
+hours by ordinary Telegram maintenance, including when practice is disabled; the consent history remains intact. Pilot feedback must
 be collected separately without inferring learner intent from recordings.
 
 Unit, PostgreSQL and native Worker fixtures test code behavior; they establish

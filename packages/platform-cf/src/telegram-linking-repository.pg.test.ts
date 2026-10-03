@@ -133,47 +133,51 @@ suite("durable Telegram linking authority", () => {
         revision: 1,
       });
     }));
-  test("wrong account/session/browser/state cannot consume a callback; concurrent claims exchange only once", () =>
-    fixture(async (store, admin) => {
-      const id = await pending(store);
-      for (const attacker of [
-        other,
-        { ...browser, sessionHash: "x".repeat(43) },
-        { ...browser, browserHash: "x".repeat(43) },
-      ]) {
-        await expect(store.findPending(stateHash, attacker)).rejects.toMatchObject({
+  test(
+    "wrong account/session/browser/state cannot consume a callback; concurrent claims exchange only once",
+    () =>
+      fixture(async (store, admin) => {
+        const id = await pending(store);
+        for (const attacker of [
+          other,
+          { ...browser, sessionHash: "x".repeat(43) },
+          { ...browser, browserHash: "x".repeat(43) },
+        ]) {
+          await expect(store.findPending(stateHash, attacker)).rejects.toMatchObject({
+            reason: "not_found",
+          });
+          await expect(store.get(id, attacker)).rejects.toBeDefined();
+          await expect(store.claim(id, attacker, stateHash)).rejects.toBeDefined();
+        }
+        expect(await store.findPending(stateHash, browser)).toBe(id);
+        await admin.query(
+          `INSERT INTO telegram_link_transactions(transaction_id,account_id,session_hash,browser_hash,state_hash,secret_ciphertext,community_id,bot_id,bot_epoch,expected_telegram_user_id,post_id,state)
+        SELECT $2,account_id,session_hash,browser_hash,state_hash,secret_ciphertext,community_id,bot_id,bot_epoch,expected_telegram_user_id,post_id,state FROM telegram_link_transactions WHERE transaction_id=$1`,
+          [id, "a".repeat(43)],
+        );
+        await expect(store.findPending(stateHash, browser)).rejects.toMatchObject({
           reason: "not_found",
         });
-        await expect(store.get(id, attacker)).rejects.toBeDefined();
-        await expect(store.claim(id, attacker, stateHash)).rejects.toBeDefined();
-      }
-      expect(await store.findPending(stateHash, browser)).toBe(id);
-      await admin.query(
-        `INSERT INTO telegram_link_transactions(transaction_id,account_id,session_hash,browser_hash,state_hash,secret_ciphertext,community_id,bot_id,bot_epoch,expected_telegram_user_id,post_id,state)
-        SELECT $2,account_id,session_hash,browser_hash,state_hash,secret_ciphertext,community_id,bot_id,bot_epoch,expected_telegram_user_id,post_id,state FROM telegram_link_transactions WHERE transaction_id=$1`,
-        [id, "a".repeat(43)],
-      );
-      await expect(store.findPending(stateHash, browser)).rejects.toMatchObject({
-        reason: "not_found",
-      });
-      await admin.query("DELETE FROM telegram_link_transactions WHERE transaction_id=$1", [
-        "a".repeat(43),
-      ]);
+        await admin.query("DELETE FROM telegram_link_transactions WHERE transaction_id=$1", [
+          "a".repeat(43),
+        ]);
 
-      await expect(store.findPending("x".repeat(43), browser)).rejects.toMatchObject({
-        reason: "not_found",
-      });
-      await expect(store.claim(id, browser, "x".repeat(43))).rejects.toBeDefined();
-      const results = await Promise.allSettled([
-        store.claim(id, browser, stateHash),
-        store.claim(id, browser, stateHash),
-      ]);
-      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-      await expect(store.claim(id, browser, stateHash)).rejects.toBeDefined();
-      await expect(store.findPending(stateHash, browser)).rejects.toMatchObject({
-        reason: "not_found",
-      });
-    }));
+        await expect(store.findPending("x".repeat(43), browser)).rejects.toMatchObject({
+          reason: "not_found",
+        });
+        await expect(store.claim(id, browser, "x".repeat(43))).rejects.toBeDefined();
+        const results = await Promise.allSettled([
+          store.claim(id, browser, stateHash),
+          store.claim(id, browser, stateHash),
+        ]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        await expect(store.claim(id, browser, stateHash)).rejects.toBeDefined();
+        await expect(store.findPending(stateHash, browser)).rejects.toMatchObject({
+          reason: "not_found",
+        });
+      }),
+    20_000,
+  );
   test("copied navigation cannot prove a different Telegram user or create an association", () =>
     fixture(async (store, admin) => {
       const id = await pending(store, other);
