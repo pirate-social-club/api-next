@@ -35,6 +35,18 @@ suite("reward binding shutdown database proof", () => {
         await operator.connect();
         try {
           await operator.query("SET lock_timeout='100ms'");
+          let staleCalled = false;
+          await expect(
+            withRewardsShutdownLock(
+              admin,
+              async () => {
+                staleCalled = true;
+              },
+              schema,
+              { expectedRevision: "99" },
+            ),
+          ).rejects.toThrow("revision");
+          expect(staleCalled).toBe(false);
           expect(
             await withRewardsShutdownLock(
               admin,
@@ -46,6 +58,7 @@ suite("reward binding shutdown database proof", () => {
                 return "uploaded";
               },
               schema,
+              { expectedRevision: "0" },
             ),
           ).toBe("uploaded");
           await operator.query("SELECT set_reward_operations_paused_v1(0,FALSE,'after_upload')");

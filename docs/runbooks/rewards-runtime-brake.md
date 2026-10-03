@@ -149,6 +149,113 @@ revision, with an incident-owner reason. Its operator authorization must include
 the contract identities and any outstanding winnings-claim deadline. The
 contract evidence below applies only to the exact deployments checked.
 
+## Maintained binding operations
+
+`rewards:control` also owns plan-bound binding inspection, preflight and execution.
+The existing `pause`, `resume` and `settle` commands retain direct-URL operator
+authority; they require independent authorization for that exact database and
+incident scope. Provider target proof described here applies to `flags` and
+`preflight`. It does not turn a supplied URL into production approval.
+
+```sh
+bun run rewards:control inspect reviewed-plan.json
+bun run rewards:control preflight reviewed-plan.json current-lease.json
+bun run rewards:control flags reviewed-plan.json current-lease.json
+bun run rewards:control flags reviewed-plan.json current-lease.json --execute
+```
+
+`inspect` makes independent read-only Worker observations, including after an
+expired plan. `preflight` and the default `flags` invocation are read-only.
+Execution is explicit and requires a reviewed, unexpired plan. Both activation
+and shutdown require the exact persisted `paused` state, projected `paused=true`,
+matching expected revision and all nine empty inventory predicates under the
+maintained share lock. Settling does not satisfy this guard. An incorrectly
+disabled environment with obligations needs a separate reviewed recovery plan;
+this tool cannot resume admission or restore an enabled version on failure.
+
+The strict plan has these fields. Unknown fields refuse decoding.
+
+| Field | Reviewed value |
+| --- | --- |
+| `schemaVersion`, `operationId` | `1` and a unique lowercase operation identifier. |
+| `authorizationReference`, `enableAuthority` | External reviewed authority reference; enabling requires the separate enable reference. |
+| `environment`, `accountId`, `target` | Actual tracked `staging` or `production`, account ID and string `true` or `false`. |
+| `expiresAt`, `expectedRevision`, `exclusionReference` | UTC time formatted as `YYYY-MM-DDTHH:MM:SSZ`, exact decimal revision and current lease reference. |
+| `journalNamespace` | Normalized absolute path of the pre-existing reviewed private journal directory. |
+| `workers.http`, `workers.jobs` | Exact Worker name, `hyperdriveId`, `route`, `baseline` and any reviewed candidate/deployment authority. |
+| `databaseTarget` | Provider organization/database name and immutable database/branch IDs; operator and both runtime role targets. |
+
+Each baseline includes exact version `id`, script `etag`, source `message`, full
+`runtime` and full `bindings` descriptors. The source annotation starts with
+`git:` followed by the accepted forty-character commit. Preserve opaque secret
+descriptors; they do not prove secret values. A role target includes immutable
+`id`, direct `host`, `port`, `database`, routing `login` and SQL `sqlRole`.
+`databaseTarget` also records `branchName` and `runtime.http`/`runtime.jobs`.
+Keep plans private because descriptors and target metadata may be sensitive.
+Review and seal the exact plan bytes before execution. References record
+external authority; this script cannot grant it or close a production gate.
+
+`settings-patch` preserves code, runtime and every other binding, inheriting
+them from a proven latest version that serves 100 percent. Settings can deploy
+immediately while listing lags; bounded polling identifies the exact operation
+annotation. If a verified version still needs deployment, `deploymentAuthority`
+must separately authorize that one deployment. `existing-version` additionally
+requires the full exact `candidate` descriptor and deployment authority; it
+allows only the approved reward-flag difference. No route uploads code or
+changes other bindings. Ordinary source releases retain their provenance/HNS
+procedure and authority. Tied latest timestamps, split traffic or source drift
+refuse.
+
+The current lease is strict JSON containing `schemaVersion:1`, `reference`,
+`operationId`, `accountId`, `http`, `jobs`, `active`, `startsAt` and `expiresAt`.
+It binds both exact Worker names and must remain valid through the plan expiry.
+The operator coordinator must exclude competing upload/configuration writers
+for that finite period and revoke `active` on handback or cancellation. The
+tool rereads the lease before each mutation. Cloudflare has no atomic source
+compare-and-swap here; the database lock alone cannot freeze provider resources.
+Fresh provider role and Hyperdrive origin checks also run before each mutation.
+
+Supply `CLOUDFLARE_API_TOKEN` and `REWARD_OPERATIONS_OPERATOR_DATABASE_URL` in the
+process environment. The same token is injected into API and installed Wrangler
+calls; no archive credential loader or fixed home credential path is read.
+Known token expiry needs twenty minutes remaining; absent optional expiry is
+distinct from failed authentication. An authenticated read does not prove
+write scope. The reviewed authorization must cover those exact account/Workers.
+The default target collector uses fresh read-only `pscale api ... --method GET`
+calls and Cloudflare Hyperdrive reads, never a caller-supplied evidence snapshot.
+It verifies ready, unexpired provider branch and exact roles, privately matches
+the direct URL, and checks `current_database`, `session_user` and `current_user`
+on the same client used by the guard. Missing production proof refuses before
+any journal or Worker write. No role, grant, migration or key is provisioned.
+
+Provision the private journal namespace before review and preserve it across
+process restarts. Execution never creates or relocates the directory. Exclusive
+file creation, file fsync and directory fsync establish the one-use operation;
+each PATCH/deploy attempt is appended and fsynced before submission. A journal
+that already exists refuses execution, including an empty or uncertain record.
+Never delete, relocate or select another namespace to retry. Inspect independently
+and obtain a new reviewed operation after resolving the old outcome. This cannot
+renew or reset a funded-window host's separate start counter.
+
+Reads retry at most three times with one- and two-second delays. Mutations are
+never retried. Polling has twelve observations, five seconds apart. Execution
+is bounded by plan expiry and a 178-second stop, reserving up to two seconds
+inside the 180-second terminal deadline for cleanup. Request timeouts and lost
+responses leave submitted mutations uncertain. Cleanup has independently short
+bounds. Both Workers receive a final paired readback under the held guard.
+A failed disable retains confirmed off transitions and reports remaining
+on/unknown states; it never enables either Worker. The bounded JSON report
+contains safe stage/reason codes, verified control/admitted counts, public
+version/digest observations and separate cleanup failures. It excludes raw
+provider/driver errors, SQL, credentials and binding contents.
+
+The reviewed provider contracts are [Cloudflare token verification](https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/verify/),
+[script/version settings](https://developers.cloudflare.com/api/go/resources/workers/subresources/scripts/subresources/script_and_version_settings/methods/edit/)
+and [PlanetScale database reads](https://api-docs.planetscale.com/reference/get_database).
+Local fake-client and PostgreSQL checks do not claim live provider success or
+release approval. This source successor is held as a stacked draft; production
+activation, runtime handbacks and the inherited migration ordinal remain open.
+
 ## Drawing and refund behavior
 
 When a paused drawing passes its purchase window, a proven unsent committed
