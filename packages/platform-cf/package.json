@@ -198,7 +198,10 @@
     "./avatar-store": "./src/avatar-store.ts",
     "./avatar-storage": "./src/avatar-storage.ts",
     "./song-library-repository": "./src/song-library-repository.ts",
-    "./video-outcome-repository": "./src/video-outcome-repository.ts"
+    "./video-outcome-repository": "./src/video-outcome-repository.ts",
+    "./telegram-oidc": "./src/telegram-oidc.ts",
+    "./telegram-linking-repository": "./src/telegram-linking-repository.ts",
+    "./telegram-linking-runtime": "./src/telegram-linking-runtime.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

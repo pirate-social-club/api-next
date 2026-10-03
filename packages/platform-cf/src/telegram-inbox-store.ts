@@ -134,6 +134,12 @@ export function makeTelegramInboxStore(
       );
     },
     async cleanup() {
+      // Bounded private linking retention; migration admission precedes activation.
+      await db.query(`DELETE FROM telegram_link_transactions WHERE transaction_id IN
+        (SELECT transaction_id FROM telegram_link_transactions WHERE expires_at<=clock_timestamp() ORDER BY expires_at LIMIT 500)`);
+      await db.query(`DELETE FROM telegram_link_navigation WHERE reference_hash IN
+        (SELECT reference_hash FROM telegram_link_navigation WHERE expires_at<=clock_timestamp() ORDER BY expires_at LIMIT 500)`);
+
       await db.query(
         "UPDATE community_telegram_deliveries SET desired=NULL,desired_hash=NULL,confirmed=NULL,confirmed_hash=NULL,state='cancelled',attempt=NULL WHERE kind IN ('reply','voice','setup') AND created_at<clock_timestamp()-interval '24 hours' AND (desired IS NOT NULL OR confirmed IS NOT NULL)",
       );

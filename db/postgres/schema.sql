@@ -4820,6 +4820,25 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION fence_telegram_learner_linking() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF (NEW.record->>'botEpoch') IS DISTINCT FROM (OLD.record->>'botEpoch')
+    OR (NEW.record->>'status') IS DISTINCT FROM (OLD.record->>'status')
+    OR (NEW.record->>'botId') IS DISTINCT FROM (OLD.record->>'botId') THEN
+    UPDATE telegram_link_navigation SET cancelled=TRUE WHERE community_id=NEW.community_id;
+    UPDATE telegram_link_transactions SET state='cancelled', state_hash=NULL, secret_ciphertext=NULL
+      WHERE community_id=NEW.community_id AND state IN ('pending','exchanging','verified');
+    IF NEW.record->>'botId' IS NOT NULL THEN
+      UPDATE telegram_bot_grants SET active=FALSE, revision=revision+1
+        WHERE community_id=NEW.community_id AND bot_id<>NEW.record->>'botId' AND active;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION fill_hns_root_import_lifecycle_job_generation_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -19789,6 +19808,20 @@ BEGIN
   RETURN retained_categories_rating_v1(categories,true,declared);
 END;
 $_$;
+
+CREATE FUNCTION revoke_deleted_account_telegram_linking() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.status='deleted' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    UPDATE telegram_bot_grants SET active=FALSE,revision=revision+1 WHERE account_id=NEW.user_id AND active;
+    UPDATE telegram_link_transactions SET state='cancelled',state_hash=NULL,secret_ciphertext=NULL
+      WHERE account_id=NEW.user_id AND state IN ('pending','exchanging','verified');
+    DELETE FROM telegram_account_associations WHERE account_id=NEW.user_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 CREATE FUNCTION revoke_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_activation_id text, input_route_binding_id text, input_expected_activation_generation bigint, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
     LANGUAGE plpgsql
@@ -36879,6 +36912,73 @@ CREATE TABLE subject_keys (
     CONSTRAINT subject_keys_sha256_digest_check CHECK (((digest_algorithm = 'sha256'::text) AND (subject_digest ~ '^[0-9a-f]{64}$'::text)))
 );
 
+CREATE TABLE telegram_account_associations (
+    telegram_user_id text NOT NULL,
+    account_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT telegram_account_associations_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
+CREATE TABLE telegram_bot_grants (
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    telegram_user_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    revision bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    consented_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT telegram_bot_grants_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_bot_grants_revision_check CHECK ((revision > 0)),
+    CONSTRAINT telegram_bot_grants_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
+CREATE TABLE telegram_link_navigation (
+    reference_hash text NOT NULL,
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    telegram_user_id text NOT NULL,
+    post_id text NOT NULL,
+    expires_at timestamp with time zone DEFAULT (clock_timestamp() + '00:15:00'::interval) NOT NULL,
+    cancelled boolean DEFAULT false NOT NULL,
+    CONSTRAINT telegram_link_navigation_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_link_navigation_reference_hash_check CHECK ((reference_hash ~ '^[A-Za-z0-9_-]{43}$'::text)),
+    CONSTRAINT telegram_link_navigation_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
+CREATE TABLE telegram_link_transactions (
+    transaction_id text NOT NULL,
+    account_id text NOT NULL,
+    session_hash text NOT NULL,
+    browser_hash text NOT NULL,
+    state_hash text,
+    secret_ciphertext text,
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    expected_telegram_user_id text NOT NULL,
+    telegram_user_id text,
+    post_id text NOT NULL,
+    state text NOT NULL,
+    grant_revision bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone DEFAULT (clock_timestamp() + '00:10:00'::interval) NOT NULL,
+    CONSTRAINT telegram_link_transactions_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_link_transactions_browser_hash_check CHECK ((browser_hash ~ '^[A-Za-z0-9_-]{43}$'::text)),
+    CONSTRAINT telegram_link_transactions_check CHECK ((((state = ANY (ARRAY['pending'::text, 'exchanging'::text])) AND (state_hash IS NOT NULL) AND (secret_ciphertext IS NOT NULL)) OR ((state <> ALL (ARRAY['pending'::text, 'exchanging'::text])) AND (state_hash IS NULL) AND (secret_ciphertext IS NULL)))),
+    CONSTRAINT telegram_link_transactions_check1 CHECK (((state <> ALL (ARRAY['verified'::text, 'completed'::text])) OR ((telegram_user_id IS NOT NULL) AND (telegram_user_id = expected_telegram_user_id)))),
+    CONSTRAINT telegram_link_transactions_check2 CHECK (((state <> 'completed'::text) OR (grant_revision IS NOT NULL))),
+    CONSTRAINT telegram_link_transactions_expected_telegram_user_id_check CHECK ((expected_telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_link_transactions_grant_revision_check CHECK ((grant_revision > 0)),
+    CONSTRAINT telegram_link_transactions_secret_ciphertext_check CHECK ((length(secret_ciphertext) <= 4096)),
+    CONSTRAINT telegram_link_transactions_session_hash_check CHECK ((session_hash ~ '^[A-Za-z0-9_-]{43}$'::text)),
+    CONSTRAINT telegram_link_transactions_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'exchanging'::text, 'verified'::text, 'completed'::text, 'failed'::text, 'cancelled'::text]))),
+    CONSTRAINT telegram_link_transactions_state_hash_check CHECK ((state_hash ~ '^[A-Za-z0-9_-]{43}$'::text)),
+    CONSTRAINT telegram_link_transactions_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_link_transactions_transaction_id_check CHECK ((transaction_id ~ '^[A-Za-z0-9_-]{43}$'::text))
+);
+
 CREATE TABLE text_content_held_revisions (
     community_id text NOT NULL,
     held_revision_id text NOT NULL,
@@ -39848,6 +39948,18 @@ ALTER TABLE ONLY subject_key_binding_events
 ALTER TABLE ONLY subject_keys
     ADD CONSTRAINT subject_keys_pkey PRIMARY KEY (subject_key_id);
 
+ALTER TABLE ONLY telegram_account_associations
+    ADD CONSTRAINT telegram_account_associations_pkey PRIMARY KEY (telegram_user_id);
+
+ALTER TABLE ONLY telegram_bot_grants
+    ADD CONSTRAINT telegram_bot_grants_pkey PRIMARY KEY (community_id, bot_id, telegram_user_id);
+
+ALTER TABLE ONLY telegram_link_navigation
+    ADD CONSTRAINT telegram_link_navigation_pkey PRIMARY KEY (reference_hash);
+
+ALTER TABLE ONLY telegram_link_transactions
+    ADD CONSTRAINT telegram_link_transactions_pkey PRIMARY KEY (transaction_id);
+
 ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_pkey PRIMARY KEY (held_revision_id);
 
@@ -40442,6 +40554,16 @@ CREATE UNIQUE INDEX subject_keys_rp_scope_uidx ON subject_keys USING btree (issu
 
 CREATE INDEX subject_keys_scope_created_idx ON subject_keys USING btree (issuer, method, scope_kind, created_at DESC, subject_key_id);
 
+CREATE INDEX telegram_account_associations_account ON telegram_account_associations USING btree (account_id);
+
+CREATE INDEX telegram_bot_grants_account ON telegram_bot_grants USING btree (account_id, community_id);
+
+CREATE INDEX telegram_link_navigation_expiry ON telegram_link_navigation USING btree (expires_at);
+
+CREATE INDEX telegram_link_transactions_account ON telegram_link_transactions USING btree (account_id, expires_at);
+
+CREATE INDEX telegram_link_transactions_expiry ON telegram_link_transactions USING btree (expires_at);
+
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
 
 CREATE UNIQUE INDEX text_content_submissions_persona_replay_uidx ON text_content_submissions USING btree (actor_account_id, author_persona_id, surface, idempotency_key);
@@ -40887,6 +41009,8 @@ CREATE CONSTRAINT TRIGGER data_registration_video_parent_shape AFTER INSERT ON d
 CREATE TRIGGER data_registration_workflow_ceiling_guard BEFORE UPDATE ON data_registration_operations FOR EACH ROW EXECUTE FUNCTION require_data_workflow_ceiling_audit();
 
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER deleted_account_telegram_linking_fence AFTER UPDATE OF status ON users FOR EACH ROW EXECUTE FUNCTION revoke_deleted_account_telegram_linking();
 
 CREATE TRIGGER evidence_receipts_append_only BEFORE DELETE OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -41761,6 +41885,8 @@ CREATE TRIGGER subject_key_binding_events_project AFTER INSERT ON subject_key_bi
 CREATE TRIGGER subject_key_binding_events_validate BEFORE INSERT ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_subject_key_binding_event();
 
 CREATE TRIGGER subject_keys_append_only BEFORE DELETE OR UPDATE ON subject_keys FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER telegram_learner_generation_fence AFTER UPDATE ON community_telegram_integrations FOR EACH ROW EXECUTE FUNCTION fence_telegram_learner_linking();
 
 CREATE TRIGGER text_content_held_revision_insert_guard BEFORE INSERT ON text_content_held_revisions FOR EACH ROW EXECUTE FUNCTION validate_text_review_child_insert();
 
@@ -44659,6 +44785,27 @@ ALTER TABLE ONLY subject_key_binding_events
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY telegram_account_associations
+    ADD CONSTRAINT telegram_account_associations_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY telegram_bot_grants
+    ADD CONSTRAINT telegram_bot_grants_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY telegram_bot_grants
+    ADD CONSTRAINT telegram_bot_grants_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_bot_grants
+    ADD CONSTRAINT telegram_bot_grants_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY telegram_link_navigation
+    ADD CONSTRAINT telegram_link_navigation_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_link_transactions
+    ADD CONSTRAINT telegram_link_transactions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY telegram_link_transactions
+    ADD CONSTRAINT telegram_link_transactions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);

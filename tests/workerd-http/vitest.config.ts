@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
 const alias = {
   "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
@@ -21,6 +22,10 @@ const alias = {
 
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/telegram-oidc": new URL(
+    "../../packages/application/src/telegram-oidc.ts",
     import.meta.url,
   ).pathname,
   "@pirate/domain/telegram": new URL("../../packages/domain/src/telegram.ts", import.meta.url)
@@ -187,6 +192,7 @@ export default defineConfig({
       wrangler: { configPath: "./tests/workerd-http/wrangler.jsonc" },
       miniflare: {
         alias,
+        outboundService: telegramOidcOutbound,
         serviceBindings: {
           HNS_OWNER_VERIFIER: async (request) => {
             const url = new URL(request.url);
