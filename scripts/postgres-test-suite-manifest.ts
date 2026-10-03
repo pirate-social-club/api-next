@@ -21,6 +21,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
   "packages/platform-cf/src/song-owner-video-policy.pg.test.ts",
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
+  "packages/platform-cf/src/video-outcome-repository.pg.test.ts",
   "packages/platform-cf/src/video-publication-repository.pg.test.ts",
   "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",

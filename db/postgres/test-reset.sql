@@ -280,6 +280,7 @@ TRUNCATE TABLE
   "media_video_derived_artifacts",
   "media_video_enrichment_outbox",
   "media_video_original_sounds",
+  "media_video_outcome_claims",
   "media_video_publication_decisions",
   "media_video_publication_wakeups",
   "media_video_reservation_command_replays",

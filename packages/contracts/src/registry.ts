@@ -141,6 +141,7 @@ import {
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
+import { ClaimVideoOutcome } from "./video-outcomes.ts";
 import {
   CreateWalletSponsoredSend,
   GetWalletSponsoredSend,
@@ -267,6 +268,7 @@ export const registry = {
   GetPublicPostSitemap,
   ListPostComments,
   CreateSongPlaybackAccess,
+  ClaimVideoOutcome,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */
