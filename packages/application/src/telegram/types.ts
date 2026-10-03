@@ -12,6 +12,7 @@ export class TelegramFailure extends Data.TaggedError("TelegramFailure")<{
     | "unauthorized"
     | "not_found"
     | "conflict"
+    | "identity_conflict"
     | "invalid"
     | "unavailable"
     | "rate_limited";
@@ -249,6 +250,7 @@ export interface TelegramStore {
 }
 
 export interface TelegramServices {
+  study?: import("../telegram-study.ts").TelegramStudyServices;
   store: TelegramStore;
   api: TelegramApi;
   providers: AssistantProviders;

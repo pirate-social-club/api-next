@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { TELEGRAM_IDENTITY_LINK_CONFLICT_REASON } from "@pirate/api-client";
+import { TelegramFailure } from "@pirate/application/telegram";
 import { TelegramLinkTransaction } from "@pirate/contracts";
 import { Schema } from "effect";
 import { makeTelegramLinkingHandlers } from "./telegram-linking-handlers.ts";
@@ -179,6 +181,7 @@ test("actual linking handlers issue an HttpOnly binding and preserve typed provi
         return { ...transaction, id: input.id };
       },
       get: async () => transaction,
+      findPending: async () => transaction.id,
       claim: async () => {
         throw new Error("Unavailable keys cannot claim a transaction");
       },
@@ -223,4 +226,61 @@ test("actual linking handlers issue an HttpOnly binding and preserve typed provi
   );
   expect(failed.status).toBe(502);
   expect(JSON.stringify(await failed.json())).not.toContain("fixture-code");
+  const missingCookie = request();
+  missingCookie.body = JSON.stringify({ state: "s".repeat(43), code: "fixture-code" });
+  expect((await app.request(`${origin}/telegram/link/callback/verify`, missingCookie)).status).toBe(
+    401,
+  );
+  unavailable = false;
+  Object.assign(services.store, {
+    findPending: async (
+      _hash: string,
+      actual: import("@pirate/application/telegram-linking").TelegramLinkBrowser,
+    ) => {
+      expect(observedBrowser).toEqual(actual);
+      return token;
+    },
+    claim: async () =>
+      vault.seal(
+        JSON.stringify({ nonce: "n".repeat(43), verifier: "v".repeat(43) }),
+        `telegram-link:${token}`,
+      ),
+    verified: async () => ({ ...transaction, state: "verified", telegram_user_id: "321" }),
+    confirm: async () => {
+      throw new TelegramFailure({ reason: "identity_conflict" });
+    },
+  });
+  Object.assign(services.oidc, {
+    exchange: () =>
+      Effect.succeed({
+        telegramUserId: "321",
+        display: { name: "Learner fixture", username: "learner_fixture" },
+      }),
+  });
+  const verifiedResponse = await app.request(`${origin}/telegram/link/callback/verify`, callback);
+  expect(verifiedResponse.status).toBe(200);
+  expect(verifiedResponse.headers.get("cache-control")).toBe("private, no-store");
+  const verifiedBody = Schema.decodeUnknownSync(TelegramLinkTransaction)(
+    await verifiedResponse.json(),
+  );
+  expect(verifiedBody.confirmation_display).toEqual({
+    name: "Learner fixture",
+    username: "learner_fixture",
+  });
+  expect(JSON.stringify(verifiedBody)).not.toContain("fixture-code");
+  expect(JSON.stringify(verifiedBody)).not.toContain("s".repeat(43));
+  const confirmation = request(
+    `__Host-pirate_session=fixture-session; __Host-pirate_csrf=csrf; __Host-pirate_telegram_link=${binding}`,
+  );
+  confirmation.body = JSON.stringify({ persona_id: "persona" });
+  const refused = await app.request(
+    `${origin}/telegram/link/transactions/${token}/confirm`,
+    confirmation,
+  );
+  expect(refused.status).toBe(409);
+  const refusal = await refused.json();
+  expect(refusal).toMatchObject({
+    error: { details: { reason: TELEGRAM_IDENTITY_LINK_CONFLICT_REASON } },
+  });
+  expect(JSON.stringify(refusal)).not.toContain("other-account");
 });

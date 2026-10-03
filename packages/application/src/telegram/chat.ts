@@ -3,6 +3,7 @@ import {
   type TelegramMessage,
   telegramReplyUsesVoice,
 } from "@pirate/domain/telegram";
+import { handleTelegramStudyChat } from "../telegram-study-chat.ts";
 import { telegramBotCredentials } from "./delivery.ts";
 import { verifyTelegramChannel } from "./setup.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./types.ts";
@@ -49,6 +50,55 @@ const textMessage = (text: string): TelegramMessage => ({
 });
 
 async function handle(services: TelegramServices, item: InboxRecord, record: IntegrationRecord) {
+  const callback = object(item.update.callback_query);
+  if (callback) {
+    const callbackId =
+      typeof callback.id === "string" && callback.id.length <= 256 ? callback.id : null;
+    if (callbackId) {
+      const bot = await telegramBotCredentials(services, record);
+      try {
+        await services.api.call(bot.token, "answerCallbackQuery", {
+          callback_query_id: callbackId,
+        });
+      } catch {
+        /* Expired acknowledgements must not suppress the learner reply. */
+      }
+    }
+    const callbackMessage = object(callback.message);
+    const callbackChat = object(callbackMessage?.chat);
+    const callbackFrom = object(callback.from);
+    const senderId = identifier(callbackFrom?.id);
+    if (
+      !senderId ||
+      callbackFrom?.is_bot !== false ||
+      callbackChat?.type !== "private" ||
+      identifier(callbackChat.id) !== senderId
+    )
+      return;
+    const data =
+      typeof callback.data === "string" && callback.data.length <= 64 ? callback.data : "";
+    if (
+      services.study &&
+      (await services.store.privateChatStarted(item.communityId, item.botEpoch, senderId))
+    )
+      await handleTelegramStudyChat(
+        services,
+        services.study,
+        item,
+        record,
+        senderId,
+        callbackMessage,
+        data,
+      );
+    else
+      await reply(
+        services,
+        item,
+        senderId,
+        textMessage("This lesson has ended. Use /study to start again."),
+      );
+    return;
+  }
   const message = object(item.update.message);
   const chat = object(message?.chat);
   const from = object(message?.from);
@@ -138,12 +188,22 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         item,
         chatId,
         textMessage(
-          "Welcome. Use /songs to discover community songs and available rewards, or ask about public community content. Study and karaoke open in Pirate.",
+          services.study
+            ? "Welcome. Use /study for read-aloud practice with voice answers, /resume to continue, or /help. Practice only; no rewards are earned. The community owner can read your messages and voice notes."
+            : "Welcome. Use /songs to discover community songs and available rewards, or /help. Study and karaoke open in Pirate.",
         ),
       );
     return;
   }
-  if (!(await services.store.privateChatStarted(item.communityId, item.botEpoch, userId))) return;
+  if (!(await services.store.privateChatStarted(item.communityId, item.botEpoch, userId))) {
+    await reply(
+      services,
+      item,
+      chatId,
+      textMessage("Send /start to begin, then /study or /songs. Use /help for help."),
+    );
+    return;
+  }
   const shared = object(message.chat_shared);
   if (shared) {
     const channelId = identifier(shared.chat_id);
@@ -175,6 +235,21 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     );
     return;
   }
+  if (services.study) {
+    await handleTelegramStudyChat(services, services.study, item, record, userId, message);
+    return;
+  }
+  if (/^\/(?:help|cancel|study|resume|rewards)(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {
+    await reply(
+      services,
+      item,
+      chatId,
+      textMessage(
+        "Use /songs to browse. Native Study is not available in this bot yet; open Pirate for Study, rewards and account changes. Use /help for these commands.",
+      ),
+    );
+    return;
+  }
   if (/^\/songs(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {
     const songs = (await services.store.publicPosts(item.communityId, undefined, "song"))
       .filter((post) => post.kind === "song")
@@ -194,13 +269,26 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     });
     return;
   }
+  if (input.trim().startsWith("/") && !/^\/voice(?:@[A-Za-z0-9_]+)?(?:\s|$)/u.test(input)) {
+    await reply(services, item, chatId, textMessage("Unknown command. Use /help or /songs."));
+    return;
+  }
   const voice = object(message.voice);
   if (
     !record.policy.enabled ||
     record.credentials.openrouter?.status !== "valid" ||
     (!input && !voice)
-  )
+  ) {
+    await reply(
+      services,
+      item,
+      chatId,
+      textMessage(
+        "Use /songs to browse, or /help. Send /study to check whether practice is available.",
+      ),
+    );
     return;
+  }
   if (
     !(await services.store.reserveUsage(
       item.communityId,

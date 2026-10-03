@@ -915,7 +915,7 @@ export async function createProductionHttpWorker(
   const telegramServices = await makeTelegramServices(bindings, controlPlane);
   const telegramHandlers = makeTelegramHandlers(telegramServices);
   const telegramLinkingHandlers = makeTelegramLinkingHandlers(
-    makeTelegramLinkServices(bindings, controlPlane, telegramServices),
+    await makeTelegramLinkServices(bindings, controlPlane, telegramServices),
   );
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(

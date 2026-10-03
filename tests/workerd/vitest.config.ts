@@ -36,6 +36,14 @@ const alias = {
     import.meta.url,
   ).pathname,
 
+  "@pirate/application/telegram-study": new URL(
+    "../../packages/application/src/telegram-study.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/telegram-linking": new URL(
+    "../../packages/application/src/telegram-linking.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,

@@ -7,12 +7,17 @@ import {
   type TelegramServices,
 } from "@pirate/application/telegram";
 import type { Layer } from "effect";
+import { assertTelegramRuntimePrivileges } from "./telegram-activation-privileges.ts";
 import { makeTelegramApi } from "./telegram-api.ts";
 import { makeTelegramAssistantProviders } from "./telegram-assistant-providers.ts";
 import { makeTelegramCredentialVault } from "./telegram-credential-vault.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
+import {
+  makeTelegramStudyServices,
+  type TelegramPracticeBindings,
+} from "./telegram-study-runtime.ts";
 
-export interface TelegramBindings {
+export interface TelegramBindings extends TelegramPracticeBindings {
   readonly TELEGRAM_ENABLED?: string;
   readonly TELEGRAM_PUBLIC_ORIGIN?: string;
   readonly TELEGRAM_WEBHOOK_ORIGIN?: string;
@@ -50,8 +55,9 @@ export async function makeTelegramServices(
   } catch {
     throw new Error("Telegram credential key ring invalid");
   }
+  await assertTelegramRuntimePrivileges(runtime);
   const queue = bindings.TELEGRAM_QUEUE;
-  return {
+  const services: TelegramServices = {
     store: makeControlPlaneTelegramStore(runtime, bindings.TELEGRAM_PUBLIC_ORIGIN),
     api: makeTelegramApi(fetch),
     providers: makeTelegramAssistantProviders(fetch),
@@ -64,11 +70,14 @@ export async function makeTelegramServices(
     now: Date.now,
     wake: (work) => queue.send(work),
   };
+  const study = makeTelegramStudyServices(bindings, runtime, services);
+  return study === undefined ? services : { ...services, study };
 }
 
 export async function runTelegramMaintenance(services: TelegramServices) {
   await configureTelegramBots(services);
   await services.store.cleanup();
+  await services.study?.store.cleanup();
   for (const candidate of await services.store.publicationCandidates())
     await reconcileTelegramPublication(services, candidate.communityId, candidate.postId);
   for (const work of await services.store.pendingWork()) await services.wake(work);

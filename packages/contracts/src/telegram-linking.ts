@@ -26,6 +26,12 @@ const errors = [
 ];
 const auth = Auth.user({ browserSessionOnly: true });
 const path = Schema.Struct({ transactionId: Token });
+export const TELEGRAM_IDENTITY_LINK_CONFLICT_REASON =
+  "telegram_identity_already_linked_to_another_account" as const;
+export const TelegramConfirmationDisplay = Schema.Struct({
+  name: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  username: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+});
 export const TelegramLinkTransaction = Schema.Struct({
   id: Token,
   state: Schema.Literals(["pending", "exchanging", "verified", "completed", "failed", "cancelled"]),
@@ -36,6 +42,7 @@ export const TelegramLinkTransaction = Schema.Struct({
   bot_username: Schema.String,
   post_id: Id,
   telegram_user_id: Schema.NullOr(TelegramId),
+  confirmation_display: Schema.optional(TelegramConfirmationDisplay),
 });
 export type TelegramLinkTransaction = Schema.Schema.Type<typeof TelegramLinkTransaction>;
 export const TelegramLinkGrant = Schema.Struct({
@@ -91,6 +98,19 @@ export const VerifyTelegramLink = endpoint({
   response: TelegramLinkTransaction,
   errors,
 });
+export const VerifyTelegramLinkCallback = endpoint({
+  method: "POST",
+  path: "/telegram/link/callback/verify",
+  auth,
+  request: {
+    body: Schema.Struct({
+      state: Token,
+      code: Schema.NonEmptyString.check(Schema.isMaxLength(2048)),
+    }),
+  },
+  response: TelegramLinkTransaction,
+  errors,
+});
 export const ConfirmTelegramLink = endpoint({
   method: "POST",
   path: "/telegram/link/transactions/:transactionId/confirm",
@@ -120,6 +140,7 @@ export const telegramLinkingRegistry = {
   StartTelegramLink,
   GetTelegramLink,
   VerifyTelegramLink,
+  VerifyTelegramLinkCallback,
   ConfirmTelegramLink,
   RevokeTelegramLinkGrant,
   UnlinkTelegramAccount,

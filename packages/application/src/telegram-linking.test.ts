@@ -5,6 +5,7 @@ import {
   type TelegramLinkBrowser,
   type TelegramLinkServices,
   verifyTelegramLink,
+  verifyTelegramLinkCallback,
 } from "./telegram-linking.ts";
 import { TelegramOidcRejected } from "./telegram-oidc.ts";
 
@@ -63,6 +64,7 @@ function fixture() {
         calls.push("get");
         return transaction;
       },
+      findPending: async () => transaction.id,
       claim: async () => {
         calls.push("claim");
         return "encrypted-fixture";
@@ -123,4 +125,59 @@ test("failed exchange purges transaction material rather than retrying the code"
     verifyTelegramLink(invalid, browser, transaction.id, "s".repeat(43), "code"),
   ).rejects.toMatchObject({ reason: "invalid_proof" });
   expect(calls).toEqual(["get", "prepare", "claim", "failed"]);
+});
+
+test("state callback discovers attempt in the same browser before provider traffic", async () => {
+  const { services, calls } = fixture();
+  Object.assign(services.store, {
+    findPending: async (hash: string, actual: TelegramLinkBrowser) => {
+      expect(hash).toBe("h".repeat(43));
+      expect(actual).toEqual(browser);
+      calls.push("lookup");
+      return transaction.id;
+    },
+  });
+  await verifyTelegramLinkCallback(services, browser, "s".repeat(43), "code");
+  expect(calls).toEqual(["lookup", "get", "prepare", "claim", "exchange", "verified"]);
+});
+test("unknown state or refreshed session does not consume provider code", async () => {
+  const { services, calls } = fixture();
+  Object.assign(services.store, {
+    findPending: async () => {
+      throw Error("callback unavailable");
+    },
+  });
+  await expect(
+    verifyTelegramLinkCallback(
+      services,
+      { ...browser, sessionHash: "x".repeat(43) },
+      "s".repeat(43),
+      "code",
+    ),
+  ).rejects.toThrow("callback unavailable");
+  expect(calls).toEqual([]);
+});
+test("verified profile display is transient and never passed to storage", async () => {
+  const { services } = fixture();
+  Object.assign(services.oidc, {
+    exchange: () =>
+      Effect.succeed({
+        telegramUserId: "321",
+        display: { name: "Learner fixture", username: "learner_fixture" },
+      }),
+  });
+  const result = await verifyTelegramLink(
+    services,
+    browser,
+    transaction.id,
+    "s".repeat(43),
+    "code",
+  );
+  expect(result.confirmation_display).toEqual({
+    name: "Learner fixture",
+    username: "learner_fixture",
+  });
+  expect(await services.store.get(transaction.id, browser)).not.toHaveProperty(
+    "confirmation_display",
+  );
 });

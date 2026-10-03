@@ -17965,6 +17965,17 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION protect_telegram_practice_mode() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.telegram_practice_only IS DISTINCT FROM OLD.telegram_practice_only THEN
+    RAISE EXCEPTION 'Study practice mode is immutable' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -18886,6 +18897,19 @@ CREATE FUNCTION reject_reward_append_only_change() RETURNS trigger
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END
+$$;
+
+CREATE FUNCTION reject_telegram_practice_qualification() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.study_session_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM study_sessions_v2 WHERE session_id=NEW.study_session_id AND telegram_practice_only
+  ) THEN
+    RAISE EXCEPTION 'Telegram practice cannot create reward qualification' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
@@ -36741,6 +36765,7 @@ CREATE TABLE study_sessions_v2 (
     current_presented_at timestamp with time zone,
     presentation_count bigint DEFAULT 0 NOT NULL,
     completion_reason text,
+    telegram_practice_only boolean DEFAULT false NOT NULL,
     CONSTRAINT study_session_completion_shape CHECK ((((status = 'active'::text) AND (completed_at IS NULL) AND (completion_reason IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completion_reason IS NOT NULL)))),
     CONSTRAINT study_session_current_presentation_shape CHECK ((((status = 'active'::text) AND (current_session_item_id IS NOT NULL) AND (current_presented_at IS NOT NULL)) OR ((status = 'completed'::text) AND (current_session_item_id IS NULL) AND (current_presented_at IS NULL)))),
     CONSTRAINT study_session_expiry_shape CHECK ((expires_at > created_at)),
@@ -37030,6 +37055,23 @@ CREATE TABLE telegram_link_transactions (
     CONSTRAINT telegram_link_transactions_state_hash_check CHECK ((state_hash ~ '^[A-Za-z0-9_-]{43}$'::text)),
     CONSTRAINT telegram_link_transactions_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text)),
     CONSTRAINT telegram_link_transactions_transaction_id_check CHECK ((transaction_id ~ '^[A-Za-z0-9_-]{43}$'::text))
+);
+
+CREATE TABLE telegram_study_conversations (
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    telegram_user_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    revision bigint DEFAULT 1 NOT NULL,
+    state jsonb DEFAULT '{}'::jsonb NOT NULL,
+    lease_token text,
+    lease_until timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT telegram_study_conversations_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_study_conversations_check CHECK (((lease_token IS NULL) = (lease_until IS NULL))),
+    CONSTRAINT telegram_study_conversations_revision_check CHECK ((revision > 0)),
+    CONSTRAINT telegram_study_conversations_state_check CHECK (((jsonb_typeof(state) = 'object'::text) AND (octet_length((state)::text) <= 32768))),
+    CONSTRAINT telegram_study_conversations_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
 );
 
 CREATE TABLE text_content_held_revisions (
@@ -40013,6 +40055,9 @@ ALTER TABLE ONLY telegram_link_navigation
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_pkey PRIMARY KEY (transaction_id);
 
+ALTER TABLE ONLY telegram_study_conversations
+    ADD CONSTRAINT telegram_study_conversations_pkey PRIMARY KEY (community_id, bot_id, telegram_user_id);
+
 ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_pkey PRIMARY KEY (held_revision_id);
 
@@ -40617,6 +40662,8 @@ CREATE INDEX telegram_link_transactions_account ON telegram_link_transactions US
 
 CREATE INDEX telegram_link_transactions_expiry ON telegram_link_transactions USING btree (expires_at);
 
+CREATE INDEX telegram_link_transactions_pending_callback_idx ON telegram_link_transactions USING btree (state_hash, account_id, session_hash, browser_hash) WHERE (state = 'pending'::text);
+
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
 
 CREATE UNIQUE INDEX text_content_submissions_persona_replay_uidx ON text_content_submissions USING btree (actor_account_id, author_persona_id, surface, idempotency_key);
@@ -40682,6 +40729,8 @@ CREATE TRIGGER account_streak_timezone_actions_append_only BEFORE INSERT OR DELE
 CREATE TRIGGER action_grants_append_only BEFORE DELETE OR UPDATE ON action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELETE OR UPDATE ON active_subject_key_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_active_binding_projection_guard();
+
+CREATE TRIGGER activity_00_telegram_practice_not_rewarded BEFORE INSERT OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION reject_telegram_practice_qualification();
 
 CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
 
@@ -41924,6 +41973,8 @@ CREATE TRIGGER study_session_items_v2_immutable BEFORE DELETE OR UPDATE ON study
 CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_sessions FOR EACH ROW EXECUTE FUNCTION guard_study_session();
 
 CREATE TRIGGER study_sessions_v2_activity_authority BEFORE INSERT OR UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION guard_study_v2_activity_authority();
+
+CREATE TRIGGER study_telegram_practice_mode_immutable BEFORE UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION protect_telegram_practice_mode();
 
 CREATE TRIGGER study_translation_generation_items_immutable BEFORE DELETE OR UPDATE ON study_translation_generation_items FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
@@ -44859,6 +44910,9 @@ ALTER TABLE ONLY telegram_link_transactions
 
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_study_conversations
+    ADD CONSTRAINT telegram_study_conversations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);

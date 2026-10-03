@@ -42,6 +42,8 @@ const Claims = Schema.Struct({
   nonce: Token,
   iat: Integer,
   exp: Integer,
+  name: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  preferred_username: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
 });
 const Code = Schema.Struct({ code: Text, nonce: Token, verifier: Token });
 const TokenResponse = Schema.Struct({
@@ -247,7 +249,19 @@ export function makeTelegramOidcClient(options: TelegramOidcOptions): TelegramOi
             !sameNonce(claims.nonce, code.nonce)
           )
             throw new TelegramOidcRejected({ reason: "invalid_proof" });
-          return { telegramUserId: String(claims.id) };
+          return {
+            telegramUserId: String(claims.id),
+            ...(claims.name !== undefined || claims.preferred_username !== undefined
+              ? {
+                  display: {
+                    ...(claims.name === undefined ? {} : { name: claims.name }),
+                    ...(claims.preferred_username === undefined
+                      ? {}
+                      : { username: claims.preferred_username }),
+                  },
+                }
+              : {}),
+          };
         },
         catch: proofRejected,
       }),
