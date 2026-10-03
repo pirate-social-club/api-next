@@ -82,5 +82,9 @@ always denies copy permission and terminal-failure authority. A null UID cannot
 be invented to satisfy a failed-ingest row constraint. Historical rejection or
 adoption needs retained exact provider evidence and a separately reviewed valid
 domain transition. Until then the operation stays unresolved and replay remains
-prohibited. This cleanup does not hold the completed backend or XState-owned
-frontend milestone open.
+prohibited. Historical cleanup source remains separate from the selected 7cdf
+release and does not block its deployment or reopen the completed backend
+milestone. XState owns which cleanup is required for reconciliation acceptance.
+The frontend reconciliation task closes only after its required cleanup,
+acceptance and Rewards handback; this separate source preparation waives none
+of those closure requirements.
