@@ -10955,6 +10955,31 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_video_outcome_claim() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'video outcome claims are permanent';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM media_post_submissions s
+     WHERE s.submission_id=NEW.submission_id AND s.actor_user_id=NEW.actor_user_id
+       AND s.media_kind='video' AND s.video_revision>0 AND s.current_immutable_ref IS NOT NULL
+       AND ((NEW.kind='policy_block' AND s.status='blocked') OR
+         (NEW.kind='processing_failure' AND s.status='processing_failed'
+           AND s.retryable IS FALSE
+           AND s.video_state_snapshot->>'reconciliationRequired' IS DISTINCT FROM 'true'))
+       AND NOT EXISTS (SELECT 1 FROM media_publication_projections p
+         WHERE p.submission_id=s.submission_id)
+     FOR UPDATE OF s
+  ) THEN
+    RAISE EXCEPTION 'video outcome claim requires exact sealed terminal author authority';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_media_video_reservation_song_plan() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -33129,6 +33154,14 @@ CREATE TABLE media_video_original_sounds (
     CONSTRAINT media_video_original_sounds_retention_policy_revision_check CHECK ((retention_policy_revision > 0))
 );
 
+CREATE TABLE media_video_outcome_claims (
+    submission_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    kind text NOT NULL,
+    claimed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_outcome_claims_kind_check CHECK ((kind = ANY (ARRAY['processing_failure'::text, 'policy_block'::text])))
+);
+
 CREATE TABLE media_video_publication_decisions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -38777,6 +38810,9 @@ ALTER TABLE ONLY media_video_original_sounds
 ALTER TABLE ONLY media_video_original_sounds
     ADD CONSTRAINT media_video_original_sounds_submission_id_key UNIQUE (submission_id);
 
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_pkey PRIMARY KEY (submission_id);
+
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decisions_pkey PRIMARY KEY (submission_id, creation_revision);
 
@@ -40206,6 +40242,8 @@ CREATE INDEX media_video_source_grants_expiry_idx ON media_video_source_grants U
 
 CREATE INDEX media_video_source_grants_request_idx ON media_video_source_grants USING btree (request_id);
 
+CREATE INDEX media_video_terminal_outcome_candidates ON media_post_submissions USING btree (actor_user_id, updated_at, submission_id) WHERE ((media_kind = 'video'::text) AND (status = ANY (ARRAY['processing_failed'::text, 'blocked'::text])) AND (video_revision > 0) AND (current_immutable_ref IS NOT NULL));
+
 CREATE INDEX media_video_transform_attempt_reconciliation_idx ON media_video_transform_attempts USING btree (submission_id, video_revision, creation_revision) WHERE (reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text]));
 
 CREATE INDEX megapot_drawing_observations_latest_idx ON megapot_drawing_observations USING btree (attestation_id, drawing_id, block_number DESC, observation_id);
@@ -41263,6 +41301,8 @@ CREATE TRIGGER media_transcript_artifact_shape_guard BEFORE INSERT ON media_tran
 CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
+
+CREATE TRIGGER media_video_outcome_claim_guard BEFORE INSERT OR DELETE OR UPDATE ON media_video_outcome_claims FOR EACH ROW EXECUTE FUNCTION guard_media_video_outcome_claim();
 
 CREATE TRIGGER media_video_reservation_song_plan_guard BEFORE DELETE OR UPDATE ON media_video_reservation_song_plans FOR EACH ROW EXECUTE FUNCTION guard_media_video_reservation_song_plan();
 
@@ -43476,6 +43516,12 @@ ALTER TABLE ONLY media_video_original_sounds
 
 ALTER TABLE ONLY media_video_original_sounds
     ADD CONSTRAINT media_video_original_sounds_submission_id_origin_video_rev_fkey FOREIGN KEY (submission_id, origin_video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(user_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decis_submission_id_analysis_revis_fkey FOREIGN KEY (submission_id, analysis_revision) REFERENCES media_video_analyses(submission_id, analysis_revision);
