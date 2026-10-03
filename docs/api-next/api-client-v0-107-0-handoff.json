@@ -13,17 +13,20 @@
     "sha256": "5310e31a4ee59708d7d25496eedf931545e33d32ea273bf172c4bfc2e102a6f2"
   },
   "validation": {
-    "status": "Local verification in progress",
+    "status": "Local source and PostgreSQL gates passed; hosted and deployed checks pending",
     "passed": [
       "Focused HTTP composition/authentication suite: 37 tests, 128 assertions",
       "PostgreSQL 17 recovery of activated/claimed roots: 2 cases, 117 assertions, including rollback/retry and preservation of owner pauses",
-      "Owner-read contract compatibility and safe-integer validation: 9 tests, 18 assertions"
+      "Owner-read contract compatibility and safe-integer validation: 9 tests, 18 assertions",
+      "bun run check: types, lint, dependency boundaries, migration consistency and client package verification passed",
+      "Unit suite: 5386 passed, 1 skipped; Node suite passed",
+      "All six Worker suites passed after making the HNS fixture Content-Type explicit for Node and Bun"
     ],
     "remaining": [
-      "Final repository gates after integrating origin/main da905bac",
       "Hosted required checks",
       "Matching Solid integration and deployed recovery acceptance"
     ],
-    "operationalBoundary": "Isolated source preparation. No live database, runtime, wallet, or credential change."
+    "operationalBoundary": "Isolated source preparation. No live database, runtime, wallet, or credential change.",
+    "testNotes": "The initial full test run hit an unrelated 5ms ACRCloud timeout flake; its focused rerun and the full unit rerun passed. A Worker fixture returned a Bun-specific JSON charset; the fixture now declares the exact production wire media type. The unit, Node and final Worker gates passed separately. PostgreSQL recovery uses the real HTTP/private-verifier stack with a synthetic chain observer, not a deployed chain proof."
   }
 }
