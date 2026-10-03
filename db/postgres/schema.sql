@@ -12464,6 +12464,35 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_effect_admission_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE control_record reward_operations_control%ROWTYPE;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR SHARE;
+  -- An identity-preserving replacement belongs to an existing admitted tail.
+  -- The existing chain identity guard validates its complete replacement pair.
+  IF NEW.replacement_of_effect_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM reward_chain_effects previous
+     WHERE previous.effect_id=NEW.replacement_of_effect_id AND previous.nonce IS NOT NULL
+       AND previous.state='replaced' AND previous.replaced_by_effect_id=NEW.effect_id
+       AND previous.effect_kind=NEW.effect_kind AND previous.chain_id=NEW.chain_id
+       AND previous.signer_address=NEW.signer_address AND previous.target_address=NEW.target_address
+       AND previous.value_wei=NEW.value_wei AND previous.reserved_amount_atomic=NEW.reserved_amount_atomic
+       AND (TG_OP='INSERT' OR NEW.nonce=previous.nonce)
+  ) THEN RETURN NEW; END IF;
+  IF NOT FOUND OR control_record.paused IS DISTINCT FROM (control_record.state <> 'running')
+     OR (control_record.state <> 'running' AND NOT (
+       control_record.state='settling' AND NEW.effect_kind IN
+         ('reward_refund','reward_payout','winnings_claim')
+     )) THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_erc20_transfer_receipt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12667,11 +12696,8 @@ CREATE FUNCTION guard_reward_http_admission() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE operations_paused BOOLEAN;
 BEGIN
-  SELECT paused INTO operations_paused FROM reward_operations_control
-   WHERE singleton FOR SHARE;
-  IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
+  IF NOT reward_operations_running_v2() THEN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
   END IF;
   RETURN NEW;
@@ -12732,15 +12758,15 @@ CREATE FUNCTION guard_reward_operations_control() RETURNS trigger
     SET search_path FROM CURRENT
     AS $$
 BEGIN
-  IF TG_OP = 'INSERT' AND NEW.paused AND NEW.revision=0
+  IF TG_OP='INSERT' AND NEW.state='paused' AND NEW.paused AND NEW.revision=0
      AND NEW.reason='environment_initially_paused' THEN RETURN NEW; END IF;
   IF TG_OP <> 'UPDATE' OR NEW.singleton IS DISTINCT FROM OLD.singleton
      OR NEW.revision <> OLD.revision+1 OR NEW.changed_at <= OLD.changed_at
-     OR NEW.paused = OLD.paused THEN
+     OR NEW.state IS NOT DISTINCT FROM OLD.state THEN
     RAISE EXCEPTION 'invalid reward operations control transition' USING ERRCODE='PR002';
   END IF;
-  INSERT INTO reward_operations_control_events(revision,paused,reason,operator_role,changed_at)
-  VALUES(NEW.revision,NEW.paused,NEW.reason,session_user,NEW.changed_at);
+  INSERT INTO reward_operations_control_events(revision,paused,reason,operator_role,changed_at,state)
+  VALUES(NEW.revision,NEW.paused,NEW.reason,session_user,NEW.changed_at,NEW.state);
   RETURN NEW;
 END
 $$;
@@ -12932,27 +12958,45 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_replacement_preparation_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE previous_record reward_chain_effects%ROWTYPE;
+BEGIN
+  SELECT * INTO previous_record FROM reward_chain_effects
+   WHERE effect_id=NEW.replacement_of_effect_id FOR SHARE;
+  IF NOT FOUND OR previous_record.state <> 'replaced'
+     OR previous_record.replaced_by_effect_id IS DISTINCT FROM NEW.effect_id
+     OR previous_record.nonce IS NULL OR NEW.nonce IS DISTINCT FROM previous_record.nonce
+     OR previous_record.calldata IS NULL OR previous_record.calldata_hash IS NULL
+     OR previous_record.signed_transaction IS NULL OR previous_record.signed_transaction_hash IS NULL
+     OR NEW.signed_transaction IS NULL OR NEW.signed_transaction_hash IS NULL
+     OR NEW.calldata IS DISTINCT FROM previous_record.calldata
+     OR NEW.calldata_hash IS DISTINCT FROM previous_record.calldata_hash THEN
+    RAISE EXCEPTION 'reward replacement transaction intent refused' USING ERRCODE='PR001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_signer_nonce() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE
-  operations_paused BOOLEAN;
+DECLARE control_record reward_operations_control%ROWTYPE;
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'reward signer nonce fences cannot be deleted';
-  END IF;
-  IF TG_OP = 'UPDATE' AND (
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'reward signer nonce fences cannot be deleted'; END IF;
+  IF TG_OP='UPDATE' AND (
     NEW.chain_id <> OLD.chain_id OR NEW.signer_address <> OLD.signer_address
-    OR NEW.next_nonce < OLD.next_nonce OR NEW.fence_version <> OLD.fence_version + 1
+    OR NEW.next_nonce < OLD.next_nonce OR NEW.fence_version <> OLD.fence_version+1
     OR NEW.observed_block_number < OLD.observed_block_number
     OR NEW.observed_at < OLD.observed_at OR NEW.updated_at <= OLD.updated_at
-  ) THEN
-    RAISE EXCEPTION 'invalid reward signer nonce fence update';
-  END IF;
-  IF TG_OP = 'INSERT' OR NEW.next_nonce > OLD.next_nonce THEN
-    SELECT paused INTO operations_paused FROM reward_operations_control WHERE singleton FOR SHARE;
-    IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
+  ) THEN RAISE EXCEPTION 'invalid reward signer nonce fence update'; END IF;
+  IF TG_OP='INSERT' OR NEW.next_nonce > OLD.next_nonce THEN
+    SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR SHARE;
+    IF NOT FOUND OR control_record.state NOT IN ('running','settling')
+       OR control_record.paused IS DISTINCT FROM (control_record.state <> 'running') THEN
       RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
     END IF;
   END IF;
@@ -20061,6 +20105,54 @@ CREATE FUNCTION reward_distinct_nonempty_text_array(candidate text[]) RETURNS bo
     )
 $$;
 
+CREATE FUNCTION reward_effect_is_admitted_replacement_v2(effect_id_input text) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM reward_chain_effects effect
+    JOIN reward_chain_effects previous ON previous.effect_id=effect.replacement_of_effect_id
+     WHERE effect.effect_id=effect_id_input AND previous.nonce IS NOT NULL
+       AND previous.state='replaced' AND previous.replaced_by_effect_id=effect.effect_id
+       AND effect.nonce=previous.nonce AND effect.effect_kind=previous.effect_kind
+       AND effect.chain_id=previous.chain_id AND effect.signer_address=previous.signer_address
+       AND effect.target_address=previous.target_address AND effect.value_wei=previous.value_wei
+       AND effect.reserved_amount_atomic=previous.reserved_amount_atomic
+  );
+$$;
+
+CREATE FUNCTION reward_effect_is_settlement_v2(effect_id_input text) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM reward_chain_effects effect
+     WHERE effect.effect_id=effect_id_input AND effect.nonce IS NOT NULL AND (
+       (effect.effect_kind='reward_refund' AND EXISTS (
+         SELECT 1 FROM reward_refund_effects refund
+         JOIN song_reward_leg_funding_effects funding
+           ON funding.funding_effect_id=refund.funding_effect_id AND funding.state='confirmed'
+          AND funding.leg_id=refund.leg_id
+         WHERE refund.refund_effect_id=effect.effect_id
+       )) OR
+       (effect.effect_kind='reward_payout' AND EXISTS (
+         SELECT 1 FROM reward_payout_effects payout
+         JOIN reward_ledger_credits credit ON credit.credit_id=payout.credit_id
+         WHERE payout.payout_effect_id=effect.effect_id
+       )) OR
+       (effect.effect_kind='winnings_claim' AND EXISTS (
+         SELECT 1 FROM megapot_claim_effects claim
+         JOIN megapot_ticket_inventory ticket
+           ON ticket.attestation_id=claim.attestation_id AND ticket.ticket_id=claim.ticket_id
+         JOIN reward_chain_effects purchase
+           ON purchase.effect_id=ticket.purchase_effect_id
+          AND purchase.effect_kind='ticket_purchase' AND purchase.state='confirmed'
+         WHERE claim.claim_effect_id=effect.effect_id
+       ))
+     )
+  );
+$$;
+
 CREATE FUNCTION reward_json_contains_private_identity(candidate jsonb) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
     AS $$
@@ -20095,6 +20187,17 @@ CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_inp
     WHERE entry->>'activity' = activity_input
       AND entry->'policy'->>'qualification_policy_version_id' = version_input)
     FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
+$$;
+
+CREATE FUNCTION reward_operations_running_v2() RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE control_record reward_operations_control%ROWTYPE;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR SHARE;
+  RETURN FOUND AND control_record.state='running' AND control_record.paused=FALSE;
+END
 $$;
 
 CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_attempt_id text, input_service_version text, input_expected_bundle_sha256 text, input_measured_bundle_sha256 text, input_process_started_at timestamp with time zone) RETURNS text
@@ -20379,19 +20482,29 @@ CREATE FUNCTION set_reward_operations_paused_v1(expected_revision bigint, reques
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE
-  control_record reward_operations_control%ROWTYPE;
+BEGIN
+  RETURN set_reward_operations_state_v2(expected_revision,
+    CASE WHEN requested_paused IS NULL THEN NULL
+         WHEN requested_paused THEN 'paused' ELSE 'running' END,operator_reason);
+END
+$$;
+
+CREATE FUNCTION set_reward_operations_state_v2(expected_revision bigint, requested_state text, operator_reason text) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE control_record reward_operations_control%ROWTYPE;
 BEGIN
   SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR UPDATE;
   IF NOT FOUND OR expected_revision IS NULL OR control_record.revision <> expected_revision
-     OR requested_paused IS NULL OR operator_reason IS NULL
-     OR octet_length(btrim(operator_reason)) NOT BETWEEN 1 AND 256 THEN
+     OR requested_state IS NULL OR requested_state NOT IN ('running','settling','paused')
+     OR operator_reason IS NULL OR octet_length(btrim(operator_reason)) NOT BETWEEN 1 AND 256 THEN
     RAISE EXCEPTION 'reward operations control conflict' USING ERRCODE='PR002';
   END IF;
-  IF control_record.paused = requested_paused THEN RETURN control_record.revision; END IF;
+  IF control_record.state=requested_state THEN RETURN control_record.revision; END IF;
   UPDATE reward_operations_control
-     SET paused=requested_paused, revision=revision+1, reason=btrim(operator_reason),
-         changed_at=clock_timestamp()
+     SET state=requested_state, paused=(requested_state <> 'running'), revision=revision+1,
+         reason=btrim(operator_reason), changed_at=clock_timestamp()
    WHERE singleton;
   RETURN control_record.revision+1;
 END
@@ -26475,6 +26588,39 @@ BEGIN
     RAISE EXCEPTION 'native transfer receipt evidence does not match its chain effect';
   END IF;
   RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION validate_reward_settling_effect_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE control_record reward_operations_control%ROWTYPE;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR SHARE;
+  IF FOUND AND control_record.state='running' AND NOT control_record.paused THEN RETURN NULL; END IF;
+  IF reward_effect_is_admitted_replacement_v2(NEW.effect_id) THEN RETURN NULL; END IF;
+  IF FOUND AND control_record.state='settling' AND control_record.paused
+     AND reward_effect_is_settlement_v2(NEW.effect_id) THEN RETURN NULL; END IF;
+  RAISE EXCEPTION 'reward operations settlement detail refused' USING ERRCODE='PR001';
+END
+$$;
+
+CREATE FUNCTION validate_reward_settling_nonce_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE control_record reward_operations_control%ROWTYPE;
+BEGIN
+  IF TG_OP='UPDATE' AND NEW.next_nonce=OLD.next_nonce THEN RETURN NULL; END IF;
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR SHARE;
+  IF FOUND AND control_record.state='running' AND NOT control_record.paused THEN RETURN NULL; END IF;
+  IF FOUND AND control_record.state='settling' AND control_record.paused AND EXISTS (
+    SELECT 1 FROM reward_chain_effects effect
+     WHERE effect.chain_id=NEW.chain_id AND effect.signer_address=NEW.signer_address
+       AND effect.nonce=NEW.next_nonce-1 AND reward_effect_is_settlement_v2(effect.effect_id)
+  ) THEN RETURN NULL; END IF;
+  RAISE EXCEPTION 'reward operations reservation refused' USING ERRCODE='PR001';
 END
 $$;
 
@@ -35147,9 +35293,11 @@ CREATE TABLE reward_operations_control (
     revision bigint DEFAULT 0 NOT NULL,
     reason text NOT NULL,
     changed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    state text DEFAULT 'paused'::text NOT NULL,
     CONSTRAINT reward_operations_control_reason_check CHECK (((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))),
     CONSTRAINT reward_operations_control_revision_check CHECK ((revision >= 0)),
-    CONSTRAINT reward_operations_control_singleton_check CHECK (singleton)
+    CONSTRAINT reward_operations_control_singleton_check CHECK (singleton),
+    CONSTRAINT reward_operations_control_state_shape CHECK (((state = ANY (ARRAY['running'::text, 'settling'::text, 'paused'::text])) AND (paused = (state <> 'running'::text))))
 );
 
 CREATE TABLE reward_operations_control_events (
@@ -35158,8 +35306,10 @@ CREATE TABLE reward_operations_control_events (
     reason text NOT NULL,
     operator_role text NOT NULL,
     changed_at timestamp with time zone NOT NULL,
+    state text NOT NULL,
     CONSTRAINT reward_operations_control_events_reason_check CHECK (((octet_length(reason) >= 1) AND (octet_length(reason) <= 256))),
-    CONSTRAINT reward_operations_control_events_revision_check CHECK ((revision >= 0))
+    CONSTRAINT reward_operations_control_events_revision_check CHECK ((revision >= 0)),
+    CONSTRAINT reward_operations_events_state_shape CHECK (((state = ANY (ARRAY['running'::text, 'settling'::text, 'paused'::text])) AND (paused = (state <> 'running'::text))))
 );
 
 CREATE TABLE reward_payout_effects (
@@ -37067,9 +37217,9 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 
-INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
+INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00', 'paused');
 
-INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00');
+INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00', 'paused');
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');
@@ -40472,9 +40622,9 @@ CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELE
 
 CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
 
-CREATE TRIGGER activity_qualifications_project_asset_bonus_claim AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_asset_bonus_claim_from_qualification();
+CREATE TRIGGER activity_qualifications_project_asset_bonus_claim AFTER INSERT ON activity_qualifications FOR EACH ROW WHEN (reward_operations_running_v2()) EXECUTE FUNCTION project_asset_bonus_claim_from_qualification();
 
-CREATE TRIGGER activity_qualifications_project_megapot_share AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_megapot_pool_share_from_qualification();
+CREATE TRIGGER activity_qualifications_project_megapot_share AFTER INSERT ON activity_qualifications FOR EACH ROW WHEN (reward_operations_running_v2()) EXECUTE FUNCTION project_megapot_pool_share_from_qualification();
 
 CREATE TRIGGER activity_registry_change_guard BEFORE DELETE OR UPDATE ON activity_registry FOR EACH ROW EXECUTE FUNCTION guard_activity_registry_change();
 
@@ -41512,7 +41662,19 @@ CREATE TRIGGER reward_chain_effects_gas_topup_signer BEFORE INSERT ON reward_cha
 
 CREATE TRIGGER reward_chain_effects_gas_topup_terminal_release AFTER UPDATE OF state ON reward_chain_effects FOR EACH ROW WHEN (((new.effect_kind = 'gas_topup'::text) AND (new.state = ANY (ARRAY['terminal_failed'::text, 'reclaimable_failed'::text])) AND (old.state IS DISTINCT FROM new.state))) EXECUTE FUNCTION release_reward_gas_topup_on_terminal_effect();
 
+CREATE TRIGGER reward_effect_admission_guard BEFORE INSERT ON reward_chain_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_effect_admission_v2();
+
+CREATE TRIGGER reward_effect_nonce_admission_guard BEFORE UPDATE OF nonce ON reward_chain_effects FOR EACH ROW WHEN (((old.nonce IS NULL) AND (new.nonce IS NOT NULL))) EXECUTE FUNCTION guard_reward_effect_admission_v2();
+
 CREATE TRIGGER reward_eligibility_decisions_append_only BEFORE DELETE OR UPDATE ON reward_eligibility_decisions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER reward_entries_admission_guard BEFORE INSERT ON megapot_pool_shares FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_entries_admission_guard BEFORE INSERT ON reward_ledger_credits FOR EACH ROW WHEN ((new.source_kind = 'asset_bonus'::text)) EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_entries_admission_guard BEFORE INSERT ON song_reward_bundle_claim_legs FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_entries_admission_guard BEFORE INSERT ON song_reward_bundle_claims FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
 
 CREATE TRIGGER reward_erc20_transfer_receipt_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_erc20_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION guard_reward_erc20_transfer_receipt();
 
@@ -41543,6 +41705,14 @@ CREATE TRIGGER reward_operations_control_events_change_guard BEFORE DELETE OR UP
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
 CREATE TRIGGER reward_refund_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_refund_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_refund_effect();
+
+CREATE TRIGGER reward_replacement_preparation_guard BEFORE INSERT OR UPDATE ON reward_chain_effects FOR EACH ROW WHEN (((new.replacement_of_effect_id IS NOT NULL) AND ((new.calldata IS NOT NULL) OR (new.calldata_hash IS NOT NULL) OR (new.signed_transaction IS NOT NULL) OR (new.signed_transaction_hash IS NOT NULL) OR (new.state = ANY (ARRAY['prepared'::text, 'broadcast_pending'::text, 'confirming'::text, 'confirmed'::text, 'reverted'::text, 'replaced'::text, 'reconciliation_required'::text]))))) EXECUTE FUNCTION guard_reward_replacement_preparation_v2();
+
+CREATE CONSTRAINT TRIGGER reward_settling_effect_nonce_pair AFTER UPDATE ON reward_chain_effects DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.nonce IS NULL) AND (new.nonce IS NOT NULL))) EXECUTE FUNCTION validate_reward_settling_effect_v2();
+
+CREATE CONSTRAINT TRIGGER reward_settling_effect_pair AFTER INSERT ON reward_chain_effects DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_settling_effect_v2();
+
+CREATE CONSTRAINT TRIGGER reward_settling_nonce_pair AFTER INSERT OR UPDATE ON reward_signer_nonces DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_settling_nonce_v2();
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 

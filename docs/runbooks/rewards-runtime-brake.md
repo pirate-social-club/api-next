@@ -6,9 +6,78 @@ credit, refund, reserved budget or ambiguous chain effect is outstanding. It
 may be turned off only after a fresh inventory proves nothing owed and no
 ambiguous effects. Pausing never changes either Worker binding.
 
+## Settling existing obligations
+
+The settling-control migration expands the persisted state to `running`,
+`settling` and `paused`. New environments still begin paused. `settling`
+admits fresh nonce reservations only for a guarded refund, payout or winnings
+claim for an already purchased ticket. It refuses new offers, legs, funding
+intents, pool shares, asset-bonus claims, ticket purchases, custody approvals
+and gas top-up effects. Ordinary Study/Karaoke qualification and streaks still
+record; their financial projections create no new benefits in settling or
+paused. Previously earned held credits remain visible and payable.
+
+The database locks the control row for the reservation transaction. A settling
+nonce increase cannot commit without its exact effect, nonce and guarded
+obligation detail. The same detail check covers assigning a nonce to a
+previously planned effect. Solvency, historical custody, amount and receipt
+checks remain required by the existing repositories and detail triggers.
+An observed nonce catch-up may pair an already existing guarded obligation;
+it changes the fence bookkeeping and admits no new business. Every effect
+INSERT and fresh nonce assignment has its own purpose and detail checks.
+Existing allocations and participant claims for purchased tickets can finish.
+Gas subsidies that have not reserved a nonce stay held; this mode does not
+authorize a new subsidy or user-owned transfer.
+
+An incident operator may use `bun run rewards:control settle REVISION REASON`
+after receiving explicit operator authority for the settlement scope. The
+command requires EXECUTE on `set_reward_operations_state_v2(bigint,text,text)`
+from the migration owner. It reads back the exact state and revision and
+reports the already-admitted effect inventory. `pause` stops fresh obligation
+reservations as well; `resume` explicitly restores all admission. A transition
+increments the revision and appends the authenticated session role and reason.
+An identical state is idempotent. No command compensates a failure by resuming.
+
+Entering settling does not cancel an already-reserved ticket purchase, approval
+or gas top-up. Reserved, prepared, broadcast and uncertain transactions retain
+their existing exactly-once reconciliation. An identity-preserving replacement
+can reuse only its actual predecessor's admitted nonce, calldata and calldata
+hash. Preparing replacement bytes rechecks that intent after nonce assignment;
+fee and signature changes are permitted. Missing predecessor bytes refuse.
+A missing or unknown
+control never authorizes a fresh reservation. Already-issued sponsor funding
+instructions also cannot be recalled; their existing transfer observations may
+settle and create refund liability. Inventory that tail before declaring an
+incident contained, and keep both bindings on while anything remains owed.
+
+The `paused` column projects true for both settling and paused. Earlier HTTP
+code therefore refuses new business during settling. Updated reads validate
+both the explicit state and its projection. Jobs relies on the authoritative
+database purpose gate: its existing refund/payout/claim repositories can reserve
+in settling, while purchase/approval/gas reservations refuse. Binding shutdown
+requires the exact persisted state `paused` under its share lock, in addition
+to all nine empty-inventory predicates; the projected boolean alone is insufficient.
+
+This is source-only engineering. A separately reviewed release must apply the
+forward migration atomically, verify the new restricted operator and read/lock
+predicate grants, and deploy both reviewed Workers and operator/shutdown tools
+while paused. The old pause/resume function remains usable with its existing
+dedicated-role grant, including a real pause from settling. Updated tools refuse
+an older schema rather than treating a missing state as authority. Migration
+ordinal 0236 is provisional until merge order is fixed. Local PostgreSQL tests
+do not close the production gate: measured incident behavior and a separately
+authorized live rehearsal remain required. This does not add a settlement
+resume to the bounded funded staging window.
+
+The replacement regression seeds a valid admitted pair as fixture-owner
+evidence, then exercises the actual chain guards. Migration 0053's immediate
+predecessor/replacement foreign keys leave their creation order unresolved;
+this change preserves those constraints and adds no operational replacement
+creation procedure. That existing recovery gap needs separate engineering.
+
 ## Admission boundary
 
-The nonce trigger refuses INSERT and increases in next_nonce with SQLSTATE
+In paused, the nonce trigger refuses INSERT and increases in next_nonce with SQLSTATE
 PR001. Its migration-owner SECURITY DEFINER function takes FOR SHARE on the
 singleton control row. The operator function takes FOR UPDATE on the same row,
 so a committed pause waits for admitted reservation transactions and refuses

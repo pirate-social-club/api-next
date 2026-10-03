@@ -112,10 +112,14 @@ export async function withRewardsShutdownLock<T>(
     await db.query(
       "SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='10s'; SET LOCAL idle_in_transaction_session_timeout=0",
     );
-    const control = await db.query<{ paused: boolean }>(
-      `SELECT paused FROM "${schema}".reward_operations_control WHERE singleton=TRUE FOR SHARE`,
+    const control = await db.query<{ paused: boolean; state: string }>(
+      `SELECT state,paused FROM "${schema}".reward_operations_control WHERE singleton=TRUE FOR SHARE`,
     );
-    if (control.rows.length !== 1 || control.rows[0]?.paused !== true)
+    if (
+      control.rows.length !== 1 ||
+      control.rows[0]?.state !== "paused" ||
+      control.rows[0]?.paused !== true
+    )
       throw Error("reward binding shutdown requires persisted pause");
     await assertRewardsShutdownInventory(db, schema);
     if (cancellation.signal.aborted) throw Error("reward shutdown control connection lost");

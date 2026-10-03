@@ -1,7 +1,7 @@
 import { Client } from "pg";
 
 export type RewardOperationsCommand = {
-  readonly paused: boolean;
+  readonly state: "running" | "settling" | "paused";
   readonly expectedRevision: string;
   readonly reason: string;
 };
@@ -10,31 +10,44 @@ export function parseRewardOperationsCommand(args: readonly string[]): RewardOpe
   const [mode, expectedRevision, reason] = args;
   if (
     args.length !== 3 ||
-    (mode !== "pause" && mode !== "resume") ||
+    (mode !== "pause" && mode !== "resume" && mode !== "settle") ||
     expectedRevision === undefined ||
     !/^(0|[1-9][0-9]*)$/u.test(expectedRevision) ||
     reason === undefined ||
     Buffer.byteLength(reason.trim()) < 1 ||
     Buffer.byteLength(reason.trim()) > 256
   ) {
-    throw new Error("Usage: reward-operations-control pause|resume expected_revision reason");
+    throw new Error(
+      "Usage: reward-operations-control pause|settle|resume expected_revision reason",
+    );
   }
-  return { paused: mode === "pause", expectedRevision, reason: reason.trim() };
+  return {
+    state: mode === "pause" ? "paused" : mode === "settle" ? "settling" : "running",
+    expectedRevision,
+    reason: reason.trim(),
+  };
 }
 
 /** No rollback to running on any failure. The database function owns the cut-over lock. */
 export async function setRewardOperationsControl(client: Client, command: RewardOperationsCommand) {
   const changed = await client.query<{ revision: string }>(
-    "SELECT set_reward_operations_paused_v1($1::bigint,$2::boolean,$3::text)::text AS revision",
-    [command.expectedRevision, command.paused, command.reason],
+    command.state === "settling"
+      ? "SELECT set_reward_operations_state_v2($1::bigint,$2::text,$3::text)::text AS revision"
+      : "SELECT set_reward_operations_paused_v1($1::bigint,$2::boolean,$3::text)::text AS revision",
+    [
+      command.expectedRevision,
+      command.state === "settling" ? command.state : command.state === "paused",
+      command.reason,
+    ],
   );
   const control = await client.query(
-    "SELECT paused,revision::text,reason,changed_at FROM reward_operations_control WHERE singleton",
+    "SELECT state,paused,revision::text,reason,changed_at FROM reward_operations_control WHERE singleton",
   );
   const row = control.rows[0];
   if (
     control.rowCount !== 1 ||
-    row.paused !== command.paused ||
+    row.state !== command.state ||
+    row.paused !== (command.state !== "running") ||
     row.revision !== changed.rows[0]?.revision
   ) {
     throw new Error("Reward control readback failed; inspect the control before further action");
