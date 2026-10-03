@@ -431,6 +431,7 @@ export const HnsCommunityRootImportCurrentResponseV1 = Schema.Struct({
     Schema.Struct({
       canonical_route: CommunityCanonicalRouteV2,
       status: CommunityRouteLifecycleStatusV1,
+      binding_generation: Schema.optionalKey(PositiveSafeInteger),
     }),
   ),
   session: Schema.NullOr(HnsCommunityRootImportSessionResponseV1),

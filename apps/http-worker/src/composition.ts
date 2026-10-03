@@ -269,6 +269,7 @@ import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
+import { makeProductionHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
@@ -1297,6 +1298,12 @@ export async function createProductionHttpWorker(
   const communityHnsBinding = namespaceBindings.find(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
+  const hnsOwnerRecoveryHandlers = makeProductionHnsOwnerRecoveryHandlers({
+    enabled: config.HNS_OWNERSHIP_ENABLED && bindings.HNS_OWNER_VERIFIER !== undefined,
+    environment: config.API_NEXT_ENV,
+    database: controlPlane,
+    ...(bindings.HNS_OWNER_VERIFIER === undefined ? {} : { verifier: bindings.HNS_OWNER_VERIFIER }),
+  });
   const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
   // The activation current-view gatherer. Disabled by default; disabled
   // configuration stays an unavailable capability, and enabled configuration
@@ -1809,6 +1816,7 @@ export async function createProductionHttpWorker(
       ...publicPostRouteHandlers,
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
+      ...hnsOwnerRecoveryHandlers,
       ...hnsCommunityRootImportHandlers,
       ...hnsTxtAttachmentHandlers,
       ...verificationHandlers,

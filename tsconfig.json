@@ -38,6 +38,9 @@
       "@pirate/platform-cf/namespace-ownership-provider-registry": [
         "./packages/platform-cf/src/namespace-ownership/provider-registry.ts"
       ],
+      "@pirate/platform-cf/namespace-ownership-hns-owner-recovery-service-binding": [
+        "./packages/platform-cf/src/namespace-ownership/hns-owner-recovery-service-binding.ts"
+      ],
       "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer": [
         "./packages/platform-cf/src/namespace-ownership/hns-root-resource-observer.ts"
       ],

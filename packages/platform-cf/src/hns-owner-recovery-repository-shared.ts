@@ -92,6 +92,28 @@ const ownerRecoveryAuthoritySql = `
          WHERE s.evidence_ref = e.evidence_ref
         UNION ALL
         SELECT s.provider_configuration_kind,
+               s.provider_configuration_ref,
+               s.provider_configuration_version,
+               NULL::text,
+               s.environment
+          FROM community_route_attachment_namespace_sessions AS s
+          JOIN community_route_attachment_ceremony_results AS result
+            ON result.ceremony_intent_id = s.ceremony_intent_id
+           AND result.actor_id = s.actor_id
+           AND result.attachment_intent_id = s.attachment_intent_id
+           AND result.evidence_ref = e.evidence_ref
+           AND result.outcome_status = 'satisfied'
+         WHERE e.origin = 'route_attachment'
+           AND s.ceremony_intent_id = e.route_attachment_ceremony_intent_id
+           AND s.actor_id = e.verified_by_actor_id
+           AND s.route_root_label = e.root_label
+           AND s.requirement_hash = e.requirement_hash
+           AND s.provider_id = e.provider_id
+           AND s.provider_binding_hash = e.provider_binding_hash
+           AND s.provider_configuration_version = e.provider_configuration_version
+           AND s.status = 'completed'
+        UNION ALL
+        SELECT s.provider_configuration_kind,
                s.provider_configuration_reference,
                s.provider_configuration_version,
                s.provider_configuration_digest,

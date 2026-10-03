@@ -12,6 +12,7 @@ import {
 } from "@pirate/application";
 import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
+import { refreshRecoveredHnsHosts } from "./hns-owner-recovery-host-refresh.ts";
 import {
   type HnsOwnerRecoveryRow,
   hnsOwnerRecoveryInteger,
@@ -565,6 +566,12 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
               responseMetadata,
               retainedBytes,
               input.attempt.fence_token,
+            );
+            yield* refreshRecoveredHnsHosts(
+              transaction,
+              session,
+              evidence.evidence_ref,
+              resultHash,
             );
           } else if (input.evidence !== null && keepsProviderResult) {
             return yield* Effect.fail(storageFailure());
