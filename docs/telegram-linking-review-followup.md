@@ -72,7 +72,7 @@ DELETE or excessive DELETE/TRUNCATE are refused. The standalone read-only
 command is bun run db:preflight:telegram-activation. Its connection must be the
 actual serving role, separately evidenced in each environment. Shared staging
 may need DELETE revoked; that mutation still requires owner approval.
-Migration 0238 must precede code using the shared Study practice marker, even
+Migration 0239 must precede code using the shared Study practice marker, even
 when Telegram flags remain false.
 
 ## Website contracts
