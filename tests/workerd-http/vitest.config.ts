@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
 const alias = {
   "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
@@ -191,6 +192,7 @@ export default defineConfig({
       wrangler: { configPath: "./tests/workerd-http/wrangler.jsonc" },
       miniflare: {
         alias,
+        outboundService: telegramOidcOutbound,
         serviceBindings: {
           HNS_OWNER_VERIFIER: async (request) => {
             const url = new URL(request.url);

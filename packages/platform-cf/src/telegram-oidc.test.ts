@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Effect, Exit } from "effect";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { makeTelegramOidcClient } from "./telegram-oidc.ts";
@@ -72,6 +72,42 @@ async function failure(client: ReturnType<typeof makeTelegramOidcClient>, input 
   return Effect.runPromise(Effect.flip(client.exchange(input)));
 }
 
+async function heldKeyFixture() {
+  let token = await signed();
+  let now = NOW * 1000;
+  let blocked = false;
+  let keyFetches = 0;
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  return {
+    client: makeTelegramOidcClient({
+      ...CONFIG,
+      nowMs: () => now,
+      fetcher: async (url) => {
+        if (url.endsWith("/token")) return Response.json({ id_token: token });
+        keyFetches += 1;
+        if (blocked) {
+          started.resolve();
+          await release.promise;
+        }
+        return Response.json({ keys: [firstJwk, secondJwk] });
+      },
+    }),
+    blockRefresh() {
+      blocked = true;
+    },
+    advance(seconds: number) {
+      now += seconds * 1000;
+    },
+    useToken(value: string) {
+      token = value;
+    },
+    started: started.promise,
+    release: () => release.resolve(),
+    keyFetches: () => keyFetches,
+  };
+}
+
 describe("Pirate-controlled Telegram OIDC evidence", () => {
   test("creates independent server material and exact S256 authorization", async () => {
     const f = await fixture();
@@ -109,7 +145,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       "https://oauth.telegram.org/.well-known/jwks.json",
     ]);
     const request = f.calls[0]?.init;
-    expect(request?.redirect).toBe("error");
+    expect(request?.redirect).toBe("manual");
     expect(request?.headers).toEqual({
       "content-type": "application/x-www-form-urlencoded",
       authorization: `Basic ${btoa(`${CONFIG.clientId}:${CONFIG.clientSecret}`)}`,
@@ -185,8 +221,8 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     const f = await fixture();
     await Effect.runPromise(f.client.exchange(INPUT));
     f.rotate(await signed({}, true));
-    expect((await failure(f.client)).reason).toBe("invalid_proof");
-    expect((await failure(f.client)).reason).toBe("invalid_proof");
+    expect((await failure(f.client)).reason).toBe("provider_unavailable");
+    expect((await failure(f.client)).reason).toBe("provider_unavailable");
     expect(f.calls.filter((call) => call.url.endsWith("jwks.json"))).toHaveLength(1);
     f.advance(30);
     expect(await Effect.runPromise(f.client.exchange(INPUT))).toEqual({
@@ -311,4 +347,121 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       expect(String(error)).not.toContain(CONFIG.clientSecret);
     }
   });
+
+  test("reports a concurrent cold-cache miss as provider unavailable without sharing I/O", async () => {
+    const f = await heldKeyFixture();
+    f.blockRefresh();
+    const firstLogin = Effect.runPromise(f.client.exchange(INPUT));
+    try {
+      await f.started;
+      expect((await failure(f.client)).reason).toBe("provider_unavailable");
+      expect(f.keyFetches()).toBe(1);
+    } finally {
+      f.release();
+      expect(await firstLogin).toEqual({ telegramUserId: "987654321" });
+    }
+  });
+
+  test("uses a held known key during an expired-cache refresh, still checking signatures", async () => {
+    const f = await heldKeyFixture();
+    await Effect.runPromise(f.client.exchange(INPUT));
+    f.advance(300);
+    f.blockRefresh();
+    const refreshing = Effect.runPromise(f.client.exchange(INPUT));
+    try {
+      await f.started;
+      expect(await Effect.runPromise(f.client.exchange(INPUT))).toEqual({
+        telegramUserId: "987654321",
+      });
+      f.useToken(
+        await new SignJWT(payload())
+          .setProtectedHeader({ alg: "RS256", kid: "first" })
+          .sign(second.privateKey),
+      );
+      expect((await failure(f.client)).reason).toBe("invalid_proof");
+      expect(f.keyFetches()).toBe(2);
+    } finally {
+      f.release();
+      expect(await refreshing).toEqual({ telegramUserId: "987654321" });
+    }
+  });
+
+  test("reports an unknown key during cooldown as provider unavailable", async () => {
+    const token = await signed();
+    const rotated = await signed({}, true);
+    let now = NOW * 1000;
+    let currentToken = token;
+    let keyFetches = 0;
+    const client = makeTelegramOidcClient({
+      ...CONFIG,
+      nowMs: () => now,
+      fetcher: async (url) => {
+        if (url.endsWith("/token")) return Response.json({ id_token: currentToken });
+        keyFetches += 1;
+        if (keyFetches === 2) throw new Error("fixture provider outage");
+        return Response.json({ keys: [firstJwk] });
+      },
+    });
+    await Effect.runPromise(client.exchange(INPUT));
+    now += 300_000;
+    expect((await failure(client)).reason).toBe("provider_unavailable");
+    expect(await Effect.runPromise(client.exchange(INPUT))).toEqual({
+      telegramUserId: "987654321",
+    });
+    currentToken = rotated;
+    expect((await failure(client)).reason).toBe("provider_unavailable");
+    expect(keyFetches).toBe(2);
+  });
+
+  test("logs a safe transport error name and redirect diagnostic without secrets", async () => {
+    const log = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const client = makeTelegramOidcClient({
+        ...CONFIG,
+        fetcher: async () => {
+          throw new TypeError(
+            `Invalid redirect value, ${CONFIG.clientSecret} ${INPUT.code} ${INPUT.verifier}`,
+          );
+        },
+      });
+      expect((await failure(client)).reason).toBe("provider_unavailable");
+      expect(log.mock.calls).toEqual([
+        [
+          "telegram_oidc_transport_failure",
+          {
+            name: "TypeError",
+            message: "Invalid redirect value; Workers supports follow or manual",
+          },
+        ],
+      ]);
+      for (const value of [CONFIG.clientSecret, INPUT.code, INPUT.verifier])
+        expect(JSON.stringify(log.mock.calls)).not.toContain(value);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test.each(["error", "opaque"])(
+    "does not log arbitrary transport rejection data: %s",
+    async (kind) => {
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      const privateData = `${CONFIG.clientSecret} ${INPUT.code} ${INPUT.verifier}`;
+      const error = new Error(privateData);
+      error.name = privateData;
+      try {
+        const client = makeTelegramOidcClient({
+          ...CONFIG,
+          fetcher: async () => {
+            throw kind === "error" ? error : { body: privateData, headers: privateData };
+          },
+        });
+        expect((await failure(client)).reason).toBe("provider_unavailable");
+        expect(log).toHaveBeenCalledTimes(1);
+        for (const value of [CONFIG.clientSecret, INPUT.code, INPUT.verifier])
+          expect(JSON.stringify(log.mock.calls)).not.toContain(value);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 });

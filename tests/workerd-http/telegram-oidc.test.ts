@@ -7,6 +7,78 @@ function encoded(value: unknown): string {
 }
 
 describe("Telegram login evidence in workerd", () => {
+  it.each(["none", "token", "jwks"] as const)(
+    "uses native fetch with host-side outbound fixtures: %s",
+    async (redirectStage) => {
+      const pair = await crypto.subtle.generateKey(
+        {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256",
+        },
+        true,
+        ["sign", "verify"],
+      );
+      const jwk = {
+        ...(await crypto.subtle.exportKey("jwk", pair.publicKey)),
+        kid: "native-fetch-fixture",
+        use: "sig",
+        alg: "RS256",
+      };
+      const now = Math.floor(Date.now() / 1000);
+      const input = { code: "fixture-code", nonce: "n".repeat(43), verifier: "v".repeat(43) };
+      const signingInput = `${encoded({ alg: "RS256", kid: jwk.kid })}.${encoded({
+        iss: "https://oauth.telegram.org",
+        aud: "10000001",
+        sub: "opaque-subject",
+        id: 987654321,
+        nonce: input.nonce,
+        iat: now,
+        exp: now + 3600,
+      })}`;
+      const signature = await crypto.subtle.sign(
+        "RSASSA-PKCS1-v1_5",
+        pair.privateKey,
+        new TextEncoder().encode(signingInput),
+      );
+      const token = `${signingInput}.${Buffer.from(signature).toString("base64url")}`;
+      const configured = await fetch("https://telegram-oidc-fixture.test/configure", {
+        method: "POST",
+        body: JSON.stringify({ token, jwk, redirectStage }),
+      });
+      expect(configured.ok).toBe(true);
+      // Omit fetcher: both exchange and JWKS must use workerd's real global fetch.
+      const client = makeTelegramOidcClient({
+        clientId: "10000001",
+        clientSecret: "fixture-client-secret",
+        redirectUri: "https://web.test/telegram/link/callback",
+      });
+      if (redirectStage === "none") {
+        expect(await Effect.runPromise(client.exchange(input))).toEqual({
+          telegramUserId: "987654321",
+        });
+      } else {
+        expect((await Effect.runPromise(Effect.flip(client.exchange(input)))).reason).toBe(
+          "provider_unavailable",
+        );
+      }
+      const calls = await (await fetch("https://telegram-oidc-fixture.test/calls")).json();
+      expect(calls).toEqual([
+        { url: "https://oauth.telegram.org/token", method: "POST", authorization: true },
+        ...(redirectStage === "token"
+          ? []
+          : [
+              {
+                url: "https://oauth.telegram.org/.well-known/jwks.json",
+                method: "GET",
+                authorization: false,
+              },
+            ]),
+      ]);
+    },
+  );
+
   it("constructs server PKCE material with native Web Crypto", async () => {
     const client = makeTelegramOidcClient({
       clientId: "10000001",

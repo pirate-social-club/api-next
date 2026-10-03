@@ -124,7 +124,12 @@ export function makeTelegramOidcClient(options: TelegramOidcOptions): TelegramOi
       const current = now();
       if (cache && cache.expiresAt > current && cache.ids.includes(id))
         return cache.resolve(header, token);
-      if (current < nextRefreshAt) throw new TelegramOidcRejected({ reason: "invalid_proof" });
+      if (current < nextRefreshAt) {
+        // A refresh belongs to another request. Held known keys still verify
+        // signatures during cooldown; a cache miss is temporary unavailability.
+        if (cache?.ids.includes(id)) return cache.resolve(header, token);
+        throw new TelegramOidcRejected({ reason: "provider_unavailable" });
+      }
       nextRefreshAt = current + REFRESH_COOLDOWN_MS;
       // No shared in-flight I/O promise: cached public keys may cross requests,
       // while every fetch belongs to the request that initiated it.
