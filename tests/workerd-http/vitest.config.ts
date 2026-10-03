@@ -207,22 +207,25 @@ export default defineConfig({
               if (request.headers.get("accept") !== "application/json") {
                 return new Response(null, { status: 422 });
               }
-              return Response.json({
-                upstream_session_ref: "upstream-workerd-binding",
-                expires_at: "2099-01-01T00:00:00.000Z",
-                presentation: {
-                  kind: "embedded_sdk",
-                  session_id: "upstream-workerd-binding",
-                  protocol: "hns-txt-challenge",
-                  version: "1",
-                  payload: {
-                    ownership_source: "hns_parent_chain_txt",
-                    challenge_name: "jazleeuw",
-                    challenge_value: "pirate-verification=upstream-workerd-binding",
-                    expires_at: "2099-01-01T00:00:00.000Z",
+              return Response.json(
+                {
+                  upstream_session_ref: "upstream-workerd-binding",
+                  expires_at: "2099-01-01T00:00:00.000Z",
+                  presentation: {
+                    kind: "embedded_sdk",
+                    session_id: "upstream-workerd-binding",
+                    protocol: "hns-txt-challenge",
+                    version: "1",
+                    payload: {
+                      ownership_source: "hns_parent_chain_txt",
+                      challenge_name: "jazleeuw",
+                      challenge_value: "pirate-verification=upstream-workerd-binding",
+                      expires_at: "2099-01-01T00:00:00.000Z",
+                    },
                   },
                 },
-              });
+                { headers: { "content-type": "application/json" } },
+              );
             }
             if (url.pathname === "/internal/hns-owner/v1/poll") {
               if (
