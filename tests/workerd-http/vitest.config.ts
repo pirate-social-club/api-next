@@ -23,6 +23,10 @@ const alias = {
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/telegram-oidc": new URL(
+    "../../packages/application/src/telegram-oidc.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/domain/telegram": new URL("../../packages/domain/src/telegram.ts", import.meta.url)
     .pathname,
   "@pirate/application/video/playback-access": new URL(
