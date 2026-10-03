@@ -4691,6 +4691,121 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION enqueue_hns_safe_ownership_completion_v1(input_session_id text, input_job_id bigint, input_executor_id text, input_lease_fence bigint, input_proof_bytes bytea, input_proof_sha256 text) RETURNS TABLE(outcome text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+#variable_conflict use_column
+DECLARE
+  job hns_root_import_lifecycle_jobs%ROWTYPE;
+  lifecycle hns_root_import_lifecycle%ROWTYPE;
+  session hns_root_import_sessions%ROWTYPE;
+  provision hns_authority_provision_jobs%ROWTYPE;
+  queued hns_community_publication_jobs%ROWTYPE;
+  proof jsonb;
+  database_now timestamptz;
+  observed_ms double precision;
+  first_proof boolean;
+BEGIN
+  IF input_proof_bytes IS NULL OR octet_length(input_proof_bytes) NOT BETWEEN 1 AND 1048576
+    OR input_proof_sha256 IS NULL OR input_proof_sha256 !~ '^[0-9a-f]{64}$'
+    OR encode(sha256(input_proof_bytes),'hex') IS DISTINCT FROM input_proof_sha256 THEN
+    RETURN QUERY SELECT 'invalid_proof'::text; RETURN;
+  END IF;
+  SELECT * INTO job FROM hns_root_import_lifecycle_jobs WHERE lifecycle_job_id=input_job_id FOR UPDATE;
+  SELECT * INTO lifecycle FROM hns_root_import_lifecycle WHERE root_import_session_id=input_session_id FOR UPDATE;
+  SELECT * INTO session FROM hns_root_import_sessions WHERE root_import_session_id=input_session_id FOR UPDATE;
+  database_now := clock_timestamp();
+  IF job.root_import_session_id IS DISTINCT FROM input_session_id
+    OR lifecycle.root_import_session_id IS NULL OR session.root_import_session_id IS NULL
+    OR job.state IS DISTINCT FROM 'leased' OR job.job_kind IS DISTINCT FROM 'observe_readiness'
+    OR job.leased_by IS DISTINCT FROM input_executor_id
+    OR job.lease_fence IS DISTINCT FROM input_lease_fence
+    OR job.lease_expires_at IS NULL OR job.lease_expires_at<=database_now
+    OR job.generation IS DISTINCT FROM lifecycle.generation THEN
+    RETURN QUERY SELECT 'lease_conflict'::text; RETURN;
+  END IF;
+  IF lifecycle.phase NOT IN ('checking_authority','ready') THEN
+    RETURN QUERY SELECT 'phase_conflict'::text; RETURN;
+  END IF;
+  IF lifecycle.plan_encoded_resource_sha256 IS NULL THEN
+    RETURN QUERY SELECT 'plan_absent'::text; RETURN;
+  END IF;
+  IF session.ownership_result_sha256 IS NOT NULL AND session.status IN ('observing','ready') THEN
+    RETURN QUERY SELECT 'ownership_ready'::text; RETURN;
+  END IF;
+  SELECT * INTO provision FROM hns_authority_provision_jobs WHERE provision_job_id=session.provision_job_id FOR SHARE;
+  IF session.origin_kind IS DISTINCT FROM 'community_attachment'
+    OR session.status IS DISTINCT FROM 'awaiting_owner_update'
+    OR session.provision_authorization_kind IS NULL
+    OR session.provision_authorization_kind NOT IN ('community_provisional','hns_name_signature')
+    OR session.ownership_result_sha256 IS NOT NULL
+    OR provision.state IS DISTINCT FROM 'completed'
+    OR provision.publish_plan_sha256 IS DISTINCT FROM session.publish_plan_sha256
+    OR NOT hns_root_import_publication_window_open_v1(input_session_id)
+    OR NOT has_community_route_authority(session.community_id, session.actor_id)
+    OR NOT EXISTS (SELECT 1 FROM communities WHERE community_id=session.community_id AND status='active')
+    OR NOT EXISTS (SELECT 1 FROM users WHERE user_id=session.actor_id AND status='active') THEN
+    RETURN QUERY SELECT 'session_conflict'::text; RETURN;
+  END IF;
+  BEGIN
+    proof := convert_from(input_proof_bytes,'UTF8')::jsonb;
+    observed_ms := (proof#>>'{observation,observed_at_epoch_ms}')::double precision;
+    IF jsonb_typeof(proof) IS DISTINCT FROM 'object'
+      OR proof->>'version' IS DISTINCT FROM 'pirate-hns-provisional-safe-ownership-v1'
+      OR proof->>'root_import_session_id' IS DISTINCT FROM input_session_id
+      OR proof->>'namespace_session_id' IS DISTINCT FROM session.namespace_session_id
+      OR proof->>'root_label' IS DISTINCT FROM session.root_label
+      OR jsonb_typeof(proof->'lifecycle_revision') IS DISTINCT FROM 'number'
+      OR (proof->>'generation')::bigint IS DISTINCT FROM lifecycle.generation
+      OR proof->>'publish_plan_sha256' IS DISTINCT FROM session.publish_plan_sha256
+      OR proof->>'plan_encoded_resource_sha256' IS DISTINCT FROM lifecycle.plan_encoded_resource_sha256
+      OR proof->>'challenge_value_sha256' IS DISTINCT FROM encode(sha256(convert_to(session.challenge_txt_value,'UTF8')),'hex')
+      OR proof#>>'{observation,view}' IS DISTINCT FROM 'safe'
+      OR jsonb_typeof(proof#>'{observation,commitment}') IS DISTINCT FROM 'object'
+      OR jsonb_typeof(proof#>'{observation,records}') IS DISTINCT FROM 'array'
+      OR observed_ms IS NULL OR observed_ms='NaN'::double precision
+      OR NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(proof#>'{observation,records}') record
+        WHERE record->>'type'='TXT' AND
+          (SELECT string_agg(chunk#>>'{}','' ORDER BY ordinal)
+             FROM jsonb_array_elements(record->'txt') WITH ORDINALITY AS chunks(chunk,ordinal))
+            =session.challenge_txt_value
+      ) THEN
+      RETURN QUERY SELECT 'invalid_proof'::text; RETURN;
+    END IF;
+    IF (proof->>'lifecycle_revision')::bigint IS DISTINCT FROM lifecycle.revision THEN
+      RETURN QUERY SELECT 'revision_conflict'::text; RETURN;
+    END IF;
+    IF observed_ms > extract(epoch FROM database_now)*1000
+      OR observed_ms < extract(epoch FROM database_now)*1000-900000 THEN
+      RETURN QUERY SELECT 'stale_proof'::text; RETURN;
+    END IF;
+  EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range
+    OR invalid_parameter_value OR character_not_in_repertoire OR untranslatable_character THEN
+    RETURN QUERY SELECT 'invalid_proof'::text; RETURN;
+  END;
+  SELECT * INTO queued FROM hns_community_publication_jobs WHERE root_import_session_id=input_session_id FOR UPDATE;
+  IF FOUND AND (queued.actor_id IS DISTINCT FROM session.actor_id
+    OR queued.community_id IS DISTINCT FROM session.community_id
+    OR queued.expected_revision IS DISTINCT FROM session.revision
+    OR queued.state NOT IN ('pending','leased')) THEN
+    RETURN QUERY SELECT 'queue_conflict'::text; RETURN;
+  END IF;
+  INSERT INTO hns_root_import_safe_ownership_proofs
+    (root_import_session_id,generation,proof_bytes,proof_sha256,lifecycle_job_id,lease_fence)
+    VALUES (input_session_id,lifecycle.generation,input_proof_bytes,input_proof_sha256,input_job_id,input_lease_fence)
+    ON CONFLICT DO NOTHING;
+  first_proof := FOUND;
+  INSERT INTO hns_community_publication_jobs
+    (root_import_session_id,actor_id,community_id,expected_revision,idempotency_key)
+    VALUES (input_session_id,session.actor_id,session.community_id,session.revision,
+      'safe-ownership:'||encode(sha256(convert_to(input_session_id||':'||lifecycle.generation::text,'UTF8')),'hex'))
+    ON CONFLICT DO NOTHING;
+  RETURN QUERY SELECT CASE WHEN first_proof THEN 'queued' ELSE 'replayed' END::text;
+END;
+$_$;
+
 CREATE FUNCTION ensure_handle_persona_public_footprint_v1(input_persona_id text, input_occurred_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
@@ -10835,6 +10950,31 @@ BEGIN
   IF NEW.status = 'abandoned' AND NEW.abandonment_reason = 'action_deadline_elapsed' AND NEW.retention_disposition IS DISTINCT FROM (CASE WHEN NEW.audio_revision > 0 THEN 'retain_until_expiry' ELSE 'no_object' END) THEN RAISE EXCEPTION 'action deadline retention is not exact'; END IF;
   IF NEW.status = 'abandoned' THEN
     IF NEW.phase IS NOT NULL OR NEW.post_id IS NOT NULL OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'abandoned cleanup is not exact'; END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_video_outcome_claim() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'video outcome claims are permanent';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM media_post_submissions s
+     WHERE s.submission_id=NEW.submission_id AND s.actor_user_id=NEW.actor_user_id
+       AND s.media_kind='video' AND s.video_revision>0 AND s.current_immutable_ref IS NOT NULL
+       AND ((NEW.kind='policy_block' AND s.status='blocked') OR
+         (NEW.kind='processing_failure' AND s.status='processing_failed'
+           AND s.retryable IS FALSE
+           AND s.video_state_snapshot->>'reconciliationRequired' IS DISTINCT FROM 'true'))
+       AND NOT EXISTS (SELECT 1 FROM media_publication_projections p
+         WHERE p.submission_id=s.submission_id)
+     FOR UPDATE OF s
+  ) THEN
+    RAISE EXCEPTION 'video outcome claim requires exact sealed terminal author authority';
   END IF;
   RETURN NEW;
 END;
@@ -31609,6 +31749,20 @@ ALTER TABLE hns_root_import_retention_reviews ALTER COLUMN retention_review_id A
     CACHE 1
 );
 
+CREATE TABLE hns_root_import_safe_ownership_proofs (
+    root_import_session_id text NOT NULL,
+    generation bigint NOT NULL,
+    proof_bytes bytea NOT NULL,
+    proof_sha256 text NOT NULL,
+    lifecycle_job_id bigint NOT NULL,
+    lease_fence bigint NOT NULL,
+    retained_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_root_import_safe_ownership_proofs_check CHECK ((encode(sha256(proof_bytes), 'hex'::text) = proof_sha256)),
+    CONSTRAINT hns_root_import_safe_ownership_proofs_generation_check CHECK ((generation > 0)),
+    CONSTRAINT hns_root_import_safe_ownership_proofs_proof_bytes_check CHECK (((octet_length(proof_bytes) >= 1) AND (octet_length(proof_bytes) <= 1048576))),
+    CONSTRAINT hns_root_import_safe_ownership_proofs_proof_sha256_check CHECK ((proof_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE hns_root_import_separated_clocks_inventory (
     root_import_session_id text NOT NULL,
     session_status text NOT NULL,
@@ -32998,6 +33152,14 @@ CREATE TABLE media_video_original_sounds (
     CONSTRAINT media_video_original_sounds_extraction_policy_revision_check CHECK ((btrim(extraction_policy_revision) <> ''::text)),
     CONSTRAINT media_video_original_sounds_original_sound_id_check CHECK ((btrim(original_sound_id) <> ''::text)),
     CONSTRAINT media_video_original_sounds_retention_policy_revision_check CHECK ((retention_policy_revision > 0))
+);
+
+CREATE TABLE media_video_outcome_claims (
+    submission_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    kind text NOT NULL,
+    claimed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_video_outcome_claims_kind_check CHECK ((kind = ANY (ARRAY['processing_failure'::text, 'policy_block'::text])))
 );
 
 CREATE TABLE media_video_publication_decisions (
@@ -35654,7 +35816,7 @@ CREATE TABLE spaces_namespace_authority_evidence (
     CONSTRAINT spaces_namespace_authority_evidence_anchor_height_check CHECK (((anchor_height >= 0) AND (anchor_height <= '9007199254740991'::bigint))),
     CONSTRAINT spaces_namespace_authority_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_identity_check CHECK ((is_handle_sales_identifier_v1(namespace_authority_reference, 512) AND ((namespace_authority_generation >= 1) AND (namespace_authority_generation <= '9007199254740991'::bigint)) AND is_community_route_root_label('spaces'::text, canonical_root) AND is_community_route_root_label_display(display_root) AND (canonical_root <> 'pirate'::text) AND is_handle_sales_identifier_v1(challenge_environment, 64))),
-    CONSTRAINT spaces_namespace_authority_evidence_raw_verifier_evidence_check CHECK (((octet_length(raw_verifier_evidence) >= 1) AND (octet_length(raw_verifier_evidence) <= 65536))),
+    CONSTRAINT spaces_namespace_authority_evidence_raw_verifier_evidence_check CHECK (((octet_length(raw_verifier_evidence) >= 1) AND (octet_length(raw_verifier_evidence) <= 1048576))),
     CONSTRAINT spaces_namespace_authority_evidence_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text)),
     CONSTRAINT spaces_namespace_authority_evidence_time_order CHECK (((challenge_completed_at > key_last_changed_at) AND (publication_verified_at >= key_last_changed_at) AND (anchored_at <= observed_at) AND (challenge_completed_at <= recorded_at) AND (publication_verified_at <= recorded_at) AND (observed_at <= recorded_at) AND (fresh_until > observed_at)))
@@ -35873,7 +36035,7 @@ CREATE TABLE spaces_owner_proof_ceremonies (
     CONSTRAINT spaces_owner_proof_ceremonies_start_idempotency_key_check CHECK (is_handle_sales_identifier_v1(start_idempotency_key, 128)),
     CONSTRAINT spaces_owner_proof_ceremonies_start_request_bytes_check CHECK (((octet_length(start_request_bytes) >= 1) AND (octet_length(start_request_bytes) <= 2048))),
     CONSTRAINT spaces_owner_proof_ceremonies_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_bytes_check CHECK (((octet_length(start_verifier_bytes) >= 1) AND (octet_length(start_verifier_bytes) <= 65536))),
+    CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_bytes_check CHECK (((octet_length(start_verifier_bytes) >= 1) AND (octet_length(start_verifier_bytes) <= 1048576))),
     CONSTRAINT spaces_owner_proof_ceremonies_start_verifier_sha256_hex_check CHECK ((start_verifier_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_owner_proof_ceremonies_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'verified'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text]))),
     CONSTRAINT spaces_owner_proof_ceremony_terminal CHECK ((((status = 'pending'::text) AND (terminal_response IS NULL)) OR ((status <> 'pending'::text) AND (terminal_response IS NOT NULL)))),
@@ -38225,6 +38387,9 @@ ALTER TABLE ONLY hns_root_import_recovery_findings
 ALTER TABLE ONLY hns_root_import_retention_reviews
     ADD CONSTRAINT hns_root_import_retention_reviews_pkey PRIMARY KEY (retention_review_id);
 
+ALTER TABLE ONLY hns_root_import_safe_ownership_proofs
+    ADD CONSTRAINT hns_root_import_safe_ownership_proofs_pkey PRIMARY KEY (root_import_session_id, generation);
+
 ALTER TABLE ONLY hns_root_import_separated_clocks_inventory
     ADD CONSTRAINT hns_root_import_separated_clocks_inventory_pkey PRIMARY KEY (root_import_session_id);
 
@@ -38644,6 +38809,9 @@ ALTER TABLE ONLY media_video_original_sounds
 
 ALTER TABLE ONLY media_video_original_sounds
     ADD CONSTRAINT media_video_original_sounds_submission_id_key UNIQUE (submission_id);
+
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_pkey PRIMARY KEY (submission_id);
 
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decisions_pkey PRIMARY KEY (submission_id, creation_revision);
@@ -40074,6 +40242,8 @@ CREATE INDEX media_video_source_grants_expiry_idx ON media_video_source_grants U
 
 CREATE INDEX media_video_source_grants_request_idx ON media_video_source_grants USING btree (request_id);
 
+CREATE INDEX media_video_terminal_outcome_candidates ON media_post_submissions USING btree (actor_user_id, updated_at, submission_id) WHERE ((media_kind = 'video'::text) AND (status = ANY (ARRAY['processing_failed'::text, 'blocked'::text])) AND (video_revision > 0) AND (current_immutable_ref IS NOT NULL));
+
 CREATE INDEX media_video_transform_attempt_reconciliation_idx ON media_video_transform_attempts USING btree (submission_id, video_revision, creation_revision) WHERE (reconciliation_state = ANY (ARRAY['pending'::text, 'required'::text]));
 
 CREATE INDEX megapot_drawing_observations_latest_idx ON megapot_drawing_observations USING btree (attestation_id, drawing_id, block_number DESC, observation_id);
@@ -40902,6 +41072,8 @@ CREATE TRIGGER hns_root_import_sessions_insert_guard BEFORE INSERT ON hns_root_i
 
 CREATE TRIGGER hns_root_import_sessions_provision_authorization_guard BEFORE UPDATE ON hns_root_import_sessions FOR EACH ROW EXECUTE FUNCTION guard_hns_root_import_provision_authorization_change();
 
+CREATE TRIGGER hns_safe_ownership_proof_append_only BEFORE DELETE OR UPDATE ON hns_root_import_safe_ownership_proofs FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+
 CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON identity_credentials FOR EACH ROW EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
 
 CREATE TRIGGER karaoke_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_attempts FOR EACH ROW EXECUTE FUNCTION guard_karaoke_attempt();
@@ -41129,6 +41301,8 @@ CREATE TRIGGER media_transcript_artifact_shape_guard BEFORE INSERT ON media_tran
 CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
+
+CREATE TRIGGER media_video_outcome_claim_guard BEFORE INSERT OR DELETE OR UPDATE ON media_video_outcome_claims FOR EACH ROW EXECUTE FUNCTION guard_media_video_outcome_claim();
 
 CREATE TRIGGER media_video_reservation_song_plan_guard BEFORE DELETE OR UPDATE ON media_video_reservation_song_plans FOR EACH ROW EXECUTE FUNCTION guard_media_video_reservation_song_plan();
 
@@ -42923,6 +43097,12 @@ ALTER TABLE ONLY hns_root_import_publication_authorizations
 ALTER TABLE ONLY hns_root_import_recovery_authorizations
     ADD CONSTRAINT hns_root_import_recovery_authorization_recovery_finding_id_fkey FOREIGN KEY (recovery_finding_id) REFERENCES hns_root_import_recovery_findings(recovery_finding_id);
 
+ALTER TABLE ONLY hns_root_import_safe_ownership_proofs
+    ADD CONSTRAINT hns_root_import_safe_ownership_proo_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
+
+ALTER TABLE ONLY hns_root_import_safe_ownership_proofs
+    ADD CONSTRAINT hns_root_import_safe_ownership_proofs_lifecycle_job_id_fkey FOREIGN KEY (lifecycle_job_id) REFERENCES hns_root_import_lifecycle_jobs(lifecycle_job_id);
+
 ALTER TABLE ONLY hns_root_import_separated_clocks_inventory
     ADD CONSTRAINT hns_root_import_separated_clocks_in_root_import_session_id_fkey FOREIGN KEY (root_import_session_id) REFERENCES hns_root_import_sessions(root_import_session_id);
 
@@ -43336,6 +43516,12 @@ ALTER TABLE ONLY media_video_original_sounds
 
 ALTER TABLE ONLY media_video_original_sounds
     ADD CONSTRAINT media_video_original_sounds_submission_id_origin_video_rev_fkey FOREIGN KEY (submission_id, origin_video_revision) REFERENCES media_video_revisions(submission_id, video_revision);
+
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(user_id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY media_video_outcome_claims
+    ADD CONSTRAINT media_video_outcome_claims_submission_id_fkey FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id) ON DELETE RESTRICT;
 
 ALTER TABLE ONLY media_video_publication_decisions
     ADD CONSTRAINT media_video_publication_decis_submission_id_analysis_revis_fkey FOREIGN KEY (submission_id, analysis_revision) REFERENCES media_video_analyses(submission_id, analysis_revision);

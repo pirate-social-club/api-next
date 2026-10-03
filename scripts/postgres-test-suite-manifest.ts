@@ -21,6 +21,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
   "packages/platform-cf/src/song-owner-video-policy.pg.test.ts",
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
+  "packages/platform-cf/src/video-outcome-repository.pg.test.ts",
   "packages/platform-cf/src/video-publication-repository.pg.test.ts",
   "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
@@ -31,6 +32,7 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "apps/http-worker/src/hns-provisional-safe-ownership.pg.test.ts",
   "packages/platform-cf/src/reward-money-privileges.pg.test.ts",
   "packages/platform-cf/src/reward-binding-deploy.pg.test.ts",
   "packages/platform-cf/src/reward-http-admission.pg.test.ts",
@@ -155,6 +157,7 @@ export const noBaselinePostgresTestSuites = [
   "packages/platform-cf/src/hns-renewal-privileges.pg.test.ts",
   "packages/platform-cf/src/hns-admission-privileges.pg.test.ts",
   "packages/platform-cf/src/video-reconciliation-operator.pg.test.ts",
+  "packages/platform-cf/src/video-accepted-analysis-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-source-grants.pg.test.ts",
   "packages/platform-cf/src/video-safety-evidence.pg.test.ts",
   "packages/platform-cf/src/video-workflow-composed.pg.test.ts",

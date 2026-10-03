@@ -17,6 +17,7 @@
     "scripts/check-scripts-typecheck-coverage.ts",
     "scripts/dependency-audit.ts",
     "scripts/deploy-worker-with-provenance.ts",
+    "scripts/check-staging-serving-bindings.ts",
     "scripts/evaluate-study-translation-corpus.ts",
     "scripts/generate-contracts.ts",
     "scripts/generate-postgres-baseline.ts",
@@ -49,6 +50,11 @@
     "scripts/secret-boundary-check.ts",
     "scripts/seed-gates-v2-age18.ts",
     "scripts/verify-api-client-package.ts",
-    "scripts/verify-postgres-test-sentinels.ts"
+    "scripts/verify-postgres-test-sentinels.ts",
+    "scripts/song-video-frame-comparison.ts",
+    "scripts/song-video-frame-policy.ts",
+    "scripts/song-video-frame-comparison.test.ts",
+    "scripts/video-accepted-analysis-cleanup.ts",
+    "scripts/video-stream-reconciliation-inspect.ts"
   ]
 }

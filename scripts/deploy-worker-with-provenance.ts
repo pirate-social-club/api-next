@@ -7,6 +7,11 @@ import {
 } from "./hns-staging-gateway-preflight.ts";
 
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+import {
+  type PrepareStagingBindingGuard,
+  prepareStagingBindingGuard,
+} from "./staging-serving-bindings-preflight.ts";
+import type { BindingDriftReceipt } from "./worker-binding-drift.ts";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -16,6 +21,7 @@ export type WorkerDeploymentInput = Readonly<{
   environment: string;
   sourceRef: string;
   acceptedMainRef: string;
+  bindingReviewPath?: string;
 }>;
 
 export type WorkerDeploymentReceipt = Readonly<{
@@ -24,6 +30,7 @@ export type WorkerDeploymentReceipt = Readonly<{
   worker_version_id: string;
   environment: string;
   config_path: string;
+  staging_binding_preflight?: BindingDriftReceipt;
 }>;
 
 type CommandResult = Readonly<{ exitCode: number; stdout: string; stderr: string }>;
@@ -57,6 +64,7 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   let configPath: string | null = null;
   let environment: string | null = null;
   let sourceRef = "HEAD";
+  let bindingReviewPath: string | undefined;
   const acceptedMainRef = "origin/main";
 
   for (let index = 0; index < args.length; index += 1) {
@@ -74,6 +82,10 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
         sourceRef = optionValue(args, index);
         index += 1;
         break;
+      case "--binding-review":
+        bindingReviewPath = optionValue(args, index);
+        index += 1;
+        break;
       default:
         throw new Error(`unknown deployment argument: ${argument ?? ""}`);
     }
@@ -82,7 +94,15 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   if (configPath === null) throw new Error("--config is required");
   if (environment === null) throw new Error("--env is required");
   if (!ENVIRONMENT_NAME.test(environment)) throw new Error("--env is invalid");
-  return { configPath, environment, sourceRef, acceptedMainRef };
+  if (bindingReviewPath !== undefined && environment !== "staging")
+    throw new Error("--binding-review applies only to staging");
+  return {
+    configPath,
+    environment,
+    sourceRef,
+    acceptedMainRef,
+    ...(bindingReviewPath === undefined ? {} : { bindingReviewPath }),
+  };
 }
 
 export function parseWorkerVersions(source: string): readonly WorkerVersion[] {
@@ -133,11 +153,12 @@ export function findDeployedVersion(
   return candidates[0] as WorkerVersion;
 }
 
-async function runCommand(
+export async function runCommand(
   command: readonly string[],
   cwd: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (signal?.aborted) throw Error("deployment command interrupted");
   const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
@@ -148,7 +169,7 @@ async function runCommand(
   ]);
   const exitCode = await child.exited;
   signal?.removeEventListener("abort", abort);
-  if (signal?.aborted) throw Error("reward shutdown control connection lost during deploy");
+  if (signal?.aborted) throw Error("deployment command interrupted");
   return { exitCode, stdout, stderr };
 }
 
@@ -246,6 +267,7 @@ export async function deployWorkerWithProvenance(
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
   readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
   rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
+  stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
@@ -271,13 +293,30 @@ export async function deployWorkerWithProvenance(
   const before = parseWorkerVersions(
     await requiredOutput(runner, listCommand, repositoryRoot, "pre-deploy version listing"),
   );
+  const bindingGuard = await stagingBindingGuard(
+    repositoryRoot,
+    {
+      source_sha: sourceSha,
+      config_path: configPath,
+      environment: input.environment,
+    },
+    runner,
+    input.bindingReviewPath,
+    writeDiagnostic,
+  );
 
   const deployed = await rewardDeploymentGuard(
     repositoryRoot,
     configPath,
     input.environment,
-    (signal) =>
-      runner(
+    async (signal) => {
+      if (bindingGuard !== null) {
+        await bindingGuard.recheck();
+        const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+        if (current.sourceSha !== sourceSha) throw Error("deployment source changed before upload");
+      }
+      if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
+      return runner(
         [
           "bunx",
           "wrangler",
@@ -291,7 +330,8 @@ export async function deployWorkerWithProvenance(
         ],
         repositoryRoot,
         signal,
-      ),
+      );
+    },
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);
@@ -318,6 +358,7 @@ export async function deployWorkerWithProvenance(
     worker_version_id: version.id,
     environment: input.environment,
     config_path: configPath,
+    ...(bindingGuard === null ? {} : { staging_binding_preflight: bindingGuard.receipt }),
   };
 }
 

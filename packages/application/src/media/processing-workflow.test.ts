@@ -1541,7 +1541,17 @@ describe("media processing workflow", () => {
   });
 
   test("stale or failed recovery reads never reach the provider", async () => {
-    for (const recovery of [{ kind: "stale" }, { kind: "failed" }] as const) {
+    for (const recovery of [
+      { kind: "stale", reason: "invalid_projection_row_count" },
+      {
+        kind: "failed",
+        reason: {
+          errorClass: "ControlPlaneAcquireFailed",
+          code: null,
+          query: "media-processing.alignment-recovery-authorization",
+        },
+      },
+    ] as const) {
       const store = new FakeStore(
         authority({
           status: "published",
@@ -1560,7 +1570,11 @@ describe("media processing workflow", () => {
           "alignment",
           dependencies(store, providers(providerEvents)),
         ),
-      ).toEqual({ outcome: "waiting_for_provider" });
+      ).toEqual(
+        recovery.kind === "stale"
+          ? { outcome: "alignment_recovery_lookup_stale", reason: recovery.reason }
+          : { outcome: "alignment_recovery_lookup_failed", reason: recovery.reason },
+      );
       expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
       expect(store.alignments).toBe(0);
     }

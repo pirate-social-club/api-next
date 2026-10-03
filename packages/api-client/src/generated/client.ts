@@ -823,6 +823,10 @@ export type PostPostsPostIdSongPlaybackAccessInput = { readonly path: { readonly
 export type PostPostsPostIdSongPlaybackAccessResponse = { readonly kind: "full_mix"; readonly playback_url: string; readonly expires_at: number; readonly renew_after: number };
 export type PostPostsPostIdSongPlaybackAccessError = /* PostPostsPostIdSongPlaybackAccess declared errors */ (ApiClientError & { readonly status: 401; readonly code: "auth_error"; readonly declaredName: "AuthError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 400; readonly code: "bad_request"; readonly declaredName: "BadRequest"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 500; readonly code: "internal_error"; readonly declaredName: "InternalError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 404; readonly code: "not_found"; readonly declaredName: "NotFound"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 429; readonly code: "rate_limited"; readonly declaredName: "RateLimited"; readonly retryable: boolean });
 
+export type PostVideoOutcomesClaimInput = { readonly body?: Readonly<Record<string, unknown>> | ReadonlyArray<unknown> };
+export type PostVideoOutcomesClaimResponse = { readonly object: "video_outcome_claim"; readonly display_permission: false; readonly outcome: null } | { readonly object: "video_outcome_claim"; readonly display_permission: true; readonly outcome: { readonly submission_id: string; readonly kind: "processing_failure" | "policy_block"; readonly song: { readonly community_id: string; readonly post_id: string } | null } };
+export type PostVideoOutcomesClaimError = /* PostVideoOutcomesClaim declared errors */ (ApiClientError & { readonly status: 401; readonly code: "auth_error"; readonly declaredName: "AuthError"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 400; readonly code: "bad_request"; readonly declaredName: "BadRequest"; readonly retryable: boolean }) | (ApiClientError & { readonly status: 500; readonly code: "internal_error"; readonly declaredName: "InternalError"; readonly retryable: boolean });
+
 export type ReserveAvatarUploadInput = PostAvatarUploadReservationsInput;
 export type ReserveAvatarUploadResponse = PostAvatarUploadReservationsResponse;
 export type ReserveAvatarUploadError = PostAvatarUploadReservationsError;
@@ -1647,6 +1651,10 @@ export type CreateSongPlaybackAccessInput = PostPostsPostIdSongPlaybackAccessInp
 export type CreateSongPlaybackAccessResponse = PostPostsPostIdSongPlaybackAccessResponse;
 export type CreateSongPlaybackAccessError = PostPostsPostIdSongPlaybackAccessError;
 
+export type ClaimVideoOutcomeInput = PostVideoOutcomesClaimInput;
+export type ClaimVideoOutcomeResponse = PostVideoOutcomesClaimResponse;
+export type ClaimVideoOutcomeError = PostVideoOutcomesClaimError;
+
 export interface PirateApiRequestOptions {
   readonly headers?: Headers | readonly [string, string][] | Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
@@ -1977,6 +1985,7 @@ const RESPONSE_SCHEMAS: Record<string, JsonSchema> = {
   "get_publicPostsSitemap": {"type":"object","properties":{"object":{"type":"string","enum":["public_post_sitemap_page"]},"items":{"type":"array","items":{"type":"object","properties":{"canonical_path":{"type":"string"}},"required":["canonical_path"],"additionalProperties":false}},"next_cursor":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["object","items","next_cursor"],"additionalProperties":false},
   "get_postsPostIdComments": {"type":"object","properties":{"items":{"type":"array","items":{"anyOf":[{"type":"object","properties":{"comment_id":{"type":"string","allOf":[{"minLength":1},{"maxLength":512}]},"parent_comment_id":{"anyOf":[{"type":"string","allOf":[{"minLength":1},{"maxLength":512}]},{"type":"null"}]},"body":{"type":"string"},"author_persona":{"anyOf":[{"type":"object","properties":{"persona_id":{"type":"string"},"object":{"type":"string","enum":["persona"]},"display_name":{"anyOf":[{"type":"string"},{"type":"null"}]},"avatar_ref":{"anyOf":[{"type":"string"},{"type":"null"}]},"primary_public_handle":{"anyOf":[{"type":"string"},{"type":"null"}]}},"required":["persona_id","object","display_name","avatar_ref","primary_public_handle"],"additionalProperties":false},{"type":"null"}]},"depth":{"type":"integer","allOf":[{"minimum":0,"maximum":8}]},"reply_count":{"type":"integer","allOf":[{"minimum":0}]},"status":{"type":"string","enum":["published"]},"content_rating":{"type":"string","enum":["general","adult_18"]},"created_at":{"type":"string"}},"required":["comment_id","parent_comment_id","body","author_persona","depth","reply_count","status","content_rating","created_at"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","enum":["age_locked"]},"content_rating":{"type":"string","enum":["adult_18"]},"next_action":{"type":"object","properties":{"kind":{"type":"string","enum":["verify_minimum_age"]},"minimum_age":{"type":"number","enum":[18]}},"required":["kind","minimum_age"],"additionalProperties":false}},"required":["kind","content_rating","next_action"],"additionalProperties":false}]}},"next_cursor":{"anyOf":[{"type":"string","allOf":[{"minLength":1},{"maxLength":512}]},{"type":"null"}]}},"required":["items","next_cursor"],"additionalProperties":false},
   "post_postsPostIdSongPlaybackAccess": {"type":"object","properties":{"kind":{"type":"string","enum":["full_mix"]},"playback_url":{"type":"string"},"expires_at":{"type":"integer","allOf":[{"minimum":0}]},"renew_after":{"type":"integer","allOf":[{"minimum":0}]}},"required":["kind","playback_url","expires_at","renew_after"],"additionalProperties":false},
+  "post_videoOutcomesClaim": {"anyOf":[{"type":"object","properties":{"object":{"type":"string","enum":["video_outcome_claim"]},"display_permission":{"type":"boolean","enum":[false]},"outcome":{"type":"null"}},"required":["object","display_permission","outcome"],"additionalProperties":false},{"type":"object","properties":{"object":{"type":"string","enum":["video_outcome_claim"]},"display_permission":{"type":"boolean","enum":[true]},"outcome":{"type":"object","properties":{"submission_id":{"type":"string","allOf":[{"minLength":1},{"maxLength":256}]},"kind":{"type":"string","enum":["processing_failure","policy_block"]},"song":{"anyOf":[{"type":"object","properties":{"community_id":{"type":"string","allOf":[{"minLength":1},{"maxLength":256}]},"post_id":{"type":"string","allOf":[{"minLength":1},{"maxLength":256}]}},"required":["community_id","post_id"],"additionalProperties":false},{"type":"null"}]}},"required":["submission_id","kind","song"],"additionalProperties":false}},"required":["object","display_permission","outcome"],"additionalProperties":false}]},
 };
 const SUCCESS_STATUSES: Record<string, readonly number[]> = {
   "post_avatarUploadReservations": [200],
@@ -2185,6 +2194,7 @@ const SUCCESS_STATUSES: Record<string, readonly number[]> = {
   "get_publicPostsSitemap": [200],
   "get_postsPostIdComments": [200],
   "post_postsPostIdSongPlaybackAccess": [200],
+  "post_videoOutcomesClaim": [200],
 };
 const ERROR_DEFINITIONS: Record<string, readonly ApiClientErrorDefinition[]> = {
   "post_avatarUploadReservations": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":409,"code":"conflict","name":"Conflict","retryable":false},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true},{"status":502,"code":"provider_unavailable","name":"ProviderUnavailable","retryable":true},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
@@ -2393,6 +2403,7 @@ const ERROR_DEFINITIONS: Record<string, readonly ApiClientErrorDefinition[]> = {
   "get_publicPostsSitemap": [{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
   "get_postsPostIdComments": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
   "post_postsPostIdSongPlaybackAccess": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false},{"status":404,"code":"not_found","name":"NotFound","retryable":false},{"status":429,"code":"rate_limited","name":"RateLimited","retryable":true}],
+  "post_videoOutcomesClaim": [{"status":401,"code":"auth_error","name":"AuthError","retryable":false},{"status":400,"code":"bad_request","name":"BadRequest","retryable":false},{"status":500,"code":"internal_error","name":"InternalError","retryable":false}],
 };
 const WIRE_ERROR_SCHEMA: JsonSchema = {
   type: "object",
@@ -2681,6 +2692,7 @@ export interface PirateApiClient {
   get_publicPostsSitemap: (input: GetPublicPostsSitemapInput, options?: PirateApiRequestOptions) => Promise<GetPublicPostsSitemapResponse>;
   get_postsPostIdComments: (input: GetPostsPostIdCommentsInput, options?: PirateApiRequestOptions) => Promise<GetPostsPostIdCommentsResponse>;
   post_postsPostIdSongPlaybackAccess: (input: PostPostsPostIdSongPlaybackAccessInput, options?: PirateApiRequestOptions) => Promise<PostPostsPostIdSongPlaybackAccessResponse>;
+  post_videoOutcomesClaim: (input: PostVideoOutcomesClaimInput, options?: PirateApiRequestOptions) => Promise<PostVideoOutcomesClaimResponse>;
 }
 export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApiClientOptions | typeof fetch = {}): PirateApiClient {
   const config: PirateApiClientOptions =
@@ -3006,5 +3018,6 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   get_publicPostsSitemap: (input, options) => request("get_publicPostsSitemap", "GET", "/public/posts/sitemap", input, options, "json", [], []),
   get_postsPostIdComments: (input, options) => request("get_postsPostIdComments", "GET", "/posts/:postId/comments", input, options, "json", [], []),
   post_postsPostIdSongPlaybackAccess: (input, options) => request("post_postsPostIdSongPlaybackAccess", "POST", "/posts/:postId/song/playback-access", input, options, "json", [], []),
+  post_videoOutcomesClaim: (input, options) => request("post_videoOutcomesClaim", "POST", "/video-outcomes/claim", input, options, "json", [], []),
   };
 }

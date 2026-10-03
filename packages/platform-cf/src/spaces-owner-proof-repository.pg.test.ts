@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { ControlPlaneDb } from "@pirate/application";
 import { SpacesOwnerProofRefused } from "@pirate/contracts";
@@ -10,7 +11,12 @@ import {
   makeSpacesOwnerProofStore,
   type SpacesRootAuthorityObserver,
 } from "./spaces-owner-proof-repository.ts";
-import type { SpacesRootAuthorityEvidenceV1 } from "./spaces-root-authority-evidence.ts";
+import {
+  parseSpacesRootAuthorityEvidenceV1,
+  SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES,
+  type SpacesRootAuthorityEvidenceV1,
+} from "./spaces-root-authority-evidence.ts";
+import { bytes, fixture } from "./spaces-root-authority-test-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -117,6 +123,110 @@ function makeStore(connection: string, observer: SpacesRootAuthorityObserver) {
 }
 
 suite("Spaces owner proof persistence", () => {
+  for (const size of [303_364, SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES]) {
+    test(`retains exact ${size}-byte verified responses in both owner-proof columns`, async () => {
+      await withSchema(async (admin, connection) => {
+        const observed: Buffer[] = [];
+        const observer: SpacesRootAuthorityObserver = {
+          observe: async ({ digestHex }) => {
+            const unpadded = {
+              ...fixture(),
+              outpoint,
+              owner_script_pubkey_hex: `5120${rootKey}`,
+              owner_xonly_key_hex: rootKey,
+              owner_signature_verified: digestHex === undefined ? null : true,
+              commitment_count: 1,
+              latest_commitment: { padding: "" },
+            };
+            const response = Buffer.from(
+              bytes({
+                ...unpadded,
+                latest_commitment: { padding: "r".repeat(size - bytes(unpadded).byteLength) },
+              }),
+            );
+            expect(response.byteLength).toBe(size);
+            const checked = parseSpacesRootAuthorityEvidenceV1(
+              response,
+              root,
+              digestHex !== undefined,
+            );
+            observed.push(response);
+            return { kind: "verified", bytes: response, evidence: checked };
+          },
+        };
+        const store = makeStore(connection, observer);
+        const challenge = (await store.start({
+          accountId,
+          communityId,
+          canonicalRoot: root,
+          idempotencyKey: "large-start",
+        })) as {
+          ceremony_id: string;
+          challenge_digest_hex: string;
+        };
+        const signatureHex = Buffer.from(
+          schnorr.sign(Buffer.from(challenge.challenge_digest_hex, "hex"), secretKey),
+        ).toString("hex");
+        expect(
+          await store.poll({
+            accountId,
+            communityId,
+            ceremonyId: challenge.ceremony_id,
+            idempotencyKey: "large-poll",
+            signatureHex,
+          }),
+        ).toMatchObject({ status: "verified" });
+        const result = await admin.query(`
+          SELECT ceremony.start_verifier_bytes,ceremony.start_verifier_sha256_hex,
+                 authority.raw_verifier_evidence,proof.observation_sha256_hex AS observation_sha256
+          FROM spaces_owner_proof_ceremonies ceremony
+          JOIN spaces_owner_proof_evidence proof USING (ceremony_id)
+          JOIN spaces_namespace_authority_evidence authority USING
+            (namespace_authority_reference,namespace_authority_generation)`);
+        expect(result.rows[0].start_verifier_bytes).toEqual(observed[0]);
+        expect(result.rows[0].raw_verifier_evidence).toEqual(observed[1]);
+        expect(result.rows[0].start_verifier_sha256_hex).toBe(
+          createHash("sha256")
+            .update(observed[0] as Buffer)
+            .digest("hex"),
+        );
+        expect(result.rows[0].observation_sha256).toBe(
+          createHash("sha256")
+            .update(observed[1] as Buffer)
+            .digest("hex"),
+        );
+
+        // Copy the actual constraints, without append-only triggers, to test
+        // direct SQL boundary violations without changing retained evidence.
+        for (const [table, column] of [
+          ["spaces_owner_proof_ceremonies", "start_verifier_bytes"],
+          ["spaces_namespace_authority_evidence", "raw_verifier_evidence"],
+        ]) {
+          await admin.query(
+            `CREATE TEMP TABLE byte_boundary (LIKE ${table} INCLUDING CONSTRAINTS)`,
+          );
+          const names = await admin.query(
+            "SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum",
+            [table],
+          );
+          const projections = names.rows
+            .map(({ attname }: { attname: string }) =>
+              attname === column ? "$1::bytea" : `"${attname}"`,
+            )
+            .join(",");
+          for (const invalidSize of [0, SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES + 1]) {
+            await expect(
+              admin.query(`INSERT INTO byte_boundary SELECT ${projections} FROM ${table} LIMIT 1`, [
+                Buffer.alloc(invalidSize),
+              ]),
+            ).rejects.toMatchObject({ code: "23514", constraint: `${table}_${column}_check` });
+          }
+          await admin.query("DROP TABLE byte_boundary");
+        }
+      });
+    });
+  }
+
   test("verifies once, then replays exactly without a verifier call", async () => {
     await withSchema(async (admin, connection) => {
       let observations = 0;

@@ -228,6 +228,7 @@ import {
   makeR2VideoMultipartGateway,
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
+import { makeControlPlaneVideoOutcomeStore } from "@pirate/platform-cf/video-outcome-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
 import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
@@ -306,6 +307,7 @@ import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+import { makeVideoOutcomeHandlers } from "./video-outcome-handlers.ts";
 import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
@@ -1815,6 +1817,7 @@ export async function createProductionHttpWorker(
       ...songRewardOfferHandlers,
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
+      ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),
       ...mediaHandlers,
       ...videoAccessHandlers,
       ...songPlaybackHandlers,
