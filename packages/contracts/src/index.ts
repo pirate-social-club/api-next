@@ -43,6 +43,7 @@ export * from "./spaces-operator-assignment.ts";
 export * from "./spaces-owner-proof.ts";
 export * from "./study-v2.ts";
 export * from "./telegram.ts";
+export * from "./telegram-linking.ts";
 export * from "./text-moderation.ts";
 export * from "./v1.ts";
 export * from "./verification.ts";

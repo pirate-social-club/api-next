@@ -4,6 +4,7 @@ import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } fr
 import { endpoint } from "./endpoint.ts";
 import { CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
+import { telegramLinkingRegistry } from "./telegram-linking.ts";
 
 export const Health = endpoint({
   method: "GET",
@@ -150,6 +151,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...telegramLinkingRegistry,
   ReserveAvatarUpload,
   FinalizeAvatarUpload,
   GetAvatar,
