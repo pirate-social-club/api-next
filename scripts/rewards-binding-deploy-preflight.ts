@@ -2,6 +2,26 @@ import { resolve } from "node:path";
 import * as BunRuntime from "bun";
 import pg from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
+import {
+  RewardOperationsRefusal,
+  type RewardStage,
+  sanitizeRewardOperationsFailure,
+} from "./reward-operations-report.ts";
+import { boundedRewardOperation } from "./reward-operations-worker-client.ts";
+
+export type RewardShutdownObservation = {
+  stage: RewardStage;
+  status: "started" | "succeeded" | "failed";
+  category?: (typeof REWARD_SHUTDOWN_PREDICATES)[number][0];
+  present?: boolean;
+  failure?: ReturnType<typeof sanitizeRewardOperationsFailure>;
+};
+export type RewardShutdownGuardOptions = {
+  expectedRevision?: string;
+  signal?: AbortSignal;
+  cleanupSignal?: AbortSignal | undefined;
+  observe?: (event: RewardShutdownObservation) => void;
+};
 
 const REWARD_CONFIGS = new Set([
   "apps/http-worker/wrangler.jsonc",
@@ -82,18 +102,36 @@ export const REWARD_SHUTDOWN_PREDICATES = [
   ["unresolved_gas_topups", "reward_gas_topups", "status NOT IN ('confirmed','released')"],
 ] as const;
 
-export async function assertRewardsShutdownInventory(db: pg.Client, schema = "api_next") {
+export async function assertRewardsShutdownInventory(
+  db: pg.Client,
+  schema = "api_next",
+  options: RewardShutdownGuardOptions = {},
+) {
   if (!/^[a-z][a-z0-9_]*$/.test(schema)) throw Error("invalid reward inventory schema");
   const liabilities: string[] = [];
   for (const [category, table, predicate] of REWARD_SHUTDOWN_PREDICATES) {
-    const result = await db.query<{ present: boolean }>(
+    options.observe?.({ stage: "guard-inventory", status: "started", category });
+    const query = db.query<{ present: boolean }>(
       `SELECT EXISTS(SELECT 1 FROM "${schema}"."${table}" WHERE ${predicate}) AS present`,
     );
+    const result = options.signal
+      ? await boundedRewardOperation(query, options.signal)
+      : await query;
     if (result.rows.length !== 1 || typeof result.rows[0]?.present !== "boolean")
       throw Error("reward shutdown inventory malformed");
     if (result.rows[0].present) liabilities.push(category);
+    options.observe?.({
+      stage: "guard-inventory",
+      status: "succeeded",
+      category,
+      present: result.rows[0].present,
+    });
   }
-  if (liabilities.length) throw Error(`reward binding shutdown refused: ${liabilities.join(", ")}`);
+  if (liabilities.length) {
+    const error = new RewardOperationsRefusal("inventory");
+    error.message = `reward binding shutdown refused: ${liabilities.join(", ")}`;
+    throw error;
+  }
 }
 
 /** SELECT-only operator connection; row lock prevents resume during the upload. */
@@ -101,34 +139,80 @@ export async function withRewardsShutdownLock<T>(
   db: pg.Client,
   operation: (signal: AbortSignal) => Promise<T>,
   schema = "api_next",
+  options: RewardShutdownGuardOptions = {},
 ): Promise<T> {
   if (!/^[a-z][a-z0-9_]*$/.test(schema)) throw Error("invalid reward inventory schema");
   const cancellation = new AbortController();
-  const connectionLost = () => cancellation.abort();
+  const connectionLost = () => cancellation.abort(new RewardOperationsRefusal("guard-lost"));
+  const deadline = () => cancellation.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", deadline, { once: true });
+  if (options.signal?.aborted) deadline();
   db.on("error", connectionLost);
   db.on("end", connectionLost);
+  let stage: RewardStage = "guard-begin";
+  async function query<Row extends pg.QueryResultRow>(text: string) {
+    cancellation.signal.throwIfAborted();
+    options.observe?.({ stage, status: "started" });
+    const result = await boundedRewardOperation(db.query<Row>(text), cancellation.signal);
+    options.observe?.({ stage, status: "succeeded" });
+    return result;
+  }
   try {
-    await db.query("BEGIN");
-    await db.query(
+    await query("BEGIN");
+    stage = "guard-configure";
+    await query(
       "SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='10s'; SET LOCAL idle_in_transaction_session_timeout=0",
     );
-    const control = await db.query<{ paused: boolean; state: string }>(
-      `SELECT state,paused FROM "${schema}".reward_operations_control WHERE singleton=TRUE FOR SHARE`,
+    stage = "guard-control";
+    const control = await query<{ paused: boolean; state: string; revision: string }>(
+      `SELECT state,paused,revision::text FROM "${schema}".reward_operations_control WHERE singleton=TRUE FOR SHARE`,
     );
     if (
       control.rows.length !== 1 ||
       control.rows[0]?.state !== "paused" ||
       control.rows[0]?.paused !== true
     )
-      throw Error("reward binding shutdown requires persisted pause");
-    await assertRewardsShutdownInventory(db, schema);
-    if (cancellation.signal.aborted) throw Error("reward shutdown control connection lost");
-    const result = await operation(cancellation.signal);
-    if (cancellation.signal.aborted)
-      throw Error("reward shutdown control connection lost during deploy");
+      throw Object.assign(new RewardOperationsRefusal("persisted-pause"), {
+        message: "reward binding shutdown requires persisted pause",
+      });
+    if (
+      options.expectedRevision !== undefined &&
+      (!/^(0|[1-9][0-9]*)$/u.test(options.expectedRevision) ||
+        control.rows[0].revision !== options.expectedRevision)
+    )
+      throw new RewardOperationsRefusal("revision");
+    stage = "guard-inventory";
+    await assertRewardsShutdownInventory(db, schema, { ...options, signal: cancellation.signal });
+    if (cancellation.signal.aborted) throw new RewardOperationsRefusal("guard-lost");
+    stage = "guard-operation";
+    options.observe?.({ stage, status: "started" });
+    const result = await boundedRewardOperation(
+      operation(cancellation.signal),
+      cancellation.signal,
+    );
+    if (cancellation.signal.aborted) throw new RewardOperationsRefusal("guard-lost");
     return result;
+  } catch (error) {
+    options.observe?.({ stage, status: "failed", failure: sanitizeRewardOperationsFailure(error) });
+    throw error;
   } finally {
-    await db.query("ROLLBACK").catch(() => undefined);
+    try {
+      await boundedRewardOperation(
+        db.query("ROLLBACK"),
+        AbortSignal.any([
+          AbortSignal.timeout(2_000),
+          options.cleanupSignal ?? new AbortController().signal,
+        ]),
+      );
+      options.observe?.({ stage: "guard-rollback", status: "succeeded" });
+    } catch (error) {
+      options.observe?.({
+        stage: "guard-rollback",
+        status: "failed",
+        failure: sanitizeRewardOperationsFailure(error),
+      });
+    }
+    options.signal?.removeEventListener("abort", deadline);
     db.off("error", connectionLost);
     db.off("end", connectionLost);
   }

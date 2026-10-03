@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Client } from "pg";
 import {
+  type RewardShutdownObservation,
   rewardsBinding,
   rewardsLifecycle,
   withRewardsBindingDeployment,
+  withRewardsShutdownLock,
 } from "./rewards-binding-deploy-preflight.ts";
 
 describe("rewards binding deployment", () => {
@@ -116,4 +120,68 @@ describe("rewards binding deployment", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+test("maintained guard checks revision before inventory/operation and reports cleanup separately", async () => {
+  const events: RewardShutdownObservation[] = [];
+  let called = false;
+  const db = Object.assign(new EventEmitter(), {
+    query: async (sql: string) => {
+      if (sql === "ROLLBACK")
+        throw Object.assign(Error("private rollback"), { code: "ECONNRESET" });
+      if (sql.includes("FOR SHARE"))
+        return { rows: [{ state: "paused", paused: true, revision: "10" }] };
+      return { rows: [] };
+    },
+  }) as unknown as Client;
+  await expect(
+    withRewardsShutdownLock(
+      db,
+      async () => {
+        called = true;
+      },
+      "api_next",
+      {
+        expectedRevision: "9",
+        observe: (event) => events.push(event),
+      },
+    ),
+  ).rejects.toThrow("revision");
+  expect(called).toBe(false);
+  expect(events.some((event) => event.stage === "guard-inventory")).toBe(false);
+  expect(
+    events.find((event) => event.stage === "guard-control" && event.status === "failed")?.failure
+      ?.reason,
+  ).toBe("revision");
+  expect(events.at(-1)?.stage).toBe("guard-rollback");
+  expect(events.at(-1)?.failure?.transport).toBe("ECONNRESET");
+  expect(JSON.stringify(events)).not.toContain("private");
+});
+
+test("a lost guard during an awaited operation reports guard-lost and refuses later work", async () => {
+  const db = Object.assign(new EventEmitter(), {
+    query: async (sql: string) =>
+      sql.includes("FOR SHARE")
+        ? { rows: [{ state: "paused", paused: true, revision: "10" }] }
+        : { rows: [{ present: false }] },
+  }) as unknown as Client;
+  const events: RewardShutdownObservation[] = [];
+  let later = false;
+  await expect(
+    withRewardsShutdownLock(
+      db,
+      async (signal) => {
+        db.emit("end");
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else resolve();
+        });
+        later = true;
+      },
+      "api_next",
+      { expectedRevision: "10", observe: (event) => events.push(event) },
+    ),
+  ).rejects.toThrow("guard-lost");
+  expect(later).toBe(false);
+  expect(events.find((e) => e.status === "failed")?.failure?.reason).toBe("guard-lost");
 });
