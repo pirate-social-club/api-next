@@ -60,6 +60,17 @@ suite("reward binding shutdown database proof", () => {
             ),
           ).rejects.toThrow("persisted pause");
           expect(called).toBe(false);
+          await operator.query("SELECT set_reward_operations_state_v2(1,'settling','incident')");
+          await expect(
+            withRewardsShutdownLock(
+              admin,
+              async () => {
+                called = true;
+              },
+              schema,
+            ),
+          ).rejects.toThrow("persisted pause");
+          expect(called).toBe(false);
           await admin.query(
             "SET session_replication_role=replica; DELETE FROM reward_operations_control; SET session_replication_role=origin",
           );

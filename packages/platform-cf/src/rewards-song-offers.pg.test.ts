@@ -23,7 +23,7 @@ import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
-import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
+import { encodeMegapotBuyTickets, encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -47,7 +47,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 24;
+const testCount = 25;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -89,6 +89,15 @@ async function assertPausedReservation<A, E>(admin: Client, reserve: () => Effec
   await admin.query(
     "SELECT set_reward_operations_paused_v1(revision,FALSE,'reservation_resume_test') FROM reward_operations_control WHERE singleton",
   );
+}
+
+async function enterSettling(admin: Client) {
+  await admin.query(
+    "SELECT set_reward_operations_state_v2(revision,'settling','existing_obligation_test') FROM reward_operations_control WHERE singleton",
+  );
+  expect((await admin.query("SELECT state,paused FROM reward_operations_control")).rows).toEqual([
+    { state: "settling", paused: true },
+  ]);
 }
 
 async function seedMegapotAuthority(admin: Client): Promise<void> {
@@ -1836,6 +1845,148 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     completedTestCount += 1;
   });
 
+  test("fee replacements preserve admitted calldata and nonce under the actual chain guard", async () => {
+    await withSchema(async (admin) => {
+      const ticketCall = (bonusball: number) =>
+        encodeMegapotBuyTickets({
+          tickets: [{ normals: [1, 2, 3, 4, 5], bonusball }],
+          recipient: address("4"),
+          referrers: [address("5")],
+          referralSplit: [1000000000000000000n],
+          source: bytes32("6"),
+        });
+      const cases = [
+        {
+          suffix: "transfer",
+          kind: "reward_payout",
+          mode: "paused",
+          signer: address("7"),
+          signedHash: bytes32("7"),
+          replacementHash: bytes32("9"),
+          calldata: encodeMegapotUsdcTransfer(address("a"), 100n),
+          changed: [
+            encodeMegapotUsdcTransfer(address("b"), 100n),
+            encodeMegapotUsdcTransfer(address("a"), 200n),
+          ],
+        },
+        {
+          suffix: "jackpot",
+          kind: "ticket_purchase",
+          mode: "settling",
+          signer: address("8"),
+          signedHash: bytes32("8"),
+          replacementHash: bytes32("a"),
+          calldata: ticketCall(1),
+          changed: [ticketCall(2)],
+        },
+      ] as const;
+      for (const item of cases) {
+        await admin.query(
+          "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_admitted_tail') FROM reward_operations_control WHERE singleton",
+        );
+        await admin.query(
+          `INSERT INTO reward_signer_nonces
+            (chain_id,signer_address,next_nonce,observed_pending_nonce,observed_block_number,observed_block_hash,observed_at)
+           VALUES(84532,$1,8,7,100,$2,clock_timestamp())`,
+          [item.signer, bytes32("4")],
+        );
+        // 0053's immediate replacement FK has no normal two-row insertion order.
+        // Seed a valid admitted pair as owner evidence; every mutation below uses
+        // the actual identity, state, byte, nonce and transition-event guards.
+        await admin.query("BEGIN; SET LOCAL session_replication_role=replica");
+        try {
+          await admin.query(
+            `INSERT INTO reward_chain_effects
+              (effect_id,effect_kind,state,version,chain_id,signer_address,target_address,
+               reserved_amount_atomic,nonce,calldata,calldata_hash,signed_transaction,
+               signed_transaction_hash,transaction_hash,prepared_at,broadcast_at,replaced_by_effect_id)
+             VALUES($1,$2,'replaced',5,84532,$3,$4,100,7,$5,$6,'0x0101',$7,$7,
+               clock_timestamp(),clock_timestamp(),$8)`,
+            [
+              `original-${item.suffix}`,
+              item.kind,
+              item.signer,
+              address("2"),
+              item.calldata,
+              hash("5"),
+              item.signedHash,
+              `replacement-${item.suffix}`,
+            ],
+          );
+          await admin.query(
+            `INSERT INTO reward_chain_effects
+              (effect_id,effect_kind,state,chain_id,signer_address,target_address,reserved_amount_atomic,replacement_of_effect_id)
+             VALUES($1,$2,'planned',84532,$3,$4,100,$5)`,
+            [
+              `replacement-${item.suffix}`,
+              item.kind,
+              item.signer,
+              address("2"),
+              `original-${item.suffix}`,
+            ],
+          );
+          await admin.query("COMMIT");
+        } catch (error) {
+          await admin.query("ROLLBACK");
+          throw error;
+        }
+        await admin.query(
+          "SELECT set_reward_operations_state_v2(revision,$1,'fixture_replacement_hold') FROM reward_operations_control WHERE singleton",
+          [item.mode],
+        );
+        const transition = async (assignments: string, values: readonly unknown[] = []) => {
+          await admin.query("BEGIN");
+          try {
+            const updated = await admin.query<{ readonly version: string }>(
+              `UPDATE reward_chain_effects SET ${assignments},version=version+1,updated_at=clock_timestamp()
+                WHERE effect_id=$1 RETURNING version::text`,
+              [`replacement-${item.suffix}`, ...values],
+            );
+            await admin.query(
+              "INSERT INTO reward_chain_effect_transitions(effect_id,target_version,event_type,event) VALUES($1,$2,'fixture_replacement','{}')",
+              [`replacement-${item.suffix}`, updated.rows[0]?.version],
+            );
+            await admin.query("COMMIT");
+          } catch (error) {
+            await admin.query("ROLLBACK");
+            throw error;
+          }
+        };
+        await transition("state='nonce_reserved',nonce=7");
+        await expect(
+          transition("state='prepared',prepared_at=clock_timestamp()"),
+        ).rejects.toMatchObject({ code: "PR001" });
+        const prepare = (calldata: string, calldataHash = hash("5"), nonce = 7) =>
+          transition(
+            "state='prepared',nonce=$2,calldata=$3,calldata_hash=$4,signed_transaction='0x0202',signed_transaction_hash=$5,prepared_at=clock_timestamp()",
+            [nonce, calldata, calldataHash, item.replacementHash],
+          );
+        for (const changed of item.changed)
+          await expect(prepare(changed)).rejects.toMatchObject({ code: "PR001" });
+        await expect(prepare(item.calldata, hash("6"))).rejects.toMatchObject({ code: "PR001" });
+        await expect(prepare(item.calldata, hash("5"), 8)).rejects.toMatchObject({ code: "PR001" });
+        await prepare(item.calldata);
+        expect(
+          (
+            await admin.query(
+              "SELECT state,nonce::text,calldata,calldata_hash,signed_transaction FROM reward_chain_effects WHERE effect_id=$1",
+              [`replacement-${item.suffix}`],
+            )
+          ).rows,
+        ).toEqual([
+          {
+            state: "prepared",
+            nonce: "7",
+            calldata: item.calldata,
+            calldata_hash: hash("5"),
+            signed_transaction: "0x0202",
+          },
+        ]);
+      }
+    });
+    completedTestCount += 1;
+  });
+
   test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "purchase-repository", address("f"));
@@ -2148,6 +2299,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           observedAt: new Date().toISOString(),
         }),
       );
+      await enterSettling(admin);
       const claimReservation = await Effect.runPromise(
         claimStore.reserveNonce({
           candidate: claimCandidate,
@@ -2417,6 +2569,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           observedAt: new Date().toISOString(),
         }),
       );
+      await enterSettling(admin);
       const payoutReservation = await Effect.runPromise(
         payoutStore.reserveNonce({
           candidate: payoutCandidate,
@@ -3141,6 +3294,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
             observedAt: new Date().toISOString(),
           }),
         );
+        await enterSettling(admin);
         const reservation = await Effect.runPromise(
           refundStore.reserveNonce({
             candidate,

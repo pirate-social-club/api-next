@@ -492,7 +492,7 @@ async function seedOpenMegapotPool(
     [legId, observationId],
   );
   await admin.query(
-    "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_financial_qualification_admission') FROM reward_operations_control WHERE singleton",
   );
   return { legId, offerId };
 }
@@ -599,7 +599,7 @@ async function seedOpenAssetBonus(
     [legId],
   );
   await admin.query(
-    "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_financial_qualification_admission') FROM reward_operations_control WHERE singleton",
   );
   return { legId, offerId, token };
 }
@@ -1146,6 +1146,27 @@ suite("Postgres 17 activity qualification repository", () => {
         "2026-08-25T15:05:00.000Z",
       );
       await qualify(participant, "pool-share-missing", "2026-08-25T15:10:00.000Z");
+      for (const state of ["settling", "paused"] as const) {
+        const actor = await seedParticipant(admin, identity, `pool-share-${state}`);
+        await admin.query(
+          "SELECT set_reward_operations_state_v2(revision,$1,'qualification_hold_test') FROM reward_operations_control WHERE singleton",
+          [state],
+        );
+        await qualify(actor, `pool-share-${state}`, "2026-08-25T15:11:00.000Z");
+        expect(
+          (
+            await admin.query(
+              `SELECT (SELECT count(*)::int FROM activity_qualifications WHERE account_id=$1) AS qualifications,
+            (SELECT count(*)::int FROM song_streak_days WHERE account_id=$1) AS streak_days,
+            (SELECT count(*)::int FROM megapot_pool_shares WHERE account_id=$1) AS shares`,
+              [actor.accountId],
+            )
+          ).rows,
+        ).toEqual([{ qualifications: 1, streak_days: 1, shares: 0 }]);
+      }
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'qualification_hold_complete') FROM reward_operations_control WHERE singleton",
+      );
 
       await admin.query("SET session_replication_role = replica");
       try {
@@ -1252,7 +1273,7 @@ suite("Postgres 17 activity qualification repository", () => {
         consumptions: "0",
         decisions: "2",
         eligibility: "2",
-        qualifications: "4",
+        qualifications: "6",
         shares: "2",
       });
 
@@ -1815,7 +1836,7 @@ suite("Postgres 17 activity qualification repository", () => {
         [unfundedLegId],
       );
       await admin.query(
-        "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_financial_qualification_admission') FROM reward_operations_control WHERE singleton",
       );
       const source = sourceFor(identity);
       const service = makeActivityQualificationService(
@@ -1865,6 +1886,33 @@ suite("Postgres 17 activity qualification repository", () => {
         expect(result.session.qualification).not.toBeNull();
       };
 
+      for (const [index, state] of (["settling", "paused"] as const).entries()) {
+        const actor = await seedParticipant(admin, identity, `asset-claim-${state}`);
+        await seedVeryRewardEvidence(
+          admin,
+          actor.accountId,
+          `asset-claim-${state}`,
+          String(index + 4),
+        );
+        await admin.query(
+          "SELECT set_reward_operations_state_v2(revision,$1,'asset_qualification_hold_test') FROM reward_operations_control WHERE singleton",
+          [state],
+        );
+        await qualify(actor, `asset-claim-${state}`, "2026-08-25T14:58:00.000Z");
+        expect(
+          (
+            await admin.query(
+              `SELECT (SELECT count(*)::int FROM activity_qualifications WHERE account_id=$1) AS qualifications,
+            (SELECT count(*)::int FROM reward_ledger_credits WHERE account_id=$1) AS credits,
+            (SELECT count(*)::int FROM song_reward_bundle_claims WHERE account_id=$1) AS claims`,
+              [actor.accountId],
+            )
+          ).rows,
+        ).toEqual([{ qualifications: 1, credits: 0, claims: 0 }]);
+      }
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'asset_qualification_hold_complete') FROM reward_operations_control WHERE singleton",
+      );
       await qualify(identity, "asset-claim-eligible", "2026-08-25T15:00:00.000Z");
 
       const secondPersonaId = `persona-${crypto.randomUUID()}`;
@@ -2044,6 +2092,19 @@ suite("Postgres 17 activity qualification repository", () => {
           [laterLegId],
         ),
       ).rejects.toThrow("asset bonus leg accounting is not exact");
+      await expect(
+        admin.query(
+          `INSERT INTO reward_ledger_credits (
+             credit_id,account_id,payout_persona_id,chain_id,token_address,
+             amount_atomic,source_kind,source_reference,state
+           ) VALUES ('hostile-asset-credit',$1,$2,84532,$3,100,
+             'asset_bonus','hostile-source','credited')`,
+          [identity.accountId, identity.personaId, token],
+        ),
+      ).rejects.toThrow("reward operations paused");
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_accounting_guard') FROM reward_operations_control WHERE singleton",
+      );
       await expect(
         admin.query(
           `INSERT INTO reward_ledger_credits (
