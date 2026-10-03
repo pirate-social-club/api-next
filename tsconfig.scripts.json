@@ -50,6 +50,9 @@
     "scripts/secret-boundary-check.ts",
     "scripts/seed-gates-v2-age18.ts",
     "scripts/verify-api-client-package.ts",
-    "scripts/verify-postgres-test-sentinels.ts"
+    "scripts/verify-postgres-test-sentinels.ts",
+    "scripts/song-video-frame-comparison.ts",
+    "scripts/song-video-frame-policy.ts",
+    "scripts/song-video-frame-comparison.test.ts"
   ]
 }
