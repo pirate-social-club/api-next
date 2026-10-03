@@ -224,7 +224,7 @@ export function createRewardWorkerClient(input: {
       response = await boundedRewardOperation(
         (input.fetch ?? fetch)(`https://api.cloudflare.com/client/v4/${path}`, {
           method: form ? "PATCH" : "GET",
-          body: form,
+          ...(form ? { body: form } : {}),
           signal,
           headers: { authorization: `Bearer ${input.token}` },
         }),
