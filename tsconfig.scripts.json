@@ -53,6 +53,8 @@
     "scripts/verify-postgres-test-sentinels.ts",
     "scripts/song-video-frame-comparison.ts",
     "scripts/song-video-frame-policy.ts",
-    "scripts/song-video-frame-comparison.test.ts"
+    "scripts/song-video-frame-comparison.test.ts",
+    "scripts/video-accepted-analysis-cleanup.ts",
+    "scripts/video-stream-reconciliation-inspect.ts"
   ]
 }
