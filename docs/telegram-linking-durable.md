@@ -11,8 +11,10 @@ This source slice implements linking and consent. It runs no Study session,
 credits no reward, and gives bots no account-change or wallet authority.
 TELEGRAM_LINKING_ENABLED is false in every checked-in HTTP environment. Login
 client registration, credentials, serving schema and actual Telegram/mobile
-acceptance remain prerequisites for activation. No production operation was
-performed for these local tests.
+acceptance remain prerequisites for activation. Runtime-role privileges must
+also be admitted with the schema, before existing maintenance uses migration
+0237; see [the review follow-up](telegram-linking-review-followup.md). No
+production operation was performed for these local tests.
 
 ## Browser flow
 
