@@ -22,6 +22,7 @@ import {
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
+import { refreshVerifiedHnsHosts } from "./hns-ownership-host-refresh.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -98,6 +99,28 @@ const eligibleAuthoritySelect = `
            s.environment
       FROM namespace_ownership_evidence_snapshots AS s
      WHERE s.evidence_ref = e.evidence_ref
+    UNION ALL
+    SELECT s.provider_configuration_kind,
+           s.provider_configuration_ref,
+           s.provider_configuration_version,
+           NULL::text,
+           s.environment
+      FROM community_route_attachment_namespace_sessions AS s
+      JOIN community_route_attachment_ceremony_results AS result
+        ON result.ceremony_intent_id = s.ceremony_intent_id
+       AND result.actor_id = s.actor_id
+       AND result.attachment_intent_id = s.attachment_intent_id
+       AND result.evidence_ref = e.evidence_ref
+       AND result.outcome_status = 'satisfied'
+     WHERE e.origin = 'route_attachment'
+       AND s.ceremony_intent_id = e.route_attachment_ceremony_intent_id
+       AND s.actor_id = e.verified_by_actor_id
+       AND s.route_root_label = e.root_label
+       AND s.requirement_hash = e.requirement_hash
+       AND s.provider_id = e.provider_id
+       AND s.provider_binding_hash = e.provider_binding_hash
+       AND s.provider_configuration_version = e.provider_configuration_version
+       AND s.status = 'completed'
     UNION ALL
     SELECT s.provider_configuration_kind,
            s.provider_configuration_reference,
@@ -771,7 +794,7 @@ function finalizeInTransaction(
     const request = input.reservation.request;
     const lockResult = yield* transaction.execute<Row>({
       label: "hns-active-renewal.finalize-lock",
-      text: `SELECT c.status AS community_status, c.canonical_route_binding_id,
+      text: `SELECT c.status AS community_status, c.canonical_route_binding_id, c.created_by_user_id,
                     b.binding_generation, b.verified_evidence_ref,
                     b.ownership_status, b.route_lifecycle_status,
                     e.expires_at AS evidence_expires_at,
@@ -1085,6 +1108,18 @@ function finalizeInTransaction(
         readonly: false,
       });
       if (routeEvidence.rowCount !== 1) return yield* Effect.fail(storageFailure());
+      const actor = stringValue(locked, "created_by_user_id");
+      if (actor === null) return yield* Effect.fail(storageFailure());
+      yield* refreshVerifiedHnsHosts(transaction, {
+        community_id: request.community_id,
+        route_binding_id: request.route_binding_id,
+        root_label: evidence.root_label,
+        actor_id: actor,
+        expected_binding_generation: request.expected_binding_generation,
+        evidence_ref: evidence.evidence_ref,
+        operation_id: request.active_lease_renewal_id,
+        result_hash: resultHash,
+      }).pipe(Effect.mapError(() => storageFailure()));
     }
     const stored = yield* loadStored(transaction, request.active_lease_renewal_id);
     if (stored === null || stored.terminal === null) return yield* Effect.fail(storageFailure());

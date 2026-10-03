@@ -12,7 +12,6 @@ import {
 } from "@pirate/application";
 import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
-import { refreshRecoveredHnsHosts } from "./hns-owner-recovery-host-refresh.ts";
 import {
   type HnsOwnerRecoveryRow,
   hnsOwnerRecoveryInteger,
@@ -21,6 +20,7 @@ import {
   loadHnsOwnerRecoveryStored,
   oneHnsOwnerRecoveryRow,
 } from "./hns-owner-recovery-repository-shared.ts";
+import { refreshVerifiedHnsHosts } from "./hns-ownership-host-refresh.ts";
 
 const storageFailure = (): HnsOwnerRecoveryPollStorageFailed =>
   new HnsOwnerRecoveryPollStorageFailed();
@@ -567,12 +567,16 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
               retainedBytes,
               input.attempt.fence_token,
             );
-            yield* refreshRecoveredHnsHosts(
-              transaction,
-              session,
-              evidence.evidence_ref,
-              resultHash,
-            );
+            yield* refreshVerifiedHnsHosts(transaction, {
+              community_id: session.community_id,
+              route_binding_id: session.route_binding_id,
+              root_label: session.route.root_label,
+              actor_id: session.actor_id,
+              expected_binding_generation: session.expected_binding_generation,
+              evidence_ref: evidence.evidence_ref,
+              operation_id: session.route_recovery_id,
+              result_hash: resultHash,
+            }).pipe(Effect.mapError(() => storageFailure()));
           } else if (input.evidence !== null && keepsProviderResult) {
             return yield* Effect.fail(storageFailure());
           }
