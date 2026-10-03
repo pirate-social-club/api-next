@@ -72,7 +72,10 @@ suite("Composed never-joined activity and reward acceptance", () => {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await applyPostgresTestBaselineConnection({
+        connectionString: scoped,
+        rewardsRunning: true,
+      });
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('composed-unverified'),('composed-eligible')",
       );
@@ -256,7 +259,10 @@ suite("Composed never-joined activity and reward acceptance", () => {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await applyPostgresTestBaselineConnection({
+        connectionString: scoped,
+        rewardsRunning: true,
+      });
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('composed-karaoke-unverified'),('composed-karaoke-eligible')",
       );
