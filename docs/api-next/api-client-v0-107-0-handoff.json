@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.107.0",
+  "sourceBranch": "fix/hns-owner-recovery-runtime-wiring",
+  "sourceBase": "a247aa653c2d2dd36254b102bae7c73f88bd0092",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "The authenticated community HNS import read exposes optional attachment.binding_generation as a positive safe integer. The server supplies the canonical route binding generation, independently of import-session revision, for existing owner-recovery commands. Older responses remain valid; recovery clients must not infer a generation when it is absent. Existing endpoints are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.107.0.tgz",
+    "sha256": "dedacc1aea6b1a9c6b64e22208c5d4cbd7695f0db923972ebe2d3a9d4695e399"
+  },
+  "validation": {
+    "status": "Local verification in progress",
+    "passed": [],
+    "remaining": [
+      "Repository gates",
+      "PostgreSQL owner-read and recovery acceptance",
+      "Hosted required checks",
+      "Matching Solid integration and deployed recovery acceptance"
+    ],
+    "operationalBoundary": "Isolated source preparation. No live database, runtime, wallet, or credential change."
+  }
+}

@@ -30639,6 +30639,9 @@
                                 "active",
                                 "suspended"
                               ]
+                            },
+                            "binding_generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [

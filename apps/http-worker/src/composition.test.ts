@@ -439,6 +439,15 @@ describe("HTTP production composition", () => {
     });
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
     expect(calls).toBe(0);
+    for (const operation of ["start", "poll"]) {
+      const response = await worker.request(
+        `https://worker.test/communities/community-1/canonical-route/ownership-recovery/${operation}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      );
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
+    expect(calls).toBe(0);
   });
 
   test("keeps the activation current-view gatherer disabled by default and fails closed when enabled incompletely", async () => {
