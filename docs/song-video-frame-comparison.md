@@ -1,6 +1,8 @@
 # Song-video frame comparison gate
 
-Policy revision 1 is defined before the watched production canary. The gate
+Policy revision 1 is a one-time qualification of the exact CloudConvert recipe
+and independent decoder, defined before the watched production canary.
+Ordinary posting does not run this workstation decoder per video. The gate
 compares every decoded frame of an accepted CloudConvert master with its own
 sealed video source, independently of the audio verifier. A passing staging
 verdict qualifies the implementation on real accepted output. The production
@@ -72,6 +74,39 @@ the stated tolerance. Other production content, device and safety gates remain.
 SSIM and PSNR statistics follow the [FFmpeg filter documentation](https://ffmpeg.org/ffmpeg-filters.html#ssim)
 and [PSNR documentation](https://ffmpeg.org/ffmpeg-filters.html#psnr). These
 sources define the metrics, not this project's numerical acceptance thresholds.
+
+## Measured localized-alteration limitation
+
+The qualification also measured opaque magenta corner squares against one
+exact accepted-master frame, using lossless raw yuv420p so a second H.264
+encode cannot blur the experiment. The frame is zero-based 225, at 7.5 seconds,
+1080 by 1920 pixels, from the October 2 backend completion canary. Its
+unaltered SSIM All is 0.988207 and PSNR All is 48.94 dB, exactly matching the
+same frame in the full comparison. The original selected source stays fixed.
+
+| Corner square | Frame area altered | SSIM All | PSNR All | Unchanged policy |
+| --- | ---: | ---: | ---: | --- |
+| 16 by 16 | 0.0123457% | 0.988123 | 46.31 dB | Pass |
+| 32 by 32 | 0.0493827% | 0.987957 | 42.60 dB | Pass |
+| 64 by 64 | 0.1975309% | 0.987412 | 37.41 dB | Pass |
+| 128 by 128 | 0.7901235% | 0.985519 | 31.70 dB | Pass |
+
+All plane limits also pass. A two-pixel square passes too. These are measured
+accepted alterations, not evidence that the picture is unaltered. No universal
+size boundary is inferred: contrast, location, source texture and color all
+matter. The 64-pixel control is 4,096 altered luma pixels; the 128-pixel control
+is 16,384. The numerical floors remain unchanged. Raw statistics and agreement
+with the published frame-policy function are retained in the staging
+qualification package's `localized-alteration-controls/` directory.
+
+The release coordinator selected this user-delegated scope as one-time
+recipe/decoder qualification, recorded in production task commit
+`4915ba614fb6266530e54b73ee04812b39103016`. It does not replace provider trust
+with cryptographic frame identity or add a decoder to every ordinary user's
+video path. The production
+record must preserve this residual trust when linking the passing verdict.
+Requalify when the exact recipe or decoder changes. These limitation controls
+are evidence, not a new production prerequisite.
 
 ## Execution and verdict
 

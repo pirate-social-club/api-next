@@ -240,6 +240,36 @@ suite("real decoder frame comparison", () => {
     expect(result.verdict.passed).toBe(false);
     expect(result.verdict.failedFrames).toContain(31);
   }, 30_000);
+  test("records that a tiny localized alteration can pass the lossy tolerance", async () => {
+    const path = join(directory, "tiny-corner.mp4");
+    await run([
+      "-i",
+      source,
+      "-vf",
+      "drawbox=x=0:y=0:w=2:h=2:color=magenta:t=fill:enable='eq(n,30)'",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "23",
+      "-bf",
+      "0",
+      "-video_track_timescale",
+      "48000",
+      "-movie_timescale",
+      "48000",
+      path,
+    ]);
+    const result = await compare(
+      { ...manifest, master: await identity(path, "tiny-corner") },
+      path,
+    );
+    expect(result.comparedFrames).toBe(90);
+    expect(result.verdict.passed).toBe(true);
+    // This is a recorded residual-trust limit. Tightening the floors later
+    // requires requalification rather than silently relabeling this result.
+  }, 30_000);
   test("rejects a mirrored picture with a correct timeline", async () => {
     const path = join(directory, "mirrored.mp4");
     await run([
