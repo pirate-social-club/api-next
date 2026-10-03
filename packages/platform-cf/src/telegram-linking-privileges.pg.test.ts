@@ -178,6 +178,27 @@ suite("Telegram linking runtime privileges", () => {
       await admin.query(grant.replaceAll("api_next_app", runtimeRole));
       await admin.query(grant.replaceAll("api_next_app", runtimeRole)); // Idempotent operator replay.
       expect(assertTelegramActivationPrivileges(await privilegeFacts())).toBe(runtimeRole);
+      // Effective inherited authority must refuse even after direct grants are repaired.
+      await admin.query(`GRANT DELETE ON telegram_bot_grants TO ${readerRole}`);
+      await admin.query(`GRANT TRUNCATE ON telegram_study_conversations TO ${readerRole}`);
+      await admin.query(`GRANT ${readerRole} TO ${runtimeRole}`);
+      const inherited = await privilegeFacts();
+      expect(inherited.find((row) => row.table_name === "telegram_bot_grants")?.can_delete).toBe(
+        true,
+      );
+      expect(
+        inherited.find((row) => row.table_name === "telegram_study_conversations")?.can_truncate,
+      ).toBe(true);
+      expect(() => assertTelegramActivationPrivileges(inherited)).toThrow();
+      await admin.query(grant.replaceAll("api_next_app", runtimeRole));
+      const stillInherited = await privilegeFacts();
+      expect(() => assertTelegramActivationPrivileges(stillInherited)).toThrow();
+      await admin.query(`REVOKE DELETE ON telegram_bot_grants FROM ${readerRole}`);
+      const inheritedTruncate = await privilegeFacts();
+      expect(() => assertTelegramActivationPrivileges(inheritedTruncate)).toThrow();
+      await admin.query(`REVOKE TRUNCATE ON telegram_study_conversations FROM ${readerRole}`);
+      await admin.query(`REVOKE ${readerRole} FROM ${runtimeRole}`);
+      expect(assertTelegramActivationPrivileges(await privilegeFacts())).toBe(runtimeRole);
       for (const [table, permission] of [
         ["telegram_bot_grants", "DELETE"],
         ["telegram_study_conversations", "DELETE"],
