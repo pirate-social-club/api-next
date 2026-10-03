@@ -25,6 +25,8 @@ export interface TelegramOidcIdentity {
 }
 
 export interface TelegramOidcClient {
+  /** Verify key availability before consuming a one-time authorization code. */
+  readonly prepare: () => Effect.Effect<void, TelegramOidcRejected>;
   readonly authorize: () => Effect.Effect<TelegramOidcAuthorization, TelegramOidcRejected>;
   /** The caller must atomically claim its browser-bound transaction first. */
   readonly exchange: (

@@ -141,10 +141,10 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       telegramUserId: "987654321",
     });
     expect(f.calls.map((call) => call.url)).toEqual([
-      "https://oauth.telegram.org/token",
       "https://oauth.telegram.org/.well-known/jwks.json",
+      "https://oauth.telegram.org/token",
     ]);
-    const request = f.calls[0]?.init;
+    const request = f.calls.find((call) => call.url.endsWith("/token"))?.init;
     expect(request?.redirect).toBe("manual");
     expect(request?.headers).toEqual({
       "content-type": "application/x-www-form-urlencoded",
@@ -200,7 +200,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     expect(calls).not.toContain("https://owner.test/jwks");
   });
 
-  test("rejects symmetric algorithms before fetching signing keys", async () => {
+  test("rejects symmetric algorithms after key preflight without trusting token keys", async () => {
     const token = await new SignJWT(payload())
       .setProtectedHeader({ alg: "HS256", kid: "first" })
       .sign(new Uint8Array(32));
@@ -210,11 +210,14 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       nowMs: () => NOW * 1000,
       fetcher: async (url) => {
         calls.push(url);
-        return Response.json({ id_token: token });
+        return Response.json(url.endsWith("/token") ? { id_token: token } : { keys: [firstJwk] });
       },
     });
     expect((await failure(client)).reason).toBe("invalid_proof");
-    expect(calls).toEqual(["https://oauth.telegram.org/token"]);
+    expect(calls).toEqual([
+      "https://oauth.telegram.org/.well-known/jwks.json",
+      "https://oauth.telegram.org/token",
+    ]);
   });
 
   test("bounds key refresh while permitting rotation after cooldown", async () => {
@@ -381,6 +384,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       expect((await failure(f.client)).reason).toBe("invalid_proof");
       expect(f.keyFetches()).toBe(2);
     } finally {
+      f.useToken(await signed());
       f.release();
       expect(await refreshing).toEqual({ telegramUserId: "987654321" });
     }
@@ -465,3 +469,33 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     },
   );
 });
+
+test("signing-key preflight failure never spends the authorization code", async () => {
+  const calls: string[] = [];
+  const client = makeTelegramOidcClient({
+    ...CONFIG,
+    fetcher: async (url) => {
+      calls.push(url);
+      return new Response(null, { status: 503 });
+    },
+  });
+  expect((await failure(client)).reason).toBe("provider_unavailable");
+  expect(calls).toEqual(["https://oauth.telegram.org/.well-known/jwks.json"]);
+  expect((await failure(client)).reason).toBe("provider_unavailable");
+  expect(calls).toHaveLength(1);
+});
+
+for (const body of [{}, { keys: "invalid" }]) {
+  test(`malformed signing-key availability remains retryable: ${JSON.stringify(body)}`, async () => {
+    const calls: string[] = [];
+    const client = makeTelegramOidcClient({
+      ...CONFIG,
+      fetcher: async (url) => {
+        calls.push(url);
+        return Response.json(body);
+      },
+    });
+    expect((await failure(client)).reason).toBe("provider_unavailable");
+    expect(calls).toEqual(["https://oauth.telegram.org/.well-known/jwks.json"]);
+  });
+}

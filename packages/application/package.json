@@ -115,6 +115,7 @@
     "./use-cases/avatars": "./src/use-cases/avatars.ts",
     "./use-cases/song-library": "./src/use-cases/song-library.ts",
     "./use-cases/video-outcomes": "./src/use-cases/video-outcomes.ts",
-    "./telegram-oidc": "./src/telegram-oidc.ts"
+    "./telegram-oidc": "./src/telegram-oidc.ts",
+    "./telegram-linking": "./src/telegram-linking.ts"
   }
 }

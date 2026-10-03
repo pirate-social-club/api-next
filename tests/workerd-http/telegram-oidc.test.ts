@@ -65,16 +65,14 @@ describe("Telegram login evidence in workerd", () => {
       }
       const calls = await (await fetch("https://telegram-oidc-fixture.test/calls")).json();
       expect(calls).toEqual([
-        { url: "https://oauth.telegram.org/token", method: "POST", authorization: true },
-        ...(redirectStage === "token"
+        {
+          url: "https://oauth.telegram.org/.well-known/jwks.json",
+          method: "GET",
+          authorization: false,
+        },
+        ...(redirectStage === "jwks"
           ? []
-          : [
-              {
-                url: "https://oauth.telegram.org/.well-known/jwks.json",
-                method: "GET",
-                authorization: false,
-              },
-            ]),
+          : [{ url: "https://oauth.telegram.org/token", method: "POST", authorization: true }]),
       ]);
     },
   );

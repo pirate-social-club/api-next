@@ -117,48 +117,60 @@ export function makeTelegramOidcClient(options: TelegramOidcOptions): TelegramOi
     | undefined;
   let nextRefreshAt = 0;
 
+  const load = async (signal: AbortSignal) => {
+    nextRefreshAt = now() + REFRESH_COOLDOWN_MS;
+    // No shared in-flight I/O promise: cached public keys may cross requests,
+    // while every fetch belongs to the request that initiated it.
+    const body = await telegramOidcJson(fetcher, JWKS_URL, {}, signal, timeoutMs, 64 * 1024);
+    const decoded = Schema.decodeUnknownOption(Keys)(body);
+    if (Option.isNone(decoded)) throw new TelegramOidcRejected({ reason: "provider_unavailable" });
+    const parsed = decoded.value;
+    const keys = parsed.keys.flatMap((entry) => {
+      const result = Schema.decodeUnknownOption(Key)(entry);
+      if (Option.isNone(result)) return [];
+      const { alg, use, key_ops, ...key } = result.value;
+      return [
+        {
+          ...key,
+          ...(alg ? { alg } : {}),
+          ...(use ? { use } : {}),
+          ...(key_ops ? { key_ops: [...key_ops] } : {}),
+        },
+      ];
+    });
+    if (keys.length === 0 || new Set(keys.map((key) => key.kid)).size !== keys.length)
+      throw new TelegramOidcRejected({ reason: "provider_unavailable" });
+    cache = {
+      resolve: createLocalJWKSet({ keys }),
+      ids: keys.map((key) => key.kid),
+      expiresAt: now() + CACHE_TTL_MS,
+    };
+  };
+  const prepare = async (signal: AbortSignal) => {
+    if (cache && cache.expiresAt > now()) return;
+    if (now() < nextRefreshAt) {
+      if (cache) return;
+      throw new TelegramOidcRejected({ reason: "provider_unavailable" });
+    }
+    await load(signal);
+  };
   const resolve =
     (signal: AbortSignal): JWTVerifyGetKey =>
     async (header, token) => {
       const id = Schema.decodeUnknownSync(KeyId)(header.kid);
-      const current = now();
-      if (cache && cache.expiresAt > current && cache.ids.includes(id))
+      if (cache && cache.expiresAt > now() && cache.ids.includes(id))
         return cache.resolve(header, token);
-      if (current < nextRefreshAt) {
-        // A refresh belongs to another request. Held known keys still verify
-        // signatures during cooldown; a cache miss is temporary unavailability.
+      if (now() < nextRefreshAt) {
         if (cache?.ids.includes(id)) return cache.resolve(header, token);
         throw new TelegramOidcRejected({ reason: "provider_unavailable" });
       }
-      nextRefreshAt = current + REFRESH_COOLDOWN_MS;
-      // No shared in-flight I/O promise: cached public keys may cross requests,
-      // while every fetch belongs to the request that initiated it.
-      const body = await telegramOidcJson(fetcher, JWKS_URL, {}, signal, timeoutMs, 64 * 1024);
-      const parsed = Schema.decodeUnknownSync(Keys)(body);
-      const keys = parsed.keys.flatMap((entry) => {
-        const result = Schema.decodeUnknownOption(Key)(entry);
-        if (Option.isNone(result)) return [];
-        const { alg, use, key_ops, ...key } = result.value;
-        return [
-          {
-            ...key,
-            ...(alg ? { alg } : {}),
-            ...(use ? { use } : {}),
-            ...(key_ops ? { key_ops: [...key_ops] } : {}),
-          },
-        ];
-      });
-      if (keys.length === 0 || new Set(keys.map((key) => key.kid)).size !== keys.length)
-        throw new TelegramOidcRejected({ reason: "provider_unavailable" });
-      cache = {
-        resolve: createLocalJWKSet({ keys }),
-        ids: keys.map((key) => key.kid),
-        expiresAt: now() + CACHE_TTL_MS,
-      };
+      await load(signal);
+      if (!cache?.ids.includes(id)) throw new TelegramOidcRejected({ reason: "invalid_proof" });
       return cache.resolve(header, token);
     };
 
   return {
+    prepare: () => Effect.tryPromise({ try: prepare, catch: proofRejected }),
     authorize: () =>
       Effect.tryPromise({
         try: async () => {
@@ -195,6 +207,7 @@ export function makeTelegramOidcClient(options: TelegramOidcOptions): TelegramOi
           } catch {
             throw new TelegramOidcRejected({ reason: "invalid_input" });
           }
+          await prepare(signal);
           const body = await telegramOidcJson(
             fetcher,
             `${ISSUER}/token`,
