@@ -15,6 +15,7 @@
       "class_name": "DataRegistrationWorkflow"
     }
   ],
+  "kv_namespaces": [{ "binding": "RECOVERY_STATE", "id": "00000000000000000000000000000001" }],
   "vars": {
     "MEDIA_PROCESSING_ENABLED": "true",
     "DATA_REGISTRATION_ENABLED": "false"

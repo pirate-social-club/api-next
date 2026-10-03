@@ -58,6 +58,7 @@ import {
   makeSpacesRegistryTransport,
   type SpacesRegistryTransportOptions,
 } from "./spaces-registry-transport.ts";
+import { telegramLinkBrowser } from "./telegram-linking-browser.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -69,6 +70,8 @@ export interface Principal {
 
 /** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
+  /** Trusted session digest and private binding, only for Telegram linking routes. */
+  readonly telegramLinkBrowser?: { readonly sessionHash: string; readonly binding?: string };
   readonly body: unknown;
   /** Present only when the endpoint declares a headers schema. */
   readonly headers?: unknown;
@@ -267,7 +270,11 @@ type ParsedCookies = {
   readonly invalidNames: ReadonlySet<string>;
 };
 
-const SENSITIVE_COOKIE_NAMES = new Set([SESSION_COOKIE_NAME, CSRF_COOKIE_NAME]);
+const SENSITIVE_COOKIE_NAMES = new Set([
+  SESSION_COOKIE_NAME,
+  CSRF_COOKIE_NAME,
+  "__Host-pirate_telegram_link",
+]);
 const hasControlCharacter = (value: string): boolean =>
   [...value].some((character) => {
     const code = character.charCodeAt(0);
@@ -1021,8 +1028,25 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           if (compatibilityResponse !== undefined) return compatibilityResponse;
           const input = await decodeInput(binding.endpoint, context, principal);
           const edgeClientIp = context.req.header("CF-Connecting-IP");
+          const linkBrowser =
+            isBrowserSessionOnly(binding.endpoint) &&
+            binding.endpoint.path.startsWith("/telegram/link/") &&
+            sessionCookie
+              ? await telegramLinkBrowser(
+                  sessionCookie,
+                  cookies,
+                  parsedCookies.duplicateNames,
+                  parsedCookies.invalidNames,
+                  ![
+                    "GetMyTelegramLinks",
+                    "RevokeTelegramLinkGrant",
+                    "UnlinkTelegramAccount",
+                  ].includes(binding.name),
+                )
+              : undefined;
           const requestWithEdgeIp = {
             ...input,
+            ...(linkBrowser === undefined ? {} : { telegramLinkBrowser: linkBrowser }),
             signal: context.req.raw.signal,
             ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
           };

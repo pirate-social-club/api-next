@@ -32,6 +32,7 @@ import {
 } from "./data/metadata-snapshot.ts";
 import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeMediaProcessingStore } from "./media-processing-store.ts";
+import { songModerationFixtureHash } from "./media-song-interpreter.pg-fixture.ts";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -261,7 +262,7 @@ async function seedPublishedSong(
     contentModeration: {
       decision: "allow",
       resultingContentRating: "general",
-      inputSha256: hash("b"),
+      inputSha256: songModerationFixtureHash("DATA fixture"),
       matchedCategories: [],
       policyRevision: "moderation-policy-v1",
       platformPolicyRevision: "platform-policy-v1",

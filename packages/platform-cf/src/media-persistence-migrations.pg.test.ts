@@ -13,6 +13,7 @@ import type {
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
+import { songModerationFixtureHash } from "./media-song-interpreter.pg-fixture.ts";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { backfillActivePersonaWalletFixtures } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -81,7 +82,7 @@ const analysis: TrustedSongAnalysis = {
   contentModeration: {
     decision: "allow",
     resultingContentRating: "general",
-    inputSha256: "b".repeat(64),
+    inputSha256: songModerationFixtureHash("Fixture song"),
     matchedCategories: [],
     policyRevision: "moderation_policy_1",
     platformPolicyRevision: "platform_policy_1",

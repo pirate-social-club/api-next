@@ -4,6 +4,7 @@ import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } fr
 import { endpoint } from "./endpoint.ts";
 import { CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
+import { telegramLinkingRegistry } from "./telegram-linking.ts";
 
 export const Health = endpoint({
   method: "GET",
@@ -141,6 +142,7 @@ import {
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
+import { ClaimVideoOutcome } from "./video-outcomes.ts";
 import {
   CreateWalletSponsoredSend,
   GetWalletSponsoredSend,
@@ -149,6 +151,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...telegramLinkingRegistry,
   ReserveAvatarUpload,
   FinalizeAvatarUpload,
   GetAvatar,
@@ -267,6 +270,7 @@ export const registry = {
   GetPublicPostSitemap,
   ListPostComments,
   CreateSongPlaybackAccess,
+  ClaimVideoOutcome,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

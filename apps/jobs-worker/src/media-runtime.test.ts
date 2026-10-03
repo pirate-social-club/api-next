@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { sanitizeAlignmentRecoveryLookupFailure } from "../../../packages/application/src/media/alignment-recovery-diagnostics.ts";
 import {
   isolateMediaMaintenanceAction,
   isolateMediaMaintenanceDispatch,
@@ -7,6 +8,43 @@ import {
 } from "./media-runtime.ts";
 
 describe("media scheduled maintenance", () => {
+  test("retains the sanitized terminal recovery reason in the real scheduled logger", () => {
+    const logs: string[] = [];
+    const original = console.error;
+    const diagnostic = {
+      outcome: "alignment_recovery_lookup_failed",
+      reason: sanitizeAlignmentRecoveryLookupFailure(
+        {
+          _tag: "ControlPlaneStatementFailed",
+          sqlState: "40P01",
+          message: "private database row",
+          cause: "credentials",
+        },
+        "media-processing.alignment-recovery-authorization",
+      ),
+    } as const;
+    console.error = (message) => logs.push(String(message));
+    try {
+      observeMediaWorkflowRecovery({
+        event: "workflow_terminal_recovery_failed",
+        operationId: "operation",
+        submissionId: "submission",
+        workflowRevision: 3,
+        recoveryFailure: diagnostic,
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(logs.map((value) => JSON.parse(value))).toEqual([
+      expect.objectContaining({
+        operation_id: "operation",
+        workflow_revision: 3,
+        recovery_failure: diagnostic,
+      }),
+    ]);
+    expect(logs.join()).not.toContain("private");
+    expect(logs.join()).not.toContain("credentials");
+  });
   test("logs only allowlisted recovery failure fields", () => {
     const logs: string[] = [];
     const original = console.error;

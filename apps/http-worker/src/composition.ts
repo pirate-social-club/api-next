@@ -208,6 +208,10 @@ import { makeStudyProfileCoverageStore } from "@pirate/platform-cf/study-profile
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
+import {
+  makeTelegramLinkServices,
+  type TelegramLinkBindings,
+} from "@pirate/platform-cf/telegram-linking-runtime";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
   makeControlPlaneVerificationCompletionStore,
@@ -228,6 +232,7 @@ import {
   makeR2VideoMultipartGateway,
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
+import { makeControlPlaneVideoOutcomeStore } from "@pirate/platform-cf/video-outcome-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
 import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
@@ -303,15 +308,18 @@ import {
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { makeTelegramHandlers } from "./telegram-handlers.ts";
+import { makeTelegramLinkingHandlers } from "./telegram-linking-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+import { makeVideoOutcomeHandlers } from "./video-outcome-handlers.ts";
 import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
     SongPlaybackBindings,
     TelegramBindings,
+    TelegramLinkBindings,
     SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
@@ -903,7 +911,11 @@ export async function createProductionHttpWorker(
     controlPlane,
     config.API_NEXT_ENV,
   );
-  const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
+  const telegramServices = await makeTelegramServices(bindings, controlPlane);
+  const telegramHandlers = makeTelegramHandlers(telegramServices);
+  const telegramLinkingHandlers = makeTelegramLinkingHandlers(
+    makeTelegramLinkServices(bindings, controlPlane, telegramServices),
+  );
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
@@ -1787,6 +1799,7 @@ export async function createProductionHttpWorker(
       ...productHandlers,
       ListPostComments: makeCommentThreadHandler(makeCommentThreadStore(controlPlane)),
       ...telegramHandlers,
+      ...telegramLinkingHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
       }),
@@ -1815,6 +1828,7 @@ export async function createProductionHttpWorker(
       ...songRewardOfferHandlers,
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
+      ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),
       ...mediaHandlers,
       ...videoAccessHandlers,
       ...songPlaybackHandlers,
