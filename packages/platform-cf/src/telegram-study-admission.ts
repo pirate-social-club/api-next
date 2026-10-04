@@ -1,5 +1,9 @@
 import { type ControlPlaneTransaction, StudyV2CommandRejected } from "@pirate/application";
-import type { TelegramStudyGrant, TelegramStudyLease } from "@pirate/application/telegram-study";
+import {
+  type TelegramStudyGrant,
+  type TelegramStudyLease,
+  TelegramStudyLeaseExpired,
+} from "@pirate/application/telegram-study";
 import { Effect } from "effect";
 import type { StudyV2Admission } from "./study-v2-repository.ts";
 import { TELEGRAM_STUDY_READY_SQL } from "./telegram-study-store.ts";
@@ -40,10 +44,10 @@ export function telegramStudyAdmission(
           values: [grant.accountId],
           readonly: false,
         });
-        const authority = yield* transaction.execute({
+        const authority = yield* transaction.execute<{ readonly lease_valid: boolean }>({
           label: "telegram-study.acceptance",
           text: `
-        SELECT g.revision FROM telegram_bot_grants g
+        SELECT g.revision, chat.lease_until>clock_timestamp() AS lease_valid FROM telegram_bot_grants g
         JOIN telegram_account_associations a USING(telegram_user_id)
         JOIN users u ON u.user_id=g.account_id
         JOIN communities c USING(community_id)
@@ -59,7 +63,7 @@ export function telegramStudyAdmission(
           AND b.account_id=g.account_id AND b.community_id=g.community_id
           AND i.record->>'status'='ready' AND i.record->>'botId'=g.bot_id
           AND i.record->>'botEpoch'=$7 AND chat.bot_epoch=$7
-          AND chat.lease_token=$8 AND chat.lease_until>clock_timestamp()
+          AND chat.lease_token=$8
           AND EXISTS (SELECT 1 FROM community_telegram_private_chats started
             WHERE started.community_id=$1 AND started.bot_epoch=$7 AND started.telegram_user_id=$3)
         FOR SHARE OF g,a,p,b,chat`,
@@ -76,6 +80,7 @@ export function telegramStudyAdmission(
           readonly: false,
         });
         if (authority.rows.length !== 1) return yield* refuse();
+        if (authority.rows[0]?.lease_valid !== true) return yield* new TelegramStudyLeaseExpired();
         if (input.personaId !== undefined) {
           if (!input.postId || !postIds.includes(input.postId)) return yield* refuse();
           const ready = yield* transaction.execute({

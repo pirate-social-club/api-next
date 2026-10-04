@@ -28,7 +28,7 @@ export interface TelegramBindings extends TelegramPracticeBindings {
   };
 }
 
-export async function makeTelegramServices(
+async function buildTelegramServices(
   bindings: TelegramBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): Promise<TelegramServices | null> {
@@ -95,4 +95,16 @@ export async function consumeTelegramWork(services: TelegramServices, body: unkn
   if (body.kind === "inbox") await processTelegramInbox(services, body.id);
   else if (body.kind === "delivery") await processTelegramDelivery(services, body.id);
   else throw new Error("Invalid Telegram work item");
+}
+
+export async function makeTelegramServices(
+  bindings: TelegramBindings,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): Promise<TelegramServices | null> {
+  try {
+    return await buildTelegramServices(bindings, runtime);
+  } catch {
+    console.error("Telegram chat setup unavailable; chat operations disabled");
+    return null;
+  }
 }

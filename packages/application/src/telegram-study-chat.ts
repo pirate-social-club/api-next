@@ -1,14 +1,15 @@
 import type { StudySessionV2 } from "@pirate/contracts";
 import { boundedTelegramText } from "@pirate/domain/telegram";
 import { Schema } from "effect";
-import { StudyV2CommandRejected } from "./study-v2-service.ts";
+import { StudyV2CommandRejected, StudyV2StoreFailed } from "./study-v2-service.ts";
 import { telegramBotCredentials } from "./telegram/delivery.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./telegram/types.ts";
 import { TelegramFailure } from "./telegram/types.ts";
-import type {
-  TelegramStudyReply,
-  TelegramStudyServices,
-  TelegramStudyState,
+import {
+  TelegramStudyLeaseExpired,
+  type TelegramStudyReply,
+  type TelegramStudyServices,
+  type TelegramStudyState,
 } from "./telegram-study.ts";
 
 const Id = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }));
@@ -18,9 +19,11 @@ const Incoming = Schema.Struct({
   voice: Schema.optional(
     Schema.Struct({
       file_id: Schema.String.check(Schema.isMaxLength(512)),
-      duration: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 120 })),
+      duration: Schema.Int.check(
+        Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
       file_size: Schema.optional(
-        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 5242880 })),
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
       ),
     }),
   ),
@@ -53,9 +56,11 @@ export async function handleTelegramStudyChat(
   };
   const lease = await study.store.claim(sender, services.vault.token());
   if (!lease) throw new TelegramFailure({ reason: "unavailable" });
+  // Keep the acquired lease narrowed across asynchronous closures.
+  let activeLease = lease;
   let state: TelegramStudyState = lease.state;
   const persist = async () => {
-    await study.store.save(lease, state);
+    await study.store.save(activeLease, state);
   };
   const observe = (
     stage: TelegramStudyState["observations"][number]["stage"],
@@ -159,8 +164,14 @@ export async function handleTelegramStudyChat(
       await respond(text("This lesson has ended. Use /study to start again."));
       return;
     }
-    if (state.pendingAnswer !== null && state.pendingAnswer.inboxId !== inbox.id)
-      throw new TelegramFailure({ reason: "unavailable" });
+    if (state.pendingAnswer !== null && state.pendingAnswer.inboxId !== inbox.id) {
+      await respond(
+        text(
+          "Your previous voice answer has not finished. Please wait, or use /cancel before starting another lesson. No new answer was submitted.",
+        ),
+      );
+      return;
+    }
     if (command === "/study" || command === "/songs") {
       observe("selection");
       const songs = await study.store.catalogue(sender.communityId);
@@ -208,6 +219,7 @@ export async function handleTelegramStudyChat(
     }
     const grant = await study.grant(sender);
     if (!grant) {
+      state = { ...state, pendingAnswer: null, turn: null };
       if (state.selectedPostId !== null && services.now() < state.selectedUntil) {
         observe("linking");
         const url = state.navigationUrl ?? (await study.navigation(sender, state.selectedPostId));
@@ -246,7 +258,7 @@ export async function handleTelegramStudyChat(
         return;
       }
       const session = await study.start(
-        lease,
+        activeLease,
         grant,
         state.selectedPostId,
         `telegram:${inbox.id}:start`,
@@ -266,7 +278,7 @@ export async function handleTelegramStudyChat(
     }
     if (command === "/resume" && state.sessionId !== null) {
       await showSession(
-        await study.session(lease, grant, state.sessionId),
+        await study.session(activeLease, grant, state.sessionId),
         "Resuming saved practice.",
         grant.personaLabel,
       );
@@ -277,7 +289,14 @@ export async function handleTelegramStudyChat(
       state.turn !== null &&
       (message?.voice !== undefined || state.pendingAnswer?.inboxId === inbox.id)
     ) {
-      if (state.pendingAnswer === null) {
+      const oversized = () =>
+        respond(
+          text(
+            "Keep voice notes to a minute or less and at most 512 KiB. No attempt was used. Reply to the current line with a shorter note, or use /resume.",
+          ),
+        );
+      let pending = state.pendingAnswer;
+      if (pending === null) {
         if (
           !message?.voice ||
           message.reply_to_message?.message_id !==
@@ -290,24 +309,39 @@ export async function handleTelegramStudyChat(
           );
           return;
         }
+        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
+          await oversized();
+          return;
+        }
+        pending = {
+          inboxId: inbox.id,
+          sessionId: state.sessionId,
+          itemId: state.turn.itemId,
+          attemptNumber: state.turn.attemptNumber,
+          fileId: message.voice.file_id,
+          durationMs: message.voice.duration * 1000,
+        };
+      }
+      if (pending.durationMs > 60000) {
+        state = { ...state, pendingAnswer: null };
+        await oversized();
+        return;
+      }
+      const bot = await telegramBotCredentials(services, integration);
+      const audio = await services.api.downloadVoice(bot.token, pending.fileId);
+      if (audio.byteLength < 1 || audio.byteLength > 524288) {
+        state = { ...state, pendingAnswer: null };
+        await oversized();
+        return;
+      }
+      if (state.pendingAnswer === null) {
         state = {
           ...state,
-          pendingAnswer: {
-            inboxId: inbox.id,
-            sessionId: state.sessionId,
-            itemId: state.turn.itemId,
-            attemptNumber: state.turn.attemptNumber,
-            fileId: message.voice.file_id,
-            durationMs: message.voice.duration * 1000,
-          },
+          pendingAnswer: pending,
         };
         await persist();
       }
-      const pending = state.pendingAnswer;
-      if (!pending) throw new TelegramFailure({ reason: "unavailable" });
-      const bot = await telegramBotCredentials(services, integration);
-      const audio = await services.api.downloadVoice(bot.token, pending.fileId);
-      const result = await study.answer(lease, grant, {
+      const result = await study.answer(activeLease, grant, {
         sessionId: pending.sessionId,
         itemId: pending.itemId,
         attemptNumber: pending.attemptNumber,
@@ -362,23 +396,59 @@ export async function handleTelegramStudyChat(
       ),
     );
   } catch (error) {
-    if (error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable") {
+    if (
+      (error instanceof StudyV2CommandRejected && error.reason !== "command-in-flight") ||
+      (error instanceof StudyV2StoreFailed && error.reason === "constraint")
+    ) {
+      // Recovery also needs a fresh lease when a slow provider exhausted the old one.
+      // Never overwrite state acquired by another handler in the release/claim gap.
+      const priorInboxId = state.lastInboxId;
+      await study.store.release(activeLease);
+      const recoveredLease = await study.store.claim(sender, services.vault.token());
+      if (!recoveredLease) throw new TelegramFailure({ reason: "unavailable" });
+      activeLease = recoveredLease;
+      state = recoveredLease.state;
+      if (
+        state.lastInboxId !== priorInboxId ||
+        (state.pendingAnswer !== null && state.pendingAnswer.inboxId !== inbox.id)
+      )
+        throw new TelegramFailure({ reason: "unavailable" });
       state = { ...state, pendingAnswer: null };
       observe("unavailable");
+      await persist();
+      const currentGrant = await study.grant(sender);
+      if (currentGrant && state.sessionId && state.grantRevision === currentGrant.revision) {
+        let current: StudySessionV2 | null = null;
+        try {
+          current = await study.session(activeLease, currentGrant, state.sessionId);
+        } catch (reloadError) {
+          if (
+            !(reloadError instanceof StudyV2CommandRejected) ||
+            reloadError.reason !== "not-found"
+          )
+            throw reloadError;
+        }
+        if (current) {
+          await showSession(
+            current,
+            error instanceof TelegramStudyLeaseExpired
+              ? "Voice grading took too long. Your link does not need to be changed. Resuming current practice."
+              : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
+                ? "Voice grading is temporarily unavailable. No attempt was used. Resuming current practice."
+                : "That answer could not be accepted. Resuming current practice.",
+            currentGrant.personaLabel,
+          );
+          return;
+        }
+      }
+      state = { ...state, turn: null, sessionId: null };
       await respond(
         text(
-          "Voice grading is temporarily unavailable. No attempt was used. Use /resume and send a new voice note replying to the line.",
-        ),
-      );
-    } else if (error instanceof StudyV2CommandRejected && error.reason === "not-found") {
-      state = { ...state, turn: null, pendingAnswer: null };
-      await respond(
-        text(
-          "This lesson or its authorization is unavailable. Check your link and persona on Pirate, then use /resume or /study.",
+          "This lesson or its authorization is unavailable. Check your link and persona on Pirate, then use /study.",
         ),
       );
     } else throw error;
   } finally {
-    await study.store.release(lease);
+    await study.store.release(activeLease);
   }
 }

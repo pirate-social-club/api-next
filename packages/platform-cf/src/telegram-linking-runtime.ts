@@ -12,7 +12,7 @@ export interface TelegramLinkBindings {
   readonly TELEGRAM_LOGIN_CLIENT_SECRET?: string;
   readonly TELEGRAM_LOGIN_REDIRECT_URI?: string;
 }
-export async function makeTelegramLinkServices(
+async function buildTelegramLinkServices(
   bindings: TelegramLinkBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   telegram: TelegramServices | null,
@@ -35,4 +35,17 @@ export async function makeTelegramLinkServices(
       redirectUri: bindings.TELEGRAM_LOGIN_REDIRECT_URI,
     }),
   };
+}
+
+export async function makeTelegramLinkServices(
+  bindings: TelegramLinkBindings,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  telegram: TelegramServices | null,
+): Promise<TelegramLinkServices | null> {
+  try {
+    return await buildTelegramLinkServices(bindings, runtime, telegram);
+  } catch {
+    console.error("Telegram linking setup unavailable; linking operations disabled");
+    return null;
+  }
 }
