@@ -3,27 +3,29 @@ import type { TelegramServices } from "@pirate/application/telegram";
 import type { TelegramLinkServices } from "@pirate/application/telegram-linking";
 import type { Layer } from "effect";
 import { assertTelegramRuntimePrivileges } from "./telegram-activation-privileges.ts";
+import {
+  decodeTelegramConfiguration,
+  decodeTelegramCredentials,
+  type TelegramConfigurationBindings,
+} from "./telegram-configuration.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { makeTelegramOidcClient } from "./telegram-oidc.ts";
 import { logTelegramSetupFailure } from "./telegram-setup-diagnostics.ts";
 
-export interface TelegramLinkBindings {
-  readonly TELEGRAM_LINKING_ENABLED?: string;
-  readonly TELEGRAM_LOGIN_CLIENT_ID?: string;
-  readonly TELEGRAM_LOGIN_CLIENT_SECRET?: string;
-  readonly TELEGRAM_LOGIN_REDIRECT_URI?: string;
-}
+export type TelegramLinkBindings = TelegramConfigurationBindings;
 async function buildTelegramLinkServices(
   bindings: TelegramLinkBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   telegram: TelegramServices | null,
 ): Promise<TelegramLinkServices | null> {
-  if (bindings.TELEGRAM_LINKING_ENABLED !== "true") return null;
+  const config = decodeTelegramConfiguration(bindings);
+  if (!config.linking_enabled) return null;
+  const credentials = decodeTelegramCredentials(bindings);
   if (
     !telegram ||
-    !bindings.TELEGRAM_LOGIN_CLIENT_ID ||
-    !bindings.TELEGRAM_LOGIN_CLIENT_SECRET ||
-    !bindings.TELEGRAM_LOGIN_REDIRECT_URI
+    !config.login_client_id ||
+    !credentials.login_client_secret ||
+    !config.login_redirect_uri
   )
     throw new Error("Telegram login configuration incomplete");
   await assertTelegramRuntimePrivileges(runtime);
@@ -31,9 +33,9 @@ async function buildTelegramLinkServices(
     store: makeControlPlaneTelegramLinkStore(runtime),
     vault: telegram.vault,
     oidc: makeTelegramOidcClient({
-      clientId: bindings.TELEGRAM_LOGIN_CLIENT_ID,
-      clientSecret: bindings.TELEGRAM_LOGIN_CLIENT_SECRET,
-      redirectUri: bindings.TELEGRAM_LOGIN_REDIRECT_URI,
+      clientId: config.login_client_id,
+      clientSecret: credentials.login_client_secret,
+      redirectUri: config.login_redirect_uri,
     }),
   };
 }

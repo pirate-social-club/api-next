@@ -5,6 +5,7 @@ import {
   assertTelegramActivationPrivileges,
   TELEGRAM_ACTIVATION_PRIVILEGES_SQL,
 } from "../packages/platform-cf/src/telegram-activation-privileges.ts";
+import { decodeTelegramConfiguration } from "../packages/platform-cf/src/telegram-configuration.ts";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 
 const configurations = new Set([
@@ -17,13 +18,12 @@ export function telegramActivationBinding(source: string, environment: string, l
   };
   const vars = config?.env?.[environment]?.vars;
   if (!vars) throw Error("Telegram activation environment missing");
-  const flags = linking ? ["TELEGRAM_ENABLED", "TELEGRAM_LINKING_ENABLED"] : ["TELEGRAM_ENABLED"];
-  if (vars.TELEGRAM_STUDY_PRACTICE_ENABLED !== undefined)
-    flags.push("TELEGRAM_STUDY_PRACTICE_ENABLED");
-  for (const flag of flags)
-    if (vars[flag] !== "true" && vars[flag] !== "false")
-      throw Error("Telegram activation binding missing or invalid");
-  return flags.some((flag) => vars[flag] === "true");
+  const intent = decodeTelegramConfiguration({
+    TELEGRAM_CONFIG_JSON:
+      typeof vars.TELEGRAM_CONFIG_JSON === "string" ? vars.TELEGRAM_CONFIG_JSON : undefined,
+  });
+  if (!linking && intent.linking_enabled) throw Error("Telegram linking cannot be enabled on jobs");
+  return intent.enabled || intent.linking_enabled || intent.practice_enabled;
 }
 
 export async function runTelegramActivationPreflight(connectionString: string) {

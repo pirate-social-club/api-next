@@ -339,11 +339,16 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     const waits: Promise<unknown>[] = [];
     const workerEnv = scheduledWorkerEnv({
       CONTROL_PLANE: { connectionString: "postgres://fixture:fixture@127.0.0.1:1/fixture" },
-      TELEGRAM_ENABLED: "true",
-      TELEGRAM_PUBLIC_ORIGIN: "https://pirate.test",
-      TELEGRAM_WEBHOOK_ORIGIN: "https://api.test",
-      TELEGRAM_CREDENTIAL_ACTIVE_VERSION: "fixture",
-      TELEGRAM_CREDENTIAL_KEYS_JSON: "{}",
+      TELEGRAM_CONFIG_JSON: JSON.stringify({
+        version: 1,
+        enabled: true,
+        linking_enabled: false,
+        practice_enabled: false,
+        public_origin: "https://pirate.test",
+        webhook_origin: "https://api.test",
+        credential_active_version: "fixture",
+      }),
+      TELEGRAM_SECRETS_JSON: JSON.stringify({ version: 1, credential_keys: {} }),
       TELEGRAM_QUEUE: {
         send: async () => {
           throw Error("Unsafe Telegram must not run");

@@ -6,6 +6,7 @@ import { createHttpWorker } from "../../apps/http-worker/src/transport.ts";
 import { TELEGRAM_ACTIVATION_TABLES } from "../../packages/platform-cf/src/telegram-activation-privileges.ts";
 import { makeTelegramLinkServices } from "../../packages/platform-cf/src/telegram-linking-runtime.ts";
 import { makeTelegramServices } from "../../packages/platform-cf/src/telegram-runtime.ts";
+import { telegramBindingsFixture } from "../../packages/testing/src/telegram-configuration-fixture.ts";
 
 for (const failure of ["query", "permission"] as const) {
   test(`native HTTP requests recover Telegram ${failure} failure within the same composition`, async () => {
@@ -39,18 +40,7 @@ for (const failure of ["query", "permission"] as const) {
       execute,
       withTransaction: (use) => use({ execute }),
     });
-    const bindings = {
-      TELEGRAM_ENABLED: "true",
-      TELEGRAM_PUBLIC_ORIGIN: "https://pirate.example.invalid",
-      TELEGRAM_WEBHOOK_ORIGIN: "https://api.example.invalid",
-      TELEGRAM_CREDENTIAL_ACTIVE_VERSION: "v1",
-      TELEGRAM_CREDENTIAL_KEYS_JSON: JSON.stringify({ v1: "a".repeat(43) }),
-      TELEGRAM_QUEUE: { send: async () => {} },
-      TELEGRAM_LINKING_ENABLED: "true",
-      TELEGRAM_LOGIN_CLIENT_ID: "123",
-      TELEGRAM_LOGIN_CLIENT_SECRET: "fixture-secret",
-      TELEGRAM_LOGIN_REDIRECT_URI: "https://pirate.example.invalid/telegram/link/callback",
-    };
+    const bindings = telegramBindingsFixture;
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const app = createHttpWorker({
@@ -91,3 +81,51 @@ for (const failure of ["query", "permission"] as const) {
     }
   });
 }
+
+test("native HTTP leaves unrelated routes available for missing or malformed compact settings", async () => {
+  let checks = 0;
+  const execute = <R = unknown>(_statement: ControlPlaneStatement) => {
+    checks++;
+    return Effect.succeed({ rows: [] as readonly R[], rowCount: 0 });
+  };
+  const runtime = Layer.succeed(ControlPlaneDb, {
+    execute,
+    withTransaction: (use) => use({ execute }),
+  });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const value of [
+      undefined,
+      "secret-looking-invalid-input",
+      '{"version":1,"enabled":"true"}',
+    ]) {
+      const bindings = { TELEGRAM_CONFIG_JSON: value };
+      const app = createHttpWorker({
+        config: { corsOrigin: "https://pirate.example.invalid" },
+        authenticate: () => ({ kind: "user", subject: "learner" }),
+        authorize: () => {},
+        handlers: makeRecoveringTelegramHandlers({
+          chat: () => makeTelegramServices(bindings, runtime),
+          linking: (chat) => makeTelegramLinkServices(bindings, runtime, chat),
+        }),
+      });
+      expect((await app.request("https://pirate.example.invalid/health")).status).toBe(200);
+      expect(
+        (
+          await app.request("https://pirate.example.invalid/telegram/link/account", {
+            headers: { cookie: "__Host-pirate_session=fixture-session" },
+          })
+        ).status,
+      ).toBe(502);
+      expect((await app.request("https://pirate.example.invalid/health")).status).toBe(200);
+    }
+    expect(checks).toBe(0);
+    expect(log.mock.calls).toHaveLength(3);
+    expect(
+      log.mock.calls.every((call) => JSON.stringify(call[1]) === '{"category":"configuration"}'),
+    ).toBe(true);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret-looking-invalid-input");
+  } finally {
+    log.mockRestore();
+  }
+});
