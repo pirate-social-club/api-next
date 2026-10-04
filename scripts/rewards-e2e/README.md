@@ -47,3 +47,25 @@ SQL identity, refuses elevated roles, applies application grants with the
 maintained Rewards denials, and then checks the entire runtime money permission
 inventory and exact source ledger. Credential values belong only in the
 isolated Infisical folder and temporary runtime workflows.
+
+`worker-plan.mjs` replaces the current configurations' writable bindings with
+the isolated resources and leaves rewards off. It refuses unknown storage and
+remote Durable Object targets. `prepare-worker-build.mjs` requires the tracked
+plans to match, embeds the runtime role pin, and checks that jobs exclude
+simulated verification. The deployment environment is `rewards-e2e`.
+
+`seed-fixtures.ts` reads only the preserved isolated database. It imports the
+three fixture identities, the published song, its policy and media evidence,
+and the Study corpus into an empty, checksum-verified target. It excludes old
+sessions, attempts, qualifications and money. The transaction temporarily
+suspends an explicit list of account provisioners and media insertion guards
+that require a newly issued upload or next revision. Foreign keys, snapshot
+checks, mutation guards and rewards guards remain active. Deferred checks are
+flushed before every suspended guard is restored and the transaction commits.
+A populated target refuses automatic reset.
+
+`prepare-solid-artifact.mjs` verifies all 324 files against independently
+reviewed Solid release 8baa1948 before copying its build. The isolated site
+proxies only the isolated API and disables HNS ingress. It requires no shared
+frontend build or source mutation. These preparations do not establish live
+Rewards acceptance.

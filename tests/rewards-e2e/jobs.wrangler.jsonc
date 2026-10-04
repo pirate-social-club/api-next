@@ -1,0 +1,291 @@
+{
+  "name": "pirate-jobs-worker-megapot-e2e-staging",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "main": "../../apps/jobs-worker/src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true
+    }
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "04a1c805805d42d6bfc67ae7b005ec93"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "AVATAR_INGRESS",
+      "bucket_name": "pirate-avatar-ingress-megapot-e2e-staging",
+      "preview_bucket_name": "pirate-avatar-ingress-megapot-e2e-staging"
+    },
+    {
+      "binding": "AVATAR_SEALED",
+      "bucket_name": "pirate-avatar-sealed-megapot-e2e-staging",
+      "preview_bucket_name": "pirate-avatar-sealed-megapot-e2e-staging"
+    },
+    {
+      "binding": "MEDIA_INGRESS",
+      "bucket_name": "pirate-media-ingress-megapot-e2e-staging",
+      "preview_bucket_name": "pirate-media-ingress-megapot-e2e-staging"
+    },
+    {
+      "binding": "LEARNER_AUDIO",
+      "bucket_name": "pirate-learner-audio-megapot-e2e-staging",
+      "preview_bucket_name": "pirate-learner-audio-megapot-e2e-staging"
+    },
+    {
+      "binding": "MEGAPOT_COMMITMENTS",
+      "bucket_name": "pirate-megapot-commitments-e2e-staging",
+      "preview_bucket_name": "pirate-megapot-commitments-e2e-staging"
+    }
+  ],
+  "workflows": [],
+  "queues": {
+    "producers": [],
+    "consumers": []
+  },
+  "vars": {
+    "AVATAR_CLEANUP_ENABLED": "false",
+    "TELEGRAM_ENABLED": "false",
+    "TELEGRAM_STUDY_PRACTICE_ENABLED": "false",
+    "TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID": "",
+    "TELEGRAM_STUDY_PRACTICE_POST_IDS_JSON": "[]",
+    "TELEGRAM_PUBLIC_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+    "TELEGRAM_WEBHOOK_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+    "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
+    "API_NEXT_ENV": "development",
+    "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
+    "COMMUNITY_MAINTENANCE_ENABLED": "false",
+    "MEDIA_PROCESSING_ENABLED": "false",
+    "VIDEO_ANALYSIS_ENABLED": "false",
+    "VIDEO_DELIVERY_ENABLED": "false",
+    "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+    "VIDEO_WORKFLOW_NAME": "",
+    "VIDEO_WORKFLOW_SCRIPT_NAME": "",
+    "DATA_REGISTRATION_ENABLED": "false",
+    "SONG_SOURCE_RECORDING_ENABLED": "false",
+    "SONG_VIDEO_PCM_ADMISSION_ENABLED": "false",
+    "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
+    "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
+    "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
+    "HNS_OWNERSHIP_ENABLED": "false",
+    "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
+    "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
+    "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+    "SPACES_RECONCILIATION_ENABLED": "false",
+    "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
+    "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
+    "MEGAPOT_REWARDS_ENABLED": "false",
+    "MEGAPOT_CHAIN_ID": "84532",
+    "MEGAPOT_ATTESTATION_ID": "megapot-e2e-sepolia-20261004-r2",
+    "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+    "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+    "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "20000",
+    "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+    "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+    "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "2",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "20000",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "2",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "20000",
+    "CORS_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+    "PIRATE_API_PUBLIC_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+    "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "200000000000000",
+    "SONG_PLAYBACK_ENABLED": "true",
+    "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-staging",
+    "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-megapot-e2e-staging",
+    "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-megapot-e2e-staging",
+    "ZKPASSPORT_DOMAIN": "web-megapot-e2e-staging.pirate.sc"
+  },
+  "secrets": {
+    "required": [
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "MEGAPOT_V2_RPC_URL",
+      "MEGAPOT_CUSTODY_PRIVATE_KEY",
+      "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+      "MEGAPOT_GAS_TOPUP_PRIVATE_KEY"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CRON_LOCK",
+        "class_name": "ScheduledCronLockDO"
+      },
+      {
+        "name": "KARAOKE_ATTEMPT",
+        "class_name": "KaraokeAttemptDO",
+        "script_name": "pirate-http-worker-megapot-e2e-staging"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ScheduledCronLockDO"
+      ]
+    }
+  ],
+  "placement": {
+    "mode": "targeted",
+    "host": "aws-us-east-1-3.pg.psdb.cloud:5432"
+  },
+  "routes": [],
+  "services": [],
+  "vpc_services": [],
+  "env": {
+    "rewards-e2e": {
+      "name": "pirate-jobs-worker-megapot-e2e-staging",
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "vars": {
+        "AVATAR_CLEANUP_ENABLED": "false",
+        "TELEGRAM_ENABLED": "false",
+        "TELEGRAM_STUDY_PRACTICE_ENABLED": "false",
+        "TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID": "",
+        "TELEGRAM_STUDY_PRACTICE_POST_IDS_JSON": "[]",
+        "TELEGRAM_PUBLIC_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
+        "API_NEXT_ENV": "development",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
+        "COMMUNITY_MAINTENANCE_ENABLED": "false",
+        "MEDIA_PROCESSING_ENABLED": "false",
+        "VIDEO_ANALYSIS_ENABLED": "false",
+        "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "",
+        "DATA_REGISTRATION_ENABLED": "false",
+        "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "false",
+        "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
+        "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
+        "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
+        "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "SPACES_RECONCILIATION_ENABLED": "false",
+        "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
+        "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_ATTESTATION_ID": "megapot-e2e-sepolia-20261004-r2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+        "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "20000",
+        "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+        "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+        "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "2",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "20000",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "2",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "20000",
+        "CORS_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+        "PIRATE_API_PUBLIC_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+        "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "200000000000000",
+        "SONG_PLAYBACK_ENABLED": "true",
+        "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-staging",
+        "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-megapot-e2e-staging",
+        "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-megapot-e2e-staging",
+        "ZKPASSPORT_DOMAIN": "web-megapot-e2e-staging.pirate.sc"
+      },
+      "r2_buckets": [
+        {
+          "binding": "AVATAR_INGRESS",
+          "bucket_name": "pirate-avatar-ingress-megapot-e2e-staging",
+          "preview_bucket_name": "pirate-avatar-ingress-megapot-e2e-staging"
+        },
+        {
+          "binding": "AVATAR_SEALED",
+          "bucket_name": "pirate-avatar-sealed-megapot-e2e-staging",
+          "preview_bucket_name": "pirate-avatar-sealed-megapot-e2e-staging"
+        },
+        {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-megapot-e2e-staging",
+          "preview_bucket_name": "pirate-media-ingress-megapot-e2e-staging"
+        },
+        {
+          "binding": "LEARNER_AUDIO",
+          "bucket_name": "pirate-learner-audio-megapot-e2e-staging",
+          "preview_bucket_name": "pirate-learner-audio-megapot-e2e-staging"
+        },
+        {
+          "binding": "MEGAPOT_COMMITMENTS",
+          "bucket_name": "pirate-megapot-commitments-e2e-staging",
+          "preview_bucket_name": "pirate-megapot-commitments-e2e-staging"
+        }
+      ],
+      "services": [],
+      "vpc_services": [],
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "04a1c805805d42d6bfc67ae7b005ec93"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CRON_LOCK",
+            "class_name": "ScheduledCronLockDO"
+          },
+          {
+            "name": "KARAOKE_ATTEMPT",
+            "class_name": "KaraokeAttemptDO",
+            "script_name": "pirate-http-worker-megapot-e2e-staging"
+          }
+        ]
+      },
+      "workflows": [],
+      "queues": {
+        "producers": [],
+        "consumers": []
+      },
+      "routes": [],
+      "triggers": {
+        "crons": [
+          "* * * * *"
+        ]
+      },
+      "secrets": {
+        "required": [
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+          "MEGAPOT_GAS_TOPUP_PRIVATE_KEY"
+        ]
+      },
+      "placement": {
+        "mode": "targeted",
+        "host": "aws-us-east-1-3.pg.psdb.cloud:5432"
+      }
+    }
+  }
+}
