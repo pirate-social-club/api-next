@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, constants as zlibConstants } from "node:zlib";
+import { verifyNodeForgeRemediation } from "./node-forge-remediation.ts";
 
 const severityRank: Readonly<Record<string, number>> = {
   info: 0,
@@ -334,8 +335,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return why.stdout;
     },
   );
-  const evaluation = evaluateAudit(findings, policy);
-  const report = renderReport(findings, policy, evaluation);
+  await verifyNodeForgeRemediation();
+  const remediated = findings.filter(
+    (finding) => finding.package === "node-forge" && finding.advisory === "GHSA-86w9-cpqp-85rv",
+  );
+  const evaluation = evaluateAudit(
+    findings.filter((finding) => !remediated.includes(finding)),
+    policy,
+  );
+  const report = [
+    renderReport(findings, policy, evaluation),
+    ...remediated.map(
+      (finding) =>
+        `remediated [${finding.severity}] ${finding.package} ${finding.advisory} — both installed RSA validators match reviewed patches and reject malformed DigestInfo; no risk exception`,
+    ),
+  ].join("\n");
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY !== undefined) {
     await appendFile(
