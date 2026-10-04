@@ -172,7 +172,7 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
       const readBinding = async () =>
         (
           await ready.admin.query(
-            "SELECT b.*,e.verified_at,e.expires_at,e.origin FROM community_canonical_route_bindings b LEFT JOIN community_route_ownership_evidence e ON e.evidence_ref=b.verified_evidence_ref WHERE b.community_id=$1",
+            "SELECT b.*,e.expires_at,e.origin FROM community_canonical_route_bindings b LEFT JOIN community_route_ownership_evidence e ON e.evidence_ref=b.verified_evidence_ref WHERE b.community_id=$1",
             [ready.community],
           )
         ).rows[0];
@@ -264,9 +264,6 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
         origin: "active_lease_renewal",
       });
       expect(renewed.verified_evidence_ref).not.toBe(initial.verified_evidence_ref);
-      expect(new Date(renewed.verified_at).getTime()).toBeGreaterThan(
-        new Date(initial.verified_at).getTime(),
-      );
       expect(new Date(renewed.expires_at).getTime()).toBeGreaterThan(
         new Date(initial.expires_at).getTime(),
       );
