@@ -381,7 +381,7 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
       ).toBeGreaterThan(0);
     } finally {
       await ready.cleanup();
-      await hsdRegtestNode("setmocktime", [0]);
+      await hsdRegtestNode("setmocktime", [Math.floor(Date.now() / 1_000)]);
     }
     await markHnsRegtestSuiteComplete(
       "HNS_REGTEST_RENEWAL_RECOVERY_SENTINEL",
