@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { emptyTelegramStudyState } from "@pirate/application/telegram-study";
+import {
+  emptyTelegramStudyState,
+  TelegramStudyLeaseExpired,
+} from "@pirate/application/telegram-study";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -608,6 +611,34 @@ suite("Study v2 spoken lifecycle", () => {
             }),
           ),
         ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+        if (practiceOnly) {
+          const read = () =>
+            run(
+              study.getSession({
+                accountId: grant.accountId,
+                communityId: lease.sender.communityId,
+                sessionId: session.session_id,
+              }),
+            );
+          await admin.query(
+            "UPDATE telegram_study_conversations SET lease_until=clock_timestamp()-interval '1 second'",
+          );
+          await expect(read()).rejects.toBeInstanceOf(TelegramStudyLeaseExpired);
+          // Genuine revocation takes precedence over lease expiry and still refuses authority.
+          await admin.query("UPDATE telegram_bot_grants SET active=FALSE");
+          try {
+            await read();
+            throw Error("Revoked grant admitted");
+          } catch (error) {
+            expect(error).not.toBeInstanceOf(TelegramStudyLeaseExpired);
+            expect(error).toMatchObject({ reason: "not-found" });
+          }
+          await admin.query("UPDATE telegram_bot_grants SET active=TRUE");
+          await admin.query(
+            "UPDATE telegram_study_conversations SET lease_until=clock_timestamp()+interval '120 seconds'",
+          );
+          expect((await read())?.session_id).toBe(session.session_id);
+        }
         if (practiceOnly) {
           const chat = makeTelegramStudyStore(makeTelegramDatabase(runtime), "study-community", [
             "study-post",
