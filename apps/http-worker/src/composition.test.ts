@@ -65,6 +65,18 @@ describe("HTTP production composition", () => {
     ).resolves.toBeDefined();
   });
 
+  test("Telegram setup failure leaves unrelated HTTP routes available", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      TELEGRAM_ENABLED: "true",
+      TELEGRAM_LINKING_ENABLED: "true",
+      TELEGRAM_CREDENTIAL_KEYS_JSON: "malformed-fixture",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
   test("requires both Durable Object registration limiter bindings", () => {
     expect(() =>
       makeProductionIdentityRegistrationRateLimiter({} as HttpWorkerBindings, "development"),

@@ -1,5 +1,13 @@
 import type { StudyAnswerResultV2, StudySessionV2 } from "@pirate/contracts";
 import { Schema } from "effect";
+import { StudyV2CommandRejected } from "./study-v2-service.ts";
+
+/** Internal admission distinction; the shared Study error vocabulary stays unchanged. */
+export class TelegramStudyLeaseExpired extends StudyV2CommandRejected {
+  constructor() {
+    super({ reason: "not-found" });
+  }
+}
 
 export const TelegramStudyReply = Schema.Struct({
   kind: Schema.Literal("text"),

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { StudySessionItemV2, StudySessionV2 } from "@pirate/contracts";
-import { StudyV2CommandRejected } from "./study-v2-service.ts";
+import { StudyV2CommandRejected, StudyV2StoreFailed } from "./study-v2-service.ts";
 import { processTelegramInbox } from "./telegram/chat.ts";
 import {
   DEFAULT_ASSISTANT_POLICY,
@@ -12,6 +12,7 @@ import {
 import {
   emptyTelegramStudyState,
   type TelegramStudyGrant,
+  TelegramStudyLeaseExpired,
   type TelegramStudyReply,
   type TelegramStudyServices,
 } from "./telegram-study.ts";
@@ -263,11 +264,11 @@ function fixture() {
       { message_id: 1 },
       data,
     );
-  const voice = (id: string, reply = 99) =>
+  const voice = (id: string, reply = 99, duration = 1, size = 4) =>
     handleTelegramStudyChat(services, study, inbox(id), integration, "321", {
       message_id: 2,
       reply_to_message: { message_id: reply },
-      voice: { file_id: "voice", duration: 1, file_size: 4 },
+      voice: { file_id: "voice", duration, file_size: size },
     });
   const begin = async () => {
     await send("picker", "/study");
@@ -538,4 +539,222 @@ test("practice is unavailable in communities outside the admitted pilot", async 
   await processTelegramInbox(f.services, "outside");
   expect(reply).toContain("Native Study is not available");
   expect(f.counts().starts).toBe(0);
+});
+
+test.each([61, 120, 121])(
+  "oversized duration %i replies without checkpointing or downloading",
+  async (duration) => {
+    const f = fixture();
+    await f.begin();
+    const save = f.study.store.save;
+    Object.assign(f.study.store, {
+      save: async (...args: Parameters<typeof save>) => {
+        expect(args[1].pendingAnswer).toBeNull();
+        return save(...args);
+      },
+    });
+    await f.voice("long", 99, duration);
+    expect(f.counts()).toEqual({ starts: 1, answers: 0, downloads: 0 });
+    expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+    expect(f.replies.at(-1)?.text).toContain("minute");
+    await f.send("resume-long", "/resume");
+    expect(f.state().turn?.itemId).toBe("item-0");
+  },
+);
+test("file metadata and downloaded bytes are both bounded before pending persistence", async () => {
+  const f = fixture();
+  await f.begin();
+  await f.voice("metadata", 99, 1, 524289);
+  expect(f.counts().downloads).toBe(0);
+  const save = f.study.store.save;
+  Object.assign(f.study.store, {
+    save: async (...args: Parameters<typeof save>) => {
+      expect(args[1].pendingAnswer).toBeNull();
+      return save(...args);
+    },
+  });
+  Object.assign(f.services.api, { downloadVoice: async () => new Uint8Array(524289) });
+  await f.voice("bytes");
+  expect(f.counts().answers).toBe(0);
+  expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+  await f.send("resume-bytes", "/resume");
+  expect(f.state().turn?.itemId).toBe("item-0");
+});
+test("the exact Study duration and byte limits remain accepted", async () => {
+  const f = fixture();
+  await f.begin();
+  Object.assign(f.services.api, { downloadVoice: async () => new Uint8Array(524288) });
+  await f.voice("boundary", 99, 60, 524288);
+  expect(f.counts().answers).toBe(1);
+  expect(f.state().pendingAnswer).toBeNull();
+});
+test.each([
+  "attempt-conflict",
+  "idempotency-conflict",
+  "invalid-input",
+  "submission-kind-mismatch",
+  "transcript-evidence-expired",
+  "transcript-evidence-mismatch",
+  "transcript-evidence-not-found",
+  "insufficient-exercises",
+] as const)(
+  "permanent %s refusal clears the note and reloads the current prompt",
+  async (reason) => {
+    const f = fixture();
+    await f.begin();
+    const normal = f.study.answer;
+    Object.assign(f.study, {
+      answer: async () => {
+        throw new StudyV2CommandRejected({ reason });
+      },
+    });
+    f.session({
+      ...session,
+      lesson: {
+        ...session.lesson,
+        current: {
+          session_item_id: "item-1",
+          presentation_number: 1,
+          is_reappearance: false,
+          presented_at: "2026-10-04T00:00:00Z",
+        },
+      },
+    });
+    await f.voice("rejected");
+    expect(f.state().pendingAnswer).toBeNull();
+    expect(f.state().turn?.itemId).toBe("item-1");
+    expect(f.replies.at(-1)?.text).toContain("Hold on");
+    Object.assign(f.study, { answer: normal });
+    await f.voice("new-answer", 100);
+    expect(f.counts().answers).toBe(1);
+  },
+);
+test("an in-flight command retains the answer identity for retry", async () => {
+  const f = fixture();
+  await f.begin();
+  Object.assign(f.study, {
+    answer: async () => {
+      throw new StudyV2CommandRejected({ reason: "command-in-flight" });
+    },
+  });
+  await expect(f.voice("busy-answer")).rejects.toMatchObject({ reason: "command-in-flight" });
+  expect(f.state().pendingAnswer?.inboxId).toBe("busy-answer");
+});
+
+test("slow grading reacquires the lease and recovers without blaming the link", async () => {
+  const f = fixture();
+  await f.begin();
+  let token: string | null = null;
+  const claim = f.study.store.claim;
+  Object.assign(f.study.store, {
+    claim: async (...args: Parameters<typeof claim>) => {
+      const held = await claim(...args);
+      token = held?.token ?? null;
+      return held;
+    },
+  });
+  const save = f.study.store.save;
+  Object.assign(f.study.store, {
+    save: async (...args: Parameters<typeof save>) => {
+      if (token === null) throw Error("Missing claimed lease token");
+      expect(args[0].token).toBe(token);
+      return save(...args);
+    },
+  });
+  Object.assign(f.study, {
+    answer: async () => {
+      token = "expired";
+      throw new TelegramStudyLeaseExpired();
+    },
+  });
+  await f.voice("slow");
+  expect(f.state().pendingAnswer).toBeNull();
+  expect(f.replies.at(-1)?.text).toContain("took too long");
+  expect(f.replies.at(-1)?.text).not.toContain("Check your link");
+  await f.send("after-slow", "/resume");
+  expect(f.state().turn?.itemId).toBe("item-0");
+});
+test("recovery never revives a lesson cancelled while the expired lease was released", async () => {
+  const f = fixture();
+  await f.begin();
+  const normal = f.study.store.release;
+  let first = true;
+  Object.assign(f.study.store, {
+    release: async (...args: Parameters<typeof normal>) => {
+      if (first) {
+        first = false;
+        await f.send("concurrent-cancel", "/cancel");
+      }
+      return normal(...args);
+    },
+  });
+  Object.assign(f.study, {
+    answer: async () => {
+      throw new TelegramStudyLeaseExpired();
+    },
+  });
+  await expect(f.voice("slow-cancelled")).rejects.toMatchObject({ reason: "unavailable" });
+  expect(f.state().turn).toBeNull();
+  expect(f.state().pendingAnswer).toBeNull();
+  expect(f.replies.at(-1)?.text).toContain("Practice stopped");
+});
+test("a failed session reload still clears a permanently rejected note", async () => {
+  const f = fixture();
+  await f.begin();
+  Object.assign(f.study, {
+    answer: async () => {
+      throw new StudyV2CommandRejected({ reason: "attempt-conflict" });
+    },
+    session: async () => {
+      throw Error("temporary database failure");
+    },
+  });
+  await expect(f.voice("conflict-reload")).rejects.toThrow("temporary database failure");
+  expect(f.state().pendingAnswer).toBeNull();
+  await f.send("after-failed-reload", "/study");
+  expect(f.replies.at(-1)?.text).toContain("Choose a song");
+});
+
+test.each(["constraint", "outcome-unknown", "unavailable", "invalid-row"] as const)(
+  "storage %s preserves only outcomes that remain uncertain or retryable",
+  async (reason) => {
+    const f = fixture();
+    await f.begin();
+    Object.assign(f.study, {
+      answer: async () => {
+        throw new StudyV2StoreFailed({ reason });
+      },
+    });
+    if (reason === "constraint") {
+      await f.voice("store-refusal");
+      expect(f.state().pendingAnswer).toBeNull();
+      await f.send("store-resume", "/resume");
+      expect(f.state().turn?.itemId).toBe("item-0");
+    } else {
+      await expect(f.voice("store-refusal")).rejects.toMatchObject({ reason });
+      expect(f.state().pendingAnswer?.inboxId).toBe("store-refusal");
+    }
+  },
+);
+
+test("a pending answer gives guidance to new messages without losing its retry identity", async () => {
+  const f = fixture();
+  await f.begin();
+  const normal = f.study.answer;
+  Object.assign(f.study, {
+    answer: async () => {
+      throw new StudyV2StoreFailed({ reason: "outcome-unknown" });
+    },
+  });
+  await expect(f.voice("unknown-answer")).rejects.toMatchObject({ reason: "outcome-unknown" });
+  await f.send("resume-pending", "/resume");
+  expect(f.replies.at(-1)?.text).toContain("previous voice answer has not finished");
+  expect(f.state().pendingAnswer?.inboxId).toBe("unknown-answer");
+  await f.voice("second-pending");
+  expect(f.state().pendingAnswer?.inboxId).toBe("unknown-answer");
+  expect(f.counts().answers).toBe(0);
+  Object.assign(f.study, { answer: normal });
+  await f.voice("unknown-answer");
+  expect(f.keys.at(-1)).toBe("telegram:unknown-answer:answer");
+  expect(f.counts().answers).toBe(1);
 });

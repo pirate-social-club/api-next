@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import type { TelegramServices } from "@pirate/application/telegram";
 import { Effect, Layer } from "effect";
@@ -35,15 +35,13 @@ test("disabled HTTP, jobs and linking setup never touch the database", async () 
 });
 test("runtime setup refuses the actual executor before bot/provider construction", async () => {
   const f = fixture();
-  await expect(makeTelegramServices(complete, f.runtime)).rejects.toThrow(
-    "privilege facts incomplete",
-  );
+  expect(await makeTelegramServices(complete, f.runtime)).toBeNull();
   expect(f.calls).toHaveLength(1);
   expect(f.calls[0]?.readonly).toBe(true);
   expect(f.calls[0]?.text).toContain("current_user");
   const inert = {} as TelegramServices;
-  await expect(
-    makeTelegramLinkServices(
+  expect(
+    await makeTelegramLinkServices(
       {
         TELEGRAM_LINKING_ENABLED: "true",
         TELEGRAM_LOGIN_CLIENT_ID: "123",
@@ -53,7 +51,7 @@ test("runtime setup refuses the actual executor before bot/provider construction
       f.runtime,
       inert,
     ),
-  ).rejects.toThrow("privilege facts incomplete");
+  ).toBeNull();
   expect(f.calls).toHaveLength(2);
 });
 test("practice defaults off and cannot be activated in production", () => {
@@ -68,4 +66,32 @@ test("practice defaults off and cannot be activated in production", () => {
     ),
   ).toThrow("requires staging");
   expect(f.calls).toEqual([]);
+});
+
+test("setup failures produce only fixed diagnostics and leave Telegram unavailable", async () => {
+  const f = fixture();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await makeTelegramServices(complete, f.runtime)).toBeNull();
+    expect(
+      await makeTelegramServices(
+        { ...complete, TELEGRAM_CREDENTIAL_KEYS_JSON: "secret malformed key" },
+        f.runtime,
+      ),
+    ).toBeNull();
+    expect(
+      await makeTelegramLinkServices(
+        { TELEGRAM_LINKING_ENABLED: "true", TELEGRAM_LOGIN_CLIENT_SECRET: "secret" },
+        f.runtime,
+        null,
+      ),
+    ).toBeNull();
+    expect(log.mock.calls).toEqual([
+      ["Telegram chat setup unavailable; chat operations disabled"],
+      ["Telegram chat setup unavailable; chat operations disabled"],
+      ["Telegram linking setup unavailable; linking operations disabled"],
+    ]);
+  } finally {
+    log.mockRestore();
+  }
 });
