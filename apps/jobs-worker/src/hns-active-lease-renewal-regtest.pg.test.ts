@@ -1,7 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AlertCollector, ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
-import { encodeHnsControlObserverConfiguration } from "@pirate/application/namespace-ownership";
+import {
+  encodeHnsControlObserverConfiguration,
+  HnsActiveLeaseRenewalProviderFailed,
+  runHnsActiveLeaseRenewal,
+} from "@pirate/application/namespace-ownership";
 import { makeControlPlaneHnsActiveLeaseRenewalStore } from "@pirate/platform-cf/hns-active-lease-renewal-repository";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
@@ -78,12 +82,18 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
     };
     const configurationBytes = await encodeHnsControlObserverConfiguration(configuration);
     const digest = createHash("sha256").update(configurationBytes).digest("hex");
+    let chainUnavailable = false;
+    let chainReads = 0;
     const driver = makeHnsObserverDriverService({
       hsd_driver_reference: configuration.chain.driver_reference,
       hsd: makeHnsObserverDriverHsdHttpCapability({
         endpoint: hsdRegtestNodeUrl,
         authorization: hsdRegtestAuthorization,
-        fetcher: fetch,
+        fetcher: async (input, init) => {
+          chainReads++;
+          if (chainUnavailable) return new Response("Unavailable", { status: 503 });
+          return fetch(input, init);
+        },
       }),
       dns_views: [],
     });
@@ -256,7 +266,24 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
         );
       await mine(5);
       await moveExpiry("5 minutes");
+      chainUnavailable = true;
+      const readsBeforeFailure = chainReads;
+      await expect(tick()).rejects.toMatchObject({ reason: "unavailable" });
+      expect(chainReads).toBeGreaterThan(readsBeforeFailure);
+      expect(await readBinding()).toMatchObject({
+        binding_generation: "1",
+        ownership_status: "verified",
+      });
+      const failedObservation = (
+        await ready.admin.query(
+          "SELECT observation_id,result_status FROM hns_control_observer_snapshots WHERE result_status='unavailable'",
+        )
+      ).rows;
+      expect(failedObservation).toHaveLength(1);
+      chainUnavailable = false;
+      const readsBeforeRetry = chainReads;
       await tick();
+      expect(chainReads).toBeGreaterThan(readsBeforeRetry);
       const renewed = await readBinding();
       expect(renewed).toMatchObject({
         binding_generation: "2",
@@ -268,14 +295,51 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
         new Date(initial.expires_at).getTime(),
       );
       expect(new Date(renewed.expires_at).getTime()).toBeGreaterThan(Date.now() + 900_000);
-      expect(providerCalls).toBe(1);
+      expect(providerCalls).toBe(2);
       expect(alerts).toEqual([]);
       await assertServingAuthority(true);
       await tick();
-      expect(providerCalls).toBe(1);
+      expect(providerCalls).toBe(2);
+      const renewalProof = (
+        await ready.admin.query(
+          `SELECT proof.chain_anchor_height,proof.provider_evidence_ref,snapshot.observation_id,snapshot.result_status,attempt.fence_token
+         FROM community_route_active_lease_renewal_evidence_snapshots proof
+         JOIN hns_control_observer_snapshots snapshot ON proof.provider_evidence_ref=('hns-observer-v1:sha256:' || snapshot.result_sha256 || ':' || snapshot.snapshot_reference)
+         JOIN community_route_active_lease_renewal_attempts attempt USING(active_lease_renewal_attempt_id)
+         WHERE proof.evidence_ref=$1`,
+          [renewed.verified_evidence_ref],
+        )
+      ).rows;
+      expect(renewalProof).toHaveLength(1);
+      expect(renewalProof[0]).toMatchObject({ result_status: "verified", fence_token: "2" });
+      expect(renewalProof[0].observation_id).not.toBe(failedObservation[0].observation_id);
+      expect(Number(renewalProof[0].chain_anchor_height)).toBeGreaterThan(0);
       await moveExpiry("-1 second");
+      await expect(
+        Effect.runPromise(
+          runHnsActiveLeaseRenewal(
+            {
+              route_binding_id: initial.route_binding_id,
+              idempotency_key: "explicit-expired-renewal",
+            },
+            {
+              store: makeControlPlaneHnsActiveLeaseRenewalStore(ready.layer),
+              policy: { ...configuration.chain, evidence_lease_seconds: 3600 },
+              provider: {
+                renew: () => {
+                  providerCalls++;
+                  return Effect.fail(
+                    new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }),
+                  );
+                },
+              },
+            },
+          ),
+        ),
+      ).rejects.toMatchObject({ reason: "not_found" });
+      expect(providerCalls).toBe(2);
       await tick();
-      expect(providerCalls).toBe(1);
+      expect(providerCalls).toBe(2);
       expect(await readBinding()).toMatchObject({
         binding_generation: "3",
         route_lifecycle_status: "suspended",
@@ -449,13 +513,27 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
         { attempt_number: 1, state: "consumed", fence_token: "3" },
         { attempt_number: 1, state: "released", fence_token: "2" },
       ]);
-      expect(
-        (
-          await ready.admin.query(
-            "SELECT count(*)::int AS observations FROM hns_control_observer_snapshots WHERE result_status='verified'",
-          )
-        ).rows[0]?.observations,
-      ).toBeGreaterThan(0);
+      // A genuine chain rejection must fail closed, while retaining the claim.
+      await hsdRegtestWallet("sendupdate", [
+        "harbor",
+        { records: replacement.filter((record) => (record as { type: string }).type !== "TXT") },
+      ]);
+      await mine(30);
+      await moveExpiry("5 minutes");
+      await tick();
+      expect(providerCalls).toBe(3);
+      expect(await readBinding()).toMatchObject({
+        ownership_status: "disputed",
+        route_lifecycle_status: "suspended",
+      });
+      expect(alerts).toEqual(["hns-active-lease-renewal:unresolved"]);
+      const rejection = (
+        await ready.admin.query(
+          "SELECT status FROM community_route_active_lease_renewals WHERE expected_binding_generation=4",
+        )
+      ).rows;
+      expect(rejection).toEqual([{ status: "failed" }]);
+      await assertServingAuthority(false);
     } finally {
       await ready.cleanup();
       await hsdRegtestNode("setmocktime", [Math.floor(Date.now() / 1_000)]);

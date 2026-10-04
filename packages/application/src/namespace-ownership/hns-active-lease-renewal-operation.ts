@@ -19,6 +19,7 @@ import {
   hnsActiveLeaseRenewalSourceIneligibleResultV3Hash,
   hnsActiveLeaseRenewalSourceIneligibleResultV3Preimage,
 } from "./hns-control-observer-v2.ts";
+import { sha256Utf8 } from "./hns-evidence.ts";
 
 const CanonicalIdentifier = Schema.NonEmptyString.check(
   Schema.makeFilter((value) =>
@@ -394,10 +395,19 @@ export const runHnsActiveLeaseRenewal = Effect.fn("runHnsActiveLeaseRenewal")(fu
     return yield* new HnsActiveLeaseRenewalRejected({ reason: "conflict" });
   }
 
+  // A released attempt keeps its immutable seed, but each reacquisition must
+  // read the chain again rather than replay an unavailable observer snapshot.
+  const observationId = yield* Effect.tryPromise({
+    try: () =>
+      sha256Utf8(
+        canonicalJson([reservation.attempt.observation_id, reservation.attempt.fence_token]),
+      ),
+    catch: () => new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }),
+  });
   const provider = yield* services.provider
     .renew(reservation.request, reservation.stored.authority, {
       deadline_ms: HNS_ACTIVE_LEASE_RENEWAL_PROVIDER_DEADLINE_MS,
-      observation_id: reservation.attempt.observation_id,
+      observation_id: observationId,
     })
     .pipe(
       Effect.matchEffect({

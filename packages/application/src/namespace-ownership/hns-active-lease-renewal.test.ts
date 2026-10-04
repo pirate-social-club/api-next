@@ -674,6 +674,7 @@ async function operationFixture(
 > {
   const renewalRequest = await operationRequestFor(inputAuthority);
   let releases = 0;
+  let fenceToken = 0;
   let stored: HnsActiveLeaseRenewalStoredOperation = {
     authority: inputAuthority,
     control_identity: persistedIdentity,
@@ -695,7 +696,7 @@ async function operationFixture(
           active_lease_renewal_attempt_id: renewalRequest.active_lease_renewal_attempt_id,
           evidence_ref: renewalRequest.evidence_ref,
           observation_id: "observer-renewal-01",
-          fence_token: 1,
+          fence_token: ++fenceToken,
           attempt_number: 1,
           database_now: "2026-02-02T04:40:00.000Z",
           lease_expires_at: "2026-02-02T04:40:20.000Z",
@@ -881,4 +882,27 @@ test("finalizes prior-evidence ineligibility without calling a hidden retry path
     evidence: null,
     provider_response_bytes: null,
   });
+});
+
+test("reacquiring a released renewal obtains a distinct observer snapshot", async () => {
+  const positive = await positiveResponse();
+  const ids: string[] = [];
+  const fixture = await operationFixture(authority, {
+    renew: (_request, _authority, options) => {
+      ids.push(options.observation_id);
+      return ids.length === 1
+        ? Effect.fail(new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }))
+        : Effect.succeed(new TextEncoder().encode(JSON.stringify(positive.response)));
+    },
+  });
+  const input = { route_binding_id: authority.route_binding_id, idempotency_key: "same-renewal" };
+  await expect(
+    Effect.runPromise(runHnsActiveLeaseRenewal(input, fixture.services)),
+  ).rejects.toMatchObject({ reason: "unavailable" });
+  expect(await Effect.runPromise(runHnsActiveLeaseRenewal(input, fixture.services))).toMatchObject({
+    status: "verified",
+  });
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(fixture.releaseCount()).toBe(1);
 });
