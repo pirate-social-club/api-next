@@ -1,11 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { AlertCollector } from "@pirate/application";
+import { AlertCollector, ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import { encodeHnsControlObserverConfiguration } from "@pirate/application/namespace-ownership";
 import { makeControlPlaneHnsActiveLeaseRenewalStore } from "@pirate/platform-cf/hns-active-lease-renewal-repository";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
-import { Effect, Redacted } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { Client } from "pg";
 import {
   hsdRegtestAuthorization,
@@ -290,12 +290,67 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
       ).toBeNull();
       await assertServingAuthority(false);
 
+      let expireAfterCleanup = false;
+      let expiryBarriers = 0;
+      const recoveryDatabase = Layer.effect(
+        ControlPlaneDb,
+        Effect.map(
+          ControlPlaneDb,
+          (db) =>
+            ({
+              ...db,
+              withTransaction: (use) =>
+                db.withTransaction((transaction) =>
+                  use({
+                    ...transaction,
+                    execute: <Row>(statement: ControlPlaneStatement) =>
+                      transaction.execute<Row>(statement).pipe(
+                        Effect.tap(() =>
+                          Effect.gen(function* () {
+                            if (
+                              !expireAfterCleanup ||
+                              statement.label !== "hns-owner-recovery.poll-release-expired-lease"
+                            )
+                              return;
+                            expireAfterCleanup = false;
+                            const lease = yield* transaction.execute<{
+                              live: boolean;
+                              wait_ms: number;
+                            }>({
+                              label: "regtest.recovery-lease-before-expiry",
+                              text: "SELECT lease_expires_at > clock_timestamp() AS live, (EXTRACT(EPOCH FROM lease_expires_at-clock_timestamp())*1000)::double precision AS wait_ms FROM community_route_revalidation_completion_attempts WHERE route_revalidation_id=$1 AND state='leased'",
+                              values: statement.values,
+                              readonly: true,
+                            });
+                            expect(lease.rows).toMatchObject([{ live: true }]);
+                            const wait = lease.rows[0]?.wait_ms;
+                            if (wait === undefined || wait <= 0 || wait > 16_000)
+                              throw new Error("Recovery expiry barrier is outside its lease");
+                            // Keep the canonical 16-second lease and statement
+                            // bounds; pause this client between SQL statements.
+                            yield* Effect.promise(() => Bun.sleep(wait + 10));
+                            const expired = yield* transaction.execute<{ expired: boolean }>({
+                              label: "regtest.recovery-lease-after-expiry",
+                              text: "SELECT lease_expires_at <= clock_timestamp() AS expired FROM community_route_revalidation_completion_attempts WHERE route_revalidation_id=$1 AND state='leased'",
+                              values: statement.values,
+                              readonly: true,
+                            });
+                            expect(expired.rows).toEqual([{ expired: true }]);
+                            expiryBarriers++;
+                          }),
+                        ),
+                      ),
+                  }),
+                ),
+            }) satisfies ControlPlaneDb["Service"],
+        ),
+      ).pipe(Layer.provide(ready.layer));
       const recovery = createHttpWorker({
         config: { corsOrigin: "https://worker.test" },
         handlers: makeProductionHnsOwnerRecoveryHandlers({
           enabled: true,
           environment: "staging",
-          database: ready.layer,
+          database: recoveryDatabase,
           verifier: {
             fetch: (input, init) => verifier.fetch(new Request(String(input), init), env),
           },
@@ -333,12 +388,30 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
       const pending = await request("poll", poll);
       expect(pending.status).toBe(202);
       expect(await pending.json()).toMatchObject({ status: "pending" });
+      const leasePendingAttempt = async (key: string) => {
+        const leased = await ready.admin.query(
+          "UPDATE community_route_revalidation_completion_attempts SET state='leased',fence_token=fence_token+1,lease_expires_at=clock_timestamp()+interval '2 seconds' WHERE route_revalidation_id=$1 AND idempotency_key=$2 AND state='released' RETURNING route_revalidation_attempt_id",
+          [started.route_recovery_id, key],
+        );
+        expect(leased.rowCount).toBe(1);
+        expireAfterCleanup = true;
+      };
+      await leasePendingAttempt(poll.idempotency_key);
+      const expiredBeforeAdmission = await request("poll", {
+        ...poll,
+        idempotency_key: "live-recover-poll-2",
+      });
+      expect(expiredBeforeAdmission.status).toBe(409);
       const pendingAgain = await request("poll", {
         ...poll,
         idempotency_key: "live-recover-poll-2",
       });
       expect(pendingAgain.status).toBe(202);
       expect(await pendingAgain.json()).toMatchObject({ status: "pending" });
+      await leasePendingAttempt("live-recover-poll-2");
+      const expiredBeforeReacquire = await request("poll", poll);
+      expect(expiredBeforeReacquire.status).toBe(409);
+      expect(expiryBarriers).toBe(2);
       const challenge = (
         await ready.admin.query(
           "SELECT upstream_session_ref FROM community_route_revalidation_sessions WHERE revalidation_session_id=$1",
@@ -373,8 +446,8 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
           )
         ).rows,
       ).toEqual([
-        { attempt_number: 1, state: "consumed", fence_token: "2" },
-        { attempt_number: 1, state: "released", fence_token: "1" },
+        { attempt_number: 1, state: "consumed", fence_token: "3" },
+        { attempt_number: 1, state: "released", fence_token: "2" },
       ]);
       expect(
         (

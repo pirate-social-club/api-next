@@ -236,7 +236,7 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
                        FROM community_route_revalidation_completion_attempts
                       WHERE route_revalidation_id = $1
                         AND route_revalidation_attempt_id <> $2
-                        AND state = 'leased' AND lease_expires_at > clock_timestamp()`,
+                        AND state = 'leased'`,
               values: [session.route_recovery_id, attemptId],
               readonly: false,
             });
@@ -264,9 +264,7 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
           const admissionResult = yield* transaction.execute<HnsOwnerRecoveryRow>({
             label: "hns-owner-recovery.poll-admission",
             text: `SELECT count(*) FILTER (WHERE state = 'consumed')::integer AS consumed_count,
-                          min(lease_expires_at) FILTER (
-                            WHERE state = 'leased' AND lease_expires_at > clock_timestamp()
-                          ) AS live_lease
+                          min(lease_expires_at) FILTER (WHERE state = 'leased') AS live_lease
                      FROM community_route_revalidation_completion_attempts
                     WHERE route_revalidation_id = $1
                       AND operation_mode = 'same_root_recovery'`,
