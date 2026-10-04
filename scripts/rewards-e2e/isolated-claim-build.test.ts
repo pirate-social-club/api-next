@@ -37,6 +37,16 @@ test("the separate isolated build includes the labelled adapter and compiled dat
   const build = await buildRewardsHttpArtifact("isolated", digest);
   expect(build.source).toContain(marker);
   expect(build.source).toContain(digest);
+  expect(
+    build.inputPaths.some(
+      (path: string) => path.includes("pg-cloudflare") && path.endsWith("dist/index.js"),
+    ),
+  ).toBe(true);
+  expect(
+    build.inputPaths.some(
+      (path: string) => path.includes("pg-cloudflare") && path.endsWith("dist/empty.js"),
+    ),
+  ).toBe(false);
   expect(build.inputPaths.some((path: string) => path.includes("reward-claim-stub"))).toBe(true);
 }, 30_000);
 

@@ -27,6 +27,15 @@ async function readIsolatedSqlRole(connectionString: string): Promise<string> {
             },
           ),
         ),
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            console.error("rewards_e2e_database_refused", {
+              tag: error._tag,
+              phase: "phase" in error ? error.phase : null,
+              sqlState: "sqlState" in error ? error.sqlState : null,
+            });
+          }),
+        ),
       ),
     ),
   );

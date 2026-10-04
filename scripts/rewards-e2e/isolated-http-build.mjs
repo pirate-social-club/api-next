@@ -52,6 +52,7 @@ async function buildArtifact(entry, plugins, mode) {
     bundle: true,
     write: false,
     platform: "node",
+    conditions: ["workerd"],
     target: "es2022",
     format: "esm",
     external: ["cloudflare:*", "node:*"],
@@ -61,6 +62,10 @@ async function buildArtifact(entry, plugins, mode) {
     logLevel: "silent",
     tsconfig: resolve(root, "tsconfig.json"),
     plugins,
+    // Prebundled CommonJS drivers retain dynamic builtin requires.
+    banner: {
+      js: 'import { createRequire as rewardsCreateRequire } from "node:module"; const require = rewardsCreateRequire("/rewards-worker.js");',
+    },
   });
   if (result.outputFiles.length !== 1) throw new Error("Unexpected Rewards Worker build output");
   return {
