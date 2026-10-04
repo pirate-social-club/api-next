@@ -1,13 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
-import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import type { TelegramServices } from "@pirate/application/telegram";
 import type { TelegramLinkServices } from "@pirate/application/telegram-linking";
+import { ControlPlaneDb } from "@pirate/platform-cf/postgres";
 import { makeTelegramLinkServices } from "@pirate/platform-cf/telegram-linking-runtime";
 import { Effect, Layer } from "effect";
 import { TELEGRAM_ACTIVATION_TABLES } from "../../../packages/platform-cf/src/telegram-activation-privileges.ts";
 import { makeTelegramServices } from "../../../packages/platform-cf/src/telegram-runtime.ts";
 import { makeRecoveringTelegramHandlers } from "./telegram-setup-cache.ts";
 import type { DecodedRequest, EndpointHandler } from "./transport.ts";
+
+type ControlPlaneStatement = Parameters<ControlPlaneDb["Service"]["execute"]>[0];
 
 function required(handlers: Readonly<Record<string, EndpointHandler>>, id: string) {
   const handler = handlers[id];
