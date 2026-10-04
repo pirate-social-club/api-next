@@ -1,12 +1,43 @@
-import { Schema } from "effect";
+import { ControlPlaneDb } from "@pirate/application";
+import { makeReadOnlyPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { Effect, Schema } from "effect";
 
 const connection = Schema.Struct({ connectionString: Schema.String });
 
-/** Hyperdrive has no runtime ID; pin its database role without emitting credentials. */
+/** Hyperdrive's connection username identifies its pool, not the origin SQL role. */
+async function readIsolatedSqlRole(connectionString: string): Promise<string> {
+  const result = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.execute<{ role: string }>({
+          label: "rewards-e2e.resource-identity",
+          text: "SELECT current_user::text AS role",
+          values: [],
+          readonly: true,
+        });
+      }).pipe(
+        Effect.provide(
+          makeReadOnlyPostgresControlPlaneLayer(connectionString, {
+            connectTimeoutMs: 5_000,
+            statementTimeoutMs: 2_000,
+            logger: { info: () => {}, error: () => {} },
+          }),
+        ),
+      ),
+    ),
+  );
+  if (result.rows.length !== 1 || typeof result.rows[0]?.role !== "string" || !result.rows[0].role)
+    throw new Error("Isolated SQL identity unavailable");
+  return result.rows[0].role;
+}
+
+/** Recheck the actual SQL role per request; never cache a mutable Hyperdrive origin. */
 export async function isIsolatedRequest(
   request: Request,
   bindings: { readonly API_NEXT_ENV?: string; readonly CONTROL_PLANE?: unknown },
   expectedRoleDigest: string,
+  readRole: (connectionString: string) => Promise<string> = readIsolatedSqlRole,
 ): Promise<boolean> {
   if (
     bindings.API_NEXT_ENV !== "development" ||
@@ -17,8 +48,8 @@ export async function isIsolatedRequest(
   }
   try {
     const decoded = Schema.decodeUnknownSync(connection)(bindings.CONTROL_PLANE);
-    const user = decodeURIComponent(new URL(decoded.connectionString).username);
-    if (user.length === 0) return false;
+    const user = await readRole(decoded.connectionString);
+    if (typeof user !== "string" || user.length === 0 || user.length > 128) return false;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(user));
     const hex = Array.from(new Uint8Array(digest), (byte) =>
       byte.toString(16).padStart(2, "0"),

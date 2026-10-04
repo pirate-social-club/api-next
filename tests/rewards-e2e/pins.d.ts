@@ -1,3 +1,3 @@
 declare module "#rewards-e2e-pins" {
-  export const databaseRoleUsernameSha256: string;
+  export const databaseSqlRoleSha256: string;
 }

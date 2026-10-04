@@ -9,7 +9,7 @@ resettable database. Failed or uncertain sends retain their reservations.
 Returned balances do not replenish the cumulative authorization automatically.
 
 The separate HTTP entrypoint is tests/rewards-e2e/entry.ts. Its compiled
-identity pin checks the database role and isolated API origin before application
+identity pin reads the actual SQL role and checks the isolated API origin before application
 initialization. Simulated claim verification is limited to development and
 reward-claim intents, binds each subject to its actor, and is labelled in the
 provider presentation and response header. Normal staging, production and jobs
@@ -69,3 +69,18 @@ reviewed Solid release 8baa1948 before copying its build. The isolated site
 proxies only the isolated API and disables HNS ingress. It requires no shared
 frontend build or source mutation. These preparations do not establish live
 Rewards acceptance.
+
+
+The first dark HTTP deployment refused because Hyperdrive supplies a pool
+username in its connection string. That username is not the origin SQL role.
+The resource guard now compares a fresh read-only current_user result with the
+compiled SQL role digest on every request. It does not cache a mutable origin
+or accept the pool username as authority. Shared origins and nondevelopment
+environments refuse before a database connection.
+
+The receipt observer subscribes only to the isolated jobs Worker before rewards
+are enabled. It retains public identifiers and never persists the private tail
+URL or full log payload. Gaps, malformed observations, expiry and failed cleanup
+are reported. Drawing advancement requires a captured transactionReadSequence
+of one from the pinned Worker and attestation, linked to the confirmed database
+purchase and independently canonical receipt. A later read cannot substitute.

@@ -12,6 +12,7 @@ import {
 
 const marker = "SIMULATED_REWARDS_CLAIM_VERIFICATION";
 const digest = createHash("sha256").update("isolated_fixture_role").digest("hex");
+const readRole = async () => "isolated_fixture_role";
 const bindings = {
   API_NEXT_ENV: "development",
   CONTROL_PLANE: { connectionString: "postgres://isolated_fixture_role:fixture@localhost/db" },
@@ -58,16 +59,60 @@ test("the adapter declares only the isolated development environment", () => {
 
 test("a copied test artifact cannot admit a shared origin or database role", async () => {
   const isolated = new Request("https://api-megapot-e2e-staging.pirate.sc/rewards/claim");
-  expect(await isIsolatedRequest(isolated, bindings, digest)).toBe(true);
+  expect(await isIsolatedRequest(isolated, bindings, digest, readRole)).toBe(true);
   expect(
     await isIsolatedRequest(
       new Request("https://api-next-staging.pirate.sc/rewards/claim"),
       bindings,
       digest,
+      readRole,
     ),
   ).toBe(false);
-  expect(await isIsolatedRequest(isolated, { ...bindings, API_NEXT_ENV: "staging" }, digest)).toBe(
+  expect(
+    await isIsolatedRequest(isolated, { ...bindings, API_NEXT_ENV: "staging" }, digest, readRole),
+  ).toBe(false);
+  expect(await isIsolatedRequest(isolated, bindings, "f".repeat(64), readRole)).toBe(false);
+});
+
+test("the pool username cannot substitute for a mismatched actual SQL role", async () => {
+  const isolated = new Request("https://api-megapot-e2e-staging.pirate.sc/rewards/claim");
+  expect(await isIsolatedRequest(isolated, bindings, digest, async () => "shared_role")).toBe(
     false,
   );
-  expect(await isIsolatedRequest(isolated, bindings, "f".repeat(64))).toBe(false);
+  const pooled = {
+    ...bindings,
+    CONTROL_PLANE: {
+      connectionString: "postgres://provider_pool:fixture@localhost/db",
+    },
+  };
+  expect(await isIsolatedRequest(isolated, pooled, digest, readRole)).toBe(true);
+  expect(await isIsolatedRequest(isolated, pooled, digest, async () => "retargeted_role")).toBe(
+    false,
+  );
+});
+
+test("SQL identity failure never admits the adapter and shared origins never read the database", async () => {
+  let reads = 0;
+  const read = async () => {
+    reads++;
+    throw new Error("Private provider diagnostic");
+  };
+  expect(
+    await isIsolatedRequest(
+      new Request("https://api-next-staging.pirate.sc/"),
+      bindings,
+      digest,
+      read,
+    ),
+  ).toBe(false);
+  expect(reads).toBe(0);
+  expect(
+    await isIsolatedRequest(
+      new Request("https://api-megapot-e2e-staging.pirate.sc/"),
+      bindings,
+      digest,
+      read,
+    ),
+  ).toBe(false);
+  expect(reads).toBe(1);
 });

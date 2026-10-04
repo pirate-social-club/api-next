@@ -30,7 +30,7 @@ export function assertDrawingAdvanceReady({ purchase, firstRead, receipt, expect
     firstRead.effectId !== expected.effectId ||
     firstRead.transactionHash !== expected.transactionHash ||
     !Number.isSafeInteger(firstRead.attempt) ||
-    firstRead.attempt < 1 ||
+    firstRead.attempt !== 1 ||
     !Number.isFinite(Date.parse(firstRead.observedAt))
   ) {
     throw new Error("The first jobs Worker receipt read is missing or mismatched");
