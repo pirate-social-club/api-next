@@ -11,6 +11,8 @@ const results = new Set([
 /** Keep public identifiers only; never persist an entire tail envelope or log object. */
 export function receiptEvents(envelope) {
   if (!envelope || !Array.isArray(envelope.logs)) throw new Error("Invalid receipt tail envelope");
+  if (["overload", "overload-stop"].includes(envelope.event?.type))
+    throw new Error("Receipt tail reported provider overload; capture incomplete");
   const events = [];
   for (const log of envelope.logs) {
     if (!Array.isArray(log.message)) throw new Error("Invalid receipt tail log");

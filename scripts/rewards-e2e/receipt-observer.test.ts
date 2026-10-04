@@ -159,3 +159,51 @@ test("an unexpected disconnect makes already captured evidence unusable", async 
     rmSync(directory, { recursive: true });
   }
 });
+
+for (const type of ["overload", "overload-stop"]) {
+  test(`native ${type} tail control refuses later sequence-one evidence`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "rewards-tail-overload-"));
+    try {
+      const observer = await subscribeJobsReceipts(directory, {
+        Socket,
+        api: async () => ({
+          id: "tail-overload",
+          url: "wss://fixture.invalid/tail",
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      });
+      Socket.last.message({ event: { type }, logs: [], exceptions: [] });
+      Socket.last.message({ logs: [{ message: [observation()] }] });
+      await observer.flush();
+      expect(() => firstJobsReceiptRead(observer.capture, expected)).toThrow("incomplete");
+      expect((await observer.close()).outcome).toBe("capture-incomplete");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+test("metadata storage failure taints evidence and still deletes the owned tail", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "rewards-tail-storage-"));
+  const calls: string[] = [];
+  const observer = await subscribeJobsReceipts(directory, {
+    Socket,
+    api: async (path: string, init: RequestInit) => {
+      calls.push(`${init.method} ${path}`);
+      return {
+        id: "tail-storage",
+        url: "wss://fixture.invalid/tail",
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+      };
+    },
+  });
+  rmSync(directory, { recursive: true });
+  Socket.last.message({ logs: [{ message: [observation()] }] });
+  await observer.flush();
+  expect(() => firstJobsReceiptRead(observer.capture, expected)).toThrow("incomplete");
+  Socket.last.dispatchEvent(new Event("close"));
+  expect((await observer.close()).outcome).toBe("capture-incomplete");
+  expect(calls).toEqual([
+    "POST /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails",
+    "DELETE /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails/tail-storage",
+  ]);
+});

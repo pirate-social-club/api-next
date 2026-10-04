@@ -21,22 +21,30 @@ export async function subscribeJobsReceipts(directory, dependencies = {}) {
     parseFailures: 0,
     events: [],
   };
-  const save = () =>
-    writeFileSync(
-      metadata,
-      `${JSON.stringify(
-        {
-          ...capture,
-          events: capture.events.length,
-        },
-        null,
-        2,
-      )}\n`,
-      { mode: 0o600 },
-    );
+  const save = () => {
+    try {
+      writeFileSync(
+        metadata,
+        `${JSON.stringify(
+          {
+            ...capture,
+            events: capture.events.length,
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      return true;
+    } catch {
+      capture.subscriptionGaps++;
+      capture.outcome = "capture-incomplete";
+      return false;
+    }
+  };
   // Refuse reuse of an evidence path; a retry cannot overwrite a failed subscription.
   writeFileSync(output, "", { flag: "wx", mode: 0o600 });
-  save();
+  if (!save()) throw new Error("Receipt evidence storage unavailable");
   let socket,
     tailId,
     heartbeat,
@@ -51,7 +59,11 @@ export async function subscribeJobsReceipts(directory, dependencies = {}) {
       clearInterval(heartbeat);
       clearTimeout(expiry);
       socket?.close();
-      await pending;
+      try {
+        await pending;
+      } catch {
+        capture.subscriptionGaps++;
+      }
       if (tailId) {
         try {
           await api(`${base}/${tailId}`, { method: "DELETE" });
@@ -133,7 +145,10 @@ export async function subscribeJobsReceipts(directory, dependencies = {}) {
           socket.send(JSON.stringify({ debug: false }));
           capture.connectedAt = new Date().toISOString();
           capture.outcome = "subscribed";
-          save();
+          if (!save()) {
+            reject(new Error("Receipt evidence storage unavailable"));
+            return;
+          }
           accept();
         },
         { once: true },
