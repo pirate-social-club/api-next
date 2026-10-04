@@ -1,0 +1,92 @@
+/** Reservations survive failed sends, uncertain receipts and database rebuilds. */
+import { mkdir, open, readdir, readFile, rmdir } from "node:fs/promises";
+import { join } from "node:path";
+
+export const spendingLimits = Object.freeze({
+  usdcAtomic: 10_000_000n,
+  ethWei: 50_000_000_000_000_000n,
+  principalPerRunAtomic: 1_000_000n,
+});
+
+function amount(value) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error("Spending amounts must be unsigned decimal strings");
+  }
+  return BigInt(value);
+}
+
+function validate(record) {
+  if (
+    record.chainId !== 84532 ||
+    !/^[a-f0-9]{64}$/.test(record.authoritySha256 ?? "") ||
+    !/^[a-z0-9][a-z0-9-]{0,99}$/.test(record.runId ?? "") ||
+    !/^[a-z0-9][a-z0-9-]{0,99}$/.test(record.actionId ?? "") ||
+    !["principal", "prize", "payout", "send", "gas"].includes(record.kind)
+  ) {
+    throw new Error("Invalid isolated spending reservation");
+  }
+  const usdc = amount(record.usdcAtomic);
+  const eth = amount(record.ethWei);
+  if (usdc + eth === 0n) throw new Error("Empty spending reservation");
+  if (record.kind === "principal" && usdc > spendingLimits.principalPerRunAtomic) {
+    throw new Error("Per-run principal limit exceeded");
+  }
+  return { usdc, eth };
+}
+
+async function durableWrite(path, record) {
+  const file = await open(path, "wx", 0o600);
+  try {
+    await file.writeFile(`${JSON.stringify(record)}\n`);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+export async function reserveSpending(directory, record) {
+  const requested = validate(record);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const lock = join(directory, ".reservation-lock");
+  // A stale lock requires explicit reconciliation; never silently replay a send.
+  await mkdir(lock);
+  try {
+    let usdc = requested.usdc;
+    let eth = requested.eth;
+    let principal = record.kind === "principal" ? requested.usdc : 0n;
+    const names = await readdir(directory);
+    for (const name of names) {
+      if (name === ".reservation-lock") continue;
+      if (!name.endsWith(".json")) throw new Error("Unknown spending ledger entry");
+      const previous = JSON.parse(await readFile(join(directory, name), "utf8"));
+      const reserved = validate(previous);
+      if (previous.authoritySha256 !== record.authoritySha256) {
+        throw new Error("Spending authority changed; reconciliation required");
+      }
+      if (previous.runId === record.runId && previous.actionId === record.actionId) {
+        throw new Error("Spending action already reserved; do not replay");
+      }
+      usdc += reserved.usdc;
+      eth += reserved.eth;
+      if (previous.runId === record.runId && previous.kind === "principal") {
+        principal += reserved.usdc;
+      }
+    }
+    if (principal > spendingLimits.principalPerRunAtomic) {
+      throw new Error("Per-run principal limit exceeded");
+    }
+    if (usdc > spendingLimits.usdcAtomic || eth > spendingLimits.ethWei) {
+      throw new Error("Aggregate isolated spending limit exceeded");
+    }
+    await durableWrite(join(directory, `${record.runId}--${record.actionId}.json`), record);
+    const parent = await open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    return { usdcReservedAtomic: usdc.toString(), ethReservedWei: eth.toString() };
+  } finally {
+    await rmdir(lock);
+  }
+}

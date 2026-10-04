@@ -1,0 +1,99 @@
+{
+  "name": "pirate-web-solid-megapot-e2e-staging",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "compatibility_date": "2026-08-13",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal"
+  ],
+  "main": "./dist/solid/ssr/index.js",
+  "no_bundle": true,
+  "assets": {
+    "directory": "./dist/solid/client",
+    "binding": "ASSETS"
+  },
+  "rules": [
+    {
+      "type": "ESModule",
+      "globs": [
+        "**/*.js",
+        "**/*.mjs"
+      ]
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "HnsCommunityAppReplayStoreDO"
+      ]
+    }
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "web-megapot-e2e-staging.pirate.sc",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "API_NEXT_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+    "PUBLIC_APP_CANONICAL_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+    "PRIVY_APP_ID": "cmsw5pis300b80cladbxx7bsr",
+    "VERIFICATION_UI_ENABLED": "true",
+    "COMMUNITY_CREATION_AVATAR_AUTHORING_ENABLED": "false",
+    "HNS_COMMUNITY_APP_INGRESS_ENABLED": "false",
+    "HNS_HANDLE_HOST_INGRESS_ENABLED": "false"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HNS_COMMUNITY_APP_REPLAY",
+        "class_name": "HnsCommunityAppReplayStoreDO"
+      }
+    ]
+  },
+  "secrets": {
+    "required": []
+  },
+  "env": {
+    "rewards-e2e": {
+      "name": "pirate-web-solid-megapot-e2e-staging",
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "web-megapot-e2e-staging.pirate.sc",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "API_NEXT_ORIGIN": "https://api-megapot-e2e-staging.pirate.sc",
+        "PUBLIC_APP_CANONICAL_ORIGIN": "https://web-megapot-e2e-staging.pirate.sc",
+        "PRIVY_APP_ID": "cmsw5pis300b80cladbxx7bsr",
+        "VERIFICATION_UI_ENABLED": "true",
+        "COMMUNITY_CREATION_AVATAR_AUTHORING_ENABLED": "false",
+        "HNS_COMMUNITY_APP_INGRESS_ENABLED": "false",
+        "HNS_HANDLE_HOST_INGRESS_ENABLED": "false"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "HNS_COMMUNITY_APP_REPLAY",
+            "class_name": "HnsCommunityAppReplayStoreDO"
+          }
+        ]
+      },
+      "secrets": {
+        "required": []
+      }
+    }
+  }
+}

@@ -22,7 +22,7 @@
     "workerd"
   ],
   "scripts": {
-    "check": "bun run check:knip && bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run check:scripts && bun run check:binding-contract && bun run check:persona-collector && bun run check:community-creator-activation && bun run lint:deps && bun run lint:http-boundary && bun run check:migrations:worktree && bun run check:fresh && bun run verify:api-client",
+    "check": "bun run check:knip && bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run check:scripts && bun run check:rewards-e2e && bun run check:binding-contract && bun run check:persona-collector && bun run check:community-creator-activation && bun run lint:deps && bun run lint:http-boundary && bun run check:migrations:worktree && bun run check:fresh && bun run verify:api-client",
     "check:knip": "node scripts/knip-ratchet.mjs",
     "check:persona-collector": "tsc --noEmit -p tsconfig.persona-collector.json && tsc --noEmit -p tsconfig.persona-executor.json",
     "check:binding-contract": "tsc --noEmit -p tsconfig.binding-contract.json",
@@ -68,7 +68,9 @@
     "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts",
     "test:video-workflow:postgres": "vitest run --config tests/workerd-video/vitest.config.ts --reporter=verbose",
     "avatars:remove": "bun scripts/remove-avatar.ts",
-    "reconcile:content-ratings": "bun scripts/reconcile-content-ratings.ts"
+    "reconcile:content-ratings": "bun scripts/reconcile-content-ratings.ts",
+    "check:rewards-e2e": "tsc --noEmit -p tsconfig.rewards-e2e.json",
+    "verify:rewards-e2e-build": "bun scripts/rewards-e2e/verify-build.mjs"
   },
   "dependencies": {
     "cizgile": "0.1.1",
