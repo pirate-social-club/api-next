@@ -311,8 +311,7 @@ import {
 } from "./study-profile-coverage.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
-import { makeTelegramHandlers } from "./telegram-handlers.ts";
-import { makeTelegramLinkingHandlers } from "./telegram-linking-handlers.ts";
+import { makeRecoveringTelegramHandlers } from "./telegram-setup-cache.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { assertVerificationRegistryOverride } from "./verification-registry-override.ts";
@@ -919,11 +918,10 @@ export async function createProductionHttpWorker(
     controlPlane,
     config.API_NEXT_ENV,
   );
-  const telegramServices = await makeTelegramServices(bindings, controlPlane);
-  const telegramHandlers = makeTelegramHandlers(telegramServices);
-  const telegramLinkingHandlers = makeTelegramLinkingHandlers(
-    await makeTelegramLinkServices(bindings, controlPlane, telegramServices),
-  );
+  const telegramHandlers = makeRecoveringTelegramHandlers({
+    chat: () => makeTelegramServices(bindings, controlPlane),
+    linking: (telegram) => makeTelegramLinkServices(bindings, controlPlane, telegram),
+  });
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
@@ -1817,7 +1815,6 @@ export async function createProductionHttpWorker(
       ...productHandlers,
       ListPostComments: makeCommentThreadHandler(makeCommentThreadStore(controlPlane)),
       ...telegramHandlers,
-      ...telegramLinkingHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),
       }),

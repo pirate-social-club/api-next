@@ -143,11 +143,12 @@
         "binding": "IMAGE_TRANSFORMATIONS"
       },
       "vars": {
-        "OPENAI_MODERATION_ENABLED": "false",
+        "OPENAI_MODERATION_ENABLED": "true",
     "MEDIA_PROCESSING_ENABLED": "true",
-        "VIDEO_ANALYSIS_ENABLED": "false",
-        "VIDEO_DELIVERY_ENABLED": "false",
-    "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "false",
+        "VIDEO_ANALYSIS_ENABLED": "true",
+        "VIDEO_DELIVERY_ENABLED": "true",
+    "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "true",
+        "VIDEO_SAFETY_GATE": "sampled_frame_openai_v1",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "https://pirate-video-source-gateway-staging.piratesocialclub.workers.dev",
         "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-staging",

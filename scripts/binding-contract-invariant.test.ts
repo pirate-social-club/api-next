@@ -517,17 +517,18 @@ describe("source-to-Wrangler binding contract", () => {
     resolved: known.filter((violation) => !actual.includes(violation)),
   });
 
-  test("CloudConvert is disabled in staging and its key belongs only to the media Worker", () => {
+  test("staging preserves its accepted video pipeline and keeps the render key on Media", () => {
     const staging = declaredEnvironment(configs.media, "staging");
-    expect(staging.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("false");
+    expect(staging.vars.OPENAI_MODERATION_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_SAFETY_GATE).toBe("sampled_frame_openai_v1");
     expect(staging.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
     for (const environment of ["development", "production"] as const) {
-      expect(declaredEnvironment(configs.media, environment).secrets).not.toContain(
-        "CLOUDCONVERT_RENDER_API_KEY",
-      );
-      expect(
-        declaredEnvironment(configs.media, environment).vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED,
-      ).toBeUndefined();
+      const disabled = declaredEnvironment(configs.media, environment);
+      expect(disabled.secrets).not.toContain("CLOUDCONVERT_RENDER_API_KEY");
+      expect(disabled.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBeUndefined();
     }
     expect(declaredEnvironment(configs.http, "staging").secrets).not.toContain(
       "CLOUDCONVERT_RENDER_API_KEY",
@@ -585,11 +586,10 @@ describe("source-to-Wrangler binding contract", () => {
   test("video Workflow bindings agree on class, name and processor script in every environment", () => {
     for (const environment of ENVIRONMENTS) {
       const suffix = environment === "development" ? "" : `-${environment}`;
+      const enabled = environment === "staging" ? "true" : "false";
       for (const worker of ["media", "jobs"] as const) {
         const block = rawEnvironment(configs[worker], environment);
-        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(
-          environment === "staging" && worker === "jobs" ? "true" : "false",
-        );
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(enabled);
         const bindings = block.workflows?.filter(
           (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
         );
@@ -608,7 +608,7 @@ describe("source-to-Wrangler binding contract", () => {
   test("declares staging video Workflow read access in both Workers", () => {
     for (const worker of ["jobs", "media"] as const) {
       const staging = declaredEnvironment(configs[worker], "staging");
-      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe(worker === "jobs" ? "true" : "false");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("true");
       expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
       expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
       expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
