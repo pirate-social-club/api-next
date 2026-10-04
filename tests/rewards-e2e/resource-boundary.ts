@@ -1,5 +1,5 @@
 import { ControlPlaneDb } from "@pirate/application";
-import { makeReadOnlyPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect, Schema } from "effect";
 
 const connection = Schema.Struct({ connectionString: Schema.String });
@@ -18,11 +18,14 @@ async function readIsolatedSqlRole(connectionString: string): Promise<string> {
         });
       }).pipe(
         Effect.provide(
-          makeReadOnlyPostgresControlPlaneLayer(connectionString, {
-            connectTimeoutMs: 5_000,
-            statementTimeoutMs: 2_000,
-            logger: { info: () => {}, error: () => {} },
-          }),
+          makeHyperdriveControlPlaneLayer(
+            { connectionString },
+            {
+              connectTimeoutMs: 5_000,
+              statementTimeoutMs: 2_000,
+              logger: { info: () => {}, error: () => {} },
+            },
+          ),
         ),
       ),
     ),
@@ -46,16 +49,31 @@ export async function isIsolatedRequest(
   ) {
     return false;
   }
+  let stage = "binding-decoding";
   try {
-    const decoded = Schema.decodeUnknownSync(connection)(bindings.CONTROL_PLANE);
+    // Native Hyperdrive properties live on its prototype, rather than own keys.
+    const decoded = Schema.decodeUnknownSync(connection)({
+      connectionString: (
+        bindings.CONTROL_PLANE as { readonly connectionString?: unknown } | undefined
+      )?.connectionString,
+    });
+    stage = "sql-identity";
     const user = await readRole(decoded.connectionString);
     if (typeof user !== "string" || user.length === 0 || user.length > 128) return false;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(user));
     const hex = Array.from(new Uint8Array(digest), (byte) =>
       byte.toString(16).padStart(2, "0"),
     ).join("");
-    return hex === expectedRoleDigest;
+    if (hex !== expectedRoleDigest) {
+      console.error("rewards_e2e_resource_refused", {
+        stage: "sql-role-mismatch",
+        observedDigest: hex,
+      });
+      return false;
+    }
+    return true;
   } catch {
+    console.error("rewards_e2e_resource_refused", { stage });
     return false;
   }
 }

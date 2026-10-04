@@ -116,3 +116,26 @@ test("SQL identity failure never admits the adapter and shared origins never rea
   ).toBe(false);
   expect(reads).toBe(1);
 });
+
+test("native Hyperdrive prototype accessors are projected before schema decoding", async () => {
+  let reads = 0;
+  const native = Object.create({
+    get connectionString() {
+      return "postgres://provider_pool:fixture@localhost/db";
+    },
+  });
+  expect(Object.hasOwn(native, "connectionString")).toBe(false);
+  expect(
+    await isIsolatedRequest(
+      new Request("https://api-megapot-e2e-staging.pirate.sc"),
+      { API_NEXT_ENV: "development", CONTROL_PLANE: native },
+      digest,
+      async (connectionString) => {
+        reads++;
+        expect(connectionString).toBe("postgres://provider_pool:fixture@localhost/db");
+        return "isolated_fixture_role";
+      },
+    ),
+  ).toBe(true);
+  expect(reads).toBe(1);
+});
