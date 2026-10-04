@@ -84,3 +84,41 @@ URL or full log payload. Gaps, malformed observations, expiry and failed cleanup
 are reported. Drawing advancement requires a captured transactionReadSequence
 of one from the pinned Worker and attestation, linked to the confirmed database
 purchase and independently canonical receipt. A later read cannot substitute.
+
+Run preparation readback with `bun run e2e:rewards`. Set
+`REWARDS_E2E_EVIDENCE_ROOT` to the durable authority package containing
+owner-authorization.json, database-identity.json and spending-ledger. Set
+`REWARDS_E2E_SOLID_ROOT` to the canonical Solid repository and
+`REWARDS_E2E_KARAOKE_WAV` to the accepted fixture microphone WAV. The command
+loads both approved Infisical folders in memory. Run `bun run e2e:rewards --execute`
+to execute win and loss sequentially on the same committed, serving API and
+Solid release. An interrupted invocation retains its lock and all single-use
+markers for recovery; it never replays an uncertain signature.
+
+Future runner branches use the reviewed `provision-branch.ts` helper merged in
+PR #549, commit 79caabb98645e25c225dc302fb716ab148dcb24d. First run its read-only
+plan, then `bun scripts/rewards-e2e/provision-branch.ts rewards-runner-YYYYMMDD
+--execute --receipt=/absolute/durable/branch-receipt.json`. Independently verify the receipt before credentials or Hyperdrive.
+The helper pins the organization, database, PostgreSQL 17, PS_5_AWS_ARM and
+zero replicas. Existing runner branch l8mhyb0fxy54 was resized to zero replicas
+under completed provider change 8w2whwejklwt. The current runner reuses that branch.
+It does not create or delete paid database resources.
+
+The canonical backing audio is copied byte-for-byte into
+`pirate-media-immutable-megapot-e2e-staging`, with SHA-256
+`51afd9db7bb1e0be27c0d1fd4c55741d0570027dd6c20a6f087388e971c62d08`.
+Its GET/HEAD CORS policy permits only the isolated frontend. Playback uses
+that bucket and requires an approved managed read credential scoped to it.
+The shared staging playback credential refuses this bucket with HTTP 403.
+Do not widen that credential or change shared bucket CORS. No funded run
+may begin until real isolated Karaoke playback and qualification pass.
+
+Preparation and closeout check the maintained nine shutdown inventory families
+and unresolved winner sends across the entire isolated database. A successful
+run also verifies the paused brake, disabled flags and owned browser cleanup.
+Late evidence and failed receipt-observer cleanup cannot pass acceptance.
+
+Jobs publish commitments only at the isolated bucket's reviewed managed domain,
+`pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev`. The runner verifies that domain is
+enabled and matches the serving jobs binding before execution. The initial
+readback on October 5 found it disabled. Source preparation does not enable it.

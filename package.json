@@ -70,6 +70,7 @@
     "avatars:remove": "bun scripts/remove-avatar.ts",
     "reconcile:content-ratings": "bun scripts/reconcile-content-ratings.ts",
     "check:rewards-e2e": "tsc --noEmit -p tsconfig.rewards-e2e.json",
+    "e2e:rewards": "bun scripts/rewards-e2e/rewards-runner.mjs",
     "verify:rewards-e2e-build": "bun scripts/rewards-e2e/verify-build.mjs"
   },
   "dependencies": {
@@ -89,7 +90,9 @@
     "fast-xml-parser": "5.11.1",
     "knip": "^6.32.2",
     "msw": "^2.14.0",
+    "playwright": "1.63.0",
     "typescript": "^7.0.2",
+    "viem": "2.55.18",
     "vitest": "^4.1.10",
     "wrangler": "^4.123.0"
   }
