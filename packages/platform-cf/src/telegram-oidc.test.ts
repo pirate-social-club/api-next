@@ -135,10 +135,11 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     expect(f.calls).toHaveLength(0);
   });
 
-  test("exchanges once, pins endpoints and retains numeric id only", async () => {
+  test("exchanges once, pins endpoints and separates numeric identity from transient display", async () => {
     const f = await fixture();
     expect(await Effect.runPromise(f.client.exchange(INPUT))).toEqual({
       telegramUserId: "987654321",
+      display: { name: "learner", username: "learner_fixture" },
     });
     expect(f.calls.map((call) => call.url)).toEqual([
       "https://oauth.telegram.org/.well-known/jwks.json",
@@ -230,6 +231,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     f.advance(30);
     expect(await Effect.runPromise(f.client.exchange(INPUT))).toEqual({
       telegramUserId: "987654321",
+      display: { name: "learner", username: "learner_fixture" },
     });
     expect(f.calls.filter((call) => call.url.endsWith("jwks.json"))).toHaveLength(2);
   });
@@ -361,7 +363,10 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       expect(f.keyFetches()).toBe(1);
     } finally {
       f.release();
-      expect(await firstLogin).toEqual({ telegramUserId: "987654321" });
+      expect(await firstLogin).toEqual({
+        telegramUserId: "987654321",
+        display: { name: "learner", username: "learner_fixture" },
+      });
     }
   });
 
@@ -375,6 +380,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
       await f.started;
       expect(await Effect.runPromise(f.client.exchange(INPUT))).toEqual({
         telegramUserId: "987654321",
+        display: { name: "learner", username: "learner_fixture" },
       });
       f.useToken(
         await new SignJWT(payload())
@@ -386,7 +392,10 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     } finally {
       f.useToken(await signed());
       f.release();
-      expect(await refreshing).toEqual({ telegramUserId: "987654321" });
+      expect(await refreshing).toEqual({
+        telegramUserId: "987654321",
+        display: { name: "learner", username: "learner_fixture" },
+      });
     }
   });
 
@@ -411,6 +420,7 @@ describe("Pirate-controlled Telegram OIDC evidence", () => {
     expect((await failure(client)).reason).toBe("provider_unavailable");
     expect(await Effect.runPromise(client.exchange(INPUT))).toEqual({
       telegramUserId: "987654321",
+      display: { name: "learner", username: "learner_fixture" },
     });
     currentToken = rotated;
     expect((await failure(client)).reason).toBe("provider_unavailable");

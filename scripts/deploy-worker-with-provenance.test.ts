@@ -12,6 +12,15 @@ import {
 
 import type { PrepareStagingBindingGuard } from "./staging-serving-bindings-preflight.ts";
 
+import type { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
+
+const allowTelegram: typeof withTelegramActivationDeployment = async (
+  _root,
+  _config,
+  _environment,
+  operation,
+) => operation();
+
 const allowStagingBindings: PrepareStagingBindingGuard = async () => null;
 
 import type { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
@@ -81,8 +90,45 @@ describe("Worker deployment provenance", () => {
           undefined,
           refuse,
           allowStagingBindings,
+          allowTelegram,
         ),
       ).rejects.toThrow("unpaid_credits");
+      expect(commands.some((command) => command.includes("deploy"))).toBe(false);
+    }
+  });
+  test("both Telegram executors refuse upload before reward or deployment work", async () => {
+    for (const configPath of [
+      "apps/http-worker/wrangler.jsonc",
+      "apps/jobs-worker/wrangler.jsonc",
+    ]) {
+      const { runner, commands } = queueRunner([
+        { exitCode: 0, stdout: sourceSha },
+        { exitCode: 0 },
+        { exitCode: 0 },
+        { exitCode: 0 },
+        { exitCode: 0, stdout: configPath },
+        { exitCode: 0, stdout: "[]" },
+      ]);
+      const refused: typeof withTelegramActivationDeployment = async (_root, config, env) => {
+        expect(config).toBe(configPath);
+        expect(env).toBe("prod");
+        throw Error("Telegram activation refused");
+      };
+      const reward: typeof withRewardsBindingDeployment = async () => {
+        throw Error("reward must not run");
+      };
+      await expect(
+        deployWorkerWithProvenance(
+          "/repo",
+          { ...input, configPath, environment: "prod" },
+          runner,
+          undefined,
+          undefined,
+          reward,
+          allowStagingBindings,
+          refused,
+        ),
+      ).rejects.toThrow("Telegram activation refused");
       expect(commands.some((command) => command.includes("deploy"))).toBe(false);
     }
   });
@@ -226,6 +272,7 @@ describe("Worker deployment provenance", () => {
         undefined,
         allowRewardDeployment,
         allowStagingBindings,
+        allowTelegram,
       ),
     ).resolves.toEqual({
       schema_version: 1,
@@ -288,6 +335,7 @@ describe("Worker deployment provenance", () => {
         async () => pin,
         allowRewardDeployment,
         allowStagingBindings,
+        allowTelegram,
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(commands[5]?.[0]).toBe("timeout");

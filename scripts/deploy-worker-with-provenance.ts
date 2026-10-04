@@ -5,12 +5,12 @@ import {
   readHnsStagingGatewayPin,
   verifyHnsStagingGatewayManifest,
 } from "./hns-staging-gateway-preflight.ts";
-
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import {
   type PrepareStagingBindingGuard,
   prepareStagingBindingGuard,
 } from "./staging-serving-bindings-preflight.ts";
+import { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
 import type { BindingDriftReceipt } from "./worker-binding-drift.ts";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
@@ -268,6 +268,7 @@ export async function deployWorkerWithProvenance(
   readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
   rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
   stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
+  telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
@@ -305,33 +306,35 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
-  const deployed = await rewardDeploymentGuard(
+  const deployed = await telegramDeploymentGuard(
     repositoryRoot,
     configPath,
     input.environment,
-    async (signal) => {
-      if (bindingGuard !== null) {
-        await bindingGuard.recheck();
-        const current = await verifyDeploymentSource(repositoryRoot, input, runner);
-        if (current.sourceSha !== sourceSha) throw Error("deployment source changed before upload");
-      }
-      if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
-      return runner(
-        [
-          "bunx",
-          "wrangler",
-          "deploy",
-          "--env",
-          input.environment,
-          "--config",
-          configPath,
-          "--message",
-          message,
-        ],
-        repositoryRoot,
-        signal,
-      );
-    },
+    () =>
+      rewardDeploymentGuard(repositoryRoot, configPath, input.environment, async (signal) => {
+        if (bindingGuard !== null) {
+          await bindingGuard.recheck();
+          const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+          if (current.sourceSha !== sourceSha)
+            throw Error("deployment source changed before upload");
+        }
+        if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
+        return runner(
+          [
+            "bunx",
+            "wrangler",
+            "deploy",
+            "--env",
+            input.environment,
+            "--config",
+            configPath,
+            "--message",
+            message,
+          ],
+          repositoryRoot,
+          signal,
+        );
+      }),
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);

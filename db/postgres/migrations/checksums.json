@@ -238,6 +238,7 @@
     "0235_spaces_owner_proof_evidence_bound.sql": "b63bc56e0cf63184c0d962073081cda836a5372d46243b4e2ace210e9ecd1188",
     "0236_video_outcome_claims.sql": "0ebbd826d68948a8667746338ebf68bd52049c05176327d170c04eb8b0691682",
     "0237_telegram_learner_linking.sql": "0c3954ae61007d5e5488b214b1e66b19b3b6d5a750b1fd62beb9adc852334a22",
-    "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59"
+    "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
+    "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc"
   }
 }

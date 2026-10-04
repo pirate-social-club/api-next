@@ -33,6 +33,9 @@ describe("Telegram login evidence in workerd", () => {
         aud: "10000001",
         sub: "opaque-subject",
         id: 987654321,
+        name: "Learner fixture",
+        preferred_username: "learner_fixture",
+        picture: "https://profile.test/private-picture",
         nonce: input.nonce,
         iat: now,
         exp: now + 3600,
@@ -57,6 +60,7 @@ describe("Telegram login evidence in workerd", () => {
       if (redirectStage === "none") {
         expect(await Effect.runPromise(client.exchange(input))).toEqual({
           telegramUserId: "987654321",
+          display: { name: "Learner fixture", username: "learner_fixture" },
         });
       } else {
         expect((await Effect.runPromise(Effect.flip(client.exchange(input)))).reason).toBe(
@@ -129,11 +133,12 @@ describe("Telegram login evidence in workerd", () => {
           aud: audience,
           sub: "opaque-subject",
           id: 987654321,
+          name: "Learner fixture",
+          preferred_username: "learner_fixture",
+          picture: "https://profile.test/private-picture",
           nonce,
           iat: now,
           exp: now + 3600,
-          name: "learner",
-          preferred_username: "learner_fixture",
         };
         const signingInput = `${encoded({ alg: "RS256", kid: "fixture" })}.${encoded(claims)}`;
         const signature = await crypto.subtle.sign(
@@ -148,10 +153,26 @@ describe("Telegram login evidence in workerd", () => {
     const input = { code: "fixture-code", nonce, verifier: "v".repeat(43) };
     expect(await Effect.runPromise(client.exchange(input))).toEqual({
       telegramUserId: "987654321",
+      display: { name: "Learner fixture", username: "learner_fixture" },
     });
     audience = "20000002";
     expect((await Effect.runPromise(Effect.flip(client.exchange(input)))).reason).toBe(
       "invalid_proof",
     );
+  });
+});
+
+describe("Telegram native voice transport", () => {
+  it("downloads OGG through the actual Worker fetch and acknowledges old callbacks", async () => {
+    const { makeTelegramApi } = await import("../../packages/platform-cf/src/telegram-api.ts");
+    const api = makeTelegramApi(fetch);
+    expect([...(await api.downloadVoice("123:fixture-token", "fixture-file"))]).toEqual([
+      79, 103, 103, 83, 0, 1,
+    ]);
+    expect(
+      await api.call("123:fixture-token", "answerCallbackQuery", {
+        callback_query_id: "old-fixture",
+      }),
+    ).toBe(true);
   });
 });

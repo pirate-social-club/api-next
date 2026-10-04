@@ -2,6 +2,14 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/telegram-study": new URL(
+    "../../packages/application/src/telegram-study.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/telegram-linking": new URL(
+    "../../packages/application/src/telegram-linking.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,

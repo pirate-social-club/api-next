@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.108.0",
+  "sourceBranch": "feat/telegram-practice-pilot",
+  "sourceBase": "aa0137fb2644857bfaaaa309367c78683e216a58",
+  "validatedSourceCommit": "2a790169040425173e4eac66dced083586cd1571",
+  "pullRequest": null,
+  "wireContract": "Additive state-and-private-browser callback verification with exact account/session binding. Transient name/username confirmation display is returned only from verified login, never persisted. Independently proven identity conflicts return details.reason telegram_identity_already_linked_to_another_account; the client exports its exact constant. All other conflicts retain their meaning. No Telegram reward or money authority is added.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.108.0.tgz",
+    "sha256": "1f2c7042c40f57a33343d2946fa543c40e20739c342578bdbba6d3a35a54d9c3"
+  },
+  "validation": {
+    "status": "Final local gates passed; hosted required checks pending",
+    "passed": [
+      "bun run check: types, Effect diagnostics, lint, dependency boundaries, 239 migrations, generated contracts and client 0.108.0 package provenance passed",
+      "bun run test: 5456 unit tests passed, one existing skip; 22 Node tests and 225 native Worker tests passed",
+      "PostgreSQL 17: 43 tests and 505 assertions passed across linking privileges/authority, Telegram persistence, Study lifecycle/foundation/retry and schema foundation",
+      "Chat scope: 13 focused cases and 45 assertions, including another community receiving unavailable instead of practice"
+    ],
+    "remaining": [
+      "Hosted required checks and coordinator PR review",
+      "Separate Solid source journey and real phone/browser/Telegram acceptance"
+    ],
+    "operationalBoundary": "No deployment, credential provisioning, serving permissions, real provider call or pilot activation authorized."
+  }
+}

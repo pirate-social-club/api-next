@@ -462,6 +462,7 @@ TRUNCATE TABLE
   "telegram_bot_grants",
   "telegram_link_navigation",
   "telegram_link_transactions",
+  "telegram_study_conversations",
   "text_content_held_revisions",
   "text_content_submissions",
   "text_moderation_cases",

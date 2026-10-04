@@ -33,6 +33,7 @@ export interface TelegramLinkStore {
   }): Promise<void>;
   start(input: TelegramLinkStart): Promise<TelegramLinkTransaction>;
   get(id: string, browser: TelegramLinkBrowser): Promise<TelegramLinkTransaction>;
+  findPending(stateHash: string, browser: TelegramLinkBrowser): Promise<string>;
   claim(id: string, browser: TelegramLinkBrowser, stateHash: string): Promise<string>;
   verified(
     id: string,
@@ -43,7 +44,7 @@ export interface TelegramLinkStore {
   confirm(id: string, browser: TelegramLinkBrowser, personaId: string): Promise<TelegramLinkGrant>;
   revoke(browser: TelegramLinkBrowser, communityId: string, botId: string): Promise<void>;
   unlink(browser: TelegramLinkBrowser, telegramUserId: string): Promise<void>;
-  /** No Study dispatch yet; future acceptance must recheck this revision atomically. */
+  /** Study acceptance rechecks this revision atomically against the current bot and persona. */
   resolveGrant(
     communityId: string,
     botId: string,
@@ -52,6 +53,7 @@ export interface TelegramLinkStore {
   ): Promise<{
     accountId: string;
     personaId: string;
+    personaLabel?: string;
     revision: number;
   } | null>;
   cleanup(): Promise<void>;
@@ -114,9 +116,25 @@ export async function verifyTelegramLink(
       verifier: string;
     };
     const identity = await oidc(services.oidc.exchange({ ...stored, code }), signal);
-    return await services.store.verified(id, browser, identity.telegramUserId);
+    const transaction = await services.store.verified(id, browser, identity.telegramUserId);
+    // Profile display survives only this no-store verification response, never repository storage.
+    return {
+      ...transaction,
+      ...(identity.display === undefined ? {} : { confirmation_display: identity.display }),
+    };
   } catch (error) {
     await services.store.fail(id, browser);
     throw error;
   }
+}
+
+export async function verifyTelegramLinkCallback(
+  services: TelegramLinkServices,
+  browser: TelegramLinkBrowser,
+  state: string,
+  code: string,
+  signal?: AbortSignal,
+) {
+  const id = await services.store.findPending(await services.vault.hash(state), browser);
+  return verifyTelegramLink(services, browser, id, state, code, signal);
 }

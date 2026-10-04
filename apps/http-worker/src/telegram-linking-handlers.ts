@@ -4,6 +4,7 @@ import {
   type TelegramLinkBrowser,
   type TelegramLinkServices,
   verifyTelegramLink,
+  verifyTelegramLinkCallback,
 } from "@pirate/application/telegram-linking";
 import { TelegramOidcRejected } from "@pirate/application/telegram-oidc";
 import {
@@ -14,6 +15,7 @@ import {
   NotFound,
   ProviderUnavailable,
   RateLimited,
+  TELEGRAM_IDENTITY_LINK_CONFLICT_REASON,
 } from "@pirate/contracts";
 import { type DecodedRequest, type EndpointHandler, withEndpointResult } from "./transport.ts";
 
@@ -45,6 +47,12 @@ function guarded(handler: EndpointHandler): EndpointHandler {
             throw new AuthError({ message });
           case "not_found":
             throw new NotFound({ message });
+          case "identity_conflict":
+            throw new Conflict({
+              message:
+                "This Telegram identity is linked to another Pirate account. Unlink it there before linking here.",
+              details: { reason: TELEGRAM_IDENTITY_LINK_CONFLICT_REASON },
+            });
           case "conflict":
             throw new Conflict({ message });
           case "invalid":
@@ -103,6 +111,20 @@ export function makeTelegramLinkingHandlers(
           required(),
           await bound(request),
           id(request),
+          input.state,
+          input.code,
+          request.signal,
+        ),
+        200,
+        noStore,
+      );
+    },
+    VerifyTelegramLinkCallback: async (request) => {
+      const input = request.body as { state: string; code: string };
+      return withEndpointResult(
+        await verifyTelegramLinkCallback(
+          required(),
+          await bound(request),
           input.state,
           input.code,
           request.signal,

@@ -28,18 +28,30 @@ If 0237 is already installed, check these privileges before its affected paths r
 Run the following read-only query through each actual serving connection after
 provisioning. The three DELETE results must be true; merely reading grants from
 an administrator connection or a staging role does not establish production
-permissions. The three TRUNCATE results must remain false. Read back DELETE
-and TRUNCATE on telegram_bot_grants as false as well; effective inherited
+permissions. All five TRUNCATE results must remain false. Read back DELETE
+and TRUNCATE on telegram_bot_grants and telegram_study_conversations as false as well; effective inherited
 privileges matter, not just direct grants. Record role, schema, serving
 provenance and results without secrets.
 
 ```sql
-SELECT current_user AS runtime_role, current_schema() AS runtime_schema,
-       table_name, has_table_privilege(current_user, table_name, 'DELETE') AS can_delete,
-       has_table_privilege(current_user, table_name, 'TRUNCATE') AS can_truncate
-FROM (VALUES ('telegram_account_associations'),
-             ('telegram_link_transactions'),
-             ('telegram_link_navigation')) AS required(table_name);
+SELECT
+  current_user::text AS runtime_role, required.table_name, required.expected_delete,
+  COALESCE(has_schema_privilege(current_user, n.oid, 'USAGE'), FALSE) AS schema_usage,
+  COALESCE(c.relkind IN ('r','p'), FALSE) AS table_exists,
+  COALESCE(pg_has_role(current_user, c.relowner, 'USAGE'), FALSE) AS owner_equivalent,
+  COALESCE(has_table_privilege(current_user, c.oid, 'SELECT'), FALSE) AS can_select,
+  COALESCE(has_table_privilege(current_user, c.oid, 'INSERT'), FALSE) AS can_insert,
+  COALESCE(has_table_privilege(current_user, c.oid, 'UPDATE'), FALSE) AS can_update,
+  COALESCE(has_table_privilege(current_user, c.oid, 'DELETE'), FALSE) AS can_delete,
+  FALSE AS expected_truncate,
+  COALESCE(has_table_privilege(current_user, c.oid, 'TRUNCATE'), FALSE) AS can_truncate
+FROM (VALUES ('telegram_account_associations', TRUE),
+             ('telegram_link_transactions', TRUE),
+             ('telegram_link_navigation', TRUE),
+             ('telegram_bot_grants', FALSE),
+             ('telegram_study_conversations', FALSE)) AS required(table_name, expected_delete)
+LEFT JOIN pg_catalog.pg_namespace n ON n.nspname='api_next'
+LEFT JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid AND c.relname=required.table_name;
 ```
 
 The new PostgreSQL privilege test provisions the documented pre-0237 runtime
@@ -51,30 +63,40 @@ introduced, and consent revisions and an unrelated money-table deletion denial
 survive. Tests use a disposable PostgreSQL fixture, not a serving database.
 No production role readback or privilege change was performed for this repair.
 
-## Website slice requirements
+The deployment wrapper checks the actual executor before upload whenever the
+selected HTTP or jobs configuration enables Telegram, linking or practice.
+Both runtime constructors independently query the actual connected executor;
+direct deployments and dashboard flag changes cannot bypass admission. Missing
+schema, owner-equivalent access, missing ordinary access, missing required
+DELETE or excessive DELETE/TRUNCATE are refused. The standalone read-only
+command is bun run db:preflight:telegram-activation. Its connection must be the
+actual serving role, separately evidenced in each environment. Shared staging
+may need DELETE revoked; that mutation still requires owner approval.
+Migration 0239 must precede code using the shared Study practice marker, even
+when Telegram flags remain false.
 
-The merged API still returns a generic conflict for an already-associated
-Telegram identity. Before admitting the linking UI, add a specific recovery
-reason for an independently proven identity already linked to another account,
-with a path to unlink from that account. Do not reveal the other account's
-identity. Distinguish it from other refused or stale ceremonies. This needs an
-explicit reviewed contract/client change rather than client interpretation of
-all generic 409 responses as an association conflict.
+## Website contracts
 
-The adapter currently discards names and usernames, so confirmation shows only
-the numeric Telegram ID. The website slice should offer recognizable name or
-username from the independently verified login for the confirmation step only.
-Do not persist profile data, include it in logs or telemetry, or treat display
-fields as identity proof. The numeric ID remains the association authority.
-Design the ephemeral delivery deliberately; the existing projection cannot
-supply profile fields that have already been discarded.
+The integrated practice API adds POST /telegram/link/callback/verify. Its
+state-hash lookup uses the private browser binding and exact signed-in account
+and session. The existing verification path then rechecks expiry, current bot
+and single use before consuming the provider code. The UI does not need a
+transaction ID in per-tab storage. A session refresh is rejected; restart safely
+rather than weakening this binding.
 
-Telegram redirects with code and state, not the transaction ID required by the
-current verify path. Do not depend on per-tab storage alone. Resolve the attempt
-using state hash and the private browser binding, still enforcing account,
-session, expiry and single-use checks. Prove new-tab redirects and invalid or
-ambiguous state cannot select another transaction. This is future API and UI
-work; the privileges repair does not claim to provide the lookup endpoint.
+An independently proven Telegram identity already associated with another
+account returns a 409 conflict with details.reason equal to
+telegram_identity_already_linked_to_another_account. The client exports
+TELEGRAM_IDENTITY_LINK_CONFLICT_REASON. Other conflicts do not imply that an
+association exists. Reveal no other account identity; offer recovery by
+unlinking there before starting a fresh ceremony.
+
+Verified name and username may appear in confirmation_display only in the
+no-store verification response. The repository persists only numeric Telegram
+identity, and later transaction reads cannot recover those display fields.
+The UI keeps them only while the confirmation is displayed. No picture, name,
+username, login code or state belongs in storage, logs or analytics. Display
+fields are not identity proof. Numeric identity remains authoritative.
 
 Include a sign-in session refresh between start and callback in phone-browser
 acceptance. The current exact session hash rejects it. Show a safe restart when
