@@ -48,7 +48,10 @@ import {
   makePrivySessionIdentityStore,
   makeSessionIdentityStore,
 } from "@pirate/application/use-cases/session-exchange";
-import type { VerificationIntentResolver } from "@pirate/application/verification";
+import type {
+  VerificationIntentResolver,
+  VerificationProviderRegistryService,
+} from "@pirate/application/verification";
 import {
   AuthError,
   BadRequest,
@@ -312,6 +315,7 @@ import { makeTelegramHandlers } from "./telegram-handlers.ts";
 import { makeTelegramLinkingHandlers } from "./telegram-linking-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
+import { assertVerificationRegistryOverride } from "./verification-registry-override.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
 import { makeVideoOutcomeHandlers } from "./video-outcome-handlers.ts";
 import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
@@ -484,6 +488,8 @@ export interface HttpWorkerBindings
 }
 
 export interface HttpWorkerCompositionDependencies {
+  /** Separate development test build only; never selected by a runtime binding. */
+  readonly verification_registry?: VerificationProviderRegistryService;
   readonly hns_ownership?: Readonly<{
     readonly transport?: HnsOwnerTransport;
   }>;
@@ -816,6 +822,7 @@ export async function createProductionHttpWorker(
   bindings: HttpWorkerBindings,
   dependencies: HttpWorkerCompositionDependencies = {},
 ) {
+  assertVerificationRegistryOverride(bindings.API_NEXT_ENV, dependencies.verification_registry);
   assertSupportedAuthPolicies(endpoints);
   const config = loadWorkerConfig(bindings);
   const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
@@ -1152,45 +1159,49 @@ export async function createProductionHttpWorker(
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
-  const verificationRegistry = await Effect.runPromise(
-    makePlatformVerificationProviderRegistry({
-      ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
-        ? {
-            self_pass: {
-              callback_origin: selfPassOrigin,
-              app_name: config.SELF_PASS_APP_NAME,
-              mock_passport: config.SELF_PASS_MOCK_PASSPORT,
-            },
-          }
-        : {}),
-      ...(config.ZKPASSPORT_ENABLED
-        ? {
-            zkpassport: {
-              domain: config.ZKPASSPORT_DOMAIN,
-              name: config.ZKPASSPORT_NAME,
-              ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
-              verifier_url: config.ZKPASSPORT_VERIFIER_URL,
-              verifier_shared_secret: zkPassportBearerSecret,
-              verifier_response_signing_secret: zkPassportSigningSecret,
-              verifier_response_signing_key_id: config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
-              ...(previousSigningKeyComplete
-                ? {
-                    previous_verifier_response_signing_key: {
-                      key_id: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
-                      secret: zkPassportPreviousSigningSecret,
-                      valid_until: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
-                    },
-                  }
-                : {}),
-              dev_mode: config.ZKPASSPORT_DEV_MODE,
-            },
-          }
-        : {}),
-      ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
-      ...(veryWebOptions === undefined ? {} : { very_web: veryWebOptions }),
-      callback_credential_headers: callbackCredentialHeaderNames,
-    }),
-  );
+  const verificationRegistry =
+    dependencies.verification_registry ??
+    (await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({
+        ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
+          ? {
+              self_pass: {
+                callback_origin: selfPassOrigin,
+                app_name: config.SELF_PASS_APP_NAME,
+                mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+              },
+            }
+          : {}),
+        ...(config.ZKPASSPORT_ENABLED
+          ? {
+              zkpassport: {
+                domain: config.ZKPASSPORT_DOMAIN,
+                name: config.ZKPASSPORT_NAME,
+                ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
+                verifier_url: config.ZKPASSPORT_VERIFIER_URL,
+                verifier_shared_secret: zkPassportBearerSecret,
+                verifier_response_signing_secret: zkPassportSigningSecret,
+                verifier_response_signing_key_id:
+                  config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
+                ...(previousSigningKeyComplete
+                  ? {
+                      previous_verifier_response_signing_key: {
+                        key_id: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
+                        secret: zkPassportPreviousSigningSecret,
+                        valid_until:
+                          config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
+                      },
+                    }
+                  : {}),
+                dev_mode: config.ZKPASSPORT_DEV_MODE,
+              },
+            }
+          : {}),
+        ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
+        ...(veryWebOptions === undefined ? {} : { very_web: veryWebOptions }),
+        callback_credential_headers: callbackCredentialHeaderNames,
+      }),
+    ));
   const ageProvidersReady =
     selfPassOrigin !== undefined &&
     ["self.pass", "zkpassport"].every((provider) =>
