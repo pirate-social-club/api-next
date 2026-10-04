@@ -172,7 +172,7 @@ for (const capabilityStatus of ["active", "suspended"] as const)
         const discovery = await ready.call(`/communities/${ready.community}/hns-root-imports`);
         expect(discovery.status).toBe(200);
         expect(await discovery.json()).toMatchObject({
-          attachment: { status: "suspended", binding_generation: 2 },
+          attachment: { status: "suspended", binding_generation: 2, can_recover_ownership: true },
         });
         expect(await Effect.runPromise(hostAuthority.resolve("journeytest.harbor"))).toMatchObject({
           namespace_authority_effective: false,

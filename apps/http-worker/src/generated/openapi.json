@@ -34787,6 +34787,9 @@
                             },
                             "binding_generation": {
                               "type": "integer"
+                            },
+                            "can_recover_ownership": {
+                              "type": "boolean"
                             }
                           },
                           "required": [

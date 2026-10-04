@@ -33,6 +33,7 @@ import {
 import { claimImportedHnsHandle } from "../../http-worker/src/hns-community-claim.pg-fixture.ts";
 import { makeProductionHnsOwnerRecoveryHandlers } from "../../http-worker/src/hns-owner-recovery-production-composition.ts";
 import { createHttpWorker } from "../../http-worker/src/transport.ts";
+import { checkOwnerRecoveryUi } from "./hns-owner-recovery-ui.pg-fixture.ts";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
 const { makeHnsActiveLeaseRenewalJob } = await import("./hns-active-lease-renewal.ts");
@@ -513,6 +514,14 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
         { attempt_number: 1, state: "consumed", fence_token: "3" },
         { attempt_number: 1, state: "released", fence_token: "2" },
       ]);
+
+      if (process.env.HNS_REGTEST_SOLID_ROOT) {
+        await moveExpiry("-1 second");
+        await tick();
+        await checkOwnerRecoveryUi({ ready, request, records, mine });
+        await assertServingAuthority(true);
+      }
+      const beforeNegative = await readBinding();
       // A genuine chain rejection must fail closed, while retaining the claim.
       await hsdRegtestWallet("sendupdate", [
         "harbor",
@@ -529,7 +538,8 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
       expect(alerts).toEqual(["hns-active-lease-renewal:unresolved"]);
       const rejection = (
         await ready.admin.query(
-          "SELECT status FROM community_route_active_lease_renewals WHERE expected_binding_generation=4",
+          "SELECT status FROM community_route_active_lease_renewals WHERE expected_binding_generation=$1",
+          [beforeNegative.binding_generation],
         )
       ).rows;
       expect(rejection).toEqual([{ status: "failed" }]);
