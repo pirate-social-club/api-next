@@ -169,6 +169,17 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
             return { kind: "conflict" } as const;
           }
 
+          yield* transaction.execute({
+            label: "hns-owner-recovery.poll-release-expired-lease",
+            text: `UPDATE community_route_revalidation_completion_attempts
+                      SET state = 'released'
+                    WHERE route_revalidation_id = $1
+                      AND operation_mode = 'same_root_recovery'
+                      AND state = 'leased' AND lease_expires_at <= clock_timestamp()`,
+            values: [session.route_recovery_id],
+            readonly: false,
+          });
+
           const existingResult = yield* transaction.execute<HnsOwnerRecoveryRow>({
             label: "hns-owner-recovery.poll-lock-attempt",
             text: `SELECT *, clock_timestamp() AS database_now
@@ -219,6 +230,17 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
             }
             const attemptId = hnsOwnerRecoveryString(existing, "route_revalidation_attempt_id");
             if (attemptId === null) return yield* Effect.fail(storageFailure());
+            const competing = yield* transaction.execute<HnsOwnerRecoveryRow>({
+              label: "hns-owner-recovery.poll-competing-lease",
+              text: `SELECT route_revalidation_attempt_id
+                       FROM community_route_revalidation_completion_attempts
+                      WHERE route_revalidation_id = $1
+                        AND route_revalidation_attempt_id <> $2
+                        AND state = 'leased'`,
+              values: [session.route_recovery_id, attemptId],
+              readonly: false,
+            });
+            if (competing.rows.length > 0) return { kind: "conflict" } as const;
             const reacquiredResult = yield* transaction.execute<HnsOwnerRecoveryRow>({
               label: "hns-owner-recovery.poll-reacquire-attempt",
               text: `UPDATE community_route_revalidation_completion_attempts
@@ -242,9 +264,7 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
           const admissionResult = yield* transaction.execute<HnsOwnerRecoveryRow>({
             label: "hns-owner-recovery.poll-admission",
             text: `SELECT count(*) FILTER (WHERE state = 'consumed')::integer AS consumed_count,
-                          min(lease_expires_at) FILTER (
-                            WHERE state = 'leased' AND lease_expires_at > clock_timestamp()
-                          ) AS live_lease
+                          min(lease_expires_at) FILTER (WHERE state = 'leased') AS live_lease
                      FROM community_route_revalidation_completion_attempts
                     WHERE route_revalidation_id = $1
                       AND operation_mode = 'same_root_recovery'`,

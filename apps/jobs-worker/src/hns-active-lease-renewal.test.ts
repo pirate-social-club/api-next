@@ -78,6 +78,24 @@ async function runTick(options: { environment?: string; lead?: string; missing?:
   return { statements, result };
 }
 
+function runAdmission(effect: NonNullable<ReturnType<typeof makeHnsActiveLeaseRenewalJob>>["run"]) {
+  return Effect.runPromise(
+    effect.pipe(
+      Effect.provideService(ControlPlaneDb, {
+        execute: () => Effect.die("Invalid configuration must not touch the database"),
+        withTransaction: () => Effect.die("Invalid configuration must not open a transaction"),
+      }),
+      Effect.provideService(AlertCollector, { emit: () => Effect.void }),
+      Effect.provideService(JobContext, {
+        adapterSafety: { isProven: () => false, markAbortedOrFenced: () => undefined },
+        attemptId: "renewal-admission-test",
+        lease: () => ({ expiresAt: Date.now() + 60_000, generation: 1, owner: "test-owner" }),
+        owner: "test-owner",
+      }),
+    ),
+  );
+}
+
 describe("active ownership renewal runtime admission", () => {
   test("keeps missing and disabled configuration inert", () => {
     expect(makeHnsActiveLeaseRenewalJob({}, "staging", {})).toBeNull();
@@ -85,21 +103,36 @@ describe("active ownership renewal runtime admission", () => {
       makeHnsActiveLeaseRenewalJob({ HNS_ACTIVE_LEASE_RENEWAL_ENABLED: "false" }, "production", {}),
     ).toBeNull();
   });
-  test("rejects incomplete settings and simultaneous legacy ownership writes", () => {
-    for (const change of [
-      { HNS_ACTIVE_LEASE_RENEWAL_ENABLED: "yes" },
-      { HNS_OWNERSHIP_ENABLED: "true" },
-      { HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "" },
-      { HNS_OWNERSHIP_CONFIGURATION_VERSION: " " },
-      { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "0" },
-      { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "Infinity" },
-      { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "604801" },
-    ])
-      expect(() =>
-        makeHnsActiveLeaseRenewalJob({ ...bindings(), ...change }, "staging", {}),
-      ).toThrow();
+  test("isolates invalid settings in the job without preventing registry construction", async () => {
     const { HNS_OWNER_VERIFIER: _provider, ...missingProvider } = bindings();
-    expect(() => makeHnsActiveLeaseRenewalJob(missingProvider, "staging", {})).toThrow();
+    for (const configuration of [
+      ...[
+        { HNS_ACTIVE_LEASE_RENEWAL_ENABLED: "yes" },
+        { HNS_OWNERSHIP_ENABLED: "true" },
+        { HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "" },
+        { HNS_OWNERSHIP_CONFIGURATION_VERSION: " " },
+        { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "0" },
+        { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "Infinity" },
+        { HNS_ROUTE_RENEWAL_LEAD_SECONDS: "604801" },
+      ].map((change) => ({ ...bindings(), ...change })),
+      missingProvider,
+    ]) {
+      const job = makeHnsActiveLeaseRenewalJob(configuration, "staging", {});
+      if (!job) throw new Error("Missing enabled renewal declaration");
+      const unrelated = {
+        ...job,
+        name: "unrelated",
+        lane: "unrelated",
+        reads: [],
+        writes: [],
+        run: Effect.void,
+      };
+      const registry = await Effect.runPromise(buildJobRegistry([job, unrelated]));
+      const unrelatedJob = registry.byName.get("unrelated");
+      if (!unrelatedJob) throw new Error("Unrelated job missing from registry");
+      await runAdmission(unrelatedJob.run);
+      await expect(runAdmission(job.run)).rejects.toMatchObject({ reason: "misconfigured" });
+    }
   });
   test("uses the existing registry, lease lane and five-minute schedule", async () => {
     const job = makeHnsActiveLeaseRenewalJob(bindings(), "staging", {});

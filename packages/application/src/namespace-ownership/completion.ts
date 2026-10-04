@@ -600,13 +600,16 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
     return yield* new NamespaceOwnershipCompletionRejected({ reason: "not_found" });
   }
   const attempt = reservationOutcome.reservation;
+  const observationId = yield* Effect.promise(() =>
+    sha256Utf8(JSON.stringify([attempt.completion_attempt_id, attempt.fence_token])),
+  );
 
   const providerResult = yield* adapter
     .complete(
       { session: stored.session, submission: { channel: "poll_result", payload: {} } },
       {
         namespace_session_id: stored.namespace_session_id,
-        observation_id: attempt.completion_attempt_id,
+        observation_id: observationId,
       },
     )
     .pipe(

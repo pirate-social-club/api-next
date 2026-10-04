@@ -239,6 +239,8 @@
     "0236_video_outcome_claims.sql": "0ebbd826d68948a8667746338ebf68bd52049c05176327d170c04eb8b0691682",
     "0237_telegram_learner_linking.sql": "0c3954ae61007d5e5488b214b1e66b19b3b6d5a750b1fd62beb9adc852334a22",
     "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
-    "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc"
+    "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
+    "0240_hns_recovery_pending_poll.sql": "50b501c40df9b7068acd119104bd55edaae2b3c82e00984d544376e6e543ce8a",
+    "0241_hns_proof_backed_sale_refresh.sql": "2cc22c3584e4a42d96c82adc1209896229ef09a9eb87d2cde26b07a4bb728067"
   }
 }

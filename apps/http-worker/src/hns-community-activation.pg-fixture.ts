@@ -522,7 +522,7 @@ export async function prepareReadyImport(
       "readiness-executor",
       readinessPorts,
     );
-    expect(readinessResult.outcome).toBe("completed");
+    expect(readinessResult).toMatchObject({ outcome: "completed" });
     const activatable = (await (await call(sessionUrl)).json()) as {
       status: string;
       revision: number;

@@ -327,6 +327,7 @@ jobs:
           path: |
             /tmp/api-next-hns-regtest-run-*/composed-path-suite-complete
             /tmp/api-next-hns-regtest-run-*/service-loop-suite-complete
+            /tmp/api-next-hns-regtest-run-*/renewal-recovery-suite-complete
             /tmp/api-next-hns-regtest-report.json
             /tmp/api-next-hns-authority-fixture.log
           if-no-files-found: error

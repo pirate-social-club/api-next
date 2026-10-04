@@ -1,6 +1,7 @@
 import { canonicalJson } from "@pirate/domain";
 import { Data, DateTime, Effect, Option, Schema } from "effect";
 import type { HnsEvidenceLeasePolicy } from "../namespace-ownership/hns-control-observer.ts";
+import { sha256RouteRevalidationUtf8 } from "./hashes.ts";
 import {
   buildHnsOwnerRecoveryEvidence,
   classifyHnsOwnerRecoveryTargetResponse,
@@ -118,7 +119,7 @@ export interface HnsOwnerRecoveryPollStore {
    * Under community-then-binding lock, re-proves creator and complete session
    * authority, then returns database time and a lease at least `lease_ms`
    * long. A released same-key retry with the same poll hash must reacquire the
-   * same durable attempt, `evidence_ref`, and `observation_id`; new proposals
+   * same durable attempt, `evidence_ref`, and observation seed; new proposals
    * cannot allocate a second identity. No transaction may span the provider
    * call.
    */
@@ -572,11 +573,16 @@ export const pollHnsOwnerRecovery = Effect.fn("pollHnsOwnerRecovery")(function* 
     return yield* finalizedResponse(input, pollHash, reservedStored, finalized, result);
   }
 
+  // A released retry retains its attempt but must observe the chain again.
+  // Reusing the seed alone would replay a cached pending observation forever.
+  const observationId = yield* Effect.promise(() =>
+    sha256RouteRevalidationUtf8(canonicalJson([attempt.observation_id, attempt.fence_token])),
+  );
   const providerEffect = Effect.try({
     try: () =>
       services.provider.poll(plan.request, {
         deadline_ms: HNS_OWNER_RECOVERY_POLL_PROVIDER_DEADLINE_MS,
-        observation_id: attempt.observation_id,
+        observation_id: observationId,
       }),
     catch: () => new HnsOwnerRecoveryProviderFailed({ reason: "invalid_response" }),
   });

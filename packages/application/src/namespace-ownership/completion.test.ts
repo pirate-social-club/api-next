@@ -126,7 +126,7 @@ function adapter(
     | NamespaceOwnershipProviderRejected
     | NamespaceOwnershipProviderUnboundRejected
     | NamespaceOwnershipProviderUnavailable,
-  calls: { complete: number },
+  calls: { complete: number; observationIds?: string[] },
   completeMs = 15_000,
 ): NamespaceOwnershipProviderAdapter {
   return {
@@ -141,8 +141,9 @@ function adapter(
     },
     plan: () => Effect.succeed({ status: "unsupported" as const }),
     start: () => Effect.die("not used"),
-    complete: () => {
+    complete: (_input, context) => {
       calls.complete += 1;
+      calls.observationIds?.push(context.observation_id);
       return result instanceof Error ? Effect.fail(result) : Effect.succeed(result);
     },
   };
@@ -169,6 +170,7 @@ async function services(options: {
     consume: 0,
     verify: 0,
     complete: 0,
+    observationIds: [] as string[],
   };
   let capturedVerified: Parameters<NamespaceOwnershipCompletionStore["verify"]>[0] | undefined;
   let capturedRejected: Parameters<NamespaceOwnershipCompletionStore["reject"]>[0] | undefined;
@@ -377,6 +379,35 @@ describe("namespace ownership poll completion", () => {
     );
     expect(unavailableResult).toMatchObject({ status: "unavailable", result_hash: null });
     expect(unavailable.calls).toMatchObject({ release: 1, reject: 0, verify: 0 });
+  });
+
+  test("same-key retries use a fresh observation after reacquiring the attempt", async () => {
+    const initial = await stored();
+    const first = await services({
+      initial,
+      provider: new NamespaceOwnershipProviderUnavailable({
+        provider_id: "hns.owner.v1",
+        operation: "complete",
+      }),
+      reserve: { kind: "acquired", reservation: { ...reservation, fence_token: 1 } },
+    });
+    expect((await Effect.runPromise(completeNamespaceOwnership(request, first.value))).status).toBe(
+      "unavailable",
+    );
+    const retry = await services({
+      initial,
+      provider: { status: "pending" },
+      reserve: { kind: "acquired", reservation: { ...reservation, fence_token: 2 } },
+    });
+    expect((await Effect.runPromise(completeNamespaceOwnership(request, retry.value))).status).toBe(
+      "pending",
+    );
+    expect(first.calls.observationIds).toHaveLength(1);
+    expect(retry.calls.observationIds).toHaveLength(1);
+    expect(retry.calls.observationIds[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(retry.calls.observationIds[0]).not.toBe(first.calls.observationIds[0]);
+    expect(first.calls.release).toBe(1);
+    expect(retry.calls.release).toBe(1);
   });
 
   test("returns durable expiry when retry settlement crosses the session deadline", async () => {

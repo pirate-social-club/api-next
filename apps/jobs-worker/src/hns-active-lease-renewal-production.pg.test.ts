@@ -245,6 +245,67 @@ for (const capabilityStatus of ["active", "suspended"] as const)
         if (txt?.type !== "TXT" || !Array.isArray(txt.txt))
           throw new Error("Expected imported verification TXT");
         const expectedValue = txt.txt.join("");
+        if (capabilityStatus === "active") {
+          const expected = await Effect.runPromise(
+            store.resolve({ route_binding_id: binding.route_binding_id }),
+          );
+          if (!expected) throw new Error("Expected renewable authority");
+          const reserved = await Effect.runPromise(
+            store.reserve({
+              expected,
+              active_lease_renewal_id: "expired-renewal",
+              active_lease_renewal_attempt_id: "expired-renewal-attempt",
+              evidence_ref: "expired-renewal-evidence",
+              observation_id: "expired-renewal-observation",
+              idempotency_key: "hns-lease-renewal:1",
+              lease_ms: 16_000,
+            }),
+          );
+          if (reserved.kind !== "acquired") throw new Error("Expected acquired renewal lease");
+          await Bun.sleep(16_100);
+          const request = reserved.reservation.request;
+          expect(
+            await Effect.runPromise(
+              store.finalize({
+                reservation: reserved.reservation,
+                result: {
+                  active_lease_renewal_id: request.active_lease_renewal_id,
+                  active_lease_renewal_attempt_id: request.active_lease_renewal_attempt_id,
+                  route_binding_id: request.route_binding_id,
+                  expected_binding_generation: request.expected_binding_generation,
+                  idempotency_key: reserved.reservation.idempotency_key,
+                  request_hash: request.request_hash,
+                  outcome_status: "renewal_evidence_ineligible",
+                  evidence_ref_or_null: null,
+                  evidence_digest_or_null: null,
+                  provider_response_sha256_or_null: null,
+                  ownership_status_or_null: null,
+                  route_lifecycle_status_or_null: null,
+                },
+                evidence: null,
+                provider_response_bytes: null,
+              }),
+            ),
+          ).toEqual({ kind: "lease_lost" });
+          expect(
+            (
+              await ready.admin.query(
+                `SELECT state FROM community_route_active_lease_renewal_attempts
+            WHERE active_lease_renewal_attempt_id=$1`,
+                [request.active_lease_renewal_attempt_id],
+              )
+            ).rows,
+          ).toEqual([{ state: "leased" }]);
+          expect(
+            (
+              await ready.admin.query(
+                `SELECT binding_generation FROM community_canonical_route_bindings
+            WHERE route_binding_id=$1`,
+                [binding.route_binding_id],
+              )
+            ).rows,
+          ).toEqual([{ binding_generation: "1" }]);
+        }
         let providerCalls = 0;
         const alerts: string[] = [];
         const job = makeHnsActiveLeaseRenewalJob(
@@ -377,6 +438,41 @@ for (const capabilityStatus of ["active", "suspended"] as const)
           // attempt lease to expire before the next permitted tick.
           await Bun.sleep(16_100);
         }
+        await ready.admin.query(
+          `UPDATE community_handle_sales_authority_grants
+              SET status='revoked', revoked_at=clock_timestamp(), revoked_by_account_id=$2
+            WHERE community_id=$1 AND principal_account_id=$2 AND status='active'`,
+          [ready.community, ready.actor],
+        );
+        // The public seller writer still rejects this owner after revocation.
+        const priorSale = (
+          await ready.admin.query(
+            `SELECT revision.*
+          FROM community_handle_sale_namespace_activation_revisions revision
+          JOIN community_handle_sale_namespace_activation_current current USING(sale_namespace_activation_id)
+          WHERE current.community_id=$1 AND revision.sale_namespace_activation_generation=current.current_generation`,
+            [ready.community],
+          )
+        ).rows[0];
+        await expect(
+          run(
+            sales.reviseSaleNamespace({
+              accountId: ready.actor,
+              communityId: ready.community,
+              activationId: priorSale.sale_namespace_activation_id,
+              expectedActivationHash: priorSale.sale_namespace_activation_hash,
+              requestedStatus: "revoked",
+              namespaceAuthorityReference: priorSale.namespace_authority_reference,
+              expectedNamespaceAuthorityGeneration: Number(
+                priorSale.namespace_authority_generation,
+              ),
+              dnsZoneActivationId: priorSale.dns_zone_activation_id,
+              expectedDnsZoneActivationGeneration: Number(priorSale.dns_zone_activation_generation),
+              dedicatedRootReplacementConfirmed: true,
+              idempotencyKey: "revoked-seller-refresh",
+            }),
+          ),
+        ).rejects.toMatchObject({ _tag: "HandleSalesRejected" });
         await tick();
         expect(alerts).toEqual([]);
         const after = (

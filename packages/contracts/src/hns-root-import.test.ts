@@ -29,6 +29,17 @@ describe("HNS root-import contract", () => {
     expect(
       Option.isSome(decode({ ...response, attachment: { ...attachment, binding_generation: 2 } })),
     ).toBe(true);
+    for (const can_recover_ownership of [true, false])
+      expect(
+        Option.isSome(
+          decode({ ...response, attachment: { ...attachment, can_recover_ownership } }),
+        ),
+      ).toBe(true);
+    expect(
+      Option.isNone(
+        decode({ ...response, attachment: { ...attachment, can_recover_ownership: "true" } }),
+      ),
+    ).toBe(true);
     for (const binding_generation of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
       expect(
         Option.isNone(decode({ ...response, attachment: { ...attachment, binding_generation } })),
