@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.109.0",
+  "sourceBranch": "fix/hns-active-lease-renewal-runtime",
+  "sourceBase": "9c4f7c794c3b8bacce933294c4a159545c94ed98",
+  "validatedSourceCommit": "12e38d363d4b8b895c9964c2f1fee074a701ebb6",
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/543",
+  "wireContract": "Optional can_recover_ownership on the existing attached-root discovery response reflects the authenticated creator. It grants no authority; recovery endpoints remain creator-only.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.109.0.tgz",
+    "sha256": "2f9b9827966a645787318872192915e2609f39cc5a9e3b0952199ee98cdb9911"
+  },
+  "validation": {
+    "status": "Local HNS gates passed; final check repeat and hosted exact-head gates pending",
+    "passed": [
+      "API check with client0.109: types, Effect diagnostics, dependency boundaries, 240 contiguous migrations and generated client provenance passed before source preservation",
+      "Unit5481 and Node22 pass. Worker suites total226 pass, with the unchanged video-source suite16 passing on a focused retry after a five-second cold-start timeout",
+      "PostgreSQL17 ordinary HTTP/private-verifier recovery: two cases and117 assertions pass, including creator discovery capability",
+      "Required HSD8/PostgreSQL17 regtest runner: all three suites pass, renewal/recovery81 assertions, lifecycle11 and two-name service restart23",
+      "Optional real Solid controller integration reaches pending,pending,verified through actual HTTP handlers, PostgreSQL and HSD across a second device and reload. It uses jsdom, fixture authentication and accelerated evidence time"
+    ],
+    "remaining": [
+      "Final API check repeat and hosted required checks on the new head",
+      "Paired Solid full verify: unchanged text-post browser assertion and song startup checks failed locally",
+      "Independent source review, existing shared-resource handback and migration-before-deploy",
+      "Separate deployed real-time one-hour renewal/expiry/recovery and delivered notification proof before production enablement"
+    ],
+    "operationalBoundary": "No shared environment or production change."
+  }
+}
