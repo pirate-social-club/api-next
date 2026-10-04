@@ -87,9 +87,49 @@ test("setup failures produce only fixed diagnostics and leave Telegram unavailab
       ),
     ).toBeNull();
     expect(log.mock.calls).toEqual([
-      ["Telegram chat setup unavailable; chat operations disabled"],
-      ["Telegram chat setup unavailable; chat operations disabled"],
-      ["Telegram linking setup unavailable; linking operations disabled"],
+      [
+        "Telegram chat setup unavailable; chat operations disabled",
+        { category: "permission_refused" },
+      ],
+      ["Telegram chat setup unavailable; chat operations disabled", { category: "configuration" }],
+      [
+        "Telegram linking setup unavailable; linking operations disabled",
+        { category: "configuration" },
+      ],
+    ]);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("chat and linking query failures never log database errors or connection details", async () => {
+  const execute = (_statement: ControlPlaneStatement) =>
+    Effect.die("postgres://fixture-user:fixture-password@fixture-host; fixture-bot-secret");
+  const runtime = Layer.succeed(ControlPlaneDb, {
+    execute,
+    withTransaction: (use) => use({ execute }),
+  });
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await makeTelegramServices(complete, runtime)).toBeNull();
+    expect(
+      await makeTelegramLinkServices(
+        {
+          TELEGRAM_LINKING_ENABLED: "true",
+          TELEGRAM_LOGIN_CLIENT_ID: "123",
+          TELEGRAM_LOGIN_CLIENT_SECRET: "fixture-secret",
+          TELEGRAM_LOGIN_REDIRECT_URI: "https://pirate.example.invalid/callback",
+        },
+        runtime,
+        {} as TelegramServices,
+      ),
+    ).toBeNull();
+    expect(log.mock.calls).toEqual([
+      ["Telegram chat setup unavailable; chat operations disabled", { category: "query_failed" }],
+      [
+        "Telegram linking setup unavailable; linking operations disabled",
+        { category: "query_failed" },
+      ],
     ]);
   } finally {
     log.mockRestore();

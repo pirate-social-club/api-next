@@ -1,6 +1,7 @@
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import type { Layer } from "effect";
 import { makeTelegramDatabase } from "./telegram-database.ts";
+import { TelegramSetupFailure } from "./telegram-setup-diagnostics.ts";
 
 export const TELEGRAM_ACTIVATION_TABLES = [
   ["telegram_account_associations", true],
@@ -32,10 +33,16 @@ LEFT JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid AND c.relname=required.t
 
 export function assertTelegramActivationPrivileges(rows: readonly Record<string, unknown>[]) {
   if (rows.length !== TELEGRAM_ACTIVATION_TABLES.length)
-    throw Error("Telegram activation privilege facts incomplete");
+    throw new TelegramSetupFailure(
+      "permission_refused",
+      "Telegram activation privilege facts incomplete",
+    );
   const role = rows[0]?.runtime_role;
   if (typeof role !== "string" || !role.length)
-    throw Error("Telegram activation executor identity missing");
+    throw new TelegramSetupFailure(
+      "permission_refused",
+      "Telegram activation executor identity missing",
+    );
   for (const [table, expectedDelete] of TELEGRAM_ACTIVATION_TABLES) {
     const matches = rows.filter((row) => row.table_name === table);
     const row = matches[0];
@@ -54,7 +61,11 @@ export function assertTelegramActivationPrivileges(rows: readonly Record<string,
       row.can_delete !== expectedDelete ||
       row.can_truncate !== false
     )
-      throw Error(`Telegram activation privilege admission refused: ${table}`);
+      throw new TelegramSetupFailure(
+        "permission_refused",
+        `Telegram activation privilege admission refused: ${table}`,
+        table,
+      );
   }
   return role;
 }
@@ -62,6 +73,10 @@ export function assertTelegramActivationPrivileges(rows: readonly Record<string,
 export async function assertTelegramRuntimePrivileges(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ) {
-  const rows = await makeTelegramDatabase(runtime).query(TELEGRAM_ACTIVATION_PRIVILEGES_SQL);
+  const rows = await makeTelegramDatabase(runtime)
+    .query(TELEGRAM_ACTIVATION_PRIVILEGES_SQL)
+    .catch(() => {
+      throw new TelegramSetupFailure("query_failed", "Telegram activation query unavailable");
+    });
   return assertTelegramActivationPrivileges(rows);
 }

@@ -5,6 +5,7 @@ import type { Layer } from "effect";
 import { assertTelegramRuntimePrivileges } from "./telegram-activation-privileges.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { makeTelegramOidcClient } from "./telegram-oidc.ts";
+import { logTelegramSetupFailure } from "./telegram-setup-diagnostics.ts";
 
 export interface TelegramLinkBindings {
   readonly TELEGRAM_LINKING_ENABLED?: string;
@@ -44,8 +45,8 @@ export async function makeTelegramLinkServices(
 ): Promise<TelegramLinkServices | null> {
   try {
     return await buildTelegramLinkServices(bindings, runtime, telegram);
-  } catch {
-    console.error("Telegram linking setup unavailable; linking operations disabled");
+  } catch (error) {
+    logTelegramSetupFailure("linking", error);
     return null;
   }
 }

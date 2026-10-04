@@ -11,6 +11,7 @@ import { assertTelegramRuntimePrivileges } from "./telegram-activation-privilege
 import { makeTelegramApi } from "./telegram-api.ts";
 import { makeTelegramAssistantProviders } from "./telegram-assistant-providers.ts";
 import { makeTelegramCredentialVault } from "./telegram-credential-vault.ts";
+import { logTelegramSetupFailure } from "./telegram-setup-diagnostics.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
 import {
   makeTelegramStudyServices,
@@ -103,8 +104,8 @@ export async function makeTelegramServices(
 ): Promise<TelegramServices | null> {
   try {
     return await buildTelegramServices(bindings, runtime);
-  } catch {
-    console.error("Telegram chat setup unavailable; chat operations disabled");
+  } catch (error) {
+    logTelegramSetupFailure("chat", error);
     return null;
   }
 }
