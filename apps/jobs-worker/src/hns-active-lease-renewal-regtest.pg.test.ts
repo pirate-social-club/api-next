@@ -45,7 +45,16 @@ suite("claimed import renewal and ordinary recovery on the live regtest chain", 
     // The node is disposable; keep its real proof inside the one-hour lease.
     await hsdRegtestNode("setmocktime", [Math.floor(Date.now() / 1_000) - 600]);
     const address = (await hsdRegtestWallet("getnewaddress")) as string;
-    const mine = (blocks: number) => hsdRegtestNode("generatetoaddress", [blocks, address]);
+    const mine = async (blocks: number) => {
+      await hsdRegtestNode("generatetoaddress", [blocks, address]);
+      // CI's preceding DNS fixture may already have mined future timestamps.
+      // Wait for that real chain clock; never relax the verifier's time check.
+      const info = (await hsdRegtestNode("getblockchaininfo")) as { mediantime: number };
+      const wait = Math.max(0, info.mediantime * 1_000 - Date.now() + 1);
+      if (!Number.isFinite(wait) || wait > 120_000)
+        throw new Error("Regtest chain clock is outside the test budget");
+      if (wait > 0) await Bun.sleep(wait);
+    };
     await mine(110);
     await hsdRegtestWallet("sendopen", ["harbor"]);
     await mine(8);
