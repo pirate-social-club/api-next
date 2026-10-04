@@ -16,6 +16,7 @@ const workers = [
   "data-registration-worker",
 ];
 const paths = new Set([
+  "docs/rewards-deployment-lifecycle.json",
   "bun.lock",
   "package.json",
   "patches/README.md",
@@ -93,6 +94,12 @@ export function validateDependencies(candidate, before, lock = false) {
   else delete dev["@types/node-forge"];
   if (JSON.stringify(copy) !== JSON.stringify(before)) refuse("unrelated_dependencies_changed");
 }
+export function validateRewardsPolicy(candidate, before) {
+  const expected = structuredClone(before);
+  expected.environments.production = expected.environments.prod;
+  delete expected.environments.prod;
+  if (JSON.stringify(candidate) !== JSON.stringify(expected)) refuse("rewards_lifecycle_changed");
+}
 export async function main(args = Bun.argv.slice(2)) {
   const execute = args.includes("--execute");
   const options = args.filter((value) => value !== "--execute");
@@ -145,6 +152,11 @@ export async function main(args = Bun.argv.slice(2)) {
       path === "bun.lock",
     );
   }
+  const policyPath = "docs/rewards-deployment-lifecycle.json";
+  validateRewardsPolicy(
+    JSON.parse(await Bun.file(new URL(`../${policyPath}`, import.meta.url)).text()),
+    JSON.parse(command("git", ["show", `${baseline}:${policyPath}`])),
+  );
   await verifyNodeForgeRemediation();
   if (!execute) {
     console.log(

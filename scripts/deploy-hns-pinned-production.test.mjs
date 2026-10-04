@@ -6,6 +6,7 @@ import {
   validateDependencies,
   validatePinnedSource,
   validateProductionConfig,
+  validateRewardsPolicy,
 } from "./deploy-hns-pinned-production.mjs";
 
 const sha = "a".repeat(40);
@@ -66,4 +67,19 @@ test("dependency versions cannot be upgraded under the patch exception", () => {
   expect(() => validateDependencies(after, before)).not.toThrow();
   after.devDependencies.other = "2.0.0";
   expect(() => validateDependencies(after, before)).toThrow("dependencies_changed");
+});
+
+test("the real production lifecycle matches Wrangler without enabling Rewards", async () => {
+  const { rewardsLifecycle } = await import("./rewards-binding-deploy-preflight.ts");
+  const policy = JSON.parse(
+    await Bun.file(new URL("../docs/rewards-deployment-lifecycle.json", import.meta.url)).text(),
+  );
+  const baselinePolicy = {
+    schema_version: 1,
+    environments: { staging: "dormant", prod: "prelaunch" },
+  };
+  expect(() => validateRewardsPolicy(policy, baselinePolicy)).not.toThrow();
+  expect(rewardsLifecycle(JSON.stringify(policy), "production")).toBe("prelaunch");
+  policy.environments.production = "launched";
+  expect(() => validateRewardsPolicy(policy, baselinePolicy)).toThrow("rewards_lifecycle_changed");
 });
