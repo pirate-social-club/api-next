@@ -281,6 +281,7 @@ function pollServices(
   let durableAttemptId: string | undefined;
   let durableEvidenceRef: string | undefined;
   let durableObservationId: string | undefined;
+  let durableFence = 0;
   let reservedLeaseMs: number | undefined;
   let providerDeadlineMs: number | undefined;
   let finalizedProviderResponseBytes: Uint8Array | null | undefined;
@@ -316,7 +317,7 @@ function pollServices(
             recovery_attempt_id: durableAttemptId,
             evidence_ref: durableEvidenceRef,
             observation_id: durableObservationId,
-            fence_token: 1,
+            fence_token: ++durableFence,
             database_now: databaseNow,
             lease_expires_at: options.leaseExpiresAt ?? "2026-02-02T04:41:00.000Z",
           },
@@ -571,7 +572,9 @@ describe("HNS owner-recovery application orchestration", () => {
       "hns_observation_proposed_2",
     ]);
     expect(fixture.attemptObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
-    expect(fixture.providerObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
+    expect(fixture.providerObservationIds).toHaveLength(2);
+    expect(fixture.providerObservationIds[0]).toMatch(/^[0-9a-f]{64}$/u);
+    expect(fixture.providerObservationIds[1]).not.toBe(fixture.providerObservationIds[0]);
     expect(fixture.sequence).toEqual([
       "load",
       "reserve",

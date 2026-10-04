@@ -37881,9 +37881,6 @@ ALTER TABLE ONLY community_route_revalidation_completion_attempts
     ADD CONSTRAINT community_route_revalidation_attempts_idempotency_unique UNIQUE (route_revalidation_id, idempotency_key);
 
 ALTER TABLE ONLY community_route_revalidation_completion_attempts
-    ADD CONSTRAINT community_route_revalidation_attempts_number_unique UNIQUE (route_revalidation_id, attempt_number);
-
-ALTER TABLE ONLY community_route_revalidation_completion_attempts
     ADD CONSTRAINT community_route_revalidation_completion_attemp_evidence_ref_key UNIQUE (evidence_ref);
 
 ALTER TABLE ONLY community_route_revalidation_completion_attempts
@@ -40259,6 +40256,8 @@ CREATE UNIQUE INDEX community_route_ownership_evidence_renewal_attempt_uidx ON c
 CREATE UNIQUE INDEX community_route_ownership_evidence_revalidation_attempt_uidx ON community_route_ownership_evidence USING btree (route_revalidation_attempt_id) WHERE (origin = 'route_revalidation'::text);
 
 CREATE INDEX community_route_revalidation_attempts_lease_idx ON community_route_revalidation_completion_attempts USING btree (state, lease_expires_at);
+
+CREATE UNIQUE INDEX community_route_revalidation_attempts_number_unique ON community_route_revalidation_completion_attempts USING btree (route_revalidation_id, attempt_number) WHERE ((operation_mode <> 'same_root_recovery'::text) OR (state <> 'released'::text));
 
 CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON community_route_revalidation_completion_attempts USING btree (revalidation_session_id) WHERE (state = 'leased'::text);
 

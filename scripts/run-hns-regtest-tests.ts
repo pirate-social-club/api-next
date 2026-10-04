@@ -6,6 +6,14 @@ import { verifyPostgresLockCapacity } from "./run-postgres-tests.ts";
 
 export const hnsRegtestTargets = [
   {
+    file: "apps/jobs-worker/src/hns-active-lease-renewal-regtest.pg.test.ts",
+    sentinelVariable: "HNS_REGTEST_RENEWAL_RECOVERY_SENTINEL",
+    sentinelFilename: "renewal-recovery-suite-complete",
+    sentinelContents: "api-next-hns-regtest-renewal-recovery-suite-complete\n",
+    expectedTestCount: 1,
+    timeoutMilliseconds: 660_000,
+  },
+  {
     file: "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
     sentinelVariable: "HNS_REGTEST_COMPOSED_PATH_SENTINEL",
     sentinelFilename: "composed-path-suite-complete",

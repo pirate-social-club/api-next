@@ -13,8 +13,8 @@ describe("HNS regtest target gate", () => {
   test("requires exactly the maintained target suites", () => {
     const files = hnsRegtestTargets.map(({ file }) => file);
     expect(hnsRegtestTargetError(files)).toBeNull();
-    expect(hnsRegtestTargetError(files.slice(1))).toContain("expected 2");
-    expect(hnsRegtestTargetError([files[0] ?? "", "replacement.pg.test.ts"])).toContain(
+    expect(hnsRegtestTargetError(files.slice(1))).toContain("expected 3");
+    expect(hnsRegtestTargetError(["replacement.pg.test.ts", ...files.slice(1)])).toContain(
       "required HNS regtest target is missing",
     );
   });
@@ -71,6 +71,7 @@ describe("HNS regtest target gate", () => {
     expect(job).toContain('docker rm -f -v "$HNS_REGTEST_CONTAINER_NAME"');
     expect(job).toContain("/tmp/api-next-hns-regtest-run-*/composed-path-suite-complete");
     expect(job).toContain("/tmp/api-next-hns-regtest-run-*/service-loop-suite-complete");
+    expect(job).toContain("/tmp/api-next-hns-regtest-run-*/renewal-recovery-suite-complete");
     expect(job).toContain("if: always() && env.HNS_REGTEST_CONTAINER_NAME != ''");
     const aggregate = workflow.match(/\n {2}postgres17:\n([\s\S]*?)$/u)?.[1] ?? "";
     expect(aggregate).not.toContain("hns-regtest");
