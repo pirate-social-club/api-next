@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 
@@ -26,6 +27,23 @@ export async function buildRewardsHttpArtifact(mode, databaseSqlRoleSha256) {
           {
             name: "isolated-rewards-resource-pins",
             setup(builder) {
+              builder.onLoad({ filter: /apps\/http-worker\/src\/composition\.ts$/ }, (args) => {
+                const source = readFileSync(args.path, "utf8");
+                const needle = ").pipe(Effect.map(principal)),";
+                if (source.split(needle).length !== 2)
+                  throw Error("Isolated authentication diagnostic source changed");
+                return {
+                  contents: source.replace(
+                    needle,
+                    `).pipe(
+                  Effect.tapError((error) => Effect.sync(() => {
+                    const code = typeof error.cause?.code === "string" && /^[a-z_]{1,60}$/.test(error.cause.code) ? error.cause.code : "unclassified";
+                    console.error("rewards_e2e_authentication_refused", { code });
+                  })), Effect.map(principal)),`,
+                  ),
+                  loader: "ts",
+                };
+              });
               builder.onResolve({ filter: /^#rewards-e2e-pins$/ }, () => ({
                 path: "resource-pins",
                 namespace: "isolated-rewards-pins",
