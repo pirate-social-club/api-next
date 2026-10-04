@@ -20,6 +20,16 @@ export async function telegramOidcOutbound(request: Request): Promise<Response> 
     }
     if (url.pathname === "/calls") return Response.json(calls);
   }
+  if (url.origin === "https://api.telegram.org") {
+    if (url.pathname === "/bot123:fixture-token/getFile")
+      return Response.json({ ok: true, result: { file_path: "voice/fixture.ogg" } });
+    if (url.pathname === "/file/bot123:fixture-token/voice/fixture.ogg")
+      return new Response(new Uint8Array([79, 103, 103, 83, 0, 1]), {
+        headers: { "content-type": "audio/ogg" },
+      });
+    if (url.pathname === "/bot123:fixture-token/answerCallbackQuery")
+      return Response.json({ ok: true, result: true });
+  }
   calls.push({
     url: request.url,
     method: request.method,

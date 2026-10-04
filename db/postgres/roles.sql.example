@@ -30,6 +30,11 @@ GRANT DELETE ON
 TO api_next_app;
 -- Consent revisions must survive unlink/relink and cannot be truncated.
 REVOKE DELETE, TRUNCATE ON telegram_bot_grants FROM api_next_app;
+-- Chat progress is revised rather than deleted. Apply this after migration 0238.
+GRANT SELECT, INSERT, UPDATE ON telegram_study_conversations TO api_next_app;
+REVOKE DELETE, TRUNCATE ON telegram_study_conversations FROM api_next_app;
+REVOKE TRUNCATE ON telegram_account_associations, telegram_link_transactions,
+  telegram_link_navigation FROM api_next_app;
 -- Telegram linking deletion grants end
 
 -- Money evidence and derived receipts are append-only even if a deployment

@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { emptyTelegramStudyState } from "@pirate/application/telegram-study";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import {
+  assertTelegramActivationPrivileges,
+  TELEGRAM_ACTIVATION_PRIVILEGES_SQL,
+} from "./telegram-activation-privileges.ts";
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeTelegramInboxStore } from "./telegram-inbox-store.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
@@ -151,12 +156,59 @@ suite("Telegram linking runtime privileges", () => {
         { active: true, revision: "1" },
       ]);
       // This is the exact bounded grant shipped in the operator role template.
+      const privilegeFacts = async () =>
+        (
+          await runtime.query(
+            TELEGRAM_ACTIVATION_PRIVILEGES_SQL.replace(
+              "n.nspname='api_next'",
+              `n.nspname='${schema}'`,
+            ),
+          )
+        ).rows;
+      const before = await privilegeFacts();
+      expect(() => assertTelegramActivationPrivileges(before)).toThrow();
+      // Shared staging's broad default DELETE is unsafe even after link-table grants.
+      await admin.query(
+        `GRANT DELETE ON telegram_bot_grants,telegram_study_conversations TO ${runtimeRole}`,
+      );
       const grant = template
         .split("-- Telegram linking deletion grants begin")[1]
         ?.split("-- Telegram linking deletion grants end")[0];
       if (!grant) throw new Error("Telegram linking runtime grants are missing");
       await admin.query(grant.replaceAll("api_next_app", runtimeRole));
       await admin.query(grant.replaceAll("api_next_app", runtimeRole)); // Idempotent operator replay.
+      expect(assertTelegramActivationPrivileges(await privilegeFacts())).toBe(runtimeRole);
+      // Effective inherited authority must refuse even after direct grants are repaired.
+      await admin.query(`GRANT DELETE ON telegram_bot_grants TO ${readerRole}`);
+      await admin.query(`GRANT TRUNCATE ON telegram_study_conversations TO ${readerRole}`);
+      await admin.query(`GRANT ${readerRole} TO ${runtimeRole}`);
+      const inherited = await privilegeFacts();
+      expect(inherited.find((row) => row.table_name === "telegram_bot_grants")?.can_delete).toBe(
+        true,
+      );
+      expect(
+        inherited.find((row) => row.table_name === "telegram_study_conversations")?.can_truncate,
+      ).toBe(true);
+      expect(() => assertTelegramActivationPrivileges(inherited)).toThrow();
+      await admin.query(grant.replaceAll("api_next_app", runtimeRole));
+      const stillInherited = await privilegeFacts();
+      expect(() => assertTelegramActivationPrivileges(stillInherited)).toThrow();
+      await admin.query(`REVOKE DELETE ON telegram_bot_grants FROM ${readerRole}`);
+      const inheritedTruncate = await privilegeFacts();
+      expect(() => assertTelegramActivationPrivileges(inheritedTruncate)).toThrow();
+      await admin.query(`REVOKE TRUNCATE ON telegram_study_conversations FROM ${readerRole}`);
+      await admin.query(`REVOKE ${readerRole} FROM ${runtimeRole}`);
+      expect(assertTelegramActivationPrivileges(await privilegeFacts())).toBe(runtimeRole);
+      for (const [table, permission] of [
+        ["telegram_bot_grants", "DELETE"],
+        ["telegram_study_conversations", "DELETE"],
+        ["telegram_link_navigation", "TRUNCATE"],
+      ] as const) {
+        await admin.query(`GRANT ${permission} ON ${table} TO ${runtimeRole}`);
+        const excessive = await privilegeFacts();
+        expect(() => assertTelegramActivationPrivileges(excessive)).toThrow();
+        await admin.query(`REVOKE ${permission} ON ${table} FROM ${runtimeRole}`);
+      }
       for (const table of tables) {
         expect(
           (
@@ -171,7 +223,11 @@ suite("Telegram linking runtime privileges", () => {
           code: "42501",
         });
       }
-      for (const table of ["telegram_bot_grants", "megapot_pool_shares"])
+      for (const table of [
+        "telegram_bot_grants",
+        "telegram_study_conversations",
+        "megapot_pool_shares",
+      ])
         await expect(runtime.query(`DELETE FROM ${table} WHERE FALSE`)).rejects.toMatchObject({
           code: "42501",
         });
@@ -222,7 +278,14 @@ suite("Telegram linking runtime privileges", () => {
         VALUES($1,'unlink-learner',$2,$3,'music','123','epoch','321','song','cancelled',clock_timestamp()-interval '1 second')`,
         ["t".repeat(43), "s".repeat(43), "b".repeat(43)],
       );
+      await admin.query(
+        `INSERT INTO telegram_study_conversations(community_id,bot_id,telegram_user_id,bot_epoch,state,updated_at) VALUES('music','123','321','epoch',$1::jsonb,clock_timestamp()-interval '25 hours')`,
+        [JSON.stringify({ ...emptyTelegramStudyState(), selectedPostId: "song" })],
+      );
       await inbox.cleanup();
+      expect((await admin.query("SELECT state FROM telegram_study_conversations")).rows).toEqual([
+        { state: emptyTelegramStudyState() },
+      ]);
       for (const table of [
         "telegram_link_transactions",
         "telegram_link_navigation",

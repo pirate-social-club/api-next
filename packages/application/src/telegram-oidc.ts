@@ -22,6 +22,7 @@ export interface TelegramOidcCode {
 /** Evidence only: this is neither a Pirate session nor a delegated bot grant. */
 export interface TelegramOidcIdentity {
   readonly telegramUserId: string;
+  readonly display?: { readonly name?: string; readonly username?: string };
 }
 
 export interface TelegramOidcClient {

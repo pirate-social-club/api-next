@@ -417,7 +417,20 @@ const reclaimSpokenAnswer = (
     };
   });
 
-export const makeControlPlaneStudyV2Repository = () => ({
+export interface StudyV2Admission {
+  readonly practiceOnly: boolean;
+  readonly authorize: (
+    transaction: ControlPlaneTransaction,
+    input: {
+      readonly accountId: string;
+      readonly communityId?: string;
+      readonly personaId?: string;
+      readonly postId?: string;
+      readonly sessionId: string;
+    },
+  ) => Effect.Effect<void, StudyV2CommandRejected | ControlPlaneError>;
+}
+export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) => ({
   getAvailability: (input: Parameters<StudyV2Store["getAvailability"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
@@ -504,6 +517,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (admission !== undefined) yield* admission.authorize(transaction, input);
             // Identical concurrent starts serialize here: the loser then finds
             // the winner's committed row in the replay read below and returns
             // the same session instead of a storage conflict.
@@ -588,10 +602,10 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 lyrics_revision, learning_language, target_language, learner_band,
                 study_profile_revision, source_set_revision, selection_policy_revision,
                 qualification_policy_revision, timezone, idempotency_key, request_hash, created_at,
-                current_session_item_id, current_presented_at, language_profile_revision
+                current_session_item_id, current_presented_at, language_profile_revision, telegram_practice_only
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,'en',$8,$9,1,1,
                 'study_selection_v1','study_session_first_pass_v2@1',$10,$11,$12,$13::timestamptz,
-                $14,$13::timestamptz,$15)`,
+                $14,$13::timestamptz,$15,$16)`,
               values: [
                 input.sessionId,
                 input.accountId,
@@ -610,6 +624,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 first.language_profile_revision === null
                   ? null
                   : integer(first, "language_profile_revision"),
+                admission?.practiceOnly === true,
               ],
               readonly: false,
             });
@@ -690,7 +705,14 @@ export const makeControlPlaneStudyV2Repository = () => ({
   getSession: (input: Parameters<StudyV2Store["getSession"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
-        return yield* readSession(yield* ControlPlaneDb, input);
+        const db = yield* ControlPlaneDb;
+        if (admission === undefined) return yield* readSession(db, input);
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            yield* admission.authorize(transaction, input);
+            return yield* readSession(transaction, input);
+          }),
+        );
       }),
     ),
   loadSpokenAnswerContext: (input: Parameters<StudyV2Store["loadSpokenAnswerContext"]>[0]) =>
@@ -800,6 +822,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (admission !== undefined) yield* admission.authorize(transaction, input);
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             // A committed command replays by exact account, payload and
             // idempotency identity before any new-attempt-only constraint: a
@@ -1045,6 +1068,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (admission !== undefined) yield* admission.authorize(transaction, input);
             const command = yield* transaction.execute<Row>({
               label: "study-v2.spoken.complete-command",
               text: `SELECT request_hash, state, result_snapshot, lease_token,
@@ -1382,7 +1406,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                         current_presented_at=NULL
                         WHERE session_id=$1 AND status='active'
                     RETURNING persona_id, community_id, post_id, audio_revision,
-                              qualification_policy_revision, timezone,
+                              qualification_policy_revision, timezone, telegram_practice_only,
                               ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
                 values: [
                   input.sessionId,
@@ -1414,7 +1438,11 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 const presentedCount = integer(progressRow, "presented_count");
                 const firstPassCorrect = integer(progressRow, "first_pass_correct");
                 const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
-                if (presentedCount === exerciseCount && firstPassCorrect >= requiredCorrect) {
+                if (
+                  presentedCount === exerciseCount &&
+                  firstPassCorrect >= requiredCorrect &&
+                  completed.rows[0]?.telegram_practice_only !== true
+                ) {
                   const terminal = completed.rows[0] as Row;
                   yield* transaction.execute({
                     label: "study-v2.spoken.qualification-insert",
@@ -1528,6 +1556,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (admission !== undefined) yield* admission.authorize(transaction, input);
             const replay = yield* transaction.execute<Row>({
               label: "study-v2.answer.replay",
               text: `SELECT request_hash, outcome, first_pass, attempt_state, feedback_kind,
@@ -1744,7 +1773,7 @@ export const makeControlPlaneStudyV2Repository = () => ({
                         current_presented_at=NULL
                         WHERE session_id=$1 AND status='active'
                     RETURNING persona_id, community_id, post_id, audio_revision,
-                              qualification_policy_revision, timezone,
+                              qualification_policy_revision, timezone, telegram_practice_only,
                               ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
                 values: [
                   input.sessionId,
@@ -1776,7 +1805,11 @@ export const makeControlPlaneStudyV2Repository = () => ({
                 const presentedCount = integer(progressRow, "presented_count");
                 const firstPassCorrect = integer(progressRow, "first_pass_correct");
                 const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
-                if (presentedCount === exerciseCount && firstPassCorrect >= requiredCorrect) {
+                if (
+                  presentedCount === exerciseCount &&
+                  firstPassCorrect >= requiredCorrect &&
+                  completed.rows[0]?.telegram_practice_only !== true
+                ) {
                   const terminal = completed.rows[0] as Row;
                   yield* transaction.execute({
                     label: "study-v2.answer.qualification-insert",
@@ -1887,8 +1920,9 @@ export const makeControlPlaneStudyV2Repository = () => ({
 
 export const makeControlPlaneStudyV2Store = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  admission?: StudyV2Admission,
 ): StudyV2Store => {
-  const repository = makeControlPlaneStudyV2Repository();
+  const repository = makeControlPlaneStudyV2Repository(admission);
   const provide = <A, E>(effect: Effect.Effect<A, E | ControlPlaneError, ControlPlaneDb>) =>
     mapErrors(Effect.provide(runtime)(effect));
   return {

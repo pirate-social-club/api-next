@@ -133,6 +133,16 @@ export function makeControlPlaneTelegramLinkStore(
       if (!rows[0]) refused("not_found");
       return transactionView(db.query, rows[0]);
     },
+    async findPending(stateHash, browser) {
+      const rows = await db.query(
+        `SELECT transaction_id FROM telegram_link_transactions
+         WHERE state_hash=$1 AND account_id=$2 AND session_hash=$3 AND browser_hash=$4
+           AND state='pending' AND expires_at>clock_timestamp() LIMIT 2`,
+        [stateHash, browser.accountId, browser.sessionHash, browser.browserHash],
+      );
+      if (rows.length !== 1 || typeof rows[0]?.transaction_id !== "string") refused("not_found");
+      return rows[0].transaction_id;
+    },
     claim: (id, browser, stateHash) =>
       db.transaction(async (query) => {
         const row = await lockLinkTransaction(query, id, browser);
@@ -200,7 +210,7 @@ export function makeControlPlaneTelegramLinkStore(
         WHERE telegram_user_id=$1 FOR UPDATE`,
           [row.telegram_user_id],
         );
-        if (association[0]?.account_id !== browser.accountId) refused();
+        if (association[0]?.account_id !== browser.accountId) refused("identity_conflict");
         // A newly confirmed persona replaces this bot's previous consent with a new revision.
         const grants = await query(
           `INSERT INTO telegram_bot_grants(community_id,bot_id,telegram_user_id,account_id,persona_id,revision)
@@ -254,10 +264,11 @@ export function makeControlPlaneTelegramLinkStore(
       }),
     async resolveGrant(communityId, botId, epoch, telegramUserId) {
       const rows = await db.query(
-        `SELECT g.account_id,g.persona_id,g.revision FROM telegram_bot_grants g
+        `SELECT g.account_id,g.persona_id,g.revision,profile.display_name FROM telegram_bot_grants g
         JOIN telegram_account_associations a USING(telegram_user_id) JOIN users u ON u.user_id=g.account_id
         JOIN communities c USING(community_id) JOIN community_telegram_integrations i USING(community_id)
         JOIN personas p USING(persona_id) JOIN persona_community_bindings b USING(persona_id)
+        LEFT JOIN persona_profiles profile ON profile.persona_id=g.persona_id
         WHERE g.community_id=$1 AND g.bot_id=$2 AND g.telegram_user_id=$3 AND g.active
           AND a.account_id=g.account_id AND u.status='active' AND c.status='active'
           AND p.account_id=g.account_id AND p.status='active' AND b.account_id=g.account_id AND b.community_id=g.community_id
@@ -271,6 +282,9 @@ export function makeControlPlaneTelegramLinkStore(
         accountId: String(rows[0].account_id),
         personaId: String(rows[0].persona_id),
         revision: Number(rows[0].revision),
+        ...(typeof rows[0].display_name === "string" && rows[0].display_name.length
+          ? { personaLabel: rows[0].display_name }
+          : {}),
       };
     },
     async cleanup() {
