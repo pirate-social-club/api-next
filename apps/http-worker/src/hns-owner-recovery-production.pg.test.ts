@@ -174,6 +174,29 @@ for (const capabilityStatus of ["active", "suspended"] as const)
         expect(await discovery.json()).toMatchObject({
           attachment: { status: "suspended", binding_generation: 2, can_recover_ownership: true },
         });
+        const discoverAsBuyer = () =>
+          Effect.runPromise(
+            ready.services.store.getCurrent({ actor_id: buyer, community_id: ready.community }),
+          );
+        expect(await discoverAsBuyer()).toBeNull();
+        await ready.admin.query(
+          `INSERT INTO community_route_authority_grants
+            (grant_id, community_id, principal_user_id, authority, source_kind,
+             source_policy_ref, status, granted_at, granted_by_user_id)
+           VALUES ($1, $2, $3, 'manage_routes', 'community_policy',
+                   'test-delegated-route-management', 'active', clock_timestamp(), $4)`,
+          ["test-delegated-recovery-viewer", ready.community, buyer, ready.actor],
+        );
+        expect(await discoverAsBuyer()).toMatchObject({
+          attachment: { status: "suspended", can_recover_ownership: false },
+        });
+        await ready.admin.query(
+          `UPDATE community_route_authority_grants
+              SET status='revoked', revoked_at=clock_timestamp(), revoked_by_user_id=$2
+            WHERE grant_id=$1`,
+          ["test-delegated-recovery-viewer", ready.actor],
+        );
+        expect(await discoverAsBuyer()).toBeNull();
         expect(await Effect.runPromise(hostAuthority.resolve("journeytest.harbor"))).toMatchObject({
           namespace_authority_effective: false,
           handle_grant_active: capabilityStatus === "active",

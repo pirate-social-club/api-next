@@ -237,7 +237,7 @@ describe("jobs-worker HNS route-revalidation composition", () => {
     );
   });
 
-  test("keeps HNS disabled and the verifier unbound in every Wrangler environment", async () => {
+  test("keeps both HNS writers disabled while binding the verifier in deployed environments", async () => {
     const wrangler = BunRuntime.JSONC.parse(
       await BunRuntime.file(new URL("../wrangler.jsonc", import.meta.url)).text(),
     ) as {
@@ -256,9 +256,13 @@ describe("jobs-worker HNS route-revalidation composition", () => {
 
     for (const environment of [wrangler, ...Object.values(wrangler.env ?? {})]) {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
-      expect(environment.services ?? []).not.toContainEqual(
-        expect.objectContaining({ binding: "HNS_OWNER_VERIFIER" }),
-      );
+      expect(environment.vars?.HNS_ACTIVE_LEASE_RENEWAL_ENABLED ?? "false").toBe("false");
+    }
+    for (const name of ["staging", "production"]) {
+      expect(wrangler.env?.[name]?.services).toContainEqual({
+        binding: "HNS_OWNER_VERIFIER",
+        service: `pirate-hns-owner-verifier-${name}`,
+      });
     }
   });
 });

@@ -39,21 +39,18 @@ export function makeHnsActiveLeaseRenewalJob(
     version: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
     leadSeconds: Number(bindings.HNS_ROUTE_RENEWAL_LEAD_SECONDS),
   });
-  if (
-    enabled !== "true" ||
-    bindings.HNS_OWNERSHIP_ENABLED === "true" ||
-    bindings.HNS_OWNER_VERIFIER === undefined ||
-    Option.isNone(settings)
-  ) {
-    throw new Error(
-      "HNS active lease renewal configuration is incomplete or conflicts with recovery",
-    );
-  }
-  const configuration = settings.value;
-  const transport = makeHnsOwnerActiveLeaseRenewalServiceBindingProvider(
-    bindings.HNS_OWNER_VERIFIER,
-  );
+  const verifier = bindings.HNS_OWNER_VERIFIER;
+  const configuration =
+    enabled === "true" &&
+    bindings.HNS_OWNERSHIP_ENABLED !== "true" &&
+    verifier !== undefined &&
+    Option.isSome(settings)
+      ? settings.value
+      : null;
   const run = Effect.gen(function* () {
+    if (configuration === null || verifier === undefined)
+      return yield* new HnsActiveLeaseRenewalProviderFailed({ reason: "misconfigured" });
+    const transport = makeHnsOwnerActiveLeaseRenewalServiceBindingProvider(verifier);
     const db = yield* ControlPlaneDb;
     const alerts = yield* AlertCollector;
     const runtime = Layer.succeed(ControlPlaneDb, db);

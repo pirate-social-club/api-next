@@ -841,6 +841,9 @@ function finalizeInTransaction(
     const nowRow = oneRow(nowResult);
     const now = nowRow === null || nowRow === undefined ? null : timestampValue(nowRow, "now");
     if (now === null) return yield* Effect.fail(storageFailure());
+    const attemptLeaseExpiresAt = timestampValue(locked, "lease_expires_at");
+    if (attemptLeaseExpiresAt === null || Date.parse(attemptLeaseExpiresAt) <= Date.parse(now))
+      return { kind: "lease_lost" } as const;
     const stale =
       stringValue(locked, "community_status") !== "active" ||
       stringValue(locked, "canonical_route_binding_id") !== request.route_binding_id ||
