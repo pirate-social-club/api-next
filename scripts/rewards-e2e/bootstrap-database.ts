@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Client } from "pg";
+import type { PostgresMigration } from "../../packages/platform-cf/src/postgres-migrations.ts";
 import {
   loadPostgresMigrations,
   normalizePostgresConnectionString,
@@ -12,6 +13,37 @@ export type IsolatedDatabaseIdentity = {
   readonly hostname: string;
   readonly usernameSha256: string;
 };
+
+/** Keep administrative lock usage bounded while preserving each exact ledger boundary. */
+export async function applyIsolatedBootstrapBatches(
+  connectionString: string,
+  migrations: readonly PostgresMigration[],
+  apply = runPostgresMigrations,
+) {
+  const applied: string[] = [];
+  for (
+    let end = Math.min(20, migrations.length);
+    end > 0;
+    end = Math.min(end + 20, migrations.length)
+  ) {
+    const expectedLedger = migrations
+      .slice(0, applied.length)
+      .map(({ version, checksum }) => ({ version, checksum }));
+    const result = await apply({
+      connectionString,
+      migrations: migrations.slice(0, end),
+      expectedLedger,
+    });
+    if (result.dryRun) throw new Error("A dry run cannot satisfy the isolated database rebuild");
+    const expected = migrations.slice(applied.length, end).map(({ version }) => version);
+    if (JSON.stringify(result.result.applied) !== JSON.stringify(expected)) {
+      throw new Error("The isolated migration batch did not apply its exact pinned range");
+    }
+    applied.push(...result.result.applied);
+    if (end === migrations.length) break;
+  }
+  return { applied, currentVersion: migrations.at(-1)?.version ?? null };
+}
 
 export function validateIsolatedDatabaseIdentity(
   connectionString: string,
@@ -88,13 +120,8 @@ export async function bootstrapIsolatedRewardsDatabase(input: {
     await client.end();
   }
   connection.searchParams.set("options", "-c search_path=api_next,pg_catalog");
-  const result = await runPostgresMigrations({
-    connectionString: connection.toString(),
-    migrations,
-    expectedLedger: [],
-  });
-  if (result.dryRun) throw new Error("A dry run cannot satisfy the isolated database rebuild");
-  if (result.result.applied.length !== migrations.length) {
+  const result = await applyIsolatedBootstrapBatches(connection.toString(), migrations);
+  if (result.applied.length !== migrations.length) {
     throw new Error("The isolated rebuild did not apply every pinned migration");
   }
   const readback = new Client({
@@ -126,6 +153,6 @@ export async function bootstrapIsolatedRewardsDatabase(input: {
     archivedInheritedSchema,
     inheritedSchema: archivedInheritedSchema ? archiveSchema : null,
     migrations: migrations.length,
-    currentVersion: result.result.currentVersion,
+    currentVersion: result.currentVersion,
   };
 }

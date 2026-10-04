@@ -34,3 +34,16 @@ purchased and read before settlement, and claims, payouts, onward sends or
 refunds must finish with nothing owed. Claim pending is a failure. The command
 orchestration and hosted-resource setup remain under implementation; these
 component checks do not close acceptance.
+
+The hosted bootstrap applies at most twenty migrations per transaction and checks
+the exact committed ledger before every batch. This bounds PostgreSQL lock use.
+A failed batch leaves the bootstrap receipt unfinished; ordinary bootstrap
+refuses a second attempt. Inspect the exact target, ledger and receipt before
+recovery. Previously committed batches remain committed.
+
+`configure-runtime.ts` requires independently pinned admin and runtime
+credentials and a completed bootstrap receipt. It verifies the actual runtime
+SQL identity, refuses elevated roles, applies application grants with the
+maintained Rewards denials, and then checks the entire runtime money permission
+inventory and exact source ledger. Credential values belong only in the
+isolated Infisical folder and temporary runtime workflows.
