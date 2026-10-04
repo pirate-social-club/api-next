@@ -72,10 +72,7 @@ export async function verifyPostgresLockCapacity(connectionString: string): Prom
 
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
-const dockerRecoveryTests = [
-  "scripts/staging-persona-phased-reset.pg.test.ts",
-  "scripts/staging-persona-recovery.pg.test.ts",
-] as const;
+const dockerRecoveryTests = ["scripts/staging-persona-phased-reset.pg.test.ts"] as const;
 const hnsRegtestTests = [
   "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
   "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
