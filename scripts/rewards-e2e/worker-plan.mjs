@@ -9,6 +9,8 @@ export const isolatedWorkers = {
   http: "pirate-http-worker-megapot-e2e-staging",
   jobs: "pirate-jobs-worker-megapot-e2e-staging",
 };
+export const isolatedCommitmentOrigin =
+  "https://pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev";
 const buckets = {
   MEDIA_INGRESS: "pirate-media-ingress-megapot-e2e-staging",
   MEDIA_IMMUTABLE_ORIGINALS: "pirate-media-immutable-megapot-e2e-staging",
@@ -105,9 +107,7 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
     VIDEO_WORKFLOW_SCRIPT_NAME: "",
     ZKPASSPORT_DOMAIN: new URL(isolatedOrigins.web).host,
   });
-  if (kind === "jobs")
-    config.vars.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN =
-      "https://pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev";
+  if (kind === "jobs") config.vars.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN = isolatedCommitmentOrigin;
   config.secrets = {
     required:
       kind === "http"

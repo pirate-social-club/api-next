@@ -40,7 +40,7 @@ test("current Worker bindings are isolated with admission disabled", async () =>
   expect(plans.http.routes[0].pattern).toBe("api-megapot-e2e-staging.pirate.sc");
   expect(plans.jobs.routes).toEqual([]);
   expect(plans.jobs.vars.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN).toBe(
-    "https://pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev",
+    "https://pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev",
   );
   expect(plans.jobs.secrets.required).not.toContain("MEGAPOT_COMMITMENT_PUBLIC_ORIGIN");
 });

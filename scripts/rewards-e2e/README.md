@@ -118,7 +118,9 @@ and unresolved winner sends across the entire isolated database. A successful
 run also verifies the paused brake, disabled flags and owned browser cleanup.
 Late evidence and failed receipt-observer cleanup cannot pass acceptance.
 
-Jobs publish commitments only at the isolated bucket's reviewed managed domain,
-`pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev`. The runner verifies that domain is
-enabled and matches the serving jobs binding before execution. The initial
-readback on October 5 found it disabled. Source preparation does not enable it.
+Jobs publish commitments through the existing isolated jobs Worker's public
+reader at `pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev`.
+The runner checks the exact origin, bucket binding and a read-only HEAD probe
+of a preserved public document. The route accepts only commitment document
+paths and GET/HEAD. The bucket's managed r2.dev URL remains disabled and is
+not required for publication. An earlier preflight incorrectly required it.

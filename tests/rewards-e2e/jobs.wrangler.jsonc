@@ -117,7 +117,7 @@
     "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-megapot-e2e-staging",
     "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-megapot-e2e-staging",
     "ZKPASSPORT_DOMAIN": "web-megapot-e2e-staging.pirate.sc",
-    "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN": "https://pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev"
+    "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN": "https://pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev"
   },
   "secrets": {
     "required": [
@@ -213,7 +213,7 @@
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-megapot-e2e-staging",
         "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-megapot-e2e-staging",
         "ZKPASSPORT_DOMAIN": "web-megapot-e2e-staging.pirate.sc",
-        "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN": "https://pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev"
+        "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN": "https://pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev"
       },
       "r2_buckets": [
         {

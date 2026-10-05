@@ -5,6 +5,7 @@ import { isAbsolute, resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadPostgresMigrations } from "../postgres-migrations.ts";
 import { cloudflareApi } from "./cloudflare-api.mjs";
+import { verifyCommitmentReader } from "./commitment-reader.mjs";
 import {
   assertShutdownInventory,
   isolatedDatabase,
@@ -93,16 +94,6 @@ const [http, jobs] = await Promise.all([
   inspectIsolatedWorker("http"),
   inspectIsolatedWorker("jobs"),
 ]);
-const commitmentDomain = await cloudflareApi(
-  "/r2/buckets/pirate-megapot-commitments-e2e-staging/domains/managed",
-);
-if (
-  commitmentDomain.enabled !== true ||
-  commitmentDomain.domain !== "pub-48f50b887be54c92b4f8d7896ff1ece9.r2.dev" ||
-  jobs.resources.bindings.find((binding) => binding.name === "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN")
-    ?.text !== `https://${commitmentDomain.domain}`
-)
-  throw Error("Isolated commitment publication origin is unavailable or differs");
 for (const version of [http, jobs]) {
   if (
     !version.annotations?.["workers/message"]?.startsWith(`git:${apiSource}`) ||
@@ -110,6 +101,7 @@ for (const version of [http, jobs]) {
   )
     throw Error("Both dark Workers must serve the pinned runner release");
 }
+const commitmentReader = await verifyCommitmentReader(jobs);
 const control = (
   await db.read("SELECT paused,revision::text FROM reward_operations_control WHERE singleton")
 )[0];
@@ -145,6 +137,7 @@ const plan = {
   webVersion: reviewedWebVersion,
   httpVersion: http.id,
   jobsVersion: jobs.id,
+  commitmentReader,
   authoritySha256,
   branch: identity.branchId,
   simulatedClaimVerification: true,
