@@ -101,3 +101,14 @@ export async function confirmWalletFunding(page, dialog, consumeTransfer) {
     },
   );
 }
+
+/**
+ * The app observes a submitted transfer once and then waits for the sponsor to ask again.
+ * The control only re-reads the bound hash; it cannot sign or send another transfer.
+ */
+export async function checkWalletFundingStatus(dialog) {
+  const button = dialog.getByRole("button", { name: "Check status", exact: true });
+  if (!(await button.isVisible()) || !(await button.isEnabled())) return false;
+  await button.click();
+  return true;
+}
