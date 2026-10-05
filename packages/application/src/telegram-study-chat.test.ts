@@ -448,6 +448,13 @@ test("old callbacks acknowledge and reply before /start, even if acknowledgement
   };
   const calls: string[] = [];
   f.services.store = strictPort<TelegramStore>({
+    learnerLanguageContext: async () => ({
+      preference: { locale: "en", explicit: true },
+      accountLocale: null,
+      helperLanguage: null,
+      communityName: "Fixture community",
+      resumeAvailable: false,
+    }),
     claimInbox: async () => item,
     integration: async () => integration,
     privateChatStarted: async () => false,
@@ -485,6 +492,13 @@ test("unknown commands never invoke the paid assistant", async () => {
   };
   let reply = "";
   f.services.store = strictPort<TelegramStore>({
+    learnerLanguageContext: async () => ({
+      preference: { locale: "en", explicit: true },
+      accountLocale: null,
+      helperLanguage: null,
+      communityName: "Fixture community",
+      resumeAvailable: false,
+    }),
     claimInbox: async () => item,
     integration: async () => integration,
     privateChatStarted: async () => true,
@@ -526,6 +540,13 @@ test("practice is unavailable in communities outside the admitted pilot", async 
   };
   let reply = "";
   f.services.store = strictPort<TelegramStore>({
+    learnerLanguageContext: async () => ({
+      preference: { locale: "en", explicit: true },
+      accountLocale: null,
+      helperLanguage: null,
+      communityName: "Fixture community",
+      resumeAvailable: false,
+    }),
     claimInbox: async () => item,
     integration: async () => integration,
     privateChatStarted: async () => true,
@@ -758,3 +779,25 @@ test("a pending answer gives guidance to new messages without losing its retry i
   expect(f.keys.at(-1)).toBe("telegram:unknown-answer:answer");
   expect(f.counts().answers).toBe(1);
 });
+
+for (const locale of ["ru", "ka"] as const) {
+  test(`localized ${locale} practice preserves English source lines and the current turn`, async () => {
+    const f = fixture();
+    await f.begin();
+    const before = f.state().turn;
+    await handleTelegramStudyChat(
+      f.services,
+      f.study,
+      inbox(`resume-${locale}`),
+      integration,
+      "321",
+      { message_id: 11, text: "/resume" },
+      undefined,
+      locale,
+    );
+    expect(f.state().turn?.itemId).toBe(before?.itemId);
+    expect(f.replies.at(-1)?.text).toContain("Hold on");
+    expect(f.replies.at(-1)?.text).not.toContain("Read aloud");
+    expect(f.counts().answers).toBe(0);
+  });
+}

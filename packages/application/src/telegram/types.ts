@@ -152,6 +152,15 @@ export interface CredentialVault {
 }
 
 export interface TelegramStore {
+  learnerLanguageContext(
+    sender: TelegramLanguageSender,
+  ): Promise<import("./copy.ts").TelegramLanguageContext>;
+  saveLearnerLanguage(
+    sender: TelegramLanguageSender,
+    inboxId: string,
+    locale: import("./copy.ts").TelegramLocale,
+    explicit: boolean,
+  ): Promise<void>;
   startPrivateChat(communityId: string, epoch: string, userId: string): Promise<void>;
   privateChatStarted(communityId: string, epoch: string, userId: string): Promise<boolean>;
   owner(communityId: string, accountId: string): Promise<void>;
@@ -247,6 +256,13 @@ export interface TelegramStore {
     answer: string,
   ): Promise<void>;
   cleanup(): Promise<void>;
+}
+
+export interface TelegramLanguageSender {
+  readonly communityId: string;
+  readonly botId: string;
+  readonly epoch: string;
+  readonly telegramUserId: string;
 }
 
 export interface TelegramServices {

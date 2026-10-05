@@ -238,4 +238,120 @@ suite("community Telegram persistence", () => {
       await store.finishDelivery(withdrawn, { kind: "confirmed", messageId: 9 }, "delete");
       expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("withdrawn");
     }));
+  test("interface choices survive bot rotation, fence reordered writes and stay private", () =>
+    fixture(async (store, admin) => {
+      let bot = await store.integration("telegram-community");
+      const sender = {
+        communityId: bot.communityId,
+        botId: "123",
+        epoch: "epoch",
+        telegramUserId: "321",
+      };
+      const first = await store.acceptUpdate(bot, { update_id: 10, message: {} });
+      const second = await store.acceptUpdate(bot, { update_id: 11, message: {} });
+      const third = await store.acceptUpdate(bot, { update_id: 12, message: {} });
+      for (const [id, minute] of [
+        [first, 1],
+        [second, 2],
+        [third, 3],
+      ] as const)
+        await admin.query(
+          "UPDATE community_telegram_inbox SET created_at=$2::timestamptz WHERE inbox_id=$1",
+          [id, `2026-10-05T00:0${minute}:00Z`],
+        );
+      await store.saveLearnerLanguage(sender, second, "ru", false);
+      await store.saveLearnerLanguage(sender, first, "en", true);
+      await store.saveLearnerLanguage(sender, second, "ka", false);
+      expect((await store.learnerLanguageContext(sender)).preference).toEqual({
+        locale: "en",
+        explicit: true,
+      });
+      await store.saveLearnerLanguage(sender, third, "ka", true);
+      await store.saveLearnerLanguage(sender, first, "en", true);
+      expect((await store.learnerLanguageContext(sender)).preference).toEqual({
+        locale: "ka",
+        explicit: true,
+      });
+      expect(
+        (await store.learnerLanguageContext({ ...sender, telegramUserId: "654" })).preference,
+      ).toBeNull();
+      bot = await store.saveIntegration(
+        { ...bot, revision: bot.revision + 1, botEpoch: "rotated" },
+        bot.revision,
+        "rotation",
+        "rotation-hash",
+        "telegram-owner",
+      );
+      expect(
+        (await store.learnerLanguageContext({ ...sender, epoch: "rotated" })).preference,
+      ).toEqual({ locale: "ka", explicit: true });
+      await expect(store.saveLearnerLanguage(sender, third, "ru", true)).rejects.toBeDefined();
+      await store.saveIntegration(
+        { ...bot, revision: bot.revision + 1, botEpoch: "different", botId: "456" },
+        bot.revision,
+        "replace",
+        "replace-hash",
+        "telegram-owner",
+      );
+      expect(
+        (await store.learnerLanguageContext({ ...sender, botId: "456", epoch: "different" }))
+          .preference,
+      ).toBeNull();
+    }));
+
+  test("account UI preference is read only through a current bot grant and helper is never written", () =>
+    fixture(async (store, admin) => {
+      await admin.query("INSERT INTO users(user_id) VALUES('locale-learner')");
+      // Locale authority is tested independently of the wallet activation fixture.
+      await admin.query("SET session_replication_role=replica");
+      await admin.query(
+        "INSERT INTO personas(persona_id,account_id,status) VALUES('locale-persona','locale-learner','active')",
+      );
+      await admin.query("SET session_replication_role=origin");
+      await admin.query(
+        "INSERT INTO account_language_preferences(account_id,ui_locale,study_helper_language) VALUES('locale-learner','ru','zh-Hans')",
+      );
+      await admin.query(
+        "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('321','locale-learner')",
+      );
+      const sender = {
+        communityId: "telegram-community",
+        botId: "123",
+        epoch: "epoch",
+        telegramUserId: "321",
+      };
+      expect((await store.learnerLanguageContext(sender)).accountLocale).toBeNull();
+      await admin.query(
+        "INSERT INTO telegram_bot_grants(community_id,bot_id,telegram_user_id,account_id,persona_id,revision) VALUES('telegram-community','123','321','locale-learner','locale-persona',1)",
+      );
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: null,
+        helperLanguage: null,
+      });
+      await admin.query(
+        "INSERT INTO persona_community_bindings(persona_id,account_id,community_id,binding_source) VALUES('locale-persona','locale-learner','telegram-community','persona_creation')",
+      );
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: "ru",
+        helperLanguage: "zh-Hans",
+      });
+      const message = await store.acceptUpdate(await store.integration(sender.communityId), {
+        update_id: 9,
+        message: {},
+      });
+      await store.saveLearnerLanguage(sender, message, "ka", true);
+      expect(
+        (
+          await admin.query(
+            "SELECT ui_locale,study_helper_language FROM account_language_preferences WHERE account_id='locale-learner'",
+          )
+        ).rows,
+      ).toEqual([{ ui_locale: "ru", study_helper_language: "zh-Hans" }]);
+      await admin.query("UPDATE telegram_bot_grants SET active=FALSE WHERE telegram_user_id='321'");
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: null,
+        helperLanguage: null,
+        preference: { locale: "ka", explicit: true },
+      });
+    }));
 });

@@ -94,10 +94,14 @@ serving the changed shared Study repository, even with Telegram disabled.
 The deploy wrapper checks actual effective privileges before uploading HTTP or
 jobs when Telegram, linking or practice is enabled. Both runtime constructors
 repeat the guard against the actual connected role, closing direct-upload and
-dashboard-flag bypasses. The check requires api_next schema access, all five
+dashboard-flag bypasses. The check requires api_next schema access, all six
 objects, SELECT/INSERT/UPDATE, DELETE only on the three temporary/link tables,
-and no DELETE on consent revisions or chat progress. TRUNCATE and owner-equivalent
+and no DELETE on consent revisions, chat progress or interface preferences. TRUNCATE and owner-equivalent
 access are refused throughout.
+
+Migration 0240 and bounded SELECT/INSERT/UPDATE access to
+telegram_interface_preferences are required whenever Telegram is enabled,
+including discovery-only operation with linking and practice disabled.
 
 The bounded operator block and verification SQL are in roles.sql.example and
 telegram-linking-review-followup.md. The read-only CLI is
