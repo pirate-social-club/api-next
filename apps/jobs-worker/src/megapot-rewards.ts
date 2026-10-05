@@ -9,13 +9,16 @@ import {
   makeControlPlaneMegapotDrawingObservationStore,
   makeControlPlaneMegapotWorkStore,
   makeControlPlaneRewardEffectAttestationStore,
+  makeControlPlaneRewardFundingStore,
   makeControlPlaneRewardGasTopupSendStore,
   makeControlPlaneRewardOfferTerminalStore,
   makeControlPlaneRewardPayoutStore,
   makeControlPlaneRewardRefundStore,
   makeMegapotAllocationCoordinator,
   makeMegapotCutoffCoordinator,
+  makeRewardFundingCoordinator,
   makeRewardGasTopupCoordinator,
+  type RewardFundingCoordinator,
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 import {
@@ -134,6 +137,9 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "MegapotSweepRejected",
   "MegapotSweepStorageFailed",
   "MegapotWorkStorageFailed",
+  "RewardFundingCoordinatorFailed",
+  "RewardFundingRejected",
+  "RewardFundingStorageFailed",
   "RewardGasTopupCoordinatorFailed",
   "RewardGasTopupRejected",
   "RewardGasTopupStorageFailed",
@@ -261,6 +267,23 @@ export function makeMegapotRewardsJob(
         });
       }
     }
+    // Funding is observed against the deployment its own leg froze, which may be
+    // a retained one. The clients are built on demand and live for this cycle.
+    const fundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+    const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
+    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (work) =>
+      Effect.gen(function* () {
+        let coordinator = fundingCoordinators.get(work.attestationId);
+        if (coordinator === undefined) {
+          const deployment = yield* observationStore.loadCandidate(work.attestationId);
+          coordinator = makeRewardFundingCoordinator({
+            store: fundingStore,
+            rpc: makeMegapotAttestedRpc(deployment, options.rpcUrl),
+          });
+          fundingCoordinators.set(work.attestationId, coordinator);
+        }
+        return yield* coordinator.reconcile(work.fundingEffectId);
+      });
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const cutoff = makeMegapotCutoffCoordinator({
       store: makeControlPlaneMegapotCutoffStore(controlPlane),
@@ -277,6 +300,7 @@ export function makeMegapotRewardsJob(
       work: makeControlPlaneMegapotWorkStore(controlPlane),
       runtime: {
         reconcile: routing.reconcile,
+        reconcileFunding,
         observeDrawing: () =>
           routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
         observeSolvency: () =>

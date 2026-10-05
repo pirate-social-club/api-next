@@ -5,6 +5,7 @@ import type {
   MegapotAgedPendingFamily,
   MegapotChainEffectWork,
   MegapotDrawingWork,
+  MegapotFundingWork,
   MegapotWorkStore,
 } from "@pirate/platform-cf/megapot-work-repository";
 import { Effect } from "effect";
@@ -14,6 +15,8 @@ export const MEGAPOT_REWARDS_CYCLE_LANE = "megapot-rewards";
 export const MEGAPOT_REWARDS_CYCLE_SCHEDULE = "* * * * *";
 export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
 const MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS = 10 * 60;
+// Each observation costs up to three chain reads at the client's request spacing.
+const MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT = 10;
 
 export function observeMegapotDrawingForCycle<A>(
   operation: Effect.Effect<A, MegapotDrawingObservationFailure>,
@@ -28,6 +31,13 @@ export function observeMegapotDrawingForCycle<A>(
 
 export interface MegapotRewardsRuntime {
   readonly reconcile: (work: MegapotChainEffectWork) => Effect.Effect<unknown, unknown>;
+  /**
+   * Re-observes a sponsor transfer that is already bound to a funding effect.
+   * It reads the chain and records the outcome; it never signs or sends.
+   */
+  readonly reconcileFunding: (
+    work: MegapotFundingWork,
+  ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
   readonly observeDrawing: () => Effect.Effect<boolean, unknown>;
   readonly observeSolvency: () => Effect.Effect<unknown, unknown>;
   readonly freezeDue: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
@@ -91,6 +101,7 @@ export function resolveGasTopupRuntime(input: {
 
 export type MegapotRewardsCycleSummary = Readonly<{
   reconciled: number;
+  fundingConfirmed?: number;
   observed: number;
   drawingObservationFailed: boolean;
   frozen: number;
@@ -335,6 +346,22 @@ export function runMegapotRewardsCycle(input: {
     const [reconcileFailures, reconciled] = yield* partition(pending, input.runtime.reconcile);
     recordFailures(reconcileFailures);
 
+    // The HTTP Worker observes a sponsor transfer once, right after it is sent
+    // and before it can have its confirmations. Without this step a sponsor who
+    // pays and leaves is never confirmed. It runs before expiry so a paid leg is
+    // funded, and then refunded if its offer has ended, rather than left bound.
+    const pendingFunding = yield* input.work.loadPendingFunding(
+      Math.min(limit, MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT),
+    );
+    const [fundingFailures, fundingOutcomes] = yield* partition(
+      pendingFunding,
+      input.runtime.reconcileFunding,
+    );
+    recordFailures(fundingFailures);
+    const fundingConfirmed = fundingOutcomes.filter(
+      (outcome) => outcome.kind === "confirmed",
+    ).length;
+
     // A malformed, uninitialized or unobservable new drawing must not stop
     // reconciliation of already-created obligations: held credits never
     // expire, and expiry, refunds and payouts only depend on their own
@@ -458,6 +485,7 @@ export function runMegapotRewardsCycle(input: {
 
     return {
       reconciled: reconciled.length,
+      ...(fundingConfirmed > 0 ? { fundingConfirmed } : {}),
       observed: drawingObserved ? 1 : 0,
       drawingObservationFailed: drawingObservation.failure !== null,
       frozen: frozen.length,

@@ -2,6 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  type Hex,
+  parseAbi,
+  parseAbiParameters,
+} from "viem";
+import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
@@ -24,10 +31,12 @@ import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawin
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
+import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { finishAdmittedRefund } from "./reward-admitted-refund.pg-fixture.ts";
+import { makeRewardFundingCoordinator } from "./reward-funding-coordinator.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-terminal-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
@@ -47,7 +56,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 24;
+const testCount = 25;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -3915,6 +3924,136 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         beneficiaryCount: 0,
       });
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("jobs confirms a submitted transfer once without the sponsor and then lets the offer expire", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-jobs", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-jobs",
+        expired: true,
+      });
+      const transactionHash = bytes32("b") as Hex;
+      const blockHash = bytes32("c") as Hex;
+      // The seeded leg budget is backed by one confirmed transfer, as refunds require.
+      // A second transfer is paid and left: the HTTP Worker bound its hash and nothing else ran.
+      await admin.query(
+        `INSERT INTO song_reward_leg_funding_effects (
+           funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
+           sender_address, recipient_address, expected_amount_atomic,
+           confirmed_amount_atomic, required_confirmations, state,
+           transaction_hash, log_index, block_number, block_hash,
+           observation_hash, confirmed_at
+         ) VALUES
+           ('funding-jobs-seed',$1,$2,84532,$3,$4,$5,100000,100000,3,'confirmed',
+             $7,1,190,$8,$9,clock_timestamp()),
+           ('funding-jobs-bound',$1,$2,84532,$3,$4,$5,500,NULL,3,'confirming',
+             $6,NULL,NULL,NULL,NULL,NULL),
+           ('funding-jobs-unbound',$1,$2,84532,$3,$4,$5,123,NULL,3,'planned',
+             NULL,NULL,NULL,NULL,NULL,NULL)`,
+        [
+          legId,
+          identity.accountId,
+          address("1"),
+          address("b"),
+          address("4"),
+          transactionHash,
+          bytes32("e"),
+          bytes32("f"),
+          hash("f"),
+        ],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const terminalStore = makeControlPlaneRewardOfferTerminalStore(layer);
+      const pending = () => Effect.runPromise(work.loadPendingFunding(10));
+      expect(await pending()).toEqual([
+        { fundingEffectId: "funding-jobs-bound", attestationId: "megapot-base-sepolia-v2" },
+      ]);
+      // A bound transfer holds expiry; without a server-side observer it held it forever.
+      expect(await Effect.runPromise(terminalStore.closeExpired(10))).toEqual([]);
+
+      const transfer = parseAbi([
+        "event Transfer(address indexed from, address indexed to, uint256 amount)",
+      ]);
+      let head = 201n;
+      let receiptReads = 0;
+      const rpc = {
+        attestDeployment: async () => ({}),
+        readReceipt: async () => {
+          receiptReads += 1;
+          return {
+            chainId: 84_532,
+            status: "success",
+            transactionHash,
+            from: address("b"),
+            to: address("1"),
+            blockHash,
+            blockNumber: 200n,
+            logs: [
+              {
+                address: address("1"),
+                topics: encodeEventTopics({
+                  abi: transfer,
+                  eventName: "Transfer",
+                  args: { from: address("b") as Hex, to: address("4") as Hex },
+                }),
+                data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [500n]),
+                logIndex: 4,
+                transactionHash,
+                blockHash,
+                blockNumber: 200n,
+              },
+            ],
+          };
+        },
+        readBlock: async () => ({ blockNumber: 200n, blockHash }),
+        readHead: async () => ({ blockNumber: head, blockHash: bytes32("d") }),
+      } as unknown as MegapotV2RpcClient;
+      const coordinator = makeRewardFundingCoordinator({
+        store: makeControlPlaneRewardFundingStore(layer),
+        rpc,
+      });
+      const reconcile = () => Effect.runPromise(coordinator.reconcile("funding-jobs-bound"));
+      const funded = async () =>
+        (
+          await admin.query<{ readonly state: string; readonly funded_atomic: string }>(
+            `SELECT funding.state, leg.funded_atomic::text
+               FROM song_reward_leg_funding_effects funding
+               JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+              WHERE funding.funding_effect_id='funding-jobs-bound'`,
+          )
+        ).rows[0];
+
+      // Two confirmations: nothing is credited and the effect stays in the work list.
+      expect((await reconcile()).kind).toBe("confirming");
+      expect(await funded()).toEqual({ state: "confirming", funded_atomic: "100000" });
+      expect(await pending()).toHaveLength(1);
+
+      head = 202n;
+      expect((await reconcile()).kind).toBe("confirmed");
+      expect(await funded()).toEqual({ state: "confirmed", funded_atomic: "100500" });
+      expect(await pending()).toEqual([]);
+
+      // A later cycle neither credits the leg again nor re-reads the chain.
+      const readsAtConfirmation = receiptReads;
+      expect((await reconcile()).kind).toBe("confirmed");
+      expect(await funded()).toEqual({ state: "confirmed", funded_atomic: "100500" });
+      expect(receiptReads).toBe(readsAtConfirmation);
+
+      // The ended offer now closes and the paid transfer becomes refundable.
+      expect(await Effect.runPromise(terminalStore.closeExpired(10))).toMatchObject([
+        { offerId, legIds: [legId] },
+      ]);
+      expect(await Effect.runPromise(work.loadRefunds(10))).toContain("funding-jobs-bound");
+      const unbound = await admin.query<{ readonly state: string }>(
+        "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id='funding-jobs-unbound'",
+      );
+      expect(unbound.rows).toEqual([{ state: "reclaimable_failed" }]);
     });
     completedTestCount += 1;
   });

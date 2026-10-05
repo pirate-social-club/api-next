@@ -114,12 +114,14 @@ function fixture(options: { missingRetiredKey?: boolean; failedRetiredBalance?: 
       Effect.succeed(
         ["retired", "active"].flatMap((id) => statuses.map((status) => drawing(id, status))),
       ),
+    loadPendingFunding: () => Effect.succeed([]),
     loadRefunds: () => Effect.succeed(["retired", "active"]),
     loadCredits: () => Effect.succeed(["retired", "active"]),
     loadAgedPending: () => Effect.succeed([]),
   };
   const runtime = {
     ...routing,
+    reconcileFunding: () => Effect.succeed({ kind: "confirming" }),
     observeDrawing: () =>
       routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
     observeSolvency: () =>

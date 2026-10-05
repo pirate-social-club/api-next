@@ -28,6 +28,10 @@ function fixture(approvalKind: "submitted" | "confirmed") {
   const work: MegapotWorkStore = {
     loadChainEffects: () =>
       Effect.succeed([{ effectId: "effect-1", effectKind: "ticket_purchase" }]),
+    loadPendingFunding: (limit) =>
+      Effect.sync(() => calls.push(`load-pending-funding:${limit}`)).pipe(
+        Effect.as([{ fundingEffectId: "funding-pending-1", attestationId: "attestation-1" }]),
+      ),
     loadDrawings: ({ statuses }) => Effect.succeed(statuses.map(drawing)),
     loadCredits: () => Effect.succeed(["credit-1"]),
     loadRefunds: () => Effect.succeed(["funding-1"]),
@@ -40,6 +44,8 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     });
   const runtime: MegapotRewardsRuntime = {
     reconcile: () => call("reconcile"),
+    reconcileFunding: (work) =>
+      call(`reconcile-funding:${work.fundingEffectId}`).pipe(Effect.as({ kind: "confirmed" })),
     observeDrawing: () => call("observe-drawing").pipe(Effect.as(true)),
     observeSolvency: () => call("observe-solvency"),
     freezeDue: () => call("cutoff").pipe(Effect.as([{}])),
@@ -218,6 +224,8 @@ describe("Megapot rewards scheduled cycle", () => {
     const result = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime }));
     expect(calls).toEqual([
       "reconcile",
+      "load-pending-funding:10",
+      "reconcile-funding:funding-pending-1",
       "observe-drawing",
       "observe-solvency",
       "cutoff",
@@ -235,6 +243,7 @@ describe("Megapot rewards scheduled cycle", () => {
     ]);
     expect(result).toMatchObject({
       reconciled: 1,
+      fundingConfirmed: 1,
       observed: 1,
       drawingObservationFailed: false,
       frozen: 1,
@@ -638,6 +647,64 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(result.refunded).toBe(1);
     expect(calls).toContain("close-expired");
   });
+});
+
+test("pending sponsor funding is observed before expiry and one failure does not stop the rest", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: (limit) =>
+          Effect.sync(() => calls.push(`load-pending-funding:${limit}`)).pipe(
+            Effect.as(
+              ["refused", "waiting", "confirmed"].map((fundingEffectId) => ({
+                fundingEffectId,
+                attestationId: "attestation-1",
+              })),
+            ),
+          ),
+      },
+      runtime: {
+        ...runtime,
+        reconcileFunding: (funding) =>
+          Effect.sync(() => calls.push(`reconcile-funding:${funding.fundingEffectId}`)).pipe(
+            Effect.andThen(
+              funding.fundingEffectId === "refused"
+                ? Effect.fail({ _tag: "RewardFundingCoordinatorFailed" })
+                : Effect.succeed({
+                    kind: funding.fundingEffectId === "confirmed" ? "confirmed" : "confirming",
+                  }),
+            ),
+          ),
+      },
+      // A large cycle limit must not widen the chain reads spent on funding.
+      limit: 100,
+    }),
+  );
+  expect(calls.slice(0, 6)).toEqual([
+    "reconcile",
+    "load-pending-funding:10",
+    "reconcile-funding:refused",
+    "reconcile-funding:waiting",
+    "reconcile-funding:confirmed",
+    "observe-drawing",
+  ]);
+  expect(calls.indexOf("reconcile-funding:confirmed")).toBeLessThan(calls.indexOf("close-expired"));
+  expect(result.fundingConfirmed).toBe(1);
+  expect(result.failures).toEqual(["RewardFundingCoordinatorFailed"]);
+  expect(result.paid).toBe(1);
+});
+
+test("a cycle with nothing to observe omits the funding count", async () => {
+  const { runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: { ...work, loadPendingFunding: () => Effect.succeed([]) },
+      runtime,
+    }),
+  );
+  expect(result).not.toHaveProperty("fundingConfirmed");
 });
 
 test("a paused cycle records holds, keeps reconciling and does not report storage failures", async () => {

@@ -34,6 +34,12 @@ export type MegapotChainEffectWork = Readonly<{
   effectKind: MegapotChainEffectKind;
 }>;
 
+/** Sponsor funding whose transfer is bound but not yet confirmed or reverted. */
+export type MegapotFundingWork = Readonly<{
+  fundingEffectId: string;
+  attestationId: string;
+}>;
+
 export type MegapotAgedPendingFamily =
   | "chain_effects"
   | "funding_effects"
@@ -65,6 +71,9 @@ export interface MegapotWorkStore {
   readonly loadChainEffects: (
     limit: number,
   ) => Effect.Effect<readonly MegapotChainEffectWork[], MegapotWorkStorageFailed>;
+  readonly loadPendingFunding: (
+    limit: number,
+  ) => Effect.Effect<readonly MegapotFundingWork[], MegapotWorkStorageFailed>;
   readonly loadAgedPending: (
     thresholdSeconds: number,
   ) => Effect.Effect<readonly MegapotAgedPending[], MegapotWorkStorageFailed>;
@@ -319,6 +328,36 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
+    loadPendingFunding: (limit: number) =>
+      mapped(
+        Effect.gen(function* () {
+          if (!validLimit(limit)) return yield* failed("invalid-row");
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "megapot-work.pending-funding.read",
+            // Only a transfer the sponsor already submitted is observed here. A
+            // planned effect has no hash, and nothing in jobs can create one.
+            text: `SELECT funding.funding_effect_id, leg.attestation_id
+                     FROM song_reward_leg_funding_effects funding
+                     JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+                    WHERE funding.state IN ('confirming','reconciliation_required')
+                      AND funding.transaction_hash IS NOT NULL
+                      AND leg.attestation_id IS NOT NULL
+                    ORDER BY funding.updated_at,funding.funding_effect_id LIMIT $1`,
+            values: [limit],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () =>
+              result.rows.map((row) => ({
+                fundingEffectId: text(row, "funding_effect_id"),
+                attestationId: text(row, "attestation_id"),
+              })),
+            catch: () => failed("invalid-row"),
+          });
+        }),
+      ),
+
     loadAgedPending: (thresholdSeconds: number) =>
       mapped(
         Effect.gen(function* () {
@@ -442,6 +481,7 @@ export const makeControlPlaneMegapotWorkStore = (
     loadCredits: (limit) => provide(repository.loadCredits(limit)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
+    loadPendingFunding: (limit) => provide(repository.loadPendingFunding(limit)),
     loadAgedPending: (thresholdSeconds) => provide(repository.loadAgedPending(thresholdSeconds)),
   };
 };
