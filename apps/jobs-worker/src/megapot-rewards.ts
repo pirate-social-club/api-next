@@ -26,6 +26,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_LANE,
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
   type MegapotRewardsRuntime,
   megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
@@ -267,22 +268,34 @@ export function makeMegapotRewardsJob(
         });
       }
     }
-    // Funding is observed against the deployment its own leg froze, which may be
-    // a retained one. The clients are built on demand and live for this cycle.
+    // Funding is observed against the deployment its own effect resolves to: the
+    // one a megapot-pool leg froze, or the custody deployment in force when an
+    // asset-bonus transfer was planned. Either may be a retained deployment. The
+    // clients are built on demand, live for this cycle and use a short request
+    // bound so that the step's time budget holds.
     const fundingStore = makeControlPlaneRewardFundingStore(controlPlane);
     const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
-    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (work) =>
+    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (fundingEffectId) =>
       Effect.gen(function* () {
-        let coordinator = fundingCoordinators.get(work.attestationId);
+        const intent = yield* fundingStore.find(fundingEffectId);
+        if (intent === null) {
+          return yield* new MegapotRewardRoutingRejected({ reason: "invalid-config" });
+        }
+        let coordinator = fundingCoordinators.get(intent.attestationId);
         if (coordinator === undefined) {
-          const deployment = yield* observationStore.loadCandidate(work.attestationId);
+          const deployment = yield* observationStore.loadCandidate(intent.attestationId);
           coordinator = makeRewardFundingCoordinator({
             store: fundingStore,
-            rpc: makeMegapotAttestedRpc(deployment, options.rpcUrl),
+            rpc: makeMegapotAttestedRpc(
+              deployment,
+              options.rpcUrl,
+              undefined,
+              MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+            ),
           });
-          fundingCoordinators.set(work.attestationId, coordinator);
+          fundingCoordinators.set(intent.attestationId, coordinator);
         }
-        return yield* coordinator.reconcile(work.fundingEffectId);
+        return yield* coordinator.reconcile(fundingEffectId);
       });
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const cutoff = makeMegapotCutoffCoordinator({

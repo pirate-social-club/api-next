@@ -56,7 +56,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 25;
+const testCount = 27;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -1462,6 +1462,22 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           transactionHash: bytes32("1"),
         }),
       );
+      // A bonus leg freezes no attestation of its own. Jobs still lists its bound
+      // transfer, and the store resolves the custody deployment it must be read on.
+      const pendingBonusFunding = () =>
+        Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ).loadPendingFunding({ limit: 10, cursor: 0 }),
+        );
+      expect(await pendingBonusFunding()).toEqual([funding.fundingEffectId]);
+      await expect(
+        Effect.runPromise(fundingStore.find(funding.fundingEffectId)),
+      ).resolves.toMatchObject({
+        legKind: "asset_bonus",
+        state: "confirming",
+        attestationId: "megapot-base-sepolia-v2",
+      });
       await Effect.runPromise(
         fundingStore.confirm({
           fundingEffectId: funding.fundingEffectId,
@@ -1474,6 +1490,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           confirmedAt: new Date().toISOString(),
         }),
       );
+      expect(await pendingBonusFunding()).toEqual([]);
       await admin.query(
         `UPDATE song_reward_offer_legs
             SET status='ended',participation_ends_at=clock_timestamp(),
@@ -3928,7 +3945,106 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     completedTestCount += 1;
   });
 
-  test("jobs confirms a submitted transfer once without the sponsor and then lets the offer expire", async () => {
+  // A chain as the funding coordinator reads it: one receipt whose status, block
+  // identity and depth the test moves, with a count of receipt reads.
+  const fundingChain = (input: {
+    readonly transactionHash: Hex;
+    readonly amountAtomic: bigint;
+  }) => {
+    const transfer = parseAbi([
+      "event Transfer(address indexed from, address indexed to, uint256 amount)",
+    ]);
+    const blockHash = bytes32("c") as Hex;
+    const state = {
+      head: 201n,
+      status: "success" as "success" | "reverted",
+      canonicalBlockHash: blockHash as string,
+      mined: true,
+      receiptReads: 0,
+    };
+    const rpc = {
+      attestDeployment: async () => ({}),
+      readReceipt: async () => {
+        state.receiptReads += 1;
+        if (!state.mined) return null;
+        return {
+          chainId: 84_532,
+          status: state.status,
+          transactionHash: input.transactionHash,
+          from: address("b"),
+          to: address("1"),
+          blockHash,
+          blockNumber: 200n,
+          logs:
+            state.status === "reverted"
+              ? []
+              : [
+                  {
+                    address: address("1"),
+                    topics: encodeEventTopics({
+                      abi: transfer,
+                      eventName: "Transfer",
+                      args: { from: address("b") as Hex, to: address("4") as Hex },
+                    }),
+                    data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [
+                      input.amountAtomic,
+                    ]),
+                    logIndex: 4,
+                    transactionHash: input.transactionHash,
+                    blockHash,
+                    blockNumber: 200n,
+                  },
+                ],
+        };
+      },
+      readBlock: async () => ({ blockNumber: 200n, blockHash: state.canonicalBlockHash }),
+      readHead: async () => ({ blockNumber: state.head, blockHash: bytes32("d") }),
+    } as unknown as MegapotV2RpcClient;
+    return { rpc, state };
+  };
+  const insertBoundFunding = (
+    admin: Client,
+    input: {
+      readonly fundingEffectId: string;
+      readonly legId: string;
+      readonly accountId: string;
+      readonly amountAtomic: bigint;
+      readonly transactionHash: string;
+    },
+  ) =>
+    admin.query(
+      `INSERT INTO song_reward_leg_funding_effects (
+         funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
+         sender_address, recipient_address, expected_amount_atomic,
+         required_confirmations, state, transaction_hash
+       ) VALUES ($1,$2,$3,84532,$4,$5,$6,$7,3,'confirming',$8)`,
+      [
+        input.fundingEffectId,
+        input.legId,
+        input.accountId,
+        address("1"),
+        address("b"),
+        address("4"),
+        input.amountAtomic.toString(),
+        input.transactionHash,
+      ],
+    );
+  const fundingRow = async (admin: Client, fundingEffectId: string) =>
+    (
+      await admin.query<{
+        readonly state: string;
+        readonly funded_atomic: string;
+        readonly leg_status: string;
+      }>(
+        `SELECT funding.state, leg.funded_atomic::text, leg.status AS leg_status
+           FROM song_reward_leg_funding_effects funding
+           JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+          WHERE funding.funding_effect_id=$1`,
+        [fundingEffectId],
+      )
+    ).rows[0];
+
+  test("jobs confirms a first payment once after the sponsor left and the offer ended", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "funding-jobs", address("b"));
       await seedMegapotAuthority(admin);
@@ -3937,123 +4053,239 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         suffix: "funding-jobs",
         expired: true,
       });
+      // The leg has never been funded: this transfer is its first and only payment.
+      // Leg accounting never moves backwards, so the fixture is rewound with triggers off.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE song_reward_offer_legs
+              SET status='funding', funded_atomic=0, activated_at=NULL WHERE leg_id=$1`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
       const transactionHash = bytes32("b") as Hex;
-      const blockHash = bytes32("c") as Hex;
-      // The seeded leg budget is backed by one confirmed transfer, as refunds require.
-      // A second transfer is paid and left: the HTTP Worker bound its hash and nothing else ran.
+      // The sponsor paid and left: the HTTP Worker bound the hash and nothing else ran.
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-jobs-bound",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 100_000n,
+        transactionHash,
+      });
       await admin.query(
         `INSERT INTO song_reward_leg_funding_effects (
            funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
            sender_address, recipient_address, expected_amount_atomic,
-           confirmed_amount_atomic, required_confirmations, state,
-           transaction_hash, log_index, block_number, block_hash,
-           observation_hash, confirmed_at
-         ) VALUES
-           ('funding-jobs-seed',$1,$2,84532,$3,$4,$5,100000,100000,3,'confirmed',
-             $7,1,190,$8,$9,clock_timestamp()),
-           ('funding-jobs-bound',$1,$2,84532,$3,$4,$5,500,NULL,3,'confirming',
-             $6,NULL,NULL,NULL,NULL,NULL),
-           ('funding-jobs-unbound',$1,$2,84532,$3,$4,$5,123,NULL,3,'planned',
-             NULL,NULL,NULL,NULL,NULL,NULL)`,
-        [
-          legId,
-          identity.accountId,
-          address("1"),
-          address("b"),
-          address("4"),
-          transactionHash,
-          bytes32("e"),
-          bytes32("f"),
-          hash("f"),
-        ],
+           required_confirmations, state
+         ) VALUES ('funding-jobs-unbound',$1,$2,84532,$3,$4,$5,123,3,'planned')`,
+        [legId, identity.accountId, address("1"), address("b"), address("4")],
       );
       const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
       const work = makeControlPlaneMegapotWorkStore(layer);
       const terminalStore = makeControlPlaneRewardOfferTerminalStore(layer);
-      const pending = () => Effect.runPromise(work.loadPendingFunding(10));
-      expect(await pending()).toEqual([
-        { fundingEffectId: "funding-jobs-bound", attestationId: "megapot-base-sepolia-v2" },
-      ]);
+      const pending = () => Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor: 0 }));
+      expect(await pending()).toEqual(["funding-jobs-bound"]);
       // A bound transfer holds expiry; without a server-side observer it held it forever.
       expect(await Effect.runPromise(terminalStore.closeExpired(10))).toEqual([]);
 
-      const transfer = parseAbi([
-        "event Transfer(address indexed from, address indexed to, uint256 amount)",
-      ]);
-      let head = 201n;
-      let receiptReads = 0;
-      const rpc = {
-        attestDeployment: async () => ({}),
-        readReceipt: async () => {
-          receiptReads += 1;
-          return {
-            chainId: 84_532,
-            status: "success",
-            transactionHash,
-            from: address("b"),
-            to: address("1"),
-            blockHash,
-            blockNumber: 200n,
-            logs: [
-              {
-                address: address("1"),
-                topics: encodeEventTopics({
-                  abi: transfer,
-                  eventName: "Transfer",
-                  args: { from: address("b") as Hex, to: address("4") as Hex },
-                }),
-                data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [500n]),
-                logIndex: 4,
-                transactionHash,
-                blockHash,
-                blockNumber: 200n,
-              },
-            ],
-          };
-        },
-        readBlock: async () => ({ blockNumber: 200n, blockHash }),
-        readHead: async () => ({ blockNumber: head, blockHash: bytes32("d") }),
-      } as unknown as MegapotV2RpcClient;
+      const chain = fundingChain({ transactionHash, amountAtomic: 100_000n });
       const coordinator = makeRewardFundingCoordinator({
         store: makeControlPlaneRewardFundingStore(layer),
-        rpc,
+        rpc: chain.rpc,
       });
       const reconcile = () => Effect.runPromise(coordinator.reconcile("funding-jobs-bound"));
-      const funded = async () =>
-        (
-          await admin.query<{ readonly state: string; readonly funded_atomic: string }>(
-            `SELECT funding.state, leg.funded_atomic::text
-               FROM song_reward_leg_funding_effects funding
-               JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
-              WHERE funding.funding_effect_id='funding-jobs-bound'`,
-          )
-        ).rows[0];
 
       // Two confirmations: nothing is credited and the effect stays in the work list.
       expect((await reconcile()).kind).toBe("confirming");
-      expect(await funded()).toEqual({ state: "confirming", funded_atomic: "100000" });
+      expect(await fundingRow(admin, "funding-jobs-bound")).toMatchObject({
+        state: "confirming",
+        funded_atomic: "0",
+      });
       expect(await pending()).toHaveLength(1);
 
-      head = 202n;
+      chain.state.head = 202n;
       expect((await reconcile()).kind).toBe("confirmed");
-      expect(await funded()).toEqual({ state: "confirmed", funded_atomic: "100500" });
+      // The offer has ended, so the paid leg is credited but never opened to activity.
+      expect(await fundingRow(admin, "funding-jobs-bound")).toEqual({
+        state: "confirmed",
+        funded_atomic: "100000",
+        leg_status: "funding",
+      });
       expect(await pending()).toEqual([]);
 
       // A later cycle neither credits the leg again nor re-reads the chain.
-      const readsAtConfirmation = receiptReads;
+      const readsAtConfirmation = chain.state.receiptReads;
       expect((await reconcile()).kind).toBe("confirmed");
-      expect(await funded()).toEqual({ state: "confirmed", funded_atomic: "100500" });
-      expect(receiptReads).toBe(readsAtConfirmation);
+      expect((await fundingRow(admin, "funding-jobs-bound"))?.funded_atomic).toBe("100000");
+      expect(chain.state.receiptReads).toBe(readsAtConfirmation);
 
-      // The ended offer now closes and the paid transfer becomes refundable.
+      // The ended offer now closes and the whole payment becomes refundable.
       expect(await Effect.runPromise(terminalStore.closeExpired(10))).toMatchObject([
         { offerId, legIds: [legId] },
       ]);
-      expect(await Effect.runPromise(work.loadRefunds(10))).toContain("funding-jobs-bound");
+      expect(await Effect.runPromise(work.loadRefunds(10))).toEqual(["funding-jobs-bound"]);
       const unbound = await admin.query<{ readonly state: string }>(
         "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id='funding-jobs-unbound'",
       );
       expect(unbound.rows).toEqual([{ state: "reclaimable_failed" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("ten transfers that never resolve cannot keep an eleventh payment from confirming", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-rotation", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-rotation",
+      });
+      const hashOf = (index: number) => `0x${index.toString(16).padStart(2, "0").repeat(32)}`;
+      for (let index = 1; index <= 11; index++) {
+        await insertBoundFunding(admin, {
+          fundingEffectId: `funding-rotation-${index.toString().padStart(2, "0")}`,
+          legId,
+          accountId: identity.accountId,
+          amountAtomic: 500n,
+          transactionHash: hashOf(index),
+        });
+      }
+      // Pending age is economic evidence: the oldest ten have waited far longer.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE song_reward_leg_funding_effects
+              SET created_at=clock_timestamp()-interval '2 hours',
+                  updated_at=clock_timestamp()-interval '2 hours'
+            WHERE funding_effect_id <> 'funding-rotation-11'
+              AND funding_effect_id LIKE 'funding-rotation-%'`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const ages = async () =>
+        (
+          await admin.query<{ readonly id: string; readonly at: string }>(
+            `SELECT funding_effect_id AS id, updated_at::text AS at
+               FROM song_reward_leg_funding_effects
+              WHERE funding_effect_id LIKE 'funding-rotation-%' ORDER BY 1`,
+          )
+        ).rows;
+      const before = await ages();
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const window = (cursor: number) =>
+        Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor }));
+
+      const first = await window(0);
+      expect(first).toHaveLength(10);
+      expect(first).not.toContain("funding-rotation-11");
+      // The same cycle minute reads the same window; the next minute moves it.
+      expect(await window(0)).toEqual(first);
+      const second = await window(1);
+      expect(second[0]).toBe("funding-rotation-11");
+      expect(second).toHaveLength(10);
+      // Every transfer is reached within two consecutive windows from any start.
+      for (const cursor of [0, 5, 10, 11, 1_000_003]) {
+        const seen = new Set([...(await window(cursor)), ...(await window(cursor + 1))]);
+        expect(seen.size).toBe(11);
+      }
+      // Selection wrote nothing, so pending age still measures the wait.
+      expect(await ages()).toEqual(before);
+
+      const chain = fundingChain({ transactionHash: hashOf(11) as Hex, amountAtomic: 500n });
+      chain.state.head = 202n;
+      const coordinator = makeRewardFundingCoordinator({
+        store: makeControlPlaneRewardFundingStore(layer),
+        rpc: chain.rpc,
+      });
+      expect((await Effect.runPromise(coordinator.reconcile("funding-rotation-11"))).kind).toBe(
+        "confirmed",
+      );
+      expect(await fundingRow(admin, "funding-rotation-11")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+      // An unmined transfer is read and left exactly as it was.
+      chain.state.mined = false;
+      expect((await Effect.runPromise(coordinator.reconcile("funding-rotation-01"))).kind).toBe(
+        "confirming",
+      );
+      expect(await window(0)).toHaveLength(10);
+      expect((await ages()).slice(0, 10)).toEqual(before.slice(0, 10));
+    });
+    completedTestCount += 1;
+  });
+
+  test("jobs records a reverted transfer and holds a reorganized one until it is canonical", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-outcomes", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-outcomes",
+      });
+      const revertedHash = bytes32("a") as Hex;
+      const reorganizedHash = bytes32("b") as Hex;
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-outcomes-reverted",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 500n,
+        transactionHash: revertedHash,
+      });
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-outcomes-reorganized",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 700n,
+        transactionHash: reorganizedHash,
+      });
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const store = makeControlPlaneRewardFundingStore(layer);
+      const pending = () => Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor: 0 }));
+
+      const reverted = fundingChain({ transactionHash: revertedHash, amountAtomic: 500n });
+      reverted.state.head = 202n;
+      reverted.state.status = "reverted";
+      expect(
+        (
+          await Effect.runPromise(
+            makeRewardFundingCoordinator({ store, rpc: reverted.rpc }).reconcile(
+              "funding-outcomes-reverted",
+            ),
+          )
+        ).kind,
+      ).toBe("reverted");
+      expect(await fundingRow(admin, "funding-outcomes-reverted")).toMatchObject({
+        state: "reverted",
+        funded_atomic: "100000",
+      });
+      expect(await pending()).toEqual(["funding-outcomes-reorganized"]);
+
+      const reorganized = fundingChain({ transactionHash: reorganizedHash, amountAtomic: 700n });
+      reorganized.state.head = 202n;
+      reorganized.state.canonicalBlockHash = bytes32("e");
+      const coordinator = makeRewardFundingCoordinator({ store, rpc: reorganized.rpc });
+      const reconcile = () =>
+        Effect.runPromise(coordinator.reconcile("funding-outcomes-reorganized"));
+      expect((await reconcile()).kind).toBe("reconciliation_required");
+      expect(await fundingRow(admin, "funding-outcomes-reorganized")).toMatchObject({
+        state: "reconciliation_required",
+        funded_atomic: "100000",
+      });
+      // It stays in the work list, and confirms once its block is canonical again.
+      expect(await pending()).toEqual(["funding-outcomes-reorganized"]);
+      reorganized.state.canonicalBlockHash = bytes32("c");
+      expect((await reconcile()).kind).toBe("confirmed");
+      expect(await fundingRow(admin, "funding-outcomes-reorganized")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100700",
+      });
+      expect(await pending()).toEqual([]);
     });
     completedTestCount += 1;
   });
