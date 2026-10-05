@@ -276,7 +276,7 @@
         },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" },
         // Avatar storage and Images, live on staging since the avatar lane;
-        // authoring stays off until AVATAR_AUTHORING_ENABLED is flipped.
+        // Staging authoring is enabled after provider-backed acceptance.
         { "binding": "AVATAR_INGRESS", "bucket_name": "pirate-avatar-ingress-staging" },
         { "binding": "AVATAR_SEALED", "bucket_name": "pirate-avatar-sealed-staging" }
       ],
@@ -284,7 +284,7 @@
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
         "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
-    "AVATAR_AUTHORING_ENABLED": "false",
+    "AVATAR_AUTHORING_ENABLED": "true",
         "AVATAR_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-staging",
         "API_NEXT_ENV": "staging",
