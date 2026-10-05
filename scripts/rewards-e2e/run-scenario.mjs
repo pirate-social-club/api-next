@@ -4,7 +4,11 @@ import { parseAbi } from "viem";
 import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
 import { browserApi } from "./browser-api.mjs";
-import { confirmWalletFunding, reviewWalletFunding } from "./browser-funding.mjs";
+import {
+  checkWalletFundingStatus,
+  confirmWalletFunding,
+  reviewWalletFunding,
+} from "./browser-funding.mjs";
 import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
@@ -337,7 +341,15 @@ export async function runScenario(options) {
     const fundedRows = await waitForEvidence(
       "funding confirmation",
       end - 60000,
-      () => options.db.read(fundingQuery, [leg.offer_id, legId, new Date(startedAt).toISOString()]),
+      async () => {
+        // A failed press is not evidence either way; the database row decides.
+        await checkWalletFundingStatus(reviewed.dialog).catch(() => false);
+        return options.db.read(fundingQuery, [
+          leg.offer_id,
+          legId,
+          new Date(startedAt).toISOString(),
+        ]);
+      },
       (rows) => rows.length === 1 && rows[0].state === "confirmed",
       check,
     );
@@ -357,7 +369,24 @@ export async function runScenario(options) {
       startedAt,
       deadline: end - 60000,
     };
+    // The same read-only proof is repeated briefly: public nodes can lag each other
+    // by a block, and one stale read must not end a funded run.
     const fundingCheck = async () => {
+      let last;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (attempt) await Bun.sleep(2000);
+        if (Date.now() >= run.deadline) break;
+        try {
+          const proof = await fundingProof();
+          if (Date.now() >= run.deadline) break;
+          return proof;
+        } catch (error) {
+          last = error;
+        }
+      }
+      throw last ?? Error("Isolated run deadline expired");
+    };
+    const fundingProof = async () => {
       await check();
       const receipt = await run.chain.publicClient.request({
         method: "eth_getTransactionReceipt",

@@ -34,16 +34,23 @@ export function fixtureChain() {
     wallet: createWalletClient({ chain: baseSepolia, transport, account }),
   };
 }
-export async function canonicalFixtureTransaction(chain, hash, deadline) {
+export async function canonicalFixtureTransaction(
+  chain,
+  hash,
+  deadline,
+  { now = Date.now, sleep = (ms) => Bun.sleep(ms) } = {},
+) {
   if (!/^0x[0-9a-f]{64}$/.test(hash)) throw Error("Invalid transaction hash");
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     let receipt;
     try {
       receipt = await chain.publicClient.getTransactionReceipt({ hash });
     } catch {
-      await Bun.sleep(2000);
+      await sleep(2000);
       continue;
     }
+    // A mined revert is final for this hash; reject it before any further read.
+    if (receipt.status !== "success") throw Error("Fixture transaction reverted");
     let block, head;
     try {
       [block, head] = await Promise.all([
@@ -51,13 +58,16 @@ export async function canonicalFixtureTransaction(chain, hash, deadline) {
         chain.publicClient.getBlockNumber(),
       ]);
     } catch {
-      await Bun.sleep(2000);
+      await sleep(2000);
       continue;
     }
-    if (receipt.status !== "success" || block.hash !== receipt.blockHash)
-      throw Error("Fixture transaction failed or reorganized");
-    if (head - receipt.blockNumber + 1n >= 3n) return receipt;
-    await Bun.sleep(2000);
+    // Evidence that arrives after the deadline is not accepted.
+    if (now() >= deadline) break;
+    // Load-balanced public nodes can briefly disagree about a fresh block. A receipt
+    // is accepted only once the block read back by number has the same hash and
+    // three confirmations; until then this keeps reading, and never resubmits.
+    if (block.hash === receipt.blockHash && head - receipt.blockNumber + 1n >= 3n) return receipt;
+    await sleep(2000);
   }
   throw Error("Fixture transaction confirmation uncertain; do not replay");
 }
@@ -110,7 +120,11 @@ async function sendFixtureTransaction(chain, plan, run, check) {
         JSON.stringify({ hash, chainId: 84532 }) + "\n",
         { flag: "wx", mode: 0o600 },
       );
-      const receipt = await canonicalFixtureTransaction(chain, hash, Date.now() + 120000);
+      const receipt = await canonicalFixtureTransaction(
+        chain,
+        hash,
+        Math.min(Date.now() + 120000, run.deadline),
+      );
       return { hash, blockNumber: receipt.blockNumber.toString(), blockHash: receipt.blockHash };
     },
     { recheck: check, deadline: run.deadline },
