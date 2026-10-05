@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { auditInfisicalSnapshots } from "./infisical-secret-drift-audit";
 
 test("admits Telegram wrapping keys only at the staging runtime custody path", () => {
-  const name = "TELEGRAM_CREDENTIAL_KEYS_JSON";
+  const name = "TELEGRAM_SECRETS_JSON";
   for (const environment of ["dev", "staging", "prod"] as const) {
     for (const path of ["/services/api-next", "/services/api-next/operator"] as const) {
       const report = auditInfisicalSnapshots([

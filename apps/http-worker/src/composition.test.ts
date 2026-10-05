@@ -69,9 +69,8 @@ describe("HTTP production composition", () => {
     const configured = await bindings();
     const worker = await createProductionHttpWorker({
       ...configured,
-      TELEGRAM_ENABLED: "true",
-      TELEGRAM_LINKING_ENABLED: "true",
-      TELEGRAM_CREDENTIAL_KEYS_JSON: "malformed-fixture",
+      TELEGRAM_CONFIG_JSON: "malformed-fixture",
+      TELEGRAM_SECRETS_JSON: "malformed-secret-fixture",
     });
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
     expect((await worker.request("https://worker.test/health")).status).toBe(200);

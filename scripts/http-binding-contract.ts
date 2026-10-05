@@ -4,10 +4,6 @@ import { TELEGRAM_BINDING_KINDS } from "./telegram-binding-contract.ts";
 type BindingManifest<T extends object> = { [K in keyof T]-?: "platform" | "secret" | "var" };
 export const HTTP_BINDING_KINDS = {
   ...TELEGRAM_BINDING_KINDS,
-  TELEGRAM_LINKING_ENABLED: "var",
-  TELEGRAM_LOGIN_CLIENT_ID: "var",
-  TELEGRAM_LOGIN_CLIENT_SECRET: "secret",
-  TELEGRAM_LOGIN_REDIRECT_URI: "var",
   AVATAR_AUTHORING_ENABLED: "var",
   AVATAR_INGRESS: "platform",
   AVATAR_SEALED: "platform",

@@ -6,6 +6,10 @@ import { makeTelegramLinkServices } from "@pirate/platform-cf/telegram-linking-r
 import { Effect, Layer } from "effect";
 import { TELEGRAM_ACTIVATION_TABLES } from "../../../packages/platform-cf/src/telegram-activation-privileges.ts";
 import { makeTelegramServices } from "../../../packages/platform-cf/src/telegram-runtime.ts";
+import {
+  disabledTelegramConfiguration,
+  telegramBindingsFixture,
+} from "../../../packages/testing/src/telegram-configuration-fixture.ts";
 import { makeRecoveringTelegramHandlers } from "./telegram-setup-cache.ts";
 import type { DecodedRequest, EndpointHandler } from "./transport.ts";
 
@@ -24,18 +28,7 @@ const request: DecodedRequest = {
   body: undefined,
   telegramLinkBrowser: { sessionHash: "session" },
 };
-const complete = {
-  TELEGRAM_ENABLED: "true",
-  TELEGRAM_PUBLIC_ORIGIN: "https://pirate.example.invalid",
-  TELEGRAM_WEBHOOK_ORIGIN: "https://api.example.invalid",
-  TELEGRAM_CREDENTIAL_ACTIVE_VERSION: "v1",
-  TELEGRAM_CREDENTIAL_KEYS_JSON: JSON.stringify({ v1: "a".repeat(43) }),
-  TELEGRAM_QUEUE: { send: async () => {} },
-  TELEGRAM_LINKING_ENABLED: "true",
-  TELEGRAM_LOGIN_CLIENT_ID: "123",
-  TELEGRAM_LOGIN_CLIENT_SECRET: "fixture-secret",
-  TELEGRAM_LOGIN_REDIRECT_URI: "https://pirate.example.invalid/telegram/link/callback",
-};
+const complete = telegramBindingsFixture;
 const healthy = () =>
   TELEGRAM_ACTIVATION_TABLES.map(([table_name, expected_delete]) => ({
     runtime_role: "restricted_executor",
@@ -178,9 +171,14 @@ test("disabled flags do not query the database even after multiple retry windows
     withTransaction: (use) => use({ execute }),
   });
   const handlers = makeRecoveringTelegramHandlers({
-    chat: () => makeTelegramServices({ TELEGRAM_ENABLED: "false" }, runtime),
+    chat: () =>
+      makeTelegramServices({ TELEGRAM_CONFIG_JSON: disabledTelegramConfiguration }, runtime),
     linking: (chat) =>
-      makeTelegramLinkServices({ TELEGRAM_LINKING_ENABLED: "false" }, runtime, chat),
+      makeTelegramLinkServices(
+        { TELEGRAM_CONFIG_JSON: disabledTelegramConfiguration },
+        runtime,
+        chat,
+      ),
     now: () => time,
   });
   for (time = 0; time <= 60_000; time += 30_000) {
