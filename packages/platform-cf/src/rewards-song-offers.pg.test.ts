@@ -3703,11 +3703,14 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
+          // This drawing existed before cutoff; a fresh microsecond timestamp
+          // can otherwise exceed the coordinator's millisecond freeze time.
           `INSERT INTO megapot_pool_drawings (
              pool_leg_id, drawing_id, observation_id, status,
-             entry_cutoff_at, ticket_price_ceiling_atomic
+             entry_cutoff_at, ticket_price_ceiling_atomic, created_at, updated_at
            ) SELECT $1, 100, observation_id, 'entry_open',
-                    drawing_time - interval '300 seconds', 10000
+                    drawing_time - interval '300 seconds', 10000,
+                    drawing_time - interval '10 minutes', drawing_time - interval '10 minutes'
                FROM megapot_drawing_observations
               WHERE observation_id='drawing-observation-cutoff-empty'`,
           [legId],
