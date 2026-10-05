@@ -37011,6 +37011,18 @@ CREATE TABLE telegram_bot_grants (
     CONSTRAINT telegram_bot_grants_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
 );
 
+CREATE TABLE telegram_interface_preferences (
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    telegram_user_id text NOT NULL,
+    locale text NOT NULL,
+    explicit boolean NOT NULL,
+    received_at timestamp with time zone NOT NULL,
+    CONSTRAINT telegram_interface_preferences_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_interface_preferences_locale_check CHECK ((locale = ANY (ARRAY['en'::text, 'ru'::text, 'ka'::text]))),
+    CONSTRAINT telegram_interface_preferences_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
 CREATE TABLE telegram_link_navigation (
     reference_hash text NOT NULL,
     community_id text NOT NULL,
@@ -40048,6 +40060,9 @@ ALTER TABLE ONLY telegram_account_associations
 
 ALTER TABLE ONLY telegram_bot_grants
     ADD CONSTRAINT telegram_bot_grants_pkey PRIMARY KEY (community_id, bot_id, telegram_user_id);
+
+ALTER TABLE ONLY telegram_interface_preferences
+    ADD CONSTRAINT telegram_interface_preferences_pkey PRIMARY KEY (community_id, bot_id, telegram_user_id);
 
 ALTER TABLE ONLY telegram_link_navigation
     ADD CONSTRAINT telegram_link_navigation_pkey PRIMARY KEY (reference_hash);
@@ -44901,6 +44916,9 @@ ALTER TABLE ONLY telegram_bot_grants
 
 ALTER TABLE ONLY telegram_bot_grants
     ADD CONSTRAINT telegram_bot_grants_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY telegram_interface_preferences
+    ADD CONSTRAINT telegram_interface_preferences_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY telegram_link_navigation
     ADD CONSTRAINT telegram_link_navigation_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);

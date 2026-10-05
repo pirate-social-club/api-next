@@ -1,4 +1,5 @@
 export * from "./chat.ts";
+export * from "./copy.ts";
 export * from "./delivery.ts";
 export * from "./settings.ts";
 export * from "./setup.ts";

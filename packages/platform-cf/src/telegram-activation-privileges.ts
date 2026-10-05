@@ -9,6 +9,7 @@ export const TELEGRAM_ACTIVATION_TABLES = [
   ["telegram_link_navigation", true],
   ["telegram_bot_grants", false],
   ["telegram_study_conversations", false],
+  ["telegram_interface_preferences", false],
 ] as const;
 
 /** Schema-qualified, SELECT-only facts from the executor, including inherited access. */
@@ -27,7 +28,8 @@ FROM (VALUES ('telegram_account_associations', TRUE),
              ('telegram_link_transactions', TRUE),
              ('telegram_link_navigation', TRUE),
              ('telegram_bot_grants', FALSE),
-             ('telegram_study_conversations', FALSE)) AS required(table_name, expected_delete)
+             ('telegram_study_conversations', FALSE),
+             ('telegram_interface_preferences', FALSE)) AS required(table_name, expected_delete)
 LEFT JOIN pg_catalog.pg_namespace n ON n.nspname='api_next'
 LEFT JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid AND c.relname=required.table_name`;
 

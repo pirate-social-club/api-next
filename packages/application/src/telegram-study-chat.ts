@@ -2,6 +2,7 @@ import type { StudySessionV2 } from "@pirate/contracts";
 import { boundedTelegramText } from "@pirate/domain/telegram";
 import { Schema } from "effect";
 import { StudyV2CommandRejected, StudyV2StoreFailed } from "./study-v2-service.ts";
+import { type TelegramLocale, telegramText } from "./telegram/copy.ts";
 import { telegramBotCredentials } from "./telegram/delivery.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./telegram/types.ts";
 import { TelegramFailure } from "./telegram/types.ts";
@@ -35,8 +36,6 @@ const text = (value: string): TelegramStudyReply => ({
   media: null,
   buttons: [],
 });
-const help =
-  "Use /study to choose a ready song, /resume to continue, and /cancel to stop. Practice only: read each line aloud and reply to it with a voice note. Voice answers are required. The community owner can read your messages and listen to your voice notes. Manage your link and persona on Pirate.";
 
 export async function handleTelegramStudyChat(
   services: TelegramServices,
@@ -46,7 +45,13 @@ export async function handleTelegramStudyChat(
   senderId: string,
   rawMessage: unknown,
   callbackData?: string,
+  locale: TelegramLocale = "en",
 ): Promise<void> {
+  const t = (
+    key: Parameters<typeof telegramText>[1],
+    values?: Readonly<Record<string, string | number>>,
+  ) => telegramText(locale, key, values);
+  const help = t("studyHelp");
   if (!integration.botId) throw new TelegramFailure({ reason: "unavailable" });
   const sender = {
     communityId: inbox.communityId,
@@ -101,7 +106,14 @@ export async function handleTelegramStudyChat(
       observe("completion", session.items.length);
       await respond(
         text(
-          `${prefix}\nPersona: ${personaLabel} (${session.persona_id})\nPractice complete. ${session.progress.first_pass_correct}/${session.items.length} correct on the first try; the threshold was ${session.progress.required_correct}. No reward or pool share was earned.`,
+          t("complete", {
+            prefix,
+            persona: personaLabel,
+            personaId: session.persona_id,
+            correct: session.progress.first_pass_correct,
+            total: session.items.length,
+            required: session.progress.required_correct,
+          }),
         ),
       );
       return;
@@ -120,7 +132,17 @@ export async function handleTelegramStudyChat(
     };
     await respond({
       ...text(
-        `${prefix}\nPersona: ${personaLabel} (${session.persona_id})\nPractice only. ${session.items.length} cards; ${session.progress.required_correct} first-try correct to meet the threshold.\nProgress: ${session.lesson.resolved_card_count}/${session.items.length}; first-try correct: ${session.progress.first_pass_correct}.\nRead aloud (presentation ${current.presentation_number}):\n${item.presentation.reference_text}\nReply to this message with a voice note. /resume repeats the prompt; /cancel stops.`,
+        t("card", {
+          prefix,
+          persona: personaLabel,
+          personaId: session.persona_id,
+          total: session.items.length,
+          required: session.progress.required_correct,
+          resolved: session.lesson.resolved_card_count,
+          correct: session.progress.first_pass_correct,
+          presentation: current.presentation_number,
+          line: item.presentation.reference_text,
+        }),
       ),
       keyboard: { force_reply: true, selective: true },
     });
@@ -149,11 +171,7 @@ export async function handleTelegramStudyChat(
         selectedUntil: 0,
         token: services.vault.token(),
       };
-      await respond(
-        text(
-          "Practice stopped. Your Study progress is saved. Use /resume to return within the session lifetime, or /study to choose a song.",
-        ),
-      );
+      await respond(text(t("stopped")));
       return;
     }
     if (
@@ -161,15 +179,11 @@ export async function handleTelegramStudyChat(
       state.selectionInboxId !== inbox.id &&
       !callbackData.startsWith(`study:${state.token}:`)
     ) {
-      await respond(text("This lesson has ended. Use /study to start again."));
+      await respond(text(t("ended")));
       return;
     }
     if (state.pendingAnswer !== null && state.pendingAnswer.inboxId !== inbox.id) {
-      await respond(
-        text(
-          "Your previous voice answer has not finished. Please wait, or use /cancel before starting another lesson. No new answer was submitted.",
-        ),
-      );
+      await respond(text(t("processing")));
       return;
     }
     if (command === "/study" || command === "/songs") {
@@ -183,11 +197,7 @@ export async function handleTelegramStudyChat(
         selectedUntil: services.now() + 15 * 60 * 1000,
       };
       await respond({
-        ...text(
-          songs.length
-            ? `${help}\nChoose a song:`
-            : "No ready practice songs are available here yet. Use /help for help.",
-        ),
+        ...text(songs.length ? `${help}\n${t("chooseSong")}` : t("noReadySongs")),
         keyboard: {
           inline_keyboard: songs.map((song, index) => [
             { text: song.title.slice(0, 60), callback_data: `study:${state.token}:${index}` },
@@ -199,12 +209,12 @@ export async function handleTelegramStudyChat(
     if (callbackData !== undefined && state.selectionInboxId !== inbox.id) {
       const suffix = callbackData.slice(`study:${state.token}:`.length);
       if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
-        await respond(text("This song selection has expired. Use /study to choose again."));
+        await respond(text(t("selectionExpired")));
         return;
       }
       const song = state.songs[Number(suffix)];
       if (!song || !(await study.store.ready(sender.communityId, song.postId))) {
-        await respond(text("This song is not ready for practice. Use /study to choose another."));
+        await respond(text(t("songUnavailable")));
         return;
       }
       state = {
@@ -226,17 +236,10 @@ export async function handleTelegramStudyChat(
         state = { ...state, navigationUrl: url };
         await persist();
         await respond({
-          ...text(
-            "Practice only. Voice answers are required: you will read lines aloud and send voice notes. The community owner can read your messages and listen to them. Link on Pirate, explicitly choose your community persona, then return here and use /resume. Owners of multiple bots can correlate your Telegram identity across them.",
-          ),
-          buttons: [{ text: "Link with Pirate", url }],
+          ...text(t("link")),
+          buttons: [{ text: t("linkButton"), url }],
         });
-      } else
-        await respond(
-          text(
-            "Use /study to choose a ready song before linking. Manage your Telegram link and community persona on Pirate.",
-          ),
-        );
+      } else await respond(text(t("chooseBeforeLink")));
       return;
     }
     if (state.sessionId !== null && state.grantRevision !== grant.revision) {
@@ -254,7 +257,7 @@ export async function handleTelegramStudyChat(
           navigationUrl: null,
           selectedUntil: 0,
         };
-        await respond(text("This song selection is unavailable. Use /study to choose again."));
+        await respond(text(t("selectionUnavailable")));
         return;
       }
       const session = await study.start(
@@ -264,22 +267,18 @@ export async function handleTelegramStudyChat(
         `telegram:${inbox.id}:start`,
       );
       state = { ...state, grantRevision: grant.revision };
-      await showSession(
-        session,
-        "Read-aloud practice; there is no reference audio.",
-        grant.personaLabel,
-      );
+      await showSession(session, t("noReferenceAudio"), grant.personaLabel);
       return;
     }
     if (state.sessionId !== null && (await study.store.expired(state.sessionId))) {
       state = { ...state, sessionId: null, turn: null, pendingAnswer: null };
-      await respond(text("This practice session has expired. Use /study to start again."));
+      await respond(text(t("sessionExpired")));
       return;
     }
     if (command === "/resume" && state.sessionId !== null) {
       await showSession(
         await study.session(activeLease, grant, state.sessionId),
-        "Resuming saved practice.",
+        t("resuming"),
         grant.personaLabel,
       );
       return;
@@ -289,12 +288,7 @@ export async function handleTelegramStudyChat(
       state.turn !== null &&
       (message?.voice !== undefined || state.pendingAnswer?.inboxId === inbox.id)
     ) {
-      const oversized = () =>
-        respond(
-          text(
-            "Keep voice notes to a minute or less and at most 512 KiB. No attempt was used. Reply to the current line with a shorter note, or use /resume.",
-          ),
-        );
+      const oversized = () => respond(text(t("shorterVoice")));
       let pending = state.pendingAnswer;
       if (pending === null) {
         if (
@@ -302,11 +296,7 @@ export async function handleTelegramStudyChat(
           message.reply_to_message?.message_id !==
             (await study.store.promptMessageId(state.turn.deliveryId))
         ) {
-          await respond(
-            text(
-              "Reply to the current line with your voice note so it can be graded safely. No attempt was used. Use /resume to show it again.",
-            ),
-          );
+          await respond(text(t("replyToLine")));
           return;
         }
         if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
@@ -354,21 +344,25 @@ export async function handleTelegramStudyChat(
         feedback === null
           ? ""
           : [
-              `Heard: ${feedback.heard_transcript.slice(0, 500) || "(nothing clear)"}`,
+              t("heard", { answer: feedback.heard_transcript.slice(0, 500) || t("nothingClear") }),
               ...(feedback.missing.length
                 ? [
-                    `Try saying: ${feedback.missing
-                      .map((word) => word.token)
-                      .join(" ")
-                      .slice(0, 300)}`,
+                    t("trySaying", {
+                      words: feedback.missing
+                        .map((word) => word.token)
+                        .join(" ")
+                        .slice(0, 300),
+                    }),
                   ]
                 : []),
               ...(feedback.substituted.length
                 ? [
-                    `Try saying: ${feedback.substituted
-                      .map((word) => word.expected.token)
-                      .join(" ")
-                      .slice(0, 300)}`,
+                    t("trySaying", {
+                      words: feedback.substituted
+                        .map((word) => word.expected.token)
+                        .join(" ")
+                        .slice(0, 300),
+                    }),
                   ]
                 : []),
             ].join("\n");
@@ -376,10 +370,10 @@ export async function handleTelegramStudyChat(
         result.session,
         [
           result.outcome === "correct"
-            ? "Correct."
+            ? t("correct")
             : result.outcome === "ungraded_rerecord"
-              ? "Record this line again. No attempt was used."
-              : "This presentation was incorrect. Continue with the line shown below.",
+              ? t("rerecord")
+              : t("incorrect"),
           notes,
         ]
           .filter(Boolean)
@@ -388,13 +382,7 @@ export async function handleTelegramStudyChat(
       );
       return;
     }
-    await respond(
-      text(
-        state.sessionId !== null
-          ? "This read-aloud lesson requires a voice note replying to the current line. Typed text does not use an attempt. Use /resume or /cancel."
-          : help,
-      ),
-    );
+    await respond(text(state.sessionId !== null ? t("voiceRequired") : help));
   } catch (error) {
     if (
       (error instanceof StudyV2CommandRejected && error.reason !== "command-in-flight") ||
@@ -432,21 +420,17 @@ export async function handleTelegramStudyChat(
           await showSession(
             current,
             error instanceof TelegramStudyLeaseExpired
-              ? "Voice grading took too long. Your link does not need to be changed. Resuming current practice."
+              ? t("gradingTimeout")
               : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
-                ? "Voice grading is temporarily unavailable. No attempt was used. Resuming current practice."
-                : "That answer could not be accepted. Resuming current practice.",
+                ? t("gradingUnavailable")
+                : t("answerUnavailable"),
             currentGrant.personaLabel,
           );
           return;
         }
       }
       state = { ...state, turn: null, sessionId: null };
-      await respond(
-        text(
-          "This lesson or its authorization is unavailable. Check your link and persona on Pirate, then use /study.",
-        ),
-      );
+      await respond(text(t("grantUnavailable")));
     } else throw error;
   } finally {
     await study.store.release(activeLease);

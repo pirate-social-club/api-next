@@ -33,6 +33,10 @@ REVOKE DELETE, TRUNCATE ON telegram_bot_grants FROM api_next_app;
 -- Chat progress is revised rather than deleted. Apply this after migration 0238.
 GRANT SELECT, INSERT, UPDATE ON telegram_study_conversations TO api_next_app;
 REVOKE DELETE, TRUNCATE ON telegram_study_conversations FROM api_next_app;
+-- Migration 0240 adds private bot interface choices; bot callbacks require these
+-- privileges even when linking and practice are disabled.
+GRANT SELECT, INSERT, UPDATE ON telegram_interface_preferences TO api_next_app;
+REVOKE DELETE, TRUNCATE ON telegram_interface_preferences FROM api_next_app;
 REVOKE TRUNCATE ON telegram_account_associations, telegram_link_transactions,
   telegram_link_navigation FROM api_next_app;
 -- Telegram linking deletion grants end

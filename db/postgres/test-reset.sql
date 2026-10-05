@@ -460,6 +460,7 @@ TRUNCATE TABLE
   "subject_keys",
   "telegram_account_associations",
   "telegram_bot_grants",
+  "telegram_interface_preferences",
   "telegram_link_navigation",
   "telegram_link_transactions",
   "telegram_study_conversations",
