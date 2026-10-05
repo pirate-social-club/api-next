@@ -22,10 +22,12 @@ import {
   advancePurchasedDrawing,
   armFixtureDrawing,
   canonicalFixtureTransaction,
+  clearStaleFixtureDrawing,
   fixtureChain,
   fixtureJackpot,
   fixtureToken,
   fundFixturePrize,
+  settleDueDrawing,
 } from "./fixture-chain.mjs";
 import { verifyConfirmedFunding } from "./funding-evidence.mjs";
 import { claimParticipantCredit } from "./participant-claims.mjs";
@@ -139,59 +141,64 @@ export async function runScenario(options) {
       walletDriverSha256: driver.sha256,
       backingAudio,
     });
-    // The whole managed ETH float is a conservative ceiling for automatic sends.
-    // Reserve it once; all USDC transfers are separately accounted for below.
-    if (run.outcome === "win") {
-      const addresses = [
-        fixtureCustody,
-        fixtureSponsorWallet,
-        "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a",
-      ];
-      const balances = await Promise.all(
-        addresses.map((address) => run.chain.publicClient.getBalance({ address })),
-      );
+    // The managed ETH float is a ceiling for automatic sends. It is one exposure,
+    // so it is reserved once for the authorization and not again per run.
+    const floatAddresses = [
+      fixtureCustody,
+      fixtureSponsorWallet,
+      "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a",
+    ];
+    const balances = await Promise.all(
+      floatAddresses.map((address) => run.chain.publicClient.getBalance({ address })),
+    );
+    try {
       await reserveSpending(run.ledgerDirectory, {
         authoritySha256: run.authoritySha256,
         chainId: 84532,
-        runId: run.runId,
+        runId: "managed-float",
         actionId: "worker-gas-float",
         kind: "gas",
         usdcAtomic: "0",
         ethWei: balances.reduce((sum, value) => sum + value, 0n).toString(),
       });
+    } catch (error) {
+      if (error?.message !== "Spending action already reserved; do not replay") throw error;
     }
-    await reserveSpending(run.ledgerDirectory, {
-      authoritySha256: run.authoritySha256,
-      chainId: 84532,
-      runId: run.runId,
-      actionId: "automatic-obligations",
-      kind: "payout",
-      usdcAtomic: run.outcome === "win" ? "3000000" : "1000000",
-      ethWei: "0",
-    });
+    const stale = await clearStaleFixtureDrawing(run.chain, run, check);
     const prize = await fundFixturePrize(run.chain, run, check);
-    const end = Math.ceil((Date.now() + 12 * 60000) / 60000) * 60000;
-    drawingTime = end / 1000 + 240;
-    const arm = await armFixtureDrawing(run.chain, run, drawingTime, run.outcome === "loss", check);
-    drawingId = (
-      await run.chain.publicClient.readContract({
-        address: fixtureJackpot,
-        abi: fixtureAbi,
-        functionName: "currentDrawingId",
-      })
-    ).toString();
-    stageSave("drawing-armed", {
+    // The product starts a leg on the drawing after the last observed one, so an
+    // empty placeholder is observed first and the outcome drawing is armed later.
+    const placeholderTime = Math.floor(Date.now() / 1000) + 180;
+    const placeholderArm = await armFixtureDrawing(
+      run.chain,
+      run,
+      {
+        actionId: "arm-placeholder",
+        drawingTime: placeholderTime,
+        payoutAtomic: 1n,
+        forceLoss: true,
+        placeholder: true,
+      },
+      check,
+    );
+    const readDrawingId = async () =>
+      (
+        await run.chain.publicClient.readContract({
+          address: fixtureJackpot,
+          abi: fixtureAbi,
+          functionName: "currentDrawingId",
+        })
+      ).toString();
+    const placeholderId = await readDrawingId();
+    drawingId = (BigInt(placeholderId) + 1n).toString();
+    stageSave("placeholder-armed", {
+      stale,
       prize,
-      arm,
-      drawingId,
-      endsAt: new Date(end).toISOString(),
-      drawingTime,
+      placeholderArm,
+      placeholderId,
+      placeholderTime,
     });
-    const initial = (
-      await options.db.read(
-        "SELECT paused,revision::text FROM reward_operations_control WHERE singleton",
-      )
-    )[0];
+    const initial = (await options.db.read(controlQuery))[0];
     if (initial.paused !== true) throw Error("Initial brake changed");
     // Flag changes create versions. Resume only after both verified writes finish.
     await setIsolatedRewardsFlag("http", "true", run.apiSource);
@@ -199,6 +206,22 @@ export async function runScenario(options) {
     const jobs = await setIsolatedRewardsFlag("jobs", "true", run.apiSource);
     const resumed = await options.db.control(false, initial.revision, `Isolated ${run.runId}`);
     controlRevision = resumed.control.revision;
+    stage = "placeholder-observation";
+    await waitForEvidence(
+      "jobs observation of the placeholder drawing",
+      placeholderTime * 1000,
+      () =>
+        options.db.read(
+          "SELECT observation_id FROM megapot_drawing_observations WHERE attestation_id=$1 AND drawing_id=$2::numeric AND NOT drawing_locked AND expires_at > clock_timestamp()",
+          [fixtureAttestation, placeholderId],
+        ),
+      (rows) => rows.length > 0,
+      check,
+    );
+    const end = Math.ceil((Date.now() + 14 * 60000) / 60000) * 60000;
+    drawingTime = end / 1000 + 240;
+    // Purchase, settlement, claims, payouts and the refund all follow the cutoff.
+    run.deadline = drawingTime * 1000 + 14 * 60000;
     const startedAt = Date.now();
     stage = "boost-creation";
     const reviewed = await reviewBoost(host.pages.sponsor, {
@@ -233,7 +256,7 @@ export async function runScenario(options) {
       recipient: fixtureCustody,
       token: fixtureToken,
       amountAtomic: "1000000",
-      maximumExecutionFeeWei: "5000000000000000",
+      maximumExecutionFeeWei: "500000000000000",
     };
     stage = "funding-confirmation";
     const transferReview = await reviewWalletFunding(host.pages.sponsor, reviewed.dialog, transfer);
@@ -307,6 +330,43 @@ export async function runScenario(options) {
       );
     };
     stageSave("funding-confirmed", { ...(await fundingCheck()), review: transferReview });
+    stage = "outcome-drawing";
+    const placeholderSettled = await settleDueDrawing(
+      run.chain,
+      run,
+      "settle-placeholder",
+      placeholderTime * 1000 + 3 * 60000,
+      check,
+    );
+    const arm = await armFixtureDrawing(
+      run.chain,
+      run,
+      {
+        actionId: "arm-drawing",
+        drawingTime,
+        payoutAtomic: 1000000n,
+        forceLoss: run.outcome === "loss",
+      },
+      check,
+    );
+    if ((await readDrawingId()) !== drawingId) throw Error("Outcome drawing differs from the leg");
+    await waitForEvidence(
+      "open pool drawing for the outcome drawing",
+      end - 9 * 60000,
+      () => run.inventory(),
+      (inventory) =>
+        inventory.drawings.some(
+          (drawing) => drawing.drawing_id === drawingId && drawing.status === "entry_open",
+        ),
+      check,
+    );
+    stageSave("drawing-armed", {
+      placeholderSettled,
+      arm,
+      drawingId,
+      endsAt: new Date(end).toISOString(),
+      drawingTime,
+    });
     stage = "activity-qualification";
     const activities = await Promise.all([
       (async () => {
@@ -481,7 +541,7 @@ export async function runScenario(options) {
     let brake;
     let recovery;
     // A funded offer, share or ticket must settle before the stack is shut down.
-    if (!passed && legId && controlRevision !== undefined) {
+    if (!passed && controlRevision !== undefined) {
       const recoveryRun = { ...run, deadline: recoveryDeadline(Date.now(), drawingTime) };
       const recoveryCheck = async () => {
         if (Date.now() >= recoveryRun.deadline) throw Error("Settlement recovery deadline expired");
@@ -498,7 +558,8 @@ export async function runScenario(options) {
           })),
           expectedRevision: controlRevision,
           readControl: async () => (await options.db.read(controlQuery))[0],
-          readInventory: () => run.inventory(),
+          // The create click can land without its response; then only the stack inventory is known.
+          readInventory: () => (legId ? run.inventory() : null),
           readShutdownInventory: () => readShutdownInventory(options.db),
           advance: (purchase) =>
             advancePurchasedDrawing(
@@ -507,6 +568,8 @@ export async function runScenario(options) {
               drawingId,
               purchase.ticket_id,
               recoveryCheck,
+              // The contract refuses a second settlement, so a separate marker cannot replay one.
+              "recover-advance-purchased-drawing",
             ),
           // A failed run may hold one share, so its credit is not the equal split.
           claim: (role, inventory) =>

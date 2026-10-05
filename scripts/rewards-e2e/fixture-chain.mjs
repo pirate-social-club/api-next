@@ -14,14 +14,18 @@ const tokenAbi = parseAbi([
 const fixtureAbi = parseAbi([
   "function operator() view returns(address)",
   "function currentDrawingId() view returns(uint256)",
+  "function allowTicketPurchases() view returns(bool)",
   "function armDrawingWithOutcome(uint256,uint256,bool)",
+  "function rescheduleEmptyDrawing(uint256)",
+  "function settleDrawing()",
   "function settlePurchasedDrawing(uint256,uint256)",
 ]);
 export function fixtureChain() {
   const account = privateKeyToAccount(process.env.MEGAPOT_E2E_OPERATOR_PRIVATE_KEY);
   if (account.address.toLowerCase() !== fixtureOperator) throw Error("Fixture operator differs");
   const transport = http("https://base-sepolia-rpc.publicnode.com", {
-    retryCount: 0,
+    // Reads may retry. Writes are single-use and are never resubmitted by the runner.
+    retryCount: 2,
     timeout: 20000,
   });
   return {
@@ -40,10 +44,16 @@ export async function canonicalFixtureTransaction(chain, hash, deadline) {
       await Bun.sleep(2000);
       continue;
     }
-    const [block, head] = await Promise.all([
-      chain.publicClient.getBlock({ blockNumber: receipt.blockNumber }),
-      chain.publicClient.getBlockNumber(),
-    ]);
+    let block, head;
+    try {
+      [block, head] = await Promise.all([
+        chain.publicClient.getBlock({ blockNumber: receipt.blockNumber }),
+        chain.publicClient.getBlockNumber(),
+      ]);
+    } catch {
+      await Bun.sleep(2000);
+      continue;
+    }
     if (receipt.status !== "success" || block.hash !== receipt.blockHash)
       throw Error("Fixture transaction failed or reorganized");
     if (head - receipt.blockNumber + 1n >= 3n) return receipt;
@@ -131,44 +141,112 @@ export async function fundFixturePrize(chain, run, check) {
     check,
   );
 }
-export async function armFixtureDrawing(chain, run, drawingTime, forceLoss, check) {
+const simulates = async (chain, functionName, args = []) => {
+  try {
+    await chain.publicClient.simulateContract({
+      address: fixtureJackpot,
+      abi: fixtureAbi,
+      functionName,
+      args,
+      account: chain.account,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const fixtureCall = (functionName, args = []) => ({
+  address: fixtureJackpot,
+  abi: fixtureAbi,
+  functionName,
+  args,
+});
+/**
+ * The product starts a new leg on the drawing after the last one jobs observed.
+ * A short empty placeholder is therefore armed first, and the outcome drawing
+ * is armed only after the leg exists and the placeholder has settled.
+ */
+export async function armFixtureDrawing(chain, run, plan, check) {
+  const { actionId, drawingTime, payoutAtomic, forceLoss, placeholder = false } = plan;
   if (
     !Number.isSafeInteger(drawingTime) ||
     drawingTime * 1000 < Date.now() + 120000 ||
+    typeof payoutAtomic !== "bigint" ||
+    payoutAtomic <= 0n ||
     !["win", "loss"].includes(run.outcome)
   )
     throw Error("Fixture drawing plan differs");
-  if (forceLoss !== (run.outcome === "loss")) throw Error("Fixture outcome differs");
+  if (!placeholder && forceLoss !== (run.outcome === "loss"))
+    throw Error("Fixture outcome differs");
+  if (placeholder && (forceLoss !== true || payoutAtomic !== 1n))
+    throw Error("Fixture placeholder must be an empty forced loss");
   return sendFixtureTransaction(
     chain,
     {
-      actionId: "arm-drawing",
+      actionId,
       kind: "gas",
       usdcAtomic: "0",
-      call: {
-        address: fixtureJackpot,
-        abi: fixtureAbi,
-        functionName: "armDrawingWithOutcome",
-        args: [BigInt(drawingTime), 1000000n, forceLoss],
-      },
+      call: fixtureCall("armDrawingWithOutcome", [BigInt(drawingTime), payoutAtomic, forceLoss]),
     },
     run,
     check,
   );
 }
-export async function advancePurchasedDrawing(chain, run, drawingId, ticketId, check) {
+/** Anyone may settle a due drawing; an empty one releases its reserved payout. */
+export async function settleDueDrawing(chain, run, actionId, deadline, check) {
+  while (!(await simulates(chain, "settleDrawing"))) {
+    if (Date.now() >= deadline) throw Error("Fixture drawing did not become due");
+    await check();
+    await Bun.sleep(3000);
+  }
+  return sendFixtureTransaction(
+    chain,
+    { actionId, kind: "gas", usdcAtomic: "0", call: fixtureCall("settleDrawing") },
+    run,
+    check,
+  );
+}
+/** A failed earlier run can leave the fixture armed, which refuses the next arm. */
+export async function clearStaleFixtureDrawing(chain, run, check) {
+  const open = await chain.publicClient.readContract(fixtureCall("allowTicketPurchases"));
+  const actions = [];
+  if (open) {
+    const sooner = Math.floor(Date.now() / 1000) + 135;
+    if (await simulates(chain, "rescheduleEmptyDrawing", [BigInt(sooner)]))
+      actions.push(
+        await sendFixtureTransaction(
+          chain,
+          {
+            actionId: "reschedule-stale-drawing",
+            kind: "gas",
+            usdcAtomic: "0",
+            call: fixtureCall("rescheduleEmptyDrawing", [BigInt(sooner)]),
+          },
+          run,
+          check,
+        ),
+      );
+  } else if (!(await simulates(chain, "settleDrawing"))) return { stale: false, actions };
+  actions.push(
+    await settleDueDrawing(chain, run, "settle-stale-drawing", Date.now() + 6 * 60000, check),
+  );
+  return { stale: true, actions };
+}
+export async function advancePurchasedDrawing(
+  chain,
+  run,
+  drawingId,
+  ticketId,
+  check,
+  actionId = "advance-purchased-drawing",
+) {
   return sendFixtureTransaction(
     chain,
     {
-      actionId: "advance-purchased-drawing",
+      actionId,
       kind: "gas",
       usdcAtomic: "0",
-      call: {
-        address: fixtureJackpot,
-        abi: fixtureAbi,
-        functionName: "settlePurchasedDrawing",
-        args: [BigInt(drawingId), BigInt(ticketId)],
-      },
+      call: fixtureCall("settlePurchasedDrawing", [BigInt(drawingId), BigInt(ticketId)]),
     },
     run,
     check,

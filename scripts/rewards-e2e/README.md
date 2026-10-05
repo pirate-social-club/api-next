@@ -135,3 +135,17 @@ drawing time and at most thirty minutes. The brake is then paused. Flags are
 disabled only when the whole shutdown inventory is zero; otherwise they stay
 on, the closeout reports the remaining obligations, and the next preparation
 refuses until they are reconciled.
+
+Each scenario uses two fixture drawings. The product starts a new leg on the
+drawing after the last one the jobs Worker observed, and it requires a live
+observation. The runner therefore arms a three-minute empty placeholder, waits
+for jobs to observe it, creates and funds the Boost, settles the placeholder
+once it is due, and only then arms the outcome drawing and waits for the leg's
+pool drawing to open before any activity starts. A fixture left armed by an
+earlier failed run is brought forward and settled before the placeholder.
+
+The managed ETH float is reserved against the authorization once, under the
+`managed-float` run, because it is one exposure and not a per-run cost. Each
+run then reserves only what it sends: the principal, the prize when the fixture
+needs funding, and a fee ceiling per fixture transaction. Payouts and refunds
+redistribute those amounts and are not reserved again.

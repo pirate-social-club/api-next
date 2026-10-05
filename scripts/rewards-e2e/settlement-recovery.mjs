@@ -30,6 +30,7 @@ export async function recoverSettlement({
 }) {
   const actions = [];
   const attempted = new Set();
+  let readFailures = 0;
   const once = async (id, action) => {
     if (attempted.has(id)) return;
     attempted.add(id);
@@ -44,23 +45,43 @@ export async function recoverSettlement({
       });
     }
   };
-  const stop = (reason, inventory) => ({ settled: false, reason, actions, inventory });
+  const stop = (reason, inventory) => ({
+    settled: false,
+    reason,
+    actions,
+    inventory,
+    readFailures,
+  });
   let inventory;
   while (now() < deadline) {
-    const control = await readControl();
+    let control;
+    try {
+      control = await readControl();
+      inventory = await readInventory();
+    } catch {
+      // Reads are safe to repeat; one refused connection must not strand a refund.
+      readFailures++;
+      await sleep(3000);
+      continue;
+    }
     if (control?.paused !== false || control.revision !== expectedRevision)
       return stop("Brake is paused or changed; settlement cannot continue", inventory);
-    inventory = await readInventory();
-    let legSettled = false;
-    try {
-      assertNothingOwed(inventory);
-      legSettled = true;
-    } catch {}
+    // Without a captured leg only the whole stack's inventory can show settlement.
+    let legSettled = inventory === null;
+    if (inventory !== null)
+      try {
+        assertNothingOwed(inventory);
+        legSettled = true;
+      } catch {}
     if (legSettled) {
       try {
         assertShutdownInventory(await readShutdownInventory());
-        return { settled: true, reason: null, actions, inventory };
+        return { settled: true, reason: null, actions, inventory, readFailures };
       } catch {}
+    }
+    if (inventory === null) {
+      await sleep(3000);
+      continue;
     }
     const purchase = inventory.purchases[0];
     if (

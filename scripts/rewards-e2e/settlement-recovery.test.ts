@@ -175,3 +175,33 @@ test("the recovery deadline is bounded on both sides", () => {
   expect(recoveryDeadline(now, now / 1000 + 240)).toBe(now + 240000 + 10 * 60000);
   expect(recoveryDeadline(now, now / 1000 + 86400)).toBe(now + 30 * 60000);
 });
+
+test("a transient read failure is retried instead of ending recovery", async () => {
+  const refunded = inventory({
+    legs: [leg("1000000")],
+    refunds: [{ state: "confirmed", amount_atomic: "1000000" }],
+  });
+  let reads = 0;
+  const { run, calls } = harness([refunded], {
+    readInventory: async () => {
+      if (reads++ < 2) throw new Error("connection timeout");
+      return refunded;
+    },
+  });
+  const result = await run();
+  expect(result.settled).toBe(true);
+  expect(result.readFailures).toBe(2);
+  expect(calls).toEqual([]);
+});
+
+test("a missing leg settles on the whole stack's inventory alone", async () => {
+  let shutdownReads = 0;
+  const { run, calls } = harness([], {
+    readInventory: async () => null,
+    readShutdownInventory: async () =>
+      ++shutdownReads < 3 ? new Proxy({}, { get: () => "1" }) : cleanShutdown,
+  });
+  const result = await run();
+  expect(result.settled).toBe(true);
+  expect(calls).toEqual([]);
+});
