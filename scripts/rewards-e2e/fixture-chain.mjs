@@ -54,9 +54,11 @@ export async function canonicalFixtureTransaction(chain, hash, deadline) {
       await Bun.sleep(2000);
       continue;
     }
-    if (receipt.status !== "success" || block.hash !== receipt.blockHash)
-      throw Error("Fixture transaction failed or reorganized");
-    if (head - receipt.blockNumber + 1n >= 3n) return receipt;
+    if (receipt.status !== "success") throw Error("Fixture transaction reverted");
+    // Load-balanced public nodes can briefly disagree about a fresh block. A receipt
+    // is accepted only once the block read back by number has the same hash and
+    // three confirmations; until then this keeps reading, and never resubmits.
+    if (block.hash === receipt.blockHash && head - receipt.blockNumber + 1n >= 3n) return receipt;
     await Bun.sleep(2000);
   }
   throw Error("Fixture transaction confirmation uncertain; do not replay");

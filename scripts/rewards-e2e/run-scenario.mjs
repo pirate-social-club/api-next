@@ -357,7 +357,21 @@ export async function runScenario(options) {
       startedAt,
       deadline: end - 60000,
     };
+    // The same read-only proof is repeated briefly: public nodes can lag each other
+    // by a block, and one stale read must not end a funded run.
     const fundingCheck = async () => {
+      let last;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (attempt) await Bun.sleep(2000);
+        try {
+          return await fundingProof();
+        } catch (error) {
+          last = error;
+        }
+      }
+      throw last;
+    };
+    const fundingProof = async () => {
       await check();
       const receipt = await run.chain.publicClient.request({
         method: "eth_getTransactionReceipt",
