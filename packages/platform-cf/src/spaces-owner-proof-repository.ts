@@ -64,6 +64,7 @@ export type SpacesRootAuthorityObserver = Readonly<{
       digestHex?: string;
       signatureHex?: string;
     }>,
+    signal?: AbortSignal,
   ) => Promise<SpacesRootAuthorityObservation>;
 }>;
 
