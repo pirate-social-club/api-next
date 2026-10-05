@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { parseAbi } from "viem";
+import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
 import { browserApi } from "./browser-api.mjs";
 import { confirmWalletFunding, reviewWalletFunding } from "./browser-funding.mjs";
@@ -45,10 +46,12 @@ import {
 } from "./run-evidence.mjs";
 import { disableIsolatedRewards, setIsolatedRewardsFlag } from "./runtime-flags.mjs";
 import { verifySettlementReceipts } from "./settlement-evidence.mjs";
+import { recoverSettlement, recoveryDeadline } from "./settlement-recovery.mjs";
 import { executeOnce } from "./single-use.mjs";
 import { reserveSpending } from "./spending-ledger.mjs";
 
 const fixtureAbi = parseAbi(["function currentDrawingId() view returns(uint256)"]);
+const controlQuery = "SELECT paused,revision::text FROM reward_operations_control WHERE singleton";
 export async function runScenario(options) {
   const run = {
     ...options,
@@ -62,6 +65,8 @@ export async function runScenario(options) {
     host,
     observer,
     legId,
+    drawingId,
+    drawingTime,
     controlRevision,
     flagsEnabled = false,
     passed = false,
@@ -166,9 +171,9 @@ export async function runScenario(options) {
     });
     const prize = await fundFixturePrize(run.chain, run, check);
     const end = Math.ceil((Date.now() + 12 * 60000) / 60000) * 60000;
-    const drawingTime = end / 1000 + 240;
+    drawingTime = end / 1000 + 240;
     const arm = await armFixtureDrawing(run.chain, run, drawingTime, run.outcome === "loss", check);
-    const drawingId = (
+    drawingId = (
       await run.chain.publicClient.readContract({
         address: fixtureJackpot,
         abi: fixtureAbi,
@@ -474,6 +479,59 @@ export async function runScenario(options) {
   } finally {
     const errors = [];
     let brake;
+    let recovery;
+    // A funded offer, share or ticket must settle before the stack is shut down.
+    if (!passed && legId && controlRevision !== undefined) {
+      const recoveryRun = { ...run, deadline: recoveryDeadline(Date.now(), drawingTime) };
+      const recoveryCheck = async () => {
+        if (Date.now() >= recoveryRun.deadline) throw Error("Settlement recovery deadline expired");
+        const control = (await options.db.read(controlQuery))[0];
+        if (control.paused || control.revision !== controlRevision)
+          throw Error("Brake changed during recovery");
+      };
+      try {
+        recovery = await recoverSettlement({
+          deadline: recoveryRun.deadline,
+          roles: ["study", "karaoke"].map((name) => ({
+            name,
+            accountId: fixtureAccounts[name].accountId,
+          })),
+          expectedRevision: controlRevision,
+          readControl: async () => (await options.db.read(controlQuery))[0],
+          readInventory: () => run.inventory(),
+          readShutdownInventory: () => readShutdownInventory(options.db),
+          advance: (purchase) =>
+            advancePurchasedDrawing(
+              run.chain,
+              recoveryRun,
+              drawingId,
+              purchase.ticket_id,
+              recoveryCheck,
+            ),
+          // A failed run may hold one share, so its credit is not the equal split.
+          claim: (role, inventory) =>
+            claimParticipantCredit(
+              host.pages[role],
+              role,
+              inventory,
+              recoveryRun,
+              recoveryCheck,
+              (credits, name) => {
+                const rows = credits.filter(
+                  (credit) => credit.account_id === fixtureAccounts[name].accountId,
+                );
+                if (rows.length !== 1) throw Error("Recovery credit is missing or ambiguous");
+                return rows[0];
+              },
+            ),
+        });
+      } catch (error) {
+        recovery = {
+          settled: false,
+          reason: error instanceof Error ? error.message : "Settlement recovery refused",
+        };
+      }
+    }
     try {
       const current = (
         await options.db.read(
@@ -495,8 +553,23 @@ export async function runScenario(options) {
     } catch {
       errors.push("brake pause refused");
     }
-    const disabled = await disableIsolatedRewards(run.apiSource);
-    if (!disabled.flagsOff) errors.push("flags disable uncertain");
+    let shutdownInventory;
+    let nothingOwedAnywhere = false;
+    try {
+      shutdownInventory = await readShutdownInventory(options.db);
+      assertShutdownInventory(shutdownInventory);
+      nothingOwedAnywhere = true;
+    } catch {
+      errors.push("global obligations inventory refused");
+    }
+    // Flags stay on while anything is owed, so obligations remain visible and payable.
+    let disabled;
+    if (nothingOwedAnywhere) {
+      disabled = await disableIsolatedRewards(run.apiSource);
+      if (!disabled.flagsOff) errors.push("flags disable uncertain");
+    } else if (flagsEnabled) {
+      errors.push("obligations remain; flags left enabled for recovery");
+    }
     if (observer) {
       try {
         const capture = await observer.close();
@@ -511,13 +584,6 @@ export async function runScenario(options) {
       errors.push("browser closeout failed");
     }
     const inventory = legId ? await run.inventory().catch(() => null) : null;
-    let shutdownInventory;
-    try {
-      shutdownInventory = await readShutdownInventory(options.db);
-      assertShutdownInventory(shutdownInventory);
-    } catch {
-      errors.push("global obligations inventory refused");
-    }
     if (passed) {
       try {
         assertNothingOwed(inventory);
@@ -530,6 +596,7 @@ export async function runScenario(options) {
       lastStage: stage,
       failureStage,
       failureReason: failure?.message,
+      recovery,
       brake,
       browsersClosed: host?.report.browsersClosed,
       shutdownInventory,

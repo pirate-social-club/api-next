@@ -4,8 +4,15 @@ import { waitForEvidence } from "./run-evidence.mjs";
 import { executeOnce } from "./single-use.mjs";
 
 /** Only the isolated build simulates verification. Claim reservation and payout remain normal. */
-export async function claimParticipantCredit(page, role, inventory, run, check) {
-  const credit = singleParticipantCredit(inventory.credits, role);
+export async function claimParticipantCredit(
+  page,
+  role,
+  inventory,
+  run,
+  check,
+  select = singleParticipantCredit,
+) {
+  const credit = select(inventory.credits, role);
   const once = (id, submit) =>
     executeOnce(run.directory, `${role}-${id}`, check, submit, {
       recheck: check,
@@ -42,7 +49,7 @@ export async function claimParticipantCredit(page, role, inventory, run, check) 
     run.deadline,
     () => run.inventory(),
     (result) => {
-      const paid = singleParticipantCredit(result.credits, role);
+      const paid = select(result.credits, role);
       return paid.state === "sent" && paid.amount_atomic === paid.paid_atomic;
     },
     check,
