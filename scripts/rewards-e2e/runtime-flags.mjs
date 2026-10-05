@@ -5,7 +5,8 @@ const flagOf = (version) =>
   version.resources?.bindings?.find((binding) => binding.name === "MEGAPOT_REWARDS_ENABLED")?.text;
 const descriptor = (version) =>
   JSON.stringify({
-    script: version.resources?.script,
+    // Cloudflare relabels the source of a settings-created version; the code is unchanged.
+    script: { ...version.resources?.script, last_deployed_from: undefined },
     runtime: version.resources?.script_runtime,
     bindings: version.resources?.bindings
       ?.filter((binding) => binding.name !== "MEGAPOT_REWARDS_ENABLED")

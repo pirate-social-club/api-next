@@ -161,6 +161,14 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     privilege: "EXECUTE",
     allowed: true,
   },
+  // Opening an offer or adding a leg locks the song owner-policy head through this
+  // routine. Its migration revokes PUBLIC and grants no role, so a runtime role
+  // without this grant fails the first Boost with an opaque storage error.
+  {
+    object: "lock_song_owner_policy_head_v1(text,text)",
+    privilege: "EXECUTE",
+    allowed: true,
+  },
 ] as const;
 
 type PrivilegeFact = Readonly<{
