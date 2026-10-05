@@ -7,7 +7,7 @@ function fixture(mode = "ok") {
     id: "initial",
     annotations: { "workers/message": `git:${source}` },
     resources: {
-      script: { etag: "same" },
+      script: { etag: "same", last_deployed_from: "wrangler" },
       script_runtime: { compatibility_date: "2026-08-01" },
       bindings: [
         { name: "API_NEXT_ENV", text: "development" },
@@ -31,6 +31,8 @@ function fixture(mode = "ok") {
       );
       if (!flag) throw Error("Fixture flag missing");
       flag.text = "true";
+      // A settings-created version is always relabelled by the provider.
+      version.resources.script.last_deployed_from = "api";
       if (mode === "drift") version.resources.script.etag = "different";
       return {};
     }
@@ -46,6 +48,15 @@ test("an uncertain settings write is never retried", async () => {
   await expect(
     setIsolatedRewardsFlag("http", "true", source, { api: f.api, sleep: async () => {} }),
   ).rejects.toThrow("Lost response");
+  expect(f.mutations.length).toBe(1);
+});
+test("the provider's source relabel alone does not refuse the flag change", async () => {
+  const f = fixture();
+  const result = await setIsolatedRewardsFlag("http", "true", source, {
+    api: f.api,
+    sleep: async () => {},
+  });
+  expect(result).toEqual({ versionId: "new", rewardsEnabled: "true", changed: true });
   expect(f.mutations.length).toBe(1);
 });
 test("a settings patch that changes code is refused", async () => {
