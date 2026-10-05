@@ -10,8 +10,7 @@ import { MEDIA_BINDING_KINDS, mediaUsesCloudConvert } from "./media-binding-cont
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 
-// `satisfies` requires every source binding to be classified. The runtime audit
-// checks that these classifications agree with both Wrangler configs.
+// Source binding classifications must agree with Wrangler configs.
 const ALERT_BINDING_KINDS = {
   API_NEXT_ENV: "var",
 } as const satisfies BindingManifest<AlertSinkBindings>;
@@ -59,6 +58,7 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly images?: { readonly binding: string };
   readonly vpc_services?: readonly { readonly binding: string; readonly service_id: string }[];
   readonly r2_buckets?: readonly { readonly binding: string; readonly bucket_name: string }[];
   readonly workflows?: readonly {
@@ -307,8 +307,7 @@ const LEGACY_JUNK_NAMES = [
   "SELF_CALLBACK_CAPTURE_ACCESS_TOKEN",
 ] as const;
 
-// The pre-D7 names. These must never reappear in a binding manifest or in a
-// Wrangler config; the D7 rename replaced them with their VERY_WEB_ forms.
+// Retired pre-D7 names must not replace their VERY_WEB_ forms.
 const LEGACY_VERY_WEB_NAMES = [
   "VERY_APP_ID",
   "VERY_API_URL",
@@ -449,6 +448,8 @@ const auditRequiredBindings = (): readonly string[] => {
           (bucket) => bucket.binding,
         ),
       ]);
+      const images = rawEnvironment(configs[worker], environmentName).images;
+      if (images !== undefined) names.add(images.binding);
       const varNames = new Set(Object.keys(environment.vars));
       const secretNames = new Set(environment.secrets);
       for (const name of requiredNamesFor(worker, environment)) {
@@ -457,8 +458,7 @@ const auditRequiredBindings = (): readonly string[] => {
           continue;
         }
         if (manifest[name] === "var" && !varNames.has(name)) {
-          // The classification audit reports the wrong store. Keep this
-          // check focused on absence/value rather than duplicating it.
+          // Store classification is checked separately.
           continue;
         }
         if (manifest[name] === "secret" && !secretNames.has(name)) {

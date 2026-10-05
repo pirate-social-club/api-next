@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "scripts/avatar-staging-authoring-config.test.ts",
     "scripts/reward-operations-control.ts",
     "scripts/reward-operations-control.test.ts",
     "scripts/hns-staging-gateway-fixture.ts",
