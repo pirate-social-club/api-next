@@ -117,6 +117,8 @@
     "./use-cases/video-outcomes": "./src/use-cases/video-outcomes.ts",
     "./telegram-oidc": "./src/telegram-oidc.ts",
     "./telegram-study": "./src/telegram-study.ts",
-    "./telegram-linking": "./src/telegram-linking.ts"
+    "./telegram-linking": "./src/telegram-linking.ts",
+    "./use-cases/community-navigation": "./src/use-cases/community-navigation.ts",
+    "./use-cases/profile-activity": "./src/use-cases/profile-activity.ts"
   }
 }
