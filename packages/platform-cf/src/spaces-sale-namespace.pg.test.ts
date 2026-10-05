@@ -666,6 +666,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
       // HNS terms cannot be attached to a Spaces activation.
       const sales = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(connection),
+        (binding) => Effect.succeed(binding.network === "regtest"),
       );
       expect(
         await failureOf(
@@ -926,6 +927,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
       const activation = await createActive(admin, connection);
       const sales = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(connection),
+        (binding) => Effect.succeed(binding.network === "regtest"),
       );
       const input = {
         accountId: seller,
@@ -1340,6 +1342,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
       );
       const sales = makeControlPlaneHandleSalesStore(
         makeDirectPostgresControlPlaneLayer(connection),
+        (binding) => Effect.succeed(binding.network === "regtest"),
       );
       const input = {
         accountId: "seller",

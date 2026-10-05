@@ -76,7 +76,13 @@ import {
   stringArray,
   text,
 } from "./handle-sales-internals.ts";
+import { provideHandleSalesRepository } from "./handle-sales-store.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
+import {
+  filterCurrentSpacesOfferings,
+  requireCurrentSpacesAuthority,
+  type SpacesCurrentAuthority,
+} from "./spaces-current-authority.ts";
 import {
   createSpacesQuote,
   createSpacesReservation,
@@ -1275,7 +1281,9 @@ const mutateOffering = (
     return { offering: offeringFromRow(one(result.rows, "written offering")), replayed: false };
   });
 
-export function makeControlPlaneHandleSalesRepository() {
+export function makeControlPlaneHandleSalesRepository(
+  spacesAuthority: SpacesCurrentAuthority = null,
+) {
   return {
     createSaleNamespace: (input: Parameters<HandleSalesStore["createSaleNamespace"]>[0]) =>
       Effect.gen(function* () {
@@ -2162,7 +2170,13 @@ export function makeControlPlaneHandleSalesRepository() {
           },
           catch: (error) =>
             error instanceof HandleSalesPageRejected ? error : storage("invalid-row"),
-        });
+        }).pipe(
+          Effect.flatMap((page) =>
+            filterCurrentSpacesOfferings(db, spacesAuthority, page.items).pipe(
+              Effect.map((items) => ({ ...page, items })),
+            ),
+          ),
+        );
       }),
     getManagementContext: (input: Parameters<HandleSalesStore["getManagementContext"]>[0]) =>
       Effect.gen(function* () {
@@ -2804,6 +2818,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 persona_public_identity_digest: identityDigest,
                 idempotency_key: input.idempotencyKey,
               }).sha256;
+              yield* requireCurrentSpacesAuthority(transaction, spacesAuthority, row);
               const now = instant(
                 one((yield* currentDatabaseTime(transaction)).rows, "database clock").database_now,
               );
@@ -2955,6 +2970,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 return yield* createSpacesQuote(transaction, {
                   input,
                   offering: requested.rows[0],
+                  currentAuthority: spacesAuthority,
                   endpoint,
                   requestHash: hash,
                 });
@@ -3392,7 +3408,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 return yield* createSpacesReservation(transaction, {
                   input,
                   quote: quoteRow,
-                  now,
+                  currentAuthority: spacesAuthority,
                   endpoint,
                   requestHash: hash,
                 });
@@ -3701,7 +3717,7 @@ export function makeControlPlaneHandleSalesRepository() {
                 return yield* submitSpacesClaim(transaction, {
                   input,
                   reservation: row,
-                  now,
+                  currentAuthority: spacesAuthority,
                   endpoint,
                   requestHash: hash,
                 });
@@ -4242,53 +4258,10 @@ export function makeControlPlaneHandleSalesRepository() {
 
 export function makeControlPlaneHandleSalesStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  spacesAuthority: SpacesCurrentAuthority = null,
 ): HandleSalesStore {
-  const repository = makeControlPlaneHandleSalesRepository();
-  const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
-    Effect.provide(runtime)(effect);
-  const store = {
-    createSaleNamespace: (input: Parameters<HandleSalesStore["createSaleNamespace"]>[0]) =>
-      provide(repository.createSaleNamespace(input)),
-    reviseSaleNamespace: (input: Parameters<HandleSalesStore["reviseSaleNamespace"]>[0]) =>
-      provide(repository.reviseSaleNamespace(input)),
-    listSaleNamespaces: (input: Parameters<HandleSalesStore["listSaleNamespaces"]>[0]) =>
-      provide(repository.listSaleNamespaces(input)),
-    createRecipientToken: (input: Parameters<HandleSalesStore["createRecipientToken"]>[0]) =>
-      provide(repository.createRecipientToken(input)),
-    createQualificationPolicy: (
-      input: Parameters<HandleSalesStore["createQualificationPolicy"]>[0],
-    ) => provide(repository.createQualificationPolicy(input)),
-    createOffering: (input: Parameters<HandleSalesStore["createOffering"]>[0]) =>
-      provide(repository.createOffering(input)),
-    reviseOffering: (input: Parameters<HandleSalesStore["reviseOffering"]>[0]) =>
-      provide(repository.reviseOffering(input)),
-    listOfferings: (input: Parameters<HandleSalesStore["listOfferings"]>[0]) =>
-      provide(repository.listOfferings(input)),
-    getManagementContext: (input: Parameters<HandleSalesStore["getManagementContext"]>[0]) =>
-      provide(repository.getManagementContext(input)),
-    listManagementSaleNamespaces: (
-      input: Parameters<HandleSalesStore["listManagementSaleNamespaces"]>[0],
-    ) => provide(repository.listManagementSaleNamespaces(input)),
-    listManagementOfferings: (input: Parameters<HandleSalesStore["listManagementOfferings"]>[0]) =>
-      provide(repository.listManagementOfferings(input)),
-    confirmPersonaReuse: (input: Parameters<HandleSalesStore["confirmPersonaReuse"]>[0]) =>
-      provide(repository.confirmPersonaReuse(input)),
-    createQuote: (input: Parameters<HandleSalesStore["createQuote"]>[0]) =>
-      provide(repository.createQuote(input)),
-    createReservation: (input: Parameters<HandleSalesStore["createReservation"]>[0]) =>
-      provide(repository.createReservation(input)),
-    submitFreeClaim: (input: Parameters<HandleSalesStore["submitFreeClaim"]>[0]) =>
-      provide(repository.submitFreeClaim(input)),
-    getClaim: (input: Parameters<HandleSalesStore["getClaim"]>[0]) =>
-      provide(repository.getClaim(input)),
-    listPersonaGrants: (input: Parameters<HandleSalesStore["listPersonaGrants"]>[0]) =>
-      provide(repository.listPersonaGrants(input)),
-    getPublicGrant: (input: Parameters<HandleSalesStore["getPublicGrant"]>[0]) =>
-      provide(repository.getPublicGrant(input)),
-    getPublicPersona: (input: Parameters<HandleSalesStore["getPublicPersona"]>[0]) =>
-      provide(repository.getPublicPersona(input)),
-  };
-  // The repository maps every ControlPlaneError before this boundary. The
-  // assertion hides only Effect's conservative union left by withTransaction.
-  return store as unknown as HandleSalesStore;
+  return provideHandleSalesRepository(
+    runtime,
+    makeControlPlaneHandleSalesRepository(spacesAuthority),
+  );
 }
