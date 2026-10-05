@@ -17,7 +17,7 @@ export async function cloudflareApi(path, init = {}) {
       signal: AbortSignal.timeout(30_000),
       headers: {
         authorization: `Bearer ${token}`,
-        "content-type": "application/json",
+        ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }),
         ...init.headers,
       },
     },

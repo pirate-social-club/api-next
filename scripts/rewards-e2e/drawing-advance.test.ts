@@ -70,3 +70,9 @@ test("a reorged or uncertain purchase receipt refuses", () => {
 test("a fully verified receipt returns only the exact controller identities", () => {
   expect(assertDrawingAdvanceReady(proof())).toEqual({ drawingId: "2", ticketId: "1" });
 });
+
+test("a later jobs receipt read cannot be presented as the first read", () => {
+  const input = proof();
+  input.firstRead.attempt = 2;
+  expect(() => assertDrawingAdvanceReady(input)).toThrow("first jobs Worker");
+});

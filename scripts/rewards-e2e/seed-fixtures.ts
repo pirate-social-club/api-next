@@ -19,6 +19,8 @@ export const fixture = {
 };
 const allowed = new Set([
   "users",
+  "identity_credentials",
+  "account_minimum_age_attestations",
   "personas",
   "persona_profiles",
   "persona_wallet_assignments",
@@ -33,6 +35,7 @@ const allowed = new Set([
   "community_route_ownership_evidence",
   "operator_managed_route_activations",
   "posts",
+  "post_slug_aliases",
   "community_feed_projection",
   "song_owner_policies",
   "song_owner_policy_revisions",
@@ -47,8 +50,10 @@ const allowed = new Set([
   "media_publication_decisions",
   "media_publication_projections",
   "media_timed_lyrics_artifacts",
+  "media_alignment_projections",
   "media_song_canonical_timings",
   "localization_lyric_line_occurrences",
+  "localization_lyrics_revision_lines",
   "localization_lyric_line_versions",
   "localization_study_units",
   "localization_lyric_line_study_units",
@@ -76,6 +81,7 @@ const column = (name: string) => {
 };
 const importGuards = [
   ["users", "users_provision_first_persona"],
+  ["media_alignment_projections", "media_alignment_insert_guard"],
   ["media_post_submissions", "media_submission_insert_authority_guard"],
   ["media_post_submissions", "media_submission_initial_event"],
   ["media_upload_reservations", "media_reservation_claim_pair"],
@@ -148,8 +154,13 @@ export async function planFixtureSeed(connectionString: string) {
       }
       return keys;
     }
-    for (const user_id of fixture.accounts) await collect("users", { user_id });
+    for (const user_id of fixture.accounts) {
+      await collect("users", { user_id });
+      await collect("account_minimum_age_attestations", { account_id: user_id });
+      await collect("identity_credentials", { canonical_user_id: user_id, status: "active" });
+    }
     await collect("communities", { community_id: fixture.community });
+    await collect("post_slug_aliases", { post_id: fixture.song });
     for (const account_id of fixture.accounts) {
       for (const table of [
         "personas",
@@ -174,7 +185,9 @@ export async function planFixtureSeed(connectionString: string) {
       "song_owner_policies",
       "media_publication_projections",
       "media_timed_lyrics_artifacts",
+      "media_alignment_projections",
       "localization_lyric_line_occurrences",
+      "localization_lyrics_revision_lines",
       "localization_study_units",
       "localization_lyric_line_study_units",
       "study_exercise_versions",
@@ -196,6 +209,7 @@ export async function planFixtureSeed(connectionString: string) {
       "study_exercise_versions",
       "media_publication_decisions",
       "media_timed_lyrics_artifacts",
+      "media_alignment_projections",
       "media_song_canonical_timings",
     ]) {
       if (![...nodes.values()].some((node) => node.table === table))

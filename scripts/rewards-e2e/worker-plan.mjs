@@ -9,6 +9,8 @@ export const isolatedWorkers = {
   http: "pirate-http-worker-megapot-e2e-staging",
   jobs: "pirate-jobs-worker-megapot-e2e-staging",
 };
+export const isolatedCommitmentOrigin =
+  "https://pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev";
 const buckets = {
   MEDIA_INGRESS: "pirate-media-ingress-megapot-e2e-staging",
   MEDIA_IMMUTABLE_ORIGINALS: "pirate-media-immutable-megapot-e2e-staging",
@@ -97,14 +99,15 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "200000000000000",
     KARAOKE_FINALIZATION_RECOVERY_ENABLED: "true",
     SONG_PLAYBACK_ENABLED: "true",
-    // Historical fixtures retain only GET access to their immutable song audio.
-    SONG_PLAYBACK_R2_BUCKET: "pirate-media-immutable-staging",
+    // The exact historical audio is copied to the runner-owned bucket.
+    SONG_PLAYBACK_R2_BUCKET: buckets.MEDIA_IMMUTABLE_ORIGINALS,
     MEDIA_INGRESS_R2_BUCKET_NAME: buckets.MEDIA_INGRESS,
     AVATAR_R2_BUCKET_NAME: buckets.AVATAR_INGRESS,
     VIDEO_WORKFLOW_NAME: "",
     VIDEO_WORKFLOW_SCRIPT_NAME: "",
     ZKPASSPORT_DOMAIN: new URL(isolatedOrigins.web).host,
   });
+  if (kind === "jobs") config.vars.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN = isolatedCommitmentOrigin;
   config.secrets = {
     required:
       kind === "http"
@@ -125,7 +128,6 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
             "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
             "MEGAPOT_V2_RPC_URL",
             "MEGAPOT_CUSTODY_PRIVATE_KEY",
-            "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
             "MEGAPOT_GAS_TOPUP_PRIVATE_KEY",
           ],
   };

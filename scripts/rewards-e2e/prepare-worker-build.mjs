@@ -12,6 +12,7 @@ export const deploymentPins = {
   databaseHost: "aws-us-east-1-3.pg.psdb.cloud",
   attestationId: "megapot-e2e-sepolia-20261004-r2",
   databaseRoleUsernameSha256: "e8baf39d2c952c232b7f0986a7ef960bc06fdd3589d04249ba1b746594d405c8",
+  databaseSqlRoleSha256: "96c2f4482ba02cf95cfb3f62c8ff90df582cf3181b1f6b8dbbfae8ee72667284",
 };
 
 export async function workerConfigurations(root) {
@@ -59,10 +60,7 @@ export async function prepareWorkerBuild(root) {
     )
   )
     throw new Error("Jobs build contains simulated verification");
-  const http = await buildRewardsHttpArtifact(
-    "isolated",
-    deploymentPins.databaseRoleUsernameSha256,
-  );
+  const http = await buildRewardsHttpArtifact("isolated", deploymentPins.databaseSqlRoleSha256);
   if (!http.inputPaths.some((path) => path.includes("reward-claim-stub")))
     throw new Error("Isolated HTTP build lacks its labelled verification adapter");
   const output = resolve(root, "tests/rewards-e2e/dist");
@@ -71,6 +69,7 @@ export async function prepareWorkerBuild(root) {
   return {
     simulatedVerification: true,
     databaseRoleUsernameSha256: deploymentPins.databaseRoleUsernameSha256,
+    databaseSqlRoleSha256: deploymentPins.databaseSqlRoleSha256,
     httpArtifactSha256: createHash("sha256").update(http.source).digest("hex"),
     jobsArtifactSha256: createHash("sha256").update(jobs.source).digest("hex"),
     httpInputCount: http.inputPaths.length,

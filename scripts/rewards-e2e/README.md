@@ -9,7 +9,7 @@ resettable database. Failed or uncertain sends retain their reservations.
 Returned balances do not replenish the cumulative authorization automatically.
 
 The separate HTTP entrypoint is tests/rewards-e2e/entry.ts. Its compiled
-identity pin checks the database role and isolated API origin before application
+identity pin reads the actual SQL role and checks the isolated API origin before application
 initialization. Simulated claim verification is limited to development and
 reward-claim intents, binds each subject to its actor, and is labelled in the
 provider presentation and response header. Normal staging, production and jobs
@@ -69,3 +69,85 @@ reviewed Solid release 8baa1948 before copying its build. The isolated site
 proxies only the isolated API and disables HNS ingress. It requires no shared
 frontend build or source mutation. These preparations do not establish live
 Rewards acceptance.
+
+
+The first dark HTTP deployment refused because Hyperdrive supplies a pool
+username in its connection string. That username is not the origin SQL role.
+The resource guard now compares a fresh read-only current_user result with the
+compiled SQL role digest on every request. It does not cache a mutable origin
+or accept the pool username as authority. Shared origins and nondevelopment
+environments refuse before a database connection.
+
+The receipt observer subscribes only to the isolated jobs Worker before rewards
+are enabled. It retains public identifiers and never persists the private tail
+URL or full log payload. Gaps, malformed observations, expiry and failed cleanup
+are reported. Drawing advancement requires a captured transactionReadSequence
+of one from the pinned Worker and attestation, linked to the confirmed database
+purchase and independently canonical receipt. A later read cannot substitute.
+
+Run preparation readback with `bun run e2e:rewards`. Set
+`REWARDS_E2E_EVIDENCE_ROOT` to the durable authority package containing
+owner-authorization.json, database-identity.json and spending-ledger. Set
+`REWARDS_E2E_SOLID_ROOT` to the canonical Solid repository and
+`REWARDS_E2E_KARAOKE_WAV` to the accepted fixture microphone WAV. The command
+loads both approved Infisical folders in memory. Run `bun run e2e:rewards --execute`
+to execute win and loss sequentially on the same committed, serving API and
+Solid release. An interrupted invocation retains its lock and all single-use
+markers for recovery; it never replays an uncertain signature.
+
+Future runner branches use the reviewed `provision-branch.ts` helper merged in
+PR #549, commit 79caabb98645e25c225dc302fb716ab148dcb24d. First run its read-only
+plan, then `bun scripts/rewards-e2e/provision-branch.ts rewards-runner-YYYYMMDD
+--execute --receipt=/absolute/durable/branch-receipt.json`. Independently verify the receipt before credentials or Hyperdrive.
+The helper pins the organization, database, PostgreSQL 17, PS_5_AWS_ARM and
+zero replicas. Existing runner branch l8mhyb0fxy54 was resized to zero replicas
+under completed provider change 8w2whwejklwt. The current runner reuses that branch.
+It does not create or delete paid database resources.
+
+The canonical backing audio is copied byte-for-byte into
+`pirate-media-immutable-megapot-e2e-staging`, with SHA-256
+`51afd9db7bb1e0be27c0d1fd4c55741d0570027dd6c20a6f087388e971c62d08`.
+Its GET/HEAD CORS policy permits only the isolated frontend. Playback uses
+that bucket and requires an approved managed read credential scoped to it.
+The shared staging playback credential refuses this bucket with HTTP 403.
+Do not widen that credential or change shared bucket CORS. No funded run
+may begin until real isolated Karaoke playback and qualification pass.
+
+Preparation and closeout check the maintained nine shutdown inventory families
+and unresolved winner sends across the entire isolated database. A successful
+run also verifies the paused brake, disabled flags and owned browser cleanup.
+Late evidence and failed receipt-observer cleanup cannot pass acceptance.
+
+Jobs publish commitments through the existing isolated jobs Worker's public
+reader at `pirate-jobs-worker-megapot-e2e-staging.piratesocialclub.workers.dev`.
+The runner checks the exact origin, bucket binding and a read-only HEAD probe
+of a preserved public document. The route accepts only commitment document
+paths and GET/HEAD. The bucket's managed r2.dev URL remains disabled and is
+not required for publication. An earlier preflight incorrectly required it.
+
+A run that fails after its offer exists does not shut down at once.
+`settlement-recovery.mjs` keeps the brake running and both flags on while the
+leg settles: an unfunded or shareless offer expires and refunds, a purchased
+ticket is settled on the fixture, on the same first-read and canonical-receipt
+evidence the run itself requires, and then refunded or credited, and an unpaid
+credit is claimed and paid. Each step is attempted once. A claim the run
+already submitted is never repeated; the fixture settlement may be attempted
+again because the contract refuses a second one. Recovery is bounded to ten minutes after the
+drawing time and at most thirty minutes. The brake is then paused. Flags are
+disabled only when the whole shutdown inventory is zero; otherwise they stay
+on, the closeout reports the remaining obligations, and the next preparation
+refuses until they are reconciled.
+
+Each scenario uses two fixture drawings. The product starts a new leg on the
+drawing after the last one the jobs Worker observed, and it requires a live
+observation. The runner therefore arms a three-minute empty placeholder, waits
+for jobs to observe it, creates and funds the Boost, settles the placeholder
+once it is due, and only then arms the outcome drawing and waits for the leg's
+pool drawing to open before any activity starts. A fixture left armed by an
+earlier failed run is brought forward and settled before the placeholder.
+
+The managed ETH float is reserved against the authorization once, under the
+`managed-float` run, because it is one exposure and not a per-run cost. Each
+run then reserves only what it sends: the principal, the prize when the fixture
+needs funding, and a fee ceiling per fixture transaction. Payouts and refunds
+redistribute those amounts and are not reserved again.

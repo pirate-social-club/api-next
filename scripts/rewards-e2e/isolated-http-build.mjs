@@ -10,12 +10,12 @@ const { build } = require(esbuildPath);
 const root = resolve(import.meta.dir, "../..");
 
 /** Build-time pins are embedded in the isolated artifact and are never runtime flags. */
-/** @param {string} mode @param {string | undefined} [databaseRoleUsernameSha256] */
-export async function buildRewardsHttpArtifact(mode, databaseRoleUsernameSha256) {
+/** @param {string} mode @param {string | undefined} [databaseSqlRoleSha256] */
+export async function buildRewardsHttpArtifact(mode, databaseSqlRoleSha256) {
   if (!["isolated", "staging", "production"].includes(mode)) {
     throw new Error("Unknown Rewards Worker build mode");
   }
-  if (mode === "isolated" && !/^[a-f0-9]{64}$/.test(databaseRoleUsernameSha256 ?? "")) {
+  if (mode === "isolated" && !/^[a-f0-9]{64}$/.test(databaseSqlRoleSha256 ?? "")) {
     throw new Error("An independently verified isolated database role pin is required");
   }
   const entry =
@@ -31,7 +31,7 @@ export async function buildRewardsHttpArtifact(mode, databaseRoleUsernameSha256)
                 namespace: "isolated-rewards-pins",
               }));
               builder.onLoad({ filter: /.*/, namespace: "isolated-rewards-pins" }, () => ({
-                contents: `export const databaseRoleUsernameSha256 = "${databaseRoleUsernameSha256}";`,
+                contents: `export const databaseSqlRoleSha256 = "${databaseSqlRoleSha256}";`,
                 loader: "js",
               }));
             },
@@ -52,6 +52,7 @@ async function buildArtifact(entry, plugins, mode) {
     bundle: true,
     write: false,
     platform: "node",
+    conditions: ["workerd"],
     target: "es2022",
     format: "esm",
     external: ["cloudflare:*", "node:*"],
@@ -61,6 +62,10 @@ async function buildArtifact(entry, plugins, mode) {
     logLevel: "silent",
     tsconfig: resolve(root, "tsconfig.json"),
     plugins,
+    // Prebundled CommonJS drivers retain dynamic builtin requires.
+    banner: {
+      js: 'import { createRequire as rewardsCreateRequire } from "node:module"; const require = rewardsCreateRequire("/rewards-worker.js");',
+    },
   });
   if (result.outputFiles.length !== 1) throw new Error("Unexpected Rewards Worker build output");
   return {

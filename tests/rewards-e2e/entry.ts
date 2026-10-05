@@ -1,7 +1,7 @@
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import { makeVerificationProviderRegistry } from "@pirate/application/verification";
 import { Effect } from "effect";
-import { databaseRoleUsernameSha256 } from "#rewards-e2e-pins";
+import { databaseSqlRoleSha256 } from "#rewards-e2e-pins";
 import {
   createProductionHttpWorker,
   type HttpWorkerBindings,
@@ -29,7 +29,7 @@ const isolatedApp = makeRetryingPromiseCache(async (bindings: HttpWorkerBindings
 
 export default {
   async fetch(request: Request, bindings: HttpWorkerBindings, context: ExecutionContext) {
-    if (!(await isIsolatedRequest(request, bindings, databaseRoleUsernameSha256))) {
+    if (!(await isIsolatedRequest(request, bindings, databaseSqlRoleSha256))) {
       return new Response("Isolated Rewards resource identity mismatch", { status: 503 });
     }
     if (new URL(request.url).pathname.startsWith("/karaoke/realtime/")) {
