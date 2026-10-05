@@ -174,6 +174,7 @@ test("the recovery deadline is bounded on both sides", () => {
   expect(recoveryDeadline(now, now / 1000 - 3600)).toBe(now + 5 * 60000);
   expect(recoveryDeadline(now, now / 1000 + 240)).toBe(now + 240000 + 10 * 60000);
   expect(recoveryDeadline(now, now / 1000 + 86400)).toBe(now + 30 * 60000);
+  expect(recoveryDeadline(now, undefined)).toBe(now + 5 * 60000);
 });
 
 test("a transient read failure is retried instead of ending recovery", async () => {

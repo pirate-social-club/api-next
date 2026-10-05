@@ -4,6 +4,8 @@ const settledTickets = ["claimed", "no_win"];
 
 /** Bounded so a stuck offer cannot hold the isolated stack open indefinitely. */
 export function recoveryDeadline(now, drawingTimeSeconds) {
+  // A run can fail before its drawing time exists; nothing can be owed then.
+  if (!Number.isFinite(drawingTimeSeconds)) return now + 5 * 60000;
   const afterDrawing = drawingTimeSeconds * 1000 + 10 * 60000;
   return Math.min(now + 30 * 60000, Math.max(now + 5 * 60000, afterDrawing));
 }
@@ -12,8 +14,9 @@ export function recoveryDeadline(now, drawingTimeSeconds) {
  * Settles what a failed run already admitted before the stack is shut down.
  * An unfunded or shareless leg refunds after expiry; a purchased ticket is
  * settled on the fixture and then refunded or credited; an unpaid credit is
- * claimed and paid. Each step is attempted once: a refused or uncertain step
- * is recorded and never replayed. The brake is never resumed here, and the
+ * claimed and paid. Each step is attempted once here. A claim the run already
+ * submitted is never repeated; the fixture settlement may be attempted again
+ * because the contract refuses a second one. The brake is never resumed, and the
  * caller keeps the flags on whenever this returns unsettled.
  */
 export async function recoverSettlement({

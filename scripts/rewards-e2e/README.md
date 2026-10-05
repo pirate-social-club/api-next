@@ -129,8 +129,9 @@ A run that fails after its offer exists does not shut down at once.
 `settlement-recovery.mjs` keeps the brake running and both flags on while the
 leg settles: an unfunded or shareless offer expires and refunds, a purchased
 ticket is settled on the fixture and then refunded or credited, and an unpaid
-credit is claimed and paid. Each step is attempted once and a refused or
-uncertain step is never replayed. Recovery is bounded to ten minutes after the
+credit is claimed and paid. Each step is attempted once. A claim the run
+already submitted is never repeated; the fixture settlement may be attempted
+again because the contract refuses a second one. Recovery is bounded to ten minutes after the
 drawing time and at most thirty minutes. The brake is then paused. Flags are
 disabled only when the whole shutdown inventory is zero; otherwise they stay
 on, the closeout reports the remaining obligations, and the next preparation

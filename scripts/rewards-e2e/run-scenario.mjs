@@ -168,7 +168,8 @@ export async function runScenario(options) {
     const prize = await fundFixturePrize(run.chain, run, check);
     // The product starts a leg on the drawing after the last observed one, so an
     // empty placeholder is observed first and the outcome drawing is armed later.
-    const placeholderTime = Math.floor(Date.now() / 1000) + 180;
+    // Four minutes covers the arm, both flag deploys and one jobs tick before it is due.
+    const placeholderTime = Math.floor(Date.now() / 1000) + 240;
     const placeholderArm = await armFixtureDrawing(
       run.chain,
       run,
@@ -218,7 +219,8 @@ export async function runScenario(options) {
       (rows) => rows.length > 0,
       check,
     );
-    const end = Math.ceil((Date.now() + 14 * 60000) / 60000) * 60000;
+    // Funding, the placeholder settlement, the outcome arm and one jobs tick precede activities.
+    const end = Math.ceil((Date.now() + 18 * 60000) / 60000) * 60000;
     drawingTime = end / 1000 + 240;
     // Purchase, settlement, claims, payouts and the refund all follow the cutoff.
     run.deadline = drawingTime * 1000 + 14 * 60000;

@@ -24,7 +24,7 @@ export function fixtureChain() {
   const account = privateKeyToAccount(process.env.MEGAPOT_E2E_OPERATOR_PRIVATE_KEY);
   if (account.address.toLowerCase() !== fixtureOperator) throw Error("Fixture operator differs");
   const transport = http("https://base-sepolia-rpc.publicnode.com", {
-    // Reads may retry. Writes are single-use and are never resubmitted by the runner.
+    // Reads may retry. A resent write is the same signed bytes and nonce, never a second one.
     retryCount: 2,
     timeout: 20000,
   });
@@ -141,6 +141,7 @@ export async function fundFixturePrize(chain, run, check) {
     check,
   );
 }
+/** Only a contract revert means "no"; a refused read must not look like one. */
 const simulates = async (chain, functionName, args = []) => {
   try {
     await chain.publicClient.simulateContract({
@@ -151,8 +152,14 @@ const simulates = async (chain, functionName, args = []) => {
       account: chain.account,
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const reverted =
+      typeof error?.walk === "function" &&
+      error.walk(
+        (cause) => /revert/i.test(cause?.name ?? "") || /revert/i.test(cause?.shortMessage ?? ""),
+      );
+    if (reverted) return false;
+    throw error;
   }
 };
 const fixtureCall = (functionName, args = []) => ({
