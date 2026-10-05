@@ -3725,7 +3725,8 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         sharedSponsorDailyTicketCeiling: 10,
         sharedSponsorDailySpendCeilingAtomic: 100_000n,
       });
-      await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toMatchObject([
+      const outcomes = await Effect.runPromise(coordinator.freezeDue());
+      expect(outcomes).toMatchObject([
         {
           poolLegId: legId,
           drawingId: 100n,
