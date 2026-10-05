@@ -102,4 +102,58 @@ describe("Spaces root authority observer", () => {
     }) as typeof fetch);
     await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow("unavailable");
   });
+  test("interrupts a stalled body and never waits for a hung cancellation", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => {}),
+      cancel: () => {
+        cancelled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    const observer = makeSpacesRootAuthorityObserver(credentials, streamFetch(stream), 20);
+    const began = performance.now();
+    await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow();
+    expect(performance.now() - began).toBeLessThan(500);
+    expect(cancelled).toBe(true);
+  });
+
+  test("interrupts a stalled fetch through its AbortSignal", async () => {
+    let aborted = false;
+    const waiting = (async (_input: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      })) as typeof fetch;
+    const observer = makeSpacesRootAuthorityObserver(credentials, waiting, 20);
+    await expect(observer.observe({ canonicalRoot: "yahoo" })).rejects.toThrow();
+    expect(aborted).toBe(true);
+  });
+  test("caller cancellation interrupts collection before the observer deadline", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => {}),
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const observer = makeSpacesRootAuthorityObserver(credentials, streamFetch(stream), 3000);
+    const caller = new AbortController();
+    const pending = observer.observe({ canonicalRoot: "yahoo" }, caller.signal);
+    const began = performance.now();
+    const timer = setTimeout(() => caller.abort(), 10);
+    try {
+      await expect(pending).rejects.toThrow();
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(performance.now() - began).toBeLessThan(500);
+    expect(cancelled).toBe(true);
+  });
 });
