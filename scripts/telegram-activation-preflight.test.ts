@@ -35,3 +35,14 @@ test("root configuration never substitutes for missing environment configuration
     expect(() => telegramActivationBinding(invalid, "staging", true)).toThrow();
   }
 });
+
+test("effective enabled Telegram requires privileges even when checked-in flags are off", () => {
+  const effective = JSON.stringify({
+    ...telegramConfigurationFixture,
+    enabled: true,
+    linking_enabled: false,
+    practice_enabled: false,
+  });
+  expect(telegramActivationBinding(source(false, false), "staging", true, effective)).toBe(true);
+  expect(() => telegramActivationBinding(source(false, false), "staging", true, "{")).toThrow();
+});

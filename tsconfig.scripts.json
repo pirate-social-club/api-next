@@ -19,6 +19,8 @@
     "scripts/dependency-audit.ts",
     "scripts/deploy-worker-with-provenance.ts",
     "scripts/telegram-activation-preflight.ts",
+    "scripts/staging-telegram-config.ts",
+    "scripts/staging-telegram-config.test.ts",
     "scripts/check-staging-serving-bindings.ts",
     "scripts/evaluate-study-translation-corpus.ts",
     "scripts/generate-contracts.ts",

@@ -15,3 +15,33 @@ For a read-only preview of a clean candidate branch, run `bun run check:staging:
 For an intentional change, a coordinator reviews the exact source/configuration delta and the serving readback. Copy the receipt object, add `reviewed_by_role` and `review_expires_at`, and keep it in the external dated release evidence package, outside the repository. The expiry must be in the future and no more than thirty minutes away. Pass its absolute path with `--binding-review`. The file must match the source SHA, environment, configuration path, Worker name, baseline and candidate digests, every serving version/weight and the complete changes array. No wildcard, partial change list, skip flag or permanent waiver is accepted. Expiry is checked again before deployment. A receipt alone is evidence, not authorization to deploy.
 
 The staging PCM flags in Jobs and media now persist the already approved serving value, true. Media also persists the existing source-gateway origin required by that activation; the active binding-contract test refuses an empty origin. Jobs version 4fbcbdb9 and media version 3652088c were read with that value after the October 1 correction. Initial disabled-rollout instructions describe the earlier activation boundary; they are not a request to revert the accepted staging setting. Production defaults, database policy and credentials remain unchanged. Historical song proof evidence and the September 30 to October 1 disabled interval remain in their existing handoff.
+
+
+## Preserving Telegram staging activation
+
+Normal staging HTTP and jobs deployments read TELEGRAM_CONFIG_JSON from every
+version receiving traffic. All allocations must contain the same valid public
+configuration. The effective candidate preserves those exact bytes; the
+Telegram privilege guard and Wrangler --var upload use the same value. Missing,
+malformed or conflicting values refuse before upload. Jobs cannot enable
+linking. This preserves existing activation when checked-in defaults are off.
+It does not provide an activation or flag-change operation: intentional changes
+remain a separately reviewed runtime configuration workflow.
+
+The serving allocation and all bindings are rechecked before upload. Existing
+secret descriptors, HNS, Rewards, source provenance and unrelated drift review
+remain governed by their existing checks. A reviewed drift receipt does not
+substitute for an executable configuration override.
+
+For a release pinned to an older accepted source, published clean maintained
+tooling may pass --repository-root /absolute/exact-checkout along with
+--source-ref <full-source-sha>. Both checkouts must share a Git common directory,
+and both source identities must be reachable from accepted main with exact
+clean tracked trees. Tooling defaults to origin/main; --tooling-source-ref
+<full-accepted-sha> pins an older accepted tooling tree, including a feature
+checkout whose tree matches its accepted squash merge. This option is staging-only. The Worker
+is packaged from the target checkout, and Telegram schema admission executes
+the target checkout's scripts/telegram-activation-preflight.ts, so a c28 release
+does not silently acquire localization migration 0240's permission contract.
+The binding preview accepts the same option. Use an admitted checkout and
+preserve exact source and tooling identities in the release packet.

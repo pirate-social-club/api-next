@@ -22,6 +22,8 @@ export type WorkerDeploymentInput = Readonly<{
   sourceRef: string;
   acceptedMainRef: string;
   bindingReviewPath?: string;
+  repositoryRoot?: string;
+  toolingSourceRef?: string;
 }>;
 
 export type WorkerDeploymentReceipt = Readonly<{
@@ -65,6 +67,8 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   let environment: string | null = null;
   let sourceRef = "HEAD";
   let bindingReviewPath: string | undefined;
+  let repositoryRoot: string | undefined;
+  let toolingSourceRef: string | undefined;
   const acceptedMainRef = "origin/main";
 
   for (let index = 0; index < args.length; index += 1) {
@@ -80,6 +84,17 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
         break;
       case "--source-ref":
         sourceRef = optionValue(args, index);
+        index += 1;
+        break;
+      case "--tooling-source-ref":
+        toolingSourceRef = optionValue(args, index);
+        if (!FULL_GIT_SHA.test(toolingSourceRef))
+          throw Error("--tooling-source-ref must be a full Git SHA");
+        index += 1;
+        break;
+      case "--repository-root":
+        repositoryRoot = optionValue(args, index);
+        if (!isAbsolute(repositoryRoot)) throw Error("--repository-root must be absolute");
         index += 1;
         break;
       case "--binding-review":
@@ -102,6 +117,8 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
     sourceRef,
     acceptedMainRef,
     ...(bindingReviewPath === undefined ? {} : { bindingReviewPath }),
+    ...(repositoryRoot === undefined ? {} : { repositoryRoot }),
+    ...(toolingSourceRef === undefined ? {} : { toolingSourceRef }),
   };
 }
 
@@ -330,11 +347,24 @@ export async function deployWorkerWithProvenance(
             configPath,
             "--message",
             message,
+            ...(bindingGuard?.telegramConfig === undefined
+              ? []
+              : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
           ],
           repositoryRoot,
           signal,
         );
       }),
+    bindingGuard?.telegramConfig,
+    async () => {
+      // Run schema admission from the exact deployment source, including older accepted releases.
+      const result = await runner(
+        ["bun", "scripts/telegram-activation-preflight.ts"],
+        repositoryRoot,
+        AbortSignal.timeout(30_000),
+      );
+      if (result.exitCode !== 0) throw Error("Telegram serving-role admission refused");
+    },
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);
@@ -365,9 +395,32 @@ export async function deployWorkerWithProvenance(
   };
 }
 
+/** Separate accepted tooling from an exact older accepted deployment checkout. */
+export async function resolveDeploymentRepository(
+  input: WorkerDeploymentInput,
+  runner: CommandRunner = runCommand,
+  toolingRoot = fileURLToPath(new URL("../", import.meta.url)),
+): Promise<string> {
+  const target = input.repositoryRoot === undefined ? toolingRoot : resolve(input.repositoryRoot);
+  if (target === resolve(toolingRoot)) return target;
+  if (input.environment !== "staging")
+    throw Error("external deployment checkout applies only to staging");
+  await verifyDeploymentSource(
+    toolingRoot,
+    { ...input, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
+    runner,
+  );
+  const command = ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"];
+  const toolGit = await requiredOutput(runner, command, toolingRoot, "tooling repository identity");
+  const targetGit = await requiredOutput(runner, command, target, "deployment repository identity");
+  if (toolGit !== targetGit) throw Error("deployment checkout must share the tooling repository");
+  return target;
+}
+
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
-  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-  const receipt = await deployWorkerWithProvenance(repositoryRoot, parseWorkerDeploymentArgs(args));
+  const input = parseWorkerDeploymentArgs(args);
+  const repositoryRoot = await resolveDeploymentRepository(input);
+  const receipt = await deployWorkerWithProvenance(repositoryRoot, input);
   console.log(JSON.stringify(receipt));
 }
 
