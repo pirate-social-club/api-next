@@ -33,8 +33,12 @@ const clock = () => {
   let time = 0;
   return {
     now: () => time,
-    sleep: async (ms: number) => void (time += ms),
-    set: (t: number) => void (time = t),
+    sleep: async (ms: number) => {
+      time += ms;
+    },
+    set: (t: number) => {
+      time = t;
+    },
   };
 };
 
