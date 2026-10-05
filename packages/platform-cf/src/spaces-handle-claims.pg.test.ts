@@ -583,7 +583,7 @@ suite("Spaces quote, reservation, and atomic claim", () => {
         }
         const before = await snapshot(admin);
         const expectedChecks = checks + 1;
-        const refusal = await failureOf(action());
+        const refusal = await failureOf<unknown, unknown>(action());
         expect(refusal).toEqual(rejected(reason));
         expect(checks).toBe(expectedChecks);
         expect(await snapshot(admin)).toEqual(before);

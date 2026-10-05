@@ -16,7 +16,7 @@ import { bytes, fixture } from "./spaces-root-authority-test-fixture.ts";
 
 const target = { activationId: "activation-1", activationGeneration: 1, canonicalRoot: "yahoo" };
 const delegation = bech32m.encode("bcs", [1, ...bech32m.toWords(new Uint8Array(32).fill(7))]);
-const row = {
+const row: Record<string, unknown> = {
   spaces_network: "mainnet",
   root_key_hex: "22".repeat(32),
   root_outpoint: `${"11".repeat(32)}:1`,
@@ -254,7 +254,7 @@ describe("Spaces current authority", () => {
     const began = performance.now();
     expect(
       await Effect.runPromise(filterCurrentSpacesOfferings(db, checker, [...candidates, hns])),
-    ).toEqual([candidates[1], candidates[2], hns]);
+    ).toEqual([...candidates.slice(1, 3), hns]);
     expect(performance.now() - began).toBeLessThan(4000);
     expect(calls).toEqual(["activation-1", "activation-2", "activation-3"]);
   });
