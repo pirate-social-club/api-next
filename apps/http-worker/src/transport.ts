@@ -683,6 +683,8 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "ListMyModerationCommunities",
+  "GetPublicProfileActivity",
   "StartSpacesOwnership",
   "PollSpacesOwnership",
   "GetSpacesOperatorAssignments",
@@ -1097,6 +1099,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             binding.name === "GetPublicHomeFeed" ||
             binding.name === "GetPublicPostSitemap" ||
             binding.name === "GetTrendingSongs" ||
+            binding.name === "ListPopularCommunities" ||
             binding.name === "ListCommunityHandleOfferings" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
