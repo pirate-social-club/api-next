@@ -363,13 +363,16 @@ export async function runScenario(options) {
       let last;
       for (let attempt = 0; attempt < 5; attempt++) {
         if (attempt) await Bun.sleep(2000);
+        if (Date.now() >= run.deadline) break;
         try {
-          return await fundingProof();
+          const proof = await fundingProof();
+          if (Date.now() >= run.deadline) break;
+          return proof;
         } catch (error) {
           last = error;
         }
       }
-      throw last;
+      throw last ?? Error("Isolated run deadline expired");
     };
     const fundingProof = async () => {
       await check();
