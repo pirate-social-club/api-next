@@ -43,10 +43,12 @@ describe("Spaces production composition", () => {
   });
 
   test("keeps every ceremony and registry route absent by default", () => {
-    expect(makeSpacesProductionComposition({}, layer, "staging")).toEqual({});
+    expect(makeSpacesProductionComposition({}, layer, "staging")).toEqual({
+      currentSpacesAuthority: null,
+    });
     expect(
       makeSpacesProductionComposition({ SPACES_RUNTIME_ENABLED: "false" }, layer, "staging"),
-    ).toEqual({});
+    ).toEqual({ currentSpacesAuthority: null });
   });
 
   test("refuses partial credentials, non-staging, and ambiguous flags", () => {
@@ -83,6 +85,7 @@ describe("Spaces production composition", () => {
     const registry = result.spacesRegistry;
     if (registry === undefined) throw new Error("Spaces registry was not composed");
     expect(() => makeSpacesRegistryService(registry)).not.toThrow();
+    expect(typeof result.currentSpacesAuthority).toBe("function");
     expect(typeof result.spacesOwnerProof?.start).toBe("function");
     expect(typeof result.spacesOperatorAssignments?.reportFunding).toBe("function");
   });

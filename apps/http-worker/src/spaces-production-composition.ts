@@ -1,5 +1,9 @@
 import { SPACES_REGISTRY_MAX_PAGE_CAPACITY } from "@pirate/application/use-cases/handles/spaces-registry";
 import { ControlPlaneDb, type makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  makeSpacesCurrentAuthority,
+  type SpacesCurrentAuthority,
+} from "@pirate/platform-cf/spaces-current-authority";
 import { makeSpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import { makeSpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { makeControlPlaneSpacesRegistryStore } from "@pirate/platform-cf/spaces-registry-repository";
@@ -30,7 +34,8 @@ export function spacesTaprootRecipientEnabled(
 type SpacesOptions = Pick<
   HttpWorkerOptions,
   "spacesRegistry" | "spacesOwnerProof" | "spacesOperatorAssignments"
->;
+> &
+  Readonly<{ currentSpacesAuthority: SpacesCurrentAuthority }>;
 
 /** The owner ceremony and private operator channel are staging-only until pilot acceptance. */
 export function makeSpacesProductionComposition(
@@ -39,7 +44,7 @@ export function makeSpacesProductionComposition(
   environment: "development" | "staging" | "production",
 ): SpacesOptions {
   if (bindings.SPACES_RUNTIME_ENABLED === undefined || bindings.SPACES_RUNTIME_ENABLED === "false")
-    return {};
+    return { currentSpacesAuthority: null };
   if (bindings.SPACES_RUNTIME_ENABLED !== "true" || environment !== "staging")
     throw new Error("Spaces runtime configuration is invalid");
   const credentials = {
@@ -101,6 +106,9 @@ export function makeSpacesProductionComposition(
       ),
   };
   return {
+    currentSpacesAuthority: makeSpacesCurrentAuthority(
+      makeSpacesRootAuthorityObserver(credentials, fetch, 3_000),
+    ),
     spacesRegistry: {
       basePath: "/internal/spaces/registry/v1",
       store: makeControlPlaneSpacesRegistryStore(controlPlane),

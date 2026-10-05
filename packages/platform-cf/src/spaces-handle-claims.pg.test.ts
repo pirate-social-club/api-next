@@ -60,7 +60,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 23;
+const testCount = 25;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -93,7 +93,9 @@ async function withSchema(use: (admin: Client, connection: string) => Promise<vo
 }
 
 const salesStore = (connection: string): HandleSalesStore =>
-  makeControlPlaneHandleSalesStore(makeDirectPostgresControlPlaneLayer(connection));
+  makeControlPlaneHandleSalesStore(makeDirectPostgresControlPlaneLayer(connection), (binding) =>
+    Effect.succeed(binding.network === "regtest"),
+  );
 
 const spacesStore = (connection: string): SpacesSaleNamespaceStore =>
   makeControlPlaneSpacesSaleNamespaceStore(makeDirectPostgresControlPlaneLayer(connection));
@@ -464,6 +466,136 @@ const setMembership = (admin: Client, accountId: string, status: "left" | "banne
   );
 
 suite("Spaces quote, reservation, and atomic claim", () => {
+  test("refuses fresh cached readiness when current publication is pending, preserving replays", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: null });
+      const buyer = await seedBuyer(admin, "current-authority-member");
+      let current = true;
+      const sales = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        (binding) => Effect.succeed(current && binding.network === "regtest"),
+      );
+      const priorQuote = await quoted(sales, buyer, "quoteauthority", "authority-quote");
+      const pending = await reserved(sales, buyer, "claimauthority", "authority-pending");
+      const replay = await reserved(sales, buyer, "replayauthority", "authority-replay");
+      const claim = await Effect.runPromise(
+        sales.submitFreeClaim(claimInput(buyer, replay.reservation, "authority-replay")),
+      );
+      const baseline = await snapshot(admin);
+      const databaseReady = async () =>
+        (
+          await admin.query(
+            "SELECT EXISTS (SELECT 1 FROM effective_community_handle_sale_namespace_v1($1,clock_timestamp())) AS ready",
+            [activationId],
+          )
+        ).rows[0]?.ready;
+      expect(await databaseReady()).toBe(true);
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toHaveLength(1);
+      current = false;
+      // The persisted observation is still ready. Only the current authority
+      // capability supplies the independent refusal in this hermetic case.
+      expect(await databaseReady()).toBe(true);
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toEqual([]);
+      expect(
+        await failureOf(sales.createQuote(quoteInput(buyer, "afterauthority", "authority-new"))),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.createReservation(reservationInput(buyer, priorQuote, "authority-new")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.submitFreeClaim(claimInput(buyer, pending.reservation, "authority-new")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(await snapshot(admin)).toEqual(baseline);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.createQuote(quoteInput(buyer, "quoteauthority", "authority-quote")),
+          )
+        ).kind,
+      ).toBe("quoted");
+      const repeated = await Effect.runPromise(
+        sales.submitFreeClaim(claimInput(buyer, replay.reservation, "authority-replay")),
+      );
+      expect(repeated.replayed).toBe(true);
+      expect(repeated.claim.claim_id).toBe(claim.claim.claim_id);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.getClaim({ accountId: buyer.accountId, claimId: claim.claim.claim_id }),
+          )
+        )?.claim_id,
+      ).toBe(claim.claim.claim_id);
+      expect(await snapshot(admin)).toEqual(baseline);
+      current = true;
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toHaveLength(1);
+    });
+    completed++;
+  }, 60_000);
+
+  test("refuses quote and reservation expiry reached during the authority wait", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: null });
+      const buyer = await seedBuyer(admin, "expiry-authority-member");
+      const original = salesStore(connection);
+      const quote = await quoted(original, buyer, "expiryquote", "expiry-quote");
+      const pending = await reserved(original, buyer, "expiryclaim", "expiry-claim");
+      let checks = 0;
+      const delayed = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        () =>
+          Effect.gen(function* () {
+            checks += 1;
+            yield* Effect.sleep("1250 millis");
+            return true;
+          }),
+      );
+      for (const [table, column, id, action, reason] of [
+        [
+          "handle_quotes",
+          "quote_id",
+          quote.quote_id,
+          () => delayed.createReservation(reservationInput(buyer, quote, "expired-after-wait")),
+          "quote_expired",
+        ],
+        [
+          "handle_reservations",
+          "reservation_id",
+          pending.reservation.reservation_id,
+          () =>
+            delayed.submitFreeClaim(claimInput(buyer, pending.reservation, "expired-after-wait")),
+          "reservation_expired",
+        ],
+      ] as const) {
+        // Fixture corruption shortens only the deadline; it never changes the
+        // request's pinned hash. The production write must be refused.
+        await admin.query("SET session_replication_role = replica");
+        try {
+          await admin.query(
+            `UPDATE ${table} SET expires_at=clock_timestamp()+interval '1 second' WHERE ${column}=$1`,
+            [id],
+          );
+        } finally {
+          await admin.query("SET session_replication_role = origin");
+        }
+        const before = await snapshot(admin);
+        const expectedChecks = checks + 1;
+        const refusal = await failureOf(action());
+        expect(refusal).toEqual(rejected(reason));
+        expect(checks).toBe(expectedChecks);
+        expect(await snapshot(admin)).toEqual(before);
+        expect(
+          (await admin.query(`SELECT status FROM ${table} WHERE ${column}=$1`, [id])).rows[0]
+            ?.status,
+        ).toBe(table === "handle_quotes" ? "quoted" : "reserved");
+      }
+    });
+    completed++;
+  }, 20_000);
+
   test("projects the enabled Spaces offering and owner setup without changing HNS reads", async () => {
     await withSchema(async (admin, connection) => {
       await seedSpacesSale(admin, connection);

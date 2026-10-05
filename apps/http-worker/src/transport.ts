@@ -1097,6 +1097,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             binding.name === "GetPublicHomeFeed" ||
             binding.name === "GetPublicPostSitemap" ||
             binding.name === "GetTrendingSongs" ||
+            binding.name === "ListCommunityHandleOfferings" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||
