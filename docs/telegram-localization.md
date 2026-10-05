@@ -8,10 +8,14 @@ bots offer browsing and help without advertising disabled practice.
 
 ## Preference authority
 
-A saved explicit bot interface choice wins. Otherwise a supported private
-account UI preference wins after a current bot grant, account association and
-active persona/community binding; then a supported Telegram language, a saved
-automatic choice, and English. Only a proven private sender can read or change
+A saved explicit bot interface choice wins. Otherwise a supported Telegram
+language wins, followed by a saved automatic bot choice, a supported private
+account UI preference, and English. Account preferences are accessible only
+after a current bot grant, account association and active persona/community
+binding. Linking an English website account cannot replace a saved Russian or
+Georgian bot language, including on a callback without a Telegram language tag.
+An automatic suggestion remains automatic; /start never invents explicit consent
+to a language choice. Only a proven private sender can read or change
 the bot choice. Preferences are scoped to community, stable bot ID and sender;
 same-bot token/ingress rotation preserves them, while another bot cannot read
 them. Writes from a stale bot epoch fail. Receipt timestamps fence reordered
@@ -29,16 +33,43 @@ original language so delivery retries do not change an accepted reply.
 
 Interface language, account Study helper language and exercise learning language
 remain separate. Interface changes never write account preferences or exercise
-targets. Settings show the saved helper code and point to Pirate to manage it.
+targets. Settings show an owned localized name for English, Russian, Georgian,
+Chinese and Arabic helpers and point to Pirate to manage the preference. Other
+languages safely retain the saved code. These labels do not qualify exercises.
 This pilot practices English read-aloud lines; Russian/Georgian translation
 exercises still require their separate corpus qualification. English song lines,
 recognized answers, song titles, persona labels and identifiers remain data.
 
 ## Deployment and external metadata
 
-Apply migration 0240, the generated baseline and bounded preference-table role
-access before deploying this change to any enabled Telegram bot. The activation
-preflight requires SELECT/INSERT/UPDATE and rejects DELETE/TRUNCATE and
+Deploy in this order through the activation coordinator:
+
+1. Read current staging serving identities, enabled flags and the actual runtime
+   database role through managed workflows; capture no secret values. Confirm
+   no competing staging writer before mutation.
+2. Apply migration 0240 through the migration runner. The generated baseline
+   and reset are for new/test schemas; do not run them over the live database.
+3. Apply bounded preference-table permissions to the actual serving role:
+   SELECT/INSERT/UPDATE allowed, DELETE/TRUNCATE refused. Use the reviewed
+   roles.sql.example block with the verified role. Default DELETE grants on
+   new tables must be revoked before upload. If inherited role membership still
+   confers DELETE, stop and prepare a separate scoped privilege change; do not
+   revoke permissions on unrelated tables or weaken default grants globally.
+4. Run bun run db:preflight:telegram-activation using the same serving-role
+   database connection as the candidate Workers. Require successful admission
+   for both HTTP and jobs, including discovery-only operation.
+5. Deploy reviewed source through scripts/deploy-worker-with-provenance.ts
+   and capture fresh serving identities, bot delivery and language behavior.
+
+This source review changes no serving grants, credentials or runtime flags.
+Credential creation/rotation or permission changes remain subject to workspace
+external-state policy; the activation owner must resolve applicable authority
+for the exact operation before execution. Existing standing authorization is
+not replaced with a new blanket approval requirement by this review.
+
+Uploading first is unsafe: the new runtime guard fails closed when the table
+is absent or DELETE remains effective, which would interrupt an enabled bot.
+The activation preflight requires SELECT/INSERT/UPDATE and rejects DELETE/TRUNCATE and
 owner-equivalent permissions on the preference table. Existing linking and
 practice admission checks remain in force.
 

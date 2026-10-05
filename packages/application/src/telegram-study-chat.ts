@@ -109,7 +109,6 @@ export async function handleTelegramStudyChat(
           t("complete", {
             prefix,
             persona: personaLabel,
-            personaId: session.persona_id,
             correct: session.progress.first_pass_correct,
             total: session.items.length,
             required: session.progress.required_correct,
@@ -135,12 +134,10 @@ export async function handleTelegramStudyChat(
         t("card", {
           prefix,
           persona: personaLabel,
-          personaId: session.persona_id,
           total: session.items.length,
           required: session.progress.required_correct,
           resolved: session.lesson.resolved_card_count,
           correct: session.progress.first_pass_correct,
-          presentation: current.presentation_number,
           line: item.presentation.reference_text,
         }),
       ),

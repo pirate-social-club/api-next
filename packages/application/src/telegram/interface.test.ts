@@ -6,6 +6,7 @@ import {
   type TelegramLanguageContext,
   type TelegramLanguagePreference,
   telegramCatalogs,
+  telegramHelperLanguageName,
   telegramLocale,
 } from "./copy.ts";
 import {
@@ -48,6 +49,7 @@ function fixture() {
   let sequence = 0;
   let current: InboxRecord;
   const preferences = new Map<string, TelegramLanguagePreference>();
+  let accountLocale: string | null = null;
   const deliveries: { text: string; keyboard?: unknown }[] = [];
   const started = new Set<string>();
   let writes = 0,
@@ -59,7 +61,7 @@ function fixture() {
     integration: async () => integration,
     learnerLanguageContext: async (sender) => {
       reads++;
-      return context(preferences.get(key(sender)) ?? null);
+      return { ...context(preferences.get(key(sender)) ?? null), accountLocale };
     },
     saveLearnerLanguage: async (sender, _id, locale, explicit) => {
       writes++;
@@ -131,7 +133,16 @@ function fixture() {
     await processTelegramInbox({ ...services }, current.id);
     return deliveries.at(-1);
   }
-  return { run, services, deliveries, preferences, counts: () => ({ writes, reads }) };
+  return {
+    run,
+    services,
+    deliveries,
+    preferences,
+    counts: () => ({ writes, reads }),
+    linkAccount: (locale: string) => {
+      accountLocale = locale;
+    },
+  };
 }
 
 test.each([
@@ -148,10 +159,37 @@ test.each([undefined, "", "ru_Latn", "ru-Latn", "ka-Cyrl", "en-Cyrl", "fr", "x",
 test("explicit bot language wins over account and Telegram without binding helper preferences", () => {
   const choice = { ...context({ locale: "en", explicit: true }), accountLocale: "ka" };
   expect(resolveTelegramLocale(choice, "ru")).toBe("en");
-  expect(resolveTelegramLocale({ ...choice, preference: null }, "ru")).toBe("ka");
+  expect(resolveTelegramLocale({ ...choice, preference: null }, "ru")).toBe("ru");
+  expect(resolveTelegramLocale({ ...choice, preference: null }, undefined)).toBe("ka");
   expect(resolveTelegramLocale(context({ locale: "ka", explicit: false }), undefined)).toBe("ka");
   expect(resolveTelegramLocale(context(), undefined)).toBe("en");
   expect(choice.helperLanguage).toBe("zh-Hans");
+});
+test.each(["ru", "ka"] as const)(
+  "linking an English website account keeps the %s bot language",
+  async (locale) => {
+    const f = fixture();
+    await f.run("/start", locale);
+    f.linkAccount("en");
+    expect((await f.run("/preferences", locale))?.text).toBeDefined();
+    expect(f.preferences.get("community:123:7")).toEqual({ locale, explicit: false });
+    const returned = await f.run("tg-menu:settings", undefined, true);
+    expect(returned?.text).not.toContain("Interface language:");
+    expect(f.preferences.get("community:123:7")).toEqual({ locale, explicit: false });
+  },
+);
+test("helper names are readable without changing the saved language value", () => {
+  expect(telegramHelperLanguageName("ru", "zh-Hans").toLowerCase()).toContain("китай");
+  expect(telegramHelperLanguageName("ka", "ru")).not.toBe("ru");
+  expect(telegramHelperLanguageName("en", null)).toBe("Not selected");
+  expect(telegramHelperLanguageName("en", "malformed_tag")).toBe("malformed_tag");
+});
+test("an English account preference does not hide the Telegram language suggestion", async () => {
+  const f = fixture();
+  f.linkAccount("en");
+  const welcome = await f.run("/start", "ru");
+  expect(JSON.stringify(welcome?.keyboard)).toContain("Русский · рекомендуемый");
+  expect(f.preferences.get("community:123:7")).toEqual({ locale: "ru", explicit: false });
 });
 test("all catalogs preserve key and interpolation parameter parity", () => {
   const slots = (value: string) =>
@@ -208,7 +246,7 @@ test("pre-link language callbacks bypass lesson state and paid providers", async
   const choice = await f.run("tg-language:ka", undefined, true);
   expect(choice?.text).toContain("შენახულია");
   expect(JSON.stringify(choice?.keyboard)).toContain("tg-menu:study");
-  expect((await f.run("/preferences", "ru"))?.text).toContain("zh-Hans");
+  expect((await f.run("/preferences", "ru"))?.text).toContain("ჩინური");
 });
 test("foreign-chat and obsolete-epoch callbacks cannot change language", async () => {
   const f = fixture();

@@ -5,7 +5,7 @@ import {
 } from "@pirate/domain/telegram";
 import { Schema } from "effect";
 import { handleTelegramStudyChat } from "../telegram-study-chat.ts";
-import { TelegramLocale, telegramLanguageNames } from "./copy.ts";
+import { TelegramLocale, telegramHelperLanguageName, telegramLanguageNames } from "./copy.ts";
 import { telegramBotCredentials } from "./delivery.ts";
 import { interfaceKeyboard, learnerInterface, TelegramMenu } from "./interface.ts";
 import { verifyTelegramChannel } from "./setup.ts";
@@ -112,7 +112,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
             menu.value === "settings"
               ? ui.text("preferences", {
                   interface: telegramLanguageNames[ui.locale],
-                  helper: ui.context.helperLanguage ?? ui.text("unset"),
+                  helper: telegramHelperLanguageName(ui.locale, ui.context.helperLanguage),
                 })
               : ui.text(study ? "studyHelp" : "discoveryHelp"),
           ),
@@ -242,9 +242,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
           ui.locale,
           Boolean(study),
           ui.context.resumeAvailable,
-          ui.context.preference?.explicit || ui.context.accountLocale
-            ? undefined
-            : from?.language_code,
+          ui.context.preference?.explicit ? undefined : from?.language_code,
         ),
       });
     return;
@@ -254,7 +252,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
       ...textMessage(
         t("preferences", {
           interface: telegramLanguageNames[ui.locale],
-          helper: ui.context.helperLanguage ?? t("unset"),
+          helper: telegramHelperLanguageName(ui.locale, ui.context.helperLanguage),
         }),
       ),
       keyboard: interfaceKeyboard(ui.locale, Boolean(study), ui.context.resumeAvailable),
