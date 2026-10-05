@@ -89,7 +89,8 @@ Run preparation readback with `bun run e2e:rewards`. Set
 `REWARDS_E2E_EVIDENCE_ROOT` to the durable authority package containing
 owner-authorization.json, database-identity.json and spending-ledger. Set
 `REWARDS_E2E_SOLID_ROOT` to the canonical Solid repository and
-`REWARDS_E2E_KARAOKE_WAV` to the accepted fixture microphone WAV. The command
+`REWARDS_E2E_KARAOKE_WAV` to the Karaoke microphone fixture built by
+`bun scripts/rewards-e2e/karaoke-speech-fixture.mjs /absolute/output.wav`. The command
 loads both approved Infisical folders in memory. Run `bun run e2e:rewards --execute`
 to execute win and loss sequentially on the same committed, serving API and
 Solid release. An interrupted invocation retains its lock and all single-use
@@ -151,3 +152,17 @@ The managed ETH float is reserved against the authorization once, under the
 run then reserves only what it sends: the principal, the prize when the fixture
 needs funding, and a fee ceiling per fixture transaction. Payouts and refunds
 redistribute those amounts and are not reserved again.
+
+The Karaoke microphone fixture is synthetic speech: each lyric line of the
+fixture song in `tests/rewards-e2e/karaoke-lines.json`, spoken at its own
+timestamp. The original recording played into the microphone scored 3533 of
+10000 because the scoring provider cannot transcribe it. The page opens the
+microphone and then counts in for 2.55 to 2.81 seconds before the song starts,
+and Chromium's fake microphone plays its file from the moment the stream
+opens, so the speech is delayed by 2800 milliseconds. An unfunded take with
+this fixture scored 9220 with all 28 lines scored. It is a real take through
+the real provider and proves the automated qualification path, not human
+microphone quality. The browser pins the generated file's digest; rebuild it
+with the generator and update the pin together if the song, its timings or
+the count-in change. Browser contexts use the isolated site as their base
+address, because the activity and community routes are relative.
