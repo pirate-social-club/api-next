@@ -74,6 +74,58 @@ export async function runScenario(options) {
     passed = false,
     failure;
   let failureStage;
+  let jobsVersionId;
+  /**
+   * The one gate for settling a purchased drawing, in the run and in recovery:
+   * the pinned jobs Worker's first receipt read and an independently canonical
+   * purchase receipt. Missing or uncertain evidence throws and nothing is sent.
+   */
+  const proveAdvanceReady = async (purchase, deadline) => {
+    if (!observer || jobsVersionId === undefined) throw Error("Receipt evidence unavailable");
+    await observer.flush();
+    const identity = {
+      chainId: 84532,
+      drawingId,
+      ticketId: purchase.ticket_id,
+      transactionHash: purchase.transaction_hash,
+      jobsVersionId,
+      effectId: purchase.effect_id,
+      attestationId: fixtureAttestation,
+    };
+    const firstRead = firstJobsReceiptRead(observer.capture, identity);
+    const receipt = await canonicalFixtureTransaction(
+      run.chain,
+      identity.transactionHash,
+      deadline,
+    );
+    const head = await run.chain.publicClient.getBlockNumber();
+    const publicProof = {
+      chainId: 84532,
+      transactionHash: receipt.transactionHash,
+      status: receipt.status,
+      blockNumber: receipt.blockNumber.toString(),
+      blockHash: receipt.blockHash,
+      canonicalBlockHash: receipt.blockHash,
+      confirmations: Number(head - receipt.blockNumber + 1n),
+      expectedPurchaseLogCount: expectedTicketLogs(receipt, identity),
+    };
+    const confirmed = {
+      status: purchase.state,
+      effectId: purchase.effect_id,
+      drawingId: purchase.drawing_id,
+      ticketId: purchase.ticket_id,
+      transactionHash: purchase.transaction_hash,
+    };
+    const assertReady = () =>
+      assertDrawingAdvanceReady({
+        purchase: confirmed,
+        firstRead,
+        receipt: publicProof,
+        expected: identity,
+      });
+    assertReady();
+    return { identity, firstRead, publicProof, confirmed, assertReady };
+  };
   const stageSave = (name, data) => {
     stage = name;
     saveRunEvidence(run, name, data);
@@ -205,6 +257,7 @@ export async function runScenario(options) {
     await setIsolatedRewardsFlag("http", "true", run.apiSource);
     flagsEnabled = true;
     const jobs = await setIsolatedRewardsFlag("jobs", "true", run.apiSource);
+    jobsVersionId = jobs.versionId;
     const resumed = await options.db.control(false, initial.revision, `Isolated ${run.runId}`);
     controlRevision = resumed.control.revision;
     stage = "placeholder-observation";
@@ -428,56 +481,16 @@ export async function runScenario(options) {
       check,
     );
     const purchase = purchased.purchases[0];
-    await observer.flush();
-    const identity = {
-      chainId: 84532,
-      drawingId,
-      ticketId: purchase.ticket_id,
-      transactionHash: purchase.transaction_hash,
-      jobsVersionId: jobs.versionId,
-      effectId: purchase.effect_id,
-      attestationId: fixtureAttestation,
-    };
-    const firstRead = firstJobsReceiptRead(observer.capture, identity);
-    const receipt = await canonicalFixtureTransaction(
-      run.chain,
-      identity.transactionHash,
-      run.deadline,
-    );
-    const head = await run.chain.publicClient.getBlockNumber();
-    const publicProof = {
-      chainId: 84532,
-      transactionHash: receipt.transactionHash,
-      status: receipt.status,
-      blockNumber: receipt.blockNumber.toString(),
-      blockHash: receipt.blockHash,
-      canonicalBlockHash: receipt.blockHash,
-      confirmations: Number(head - receipt.blockNumber + 1n),
-      expectedPurchaseLogCount: expectedTicketLogs(receipt, identity),
-    };
-    const confirmed = {
-      status: purchase.state,
-      effectId: purchase.effect_id,
-      drawingId: purchase.drawing_id,
-      ticketId: purchase.ticket_id,
-      transactionHash: purchase.transaction_hash,
-    };
-    assertDrawingAdvanceReady({
-      purchase: confirmed,
-      firstRead,
-      receipt: publicProof,
-      expected: identity,
+    const proof = await proveAdvanceReady(purchase, run.deadline);
+    stageSave("purchase-first-read", {
+      purchase: proof.confirmed,
+      firstRead: proof.firstRead,
+      receipt: proof.publicProof,
     });
-    stageSave("purchase-first-read", { purchase: confirmed, firstRead, receipt: publicProof });
     stage = "drawing-advancement";
-    await advancePurchasedDrawing(run.chain, run, drawingId, identity.ticketId, async () => {
+    await advancePurchasedDrawing(run.chain, run, drawingId, proof.identity.ticketId, async () => {
       await check();
-      assertDrawingAdvanceReady({
-        purchase: confirmed,
-        firstRead,
-        receipt: publicProof,
-        expected: identity,
-      });
+      proof.assertReady();
     });
     if (run.outcome === "win") {
       stage = "participant-claims-and-onward-sends";
@@ -563,16 +576,22 @@ export async function runScenario(options) {
           // The create click can land without its response; then only the stack inventory is known.
           readInventory: () => (legId ? run.inventory() : null),
           readShutdownInventory: () => readShutdownInventory(options.db),
-          advance: (purchase) =>
-            advancePurchasedDrawing(
+          // Recovery settles a ticket only on the same evidence as the run itself.
+          advance: async (purchase) => {
+            const proof = await proveAdvanceReady(purchase, recoveryRun.deadline);
+            return advancePurchasedDrawing(
               run.chain,
               recoveryRun,
               drawingId,
-              purchase.ticket_id,
-              recoveryCheck,
+              proof.identity.ticketId,
+              async () => {
+                await recoveryCheck();
+                proof.assertReady();
+              },
               // The contract refuses a second settlement, so a separate marker cannot replay one.
               "recover-advance-purchased-drawing",
-            ),
+            );
+          },
           // A failed run may hold one share, so its credit is not the equal split.
           claim: (role, inventory) =>
             claimParticipantCredit(
