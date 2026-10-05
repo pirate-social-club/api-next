@@ -20,6 +20,7 @@ import {
   GetCommunityCreationIntent,
   UpdateCommunityCreationIntent,
 } from "./community-creation.ts";
+import { ListMyModerationCommunities, ListPopularCommunities } from "./community-navigation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
 import {
@@ -77,6 +78,7 @@ import {
   RetirePersona,
 } from "./personas.ts";
 import { platformPirateHandleRegistry } from "./platform-pirate-handles.ts";
+import { GetPublicProfileActivity } from "./profile-activity.ts";
 import {
   GetPublicPostBySlug,
   GetPublicPostCanonicalRouteById,
@@ -151,6 +153,9 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  GetPublicProfileActivity,
+  ListPopularCommunities,
+  ListMyModerationCommunities,
   ...telegramLinkingRegistry,
   ReserveAvatarUpload,
   FinalizeAvatarUpload,

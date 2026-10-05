@@ -73,6 +73,7 @@ import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platfor
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
 import { makeControlPlaneCommunityModerationStore } from "@pirate/platform-cf/community-moderation-repository";
+import { makeControlPlaneCommunityNavigationStore } from "@pirate/platform-cf/community-navigation-repository";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -168,6 +169,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlaneProfileActivityStore } from "@pirate/platform-cf/profile-activity-repository";
 import { makeControlPlanePublicCommunityThreadsStore } from "@pirate/platform-cf/public-community-threads-repository";
 import { makeControlPlanePublicPostSlugStore } from "@pirate/platform-cf/public-post-slug-repository";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
@@ -252,6 +254,7 @@ import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route
 import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import { makeLegacyModerationActionCompatibility } from "./community-moderation-compatibility.ts";
+import { makeCommunityNavigationHandlers } from "./community-navigation-handlers.ts";
 import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
@@ -282,6 +285,7 @@ import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.t
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makeProfileActivityHandler } from "./profile-activity-handler.ts";
 import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
@@ -1853,6 +1857,11 @@ export async function createProductionHttpWorker(
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
       ...makeSongLibraryHandlers(makeControlPlaneSongLibraryStore(controlPlane)),
+      GetPublicProfileActivity: makeProfileActivityHandler(
+        makeControlPlaneProfileActivityStore(controlPlane),
+        contentStore,
+      ),
+      ...makeCommunityNavigationHandlers(makeControlPlaneCommunityNavigationStore(controlPlane)),
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,
