@@ -3,6 +3,7 @@ import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { fixtureAccounts, signInFixture } from "./browser-accounts.mjs";
+import { karaokeSpeechSha256 } from "./karaoke-speech-fixture.mjs";
 import { isolatedOrigins } from "./worker-plan.mjs";
 
 export async function closeOwnedBrowsers(browsers, report, save) {
@@ -30,10 +31,7 @@ export async function prepareFixtureBrowsers(directory, audioPaths, verifyPrepar
     )
       throw new Error("Fixture microphone must be a bounded WAV file");
     audio[role] = { path, sha256: createHash("sha256").update(bytes).digest("hex") };
-    if (
-      role === "karaoke" &&
-      audio[role].sha256 !== "1b229646580d7121064d75b3c17bc1c623dc253cb8b510a2ef919c3d22901208"
-    )
+    if (role === "karaoke" && audio[role].sha256 !== karaokeSpeechSha256)
       throw new Error("Accepted Karaoke microphone fixture differs");
   }
   const marker = resolve(directory, "browser-host.json");
@@ -57,6 +55,8 @@ export async function prepareFixtureBrowsers(directory, audioPaths, verifyPrepar
       });
       browsers.push(browser);
       const context = await browser.newContext({
+        // Activity and community routes are relative; resolve them on the isolated site only.
+        baseURL: isolatedOrigins.web,
         viewport: { width: 1440, height: 1000 },
         timezoneId: "UTC",
         permissions: ["microphone"],
