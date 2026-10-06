@@ -409,6 +409,8 @@ TRUNCATE TABLE
   "song_streak_day_activities",
   "song_streak_days",
   "song_streaks",
+  "spaces_community_route_attachments",
+  "spaces_community_route_renewals",
   "spaces_external_conflict_observations",
   "spaces_final_conflict_evidence",
   "spaces_final_issuance_evidence",

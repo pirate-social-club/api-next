@@ -3,17 +3,26 @@ import type {
   SpacesReconciliationStore,
   SpacesSaleNamespaceStore,
 } from "@pirate/application";
+import { ControlPlaneDb } from "@pirate/application";
 import type { JobsWorkerConfigValue } from "@pirate/platform-cf/config";
 import type { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import {
+  renewDueSpacesRouteBindings,
+  type SpacesRouteRenewalOutcome,
+} from "@pirate/platform-cf/spaces-community-route-attachment-repository";
 import { makeSpacesFinalIssuanceVerifier } from "@pirate/platform-cf/spaces-final-issuance-verifier";
 import type { SpacesRootAuthorityObserver } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { makeControlPlaneSpacesReconciliationStore } from "@pirate/platform-cf/spaces-reconciliation-repository";
-import { makeSpacesRootAuthorityObserver } from "@pirate/platform-cf/spaces-root-authority-observer";
+import {
+  makeSpacesRootAuthorityObserver,
+  makeSpacesRootRouteObserver,
+} from "@pirate/platform-cf/spaces-root-authority-observer";
 import {
   makeSpacesRootObservationTargets,
   type SpacesRootObservationTargets,
 } from "@pirate/platform-cf/spaces-root-observation-targets";
 import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
+import { Effect } from "effect";
 
 export type SpacesReconciliationBindings = Readonly<{
   SPACES_RECONCILIATION_ENABLED?: string;
@@ -32,6 +41,8 @@ export type SpacesReconciliationComposition = Readonly<{
     observer: SpacesRootAuthorityObserver;
     saleNamespaces: SpacesSaleNamespaceStore;
   }>;
+  /** Renews live Spaces community addresses; independent of issuance state. */
+  renewRoutes: () => Promise<readonly SpacesRouteRenewalOutcome[]>;
   overdueThresholdSeconds: number;
   measurementReference: string;
 }>;
@@ -64,6 +75,7 @@ export function makeSpacesReconciliationComposition(
     accessClientSecret: bindings.SPACES_VERIFIER_ACCESS_CLIENT_SECRET ?? "",
     bearerToken: bindings.SPACES_VERIFIER_BEARER_TOKEN ?? "",
   };
+  const routeObserver = makeSpacesRootRouteObserver(credentials);
   return {
     store: makeControlPlaneSpacesReconciliationStore(runtime),
     verifier: makeSpacesFinalIssuanceVerifier(credentials),
@@ -72,6 +84,16 @@ export function makeSpacesReconciliationComposition(
       observer: makeSpacesRootAuthorityObserver(credentials),
       saleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(runtime),
     },
+    renewRoutes: () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* Effect.tryPromise({
+            try: () => renewDueSpacesRouteBindings({ db, observer: routeObserver, limit: 4 }),
+            catch: (error) => error,
+          });
+        }).pipe(Effect.provide(runtime)),
+      ),
     overdueThresholdSeconds,
     measurementReference,
   };

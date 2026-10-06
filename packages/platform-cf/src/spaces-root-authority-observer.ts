@@ -4,8 +4,27 @@ import {
   parseSpacesRootAuthorityEvidenceV1,
   SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES,
 } from "./spaces-root-authority-evidence.ts";
+import {
+  parseSpacesRootRouteEvidenceV1,
+  SPACES_ROOT_ROUTE_MAX_RESPONSE_BYTES,
+  type SpacesRootRouteEvidenceV1,
+} from "./spaces-root-route-evidence.ts";
 
 const URL = "https://spaces-verifier.pirate.sc/v1/observe-root-authority";
+const ROUTE_URL = "https://spaces-verifier.pirate.sc/v1/observe-root-route";
+
+type Observation<Evidence> =
+  | Readonly<{ kind: "pending" }>
+  | Readonly<{ kind: "verified"; bytes: Uint8Array; evidence: Evidence }>;
+type ObserveInput = Parameters<SpacesRootAuthorityObserver["observe"]>[0];
+
+/** Ownership-only observation for community addressing; no issuance state. */
+export type SpacesRootRouteObserver = Readonly<{
+  observe: (
+    input: ObserveInput,
+    signal?: AbortSignal,
+  ) => Promise<Observation<SpacesRootRouteEvidenceV1>>;
+}>;
 
 const failure = (phase: string, details: Readonly<Record<string, string | number | null>>) => {
   // Never record the Access token, bearer token, signature, or verifier body.
@@ -24,6 +43,42 @@ export function makeSpacesRootAuthorityObserver(
   fetchImpl: typeof fetch = fetch,
   timeoutMilliseconds = 20_000,
 ): SpacesRootAuthorityObserver {
+  return makeObserver(
+    URL,
+    SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES,
+    parseSpacesRootAuthorityEvidenceV1,
+    credentials,
+    fetchImpl,
+    timeoutMilliseconds,
+  );
+}
+
+/** Same transport and credentials, but the verifier's ownership-only route. */
+export function makeSpacesRootRouteObserver(
+  credentials: SpacesRootAuthorityCredentials,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMilliseconds = 20_000,
+): SpacesRootRouteObserver {
+  return makeObserver(
+    ROUTE_URL,
+    SPACES_ROOT_ROUTE_MAX_RESPONSE_BYTES,
+    parseSpacesRootRouteEvidenceV1,
+    credentials,
+    fetchImpl,
+    timeoutMilliseconds,
+  );
+}
+
+function makeObserver<Evidence>(
+  url: string,
+  maxResponseBytes: number,
+  parse: (bytes: Uint8Array, canonicalRoot: string, signatureExpected: boolean) => Evidence,
+  credentials: SpacesRootAuthorityCredentials,
+  fetchImpl: typeof fetch,
+  timeoutMilliseconds: number,
+): Readonly<{
+  observe: (input: ObserveInput, signal?: AbortSignal) => Promise<Observation<Evidence>>;
+}> {
   if (!credentials.accessClientId || !credentials.accessClientSecret || !credentials.bearerToken) {
     throw new TypeError("Spaces root verifier credentials are incomplete");
   }
@@ -34,16 +89,16 @@ export function makeSpacesRootAuthorityObserver(
   )
     throw new TypeError("Spaces verifier deadline is invalid");
   const collect = async (
-    input: Parameters<SpacesRootAuthorityObserver["observe"]>[0],
+    input: ObserveInput,
     signal: AbortSignal,
-  ): Promise<Awaited<ReturnType<SpacesRootAuthorityObserver["observe"]>>> => {
+  ): Promise<Observation<Evidence>> => {
     const challenge = input.digestHex !== undefined && input.signatureHex !== undefined;
     if ((input.digestHex === undefined) !== (input.signatureHex === undefined)) {
       throw new TypeError("Incomplete Spaces root challenge");
     }
     let response: Response;
     try {
-      response = await fetchImpl(URL, {
+      response = await fetchImpl(url, {
         method: "POST",
         redirect: "manual",
         headers: {
@@ -94,7 +149,7 @@ export function makeSpacesRootAuthorityObserver(
         const result = await reader.read();
         if (result.done) break;
         total += result.value.byteLength;
-        if (total > SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES) {
+        if (total > maxResponseBytes) {
           cancel();
           throw new Error("Spaces root verifier response exceeds bound");
         }
@@ -114,7 +169,7 @@ export function makeSpacesRootAuthorityObserver(
       return {
         kind: "verified",
         bytes,
-        evidence: parseSpacesRootAuthorityEvidenceV1(bytes, input.canonicalRoot, challenge),
+        evidence: parse(bytes, input.canonicalRoot, challenge),
       };
     } catch (error) {
       failure("evidence", {

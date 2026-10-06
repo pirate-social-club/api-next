@@ -48,7 +48,7 @@ for (const worker of ["http", "jobs"] as const) {
       Object.keys(staging.vars).length +
       new Set([...staging.secrets.required, "TELEGRAM_SECRETS_JSON"]).size;
     expect(total).toBeLessThanOrEqual(128);
-    expect(total).toBe(worker === "http" ? 124 : 47);
+    expect(total).toBe(worker === "http" ? 125 : 47);
     expect(telegramActivationBinding(JSON.stringify(config), "staging", worker === "http")).toBe(
       true,
     );
