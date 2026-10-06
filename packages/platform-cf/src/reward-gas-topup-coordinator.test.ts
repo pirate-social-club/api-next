@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  RewardGasTopupCandidate,
-  RewardGasTopupPreparedEffect,
-  RewardGasTopupProgress,
-  RewardGasTopupSendStore,
+import {
+  type RewardGasTopupCandidate,
+  type RewardGasTopupPreparedEffect,
+  type RewardGasTopupProgress,
+  type RewardGasTopupSendStore,
+  RewardGasTopupStorageFailed,
+  RewardOperationsPaused,
 } from "@pirate/application";
 import { Effect } from "effect";
 import { type Hex, keccak256, parseTransaction } from "viem";
@@ -38,6 +40,12 @@ function fixture(
   overrides: Partial<RewardGasTopupRpc> = {},
   candidateOverrides: Partial<RewardGasTopupCandidate> = {},
   payoutRecipientConfirmed = true,
+  options: {
+    /** A run lease the test can let lapse, optionally right after a store step. */
+    lease?: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
+    /** Makes the record of a submission fail, as a lost database write would. */
+    record?: { fail: boolean };
+  } = {},
 ) {
   const calls: string[] = [];
   let progress: RewardGasTopupProgress | null = null;
@@ -59,11 +67,13 @@ function fixture(
           effectVersion: 2,
         };
         progress = { state: "nonce_reserved", reservation };
+        if (options.lease?.lapseAfter === "reserve") options.lease.live = false;
         return reservation;
       }),
     prepare: (input) =>
       Effect.sync(() => {
         calls.push("prepare");
+        if (options.lease?.lapseAfter === "prepare") options.lease.live = false;
         progress = {
           ...input.reservation,
           state: "prepared",
@@ -73,15 +83,23 @@ function fixture(
         };
       }),
     recordSubmission: (input) =>
-      Effect.sync(() => {
-        calls.push(`submission:${input.outcome}:${input.failureReason ?? "-"}`);
-        const prepared = progress as RewardGasTopupPreparedEffect;
-        progress = {
-          ...prepared,
-          state: input.outcome === "accepted" ? "broadcast_pending" : "reconciliation_required",
-          transactionHash: input.transactionHash,
-        };
-      }),
+      Effect.suspend(() =>
+        options.record?.fail
+          ? Effect.fail(new RewardGasTopupStorageFailed({ reason: "outcome-unknown" }))
+          : Effect.void,
+      ).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            calls.push(`submission:${input.outcome}:${input.failureReason ?? "-"}`);
+            const prepared = progress as RewardGasTopupPreparedEffect;
+            progress = {
+              ...prepared,
+              state: input.outcome === "accepted" ? "broadcast_pending" : "reconciliation_required",
+              transactionHash: input.transactionHash,
+            };
+          }),
+        ),
+      ),
     requireReconciliation: (input) =>
       Effect.sync(() => void calls.push(`reconcile:${input.reason}`)),
     confirm: (input) => Effect.sync(() => void calls.push(`confirm:${input.confirmations}`)),
@@ -110,6 +128,14 @@ function fixture(
     ...overrides,
   };
   const coordinator = makeRewardGasTopupCoordinator({
+    authority: {
+      ensure: () =>
+        Effect.suspend(() =>
+          options.lease === undefined || options.lease.live
+            ? Effect.void
+            : Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+        ),
+    },
     store,
     rpc,
     signer: makeBaseSepoliaMegapotV2PrivateKeySigner({ privateKey: KEY, expectedAddress: SIGNER }),
@@ -132,7 +158,14 @@ function fixture(
       ...value,
     };
   };
-  return { calls, coordinator, sent, setReceipt, send: () => coordinator.send(current.topupId) };
+  return {
+    calls,
+    coordinator,
+    sent,
+    setReceipt,
+    send: () => coordinator.send(current.topupId),
+    state: () => progress?.state ?? null,
+  };
 }
 
 describe("reward gas top-up coordinator", () => {
@@ -238,5 +271,66 @@ describe("reward gas top-up coordinator", () => {
     run.setReceipt({ status: "reverted" });
     expect((await Effect.runPromise(run.send())).kind).toBe("reverted");
     expect(run.calls).toContain("reverted");
+  });
+});
+
+describe("reward gas top-up under a run lease", () => {
+  const leased = (options: Parameters<typeof fixture>[3]) => fixture({}, {}, true, options);
+  const attempt = (fixture: ReturnType<typeof leased>) =>
+    Effect.runPromise(
+      fixture.send().pipe(
+        Effect.map((value) => value.kind as string),
+        Effect.catch((error) => Effect.succeed(`failed:${(error as { _tag: string })._tag}`)),
+      ),
+    );
+  type Lease = { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
+
+  test("a reservation made before expiry is not signed after it", async () => {
+    const lease: Lease = { live: true, lapseAfter: "reserve" };
+    const fixture = leased({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.state()).toBe("nonce_reserved");
+    // Resumed after expiry: still neither signed nor sent.
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.calls.filter((call) => call === "prepare").length).toBe(0);
+    expect(fixture.sent.length).toBe(0);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("submitted");
+    expect(fixture.calls.filter((call) => call === "prepare").length).toBe(1);
+    expect(fixture.sent.length).toBe(1);
+  });
+
+  test("a signature stored before expiry is not sent after it, and is not recorded as uncertain", async () => {
+    const lease: Lease = { live: true, lapseAfter: "prepare" };
+    const fixture = leased({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.state()).toBe("prepared");
+    expect(fixture.calls.filter((call) => call === "prepare").length).toBe(1);
+    expect(fixture.sent.length).toBe(0);
+    expect(fixture.calls.filter((call) => call.startsWith("submission:"))).toEqual([]);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("submitted");
+    expect(fixture.calls.filter((call) => call === "prepare").length).toBe(1);
+    expect(fixture.sent.length).toBe(1);
+  });
+
+  test("a send that succeeded but was never recorded is recovered after expiry with no signature or send", async () => {
+    const lease: Lease = { live: true };
+    const record = { fail: true };
+    const fixture = leased({ lease, record });
+    expect(await attempt(fixture)).toBe("failed:RewardGasTopupStorageFailed");
+    expect(fixture.sent.length).toBe(1);
+    expect(fixture.state()).toBe("prepared");
+    record.fail = false;
+    lease.live = false;
+    // The transfer is on chain; only the record of sending it was lost.
+    fixture.setReceipt({});
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.calls.filter((call) => call === "prepare").length).toBe(1);
+    expect(fixture.sent.length).toBe(1);
+    expect(fixture.calls.filter((call) => call.startsWith("submission:"))).toHaveLength(1);
   });
 });

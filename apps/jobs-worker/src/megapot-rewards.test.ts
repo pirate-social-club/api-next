@@ -10,6 +10,7 @@ import {
   megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
   observeMegapotDrawingForCycle,
+  pauseOnRunLeaseExpiry,
   resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
@@ -911,4 +912,33 @@ test("a paused approval still runs proven-unsent purchase-window cleanup", async
   expect(result.purchased).toBe(0);
   expect(result.pausedHolds).toBe(1);
   expect(result.failures).toEqual([]);
+});
+
+test("an expired run lease is paused by the job and reported; nothing else is done about it", async () => {
+  expect(await Effect.runPromise(pauseOnRunLeaseExpiry(() => Effect.succeed(false)))).toBeNull();
+  expect(await Effect.runPromise(pauseOnRunLeaseExpiry(() => Effect.succeed(true)))).toMatchObject({
+    key: "megapot-rewards:run-lease-expired",
+    severity: "high",
+  });
+  // A database that cannot be asked is reported and does not fail the cycle.
+  expect(
+    await Effect.runPromise(pauseOnRunLeaseExpiry(() => Effect.fail(new Error("unavailable")))),
+  ).toMatchObject({ key: "megapot-rewards:run-lease-pause-unavailable", severity: "high" });
+});
+
+test("a signature or send without authority is counted as a hold, an unanswered check as a failure", async () => {
+  const { runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime: {
+        ...runtime,
+        payout: () => Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+        refund: () => Effect.fail({ _tag: "RewardRunAuthorityUnavailable" }),
+      },
+    }),
+  );
+  expect(result.pausedHolds).toBe(1);
+  expect(result.failures).toEqual(["RewardRunAuthorityUnavailable"]);
+  expect(result.paid).toBe(0);
 });

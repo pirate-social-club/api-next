@@ -1,7 +1,9 @@
 import type {
   RewardConfirmedPayout,
+  RewardOperationsPaused,
   RewardPayoutCandidate,
   RewardPayoutStore,
+  RewardRunAuthorityUnavailable,
 } from "@pirate/application";
 import { Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
@@ -13,6 +15,7 @@ import {
 } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 type TokenSendCandidate = Omit<
   RewardPayoutCandidate,
@@ -133,6 +136,7 @@ export function makeRewardTokenSendCoordinator<
   readonly store: TokenSendStore<C, Confirmed, StorageFailure>;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;
@@ -147,10 +151,16 @@ export function makeRewardTokenSendCoordinator<
 }): {
   readonly send: (
     id: string,
-  ) => Effect.Effect<TokenSendResult<ConfirmedResult>, StorageFailure | CoordinatorFailure>;
+  ) => Effect.Effect<
+    TokenSendResult<ConfirmedResult>,
+    StorageFailure | CoordinatorFailure | RewardOperationsPaused | RewardRunAuthorityUnavailable
+  >;
   readonly reconcile: (
     effectId: string,
-  ) => Effect.Effect<TokenSendResult<ConfirmedResult>, StorageFailure | CoordinatorFailure>;
+  ) => Effect.Effect<
+    TokenSendResult<ConfirmedResult>,
+    StorageFailure | CoordinatorFailure | RewardOperationsPaused | RewardRunAuthorityUnavailable
+  >;
 } {
   const failed = input.failed;
   const span = input.family === "payout" ? "RewardPayoutCoordinator" : "RewardRefundCoordinator";
@@ -312,6 +322,23 @@ export function makeRewardTokenSendCoordinator<
     sendEffect: TokenSendPrepared<C>,
   ) {
     if (sendEffect.state !== "prepared") return yield* reconcilePrepared(sendEffect);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(input.rpc, sendEffect.signedTransactionHash)) {
+      yield* input.store.recordSubmission({
+        effectId: sendEffect.effectId,
+        transactionHash: sendEffect.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...sendEffect,
+        state: "broadcast_pending",
+        transactionHash: sendEffect.signedTransactionHash,
+      });
+    }
     yield* attest(sendEffect);
     const calldata = encodeMegapotUsdcTransfer(
       sendEffect.destinationAddress,
@@ -325,6 +352,9 @@ export function makeRewardTokenSendCoordinator<
     ) {
       return yield* Effect.fail(failed("receipt_evidence_invalid", "prepare"));
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       input.rpc.sendRawTransaction(sendEffect.signedTransaction as Hex),
     ).pipe(
@@ -388,6 +418,8 @@ export function makeRewardTokenSendCoordinator<
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* Effect.fail(failed("gas_floor_insufficient", "preflight"));
     }
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       input.signer.sign({
         chainId: reservation.chainId,

@@ -20,7 +20,13 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   ...REWARDS_MONEY_TABLES.flatMap((object) =>
     (["DELETE", "TRUNCATE"] as const).map((privilege) => ({ object, privilege, allowed: false })),
   ),
-  ...["reward_operations_control", "reward_operations_control_events"].flatMap((object) => [
+  ...[
+    "reward_operations_control",
+    "reward_operations_control_events",
+    // The run lease is read by the runtime and written only by its functions.
+    "reward_operations_run_lease",
+    "reward_operations_run_lease_events",
+  ].flatMap((object) => [
     { object, privilege: "SELECT" as const, allowed: true },
     ...(["INSERT", "UPDATE"] as const).map((privilege) => ({
       object,
@@ -34,6 +40,18 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     allowed: false,
   },
   { object: "guard_reward_http_admission()", privilege: "EXECUTE", allowed: false },
+  // Acquiring, renewing and releasing a run lease are operator acts. Automation
+  // may only pause on expiry and ask whether it still has authority.
+  ...[
+    "acquire_reward_run_lease_v1(text,integer,integer)",
+    "renew_reward_run_lease_v1(text,bigint,integer)",
+    "release_reward_run_lease_v1(text,bigint)",
+    "guard_reward_run_lease_admission()",
+    "guard_reward_run_lease_signature()",
+  ].map((object) => ({ object, privilege: "EXECUTE" as const, allowed: false })),
+  ...["pause_reward_operations_on_lease_expiry_v1()", "require_reward_run_authority_v1()"].map(
+    (object) => ({ object, privilege: "EXECUTE" as const, allowed: true }),
+  ),
   { object: "wallet_sponsored_sends", privilege: "SELECT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "INSERT", allowed: true },
   { object: "wallet_sponsored_sends", privilege: "UPDATE", allowed: true },

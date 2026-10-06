@@ -8,6 +8,7 @@ import { Data, type Effect } from "effect";
 import { type Hex, keccak256, toBytes } from "viem";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import type { RewardRunAuthority } from "./reward-operations-control.ts";
 import { makeRewardTokenSendCoordinator } from "./reward-token-send-coordinator.ts";
 
 export class RewardRefundCoordinatorFailed extends Data.TaggedError(
@@ -88,6 +89,7 @@ export function makeRewardRefundCoordinator(input: {
   readonly store: RewardRefundStore;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;

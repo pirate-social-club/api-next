@@ -282,6 +282,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     );
   const coordinator = (signer?: MegapotV2TransactionSigner) =>
     makeRewardGasTopupCoordinator({
+      authority: { ensure: () => Effect.void },
       store: makeControlPlaneRewardGasTopupSendStore(layer),
       rpc: chain.rpc,
       signer:

@@ -35,6 +35,7 @@ const baselineSeedTables = [
   "recovery_inspection_cursors",
   "reward_operations_control",
   "reward_operations_control_events",
+  "reward_operations_run_lease",
   "text_moderation_policy_current",
   "text_moderation_policy_revisions",
 ] as const;
