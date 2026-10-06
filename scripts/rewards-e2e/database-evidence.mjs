@@ -40,6 +40,17 @@ export function isolatedDatabase(identity, adminUrl, runtimeUrl) {
       use(adminUrl, false, (db) =>
         setRewardOperationsControl(db, { paused, expectedRevision, reason }),
       ),
+    // What the runtime role itself is told and allowed, for rehearsals. Each
+    // statement is its own transaction and answers with the database's code for
+    // a refusal, or null when it was accepted.
+    asRuntime: async (text, values = []) => {
+      try {
+        await use(runtimeUrl, false, (db) => db.query(text, values));
+        return null;
+      } catch (error) {
+        return typeof error?.code === "string" ? error.code : "unanswered";
+      }
+    },
     // The run lease is an operator act, so it uses the admin role. Each call is
     // one short transaction; a refusal surfaces with the database's own code.
     lease: {

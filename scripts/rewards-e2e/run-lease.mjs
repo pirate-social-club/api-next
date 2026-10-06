@@ -4,6 +4,7 @@
  * is lost: the database refuses once renewals stop, with no help from here.
  * This module only acquires, keeps renewing and releases.
  */
+/** @type {Readonly<{ ttlSeconds: number, renewEveryMs: number, maxSeconds: number }>} */
 export const leaseTiming = Object.freeze({
   // Long enough to miss a renewal or two, short enough to bound what a lost run can admit.
   ttlSeconds: 180,

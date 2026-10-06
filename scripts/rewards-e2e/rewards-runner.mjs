@@ -1,6 +1,6 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadPostgresMigrations } from "../postgres-migrations.ts";
@@ -14,8 +14,13 @@ import {
   runLeaseQuery,
 } from "./database-evidence.mjs";
 import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
+import { rehearseRunLease } from "./lease-rehearsal.mjs";
 import { runScenario } from "./run-scenario.mjs";
-import { inspectIsolatedWorker } from "./runtime-flags.mjs";
+import {
+  disableIsolatedRewards,
+  inspectIsolatedWorker,
+  setIsolatedRewardsFlag,
+} from "./runtime-flags.mjs";
 import { assertPairBudget } from "./spending-ledger.mjs";
 
 /** Enter both existing approved stores without writing credentials to disk or stdout. */
@@ -172,6 +177,82 @@ console.log(
     execute: process.argv.includes("--execute"),
   }),
 );
+if (process.argv.includes("--rehearse-lease")) {
+  // Unfunded: no offer is created and no funds move. It enables the flags and
+  // resumes the brake under a lease, so it takes the same lock as a funded run.
+  const directory = resolve(
+    evidenceRoot,
+    `lease-rehearsal-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+  );
+  mkdirSync(directory, { mode: 0o700 });
+  const lock = resolve(evidenceRoot, "runner-active.json");
+  writeFileSync(
+    lock,
+    JSON.stringify({ directory, apiSource, startedAt: new Date().toISOString() }) + "\n",
+    { flag: "wx", mode: 0o600 },
+  );
+  const identityPath = resolve(evidenceRoot, "database-identity.json");
+  const result = await rehearseRunLease({
+    db,
+    runIdPrefix: `rehearsal-${Date.now()}`,
+    enableFlags: async () => {
+      await setIsolatedRewardsFlag("http", "true", apiSource);
+      await setIsolatedRewardsFlag("jobs", "true", apiSource);
+    },
+    disableFlags: () => disableIsolatedRewards(apiSource),
+    readShutdownInventory: () => readShutdownInventory(db),
+    assertShutdownInventory,
+    record: (entry) =>
+      appendFileSync(resolve(directory, "rehearsal.jsonl"), `${JSON.stringify(entry)}\n`),
+    // A separate process that holds a lease and resumes the brake, then is
+    // killed without warning, as a lost workstation would leave it.
+    spawnHolder: (runId) =>
+      new Promise((accept, reject) => {
+        const child = spawn(
+          "bun",
+          [resolve(import.meta.dir, "lease-holder-child.mjs"), identityPath, runId],
+          { stdio: ["ignore", "pipe", "inherit"], env: process.env },
+        );
+        const exited = new Promise((done) => child.once("exit", done));
+        const timeout = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(Error("Lease holder did not resume in time"));
+        }, 60_000);
+        let seen = "";
+        child.stdout.on("data", (chunk) => {
+          seen += chunk;
+          if (!seen.includes('"kind":"resumed"')) return;
+          clearTimeout(timeout);
+          accept({
+            kill: async () => {
+              child.kill("SIGKILL");
+              await exited;
+            },
+          });
+        });
+        child.once("exit", () => {
+          clearTimeout(timeout);
+          reject(Error("Lease holder exited before resuming"));
+        });
+      }),
+  });
+  writeFileSync(
+    resolve(directory, "rehearsal.json"),
+    JSON.stringify({ ...plan, ...result }, null, 2) + "\n",
+    { flag: "wx", mode: 0o600 },
+  );
+  // The lock is cleared only when the rehearsal passed and left the stack clean.
+  if (result.passed) unlinkSync(lock);
+  console.log(JSON.stringify({ stage: "lease-rehearsal", passed: result.passed, directory }));
+  console.log(
+    JSON.stringify(
+      result.findings.filter((finding) => !finding.ok),
+      null,
+      1,
+    ),
+  );
+  process.exit(result.passed ? 0 : 1);
+}
 if (process.argv.includes("--execute")) {
   const directory = resolve(evidenceRoot, `run-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   mkdirSync(directory, { mode: 0o700 });
