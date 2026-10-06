@@ -19691,9 +19691,14 @@ BEGIN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
   END IF;
   IF lease_record.required IS DISTINCT FROM TRUE THEN RETURN; END IF;
-  SELECT paused INTO operations_paused FROM reward_operations_control WHERE singleton;
+  SELECT paused INTO operations_paused FROM reward_operations_control
+   WHERE singleton FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR SHARE;
   observed_at := clock_timestamp();
-  IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE OR lease_record.run_id IS NULL
+  IF operations_paused IS DISTINCT FROM FALSE OR lease_record.run_id IS NULL
      OR observed_at >= lease_record.expires_at
      OR observed_at >= lease_record.absolute_deadline THEN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';

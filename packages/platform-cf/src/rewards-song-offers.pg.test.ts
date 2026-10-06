@@ -47,7 +47,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 24;
+const testCount = 25;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -2958,6 +2958,123 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           allowance_after_atomic: "100000",
         },
       ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("a required run lease gates real inserts into offers, legs and funding effects", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "run-lease", address("d"));
+      await seedMegapotAuthority(admin);
+      const sqlState = async (work: () => Promise<unknown>) => {
+        try {
+          await work();
+          return null;
+        } catch (error) {
+          return (error as { code?: string }).code ?? "unknown";
+        }
+      };
+      const setPaused = (paused: boolean) =>
+        admin.query(
+          "SELECT set_reward_operations_paused_v1(revision,$1,'run_lease_admission') FROM reward_operations_control WHERE singleton",
+          [paused],
+        );
+      const fundingStore = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const plan = (legId: string, fundingEffectId: string) =>
+        Effect.runPromise(
+          Effect.flip(
+            fundingStore.plan({
+              fundingEffectId,
+              legId,
+              funderAccountId: identity.accountId,
+              senderAddress: address("d"),
+              expectedAmountAtomic: 500n,
+              requiredConfirmations: 3,
+            }),
+          ),
+        ).then(
+          (failure) => (failure as { _tag?: string })._tag ?? "failed",
+          () => null,
+        );
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL pirate.reward_run_lease_requirement_change = 'deployment'");
+      await admin.query("UPDATE reward_operations_run_lease SET required=TRUE WHERE singleton");
+      await admin.query("COMMIT");
+
+      // The brake is running, but no lease is held: the first real offer is refused.
+      // The fixture writes other rows before the offer, so the attempt is rolled back.
+      await admin.query("BEGIN");
+      expect(
+        await sqlState(() =>
+          seedActivePoolLeg(admin, identity, { fallback: false, suffix: "lease-none" }),
+        ),
+      ).toBe("PR001");
+      await admin.query("ROLLBACK");
+      expect(
+        (await admin.query("SELECT count(*)::integer AS offers FROM song_reward_offers")).rows,
+      ).toEqual([{ offers: 0 }]);
+
+      // Under a live lease and a running brake all three tables accept real rows.
+      await setPaused(true);
+      await admin.query("SELECT acquire_reward_run_lease_v1('admission-run-one',600,600)");
+      await setPaused(false);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "lease-live",
+      });
+      expect(await plan(legId, "funding-effect-lease-live")).toBeNull();
+      expect(
+        (
+          await admin.query(
+            `SELECT (SELECT count(*)::integer FROM song_reward_offers) AS offers,
+                    (SELECT count(*)::integer FROM song_reward_offer_legs) AS legs,
+                    (SELECT count(*)::integer FROM song_reward_leg_funding_effects) AS funding`,
+          )
+        ).rows,
+      ).toEqual([{ offers: 1, legs: 1, funding: 1 }]);
+
+      // Once the lease has expired, each table refuses a further real row, though
+      // the brake row still says running and no job has paused it.
+      await admin.query(
+        `UPDATE reward_operations_run_lease
+            SET expires_at = clock_timestamp() - interval '1 second' WHERE singleton`,
+      );
+      expect(await plan(legId, "funding-effect-lease-expired")).toBe("RewardOperationsPaused");
+      const clone = (table: string, key: string, from: string, to: string) =>
+        sqlState(() =>
+          admin.query(
+            `INSERT INTO ${table}
+             SELECT (jsonb_populate_record(source, jsonb_build_object($2::text, $3::text))).*
+               FROM ${table} source WHERE ${key} = $1`,
+            [from, key, to],
+          ),
+        );
+      expect(await clone("song_reward_offers", "offer_id", offerId, "offer-lease-expired")).toBe(
+        "PR001",
+      );
+      expect(await clone("song_reward_offer_legs", "leg_id", legId, "leg-lease-expired")).toBe(
+        "PR001",
+      );
+      expect(
+        await clone(
+          "song_reward_leg_funding_effects",
+          "funding_effect_id",
+          "funding-effect-lease-live",
+          "funding-effect-lease-clone",
+        ),
+      ).toBe("PR001");
+      expect(
+        (
+          await admin.query(
+            `SELECT (SELECT count(*)::integer FROM song_reward_offers) AS offers,
+                    (SELECT count(*)::integer FROM song_reward_offer_legs) AS legs,
+                    (SELECT count(*)::integer FROM song_reward_leg_funding_effects) AS funding,
+                    (SELECT paused FROM reward_operations_control) AS paused`,
+          )
+        ).rows,
+      ).toEqual([{ offers: 1, legs: 1, funding: 1, paused: false }]);
     });
     completedTestCount += 1;
   });

@@ -258,8 +258,13 @@ $$;
 -- Where a lease is required, new authority needs a live lease and a running
 -- brake: a lease is acquired while paused, and must not by itself let earlier
 -- effects sign or send before the operator has resumed. Where it is not
--- required this returns without reading the brake, as today. It reads without
--- locking: it authorizes the next action, it does not hold anything still.
+-- required this returns without reading the brake, as today.
+--
+-- The brake and the lease are read under shared locks, taken in the one order,
+-- and the clock is read after both are held. Without that the two rows could be
+-- read from different moments and authority granted for a combination that was
+-- never committed. The caller completes this transaction before it signs or
+-- sends: the answer authorizes the next action, it does not hold anything still.
 CREATE FUNCTION require_reward_run_authority_v1()
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
@@ -272,9 +277,14 @@ BEGIN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
   END IF;
   IF lease_record.required IS DISTINCT FROM TRUE THEN RETURN; END IF;
-  SELECT paused INTO operations_paused FROM reward_operations_control WHERE singleton;
+  SELECT paused INTO operations_paused FROM reward_operations_control
+   WHERE singleton FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR SHARE;
   observed_at := clock_timestamp();
-  IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE OR lease_record.run_id IS NULL
+  IF operations_paused IS DISTINCT FROM FALSE OR lease_record.run_id IS NULL
      OR observed_at >= lease_record.expires_at
      OR observed_at >= lease_record.absolute_deadline THEN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
@@ -351,7 +361,7 @@ FOR EACH ROW WHEN (OLD.state = 'nonce_reserved' AND NEW.state = 'prepared')
 EXECUTE FUNCTION guard_reward_run_lease_signature();
 
 -- Only the migration owner can acquire, renew or release until a separately
--- reviewed operator grant. Runtime roles may pause on expiry and ask for
+-- reviewed operator grant. Runtime writer roles may pause on expiry and ask for
 -- authority, and nothing else. Pin trusted schema before pg_temp.
 DO $lease_function_permissions$
 DECLARE
@@ -382,11 +392,15 @@ BEGIN
       'ALTER FUNCTION %s SET search_path TO %I, pg_temp', signature, current_schema()
     );
   END LOOP;
+  -- Only roles that can reserve a nonce, the runtime writers, may pause on
+  -- expiry or ask for authority. A role that can merely read the nonce table
+  -- gets neither.
   FOR role_name IN
     SELECT DISTINCT pg_get_userbyid(a.grantee)
       FROM pg_class c
       CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
      WHERE c.oid='reward_signer_nonces'::regclass AND a.grantee <> 0 AND a.grantee <> c.relowner
+       AND a.privilege_type IN ('INSERT','UPDATE')
   LOOP
     EXECUTE format(
       'GRANT EXECUTE ON FUNCTION pause_reward_operations_on_lease_expiry_v1() TO %I', role_name

@@ -12,6 +12,7 @@ const leaseMigration = "0242_reward_operations_run_lease.sql";
 const suffix = randomUUID().replaceAll("-", "");
 const schema = `run_lease_${suffix}`;
 const runtimeRole = `run_lease_runtime_${suffix}`;
+const readerRole = `run_lease_reader_${suffix}`;
 const scoped = (role?: string) => {
   const url = new URL(connectionString ?? "postgres://invalid");
   url.searchParams.set(
@@ -23,6 +24,7 @@ const scoped = (role?: string) => {
 let admin: Client;
 let second: Client;
 let runtime: Client;
+let reader: Client;
 
 /** The SQLSTATE a statement fails with, or null when it succeeds. */
 async function refused(client: Client, text: string, values: unknown[] = []) {
@@ -132,21 +134,30 @@ suite("rewards run lease", () => {
       `GRANT SELECT, INSERT, UPDATE ON reward_signer_nonces, reward_chain_effects,
          reward_chain_effect_transitions TO ${runtimeRole}`,
     );
+    // A role that can only read the nonce table, as a reporting role might.
+    await admin.query(`CREATE ROLE ${readerRole} NOLOGIN`);
+    await admin.query(`GRANT USAGE ON SCHEMA ${schema} TO ${readerRole}`);
+    await admin.query(`GRANT SELECT ON reward_signer_nonces TO ${readerRole}`);
     await admin.query(migrations[index]?.sql ?? "");
     second = new Client({ connectionString: scoped() });
     runtime = new Client({ connectionString: scoped(runtimeRole) });
+    reader = new Client({ connectionString: scoped(readerRole) });
     await second.connect();
     await runtime.connect();
+    await reader.connect();
   }, 180_000);
 
   afterAll(async () => {
     await runtime?.end().catch(() => undefined);
+    await reader?.end().catch(() => undefined);
     await second?.end().catch(() => undefined);
     if (admin !== undefined) {
       await admin.query("ROLLBACK").catch(() => undefined);
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined);
-      await admin.query(`DROP OWNED BY ${runtimeRole}`).catch(() => undefined);
-      await admin.query(`DROP ROLE IF EXISTS ${runtimeRole}`).catch(() => undefined);
+      for (const role of [runtimeRole, readerRole]) {
+        await admin.query(`DROP OWNED BY ${role}`).catch(() => undefined);
+        await admin.query(`DROP ROLE IF EXISTS ${role}`).catch(() => undefined);
+      }
       await admin.end().catch(() => undefined);
     }
   });
@@ -191,6 +202,78 @@ suite("rewards run lease", () => {
     expect(open.rows).toEqual([]);
   });
 
+  test("a role that can only read the nonce table may read the lease and do nothing with it", async () => {
+    await reset();
+    expect((await reader.query("SELECT current_user AS role")).rows).toEqual([
+      { role: readerRole },
+    ]);
+    expect(await refused(reader, "SELECT * FROM reward_operations_run_lease")).toBeNull();
+    // Being able to read nonces is not being a runtime writer: it may not pause
+    // operations, and it has no signing to ask authority for.
+    for (const call of [
+      "SELECT pause_reward_operations_on_lease_expiry_v1()",
+      "SELECT require_reward_run_authority_v1()",
+      "SELECT acquire_reward_run_lease_v1('run-a',60,600)",
+      "SELECT renew_reward_run_lease_v1('run-a',1,60)",
+      "SELECT release_reward_run_lease_v1('run-a',1)",
+    ])
+      expect(await refused(reader, call)).toBe("42501");
+    // Even with an expired required lease and a running brake, it cannot pause.
+    await setRequired(true);
+    await acquire(freshRun());
+    await setPaused(false);
+    await expire();
+    expect(await refused(reader, "SELECT pause_reward_operations_on_lease_expiry_v1()")).toBe(
+      "42501",
+    );
+    expect((await control()).paused).toBe(false);
+  });
+
+  test("authority is never granted for a combination of brake and lease that was not committed", async () => {
+    await reset();
+    await setRequired(true);
+    // The committed state only ever alternates between paused with a live lease
+    // and running with a released lease. Neither carries authority, so a caller
+    // that read the two rows at different moments would be the only one let through.
+    let runId = freshRun();
+    let fence = await acquire(runId, 600, 600);
+    let done = false;
+    let allowed = 0;
+    let refusals = 0;
+    const asking = (async () => {
+      while (!done) {
+        const code = await refused(runtime, "SELECT require_reward_run_authority_v1()");
+        if (code === null) allowed += 1;
+        else if (code === "PR001") refusals += 1;
+        else throw new Error(`unexpected refusal ${code}`);
+      }
+    })();
+    for (let turn = 0; turn < 150; turn++) {
+      await admin.query("BEGIN");
+      await admin.query("SELECT release_reward_run_lease_v1($1,$2::bigint)", [runId, fence]);
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,false,'release then resume') FROM reward_operations_control",
+      );
+      await admin.query("COMMIT");
+      await admin.query("BEGIN");
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,true,'pause then acquire') FROM reward_operations_control",
+      );
+      runId = freshRun();
+      fence = (
+        await admin.query<{ fence: string }>(
+          "SELECT acquire_reward_run_lease_v1($1,600,600)::text AS fence",
+          [runId],
+        )
+      ).rows[0]?.fence as string;
+      await admin.query("COMMIT");
+    }
+    done = true;
+    await asking;
+    expect(refusals).toBeGreaterThan(0);
+    expect(allowed).toBe(0);
+  }, 120_000);
+
   test("the owner cannot change the requirement by accident, nor rewrite or delete the evidence", async () => {
     await reset();
     expect(
@@ -201,12 +284,6 @@ suite("rewards run lease", () => {
     ).toBe("PR003");
     expect((await lease()).required).toBe(false);
     expect(await refused(admin, "DELETE FROM reward_operations_run_lease")).toBe("PR003");
-    expect(
-      await refused(
-        admin,
-        "UPDATE reward_operations_run_lease SET fence = fence - 1 WHERE fence > 0",
-      ),
-    ).toBeNull();
     await acquire(freshRun());
     expect(
       await refused(
