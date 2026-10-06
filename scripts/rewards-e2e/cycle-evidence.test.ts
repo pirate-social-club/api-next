@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { cycleEvents, jobsFundingProof } from "./cycle-evidence.mjs";
+import { cycleEvents, fundingConfirmationEvidence } from "./cycle-evidence.mjs";
+import { isolatedEnvironment } from "./worker-plan.mjs";
 
 const summary = (overrides = {}) => ({
   event: "megapot.rewards.cycle",
   schema_version: 4,
-  environment: "test",
+  environment: isolatedEnvironment,
   worker_version_id: "jobs-version",
   emitted_at: "2026-10-06T12:01:03.000Z",
   duration_ms: 2_500,
@@ -38,6 +39,7 @@ test("a malformed summary, an older schema or an overloaded tail is refused", ()
   for (const broken of [
     summary({ schema_version: 3 }),
     summary({ environment: "staging" }),
+    summary({ environment: "test" }),
     summary({ funding_confirmed_count: "1" }),
     summary({ funding_confirmed_count: -1 }),
     summary({ worker_version_id: "" }),
@@ -61,6 +63,7 @@ const cycle = (overrides = {}) => ({
 });
 const idle = (emittedAt: string) => cycle({ emittedAt, fundingObserved: 1, fundingConfirmed: 0 });
 const facts = {
+  httpObservations: { started: 1, answers: ["confirming"], unanswered: 0 },
   stateWhenSponsorLeft: "confirming",
   sponsorLeftAt: "2026-10-06T12:00:20.000Z",
   confirmedAt: "2026-10-06T12:01:02.000Z",
@@ -69,49 +72,96 @@ const facts = {
   cycles: [idle("2026-10-06T12:00:03.000Z"), cycle()],
 };
 
-test("one jobs cycle reporting the confirmation when it was recorded proves it", () => {
-  expect(jobsFundingProof(facts)).toEqual({ proven: true, reasons: [], cycle: cycle() });
+test("with the HTTP path closed first, a later confirmation is the jobs Worker's", () => {
+  expect(fundingConfirmationEvidence(facts)).toEqual({
+    jobsCausedConfirmation: { proven: true, reasons: [] },
+    jobsObservedConfirmedFunding: { observed: true, reasons: [], cycle: cycle() },
+  });
+});
+
+test("jobs listing a transfer the HTTP Worker then confirms is never credited to jobs", () => {
+  // Jobs lists the pending funding, the HTTP observation confirms it, jobs then
+  // reconciles the already-confirmed row and its count rises all the same.
+  for (const httpObservations of [
+    // The observation answered that it had confirmed the funding.
+    { started: 1, answers: ["confirmed"], unanswered: 0 },
+    // Or it was still on its way to the server when the sponsor left.
+    { started: 1, answers: [], unanswered: 1 },
+  ]) {
+    const evidence = fundingConfirmationEvidence({ ...facts, httpObservations });
+    expect(evidence.jobsCausedConfirmation.proven).toBe(false);
+    // The count is still reported for what it is.
+    expect(evidence.jobsObservedConfirmedFunding.observed).toBe(true);
+  }
 });
 
 test("an HTTP observation that finishes after the sponsor left, with jobs idle, proves nothing", () => {
-  // The page is gone and the state was still confirming, but every jobs cycle
-  // reports zero confirmations: the in-flight HTTP observation did it.
-  const proof = jobsFundingProof({
+  const evidence = fundingConfirmationEvidence({
     ...facts,
+    httpObservations: { started: 1, answers: [], unanswered: 1 },
     confirmedAt: "2026-10-06T12:00:24.000Z",
     cycles: [idle("2026-10-06T12:00:03.000Z"), idle("2026-10-06T12:01:03.000Z")],
   });
-  expect(proof.proven).toBe(false);
-  expect(proof.reasons).toEqual([
-    "no single jobs cycle reported this confirmation at the time it was recorded",
-  ]);
+  expect(evidence.jobsCausedConfirmation).toEqual({
+    proven: false,
+    reasons: ["an HTTP observation had no answer when the sponsor left"],
+  });
+  expect(evidence.jobsObservedConfirmedFunding.observed).toBe(false);
 });
 
-test("navigation alone is never taken as proof", () => {
-  expect(jobsFundingProof({ ...facts, cycles: [] }).proven).toBe(false);
-  expect(jobsFundingProof({ ...facts, cycles: undefined }).proven).toBe(false);
+test("the jobs count alone, or navigation alone, never proves jobs confirmed", () => {
+  // Jobs reported a confirmation, but nothing shows the HTTP path was closed.
+  for (const httpObservations of [undefined, { started: 0, answers: [], unanswered: 0 }]) {
+    const evidence = fundingConfirmationEvidence({ ...facts, httpObservations });
+    expect(evidence.jobsCausedConfirmation.proven).toBe(false);
+    expect(evidence.jobsObservedConfirmedFunding.observed).toBe(true);
+  }
 });
 
-test("each missing piece of evidence leaves confirmation unproven", () => {
+test("each gap in the HTTP path leaves jobs confirmation unproven", () => {
   const cases: Array<[Partial<typeof facts>, string]> = [
-    [{ stateWhenSponsorLeft: "confirmed" }, "not waiting for confirmation"],
+    [{ httpObservations: { started: 2, answers: ["confirming"], unanswered: 1 } }, "no answer"],
+    [
+      { httpObservations: { started: 2, answers: ["confirming", "http-503"], unanswered: 0 } },
+      "did not leave the funding waiting",
+    ],
+    [
+      { httpObservations: { started: 1, answers: ["unreadable"], unanswered: 0 } },
+      "did not leave the funding waiting",
+    ],
+    [{ httpObservations: { started: 2, answers: ["confirming"], unanswered: 0 } }, "do not add up"],
+    [{ stateWhenSponsorLeft: "confirmed" }, "not waiting for confirmation when the sponsor left"],
     [{ confirmedAt: "2026-10-06T12:00:10.000Z" }, "not confirmed after the sponsor left"],
+  ];
+  for (const [change, reason] of cases) {
+    const evidence = fundingConfirmationEvidence({ ...facts, ...change });
+    expect(evidence.jobsCausedConfirmation.proven).toBe(false);
+    expect(evidence.jobsCausedConfirmation.reasons.some((text) => text.includes(reason))).toBe(
+      true,
+    );
+  }
+});
+
+test("the corroborating jobs observation is judged on its own and never required", () => {
+  const cases: Array<[Partial<typeof facts>, string]> = [
     [{ captureComplete: false }, "capture has a gap"],
-    // A confirmation recorded well outside the reporting cycle.
     [{ confirmedAt: "2026-10-06T12:02:30.000Z" }, "no single jobs cycle"],
-    // A cycle of some other jobs version.
     [{ jobsVersionId: "another-version" }, "no single jobs cycle"],
-    // Two cycles claim a confirmation, or one claims two.
     [
       { cycles: [cycle(), cycle({ emittedAt: "2026-10-06T12:02:03.000Z" })] },
       "no single jobs cycle",
     ],
     [{ cycles: [cycle({ fundingConfirmed: 2 })] }, "no single jobs cycle"],
+    [{ cycles: [] }, "no single jobs cycle"],
   ];
   for (const [change, reason] of cases) {
-    const proof = jobsFundingProof({ ...facts, ...change });
-    expect(proof.proven).toBe(false);
-    expect(proof.cycle).toBeNull();
-    expect(proof.reasons.some((text) => text.includes(reason))).toBe(true);
+    const evidence = fundingConfirmationEvidence({ ...facts, ...change });
+    expect(evidence.jobsObservedConfirmedFunding.observed).toBe(false);
+    expect(evidence.jobsObservedConfirmedFunding.cycle).toBeNull();
+    expect(
+      evidence.jobsObservedConfirmedFunding.reasons.some((text) => text.includes(reason)),
+    ).toBe(true);
+    // A lost capture does not take away a proof that rests on the closed HTTP path.
+    expect(evidence.jobsCausedConfirmation.proven).toBe(true);
   }
 });

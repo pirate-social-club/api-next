@@ -5,6 +5,8 @@ export const isolatedOrigins = {
   api: "https://api-megapot-e2e-staging.pirate.sc",
   web: "https://web-megapot-e2e-staging.pirate.sc",
 };
+/** The value both isolated Workers run under and stamp on their log events. */
+export const isolatedEnvironment = "development";
 export const isolatedWorkers = {
   http: "pirate-http-worker-megapot-e2e-staging",
   jobs: "pirate-jobs-worker-megapot-e2e-staging",
@@ -84,7 +86,7 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
     ]),
   );
   Object.assign(config.vars, {
-    API_NEXT_ENV: "development",
+    API_NEXT_ENV: isolatedEnvironment,
     CORS_ORIGIN: isolatedOrigins.web,
     PIRATE_API_PUBLIC_ORIGIN: isolatedOrigins.api,
     TELEGRAM_PUBLIC_ORIGIN: isolatedOrigins.web,

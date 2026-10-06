@@ -4,13 +4,17 @@ import { parseAbi } from "viem";
 import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
 import { browserApi } from "./browser-api.mjs";
-import { confirmWalletFunding, reviewWalletFunding } from "./browser-funding.mjs";
+import {
+  confirmWalletFunding,
+  reviewWalletFunding,
+  trackFundingObservations,
+} from "./browser-funding.mjs";
 import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
 import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
 import { sendPaidCredit } from "./browser-winner-send.mjs";
-import { jobsFundingProof } from "./cycle-evidence.mjs";
+import { fundingConfirmationEvidence } from "./cycle-evidence.mjs";
 import {
   assertNothingOwed,
   assertShutdownInventory,
@@ -316,6 +320,12 @@ export async function runScenario(options) {
     };
     stage = "funding-confirmation";
     const transferReview = await reviewWalletFunding(host.pages.sponsor, reviewed.dialog, transfer);
+    // Watched from before the transfer is confirmed, so no observation is missed.
+    const httpObservations = trackFundingObservations(
+      host.pages.sponsor,
+      legId,
+      funding.funding_effect_id,
+    );
     await confirmWalletFunding(host.pages.sponsor, reviewed.dialog, (recheck, click) =>
       once(
         "fund-offer",
@@ -347,12 +357,28 @@ export async function runScenario(options) {
       (rows) => rows.length === 1 && typeof rows[0].transaction_hash === "string",
       check,
     );
+    // Every observation the page has made is given time to be answered, so that no
+    // request is still on its way to the server when the page goes.
+    for (let waited = 0; waited < 45000 && Date.now() < end - 60000; waited += 1000) {
+      const seen = httpObservations.snapshot();
+      if (seen.started > 0 && seen.unanswered === 0) break;
+      await Bun.sleep(1000);
+    }
+    const stateBeforeSponsorLeft = (await readFunding())[0]?.state;
     await host.pages.sponsor.goto("about:blank");
+    // Taken after the page has gone, so a request begun at the last moment counts.
+    const observedByHttp = httpObservations.snapshot();
+    httpObservations.stop();
     const sponsorLeft = {
       at: new Date().toISOString(),
-      stateWhenSponsorLeft: (await readFunding())[0]?.state,
+      // Read before the page went, so an answer racing the unload cannot hide.
+      stateWhenSponsorLeft: stateBeforeSponsorLeft,
     };
-    stageSave("sponsor-left", { ...sponsorLeft, transactionHash: boundRows[0].transaction_hash });
+    stageSave("sponsor-left", {
+      ...sponsorLeft,
+      transactionHash: boundRows[0].transaction_hash,
+      httpObservations: observedByHttp,
+    });
     // Passive reads only from here: no control is pressed and no API is called.
     const fundedRows = await waitForEvidence(
       "funding confirmation",
@@ -421,9 +447,9 @@ export async function runScenario(options) {
         expected,
       );
     };
-    // The page leaving shows no browser asked again, but an HTTP observation already
-    // in flight can still confirm. Only the jobs Worker's own cycle summary shows
-    // that jobs did it, so its summary for the confirming minute is awaited briefly.
+    // The jobs Worker's summary for the confirming minute is awaited briefly. It is
+    // corroboration only; the claim that jobs confirmed rests on the HTTP path
+    // having been closed before the sponsor left.
     const confirmedAt = new Date(fundedRows[0].confirmed_at).toISOString();
     const cycleCapture = () => cycleObserver?.capture;
     for (let waited = 0; waited < 90000 && Date.now() < end - 60000; waited += 3000) {
@@ -437,7 +463,8 @@ export async function runScenario(options) {
         break;
       await Bun.sleep(3000);
     }
-    const jobsConfirmation = jobsFundingProof({
+    const confirmationEvidence = fundingConfirmationEvidence({
+      httpObservations: observedByHttp,
       stateWhenSponsorLeft: sponsorLeft.stateWhenSponsorLeft,
       sponsorLeftAt: sponsorLeft.at,
       confirmedAt,
@@ -448,13 +475,14 @@ export async function runScenario(options) {
         !cycleCapture().parseFailures,
       cycles: cycleCapture()?.events,
     });
-    if (!jobsConfirmation.proven) run.unproven.push("jobs funding confirmation");
+    if (!confirmationEvidence.jobsCausedConfirmation.proven)
+      run.unproven.push("jobs funding confirmation");
     stageSave("funding-confirmed", {
       ...(await fundingCheck()),
       review: transferReview,
       sponsorLeftAt: sponsorLeft.at,
       confirmedAt,
-      jobsConfirmation,
+      ...confirmationEvidence,
     });
     stage = "outcome-drawing";
     const placeholderSettled = await settleDueDrawing(
