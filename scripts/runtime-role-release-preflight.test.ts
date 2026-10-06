@@ -5,6 +5,7 @@ import {
   moneyTableInventoryViolations,
   REWARDS_MONEY_TABLE_PATTERN,
   REWARDS_MONEY_TABLES,
+  REWARDS_MONEY_TABLES_AFTER_0232,
 } from "./rewards-money-write-contract.ts";
 
 import {
@@ -146,12 +147,7 @@ describe("destructive money-table inventory", () => {
     const array = sql.split("FOREACH table_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
     // Tables created after 0232 have their inherited privileges removed by the
     // migration that creates them, which is checked here in the same way.
-    const laterTables: Record<string, readonly string[]> = {
-      "0242_reward_operations_run_lease.sql": [
-        "reward_operations_run_lease",
-        "reward_operations_run_lease_events",
-      ],
-    };
+    const laterTables = REWARDS_MONEY_TABLES_AFTER_0232;
     const later = Object.values(laterTables).flat();
     expect([...array.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual(
       REWARDS_MONEY_TABLES.filter((table) => !later.includes(table)),

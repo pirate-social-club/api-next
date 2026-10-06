@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  MegapotPreparedPurchase,
-  MegapotPurchaseCandidate,
-  MegapotPurchaseProgress,
-  MegapotPurchaseStore,
+import {
+  type MegapotPreparedPurchase,
+  type MegapotPurchaseCandidate,
+  type MegapotPurchaseProgress,
+  MegapotPurchaseStorageFailed,
+  type MegapotPurchaseStore,
+  RewardOperationsPaused,
 } from "@pirate/application";
 import { Effect } from "effect";
 import {
@@ -152,11 +154,16 @@ function harness(
     allowance?: bigint;
     currentDrawingId?: bigint;
     uncertainSend?: boolean;
+    /** A run lease the test can let lapse, optionally right after a store step. */
+    lease?: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
+    /** Makes the record of a submission fail, as a lost database write would. */
+    record?: { fail: boolean };
   }> = {},
 ) {
   let progress: MegapotPurchaseProgress | null = null;
   let prepared: MegapotPreparedPurchase | null = null;
   let sendCalls = 0;
+  let signCalls = 0;
   const events: string[] = [];
   const store = {
     findProgress: () => Effect.succeed(progress),
@@ -167,6 +174,8 @@ function harness(
     },
     reserveNonce: (request) => {
       events.push("reserve");
+      if (input.lease?.lapseAfter === "reserve") input.lease.live = false;
+
       const reservation = {
         ...request.candidate,
         effectId: request.effectId,
@@ -179,6 +188,8 @@ function harness(
     },
     prepare: (request) => {
       events.push("prepare");
+      if (input.lease?.lapseAfter === "prepare") input.lease.live = false;
+
       prepared = {
         ...request.reservation,
         state: "prepared",
@@ -192,6 +203,8 @@ function harness(
       return Effect.void;
     },
     recordSubmission: (request) => {
+      if (input.record?.fail)
+        return Effect.fail(new MegapotPurchaseStorageFailed({ reason: "outcome-unknown" }));
       events.push(`submission:${request.outcome}`);
       if (prepared === null) throw new Error("purchase was not prepared");
       prepared = {
@@ -291,13 +304,23 @@ function harness(
   } satisfies MegapotV2RpcClient;
   const signer = {
     address: CUSTODY,
-    sign: async () => ({
-      signedTransaction: SIGNED_TRANSACTION,
-      signedTransactionHash: SIGNED_TRANSACTION_HASH,
-    }),
+    sign: async () => {
+      signCalls += 1;
+      return {
+        signedTransaction: SIGNED_TRANSACTION,
+        signedTransactionHash: SIGNED_TRANSACTION_HASH,
+      };
+    },
   } satisfies MegapotV2TransactionSigner;
   const coordinator = makeMegapotPurchaseCoordinator({
-    authority: { ensure: () => Effect.void },
+    authority: {
+      ensure: () =>
+        Effect.suspend(() =>
+          input.lease === undefined || input.lease.live
+            ? Effect.void
+            : Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+        ),
+    },
     store,
     rpc,
     signer,
@@ -309,7 +332,13 @@ function harness(
       now: () => 1_800_000_000_000,
     },
   });
-  return { coordinator, events, getProgress: () => progress, getSendCalls: () => sendCalls };
+  return {
+    coordinator,
+    events,
+    getProgress: () => progress,
+    getSendCalls: () => sendCalls,
+    getSignCalls: () => signCalls,
+  };
 }
 
 describe("Megapot purchase coordinator", () => {
@@ -401,4 +430,70 @@ test("pause cleanup preserves any already-admitted purchase and never resumes it
   ).toBeNull();
   expect(fixture.events).toEqual(events);
   expect(fixture.getSendCalls()).toBe(1);
+});
+
+describe("Megapot purchase under a run lease", () => {
+  const command = { poolLegId: candidate.poolLegId, drawingId: 101n };
+  const attempt = (fixture: ReturnType<typeof harness>) =>
+    Effect.runPromise(
+      fixture.coordinator.purchase(command).pipe(
+        Effect.map((value) => value.kind as string),
+        Effect.catch((error) => Effect.succeed(`failed:${(error as { _tag: string })._tag}`)),
+      ),
+    );
+
+  test("a reservation made before expiry is not signed after it", async () => {
+    const lease: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined } = {
+      live: true,
+      lapseAfter: "reserve",
+    };
+    const fixture = harness({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.getProgress()?.state).toBe("nonce_reserved");
+    // Resumed after expiry: still neither signed nor sent.
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(1);
+  });
+
+  test("a signature stored before expiry is not sent after it, and is not recorded as uncertain", async () => {
+    const lease: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined } = {
+      live: true,
+      lapseAfter: "prepare",
+    };
+    const fixture = harness({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(0);
+    expect(fixture.events.filter((event) => event.startsWith("submission:"))).toEqual([]);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(1);
+  });
+
+  test("a send that succeeded but was never recorded is recovered after expiry with no signature or send", async () => {
+    const lease = { live: true };
+    const record = { fail: true };
+    const fixture = harness({ lease, record });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    expect(fixture.getSendCalls()).toBe(1);
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    record.fail = false;
+    lease.live = false;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(1);
+    expect(fixture.events.filter((event) => event.startsWith("submission:"))).toEqual([
+      "submission:accepted",
+    ]);
+  });
 });
