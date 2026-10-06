@@ -162,6 +162,10 @@ const alias = {
     "../../packages/platform-cf/src/spaces-reconciliation-repository.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/spaces-community-route-attachment-repository": new URL(
+    "../../packages/platform-cf/src/spaces-community-route-attachment-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/spaces-root-authority-observer": new URL(
     "../../packages/platform-cf/src/spaces-root-authority-observer.ts",
     import.meta.url,

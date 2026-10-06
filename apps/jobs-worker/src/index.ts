@@ -85,6 +85,7 @@ import {
   type SpacesReconciliationComposition,
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
+import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -779,6 +780,7 @@ export function makeJobsWorkerDeclarations(
         spacesReconciliation.rootObservation.observer,
         spacesReconciliation.rootObservation.saleNamespaces,
       ),
+      makeSpacesRouteRenewalJob(sink, spacesReconciliation.renewRoutes),
     );
   }
   return declarations;
