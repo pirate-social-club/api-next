@@ -10,6 +10,7 @@ import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
 import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
 import { sendPaidCredit } from "./browser-winner-send.mjs";
+import { jobsFundingProof } from "./cycle-evidence.mjs";
 import {
   assertNothingOwed,
   assertShutdownInventory,
@@ -27,13 +28,14 @@ import {
   fixtureJackpot,
   fixtureToken,
   fundFixturePrize,
+  readManagedFloat,
   settleDueDrawing,
 } from "./fixture-chain.mjs";
 import { verifyConfirmedFunding } from "./funding-evidence.mjs";
 import { claimParticipantCredit } from "./participant-claims.mjs";
 import { singleParticipantCredit } from "./participant-policy.mjs";
 import { firstJobsReceiptRead } from "./receipt-evidence.mjs";
-import { subscribeJobsReceipts } from "./receipt-observer.mjs";
+import { subscribeJobsCycles, subscribeJobsReceipts } from "./receipt-observer.mjs";
 import {
   assertActivityShares,
   expectedTicketLogs,
@@ -50,7 +52,7 @@ import { disableIsolatedRewards, setIsolatedRewardsFlag } from "./runtime-flags.
 import { verifySettlementReceipts } from "./settlement-evidence.mjs";
 import { recoverSettlement, recoveryDeadline } from "./settlement-recovery.mjs";
 import { executeOnce } from "./single-use.mjs";
-import { reserveSpending } from "./spending-ledger.mjs";
+import { feeCeilings, reserveSpending } from "./spending-ledger.mjs";
 
 const fixtureAbi = parseAbi(["function currentDrawingId() view returns(uint256)"]);
 const controlQuery = "SELECT paused,revision::text FROM reward_operations_control WHERE singleton";
@@ -77,6 +79,7 @@ export async function runScenario(options) {
     failure;
   let failureStage;
   let jobsVersionId;
+  let cycleObserver;
   /**
    * The one gate for settling a purchased drawing, in the run and in recovery:
    * the pinned jobs Worker's first receipt read and an independently canonical
@@ -189,6 +192,9 @@ export async function runScenario(options) {
     run.chain = fixtureChain();
     const driver = await buildBrowserWalletDriver(process.env.REWARDS_E2E_SOLID_ROOT);
     observer = await subscribeJobsReceipts(run.directory);
+    // Losing this second capture never stops a run; it only leaves jobs funding
+    // confirmation unproven.
+    cycleObserver = await subscribeJobsCycles(run.directory).catch(() => undefined);
     stageSave("prepared", {
       accounts: host.report.accounts,
       routes: route.route.activity_paths,
@@ -197,14 +203,7 @@ export async function runScenario(options) {
     });
     // The managed ETH float is a ceiling for automatic sends. It is one exposure,
     // so it is reserved once for the authorization and not again per run.
-    const floatAddresses = [
-      fixtureCustody,
-      fixtureSponsorWallet,
-      "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a",
-    ];
-    const balances = await Promise.all(
-      floatAddresses.map((address) => run.chain.publicClient.getBalance({ address })),
-    );
+    const managedFloat = await readManagedFloat(run.chain);
     try {
       await reserveSpending(run.ledgerDirectory, {
         authoritySha256: run.authoritySha256,
@@ -213,7 +212,7 @@ export async function runScenario(options) {
         actionId: "worker-gas-float",
         kind: "gas",
         usdcAtomic: "0",
-        ethWei: balances.reduce((sum, value) => sum + value, 0n).toString(),
+        ethWei: managedFloat.toString(),
       });
     } catch (error) {
       if (error?.message !== "Spending action already reserved; do not replay") throw error;
@@ -313,7 +312,7 @@ export async function runScenario(options) {
       recipient: fixtureCustody,
       token: fixtureToken,
       amountAtomic: "1000000",
-      maximumExecutionFeeWei: "500000000000000",
+      maximumExecutionFeeWei: feeCeilings.fundingWei.toString(),
     };
     stage = "funding-confirmation";
     const transferReview = await reviewWalletFunding(host.pages.sponsor, reviewed.dialog, transfer);
@@ -353,15 +352,7 @@ export async function runScenario(options) {
       at: new Date().toISOString(),
       stateWhenSponsorLeft: (await readFunding())[0]?.state,
     };
-    // Confirmed before the sponsor left means the app's own observation did it, and
-    // this run then says nothing about the jobs Worker. It is reported, not hidden.
-    const jobsConfirmationProven = sponsorLeft.stateWhenSponsorLeft === "confirming";
-    if (!jobsConfirmationProven) run.unproven.push("jobs funding confirmation");
-    stageSave("sponsor-left", {
-      ...sponsorLeft,
-      transactionHash: boundRows[0].transaction_hash,
-      jobsConfirmationProven,
-    });
+    stageSave("sponsor-left", { ...sponsorLeft, transactionHash: boundRows[0].transaction_hash });
     // Passive reads only from here: no control is pressed and no API is called.
     const fundedRows = await waitForEvidence(
       "funding confirmation",
@@ -430,11 +421,40 @@ export async function runScenario(options) {
         expected,
       );
     };
+    // The page leaving shows no browser asked again, but an HTTP observation already
+    // in flight can still confirm. Only the jobs Worker's own cycle summary shows
+    // that jobs did it, so its summary for the confirming minute is awaited briefly.
+    const confirmedAt = new Date(fundedRows[0].confirmed_at).toISOString();
+    const cycleCapture = () => cycleObserver?.capture;
+    for (let waited = 0; waited < 90000 && Date.now() < end - 60000; waited += 3000) {
+      await cycleObserver?.flush();
+      if (
+        !cycleCapture() ||
+        cycleCapture().events.some(
+          (cycle) => Date.parse(cycle.emittedAt) >= Date.parse(confirmedAt),
+        )
+      )
+        break;
+      await Bun.sleep(3000);
+    }
+    const jobsConfirmation = jobsFundingProof({
+      stateWhenSponsorLeft: sponsorLeft.stateWhenSponsorLeft,
+      sponsorLeftAt: sponsorLeft.at,
+      confirmedAt,
+      jobsVersionId,
+      captureComplete:
+        cycleCapture()?.outcome === "subscribed" &&
+        !cycleCapture().subscriptionGaps &&
+        !cycleCapture().parseFailures,
+      cycles: cycleCapture()?.events,
+    });
+    if (!jobsConfirmation.proven) run.unproven.push("jobs funding confirmation");
     stageSave("funding-confirmed", {
       ...(await fundingCheck()),
       review: transferReview,
       sponsorLeftAt: sponsorLeft.at,
-      jobsConfirmationProven,
+      confirmedAt,
+      jobsConfirmation,
     });
     stage = "outcome-drawing";
     const placeholderSettled = await settleDueDrawing(
@@ -705,6 +725,8 @@ export async function runScenario(options) {
     } else if (flagsEnabled) {
       errors.push("obligations remain; flags left enabled for recovery");
     }
+    // Its outcome was judged when funding confirmed; closing it late is not an error.
+    await cycleObserver?.close().catch(() => undefined);
     if (observer) {
       try {
         const capture = await observer.close();

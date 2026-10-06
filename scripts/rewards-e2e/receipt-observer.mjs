@@ -1,17 +1,30 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cloudflareApi } from "./cloudflare-api.mjs";
+import { cycleEvents } from "./cycle-evidence.mjs";
 import { receiptEvents } from "./receipt-evidence.mjs";
 import { isolatedWorkers } from "./worker-plan.mjs";
 
+const receiptStream = { name: "receipt", query: "megapot_receipt_read", parse: receiptEvents };
+const cycleStream = { name: "cycle", query: "megapot.rewards.cycle", parse: cycleEvents };
+
+/**
+ * The jobs Worker's own cycle summaries, on a second subscription. They are the
+ * only evidence that the jobs Worker, and not a browser, confirmed a payment.
+ */
+export function subscribeJobsCycles(directory, dependencies = {}) {
+  return subscribeJobsReceipts(directory, { ...dependencies, stream: cycleStream });
+}
+
 /** Subscribe before enabling rewards. Disconnects fail closed and never reconnect silently. */
 export async function subscribeJobsReceipts(directory, dependencies = {}) {
+  const stream = dependencies.stream ?? receiptStream;
   const api = dependencies.api ?? cloudflareApi;
   const Socket = dependencies.Socket ?? WebSocket;
   const base = `/workers/scripts/${isolatedWorkers.jobs}/tails`;
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const metadata = resolve(directory, "receipt-observer.json");
-  const output = resolve(directory, "receipt-observations.jsonl");
+  const metadata = resolve(directory, `${stream.name}-observer.json`);
+  const output = resolve(directory, `${stream.name}-observations.jsonl`);
   const capture = {
     worker: isolatedWorkers.jobs,
     outcome: "connecting",
@@ -85,7 +98,7 @@ export async function subscribeJobsReceipts(directory, dependencies = {}) {
   try {
     const tail = await api(base, {
       method: "POST",
-      body: JSON.stringify({ filters: [{ query: "megapot_receipt_read" }] }),
+      body: JSON.stringify({ filters: [{ query: stream.query }] }),
     });
     if (typeof tail.id !== "string" || !/^[a-zA-Z0-9-]+$/.test(tail.id))
       throw new Error("Receipt subscription identity unavailable");
@@ -112,7 +125,7 @@ export async function subscribeJobsReceipts(directory, dependencies = {}) {
               : typeof message.data === "string"
                 ? message.data
                 : Buffer.from(message.data).toString();
-          for (const event of receiptEvents(JSON.parse(text))) {
+          for (const event of stream.parse(JSON.parse(text))) {
             appendFileSync(output, `${JSON.stringify(event)}\n`);
             capture.events.push(event);
           }

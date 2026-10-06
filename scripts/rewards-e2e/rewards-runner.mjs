@@ -11,7 +11,7 @@ import {
   isolatedDatabase,
   readShutdownInventory,
 } from "./database-evidence.mjs";
-import { fixtureChain, readFixturePrize } from "./fixture-chain.mjs";
+import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import { inspectIsolatedWorker } from "./runtime-flags.mjs";
 import { assertPairBudget } from "./spending-ledger.mjs";
@@ -137,9 +137,11 @@ if (
 // A read-only preparation reports a refusal; an execution stops on it.
 let budget;
 try {
+  const chain = fixtureChain();
   budget = await assertPairBudget(resolve(evidenceRoot, "spending-ledger"), {
     authoritySha256,
-    fixturePrizeAtomic: await readFixturePrize(fixtureChain()),
+    fixturePrizeAtomic: await readFixturePrize(chain),
+    managedFloatWei: await readManagedFloat(chain),
   });
 } catch (error) {
   if (process.argv.includes("--execute")) throw error;
