@@ -2,6 +2,6 @@
   "schema_version": 1,
   "environments": {
     "staging": "dormant",
-    "prod": "prelaunch"
+    "production": "prelaunch"
   }
 }
