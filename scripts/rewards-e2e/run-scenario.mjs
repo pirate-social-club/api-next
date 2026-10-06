@@ -676,6 +676,9 @@ export async function runScenario(options) {
         const control = (await options.db.read(controlQuery))[0];
         if (control.paused || control.revision !== controlRevision)
           throw Error("Brake changed during recovery");
+        // The fixture's signer is outside the database's guards, so every
+        // recovery mutation is refused here once the lease is gone.
+        runLease?.assertHeld();
       };
       try {
         recovery = await recoverSettlement({
@@ -685,6 +688,7 @@ export async function runScenario(options) {
             accountId: fixtureAccounts[name].accountId,
           })),
           expectedRevision: controlRevision,
+          assertAuthority: () => runLease?.assertHeld(),
           readControl: async () => (await options.db.read(controlQuery))[0],
           // The create click can land without its response; then only the stack inventory is known.
           readInventory: () => (legId ? run.inventory() : null),

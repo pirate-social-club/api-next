@@ -31,6 +31,7 @@ const refusal = (error) => error?.code === "PR003" || error?.code === "PR001";
  *   runId: string,
  *   timing?: { ttlSeconds: number, renewEveryMs: number, maxSeconds: number },
  *   now?: () => number,
+ *   elapsed?: () => number,
  *   setTimer?: (callback: () => void, ms: number) => unknown,
  *   clearTimer?: (timer: any) => void,
  *   onEvent?: (event: { kind: string, [key: string]: unknown }) => void,
@@ -41,16 +42,23 @@ export async function holdRunLease({
   runId,
   timing = leaseTiming,
   now = Date.now,
+  // Validity is measured on a clock that only moves forward. The wall clock can
+  // be set back, which would make an expired lease look live; it is kept for
+  // the timestamps in evidence only.
+  elapsed = () => performance.now(),
   setTimer = setInterval,
   clearTimer = clearInterval,
   onEvent = () => {},
 }) {
   if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(runId ?? "")) throw Error("Run lease identifier refused");
   const acquiredAt = now();
+  const acquiredElapsed = elapsed();
   let fence = await lease.acquire(runId, timing.ttlSeconds, timing.maxSeconds);
   // Counted from before the request, so the local view never outlives the database's.
-  let expiresAt = acquiredAt + timing.ttlSeconds * 1000;
-  const deadline = acquiredAt + timing.maxSeconds * 1000;
+  let expiresAt = acquiredElapsed + timing.ttlSeconds * 1000;
+  const deadline = acquiredElapsed + timing.maxSeconds * 1000;
+  // For evidence: where the monotonic instants fall on the wall clock at acquisition.
+  const wall = (instant) => new Date(acquiredAt + (instant - acquiredElapsed)).toISOString();
   let lost = null;
   let renewing = null;
   let renewals = 0;
@@ -63,7 +71,7 @@ export async function holdRunLease({
   };
   const renew = () => {
     if (lost !== null || released || renewing !== null) return renewing;
-    const askedAt = now();
+    const askedAt = elapsed();
     renewing = (async () => {
       try {
         fence = await lease.renew(runId, fence, timing.ttlSeconds);
@@ -72,7 +80,7 @@ export async function holdRunLease({
         onEvent({ kind: "renewed", fence: String(fence), at: new Date(now()).toISOString() });
       } catch (error) {
         if (refusal(error)) lose("renewal refused by the database");
-        else if (now() >= expiresAt) lose("lease expired while renewal could not be asked");
+        else if (elapsed() >= expiresAt) lose("lease expired while renewal could not be asked");
         else onEvent({ kind: "renewal-unanswered", at: new Date(now()).toISOString() });
       } finally {
         renewing = null;
@@ -81,7 +89,7 @@ export async function holdRunLease({
     return renewing;
   };
   const timer = setTimer(() => {
-    if (now() >= expiresAt) lose("lease expired before it could be renewed");
+    if (elapsed() >= expiresAt) lose("lease expired before it could be renewed");
     else void renew();
   }, timing.renewEveryMs);
   onEvent({ kind: "acquired", fence: String(fence), at: new Date(acquiredAt).toISOString() });
@@ -89,7 +97,7 @@ export async function holdRunLease({
     runId,
     /** Throws once the lease is gone. Called before every step that initiates work. */
     assertHeld() {
-      if (lost === null && !released && now() >= expiresAt)
+      if (lost === null && !released && elapsed() >= expiresAt)
         lose("lease expired before it could be renewed");
       if (lost !== null) throw Error(`Run lease lost: ${lost}`);
       if (released) throw Error("Run lease already released");
@@ -101,8 +109,8 @@ export async function holdRunLease({
       renewals,
       lost,
       released,
-      expiresAt: new Date(expiresAt).toISOString(),
-      absoluteDeadline: new Date(deadline).toISOString(),
+      expiresAt: wall(expiresAt),
+      absoluteDeadline: wall(deadline),
     }),
     /**
      * Stops renewing and shortens the lease to now. It is called after the brake

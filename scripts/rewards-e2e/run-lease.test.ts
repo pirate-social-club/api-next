@@ -45,6 +45,7 @@ function world(overrides: Record<string, unknown> = {}) {
         runId,
         timing,
         now: () => clock,
+        elapsed: () => clock,
         setTimer: (callback: () => void) => {
           tick = callback;
           return 1;
@@ -161,6 +162,7 @@ test("the local expiry is never later than the absolute deadline", async () => {
     runId: "win-1",
     timing: short,
     now: () => clock,
+    elapsed: () => clock,
     setTimer: () => 1,
     clearTimer: () => undefined,
   });
@@ -214,4 +216,75 @@ test("overlapping heartbeats share one renewal", async () => {
   await Promise.all([held.renewNow(), held.renewNow(), held.renewNow()]);
   expect(most).toBe(1);
   expect(held.state().renewals).toBe(1);
+});
+
+test("setting the wall clock back cannot keep an expired lease in use", async () => {
+  const w = world({
+    renew: async () => {
+      throw new Error("connection reset");
+    },
+  });
+  let wall = Date.parse("2026-10-06T12:00:00.000Z");
+  let monotonic = 5_000;
+  const held = await holdRunLease({
+    lease: w.lease,
+    runId: "win-1",
+    timing,
+    now: () => wall,
+    elapsed: () => monotonic,
+    setTimer: () => 1,
+    clearTimer: () => undefined,
+  });
+  held.assertHeld();
+  // 179 seconds pass: still inside the time to live.
+  monotonic += 179_000;
+  wall += 179_000;
+  held.assertHeld();
+  // Two more seconds pass while the wall clock is set back an hour.
+  monotonic += 2_000;
+  wall -= 3_600_000;
+  expect(() => held.assertHeld()).toThrow("Run lease lost: lease expired");
+});
+
+test("setting the wall clock forward does not lose a lease that is still live", async () => {
+  const w = world();
+  let wall = Date.parse("2026-10-06T12:00:00.000Z");
+  let monotonic = 5_000;
+  const held = await holdRunLease({
+    lease: w.lease,
+    runId: "win-1",
+    timing,
+    now: () => wall,
+    elapsed: () => monotonic,
+    setTimer: () => 1,
+    clearTimer: () => undefined,
+  });
+  monotonic += 60_000;
+  wall += 86_400_000;
+  held.assertHeld();
+  // Evidence timestamps are placed from the monotonic interval, not the jumped clock.
+  expect(held.state().expiresAt).toBe("2026-10-06T12:03:00.000Z");
+});
+
+test("the absolute cap is measured on the monotonic clock too", async () => {
+  const w = world();
+  let wall = Date.parse("2026-10-06T12:00:00.000Z");
+  let monotonic = 0;
+  const held = await holdRunLease({
+    lease: w.lease,
+    runId: "win-1",
+    timing: { ...timing, maxSeconds: 200 },
+    now: () => wall,
+    elapsed: () => monotonic,
+    setTimer: () => 1,
+    clearTimer: () => undefined,
+  });
+  monotonic = 100_000;
+  await held.renewNow();
+  // Renewed for 180 seconds, but capped 200 seconds after acquisition.
+  monotonic = 199_000;
+  wall -= 7_200_000;
+  held.assertHeld();
+  monotonic = 200_000;
+  expect(() => held.assertHeld()).toThrow("Run lease lost");
 });
