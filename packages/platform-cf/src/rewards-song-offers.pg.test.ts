@@ -3299,7 +3299,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           receiptReads: retry.receiptReads,
           sends: retry.sends,
           signatures: retry.signatures,
-        }).toEqual({ receiptReads: 1, sends: 1, signatures: 1 });
+          // One read before the send, in case an earlier send went unrecorded, and
+          // one after it for the receipt.
+        }).toEqual({ receiptReads: 2, sends: 1, signatures: 1 });
         const { transactionHash } = retry;
         await expect(
           Effect.runPromise(refundStore.findProgress(reservation.effectId)),
@@ -3970,6 +3972,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
       const commitment = makeMegapotCommitmentCoordinator({
+        authority: { ensure: () => Effect.void },
         store: commitmentStore,
         signer: {
           sign: async () => ({

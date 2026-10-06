@@ -159,6 +159,36 @@ const AGED_PENDING_ALERT_COPY: Readonly<
   },
 };
 
+/**
+ * Run before anything else in a cycle. The database already refuses new work
+ * once a required lease has expired; this only makes the brake row say so, so
+ * that an operator finds it paused and has to resume deliberately. It can only
+ * pause. A failure to ask is reported and never stops the cycle, whose own
+ * signatures and sends are refused by the database regardless.
+ */
+export function pauseOnRunLeaseExpiry(
+  pause: () => Effect.Effect<boolean, unknown>,
+): Effect.Effect<Alert | null> {
+  return pause().pipe(
+    Effect.map((paused): Alert | null =>
+      paused
+        ? {
+            key: "megapot-rewards:run-lease-expired",
+            severity: "high",
+            body: "A required rewards run lease expired and operations were paused; resuming needs an operator.",
+          }
+        : null,
+    ),
+    Effect.catch(() =>
+      Effect.succeed<Alert | null>({
+        key: "megapot-rewards:run-lease-pause-unavailable",
+        severity: "high",
+        body: "The run lease expiry pause could not be asked; the database still refuses work past an expired lease.",
+      }),
+    ),
+  );
+}
+
 export function megapotRewardsDrawingObservationAlert(
   summary: Pick<MegapotRewardsCycleSummary, "drawingObservationFailed">,
 ): Alert | null {

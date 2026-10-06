@@ -26,6 +26,7 @@ import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "@pirate/platform-cf/megapot-v2-signer";
+import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardPayoutCoordinator } from "@pirate/platform-cf/reward-payout-coordinator";
 import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-payout-repository";
 import { makeRewardRefundCoordinator } from "@pirate/platform-cf/reward-refund-coordinator";
@@ -127,10 +128,13 @@ export function makeMegapotAttestationRuntime(input: {
       bucket: options.commitmentBucket,
       publicOrigin: options.commitmentPublicOrigin,
     });
+    // Asked before every signature and every send; see the run lease migration.
+    const authority = makeControlPlaneRewardRunAuthority(controlPlane);
     const approval = makeMegapotApprovalCoordinator({
       store: makeControlPlaneMegapotApprovalStore(controlPlane),
       rpc,
       signer: transactionSigner,
+      authority,
       requiredConfirmations: options.requiredConfirmations,
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
@@ -139,6 +143,7 @@ export function makeMegapotAttestationRuntime(input: {
       store: makeControlPlaneMegapotPurchaseStore(controlPlane),
       rpc,
       signer: transactionSigner,
+      authority,
       options: {
         requiredConfirmations: options.requiredConfirmations,
         purchaseSafetyMarginSeconds: options.purchaseSafetyMarginSeconds,
@@ -150,6 +155,7 @@ export function makeMegapotAttestationRuntime(input: {
       store: makeControlPlaneMegapotClaimStore(controlPlane),
       rpc,
       signer: transactionSigner,
+      authority,
       requiredConfirmations: options.requiredConfirmations,
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
@@ -158,6 +164,7 @@ export function makeMegapotAttestationRuntime(input: {
       store: makeControlPlaneRewardPayoutStore(controlPlane),
       rpc,
       signer: transactionSigner,
+      authority,
       requiredConfirmations: options.requiredConfirmations,
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
@@ -166,6 +173,7 @@ export function makeMegapotAttestationRuntime(input: {
       store: makeControlPlaneRewardRefundStore(controlPlane),
       rpc,
       signer: transactionSigner,
+      authority,
       requiredConfirmations: options.requiredConfirmations,
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
@@ -173,6 +181,7 @@ export function makeMegapotAttestationRuntime(input: {
     const commitment = makeMegapotCommitmentCoordinator({
       store: makeControlPlaneMegapotCommitmentStore(controlPlane),
       signer: commitmentSigner,
+      authority,
       publisher: commitmentPublisher,
     });
     return { approval, purchase, claim, payout, refund, commitment };

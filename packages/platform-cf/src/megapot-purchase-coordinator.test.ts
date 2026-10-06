@@ -284,7 +284,8 @@ function harness(
       if (input.uncertainSend) throw new Error("unknown");
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => (prepared === null ? null : receiptFor(prepared)),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (prepared === null || sendCalls === 0 ? null : receiptFor(prepared)),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("d") }),
     readBlock: async () => ({ blockNumber: 200n, blockHash: BLOCK }),
   } satisfies MegapotV2RpcClient;
@@ -296,6 +297,7 @@ function harness(
     }),
   } satisfies MegapotV2TransactionSigner;
   const coordinator = makeMegapotPurchaseCoordinator({
+    authority: { ensure: () => Effect.void },
     store,
     rpc,
     signer,

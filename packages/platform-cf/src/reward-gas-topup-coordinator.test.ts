@@ -110,6 +110,7 @@ function fixture(
     ...overrides,
   };
   const coordinator = makeRewardGasTopupCoordinator({
+    authority: { ensure: () => Effect.void },
     store,
     rpc,
     signer: makeBaseSepoliaMegapotV2PrivateKeySigner({ privateKey: KEY, expectedAddress: SIGNER }),

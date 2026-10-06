@@ -194,7 +194,8 @@ function harness() {
       sends += 1;
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => receipt(),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (sends > 0 ? receipt() : null),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("c") }),
   } as unknown as MegapotV2RpcClient;
   const signer: MegapotV2TransactionSigner = {
@@ -211,6 +212,7 @@ describe("reward refund coordinator", () => {
   test("returns one terminal bonus-token contribution and replays the confirmed receipt", async () => {
     const state = harness();
     const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
       store: state.store,
       rpc: state.rpc,
       signer: state.signer,
@@ -241,6 +243,7 @@ describe("reward refund coordinator", () => {
       readReceipt: async () => (available ? receipt() : null),
     };
     const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
       store: state.store,
       rpc,
       signer: state.signer,
@@ -281,6 +284,7 @@ describe("reward refund coordinator", () => {
           : readBlock(blockNumber),
     };
     const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
       store,
       rpc,
       signer: state.signer,

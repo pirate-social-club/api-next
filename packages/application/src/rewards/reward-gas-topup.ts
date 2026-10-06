@@ -1,5 +1,5 @@
 import { Data, Effect } from "effect";
-import type { RewardOperationsPaused } from "./reward-operations.ts";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 /**
  * Owner decision 2026-09-25: a Megapot winner whose claimed USDC was paid to
@@ -30,7 +30,8 @@ export class RewardGasTopupBalanceUnavailable extends Data.TaggedError(
 export type RewardGasTopupFailure =
   | RewardGasTopupRejected
   | RewardGasTopupStorageFailed
-  | RewardOperationsPaused;
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type RewardGasTopupStatus = "requested" | "broadcast" | "confirmed" | "released";
 

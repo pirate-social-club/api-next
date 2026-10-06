@@ -301,7 +301,8 @@ function harness(
       if (options.uncertain) throw new Error("unknown");
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => (prepared ? receipt() : null),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (prepared && sendCalls > 0 ? receipt() : null),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("d") }),
     readBlock: async (blockNumber) => ({
       blockNumber,
@@ -320,6 +321,7 @@ function harness(
   } satisfies MegapotV2TransactionSigner;
   return {
     coordinator: makeMegapotClaimCoordinator({
+      authority: { ensure: () => Effect.void },
       store,
       rpc,
       signer,
