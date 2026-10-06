@@ -170,13 +170,37 @@ export function findDeployedVersion(
   return candidates[0] as WorkerVersion;
 }
 
+/**
+ * The managed `CLOUDFLARE_API_TOKEN` is a read-scoped staging diagnostics
+ * credential (docs/api-next/secrets-contract.md), not deployment authority.
+ * Wrangler prefers it over the operator's approved login, so a deploy started
+ * inside the secret runner reads successfully and then fails its upload with
+ * 403. Deployment Wrangler children therefore never inherit it; the shared
+ * read-only runner retains its original diagnostics environment.
+ */
+export function commandEnvironment(
+  command: readonly string[],
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const child = { ...environment };
+  if (command[0] === "bunx" && command[1] === "wrangler") delete child.CLOUDFLARE_API_TOKEN;
+  return child;
+}
+
 export async function runCommand(
   command: readonly string[],
   cwd: string,
   signal?: AbortSignal,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<CommandResult> {
   if (signal?.aborted) throw Error("deployment command interrupted");
-  const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([...command], {
+    cwd,
+    env: environment,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
@@ -188,6 +212,16 @@ export async function runCommand(
   signal?.removeEventListener("abort", abort);
   if (signal?.aborted) throw Error("deployment command interrupted");
   return { exitCode, stdout, stderr };
+}
+
+/** Use one deployment credential for provider preflight, upload and readback. */
+export function runDeploymentCommand(
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<CommandResult> {
+  return runCommand(command, cwd, signal, commandEnvironment(command, environment));
 }
 
 async function requiredOutput(
@@ -213,7 +247,7 @@ function repositoryPath(repositoryRoot: string, inputPath: string): string {
 export async function verifyDeploymentSource(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
-  runner: CommandRunner = runCommand,
+  runner: CommandRunner = runDeploymentCommand,
 ): Promise<Readonly<{ sourceSha: string; configPath: string }>> {
   const configPath = repositoryPath(repositoryRoot, input.configPath);
   const sourceSha = await requiredOutput(
@@ -280,7 +314,7 @@ function versionsCommand(input: WorkerDeploymentInput, configPath: string): read
 export async function deployWorkerWithProvenance(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
-  runner: CommandRunner = runCommand,
+  runner: CommandRunner = runDeploymentCommand,
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
   readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
   rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
@@ -398,7 +432,7 @@ export async function deployWorkerWithProvenance(
 /** Separate accepted tooling from an exact older accepted deployment checkout. */
 export async function resolveDeploymentRepository(
   input: WorkerDeploymentInput,
-  runner: CommandRunner = runCommand,
+  runner: CommandRunner = runDeploymentCommand,
   toolingRoot = fileURLToPath(new URL("../", import.meta.url)),
 ): Promise<string> {
   const target = input.repositoryRoot === undefined ? toolingRoot : resolve(input.repositoryRoot);
