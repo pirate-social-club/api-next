@@ -10,7 +10,7 @@
   "wireContract": "Add the browser-session Spaces community route attachment ceremony under /communities/:communityId/spaces-route-attachments: start, current, prove and commit. Responses carry the route-only owner message to sign and the attachment state. Additive; no existing operation changes.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.111.0.tgz",
-    "sha256": "7830f31425fba68f09b5bbbafb719d10f6b024b9c3db31c61b333c986934ce1a"
+    "sha256": "7dd2c1269a897734b9c2b18c370410738a4b8e1f876deb2c10b41f383fb29933"
   },
   "validation": {
     "status": "Focused local gates passed; full check, full test, hosted gates, independent review and staging acceptance pending",
