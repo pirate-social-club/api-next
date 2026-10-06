@@ -171,10 +171,11 @@ export type MegapotRewardsJobOptions = Readonly<{
   custodyPrivateKey: string;
   retainedCustodyPrivateKeys?: string;
   /**
-   * A session for funding observation only, with the short statement limit the
-   * step's deadlines assume. Absent in tests, which then use the job's session.
+   * A session for funding observation and the liveness projection, with the
+   * statement and close limits the cycle's deadlines assume. Absent in tests,
+   * which then use the job's session.
    */
-  fundingControlPlane?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+  boundedControlPlane?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
   /** Null when MEGAPOT_GAS_TOPUP_PRIVATE_KEY is unset; the top-up step is then skipped. */
   gasTopupPrivateKey: string | null;
   commitmentBucket: MegapotCommitmentBucket;
@@ -278,7 +279,8 @@ export function makeMegapotRewardsJob(
     // asset-bonus transfer was planned. Either may be a retained deployment. The
     // clients are built on demand, live for this cycle and use a short request
     // bound so that the step's time budget holds.
-    const fundingPlane = options.fundingControlPlane ?? controlPlane;
+    const fundingPlane = options.boundedControlPlane ?? controlPlane;
+    const boundedWork = makeControlPlaneMegapotWorkStore(fundingPlane);
     const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
     const fundingAttestations = makeControlPlaneMegapotDrawingObservationStore(fundingPlane);
     const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
@@ -321,7 +323,8 @@ export function makeMegapotRewardsJob(
       jobStartedAt: job.startedAtMs ?? startedAt,
       work: {
         ...makeControlPlaneMegapotWorkStore(controlPlane),
-        loadPendingFunding: makeControlPlaneMegapotWorkStore(fundingPlane).loadPendingFunding,
+        loadPendingFunding: boundedWork.loadPendingFunding,
+        loadAgedPending: boundedWork.loadAgedPending,
       },
       runtime: {
         reconcile: routing.reconcile,

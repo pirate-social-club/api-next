@@ -63,8 +63,9 @@ import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
 import {
-  MEGAPOT_REWARDS_FUNDING_CONNECT_TIMEOUT_MS,
-  MEGAPOT_REWARDS_FUNDING_STATEMENT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
@@ -271,14 +272,16 @@ function makeMegapotOptions(
   }
   return {
     environment: config.API_NEXT_ENV,
-    // Funding observation runs on its own session so that an interrupted
-    // transaction has a short, counted tail; see the cycle's deadlines.
+    // Funding observation and the liveness projection run on a bounded session
+    // so that an interrupted transaction has a short, counted tail; see the
+    // cycle's deadlines.
     ...(env.CONTROL_PLANE === undefined
       ? {}
       : {
-          fundingControlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
-            statementTimeoutMs: MEGAPOT_REWARDS_FUNDING_STATEMENT_TIMEOUT_MS,
-            connectTimeoutMs: MEGAPOT_REWARDS_FUNDING_CONNECT_TIMEOUT_MS,
+          boundedControlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+            statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+            connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+            closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
           }),
         }),
     workerVersion: env.CF_VERSION_METADATA,

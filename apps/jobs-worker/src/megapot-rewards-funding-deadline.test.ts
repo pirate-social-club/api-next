@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
+import { MegapotWorkStorageFailed } from "@pirate/platform-cf/megapot-work-repository";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientFactory,
@@ -7,26 +8,33 @@ import {
 import { Effect } from "effect";
 import { type MegapotRewardsRuntime, runMegapotRewardsCycle } from "./megapot-rewards-cycle.ts";
 
-// The real database adapter over a driver whose statements can be slow. The
-// adapter finishes a transaction's setup and its commit or rollback before it
-// yields to an interrupt, so the funding deadline holds only because the funding
-// session's statement limit bounds that tail. These tests measure it.
+// The real database adapter over a driver whose statements and close can be
+// slow. The adapter finishes a transaction's setup, its commit or rollback and
+// the connection's close before it yields to an interrupt, so the deadlines hold
+// only because the bounded session limits each of those. These tests measure it.
 const statementTimeoutMs = 100;
+const closeTimeoutMs = 100;
+// Four setup statements, one rollback and one close, as in the production constants.
+const tailMs = 5 * statementTimeoutMs + closeTimeoutMs;
 const deadlines = {
   budgetMs: 40,
   latestStartMs: 40,
   hardStopMs: 80,
-  // Four setup statements and one rollback, as in the production constants.
-  reportByMs: 80 + 5 * statementTimeoutMs + 100,
+  reportByMs: 80 + tailMs + 100,
 };
 const driverDelayMs = 2_000;
+// Timer and scheduling slack on a loaded machine; far below the driver's delay.
+const slackMs = 250;
 
-function slowDriver(slow: (text: string) => boolean) {
+function slowDriver(slow: (text: string) => boolean, slowEnd = false) {
   const statements: string[] = [];
   const clientFactory: PostgresClientFactory = () => ({
     connection: { stream: { destroy: () => undefined } },
     connect: async () => undefined,
-    end: async () => undefined,
+    end: async () => {
+      statements.push("<end>");
+      if (slowEnd) await new Promise((resolve) => setTimeout(resolve, driverDelayMs));
+    },
     query: async ({ text }) => {
       statements.push(text);
       if (slow(text)) await new Promise((resolve) => setTimeout(resolve, driverDelayMs));
@@ -38,11 +46,15 @@ function slowDriver(slow: (text: string) => boolean) {
 
 const idle = () => Effect.succeed({ kind: "complete" });
 
-async function runWith(driver: ReturnType<typeof slowDriver>) {
+async function runWith(
+  driver: ReturnType<typeof slowDriver>,
+  options: { readonly livenessOnSession?: boolean; readonly pending?: readonly string[] } = {},
+) {
   const layer = makeDirectPostgresControlPlaneLayer("postgres://funding.invalid/fixture", {
     clientFactory: driver.clientFactory,
     statementTimeoutMs,
     connectTimeoutMs: statementTimeoutMs,
+    closeTimeoutMs,
     logger: { info: () => undefined, error: () => undefined },
   });
   const calls: string[] = [];
@@ -85,9 +97,31 @@ async function runWith(driver: ReturnType<typeof slowDriver>) {
         loadDrawings: () => Effect.succeed([]),
         loadRefunds: () => Effect.succeed([]),
         loadCredits: () => Effect.succeed([]),
-        loadPendingFunding: () => Effect.succeed(["funding-1", "funding-2"]),
+        loadPendingFunding: () => Effect.succeed(options.pending ?? ["funding-1", "funding-2"]),
         loadAgedPending: () =>
-          Effect.sync(() => calls.push("load-aged-pending")).pipe(Effect.as([])),
+          Effect.sync(() => calls.push("load-aged-pending")).pipe(
+            Effect.andThen(
+              options.livenessOnSession !== true
+                ? Effect.succeed([])
+                : // Under Hyperdrive every read is a transaction on the bounded session.
+                  Effect.provide(layer)(
+                    Effect.gen(function* () {
+                      const db = yield* ControlPlaneDb;
+                      yield* db.withTransaction((transaction) =>
+                        transaction.execute({
+                          label: "fixture.liveness.read",
+                          text: "SELECT liveness",
+                          values: [],
+                          readonly: true,
+                        }),
+                      );
+                      return [];
+                    }),
+                  ).pipe(
+                    Effect.mapError(() => new MegapotWorkStorageFailed({ reason: "unavailable" })),
+                  ),
+            ),
+          ),
       },
       runtime,
       fundingDeadlines: deadlines,
@@ -108,7 +142,7 @@ test("a transaction whose setup stalls ends within the counted tail and the cycl
   const driver = slowDriver((text) => text === "BEGIN");
   const { summary, calls, elapsedMs } = await runWith(driver);
   // Far sooner than the driver's delay, and inside hard stop plus the counted tail.
-  expect(elapsedMs).toBeLessThan(deadlines.reportByMs);
+  expect(elapsedMs).toBeLessThan(deadlines.hardStopMs + tailMs + slackMs);
   expect(elapsedMs).toBeLessThan(driverDelayMs);
   expect(driver.statements).not.toContain("UPDATE fixture SET confirmed=true");
   expect(driver.statements).not.toContain("COMMIT");
@@ -121,12 +155,49 @@ test("a transaction whose setup stalls ends within the counted tail and the cycl
 test("a commit that stalls is reported as a failure within the counted tail, never as confirmed", async () => {
   const driver = slowDriver((text) => text === "COMMIT");
   const { summary, calls, elapsedMs } = await runWith(driver);
-  expect(elapsedMs).toBeLessThan(deadlines.reportByMs);
+  expect(elapsedMs).toBeLessThan(deadlines.hardStopMs + tailMs + slackMs);
   expect(elapsedMs).toBeLessThan(driverDelayMs);
   expect(driver.statements).toContain("COMMIT");
   // The outcome of that commit is unknown; it must not be counted as a confirmation.
   expect(summary.failures.length).toBeGreaterThan(0);
   expect(summary).not.toHaveProperty("fundingConfirmed");
   expect(calls.at(-1)).toBe("load-aged-pending");
+  expect(summary.agedPending).toEqual([]);
+});
+
+test("a connection that does not answer its close is fenced within the counted tail", async () => {
+  const driver = slowDriver(() => false, true);
+  const { summary, calls, elapsedMs } = await runWith(driver, { pending: ["funding-1"] });
+  // One observation, one unanswered close: the close bound, not the driver, ends it.
+  expect(driver.statements.filter((text) => text === "<end>")).toHaveLength(1);
+  expect(elapsedMs).toBeLessThan(deadlines.hardStopMs + tailMs + slackMs);
+  expect(elapsedMs).toBeLessThan(driverDelayMs);
+  // The transaction had already committed when the close stalled. The hard stop
+  // falls inside the close bound here, so the cycle may report the observation as
+  // cut off; either way it is one observation and never a second commit.
+  expect(summary.fundingObserved).toBe(1);
+  expect(driver.statements.filter((text) => text === "COMMIT")).toHaveLength(1);
+  expect(summary.failures.every((tag) => tag === "MegapotRewardsFundingDeadlineExceeded")).toBe(
+    true,
+  );
+  expect(calls.at(-1)).toBe("load-aged-pending");
+});
+
+test("a liveness read whose commit stalls ends within its own counted tail", async () => {
+  const driver = slowDriver((text) => text === "COMMIT");
+  const { summary, elapsedMs } = await runWith(driver, { livenessOnSession: true, pending: [] });
+  expect(driver.statements).toContain("SELECT liveness");
+  expect(elapsedMs).toBeLessThan(deadlines.reportByMs + tailMs + slackMs);
+  expect(elapsedMs).toBeLessThan(driverDelayMs);
+  expect(summary.agedPending).toBeNull();
+});
+
+test("a liveness read whose connection does not answer its close ends within its counted tail", async () => {
+  const driver = slowDriver(() => false, true);
+  const { summary, elapsedMs } = await runWith(driver, { livenessOnSession: true, pending: [] });
+  expect(driver.statements).toContain("SELECT liveness");
+  expect(elapsedMs).toBeLessThan(deadlines.reportByMs + tailMs + slackMs);
+  expect(elapsedMs).toBeLessThan(driverDelayMs);
+  // The read itself completed before the close stalled.
   expect(summary.agedPending).toEqual([]);
 });

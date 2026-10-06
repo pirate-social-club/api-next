@@ -16,19 +16,25 @@ export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
 const MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS = 10 * 60;
 const MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT = 10;
 /**
- * Funding observation is the last chain work of a cycle and is bounded against
- * the job's own start, not the cycle's, so setup and retries are counted.
+ * Funding observation and the liveness projection are the last work of a cycle
+ * and are bounded against the job's own start, not the cycle's, so setup and
+ * retries are counted.
  *
- * No observation starts after `budgetMs` of funding work or after
- * `latestStartMs` of the job. At `hardStopMs` whatever is still running is
- * interrupted. Interruption is not instant: the database adapter finishes a
- * transaction's setup and its commit or rollback before it yields. Funding
- * therefore uses its own session, whose statements are limited to
- * MEGAPOT_REWARDS_FUNDING_STATEMENT_TIMEOUT_MS. The longest tail is four setup
- * statements and one rollback, MEGAPOT_REWARDS_FUNDING_INTERRUPT_TAIL_MS, so
- * funding work is over by `hardStopMs` plus that tail, which must not exceed
- * `reportByMs`. The liveness projection is not started after `reportByMs`. What
- * remains of the 50 second job timeout is for the summary and alerts.
+ * No funding observation starts after `budgetMs` of funding work or after
+ * `latestStartMs` of the job. At `hardStopMs` whatever funding work is still
+ * running is interrupted. The liveness projection is not started after
+ * `reportByMs` and is interrupted at it.
+ *
+ * Interruption is not instant: the database adapter finishes a transaction's
+ * setup and its commit or rollback, and then closes the connection, before it
+ * yields. Both steps therefore run on a bounded session whose statements are
+ * limited to MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS and whose close is
+ * limited to MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS. The longest tail after
+ * an interrupt is four setup statements, one rollback and one close:
+ * MEGAPOT_REWARDS_BOUNDED_INTERRUPT_TAIL_MS. Funding is over by `hardStopMs`
+ * plus that tail, which must not exceed `reportByMs`; liveness is over by
+ * `reportByMs` plus that tail, which must stay inside the 50 second job timeout
+ * with room for the summary and alerts.
  *
  * An interrupted or unacknowledged confirmation is safe to repeat: the store
  * credits a transfer only while its effect is unconfirmed.
@@ -39,14 +45,17 @@ export type MegapotRewardsFundingDeadlines = Readonly<{
   hardStopMs: number;
   reportByMs: number;
 }>;
-export const MEGAPOT_REWARDS_FUNDING_STATEMENT_TIMEOUT_MS = 2_000;
-export const MEGAPOT_REWARDS_FUNDING_CONNECT_TIMEOUT_MS = 3_000;
-const MEGAPOT_REWARDS_FUNDING_INTERRUPT_TAIL_MS = 5 * MEGAPOT_REWARDS_FUNDING_STATEMENT_TIMEOUT_MS;
+export const MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS = 2_000;
+export const MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS = 3_000;
+export const MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS = 1_000;
+const MEGAPOT_REWARDS_BOUNDED_INTERRUPT_TAIL_MS =
+  5 * MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS + MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS;
+// 22 s hard stop + 11 s tail = 33 s <= 35 s; 35 s + 11 s tail = 46 s < 50 s.
 const MEGAPOT_REWARDS_FUNDING_DEADLINES: MegapotRewardsFundingDeadlines = {
   budgetMs: 10_000,
-  latestStartMs: 22_000,
-  hardStopMs: 30_000,
-  reportByMs: 30_000 + MEGAPOT_REWARDS_FUNDING_INTERRUPT_TAIL_MS + 2_000,
+  latestStartMs: 16_000,
+  hardStopMs: 22_000,
+  reportByMs: 22_000 + MEGAPOT_REWARDS_BOUNDED_INTERRUPT_TAIL_MS + 2_000,
 };
 const MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG = "MegapotRewardsFundingDeadlineExceeded";
 /** One request bound for the funding chain client; the hard stop is the guarantee. */
