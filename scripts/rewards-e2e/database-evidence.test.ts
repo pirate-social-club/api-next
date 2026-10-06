@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { REWARD_SHUTDOWN_PREDICATES } from "../rewards-binding-deploy-preflight.ts";
-import { assertShutdownInventory, isolatedDatabase } from "./database-evidence.mjs";
+import {
+  assertRunLeaseReady,
+  assertShutdownInventory,
+  isolatedDatabase,
+} from "./database-evidence.mjs";
 
 test("an obligation in any shutdown family or a missing category refuses acceptance", () => {
   const categories = [
@@ -53,4 +57,22 @@ test("credentials for another host or another role are refused before any connec
     expect(() => isolatedDatabase(identity, admin, runtime)).toThrow(
       "Isolated database identity mismatch",
     );
+});
+
+test("a run starts only on a database that requires a lease and holds none", () => {
+  expect(assertRunLeaseReady([{ required: true, run_id: null, fence: "0", live: false }])).toEqual({
+    required: true,
+    live: false,
+  });
+  // An earlier run's expired lease is not live and does not block the next run.
+  expect(
+    assertRunLeaseReady([{ required: true, run_id: "win-1", fence: "9", live: false }]).live,
+  ).toBe(false);
+  expect(() => assertRunLeaseReady([{ required: false, run_id: null, live: false }])).toThrow(
+    "does not require a run lease",
+  );
+  expect(() => assertRunLeaseReady([])).toThrow("does not require a run lease");
+  expect(() => assertRunLeaseReady([{ required: true, run_id: "win-1", live: true }])).toThrow(
+    "already live",
+  );
 });
