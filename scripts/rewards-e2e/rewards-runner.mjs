@@ -19,6 +19,7 @@ import { runScenario } from "./run-scenario.mjs";
 import {
   disableIsolatedRewards,
   inspectIsolatedWorker,
+  readIsolatedRewardsFlags,
   setIsolatedRewardsFlag,
 } from "./runtime-flags.mjs";
 import { assertPairBudget } from "./spending-ledger.mjs";
@@ -178,8 +179,8 @@ console.log(
   }),
 );
 if (process.argv.includes("--rehearse-lease")) {
-  // Unfunded: no offer is created and no funds move. It enables the flags and
-  // resumes the brake under a lease, so it takes the same lock as a funded run.
+  // Unfunded: no offer is created and no funds move. It turns the jobs flag on
+  // and resumes the brake under a lease, so it takes the same lock as a funded run.
   const directory = resolve(
     evidenceRoot,
     `lease-rehearsal-${new Date().toISOString().replace(/[:.]/g, "-")}`,
@@ -195,11 +196,11 @@ if (process.argv.includes("--rehearse-lease")) {
   const result = await rehearseRunLease({
     db,
     runIdPrefix: `rehearsal-${Date.now()}`,
-    enableFlags: async () => {
-      await setIsolatedRewardsFlag("http", "true", apiSource);
-      await setIsolatedRewardsFlag("jobs", "true", apiSource);
+    flags: {
+      read: () => readIsolatedRewardsFlags(),
+      enableJobs: () => setIsolatedRewardsFlag("jobs", "true", apiSource),
+      disableAll: () => disableIsolatedRewards(apiSource),
     },
-    disableFlags: () => disableIsolatedRewards(apiSource),
     readShutdownInventory: () => readShutdownInventory(db),
     assertShutdownInventory,
     record: (entry) =>

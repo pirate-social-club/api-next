@@ -86,6 +86,14 @@ export async function setIsolatedRewardsFlag(
   throw Error("Isolated flag outcome uncertain; inspect serving state, do not replay");
 }
 
+/** A fresh read of what each isolated Worker is serving. It changes nothing. */
+export async function readIsolatedRewardsFlags(api = cloudflareApi) {
+  const [http, jobs] = await Promise.all(
+    ["http", "jobs"].map(async (kind) => flagOf(await inspectIsolatedWorker(kind, api))),
+  );
+  return { http, jobs };
+}
+
 export async function disableIsolatedRewards(source, options) {
   const results = await Promise.allSettled(
     ["http", "jobs"].map((kind) => setIsolatedRewardsFlag(kind, "false", source, options)),

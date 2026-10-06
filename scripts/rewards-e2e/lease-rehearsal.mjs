@@ -12,19 +12,26 @@ const authorityQuery = "SELECT api_next.require_reward_run_authority_v1()";
  * An unfunded rehearsal of the run lease on the isolated stack. It creates no
  * offer and moves no funds. It shows, against the deployed Workers and the real
  * database, that the runtime role cannot hold or resume anything, that acquiring
- * a lease grants nothing while paused, that a held lease stays live past its
- * time to live, and that a runner killed without warning loses admission and
- * signing authority when the lease runs out, after which the jobs Worker pauses
- * the brake. It ends paused, with nothing owed and both flags off, or says why not.
+ * a lease grants nothing while paused, and that a held lease stays live past its
+ * time to live because it was renewed.
+ *
+ * A runner killed without warning is then proven in two separate phases. First,
+ * with the jobs flag off so that nothing can pause the brake, the database is
+ * shown refusing authority on lease expiry alone while the brake row still reads
+ * running. Only then is the jobs flag turned on and the jobs Worker shown
+ * pausing the brake. A refusal seen after a pause proves nothing about expiry,
+ * so the two are never read from one observation.
+ *
+ * It ends paused, with nothing owed and both flags read back off, or says why not.
  *
  * It cannot rehearse an uncertain send: that needs a chain effect, which needs a
- * funded offer. That behaviour is covered by the coordinator and database tests.
+ * funded offer. That behaviour is covered by fault injection in the coordinator
+ * and database tests.
  */
 export async function rehearseRunLease({
   db,
   runIdPrefix,
-  enableFlags,
-  disableFlags,
+  flags,
   readShutdownInventory,
   assertShutdownInventory,
   spawnHolder,
@@ -32,6 +39,7 @@ export async function rehearseRunLease({
   timing = leaseTiming,
   now = Date.now,
   sleep = (ms) => Bun.sleep(ms),
+  leaseClock = {},
 }) {
   const findings = [];
   const expect = (name, ok, detail) => {
@@ -41,6 +49,7 @@ export async function rehearseRunLease({
   const control = async () => (await db.read(controlQuery))[0];
   const lease = async () => (await db.read(leaseQuery))[0];
   const authority = () => db.asRuntime(authorityQuery);
+  const bothOff = (read) => read?.http === "false" && read?.jobs === "false";
   const waitFor = async (limitMs, probe) => {
     const startedAt = now();
     for (;;) {
@@ -50,13 +59,13 @@ export async function rehearseRunLease({
       await sleep(5_000);
     }
   };
-  let flagsOn = false;
   let held;
   let holder;
   try {
     const initial = await control();
     if (initial?.paused !== true) throw Error("Rehearsal requires a paused brake");
     assertShutdownInventory(await readShutdownInventory());
+    if (!bothOff(await flags.read())) throw Error("Rehearsal requires both flags off");
 
     // The runtime role may not hold a lease, change one or resume the brake.
     for (const [name, text] of [
@@ -76,28 +85,32 @@ export async function rehearseRunLease({
     }
     expect("brake still paused after refused attempts", (await control()).paused === true);
 
-    await enableFlags();
-    flagsOn = true;
-
     // Acquired while paused: no authority until the operator resumes.
     held = await holdRunLease({
       lease: db.lease,
       runId: `${runIdPrefix}-held`,
       timing,
+      ...leaseClock,
       onEvent: (event) => record({ lease: "held", ...event }),
     });
-    expect("a lease acquired while paused is live", (await lease()).live === true);
+    const acquired = await lease();
+    expect("a lease acquired while paused is live", acquired.live === true);
     expect("acquisition alone grants no authority", (await authority()) === "PR001");
     const before = await control();
     const resumed = await db.control(false, before.revision, `Isolated lease rehearsal held`);
     expect("authority is granted once resumed under a live lease", (await authority()) === null);
 
-    // Held past its time to live: the heartbeat, not the first grant, keeps it live.
+    // Held past its time to live. Only renewal can do that, and the database's
+    // own fence, which advances on every renewal, is the evidence that it did.
     await sleep(timing.ttlSeconds * 1000 + 15_000);
     held.assertHeld();
-    expect("a held lease is still live past its time to live", (await lease()).live === true, {
-      renewals: held.state().renewals,
-    });
+    const kept = await lease();
+    expect("a held lease is still live past its time to live", kept.live === true);
+    expect(
+      "the heartbeat renewed the lease",
+      held.state().renewals >= 1 && BigInt(kept.fence) > BigInt(acquired.fence),
+      { renewals: held.state().renewals, fenceAtAcquire: acquired.fence, fenceNow: kept.fence },
+    );
     expect("authority is still granted past the time to live", (await authority()) === null);
 
     // An orderly end: pause, then release. Authority goes with the pause.
@@ -112,7 +125,9 @@ export async function rehearseRunLease({
     expect("no authority after an orderly end", (await authority()) === "PR001");
     held = undefined;
 
-    // A runner lost without warning. Nothing pauses, releases or tells anyone.
+    // Phase one. A runner lost without warning, with nothing able to pause the
+    // brake: the jobs flag is off, so the jobs Worker runs no rewards cycle.
+    expect("flags are off, so nothing can pause the brake", bothOff(await flags.read()));
     holder = await spawnHolder(`${runIdPrefix}-lost`);
     const running = await control();
     expect(
@@ -125,18 +140,38 @@ export async function rehearseRunLease({
     await holder.kill();
     record({ at: new Date(killedAt).toISOString(), name: "holder killed" });
 
-    // The database stops granting authority on its own once the lease runs out.
-    const refused = await waitFor(timing.ttlSeconds * 1000 + 30_000, async () =>
-      (await authority()) === "PR001" ? { brake: await control() } : null,
+    const expired = await waitFor(timing.ttlSeconds * 1000 + 30_000, async () =>
+      (await lease()).live === false ? true : null,
     );
-    expect("authority is refused after the lease runs out", refused.value !== null, {
-      afterMs: refused.afterMs,
-      brakePausedWhenFirstRefused: refused.value?.brake.paused,
-    });
-    expect("the lost lease is not live", (await lease()).live === false);
+    expect("the lost lease ran out", expired.value === true, { afterMs: expired.afterMs });
+    // One observation, bracketed by two reads of the brake. It counts only if
+    // the brake was running, unchanged, on both sides of the refusal.
+    const brakeBefore = await control();
+    const refusal = await authority();
+    const brakeAfter = await control();
+    const flagsAtRefusal = await flags.read();
+    expect(
+      "authority is refused on lease expiry alone, with the brake still running",
+      refusal === "PR001" &&
+        brakeBefore.paused === false &&
+        brakeAfter.paused === false &&
+        brakeBefore.revision === running.revision &&
+        brakeAfter.revision === running.revision &&
+        bothOff(flagsAtRefusal),
+      {
+        refusal,
+        brakePausedBefore: brakeBefore.paused,
+        brakePausedAfter: brakeAfter.paused,
+        revisionBefore: brakeBefore.revision,
+        revisionAfter: brakeAfter.revision,
+        flags: flagsAtRefusal,
+      },
+    );
 
-    // Then the jobs Worker, which can only pause, makes the brake row agree.
-    const pausedByJobs = await waitFor(150_000, async () => {
+    // Phase two. Now let the jobs Worker, which can only pause, make the brake
+    // row agree. This is the only flag the rehearsal turns on.
+    await flags.enableJobs();
+    const pausedByJobs = await waitFor(180_000, async () => {
       const current = await control();
       return current.paused === true ? current : null;
     });
@@ -169,10 +204,16 @@ export async function rehearseRunLease({
     try {
       assertShutdownInventory(await readShutdownInventory());
       expect("nothing owed at closeout", true);
-      if (flagsOn) {
-        const disabled = await disableFlags();
-        expect("flags off at closeout", disabled.flagsOff === true);
+      // Whatever was or was not attempted, and whatever any earlier answer
+      // said: turn both off, then believe only a fresh read. A flag change
+      // whose answer was lost is settled by that read, and asked once more
+      // only if the read still shows a flag on.
+      let read = null;
+      for (let attempt = 0; attempt < 2 && !bothOff(read); attempt++) {
+        await flags.disableAll().catch(() => {});
+        read = await flags.read().catch(() => null);
       }
+      expect("both flags read back off at closeout", bothOff(read), read);
     } catch (error) {
       expect(
         "closeout inventory and flags",
