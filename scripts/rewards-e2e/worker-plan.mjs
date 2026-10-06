@@ -20,8 +20,15 @@ const buckets = {
   AVATAR_SEALED: "pirate-avatar-sealed-megapot-e2e-staging",
   MEGAPOT_COMMITMENTS: "pirate-megapot-commitments-e2e-staging",
 };
+// Database targets the isolated runner must never be planned against. A retired
+// target stays listed: its identifier may be reused or restored, and an old
+// evidence file may still name it.
 const deniedHyperdrives = new Set([
+  // Shared staging.
   "8cb7658a0f7143359c1becfec6a15c23",
+  // Production, current: the database production serves since 2026-10-04.
+  "0c215865d7994c92b940d905f54ece37",
+  // Production, former: belonged to the deleted production database.
   "884b68c5a7904982a86620ed90032b77",
   "cf1afd643ad7469fba79694ccac74df3",
   "00000000000000000000000000000000",

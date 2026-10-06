@@ -65,6 +65,16 @@ export interface MegapotWorkStore {
   readonly loadChainEffects: (
     limit: number,
   ) => Effect.Effect<readonly MegapotChainEffectWork[], MegapotWorkStorageFailed>;
+  /**
+   * Funding whose transfer is bound but neither confirmed nor reverted, for
+   * megapot-pool and asset-bonus legs alike. Each cursor step moves the first
+   * candidate by one position, so neither transfers that never resolve nor a
+   * caller that only gets through part of a batch can hold any transfer out.
+   */
+  readonly loadPendingFunding: (input: {
+    readonly limit: number;
+    readonly cursor: number;
+  }) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
   readonly loadAgedPending: (
     thresholdSeconds: number,
   ) => Effect.Effect<readonly MegapotAgedPending[], MegapotWorkStorageFailed>;
@@ -319,6 +329,50 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
+    loadPendingFunding: (input: { readonly limit: number; readonly cursor: number }) =>
+      mapped(
+        Effect.gen(function* () {
+          if (!validLimit(input.limit) || !Number.isSafeInteger(input.cursor) || input.cursor < 0) {
+            return yield* failed("invalid-row");
+          }
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "megapot-work.pending-funding.read",
+            // Only a transfer the sponsor already submitted is observed. A planned
+            // effect has no hash, and nothing in jobs can create one. The window
+            // rotates over a stable order and writes nothing, so updated_at keeps
+            // measuring how long the transfer has been pending.
+            text: `WITH pending AS (
+                    SELECT funding.funding_effect_id,
+                           row_number() OVER (
+                             ORDER BY funding.updated_at,funding.funding_effect_id
+                           ) - 1 AS position,
+                           count(*) OVER () AS total
+                      FROM song_reward_leg_funding_effects funding
+                     WHERE funding.state IN ('confirming','reconciliation_required')
+                       AND funding.transaction_hash IS NOT NULL
+                  ), rotated AS (
+                    SELECT pending.funding_effect_id,
+                           mod(
+                             pending.position
+                               - mod($2::numeric, pending.total::numeric)
+                               + pending.total::numeric,
+                             pending.total::numeric
+                           ) AS turn
+                      FROM pending
+                  )
+                  SELECT funding_effect_id FROM rotated
+                   WHERE turn < $1::numeric ORDER BY turn`,
+            values: [input.limit, input.cursor],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () => result.rows.map((row) => text(row, "funding_effect_id")),
+            catch: () => failed("invalid-row"),
+          });
+        }),
+      ),
+
     loadAgedPending: (thresholdSeconds: number) =>
       mapped(
         Effect.gen(function* () {
@@ -442,6 +496,7 @@ export const makeControlPlaneMegapotWorkStore = (
     loadCredits: (limit) => provide(repository.loadCredits(limit)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
+    loadPendingFunding: (input) => provide(repository.loadPendingFunding(input)),
     loadAgedPending: (thresholdSeconds) => provide(repository.loadAgedPending(thresholdSeconds)),
   };
 };
