@@ -323,7 +323,10 @@ export const EXPECTED_INFISICAL_DRIFT: readonly InfisicalExpectedDrift[] = [];
 export type InfisicalSnapshot = Readonly<{
   environment: InfisicalEnvironment;
   folders: readonly string[];
-  secrets: Readonly<Partial<Record<InfisicalPath, readonly string[]>>>;
+  secrets: Readonly<
+    Record<Exclude<InfisicalPath, "/services/spaces-operator">, readonly string[]> &
+      Partial<Record<"/services/spaces-operator", readonly string[]>>
+  >;
 }>;
 
 export type InfisicalDrift = Readonly<{
