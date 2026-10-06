@@ -4,6 +4,8 @@
 -- stores the owner signature and a second observation, and commit writes typed
 -- route evidence and exactly one active binding. Evidence carries a database
 -- lease; the existing effective-route predicates refuse it once it has expired.
+-- The same ceremony, with a distinct purpose, re-proves ownership for a binding
+-- that stopped resolving. It keeps the one immutable binding and never rebinds.
 CREATE TABLE spaces_community_route_attachments (
   attachment_intent_id text PRIMARY KEY CHECK (attachment_intent_id ~ '^sroute_[0-9a-f]{32}$'),
   ceremony_intent_id text NOT NULL UNIQUE CHECK (ceremony_intent_id ~ '^srcer_[0-9a-f]{32}$'),
@@ -12,6 +14,9 @@ CREATE TABLE spaces_community_route_attachments (
   canonical_root text NOT NULL CHECK (is_community_route_root_label('spaces', canonical_root) IS TRUE),
   community_id text NOT NULL REFERENCES communities(community_id),
   account_id text NOT NULL REFERENCES users(user_id),
+  purpose text NOT NULL CHECK (purpose IN ('first_attachment','revalidation')),
+  target_route_binding_id text REFERENCES community_canonical_route_bindings(route_binding_id),
+  expected_binding_generation bigint CHECK (expected_binding_generation > 0),
   start_idempotency_key text NOT NULL CHECK (octet_length(start_idempotency_key) BETWEEN 1 AND 255),
   start_request_hash text NOT NULL CHECK (start_request_hash ~ '^[0-9a-f]{64}$'),
   nonce_hex text NOT NULL CHECK (nonce_hex ~ '^[0-9a-f]{64}$'),
@@ -29,7 +34,8 @@ CREATE TABLE spaces_community_route_attachments (
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   status text NOT NULL CHECK (status IN (
-    'awaiting_signature','proved','committed','expired','root_changed','signature_rejected'
+    'awaiting_signature','proved','committed','expired','root_changed','signature_rejected',
+    'configuration_changed'
   )),
   signature_hex text CHECK (signature_hex ~ '^[0-9a-f]{128}$'),
   proof_observation bytea CHECK (octet_length(proof_observation) BETWEEN 1 AND 1048576),
@@ -38,7 +44,14 @@ CREATE TABLE spaces_community_route_attachments (
   route_binding_id text REFERENCES community_canonical_route_bindings(route_binding_id),
   evidence_ref text,
   committed_response jsonb,
+  commit_observation_sha256_hex text CHECK (commit_observation_sha256_hex ~ '^[0-9a-f]{64}$'),
   updated_at timestamptz NOT NULL,
+  CONSTRAINT spaces_community_route_attachments_purpose_shape CHECK (
+    (purpose = 'first_attachment' AND target_route_binding_id IS NULL
+      AND expected_binding_generation IS NULL)
+    OR (purpose = 'revalidation' AND target_route_binding_id IS NOT NULL
+      AND expected_binding_generation IS NOT NULL)
+  ),
   CONSTRAINT spaces_community_route_attachments_href CHECK (
     canonical_href = public_origin || '/c/@' || canonical_root
   ),
@@ -55,6 +68,7 @@ CREATE TABLE spaces_community_route_attachments (
   CONSTRAINT spaces_community_route_attachments_commit_shape CHECK (
     (status = 'committed') = (
       route_binding_id IS NOT NULL AND evidence_ref IS NOT NULL AND committed_response IS NOT NULL
+      AND commit_observation_sha256_hex IS NOT NULL
     )
   ),
   CONSTRAINT spaces_community_route_attachments_start_replay UNIQUE (
@@ -65,7 +79,8 @@ CREATE TABLE spaces_community_route_attachments (
   )
 );
 
--- One ceremony in flight per community and per root, and at most one commit of each.
+-- One ceremony in flight per community and per root. A community and a root
+-- are each first attached at most once; later commits only revalidate.
 CREATE UNIQUE INDEX spaces_community_route_attachments_open_community_uidx
   ON spaces_community_route_attachments (community_id)
   WHERE status IN ('awaiting_signature','proved');
@@ -73,9 +88,11 @@ CREATE UNIQUE INDEX spaces_community_route_attachments_open_root_uidx
   ON spaces_community_route_attachments (environment, canonical_root)
   WHERE status IN ('awaiting_signature','proved');
 CREATE UNIQUE INDEX spaces_community_route_attachments_committed_community_uidx
-  ON spaces_community_route_attachments (community_id) WHERE status = 'committed';
+  ON spaces_community_route_attachments (community_id)
+  WHERE status = 'committed' AND purpose = 'first_attachment';
 CREATE UNIQUE INDEX spaces_community_route_attachments_committed_root_uidx
-  ON spaces_community_route_attachments (environment, canonical_root) WHERE status = 'committed';
+  ON spaces_community_route_attachments (environment, canonical_root)
+  WHERE status = 'committed' AND purpose = 'first_attachment';
 
 CREATE FUNCTION guard_spaces_community_route_attachment_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -86,14 +103,16 @@ BEGIN
   END IF;
   IF ROW(
     NEW.attachment_intent_id, NEW.ceremony_intent_id, NEW.generation, NEW.environment,
-    NEW.canonical_root, NEW.community_id, NEW.account_id, NEW.start_idempotency_key,
+    NEW.canonical_root, NEW.community_id, NEW.account_id, NEW.purpose,
+    NEW.target_route_binding_id, NEW.expected_binding_generation, NEW.start_idempotency_key,
     NEW.start_request_hash, NEW.nonce_hex, NEW.root_outpoint, NEW.root_key_hex,
     NEW.public_origin, NEW.canonical_href, NEW.provider_id, NEW.provider_configuration_digest,
     NEW.requirement_hash, NEW.challenge_message, NEW.challenge_digest_hex,
     NEW.start_observation, NEW.start_observation_sha256_hex, NEW.created_at, NEW.expires_at
   ) IS DISTINCT FROM ROW(
     OLD.attachment_intent_id, OLD.ceremony_intent_id, OLD.generation, OLD.environment,
-    OLD.canonical_root, OLD.community_id, OLD.account_id, OLD.start_idempotency_key,
+    OLD.canonical_root, OLD.community_id, OLD.account_id, OLD.purpose,
+    OLD.target_route_binding_id, OLD.expected_binding_generation, OLD.start_idempotency_key,
     OLD.start_request_hash, OLD.nonce_hex, OLD.root_outpoint, OLD.root_key_hex,
     OLD.public_origin, OLD.canonical_href, OLD.provider_id, OLD.provider_configuration_digest,
     OLD.requirement_hash, OLD.challenge_message, OLD.challenge_digest_hex,
@@ -105,8 +124,9 @@ BEGIN
   -- database clock. Expiry itself may be recorded at any later time.
   IF NOT (
     (OLD.status = 'awaiting_signature' AND NEW.status IN (
-      'proved','expired','root_changed','signature_rejected'))
-    OR (OLD.status = 'proved' AND NEW.status IN ('committed','expired','root_changed'))
+      'proved','expired','root_changed','signature_rejected','configuration_changed'))
+    OR (OLD.status = 'proved' AND NEW.status IN (
+      'committed','expired','root_changed','configuration_changed'))
   ) THEN
     RAISE EXCEPTION 'spaces community route attachment transition is not allowed';
   END IF;
@@ -223,6 +243,8 @@ CREATE FUNCTION validate_spaces_route_attachment_evidence_insert() RETURNS trigg
     AS $$
 DECLARE
   attachment spaces_community_route_attachments%ROWTYPE;
+  binding community_canonical_route_bindings%ROWTYPE;
+  prior community_route_ownership_evidence%ROWTYPE;
   guard_at timestamptz := clock_timestamp();
 BEGIN
   SELECT * INTO attachment
@@ -234,7 +256,6 @@ BEGIN
     OR attachment.expires_at <= guard_at
     OR NEW.root_label <> attachment.canonical_root
     OR NEW.verified_by_actor_id <> attachment.account_id
-    OR NEW.binding_generation <> 1
     OR NEW.provider_id <> attachment.provider_id
     OR NEW.requirement_hash <> attachment.requirement_hash
     OR NEW.verified_at <> attachment.proved_at
@@ -242,6 +263,32 @@ BEGIN
     OR has_community_route_authority(attachment.community_id, attachment.account_id) IS NOT TRUE
   THEN
     RAISE EXCEPTION 'spaces route evidence requires a live proved attachment';
+  END IF;
+  IF attachment.purpose = 'first_attachment' THEN
+    IF NEW.binding_generation <> 1 THEN
+      RAISE EXCEPTION 'spaces route evidence requires a live proved attachment';
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- Revalidation restores the same immutable binding, and only one that no
+  -- longer resolves. A live lease is extended by renewal, never by this path.
+  SELECT * INTO binding
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = attachment.target_route_binding_id
+   FOR UPDATE;
+  SELECT * INTO prior
+    FROM community_route_ownership_evidence WHERE evidence_ref = binding.verified_evidence_ref;
+  IF binding.route_binding_id IS NULL
+    OR binding.community_id <> attachment.community_id
+    OR binding.family <> 'spaces'
+    OR binding.root_label <> attachment.canonical_root
+    OR binding.route_authority_kind <> 'verified_namespace_v1'
+    OR binding.binding_generation <> attachment.expected_binding_generation
+    OR NEW.binding_generation <> attachment.expected_binding_generation + 1
+    OR (binding.route_lifecycle_status = 'active' AND binding.ownership_status = 'verified'
+        AND prior.expires_at IS NOT NULL AND prior.expires_at > guard_at)
+  THEN
+    RAISE EXCEPTION 'spaces route revalidation requires the same ineffective binding';
   END IF;
   RETURN NEW;
 END;
@@ -331,6 +378,7 @@ BEGIN
        WHERE existing.community_id = NEW.community_id
     )
     OR attachment.community_id <> NEW.community_id
+    OR attachment.purpose <> 'first_attachment'
     OR attachment.status <> 'proved'
     OR attachment.expires_at <= clock_timestamp()
     OR NEW.family <> 'spaces'

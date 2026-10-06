@@ -80,13 +80,22 @@ export function spacesRouteProviderConfigurationDigestV1(
   );
 }
 
-/** The immutable requirement: this root as the first route of this community. */
+export type SpacesRoutePurpose =
+  | Readonly<{ kind: "first_attachment" }>
+  | Readonly<{ kind: "revalidation"; routeBindingId: string; expectedBindingGeneration: number }>;
+
+/**
+ * The immutable requirement. A first attachment and a revalidation of one
+ * binding generation hash differently, so a signature for one never serves
+ * the other, nor a later generation of the same binding.
+ */
 export function spacesRouteRequirementHashV1(
   input: Readonly<{
     environment: string;
     communityId: string;
     canonicalRoot: string;
     publicOrigin: string;
+    purpose: SpacesRoutePurpose;
   }>,
 ): string {
   return sha256Hex(
@@ -98,7 +107,13 @@ export function spacesRouteRequirementHashV1(
       `@${input.canonicalRoot}`,
       spacesRouteCanonicalHrefV1(input.publicOrigin, input.canonicalRoot),
       "manage_routes",
-      "first_canonical_route",
+      ...(input.purpose.kind === "first_attachment"
+        ? ["first_canonical_route"]
+        : [
+            "revalidate_canonical_route",
+            input.purpose.routeBindingId,
+            input.purpose.expectedBindingGeneration,
+          ]),
     ]),
   );
 }

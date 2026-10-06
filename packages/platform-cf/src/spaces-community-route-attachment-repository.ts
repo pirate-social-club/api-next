@@ -9,6 +9,7 @@ import {
   SPACES_ROUTE_PROVIDER_ID,
   SPACES_ROUTE_RENEW_AFTER_SECONDS,
   SPACES_ROUTE_VERIFIER_CONTRACT,
+  type SpacesRoutePurpose,
   spacesRouteCanonicalHrefV1,
   spacesRouteEvidenceDigestV1,
   spacesRouteOwnerIdentityDigestV1,
@@ -115,9 +116,17 @@ const lockAuthorizedCommunity = async (
     "spaces-route.community.lock",
     `SELECT community.canonical_route_binding_id,
             has_community_route_authority(community.community_id,$2) AS authorized,
-            EXISTS (SELECT 1 FROM community_canonical_route_bindings AS binding
-                     WHERE binding.community_id=community.community_id) AS ever_bound
+            binding.route_binding_id AS bound_route_binding_id,
+            binding.family AS bound_family,binding.root_label AS bound_root_label,
+            binding.binding_generation AS bound_generation,
+            binding.route_authority_kind AS bound_authority_kind,
+            (binding.route_lifecycle_status='active' AND binding.ownership_status='verified'
+              AND COALESCE(evidence.expires_at > clock_timestamp(),false)) AS bound_effective
        FROM communities AS community
+       LEFT JOIN community_canonical_route_bindings AS binding
+         ON binding.community_id=community.community_id
+       LEFT JOIN community_route_ownership_evidence AS evidence
+         ON evidence.evidence_ref=binding.verified_evidence_ref
       WHERE community.community_id=$1 AND community.status='active'
         AND community.route_authority_version='optional_route_v2'
       FOR UPDATE OF community`,
@@ -156,6 +165,7 @@ const stateResponse = (row: Row, replayed: boolean) => ({
   community_id: text(row.community_id),
   network: "mainnet" as const,
   canonical_root: text(row.canonical_root),
+  purpose: text(row.purpose),
   status: isOpen(row.status) && row.live !== true ? ("expired" as const) : text(row.status),
   root_outpoint: text(row.root_outpoint),
   owner_public_key_hex: text(row.root_key_hex),
@@ -171,7 +181,7 @@ const stateResponse = (row: Row, replayed: boolean) => ({
 const finish = async (
   tx: Transaction,
   row: Row,
-  status: "expired" | "root_changed" | "signature_rejected",
+  status: "expired" | "root_changed" | "signature_rejected" | "configuration_changed",
 ): Promise<unknown> => {
   const updated = await query(
     tx,
@@ -234,6 +244,11 @@ export function makeSpacesRouteAttachmentStore(
     environment,
     publicOrigin,
   });
+  // A ceremony paused across a change of trusted origin or lease policy must
+  // not activate its old URL. Committed rows still replay their exact history.
+  const configurationChanged = (row: Row): boolean =>
+    row.provider_configuration_digest !== providerConfigurationDigest ||
+    row.public_origin !== publicOrigin;
   return {
     start: async (input) => {
       if (!isCanonicalSpacesRootV1(input.canonicalRoot))
@@ -257,21 +272,38 @@ export function makeSpacesRouteAttachmentStore(
             throw new SpacesRouteAttachmentRefused("conflict");
           return stateResponse(prior, true);
         }
-        // An ineffective old binding is not an empty slot: a community that
-        // ever held a route, and a root that ever addressed one, stay taken.
-        const taken = await query(
-          tx,
-          "spaces-route.start.taken",
-          `SELECT EXISTS (SELECT 1 FROM community_canonical_route_bindings
-                           WHERE family='spaces' AND root_label=$1) AS root_bound`,
-          [input.canonicalRoot],
-        );
-        if (
-          community.canonical_route_binding_id !== null ||
-          community.ever_bound !== false ||
-          taken.rows[0]?.root_bound !== false
-        ) {
-          throw new SpacesRouteAttachmentRefused("conflict");
+        // An ineffective old binding is not an empty slot. A community that
+        // ever held a route keeps that one binding, and a root that ever
+        // addressed a community stays with it. The only way forward for a
+        // binding that stopped resolving is fresh ownership proof for that
+        // same binding; a route that still resolves has nothing to recover.
+        let purpose: SpacesRoutePurpose;
+        if (community.bound_route_binding_id === null) {
+          const taken = await query(
+            tx,
+            "spaces-route.start.taken",
+            `SELECT EXISTS (SELECT 1 FROM community_canonical_route_bindings
+                             WHERE family='spaces' AND root_label=$1) AS root_bound`,
+            [input.canonicalRoot],
+          );
+          if (community.canonical_route_binding_id !== null || taken.rows[0]?.root_bound !== false)
+            throw new SpacesRouteAttachmentRefused("conflict");
+          purpose = { kind: "first_attachment" };
+        } else {
+          if (
+            community.canonical_route_binding_id !== community.bound_route_binding_id ||
+            community.bound_family !== "spaces" ||
+            community.bound_root_label !== input.canonicalRoot ||
+            community.bound_authority_kind !== "verified_namespace_v1" ||
+            community.bound_effective !== false
+          ) {
+            throw new SpacesRouteAttachmentRefused("conflict");
+          }
+          purpose = {
+            kind: "revalidation",
+            routeBindingId: text(community.bound_route_binding_id),
+            expectedBindingGeneration: number(community.bound_generation),
+          };
         }
         const open = await query(
           tx,
@@ -284,8 +316,9 @@ export function makeSpacesRouteAttachmentStore(
           [input.communityId, input.canonicalRoot, OPEN, environment],
         );
         for (const row of open.rows) {
-          if (row.live === true) throw new SpacesRouteAttachmentRefused("conflict");
-          await finish(tx, row, "expired");
+          if (row.live !== true) await finish(tx, row, "expired");
+          else if (configurationChanged(row)) await finish(tx, row, "configuration_changed");
+          else throw new SpacesRouteAttachmentRefused("conflict");
         }
         let observed: Awaited<ReturnType<SpacesRootRouteObserver["observe"]>>;
         try {
@@ -303,6 +336,7 @@ export function makeSpacesRouteAttachmentStore(
           communityId: input.communityId,
           canonicalRoot: input.canonicalRoot,
           publicOrigin,
+          purpose,
         });
         const allocated = await query(
           tx,
@@ -341,13 +375,15 @@ export function makeSpacesRouteAttachmentStore(
           `WITH created AS (
              INSERT INTO spaces_community_route_attachments (
                attachment_intent_id,ceremony_intent_id,generation,environment,canonical_root,
-               community_id,account_id,start_idempotency_key,start_request_hash,nonce_hex,
+               community_id,account_id,purpose,target_route_binding_id,
+               expected_binding_generation,start_idempotency_key,start_request_hash,nonce_hex,
                root_outpoint,root_key_hex,public_origin,canonical_href,provider_id,
                provider_configuration_digest,requirement_hash,challenge_message,
                challenge_digest_hex,start_observation,start_observation_sha256_hex,
                created_at,expires_at,status,updated_at
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-               $21,$22::timestamptz,$23::timestamptz,'awaiting_signature',$22::timestamptz)
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$24,$25,$26,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+               $18,$19,$20,$21,$22::timestamptz,$23::timestamptz,'awaiting_signature',
+               $22::timestamptz)
              RETURNING *)
            SELECT created.*, created.expires_at > clock_timestamp() AS live FROM created`,
           [
@@ -374,6 +410,9 @@ export function makeSpacesRouteAttachmentStore(
             sha256(observed.bytes),
             createdAt,
             expiresAt,
+            purpose.kind,
+            purpose.kind === "revalidation" ? purpose.routeBindingId : null,
+            purpose.kind === "revalidation" ? purpose.expectedBindingGeneration : null,
           ],
         );
         const row = inserted.rows[0];
@@ -407,6 +446,7 @@ export function makeSpacesRouteAttachmentStore(
         }
         if (row.status !== "awaiting_signature") return stateResponse(row, true);
         if (row.live !== true) return finish(tx, row, "expired");
+        if (configurationChanged(row)) return finish(tx, row, "configuration_changed");
         const digest = text(row.challenge_digest_hex);
         if (!spacesOwnerSignatureValidV1(digest, text(row.root_key_hex), input.signatureHex))
           return finish(tx, row, "signature_rejected");
@@ -469,7 +509,24 @@ export function makeSpacesRouteAttachmentStore(
         }
         if (row.status !== "proved") throw new SpacesRouteAttachmentRefused("conflict");
         if (row.live !== true) return finish(tx, row, "expired");
+        if (configurationChanged(row)) return finish(tx, row, "configuration_changed");
         const root = text(row.canonical_root);
+        // The stored proof shows who owned the root at prove time. Activation
+        // needs the owner now: a transfer after prove ends this generation.
+        let current: Awaited<ReturnType<SpacesRootRouteObserver["observe"]>>;
+        try {
+          current = await observer.observe({ canonicalRoot: root });
+        } catch {
+          return pending;
+        }
+        if (current.kind === "pending") return pending;
+        if (
+          current.evidence.outpoint !== row.root_outpoint ||
+          current.evidence.owner_xonly_key_hex !== row.root_key_hex
+        ) {
+          return finish(tx, row, "root_changed");
+        }
+        const commitObservationDigest = sha256(current.bytes);
         const ownerIdentityDigest = spacesRouteOwnerIdentityDigestV1({
           canonicalRoot: root,
           rootOutpoint: text(row.root_outpoint),
@@ -478,17 +535,25 @@ export function makeSpacesRouteAttachmentStore(
         const lease = await query(
           tx,
           "spaces-route.commit.lease",
-          `SELECT proved_at, proved_at + make_interval(secs => $2) AS expires_at
+          `SELECT proved_at, proved_at + make_interval(secs => $2) AS expires_at,
+                  expires_at > clock_timestamp() AS live
              FROM spaces_community_route_attachments WHERE attachment_intent_id=$1`,
           [row.attachment_intent_id, SPACES_ROUTE_EVIDENCE_LEASE_SECONDS],
         );
+        // The observation took time; judge the challenge again by the database.
+        if (lease.rows[0]?.live !== true) return finish(tx, row, "expired");
         const verifiedAt = iso(lease.rows[0]?.proved_at);
         const expiresAt = iso(lease.rows[0]?.expires_at);
+        const revalidation = row.purpose === "revalidation";
+        const bindingGeneration = revalidation ? number(row.expected_binding_generation) + 1 : 1;
+        const routeBindingId = revalidation
+          ? text(row.target_route_binding_id)
+          : `srbind_${hexId()}`;
         const evidenceRef = `srevid_${hexId()}`;
-        const routeBindingId = `srbind_${hexId()}`;
         // The evidence and binding guards recheck, under their own locks and
         // the database clock, that the proof is live, the actor still holds
-        // route authority and the community has never been bound.
+        // route authority and either the community has never been bound or
+        // this is the same binding, still ineffective, at the expected generation.
         await query(
           tx,
           "spaces-route.commit.evidence",
@@ -497,7 +562,7 @@ export function makeSpacesRouteAttachmentStore(
              requirement_hash,provider_id,provider_binding_hash,provider_configuration_version,
              provider_identity_digest,evidence_digest,binding_generation,verified_at,expires_at,
              origin,spaces_route_attachment_intent_id
-           ) VALUES ($1,$2,'spaces',$3,$3,'@'||$3,$4,$5,$6,$7,$8,$9,1,$10::timestamptz,
+           ) VALUES ($1,$2,'spaces',$3,$3,'@'||$3,$4,$5,$6,$7,$8,$9,$13,$10::timestamptz,
              $11::timestamptz,'spaces_route_attachment',$12)`,
           [
             evidenceRef,
@@ -511,7 +576,7 @@ export function makeSpacesRouteAttachmentStore(
             spacesRouteEvidenceDigestV1({
               kind: "attachment",
               reference: text(row.attachment_intent_id),
-              bindingGeneration: 1,
+              bindingGeneration,
               ownerIdentityDigest,
               observationSha256Hex: text(row.proof_observation_sha256_hex),
               challengeDigestHex: text(row.challenge_digest_hex),
@@ -522,27 +587,42 @@ export function makeSpacesRouteAttachmentStore(
             verifiedAt,
             expiresAt,
             row.attachment_intent_id,
+            bindingGeneration,
           ],
         );
-        await query(
-          tx,
-          "spaces-route.commit.binding",
-          `INSERT INTO community_canonical_route_bindings (
-             route_binding_id,community_id,family,root_label,root_label_display,
-             ownership_status,route_lifecycle_status,binding_generation,
-             verified_evidence_ref,route_authority_kind
-           ) VALUES ($1,$2,'spaces',$3,$3,'verified','active',1,$4,'verified_namespace_v1')`,
-          [routeBindingId, input.communityId, root, evidenceRef],
-        );
-        const bound = await query(
-          tx,
-          "spaces-route.commit.community",
-          `UPDATE communities SET canonical_route_binding_id=$1,updated_at=clock_timestamp()
-            WHERE community_id=$2 AND canonical_route_binding_id IS NULL
-              AND status='active' AND route_authority_version='optional_route_v2'`,
-          [routeBindingId, input.communityId],
-        );
-        if (bound.rowCount !== 1) throw new SpacesRouteAttachmentRefused("conflict");
+        if (revalidation) {
+          const restored = await query(
+            tx,
+            "spaces-route.commit.revalidate",
+            `UPDATE community_canonical_route_bindings
+                SET verified_evidence_ref=$3,ownership_status='verified',
+                    route_lifecycle_status='active',binding_generation=binding_generation+1,
+                    updated_at=clock_timestamp()
+              WHERE route_binding_id=$1 AND community_id=$4 AND binding_generation=$2`,
+            [routeBindingId, row.expected_binding_generation, evidenceRef, input.communityId],
+          );
+          if (restored.rowCount !== 1) throw new SpacesRouteAttachmentRefused("conflict");
+        } else {
+          await query(
+            tx,
+            "spaces-route.commit.binding",
+            `INSERT INTO community_canonical_route_bindings (
+               route_binding_id,community_id,family,root_label,root_label_display,
+               ownership_status,route_lifecycle_status,binding_generation,
+               verified_evidence_ref,route_authority_kind
+             ) VALUES ($1,$2,'spaces',$3,$3,'verified','active',1,$4,'verified_namespace_v1')`,
+            [routeBindingId, input.communityId, root, evidenceRef],
+          );
+          const bound = await query(
+            tx,
+            "spaces-route.commit.community",
+            `UPDATE communities SET canonical_route_binding_id=$1,updated_at=clock_timestamp()
+              WHERE community_id=$2 AND canonical_route_binding_id IS NULL
+                AND status='active' AND route_authority_version='optional_route_v2'`,
+            [routeBindingId, input.communityId],
+          );
+          if (bound.rowCount !== 1) throw new SpacesRouteAttachmentRefused("conflict");
+        }
         const response = {
           ...stateResponse(
             { ...row, status: "committed", route_binding_id: routeBindingId },
@@ -555,9 +635,16 @@ export function makeSpacesRouteAttachmentStore(
           "spaces-route.commit.attachment",
           `UPDATE spaces_community_route_attachments
               SET status='committed',route_binding_id=$2,evidence_ref=$3,
-                  committed_response=$4::jsonb,updated_at=clock_timestamp()
+                  committed_response=$4::jsonb,commit_observation_sha256_hex=$5,
+                  updated_at=clock_timestamp()
             WHERE attachment_intent_id=$1 AND status='proved'`,
-          [row.attachment_intent_id, routeBindingId, evidenceRef, JSON.stringify(response)],
+          [
+            row.attachment_intent_id,
+            routeBindingId,
+            evidenceRef,
+            JSON.stringify(response),
+            commitObservationDigest,
+          ],
         );
         return response;
       }),

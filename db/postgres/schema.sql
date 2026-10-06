@@ -13834,14 +13834,16 @@ BEGIN
   END IF;
   IF ROW(
     NEW.attachment_intent_id, NEW.ceremony_intent_id, NEW.generation, NEW.environment,
-    NEW.canonical_root, NEW.community_id, NEW.account_id, NEW.start_idempotency_key,
+    NEW.canonical_root, NEW.community_id, NEW.account_id, NEW.purpose,
+    NEW.target_route_binding_id, NEW.expected_binding_generation, NEW.start_idempotency_key,
     NEW.start_request_hash, NEW.nonce_hex, NEW.root_outpoint, NEW.root_key_hex,
     NEW.public_origin, NEW.canonical_href, NEW.provider_id, NEW.provider_configuration_digest,
     NEW.requirement_hash, NEW.challenge_message, NEW.challenge_digest_hex,
     NEW.start_observation, NEW.start_observation_sha256_hex, NEW.created_at, NEW.expires_at
   ) IS DISTINCT FROM ROW(
     OLD.attachment_intent_id, OLD.ceremony_intent_id, OLD.generation, OLD.environment,
-    OLD.canonical_root, OLD.community_id, OLD.account_id, OLD.start_idempotency_key,
+    OLD.canonical_root, OLD.community_id, OLD.account_id, OLD.purpose,
+    OLD.target_route_binding_id, OLD.expected_binding_generation, OLD.start_idempotency_key,
     OLD.start_request_hash, OLD.nonce_hex, OLD.root_outpoint, OLD.root_key_hex,
     OLD.public_origin, OLD.canonical_href, OLD.provider_id, OLD.provider_configuration_digest,
     OLD.requirement_hash, OLD.challenge_message, OLD.challenge_digest_hex,
@@ -13853,8 +13855,9 @@ BEGIN
   -- database clock. Expiry itself may be recorded at any later time.
   IF NOT (
     (OLD.status = 'awaiting_signature' AND NEW.status IN (
-      'proved','expired','root_changed','signature_rejected'))
-    OR (OLD.status = 'proved' AND NEW.status IN ('committed','expired','root_changed'))
+      'proved','expired','root_changed','signature_rejected','configuration_changed'))
+    OR (OLD.status = 'proved' AND NEW.status IN (
+      'committed','expired','root_changed','configuration_changed'))
   ) THEN
     RAISE EXCEPTION 'spaces community route attachment transition is not allowed';
   END IF;
@@ -26873,6 +26876,7 @@ BEGIN
        WHERE existing.community_id = NEW.community_id
     )
     OR attachment.community_id <> NEW.community_id
+    OR attachment.purpose <> 'first_attachment'
     OR attachment.status <> 'proved'
     OR attachment.expires_at <= clock_timestamp()
     OR NEW.family <> 'spaces'
@@ -26893,6 +26897,8 @@ CREATE FUNCTION validate_spaces_route_attachment_evidence_insert() RETURNS trigg
     AS $$
 DECLARE
   attachment spaces_community_route_attachments%ROWTYPE;
+  binding community_canonical_route_bindings%ROWTYPE;
+  prior community_route_ownership_evidence%ROWTYPE;
   guard_at timestamptz := clock_timestamp();
 BEGIN
   SELECT * INTO attachment
@@ -26904,7 +26910,6 @@ BEGIN
     OR attachment.expires_at <= guard_at
     OR NEW.root_label <> attachment.canonical_root
     OR NEW.verified_by_actor_id <> attachment.account_id
-    OR NEW.binding_generation <> 1
     OR NEW.provider_id <> attachment.provider_id
     OR NEW.requirement_hash <> attachment.requirement_hash
     OR NEW.verified_at <> attachment.proved_at
@@ -26912,6 +26917,32 @@ BEGIN
     OR has_community_route_authority(attachment.community_id, attachment.account_id) IS NOT TRUE
   THEN
     RAISE EXCEPTION 'spaces route evidence requires a live proved attachment';
+  END IF;
+  IF attachment.purpose = 'first_attachment' THEN
+    IF NEW.binding_generation <> 1 THEN
+      RAISE EXCEPTION 'spaces route evidence requires a live proved attachment';
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- Revalidation restores the same immutable binding, and only one that no
+  -- longer resolves. A live lease is extended by renewal, never by this path.
+  SELECT * INTO binding
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = attachment.target_route_binding_id
+   FOR UPDATE;
+  SELECT * INTO prior
+    FROM community_route_ownership_evidence WHERE evidence_ref = binding.verified_evidence_ref;
+  IF binding.route_binding_id IS NULL
+    OR binding.community_id <> attachment.community_id
+    OR binding.family <> 'spaces'
+    OR binding.root_label <> attachment.canonical_root
+    OR binding.route_authority_kind <> 'verified_namespace_v1'
+    OR binding.binding_generation <> attachment.expected_binding_generation
+    OR NEW.binding_generation <> attachment.expected_binding_generation + 1
+    OR (binding.route_lifecycle_status = 'active' AND binding.ownership_status = 'verified'
+        AND prior.expires_at IS NOT NULL AND prior.expires_at > guard_at)
+  THEN
+    RAISE EXCEPTION 'spaces route revalidation requires the same ineffective binding';
   END IF;
   RETURN NEW;
 END;
@@ -35978,6 +36009,9 @@ CREATE TABLE spaces_community_route_attachments (
     canonical_root text NOT NULL,
     community_id text NOT NULL,
     account_id text NOT NULL,
+    purpose text NOT NULL,
+    target_route_binding_id text,
+    expected_binding_generation bigint,
     start_idempotency_key text NOT NULL,
     start_request_hash text NOT NULL,
     nonce_hex text NOT NULL,
@@ -36002,16 +36036,19 @@ CREATE TABLE spaces_community_route_attachments (
     route_binding_id text,
     evidence_ref text,
     committed_response jsonb,
+    commit_observation_sha256_hex text,
     updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_community_route_attac_commit_observation_sha256_he_check CHECK ((commit_observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attac_proof_observation_sha256_hex_check CHECK ((proof_observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attac_provider_configuration_diges_check CHECK ((provider_configuration_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attac_start_observation_sha256_hex_check CHECK ((start_observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attach_expected_binding_generation_check CHECK ((expected_binding_generation > 0)),
     CONSTRAINT spaces_community_route_attachments_attachment_intent_id_check CHECK ((attachment_intent_id ~ '^sroute_[0-9a-f]{32}$'::text)),
     CONSTRAINT spaces_community_route_attachments_canonical_root_check CHECK ((is_community_route_root_label('spaces'::text, canonical_root) IS TRUE)),
     CONSTRAINT spaces_community_route_attachments_ceremony_intent_id_check CHECK ((ceremony_intent_id ~ '^srcer_[0-9a-f]{32}$'::text)),
     CONSTRAINT spaces_community_route_attachments_challenge_digest_hex_check CHECK ((challenge_digest_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attachments_challenge_message_check CHECK (((octet_length(challenge_message) >= 1) AND (octet_length(challenge_message) <= 4096))),
-    CONSTRAINT spaces_community_route_attachments_commit_shape CHECK (((status = 'committed'::text) = ((route_binding_id IS NOT NULL) AND (evidence_ref IS NOT NULL) AND (committed_response IS NOT NULL)))),
+    CONSTRAINT spaces_community_route_attachments_commit_shape CHECK (((status = 'committed'::text) = ((route_binding_id IS NOT NULL) AND (evidence_ref IS NOT NULL) AND (committed_response IS NOT NULL) AND (commit_observation_sha256_hex IS NOT NULL)))),
     CONSTRAINT spaces_community_route_attachments_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
     CONSTRAINT spaces_community_route_attachments_generation_check CHECK ((generation > 0)),
     CONSTRAINT spaces_community_route_attachments_href CHECK ((canonical_href = ((public_origin || '/c/@'::text) || canonical_root))),
@@ -36020,6 +36057,8 @@ CREATE TABLE spaces_community_route_attachments (
     CONSTRAINT spaces_community_route_attachments_proof_shape CHECK (((status <> ALL (ARRAY['proved'::text, 'committed'::text])) OR ((signature_hex IS NOT NULL) AND (proof_observation IS NOT NULL) AND (proof_observation_sha256_hex IS NOT NULL) AND (proved_at IS NOT NULL)))),
     CONSTRAINT spaces_community_route_attachments_provider_id_check CHECK ((provider_id = 'spaces.root-route.v1'::text)),
     CONSTRAINT spaces_community_route_attachments_public_origin_check CHECK ((public_origin ~ '^https://[a-z0-9.-]{1,253}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_purpose_check CHECK ((purpose = ANY (ARRAY['first_attachment'::text, 'revalidation'::text]))),
+    CONSTRAINT spaces_community_route_attachments_purpose_shape CHECK ((((purpose = 'first_attachment'::text) AND (target_route_binding_id IS NULL) AND (expected_binding_generation IS NULL)) OR ((purpose = 'revalidation'::text) AND (target_route_binding_id IS NOT NULL) AND (expected_binding_generation IS NOT NULL)))),
     CONSTRAINT spaces_community_route_attachments_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attachments_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT spaces_community_route_attachments_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text)),
@@ -36027,7 +36066,7 @@ CREATE TABLE spaces_community_route_attachments (
     CONSTRAINT spaces_community_route_attachments_start_idempotency_key_check CHECK (((octet_length(start_idempotency_key) >= 1) AND (octet_length(start_idempotency_key) <= 255))),
     CONSTRAINT spaces_community_route_attachments_start_observation_check CHECK (((octet_length(start_observation) >= 1) AND (octet_length(start_observation) <= 1048576))),
     CONSTRAINT spaces_community_route_attachments_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT spaces_community_route_attachments_status_check CHECK ((status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text, 'committed'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text]))),
+    CONSTRAINT spaces_community_route_attachments_status_check CHECK ((status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text, 'committed'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text, 'configuration_changed'::text]))),
     CONSTRAINT spaces_community_route_attachments_time_order CHECK (((expires_at > created_at) AND (updated_at >= created_at) AND ((proved_at IS NULL) OR ((proved_at >= created_at) AND (proved_at < expires_at)))))
 );
 
@@ -40880,9 +40919,9 @@ CREATE INDEX song_video_excerpt_grants_attempt ON media_song_video_excerpt_grant
 
 CREATE UNIQUE INDEX song_video_provider_job_identity ON media_song_video_render_attempts USING btree (provider_job_id) WHERE (provider_job_id IS NOT NULL);
 
-CREATE UNIQUE INDEX spaces_community_route_attachments_committed_community_uidx ON spaces_community_route_attachments USING btree (community_id) WHERE (status = 'committed'::text);
+CREATE UNIQUE INDEX spaces_community_route_attachments_committed_community_uidx ON spaces_community_route_attachments USING btree (community_id) WHERE ((status = 'committed'::text) AND (purpose = 'first_attachment'::text));
 
-CREATE UNIQUE INDEX spaces_community_route_attachments_committed_root_uidx ON spaces_community_route_attachments USING btree (environment, canonical_root) WHERE (status = 'committed'::text);
+CREATE UNIQUE INDEX spaces_community_route_attachments_committed_root_uidx ON spaces_community_route_attachments USING btree (environment, canonical_root) WHERE ((status = 'committed'::text) AND (purpose = 'first_attachment'::text));
 
 CREATE UNIQUE INDEX spaces_community_route_attachments_open_community_uidx ON spaces_community_route_attachments USING btree (community_id) WHERE (status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text]));
 
@@ -44871,6 +44910,9 @@ ALTER TABLE ONLY spaces_community_route_attachments
 
 ALTER TABLE ONLY spaces_community_route_attachments
     ADD CONSTRAINT spaces_community_route_attachments_route_binding_id_fkey FOREIGN KEY (route_binding_id) REFERENCES community_canonical_route_bindings(route_binding_id);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_target_route_binding_id_fkey FOREIGN KEY (target_route_binding_id) REFERENCES community_canonical_route_bindings(route_binding_id);
 
 ALTER TABLE ONLY spaces_community_route_renewals
     ADD CONSTRAINT spaces_community_route_renewals_route_binding_id_fkey FOREIGN KEY (route_binding_id) REFERENCES community_canonical_route_bindings(route_binding_id);

@@ -92,12 +92,13 @@ export function makeSpacesRouteAttachmentHandlers(
       const body = request.body as { generation: number };
       const path = request.params as { communityId: string; attachmentIntentId: string };
       try {
-        return await store.commit({
+        const result = await store.commit({
           accountId: accountId(request.principal),
           communityId: path.communityId,
           attachmentIntentId: path.attachmentIntentId,
           generation: body.generation,
         });
+        return withEndpointResult(result, pending(result) ? 202 : 200);
       } catch (error) {
         return wireError(error);
       }

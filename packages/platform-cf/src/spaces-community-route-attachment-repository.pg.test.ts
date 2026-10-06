@@ -186,6 +186,7 @@ async function shift(admin: Client, sql: string, values: readonly unknown[]) {
 
 type State = {
   status: string;
+  purpose: string;
   attachment_intent_id: string;
   generation: number;
   challenge_message: string;
@@ -195,7 +196,7 @@ type State = {
   route_expires_at?: string;
 };
 
-function makeHarness(connection: string, observer: SpacesRootRouteObserver) {
+function makeHarness(connection: string, observer: SpacesRootRouteObserver, origin = ORIGIN) {
   const layer = makeDirectPostgresControlPlaneLayer(connection);
   const withDb = <T>(action: (db: ControlPlaneDb["Service"]) => Promise<T>) =>
     Effect.runPromise(
@@ -209,7 +210,7 @@ function makeHarness(connection: string, observer: SpacesRootRouteObserver) {
       ),
     );
   const store = (db: ControlPlaneDb["Service"]) =>
-    makeSpacesRouteAttachmentStore({ db, observer, environment: "staging", publicOrigin: ORIGIN });
+    makeSpacesRouteAttachmentStore({ db, observer, environment: "staging", publicOrigin: origin });
   const routes = makeControlPlaneCanonicalCommunityRouteStore(layer);
   return {
     start: (communityId: string, canonicalRoot: string, idempotencyKey: string) =>
@@ -265,14 +266,19 @@ async function attach(
   harness: ReturnType<typeof makeHarness>,
   root: "yahoo" | "csca",
   key = `start-${root}`,
+  secret: Buffer = secrets[root],
 ) {
   const started = await harness.start(communities[root], root, key);
   const proved = await harness.prove(
     communities[root],
     started.attachment_intent_id,
-    sign(started, secrets[root]),
+    sign(started, secret),
   );
-  const committed = await harness.commit(communities[root], started.attachment_intent_id);
+  const committed = await harness.commit(
+    communities[root],
+    started.attachment_intent_id,
+    started.generation,
+  );
   return { started, proved, committed };
 }
 
@@ -282,7 +288,11 @@ suite("Spaces community route attachment", () => {
       const chain = makeChain();
       const harness = makeHarness(connection, chain.observer);
       const started = await harness.start(communities.yahoo, "yahoo", "start-yahoo");
-      expect(started).toMatchObject({ status: "awaiting_signature", generation: 1 });
+      expect(started).toMatchObject({
+        status: "awaiting_signature",
+        generation: 1,
+        purpose: "first_attachment",
+      });
       expect(started.replayed).toBe(false);
       const message = JSON.parse(started.challenge_message) as unknown[];
       expect(message).toHaveLength(18);
@@ -530,6 +540,56 @@ suite("Spaces community route attachment", () => {
         ),
       ).toMatchObject({ status: "proved" });
 
+      // An owner change after prove and before commit is caught at commit.
+      chain.owners.set("yahoo", { outpoint: `${"99".repeat(32)}:0`, key: keyOf(secrets.other) });
+      expect(
+        await harness.commit(communities.yahoo, sixth.attachment_intent_id, sixth.generation),
+      ).toMatchObject({ status: "root_changed", route_binding_id: null });
+      chain.owners.set("yahoo", { outpoint: `${"22".repeat(32)}:1`, key: keyOf(secrets.yahoo) });
+      expect(await harness.resolve("@yahoo")).toBeNull();
+
+      // A ceremony paused across a change of trusted origin cannot activate
+      // its old URL, at prove or at commit, while the verifier is down or up.
+      const moved = makeHarness(connection, chain.observer, "https://moved.example");
+      const seventh = await harness.start(communities.yahoo, "yahoo", "start-yahoo-7");
+      expect(
+        await moved.prove(
+          communities.yahoo,
+          seventh.attachment_intent_id,
+          sign(seventh, secrets.yahoo),
+        ),
+      ).toMatchObject({ status: "configuration_changed" });
+      const eighth = await harness.start(communities.yahoo, "yahoo", "start-yahoo-8");
+      await harness.prove(
+        communities.yahoo,
+        eighth.attachment_intent_id,
+        sign(eighth, secrets.yahoo),
+      );
+      // A new start under the new configuration retires the old open intent.
+      const ninth = await moved.start(communities.yahoo, "yahoo", "start-yahoo-9");
+      expect(ninth).toMatchObject({ status: "awaiting_signature" });
+      expect(JSON.parse(ninth.challenge_message)[12]).toBe("https://moved.example/c/@yahoo");
+      expect(
+        await refusal(
+          harness.commit(communities.yahoo, eighth.attachment_intent_id, eighth.generation),
+        ),
+      ).toBe("conflict");
+      expect(
+        await refusal(
+          moved.commit(communities.yahoo, ninth.attachment_intent_id, ninth.generation),
+        ),
+      ).toBe("conflict");
+      await moved.prove(communities.yahoo, ninth.attachment_intent_id, sign(ninth, secrets.yahoo));
+      expect(
+        await harness.commit(communities.yahoo, ninth.attachment_intent_id, ninth.generation),
+      ).toMatchObject({ status: "configuration_changed", route_binding_id: null });
+      const tenth = await harness.start(communities.yahoo, "yahoo", "start-yahoo-10");
+      await harness.prove(
+        communities.yahoo,
+        tenth.attachment_intent_id,
+        sign(tenth, secrets.yahoo),
+      );
+
       // Revoking route authority after the proof refuses the commit.
       await admin.query(
         `UPDATE community_route_authority_grants
@@ -539,7 +599,7 @@ suite("Spaces community route attachment", () => {
       );
       expect(
         await refusal(
-          harness.commit(communities.yahoo, sixth.attachment_intent_id, sixth.generation),
+          harness.commit(communities.yahoo, tenth.attachment_intent_id, tenth.generation),
         ),
       ).toBe("forbidden");
       const bound = await admin.query(
@@ -604,10 +664,67 @@ suite("Spaces community route attachment", () => {
       });
       expect(await harness.resolve("@yahoo")).toBeNull();
       // Renewal never revives an expired lease, and an expired address cannot
-      // be re-attached as if the slot were empty.
+      // be re-attached to another community as if the slot were empty,
       expect(await harness.renew()).toEqual([]);
       expect(await harness.resolve("@yahoo")).toBeNull();
-      expect(await refusal(harness.start(communities.yahoo, "yahoo", "again"))).toBe("conflict");
+      // nor can another root take the community's one binding.
+      expect(await refusal(harness.start(communities.yahoo, "other", "other-root"))).toBe(
+        "conflict",
+      );
+      // A route that still resolves has nothing to recover.
+      expect(await refusal(harness.start(communities.csca, "csca", "not-needed"))).toBe("conflict");
+
+      // Recovery after a long verifier outage: fresh owner proof restores the
+      // same immutable binding at its next generation. The old signature does
+      // not fit the new challenge.
+      const recovery = await harness.start(communities.yahoo, "yahoo", "recover");
+      expect(recovery).toMatchObject({
+        status: "awaiting_signature",
+        purpose: "revalidation",
+        generation: 2,
+      });
+      expect(JSON.parse(recovery.challenge_message)[15]).not.toBe(
+        JSON.parse(yahoo.started.challenge_message)[15],
+      );
+      expect(
+        await harness.prove(
+          communities.yahoo,
+          recovery.attachment_intent_id,
+          sign(yahoo.started, secrets.yahoo),
+        ),
+      ).toMatchObject({ status: "signature_rejected" });
+      const restored = await attach(harness, "yahoo", "recover-2");
+      expect(restored.started).toMatchObject({ purpose: "revalidation", generation: 3 });
+      expect(restored.committed).toMatchObject({
+        status: "committed",
+        route_binding_id: yahoo.committed.route_binding_id,
+      });
+      expect(await harness.resolve("@yahoo")).toMatchObject({ community_id: communities.yahoo });
+      const binding = await admin.query(
+        `SELECT binding.binding_generation,evidence.binding_generation AS evidence_generation,
+                evidence.origin,(SELECT count(*)::int FROM community_canonical_route_bindings) AS n
+           FROM community_canonical_route_bindings AS binding
+           JOIN community_route_ownership_evidence AS evidence
+             ON evidence.evidence_ref=binding.verified_evidence_ref
+          WHERE binding.root_label='yahoo'`,
+      );
+      expect(binding.rows).toEqual([
+        {
+          binding_generation: "2",
+          evidence_generation: "2",
+          origin: "spaces_route_attachment",
+          n: 2,
+        },
+      ]);
+      // A recovered route cannot be recovered again while it resolves, and
+      // the first commit still replays its exact history.
+      expect(await refusal(harness.start(communities.yahoo, "yahoo", "recover-3"))).toBe(
+        "conflict",
+      );
+      expect(await harness.commit(communities.yahoo, yahoo.started.attachment_intent_id)).toEqual({
+        ...yahoo.committed,
+        replayed: true,
+      });
     });
   }, 60_000);
 
@@ -686,7 +803,26 @@ suite("Spaces community route attachment", () => {
         replayed: true,
       });
       expect(await harness.resolve("@csca")).toBeNull();
-      expect(await refusal(harness.start(communities.csca, "csca", "restore"))).toBe("conflict");
+      // Only the current owner's fresh signature restores the suspended
+      // binding; the previous owner's key no longer proves anything.
+      const stale = await harness.start(communities.csca, "csca", "restore-old-key");
+      expect(stale).toMatchObject({ purpose: "revalidation" });
+      expect(JSON.parse(stale.challenge_message)[10]).toBe(keyOf(secrets.other));
+      expect(
+        await harness.prove(
+          communities.csca,
+          stale.attachment_intent_id,
+          sign(stale, secrets.csca),
+        ),
+      ).toMatchObject({ status: "signature_rejected" });
+      expect(await harness.resolve("@csca")).toBeNull();
+      const regained = await attach(harness, "csca", "restore-new-key", secrets.other);
+      expect(regained.committed).toMatchObject({
+        status: "committed",
+        route_binding_id: csca.committed.route_binding_id,
+      });
+      expect(await harness.resolve("@csca")).toMatchObject({ community_id: communities.csca });
+      expect(await harness.resolve("@yahoo")).toMatchObject({ community_id: communities.yahoo });
       expect(await harness.renew()).toEqual([]);
       // The database refuses renewal evidence that names a different owner.
       await age();

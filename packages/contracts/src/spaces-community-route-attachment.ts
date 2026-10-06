@@ -63,6 +63,8 @@ const State = Schema.Struct({
   generation: PositiveInteger,
   community_id: BoundedIdentifier,
   network: Schema.Literal("mainnet"),
+  /** A first attachment binds the root; a revalidation restores the same binding. */
+  purpose: Schema.Literals(["first_attachment", "revalidation"]),
   canonical_root: SpacesCanonicalRootV1,
   status: Schema.Literals([
     "awaiting_signature",
@@ -71,6 +73,7 @@ const State = Schema.Struct({
     "expired",
     "root_changed",
     "signature_rejected",
+    "configuration_changed",
   ]),
   root_outpoint: Outpoint,
   owner_public_key_hex: Sha256Hex,
@@ -163,6 +166,7 @@ export const CommitSpacesRouteAttachment = endpoint({
     maxBodyBytes: 64,
   },
   response: SpacesRouteAttachmentResponseV1,
+  successStatus: [200, 202],
   errors,
 });
 

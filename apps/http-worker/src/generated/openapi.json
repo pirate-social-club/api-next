@@ -138425,6 +138425,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -138436,7 +138443,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -138491,6 +138499,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -138581,6 +138590,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -138592,7 +138608,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -138647,6 +138664,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -138737,6 +138755,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -138748,7 +138773,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -138803,6 +138829,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -139296,6 +139323,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -139307,7 +139341,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -139362,6 +139397,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -139883,6 +139919,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -139894,7 +139937,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -139949,6 +139993,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -140039,6 +140084,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -140050,7 +140102,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -140105,6 +140158,7 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",
@@ -140632,6 +140686,13 @@
                             "mainnet"
                           ]
                         },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
                         "canonical_root": {
                           "type": "string"
                         },
@@ -140643,7 +140704,8 @@
                             "committed",
                             "expired",
                             "root_changed",
-                            "signature_rejected"
+                            "signature_rejected",
+                            "configuration_changed"
                           ]
                         },
                         "root_outpoint": {
@@ -140698,6 +140760,172 @@
                         "generation",
                         "community_id",
                         "network",
+                        "purpose",
+                        "canonical_root",
+                        "status",
+                        "root_outpoint",
+                        "owner_public_key_hex",
+                        "public_origin",
+                        "canonical_href",
+                        "challenge_message",
+                        "challenge_digest_hex",
+                        "expires_at",
+                        "route_binding_id",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-community-route-attachment-v1"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verification_pending"
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "status",
+                        "retry_after_seconds"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contract": {
+                          "type": "string",
+                          "enum": [
+                            "pirate-spaces-community-route-attachment-v1"
+                          ]
+                        },
+                        "attachment_intent_id": {
+                          "type": "string"
+                        },
+                        "ceremony_intent_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "community_id": {
+                          "type": "string"
+                        },
+                        "network": {
+                          "type": "string",
+                          "enum": [
+                            "mainnet"
+                          ]
+                        },
+                        "purpose": {
+                          "type": "string",
+                          "enum": [
+                            "first_attachment",
+                            "revalidation"
+                          ]
+                        },
+                        "canonical_root": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "awaiting_signature",
+                            "proved",
+                            "committed",
+                            "expired",
+                            "root_changed",
+                            "signature_rejected",
+                            "configuration_changed"
+                          ]
+                        },
+                        "root_outpoint": {
+                          "type": "string"
+                        },
+                        "owner_public_key_hex": {
+                          "type": "string"
+                        },
+                        "public_origin": {
+                          "type": "string"
+                        },
+                        "canonical_href": {
+                          "type": "string"
+                        },
+                        "challenge_message": {
+                          "type": "string"
+                        },
+                        "challenge_digest_hex": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        },
+                        "route_binding_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "route_expires_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "contract",
+                        "attachment_intent_id",
+                        "ceremony_intent_id",
+                        "generation",
+                        "community_id",
+                        "network",
+                        "purpose",
                         "canonical_root",
                         "status",
                         "root_outpoint",

@@ -97,9 +97,20 @@ describe("Spaces community route owner message", () => {
       communityId: base.communityId,
       canonicalRoot: base.canonicalRoot,
       publicOrigin: base.publicOrigin,
-    };
-    expect(spacesRouteRequirementHashV1(requirement)).not.toBe(
-      spacesRouteRequirementHashV1({ ...requirement, communityId: "community-other" }),
-    );
+      purpose: { kind: "first_attachment" },
+    } as const;
+    const revalidation = (expectedBindingGeneration: number) =>
+      spacesRouteRequirementHashV1({
+        ...requirement,
+        purpose: { kind: "revalidation", routeBindingId: "binding", expectedBindingGeneration },
+      });
+    expect(
+      new Set([
+        spacesRouteRequirementHashV1(requirement),
+        spacesRouteRequirementHashV1({ ...requirement, communityId: "community-other" }),
+        revalidation(1),
+        revalidation(2),
+      ]).size,
+    ).toBe(4);
   });
 });
