@@ -12,7 +12,12 @@ const configurations = new Set([
   "apps/http-worker/wrangler.jsonc",
   "apps/jobs-worker/wrangler.jsonc",
 ]);
-export function telegramActivationBinding(source: string, environment: string, linking: boolean) {
+export function telegramActivationBinding(
+  source: string,
+  environment: string,
+  linking: boolean,
+  effectiveConfiguration?: string,
+) {
   const config = BunRuntime.JSONC.parse(source) as {
     env?: Record<string, { vars?: Record<string, unknown> }>;
   };
@@ -20,7 +25,8 @@ export function telegramActivationBinding(source: string, environment: string, l
   if (!vars) throw Error("Telegram activation environment missing");
   const intent = decodeTelegramConfiguration({
     TELEGRAM_CONFIG_JSON:
-      typeof vars.TELEGRAM_CONFIG_JSON === "string" ? vars.TELEGRAM_CONFIG_JSON : undefined,
+      effectiveConfiguration ??
+      (typeof vars.TELEGRAM_CONFIG_JSON === "string" ? vars.TELEGRAM_CONFIG_JSON : undefined),
   });
   if (!linking && intent.linking_enabled) throw Error("Telegram linking cannot be enabled on jobs");
   return intent.enabled || intent.linking_enabled || intent.practice_enabled;
@@ -49,15 +55,24 @@ export async function withTelegramActivationDeployment<T>(
   configPath: string,
   environment: string,
   operation: () => Promise<T>,
+  effectiveConfiguration?: string,
+  preflight: (connectionString: string) => Promise<unknown> = runTelegramActivationPreflight,
 ): Promise<T> {
   if (!configurations.has(configPath)) return operation();
   const source = await BunRuntime.file(resolve(root, configPath)).text();
-  if (!telegramActivationBinding(source, environment, configPath.includes("http-worker")))
+  if (
+    !telegramActivationBinding(
+      source,
+      environment,
+      configPath.includes("http-worker"),
+      effectiveConfiguration,
+    )
+  )
     return operation();
   const url = process.env.RUNTIME_POSTGRES_URL ?? process.env.CONTROL_PLANE_POSTGRES_RUNTIME_URL;
   if (!url) throw Error("Telegram activation requires the serving-role database URL");
   try {
-    await runTelegramActivationPreflight(url);
+    await preflight(url);
   } catch {
     throw Error(
       "Telegram activation serving-role preflight refused; apply and verify scoped permissions",

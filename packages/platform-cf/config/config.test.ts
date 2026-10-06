@@ -600,7 +600,7 @@ describe("config system (000 §9)", () => {
     expect(production?.hyperdrive).toEqual([
       {
         binding: "CONTROL_PLANE",
-        id: "884b68c5a7904982a86620ed90032b77",
+        id: "0c215865d7994c92b940d905f54ece37",
         localConnectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
       },
     ]);

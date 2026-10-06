@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   type CommandRunner,
+  commandEnvironment,
   deployWorkerWithProvenance,
   findDeployedVersion,
   parseWorkerDeploymentArgs,
   parseWorkerVersions,
+  resolveDeploymentRepository,
+  runCommand,
+  runDeploymentCommand,
   verifyDeploymentSource,
 } from "./deploy-worker-with-provenance";
 
@@ -132,6 +139,56 @@ describe("Worker deployment provenance", () => {
       expect(commands.some((command) => command.includes("deploy"))).toBe(false);
     }
   });
+  test("Wrangler children never inherit the staging diagnostics token", () => {
+    const environment = { CLOUDFLARE_API_TOKEN: "diagnostics", CLOUDFLARE_ACCOUNT_ID: "account" };
+    expect(commandEnvironment(["bunx", "wrangler", "deploy"], environment)).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "account",
+    });
+    expect(commandEnvironment(["bunx", "wrangler", "versions", "list"], environment)).toEqual({
+      CLOUDFLARE_ACCOUNT_ID: "account",
+    });
+    expect(
+      commandEnvironment(["bun", "scripts/telegram-activation-preflight.ts"], environment),
+    ).toEqual(environment);
+    expect(environment.CLOUDFLARE_API_TOKEN).toBe("diagnostics");
+  });
+
+  test("shared diagnostics runner preserves its token and deploy environment removes it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "deploy-auth-env-"));
+    try {
+      const executable = join(directory, "bunx");
+      await Bun.write(
+        executable,
+        `#!${process.execPath}
+console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,account:process.env.CLOUDFLARE_ACCOUNT_ID}));
+`,
+      );
+      const { chmod } = await import("node:fs/promises");
+      await chmod(executable, 0o700);
+      const environment = {
+        PATH: directory,
+        CLOUDFLARE_API_TOKEN: "test-diagnostics",
+        CLOUDFLARE_ACCOUNT_ID: "test-account",
+      };
+      const command = ["bunx", "wrangler", "versions", "list"];
+      const diagnostics = await runCommand(command, directory, undefined, environment);
+      expect(diagnostics.exitCode).toBe(0);
+      expect(JSON.parse(diagnostics.stdout)).toEqual({
+        tokenPresent: true,
+        account: "test-account",
+      });
+      const deployment = await runDeploymentCommand(command, directory, undefined, environment);
+      expect(deployment.exitCode).toBe(0);
+      expect(JSON.parse(deployment.stdout)).toEqual({
+        tokenPresent: false,
+        account: "test-account",
+      });
+      expect(environment.CLOUDFLARE_API_TOKEN).toBe("test-diagnostics");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("parses only the bounded deploy surface and rejects manual messages", () => {
     expect(
       parseWorkerDeploymentArgs([
@@ -361,4 +418,49 @@ describe("Worker deployment provenance", () => {
     ).rejects.toThrow("differs from the reviewed deploy pin");
     expect(refused.commands.some((command) => command.includes("deploy"))).toBe(false);
   });
+});
+
+test("external deployment source requires accepted clean tooling in the same repository", async () => {
+  const { runner, commands } = queueRunner([
+    { exitCode: 0, stdout: sourceSha },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0, stdout: input.configPath },
+    { exitCode: 0, stdout: "/repo/.git" },
+    { exitCode: 0, stdout: "/repo/.git" },
+  ]);
+  await expect(
+    resolveDeploymentRepository({ ...input, repositoryRoot: "/target" }, runner, "/tooling"),
+  ).resolves.toBe("/target");
+  expect(commands[0]).toContain("origin/main^{commit}");
+  const wrong = queueRunner([
+    { exitCode: 0, stdout: sourceSha },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0, stdout: input.configPath },
+    { exitCode: 0, stdout: "/repo/.git" },
+    { exitCode: 0, stdout: "/other/.git" },
+  ]);
+  await expect(
+    resolveDeploymentRepository({ ...input, repositoryRoot: "/target" }, wrong.runner, "/tooling"),
+  ).rejects.toThrow("share");
+  await expect(
+    resolveDeploymentRepository(
+      { ...input, environment: "prod", repositoryRoot: "/target" },
+      runner,
+      "/tooling",
+    ),
+  ).rejects.toThrow("staging");
+  expect(() =>
+    parseWorkerDeploymentArgs([
+      "--config",
+      input.configPath,
+      "--env",
+      "staging",
+      "--repository-root",
+      "relative",
+    ]),
+  ).toThrow("absolute");
 });

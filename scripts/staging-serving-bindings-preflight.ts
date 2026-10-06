@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { CommandRunner } from "./deploy-worker-with-provenance.ts";
+import { preserveStagingTelegramConfiguration } from "./staging-telegram-config.ts";
 import {
   assertReviewedDrift,
   assertUnchangedBaseline,
@@ -20,6 +21,7 @@ import { readCandidateBindings } from "./worker-deployment-bindings.ts";
 
 export type StagingBindingGuard = Readonly<{
   receipt: BindingDriftReceipt;
+  telegramConfig?: string;
   recheck: () => Promise<void>;
 }>;
 export type PrepareStagingBindingGuard = (
@@ -102,21 +104,23 @@ export async function prepareStagingBindingGuard(
     reviewPath === undefined
       ? undefined
       : parseJson(await readFile(reviewPath, "utf8"), "binding review");
-  const collect = async () =>
-    compareServingBindings(
-      context,
-      await candidateReader(root, context.config_path, context.environment),
-      await readServing(root, context, runner),
-    );
-  const receipt = await collect();
+  const collect = async () => {
+    const candidate = await candidateReader(root, context.config_path, context.environment);
+    const serving = await readServing(root, context, runner);
+    const effective = preserveStagingTelegramConfiguration(context, candidate, serving);
+    return { ...effective, receipt: compareServingBindings(context, effective.candidate, serving) };
+  };
+  const initial = await collect();
+  const { receipt } = initial;
   diagnostic(`${JSON.stringify({ staging_binding_preflight: receipt })}\n`);
   assertReviewedDrift(receipt, review);
   return {
     receipt,
+    ...(initial.telegramConfig === undefined ? {} : { telegramConfig: initial.telegramConfig }),
     recheck: async () => {
       const current = await collect();
-      assertUnchangedBaseline(receipt, current);
-      assertReviewedDrift(current, review);
+      assertUnchangedBaseline(receipt, current.receipt);
+      assertReviewedDrift(current.receipt, review);
     },
   };
 }
