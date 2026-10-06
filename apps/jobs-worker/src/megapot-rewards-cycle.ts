@@ -401,6 +401,8 @@ export function runMegapotRewardsCycle(input: {
   /** When the job attempt began, before setup and any retry; defaults to now. */
   readonly jobStartedAt?: number;
   readonly fundingDeadlines?: MegapotRewardsFundingDeadlines;
+  /** Told when each step ends, with milliseconds since the job began. */
+  readonly onStep?: (step: string, elapsedMs: number) => void;
 }): Effect.Effect<MegapotRewardsCycleSummary, unknown> {
   return Effect.gen(function* () {
     const now = input.now ?? Date.now;
@@ -428,9 +430,12 @@ export function runMegapotRewardsCycle(input: {
       );
     };
 
+    const mark = (step: string) => input.onStep?.(step, now() - jobStartedAt);
+    mark("cycle_started");
     const pending = yield* input.work.loadChainEffects(limit);
     const [reconcileFailures, reconciled] = yield* partition(pending, input.runtime.reconcile);
     recordFailures(reconcileFailures);
+    mark("chain_effects");
 
     // A malformed, uninitialized or unobservable new drawing must not stop
     // reconciliation of already-created obligations: held credits never
@@ -453,6 +458,7 @@ export function runMegapotRewardsCycle(input: {
       recordFailures([drawingObservation.failure]);
     }
     const drawingObserved = drawingObservation.observed;
+    mark("drawing_observed");
     const solvencyFailure = yield* input.runtime.observeSolvency().pipe(
       Effect.as(null),
       Effect.catch((failure: unknown) => Effect.succeed(failure)),
@@ -460,7 +466,9 @@ export function runMegapotRewardsCycle(input: {
     if (solvencyFailure !== null) {
       recordFailures([solvencyFailure]);
     }
+    mark("solvency_observed");
     const frozen = yield* input.runtime.freezeDue(limit);
+    mark("frozen");
 
     const frozenDrawings = yield* input.work.loadDrawings({
       statuses: ["cutoff_frozen"],
@@ -471,6 +479,7 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.publishCommitment,
     );
     recordFailures(commitFailures);
+    mark("committed");
 
     const committedDrawings = yield* input.work.loadDrawings({ statuses: ["committed"], limit });
     const [purchaseFailures, purchaseResults] = yield* partition(committedDrawings, (work) =>
@@ -497,6 +506,7 @@ export function runMegapotRewardsCycle(input: {
       }),
     );
     recordFailures(purchaseFailures);
+    mark("purchased");
 
     const purchasedDrawings = yield* input.work.loadDrawings({
       statuses: ["tickets_confirmed", "drawing_pending"],
@@ -504,6 +514,7 @@ export function runMegapotRewardsCycle(input: {
     });
     const [sweepFailures, swept] = yield* partition(purchasedDrawings, input.runtime.sweep);
     recordFailures(sweepFailures);
+    mark("swept");
 
     const winningDrawings = yield* input.work.loadDrawings({
       statuses: ["winnings_detected"],
@@ -511,6 +522,7 @@ export function runMegapotRewardsCycle(input: {
     });
     const [claimFailures, claimed] = yield* partition(winningDrawings, input.runtime.claim);
     recordFailures(claimFailures);
+    mark("claimed");
 
     const claimedDrawings = yield* input.work.loadDrawings({ statuses: ["claimed"], limit });
     const [allocationFailures, allocated] = yield* partition(
@@ -518,18 +530,22 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.allocate,
     );
     recordFailures(allocationFailures);
+    mark("allocated");
 
     const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);
+    mark("offers_closed");
 
     const refunds = yield* input.work.loadRefunds(limit);
     // Settlement callbacks refresh the immutable obligation's attestation/token,
     // rather than the active deployment's custody balance.
     const [refundFailures, refunded] = yield* partition(refunds, input.runtime.refund);
     recordFailures(refundFailures);
+    mark("refunded");
 
     const credits = yield* input.work.loadCredits(limit);
     const [payoutFailures, paid] = yield* partition(credits, input.runtime.payout);
     recordFailures(payoutFailures);
+    mark("paid");
 
     let gasTopups = 0;
     const gasTopupRuntime = input.runtime.gasTopups ?? null;
@@ -548,6 +564,8 @@ export function runMegapotRewardsCycle(input: {
       recordFailures(gasTopupFailures);
       gasTopups = sent.length;
     }
+
+    mark("gas_topups");
 
     // The HTTP Worker observes a sponsor transfer once, right after it is sent
     // and before it can have its confirmations. Without this step a sponsor who
@@ -601,6 +619,8 @@ export function runMegapotRewardsCycle(input: {
         if (outcome.kind === "done" && outcome.value.kind === "confirmed") fundingConfirmed += 1;
       }
     }
+
+    mark("funding");
 
     // The projection is read-only. It is given what remains before its bound and
     // is not started at all once the bound has passed; the cycle then reports it

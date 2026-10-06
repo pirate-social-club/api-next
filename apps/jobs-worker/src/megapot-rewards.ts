@@ -212,7 +212,10 @@ export function makeMegapotRewardsJob(
       environment: options.environment,
       workerVersion: options.workerVersion,
     });
+    const jobStartedAt = job.startedAtMs ?? startedAt;
+    const steps: Record<string, number> = { job_run: startedAt - jobStartedAt };
     const db = yield* ControlPlaneDb;
+    steps.session = Date.now() - jobStartedAt;
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
     const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
@@ -329,9 +332,13 @@ export function makeMegapotRewardsJob(
       makeControlPlaneRewardLeaseExpiryPause(controlPlane),
     );
     if (leaseAlert !== null) yield* collector.emit(leaseAlert);
+    steps.setup = Date.now() - jobStartedAt;
     const summary = yield* runMegapotRewardsCycle({
       // Funding observation is bounded against the runner's timeout clock.
-      jobStartedAt: job.startedAtMs ?? startedAt,
+      jobStartedAt,
+      onStep: (step, elapsedMs) => {
+        steps[step] = elapsedMs;
+      },
       work: {
         ...makeControlPlaneMegapotWorkStore(controlPlane),
         loadPendingFunding: boundedWork.loadPendingFunding,
@@ -358,6 +365,11 @@ export function makeMegapotRewardsJob(
         payout: routing.payout,
         gasTopups,
       },
+    });
+    (sink.log ?? ((event, fields) => console.info(event, fields)))("megapot.rewards.cycle.timing", {
+      event: "megapot.rewards.cycle.timing",
+      worker_version_id: options.workerVersion.id,
+      elapsed_ms: { ...steps, liveness: Date.now() - jobStartedAt },
     });
     writeMegapotRewardsCycleSnapshot(
       summary,
