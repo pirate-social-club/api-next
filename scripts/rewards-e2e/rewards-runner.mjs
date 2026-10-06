@@ -14,6 +14,7 @@ import {
   runLeaseQuery,
 } from "./database-evidence.mjs";
 import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
+import { assertKaraokeRecording } from "./karaoke-recording.mjs";
 import { rehearseRunLease } from "./lease-rehearsal.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import {
@@ -157,6 +158,14 @@ try {
   if (process.argv.includes("--execute")) throw error;
   budget = { refused: error instanceof Error ? error.message : "Pair budget unavailable" };
 }
+// Checked here, before any lock is taken or anything is funded.
+let karaokeRecording;
+try {
+  karaokeRecording = assertKaraokeRecording(process.env.REWARDS_E2E_KARAOKE_WAV);
+} catch (error) {
+  if (process.argv.includes("--execute")) throw error;
+  karaokeRecording = { refused: error instanceof Error ? error.message : "refused" };
+}
 const plan = {
   apiSource,
   solidSource,
@@ -168,6 +177,7 @@ const plan = {
   branch: identity.branchId,
   simulatedClaimVerification: true,
   order: ["win", "loss"],
+  karaokeRecording: karaokeRecording.refused ? karaokeRecording : { bytes: karaokeRecording.bytes },
   budget,
   runLease,
 };

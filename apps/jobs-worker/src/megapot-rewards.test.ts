@@ -110,7 +110,8 @@ describe("Megapot rewards scheduled cycle", () => {
         event: "megapot.rewards.cycle",
         fields: expect.objectContaining({
           event: "megapot.rewards.cycle",
-          schema_version: 4,
+          schema_version: 5,
+          funding_step_status: "ran",
           environment: "staging",
           worker_version_id: "worker-version-1",
           duration_ms: 1_234,

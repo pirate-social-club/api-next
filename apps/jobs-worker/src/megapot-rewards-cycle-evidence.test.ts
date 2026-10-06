@@ -72,6 +72,7 @@ test("the cycle summary the isolated jobs Worker writes is the one the runner re
       fundingObserved: 3,
       fundingConfirmed: 1,
       fundingDeferred: 2,
+      fundingStep: "ran",
       failureTags: ["RewardFundingCoordinatorFailed"],
     },
   ]);

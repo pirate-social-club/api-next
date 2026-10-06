@@ -18,9 +18,27 @@ export function cycleEvents(envelope) {
         // The event name is also logged on its own as a plain label.
         continue;
       }
+      if (event?.event === "megapot.rewards.cycle.timing") {
+        // Where a cycle's time went, in milliseconds since its job began.
+        const elapsed = event.elapsed_ms;
+        if (
+          typeof event.worker_version_id !== "string" ||
+          !elapsed ||
+          typeof elapsed !== "object" ||
+          Object.values(elapsed).some((value) => !Number.isFinite(value))
+        )
+          throw new Error("Invalid isolated cycle timing");
+        events.push({
+          event: event.event,
+          versionId: event.worker_version_id,
+          elapsedMs: { ...elapsed },
+        });
+        continue;
+      }
       if (event?.event !== "megapot.rewards.cycle") continue;
       if (
-        event.schema_version !== 4 ||
+        event.schema_version !== 5 ||
+        !["ran", "skipped_deadline_passed"].includes(event.funding_step_status) ||
         event.environment !== isolatedEnvironment ||
         typeof event.worker_version_id !== "string" ||
         !event.worker_version_id ||
@@ -41,6 +59,8 @@ export function cycleEvents(envelope) {
         fundingObserved: event.funding_observed_count,
         fundingConfirmed: event.funding_confirmed_count,
         fundingDeferred: event.funding_deferred_count,
+        // A skipped step looked at nothing; its zero counts say nothing about what was pending.
+        fundingStep: event.funding_step_status,
         failureTags: [...event.failure_tags],
       });
     }

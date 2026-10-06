@@ -24,7 +24,7 @@ import {
   makeControlPlaneRewardLeaseExpiryPause,
   makeControlPlaneRewardRunAuthority,
 } from "@pirate/platform-cf/reward-operations-control";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer } from "effect";
 import {
   MEGAPOT_REWARDS_CYCLE_JOB,
   MEGAPOT_REWARDS_CYCLE_LANE,
@@ -36,6 +36,7 @@ import {
   megapotRewardsLivenessAlerts,
   pauseOnRunLeaseExpiry,
   resolveGasTopupRuntime,
+  runMegapotFundingStep,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
@@ -218,6 +219,53 @@ export function makeMegapotRewardsJob(
     steps.session = Date.now() - jobStartedAt;
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
+    // Funding is observed against the deployment its own effect resolves to: the
+    // one a megapot-pool leg froze, or the custody deployment in force when an
+    // asset-bonus transfer was planned. Either may be a retained deployment. The
+    // clients are built on demand, live for this cycle and use a short request
+    // bound so that the step's time budget holds.
+    //
+    // On its own session the step is started here, before any setup, and runs
+    // beside the rest of the cycle. Left until last it never ran on a live
+    // stack, where the work before it outlasts its start deadline every minute.
+    const fundingPlane = options.boundedControlPlane ?? controlPlane;
+    const boundedWork = makeControlPlaneMegapotWorkStore(fundingPlane);
+    const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
+    const fundingAttestations = makeControlPlaneMegapotDrawingObservationStore(fundingPlane);
+    const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
+    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (fundingEffectId) =>
+      Effect.gen(function* () {
+        const intent = yield* fundingStore.find(fundingEffectId);
+        if (intent === null) {
+          return yield* new MegapotRewardRoutingRejected({ reason: "invalid-config" });
+        }
+        let coordinator = fundingCoordinators.get(intent.attestationId);
+        if (coordinator === undefined) {
+          const deployment = yield* fundingAttestations.loadCandidate(intent.attestationId);
+          coordinator = makeRewardFundingCoordinator({
+            store: fundingStore,
+            rpc: makeMegapotAttestedRpc(
+              deployment,
+              options.rpcUrl,
+              undefined,
+              MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+            ),
+          });
+          fundingCoordinators.set(intent.attestationId, coordinator);
+        }
+        return yield* coordinator.reconcile(fundingEffectId);
+      });
+    const fundingFiber =
+      options.boundedControlPlane === undefined
+        ? null
+        : yield* Effect.forkChild(
+            runMegapotFundingStep({
+              loadPendingFunding: boundedWork.loadPendingFunding,
+              reconcileFunding,
+              jobStartedAt,
+            }),
+            { startImmediately: true },
+          );
     const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
     const resolveCustodyKey = yield* Effect.try({
       try: () =>
@@ -284,38 +332,6 @@ export function makeMegapotRewardsJob(
         });
       }
     }
-    // Funding is observed against the deployment its own effect resolves to: the
-    // one a megapot-pool leg froze, or the custody deployment in force when an
-    // asset-bonus transfer was planned. Either may be a retained deployment. The
-    // clients are built on demand, live for this cycle and use a short request
-    // bound so that the step's time budget holds.
-    const fundingPlane = options.boundedControlPlane ?? controlPlane;
-    const boundedWork = makeControlPlaneMegapotWorkStore(fundingPlane);
-    const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
-    const fundingAttestations = makeControlPlaneMegapotDrawingObservationStore(fundingPlane);
-    const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
-    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (fundingEffectId) =>
-      Effect.gen(function* () {
-        const intent = yield* fundingStore.find(fundingEffectId);
-        if (intent === null) {
-          return yield* new MegapotRewardRoutingRejected({ reason: "invalid-config" });
-        }
-        let coordinator = fundingCoordinators.get(intent.attestationId);
-        if (coordinator === undefined) {
-          const deployment = yield* fundingAttestations.loadCandidate(intent.attestationId);
-          coordinator = makeRewardFundingCoordinator({
-            store: fundingStore,
-            rpc: makeMegapotAttestedRpc(
-              deployment,
-              options.rpcUrl,
-              undefined,
-              MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
-            ),
-          });
-          fundingCoordinators.set(intent.attestationId, coordinator);
-        }
-        return yield* coordinator.reconcile(fundingEffectId);
-      });
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const cutoff = makeMegapotCutoffCoordinator({
       store: makeControlPlaneMegapotCutoffStore(controlPlane),
@@ -334,6 +350,7 @@ export function makeMegapotRewardsJob(
     if (leaseAlert !== null) yield* collector.emit(leaseAlert);
     steps.setup = Date.now() - jobStartedAt;
     const summary = yield* runMegapotRewardsCycle({
+      ...(fundingFiber === null ? {} : { funding: Fiber.join(fundingFiber) }),
       // Funding observation is bounded against the runner's timeout clock.
       jobStartedAt,
       onStep: (step, elapsedMs) => {
@@ -365,11 +382,20 @@ export function makeMegapotRewardsJob(
         payout: routing.payout,
         gasTopups,
       },
-    });
+    }).pipe(
+      // A cycle that fails early must not take a funding observation down with
+      // it mid-flight: the step is bounded, so it is left to finish first.
+      Effect.catch((error) =>
+        (fundingFiber === null ? Effect.void : Fiber.await(fundingFiber)).pipe(
+          Effect.andThen(Effect.fail(error)),
+        ),
+      ),
+    );
     (sink.log ?? ((event, fields) => console.info(event, fields)))("megapot.rewards.cycle.timing", {
       event: "megapot.rewards.cycle.timing",
       worker_version_id: options.workerVersion.id,
       elapsed_ms: { ...steps, liveness: Date.now() - jobStartedAt },
+      funding_step_status: summary.fundingStep ?? "ran",
     });
     writeMegapotRewardsCycleSnapshot(
       summary,
@@ -383,6 +409,13 @@ export function makeMegapotRewardsJob(
     );
     for (const alert of megapotRewardsLivenessAlerts(summary.agedPending)) {
       yield* collector.emit(alert);
+    }
+    if (summary.fundingStep === "skipped_deadline_passed") {
+      yield* collector.emit({
+        key: "megapot-rewards:funding-observation-skipped",
+        severity: "high",
+        body: "Funding observation did not start before its deadline; sponsor transfers were not looked at this cycle.",
+      });
     }
     const drawingObservationAlert = megapotRewardsDrawingObservationAlert(summary);
     if (drawingObservationAlert !== null) {
