@@ -4,11 +4,7 @@ import { parseAbi } from "viem";
 import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
 import { browserApi } from "./browser-api.mjs";
-import {
-  checkWalletFundingStatus,
-  confirmWalletFunding,
-  reviewWalletFunding,
-} from "./browser-funding.mjs";
+import { confirmWalletFunding, reviewWalletFunding } from "./browser-funding.mjs";
 import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
@@ -64,6 +60,8 @@ export async function runScenario(options) {
     runId: `${options.outcome}-${Date.now()}`,
     deadline: Date.now() + 25 * 60000,
     ledgerDirectory: `${options.evidenceRoot}/spending-ledger`,
+    // What a passing run still does not establish; reported with its result.
+    unproven: [],
   };
   run.directory = `${options.directory}/${run.outcome}`;
   mkdirSync(run.directory, { mode: 0o700 });
@@ -338,18 +336,37 @@ export async function runScenario(options) {
         click,
       ),
     );
+    const readFunding = () =>
+      options.db.read(fundingQuery, [leg.offer_id, legId, new Date(startedAt).toISOString()]);
+    // The app binds the transfer's hash once, right after the wallet sends it. The
+    // sponsor then leaves: the page is unloaded so that nothing in a browser can ask
+    // the server to look again, and only the jobs Worker can confirm the payment.
+    const boundRows = await waitForEvidence(
+      "funding submission",
+      Math.min(Date.now() + 120000, end - 60000),
+      readFunding,
+      (rows) => rows.length === 1 && typeof rows[0].transaction_hash === "string",
+      check,
+    );
+    await host.pages.sponsor.goto("about:blank");
+    const sponsorLeft = {
+      at: new Date().toISOString(),
+      stateWhenSponsorLeft: (await readFunding())[0]?.state,
+    };
+    // Confirmed before the sponsor left means the app's own observation did it, and
+    // this run then says nothing about the jobs Worker. It is reported, not hidden.
+    const jobsConfirmationProven = sponsorLeft.stateWhenSponsorLeft === "confirming";
+    if (!jobsConfirmationProven) run.unproven.push("jobs funding confirmation");
+    stageSave("sponsor-left", {
+      ...sponsorLeft,
+      transactionHash: boundRows[0].transaction_hash,
+      jobsConfirmationProven,
+    });
+    // Passive reads only from here: no control is pressed and no API is called.
     const fundedRows = await waitForEvidence(
       "funding confirmation",
       end - 60000,
-      async () => {
-        // A failed press is not evidence either way; the database row decides.
-        await checkWalletFundingStatus(reviewed.dialog).catch(() => false);
-        return options.db.read(fundingQuery, [
-          leg.offer_id,
-          legId,
-          new Date(startedAt).toISOString(),
-        ]);
-      },
+      readFunding,
       (rows) => rows.length === 1 && rows[0].state === "confirmed",
       check,
     );
@@ -413,7 +430,12 @@ export async function runScenario(options) {
         expected,
       );
     };
-    stageSave("funding-confirmed", { ...(await fundingCheck()), review: transferReview });
+    stageSave("funding-confirmed", {
+      ...(await fundingCheck()),
+      review: transferReview,
+      sponsorLeftAt: sponsorLeft.at,
+      jobsConfirmationProven,
+    });
     stage = "outcome-drawing";
     const placeholderSettled = await settleDueDrawing(
       run.chain,
@@ -734,5 +756,9 @@ export async function runScenario(options) {
     nothingOwed: passed,
     flagsOff: true,
     brakePaused: true,
+    // A pass proves the money movement. These it never proves, by construction:
+    // claims and sends go through the API and an injected wallet, and claim
+    // verification is the isolated build's stub.
+    unproven: ["ordinary claim and Wallet screens", "real claim verification", ...run.unproven],
   };
 }

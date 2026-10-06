@@ -11,8 +11,10 @@ import {
   isolatedDatabase,
   readShutdownInventory,
 } from "./database-evidence.mjs";
+import { fixtureChain, readFixturePrize } from "./fixture-chain.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import { inspectIsolatedWorker } from "./runtime-flags.mjs";
+import { assertPairBudget } from "./spending-ledger.mjs";
 
 /** Enter both existing approved stores without writing credentials to disk or stdout. */
 if (!process.env.REWARDS_RUNNER_CREDENTIALS_LOADED) {
@@ -131,6 +133,18 @@ if (
   "https://api-megapot-e2e-staging.pirate.sc"
 )
   throw Error("Serving Solid API origin differs");
+// The whole pair and its recovery headroom must fit before anything is funded.
+// A read-only preparation reports a refusal; an execution stops on it.
+let budget;
+try {
+  budget = await assertPairBudget(resolve(evidenceRoot, "spending-ledger"), {
+    authoritySha256,
+    fixturePrizeAtomic: await readFixturePrize(fixtureChain()),
+  });
+} catch (error) {
+  if (process.argv.includes("--execute")) throw error;
+  budget = { refused: error instanceof Error ? error.message : "Pair budget unavailable" };
+}
 const plan = {
   apiSource,
   solidSource,
@@ -142,6 +156,7 @@ const plan = {
   branch: identity.branchId,
   simulatedClaimVerification: true,
   order: ["win", "loss"],
+  budget,
 };
 console.log(
   JSON.stringify({

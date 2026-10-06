@@ -130,13 +130,17 @@ async function sendFixtureTransaction(chain, plan, run, check) {
     { recheck: check, deadline: run.deadline },
   );
 }
-export async function fundFixturePrize(chain, run, check) {
-  const balance = await chain.publicClient.readContract({
+/** The prize the fixture can pay out now; the pair budget counts a refill when it is short. */
+export function readFixturePrize(chain) {
+  return chain.publicClient.readContract({
     address: fixtureToken,
     abi: tokenAbi,
     functionName: "balanceOf",
     args: [fixtureJackpot],
   });
+}
+export async function fundFixturePrize(chain, run, check) {
+  const balance = await readFixturePrize(chain);
   if (balance >= 1000000n) return { alreadyFunded: true, balanceAtomic: balance.toString() };
   return sendFixtureTransaction(
     chain,

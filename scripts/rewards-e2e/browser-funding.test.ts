@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkWalletFundingStatus, verifyTransferReview } from "./browser-funding.mjs";
+import { verifyTransferReview } from "./browser-funding.mjs";
 
 const expected = {
   chainId: 84532,
@@ -35,24 +35,4 @@ test("another wallet, custody, token, chain, amount or confirmation threshold re
 test("fee overflow, negative amounts and malformed fee text refuse before transfer", () => {
   for (const executionFee of ["0.002 ETH", "-1 ETH", "1.0 USDC", "1e-4 ETH"])
     expect(() => verifyTransferReview({ ...review, executionFee }, expected)).toThrow("fee");
-});
-test("the status check presses only a visible, enabled Check status control", async () => {
-  const dialog = (visible: boolean, enabled: boolean, clicks: string[]) => ({
-    getByRole: (role: string, options: { name: string; exact: boolean }) => ({
-      isVisible: async () => visible,
-      isEnabled: async () => enabled,
-      click: async () => {
-        clicks.push(`${role}:${options.name}:${options.exact}`);
-      },
-    }),
-  });
-  for (const [visible, enabled, pressed] of [
-    [true, true, true],
-    [true, false, false],
-    [false, true, false],
-  ] as const) {
-    const clicks: string[] = [];
-    expect(await checkWalletFundingStatus(dialog(visible, enabled, clicks))).toBe(pressed);
-    expect(clicks).toEqual(pressed ? ["button:Check status:true"] : []);
-  }
 });

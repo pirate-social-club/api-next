@@ -90,3 +90,87 @@ export async function reserveSpending(directory, record) {
     await rmdir(lock);
   }
 }
+
+/**
+ * What one complete win and loss pair reserves, counted from the runner's own
+ * actions: two offer principals, the winners' onward sends of the prize, and the
+ * prize refill before the loss once the win has paid it out. A fixture that does
+ * not already hold the prize needs one more refill before the win.
+ */
+export const pairBudget = Object.freeze({
+  usdcAtomic: 4_000_000n,
+  prizeAtomic: 1_000_000n,
+  // Two funding fee ceilings of 0.0005 ETH, two onward sends and the fixture's gas.
+  ethWei: 3_000_000_000_000_000n,
+});
+/**
+ * Kept free beyond the pair, so that a run which stops after funding can still
+ * be recovered, or one funded step repeated under a fresh approval, without
+ * first exhausting the allowance.
+ */
+export const recoveryHeadroom = Object.freeze({
+  usdcAtomic: 1_000_000n,
+  ethWei: 2_000_000_000_000_000n,
+});
+
+/** Read-only total of everything reserved so far under one authority. */
+export async function readSpendingTotals(directory, authoritySha256) {
+  let usdc = 0n;
+  let eth = 0n;
+  let entries = 0;
+  let names;
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    names = [];
+  }
+  for (const name of names) {
+    // A leftover lock means a reservation may be half written; it needs reconciliation.
+    if (name === ".reservation-lock") throw new Error("Spending ledger is locked; reconcile it");
+    if (!name.endsWith(".json")) throw new Error("Unknown spending ledger entry");
+    const record = JSON.parse(await readFile(join(directory, name), "utf8"));
+    const reserved = validate(record);
+    if (record.authoritySha256 !== authoritySha256)
+      throw new Error("Spending authority changed; reconciliation required");
+    usdc += reserved.usdc;
+    eth += reserved.eth;
+    entries += 1;
+  }
+  return { usdcAtomic: usdc, ethWei: eth, entries };
+}
+
+/**
+ * Refuses before any funded action unless the whole pair and its recovery
+ * headroom fit under both limits. It reserves nothing: each action still makes
+ * its own durable reservation, and a refund never gives allowance back.
+ */
+export async function assertPairBudget(directory, { authoritySha256, fixturePrizeAtomic }) {
+  if (typeof fixturePrizeAtomic !== "bigint" || fixturePrizeAtomic < 0n)
+    throw new Error("Fixture prize balance required for the pair budget");
+  const reserved = await readSpendingTotals(directory, authoritySha256);
+  const firstRefill = fixturePrizeAtomic >= pairBudget.prizeAtomic ? 0n : pairBudget.prizeAtomic;
+  const needed = {
+    usdcAtomic: pairBudget.usdcAtomic + firstRefill + recoveryHeadroom.usdcAtomic,
+    ethWei: pairBudget.ethWei + recoveryHeadroom.ethWei,
+  };
+  const after = {
+    usdcAtomic: reserved.usdcAtomic + needed.usdcAtomic,
+    ethWei: reserved.ethWei + needed.ethWei,
+  };
+  const report = {
+    reservedUsdcAtomic: reserved.usdcAtomic.toString(),
+    reservedEthWei: reserved.ethWei.toString(),
+    pairUsdcAtomic: (pairBudget.usdcAtomic + firstRefill).toString(),
+    pairEthWei: pairBudget.ethWei.toString(),
+    headroomUsdcAtomic: recoveryHeadroom.usdcAtomic.toString(),
+    headroomEthWei: recoveryHeadroom.ethWei.toString(),
+    limitUsdcAtomic: spendingLimits.usdcAtomic.toString(),
+    limitEthWei: spendingLimits.ethWei.toString(),
+  };
+  if (after.usdcAtomic > spendingLimits.usdcAtomic)
+    throw new Error("Whole-pair budget refused: USDC allowance cannot cover a pair and recovery");
+  if (after.ethWei > spendingLimits.ethWei)
+    throw new Error("Whole-pair budget refused: ETH allowance cannot cover a pair and recovery");
+  return report;
+}

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reserveSpending } from "./spending-ledger.mjs";
+import { assertPairBudget, readSpendingTotals, reserveSpending } from "./spending-ledger.mjs";
 
 const reservation = {
   authoritySha256: "a".repeat(64),
@@ -98,4 +98,91 @@ test("corrupt ledger records refuse new spending", () =>
     await writeFile(join(directory, "uncertain.json"), "{partial");
     await expect(reserveSpending(directory, reservation)).rejects.toThrow();
     expect(await readdir(directory)).toEqual(["uncertain.json"]);
+  }));
+
+const authority = { authoritySha256: "a".repeat(64) };
+const usdc = (amount: number) => (BigInt(amount) * 1_000_000n).toString();
+async function reserveMany(directory: string, usdcEach: readonly number[], ethWei = "1000") {
+  for (const [index, amount] of usdcEach.entries())
+    await reserveSpending(directory, {
+      ...reservation,
+      runId: `earlier-${index}`,
+      actionId: "fund-fixture-prize",
+      kind: "prize",
+      usdcAtomic: usdc(amount),
+      ethWei,
+    });
+}
+
+test("the pair budget fits when a pair and its recovery headroom are free", () =>
+  withLedger(async (directory) => {
+    await reserveMany(directory, [3]);
+    const report = await assertPairBudget(directory, {
+      ...authority,
+      fixturePrizeAtomic: 1_000_000n,
+    });
+    // Three reserved, four for the pair, one of headroom: eight of ten.
+    expect(report).toMatchObject({
+      reservedUsdcAtomic: "3000000",
+      pairUsdcAtomic: "4000000",
+      headroomUsdcAtomic: "1000000",
+      limitUsdcAtomic: "10000000",
+    });
+    // The check itself reserves nothing.
+    expect((await readSpendingTotals(directory, authority.authoritySha256)).entries).toBe(1);
+  }));
+
+test("a pair that fits only without recovery headroom is refused", () =>
+  withLedger(async (directory) => {
+    await reserveMany(directory, [3, 3]);
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: 1_000_000n }),
+    ).rejects.toThrow("USDC allowance cannot cover a pair and recovery");
+  }));
+
+test("an unfunded fixture prize adds one refill to the pair", () =>
+  withLedger(async (directory) => {
+    await reserveMany(directory, [3, 2]);
+    // Five reserved: a pair with a funded prize fits exactly, with an empty one it does not.
+    const funded = await assertPairBudget(directory, {
+      ...authority,
+      fixturePrizeAtomic: 1_000_000n,
+    });
+    expect(funded.pairUsdcAtomic).toBe("4000000");
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: 999_999n }),
+    ).rejects.toThrow("USDC allowance");
+  }));
+
+test("the ETH allowance is checked as well as the USDC allowance", () =>
+  withLedger(async (directory) => {
+    // 0.046 ETH reserved leaves less than the pair and its headroom need.
+    await reserveMany(directory, [1], "46000000000000000");
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: 1_000_000n }),
+    ).rejects.toThrow("ETH allowance cannot cover a pair and recovery");
+  }));
+
+test("an empty ledger, another authority and a leftover lock are each handled", () =>
+  withLedger(async (directory) => {
+    await expect(
+      assertPairBudget(join(directory, "absent"), {
+        ...authority,
+        fixturePrizeAtomic: 1_000_000n,
+      }),
+    ).resolves.toMatchObject({ reservedUsdcAtomic: "0" });
+    await reserveMany(directory, [1]);
+    await expect(
+      assertPairBudget(directory, {
+        authoritySha256: "b".repeat(64),
+        fixturePrizeAtomic: 1_000_000n,
+      }),
+    ).rejects.toThrow("authority changed");
+    await mkdir(join(directory, ".reservation-lock"));
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: 1_000_000n }),
+    ).rejects.toThrow("locked");
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: undefined as never }),
+    ).rejects.toThrow("prize balance required");
   }));
