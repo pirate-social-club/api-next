@@ -5,15 +5,16 @@ import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
 import { browserApi } from "./browser-api.mjs";
 import {
-  checkWalletFundingStatus,
   confirmWalletFunding,
   reviewWalletFunding,
+  trackFundingObservations,
 } from "./browser-funding.mjs";
 import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
 import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
 import { sendPaidCredit } from "./browser-winner-send.mjs";
+import { fundingConfirmationEvidence } from "./cycle-evidence.mjs";
 import {
   assertNothingOwed,
   assertShutdownInventory,
@@ -31,13 +32,14 @@ import {
   fixtureJackpot,
   fixtureToken,
   fundFixturePrize,
+  readManagedFloat,
   settleDueDrawing,
 } from "./fixture-chain.mjs";
 import { verifyConfirmedFunding } from "./funding-evidence.mjs";
 import { claimParticipantCredit } from "./participant-claims.mjs";
 import { singleParticipantCredit } from "./participant-policy.mjs";
 import { firstJobsReceiptRead } from "./receipt-evidence.mjs";
-import { subscribeJobsReceipts } from "./receipt-observer.mjs";
+import { subscribeJobsCycles, subscribeJobsReceipts } from "./receipt-observer.mjs";
 import {
   assertActivityShares,
   expectedTicketLogs,
@@ -54,7 +56,7 @@ import { disableIsolatedRewards, setIsolatedRewardsFlag } from "./runtime-flags.
 import { verifySettlementReceipts } from "./settlement-evidence.mjs";
 import { recoverSettlement, recoveryDeadline } from "./settlement-recovery.mjs";
 import { executeOnce } from "./single-use.mjs";
-import { reserveSpending } from "./spending-ledger.mjs";
+import { feeCeilings, reserveSpending } from "./spending-ledger.mjs";
 
 const fixtureAbi = parseAbi(["function currentDrawingId() view returns(uint256)"]);
 const controlQuery = "SELECT paused,revision::text FROM reward_operations_control WHERE singleton";
@@ -64,6 +66,8 @@ export async function runScenario(options) {
     runId: `${options.outcome}-${Date.now()}`,
     deadline: Date.now() + 25 * 60000,
     ledgerDirectory: `${options.evidenceRoot}/spending-ledger`,
+    // What a passing run still does not establish; reported with its result.
+    unproven: [],
   };
   run.directory = `${options.directory}/${run.outcome}`;
   mkdirSync(run.directory, { mode: 0o700 });
@@ -79,6 +83,7 @@ export async function runScenario(options) {
     failure;
   let failureStage;
   let jobsVersionId;
+  let cycleObserver;
   /**
    * The one gate for settling a purchased drawing, in the run and in recovery:
    * the pinned jobs Worker's first receipt read and an independently canonical
@@ -191,6 +196,9 @@ export async function runScenario(options) {
     run.chain = fixtureChain();
     const driver = await buildBrowserWalletDriver(process.env.REWARDS_E2E_SOLID_ROOT);
     observer = await subscribeJobsReceipts(run.directory);
+    // Losing this second capture never stops a run; it only leaves jobs funding
+    // confirmation unproven.
+    cycleObserver = await subscribeJobsCycles(run.directory).catch(() => undefined);
     stageSave("prepared", {
       accounts: host.report.accounts,
       routes: route.route.activity_paths,
@@ -199,14 +207,7 @@ export async function runScenario(options) {
     });
     // The managed ETH float is a ceiling for automatic sends. It is one exposure,
     // so it is reserved once for the authorization and not again per run.
-    const floatAddresses = [
-      fixtureCustody,
-      fixtureSponsorWallet,
-      "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a",
-    ];
-    const balances = await Promise.all(
-      floatAddresses.map((address) => run.chain.publicClient.getBalance({ address })),
-    );
+    const managedFloat = await readManagedFloat(run.chain);
     try {
       await reserveSpending(run.ledgerDirectory, {
         authoritySha256: run.authoritySha256,
@@ -215,7 +216,7 @@ export async function runScenario(options) {
         actionId: "worker-gas-float",
         kind: "gas",
         usdcAtomic: "0",
-        ethWei: balances.reduce((sum, value) => sum + value, 0n).toString(),
+        ethWei: managedFloat.toString(),
       });
     } catch (error) {
       if (error?.message !== "Spending action already reserved; do not replay") throw error;
@@ -315,10 +316,16 @@ export async function runScenario(options) {
       recipient: fixtureCustody,
       token: fixtureToken,
       amountAtomic: "1000000",
-      maximumExecutionFeeWei: "500000000000000",
+      maximumExecutionFeeWei: feeCeilings.fundingWei.toString(),
     };
     stage = "funding-confirmation";
     const transferReview = await reviewWalletFunding(host.pages.sponsor, reviewed.dialog, transfer);
+    // Watched from before the transfer is confirmed, so no observation is missed.
+    const httpObservations = trackFundingObservations(
+      host.pages.sponsor,
+      legId,
+      funding.funding_effect_id,
+    );
     await confirmWalletFunding(host.pages.sponsor, reviewed.dialog, (recheck, click) =>
       once(
         "fund-offer",
@@ -338,18 +345,45 @@ export async function runScenario(options) {
         click,
       ),
     );
+    const readFunding = () =>
+      options.db.read(fundingQuery, [leg.offer_id, legId, new Date(startedAt).toISOString()]);
+    // The app binds the transfer's hash once, right after the wallet sends it. The
+    // sponsor then leaves: the page is unloaded so that nothing in a browser can ask
+    // the server to look again, and only the jobs Worker can confirm the payment.
+    const boundRows = await waitForEvidence(
+      "funding submission",
+      Math.min(Date.now() + 120000, end - 60000),
+      readFunding,
+      (rows) => rows.length === 1 && typeof rows[0].transaction_hash === "string",
+      check,
+    );
+    // Every observation the page has made is given time to be answered, so that no
+    // request is still on its way to the server when the page goes.
+    for (let waited = 0; waited < 45000 && Date.now() < end - 60000; waited += 1000) {
+      const seen = httpObservations.snapshot();
+      if (seen.started > 0 && seen.unanswered === 0) break;
+      await Bun.sleep(1000);
+    }
+    const stateBeforeSponsorLeft = (await readFunding())[0]?.state;
+    await host.pages.sponsor.goto("about:blank");
+    // Taken after the page has gone, so a request begun at the last moment counts.
+    const observedByHttp = httpObservations.snapshot();
+    httpObservations.stop();
+    const sponsorLeft = {
+      at: new Date().toISOString(),
+      // Read before the page went, so an answer racing the unload cannot hide.
+      stateWhenSponsorLeft: stateBeforeSponsorLeft,
+    };
+    stageSave("sponsor-left", {
+      ...sponsorLeft,
+      transactionHash: boundRows[0].transaction_hash,
+      httpObservations: observedByHttp,
+    });
+    // Passive reads only from here: no control is pressed and no API is called.
     const fundedRows = await waitForEvidence(
       "funding confirmation",
       end - 60000,
-      async () => {
-        // A failed press is not evidence either way; the database row decides.
-        await checkWalletFundingStatus(reviewed.dialog).catch(() => false);
-        return options.db.read(fundingQuery, [
-          leg.offer_id,
-          legId,
-          new Date(startedAt).toISOString(),
-        ]);
-      },
+      readFunding,
       (rows) => rows.length === 1 && rows[0].state === "confirmed",
       check,
     );
@@ -413,7 +447,43 @@ export async function runScenario(options) {
         expected,
       );
     };
-    stageSave("funding-confirmed", { ...(await fundingCheck()), review: transferReview });
+    // The jobs Worker's summary for the confirming minute is awaited briefly. It is
+    // corroboration only; the claim that jobs confirmed rests on the HTTP path
+    // having been closed before the sponsor left.
+    const confirmedAt = new Date(fundedRows[0].confirmed_at).toISOString();
+    const cycleCapture = () => cycleObserver?.capture;
+    for (let waited = 0; waited < 90000 && Date.now() < end - 60000; waited += 3000) {
+      await cycleObserver?.flush();
+      if (
+        !cycleCapture() ||
+        cycleCapture().events.some(
+          (cycle) => Date.parse(cycle.emittedAt) >= Date.parse(confirmedAt),
+        )
+      )
+        break;
+      await Bun.sleep(3000);
+    }
+    const confirmationEvidence = fundingConfirmationEvidence({
+      httpObservations: observedByHttp,
+      stateWhenSponsorLeft: sponsorLeft.stateWhenSponsorLeft,
+      sponsorLeftAt: sponsorLeft.at,
+      confirmedAt,
+      jobsVersionId,
+      captureComplete:
+        cycleCapture()?.outcome === "subscribed" &&
+        !cycleCapture().subscriptionGaps &&
+        !cycleCapture().parseFailures,
+      cycles: cycleCapture()?.events,
+    });
+    if (!confirmationEvidence.jobsCausedConfirmation.proven)
+      run.unproven.push("jobs funding confirmation");
+    stageSave("funding-confirmed", {
+      ...(await fundingCheck()),
+      review: transferReview,
+      sponsorLeftAt: sponsorLeft.at,
+      confirmedAt,
+      ...confirmationEvidence,
+    });
     stage = "outcome-drawing";
     const placeholderSettled = await settleDueDrawing(
       run.chain,
@@ -683,6 +753,8 @@ export async function runScenario(options) {
     } else if (flagsEnabled) {
       errors.push("obligations remain; flags left enabled for recovery");
     }
+    // Its outcome was judged when funding confirmed; closing it late is not an error.
+    await cycleObserver?.close().catch(() => undefined);
     if (observer) {
       try {
         const capture = await observer.close();
@@ -734,5 +806,9 @@ export async function runScenario(options) {
     nothingOwed: passed,
     flagsOff: true,
     brakePaused: true,
+    // A pass proves the money movement. These it never proves, by construction:
+    // claims and sends go through the API and an injected wallet, and claim
+    // verification is the isolated build's stub.
+    unproven: ["ordinary claim and Wallet screens", "real claim verification", ...run.unproven],
   };
 }

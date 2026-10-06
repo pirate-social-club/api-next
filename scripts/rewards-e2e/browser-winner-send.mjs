@@ -4,7 +4,7 @@ import { installBrowserWalletDriver } from "./browser-wallet-build.mjs";
 import { canonicalFixtureTransaction, fixtureOperator, fixtureToken } from "./fixture-chain.mjs";
 import { waitForEvidence } from "./run-evidence.mjs";
 import { executeOnce } from "./single-use.mjs";
-import { reserveSpending } from "./spending-ledger.mjs";
+import { feeCeilings, reserveSpending } from "./spending-ledger.mjs";
 
 /** All credentials and provider state remain in the browser; only fee facts and the public hash return. */
 export async function sendPaidCredit(page, role, credit, run, driver, check) {
@@ -107,7 +107,7 @@ export async function sendPaidCredit(page, role, credit, run, driver, check) {
   );
   if (
     !/^[1-9][0-9]*$/.test(fee.executionFeeAtomic) ||
-    BigInt(fee.executionFeeAtomic) > 5000000000000000n
+    BigInt(fee.executionFeeAtomic) > feeCeilings.winnerSendWei
   )
     throw Error("Winner fee bound refused");
   await page.exposeFunction("isolatedRewardsSendRecheck", check);
