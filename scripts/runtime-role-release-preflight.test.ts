@@ -144,9 +144,34 @@ describe("destructive money-table inventory", () => {
       ),
     ).text();
     const array = sql.split("FOREACH table_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
-    expect([...array.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([
-      ...REWARDS_MONEY_TABLES,
-    ]);
+    // Tables created after 0232 have their inherited privileges removed by the
+    // migration that creates them, which is checked here in the same way.
+    const laterTables: Record<string, readonly string[]> = {
+      "0242_reward_operations_run_lease.sql": [
+        "reward_operations_run_lease",
+        "reward_operations_run_lease_events",
+      ],
+    };
+    const later = Object.values(laterTables).flat();
+    expect([...array.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual(
+      REWARDS_MONEY_TABLES.filter((table) => !later.includes(table)),
+    );
+    for (const [migration, tables] of Object.entries(laterTables)) {
+      const laterSql = await Bun.file(
+        new URL(`../db/postgres/migrations/${migration}`, import.meta.url),
+      ).text();
+      const revoked =
+        laterSql.split("FOREACH table_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
+      expect([...revoked.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([
+        ...tables,
+      ]);
+      expect(laterSql).toContain(
+        "EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC', table_name)",
+      );
+      expect(laterSql).toContain(
+        "EXECUTE format('REVOKE ALL ON TABLE %I FROM %I',table_name,role_name)",
+      );
+    }
     const seen = new Set<string>();
     for (const requirement of RUNTIME_RELEASE_PRIVILEGES) {
       const key = `${requirement.object}:${requirement.privilege}`;
