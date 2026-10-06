@@ -56,11 +56,10 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-<<<<<<< HEAD
 const testCount = 29;
 =======
-const testCount = 28;
->>>>>>> origin/main
+const testCount = 29;
+>>>>>>> origin/feat/rewards-run-lease
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
