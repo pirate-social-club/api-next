@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { parseAbi } from "viem";
 import { fixtureAccounts } from "./browser-accounts.mjs";
 import { createReviewedBoost, enterKaraoke, reviewBoost } from "./browser-activities.mjs";
@@ -52,6 +52,7 @@ import {
   saveRunEvidence,
   waitForEvidence,
 } from "./run-evidence.mjs";
+import { holdRunLease } from "./run-lease.mjs";
 import { disableIsolatedRewards, setIsolatedRewardsFlag } from "./runtime-flags.mjs";
 import { verifySettlementReceipts } from "./settlement-evidence.mjs";
 import { recoverSettlement, recoveryDeadline } from "./settlement-recovery.mjs";
@@ -84,6 +85,7 @@ export async function runScenario(options) {
   let failureStage;
   let jobsVersionId;
   let cycleObserver;
+  let runLease;
   /**
    * The one gate for settling a purchased drawing, in the run and in recovery:
    * the pinned jobs Worker's first receipt read and an independently canonical
@@ -149,6 +151,8 @@ export async function runScenario(options) {
     )[0];
     if (controlRevision !== undefined && (control.paused || control.revision !== controlRevision))
       throw Error("Brake changed during run");
+    // Once the lease is gone the database refuses new work; the run stops asking.
+    runLease?.assertHeld();
     if (
       observer &&
       (observer.capture.outcome !== "subscribed" ||
@@ -263,6 +267,16 @@ export async function runScenario(options) {
     flagsEnabled = true;
     const jobs = await setIsolatedRewardsFlag("jobs", "true", run.apiSource);
     jobsVersionId = jobs.versionId;
+    // The lease is acquired while paused and grants nothing until the resume below.
+    // From here on, if this process or its machine is lost, the database stops
+    // admitting, signing and sending when the lease runs out.
+    runLease = await holdRunLease({
+      lease: options.db.lease,
+      runId: run.runId,
+      onEvent: (event) =>
+        appendFileSync(`${run.directory}/run-lease-events.jsonl`, `${JSON.stringify(event)}\n`),
+    });
+    stageSave("run-lease-acquired", runLease.state());
     const resumed = await options.db.control(false, initial.revision, `Isolated ${run.runId}`);
     controlRevision = resumed.control.revision;
     stage = "placeholder-observation";
@@ -736,6 +750,16 @@ export async function runScenario(options) {
     } catch {
       errors.push("brake pause refused");
     }
+    // Released only after the pause, and it only ever shortens the lease. A lease
+    // already lost is left to run out; whatever it was is recorded.
+    let leaseCloseout;
+    if (runLease) {
+      const held = runLease.state();
+      const release = await runLease.release();
+      leaseCloseout = { ...held, ...release };
+      if (held.lost !== null) errors.push(`run lease lost: ${held.lost}`);
+      else if (release.released !== true) errors.push("run lease release refused");
+    }
     let shutdownInventory;
     let nothingOwedAnywhere = false;
     try {
@@ -783,6 +807,7 @@ export async function runScenario(options) {
       failureReason: failure?.message,
       recovery,
       brake,
+      runLease: leaseCloseout,
       browsersClosed: host?.report.browsersClosed,
       shutdownInventory,
       flagsEnabled,

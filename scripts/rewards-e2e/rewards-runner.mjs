@@ -7,9 +7,11 @@ import { loadPostgresMigrations } from "../postgres-migrations.ts";
 import { cloudflareApi } from "./cloudflare-api.mjs";
 import { verifyCommitmentReader } from "./commitment-reader.mjs";
 import {
+  assertRunLeaseReady,
   assertShutdownInventory,
   isolatedDatabase,
   readShutdownInventory,
+  runLeaseQuery,
 } from "./database-evidence.mjs";
 import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
 import { runScenario } from "./run-scenario.mjs";
@@ -109,6 +111,8 @@ const control = (
 )[0];
 if (control?.paused !== true) throw Error("Preparation requires paused isolated brake");
 assertShutdownInventory(await readShutdownInventory(db));
+// Without a required lease a lost runner would leave the brake running.
+const runLease = assertRunLeaseReady(await db.read(runLeaseQuery));
 for (const [variable, address] of [
   ["MEGAPOT_E2E_CUSTODY_PRIVATE_KEY", "0x544881290138fe0e66c1ec7d1a1f141395246f20"],
   ["MEGAPOT_E2E_GAS_TOPUP_PRIVATE_KEY", "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a"],
@@ -159,6 +163,7 @@ const plan = {
   simulatedClaimVerification: true,
   order: ["win", "loss"],
   budget,
+  runLease,
 };
 console.log(
   JSON.stringify({

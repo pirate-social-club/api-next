@@ -40,6 +40,40 @@ export function isolatedDatabase(identity, adminUrl, runtimeUrl) {
       use(adminUrl, false, (db) =>
         setRewardOperationsControl(db, { paused, expectedRevision, reason }),
       ),
+    // The run lease is an operator act, so it uses the admin role. Each call is
+    // one short transaction; a refusal surfaces with the database's own code.
+    lease: {
+      acquire: (runId, ttlSeconds, maxSeconds) =>
+        use(
+          adminUrl,
+          false,
+          async (db) =>
+            (
+              await db.query("SELECT acquire_reward_run_lease_v1($1,$2,$3)::text AS fence", [
+                runId,
+                ttlSeconds,
+                maxSeconds,
+              ])
+            ).rows[0].fence,
+        ),
+      renew: (runId, fence, ttlSeconds) =>
+        use(
+          adminUrl,
+          false,
+          async (db) =>
+            (
+              await db.query("SELECT renew_reward_run_lease_v1($1,$2::bigint,$3)::text AS fence", [
+                runId,
+                fence,
+                ttlSeconds,
+              ])
+            ).rows[0].fence,
+        ),
+      release: (runId, fence) =>
+        use(adminUrl, false, (db) =>
+          db.query("SELECT release_reward_run_lease_v1($1,$2::bigint)", [runId, fence]),
+        ),
+    },
   };
 }
 export const fundingQuery = `SELECT o.offer_id, o.community_id, o.post_id, o.audio_revision::text,
@@ -144,4 +178,17 @@ export function assertShutdownInventory(inventory) {
     if (inventory?.[category] !== "0") throw Error(`Rewards shutdown refused: ${category}`);
   }
   return { nothingOwed: true };
+}
+
+export const runLeaseQuery = `SELECT required, run_id, fence::text,
+  (run_id IS NOT NULL AND clock_timestamp() < expires_at
+    AND clock_timestamp() < absolute_deadline) AS live
+  FROM api_next.reward_operations_run_lease WHERE singleton`;
+
+/** The isolated database must demand a lease, and none may be live before a run. */
+export function assertRunLeaseReady(rows) {
+  if (rows.length !== 1 || rows[0].required !== true)
+    throw Error("Isolated database does not require a run lease");
+  if (rows[0].live === true) throw Error("A run lease is already live; reconcile it first");
+  return { required: true, live: false };
 }
