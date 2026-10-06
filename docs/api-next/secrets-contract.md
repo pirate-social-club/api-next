@@ -1158,3 +1158,31 @@ does not provision keys or alter any deployment. Development and production
 Infisical inventories do not admit this testnet secret. Retain each key until
 its original attestation has no outstanding liabilities or pending chain effects
 and its operator closeout has been verified.
+
+## HNS production operator inventory, October 6
+
+The accepted production host and database use seven optional names only at
+production `/services/api-next/operator`: `HNS_AUTHORITY_HSD_AUTHORIZATION`,
+`HNS_AUTHORITY_SECONDARY_PDNS_API_KEY`, `HNS_PRODUCTION_MAINNET_READER_CLIENT_KEY`,
+and `HNS_PRODUCTION_POSTGRES_ADMIN_URL`, `HNS_PRODUCTION_POSTGRES_GATEWAY_URL`,
+`HNS_PRODUCTION_POSTGRES_PROVISIONER_URL`, `HNS_PRODUCTION_POSTGRES_RUNTIME_URL`.
+The authority inputs belong to the retained provisioner/authority host, the
+reader key belongs to the reviewed mainnet reader, and the database URLs belong
+to fenced operator/preflight workflows for the replacement production branch.
+They are not browser or shared Worker bindings. Inventory admission creates
+no credential, changes no effective permission, and enables no runtime.
+
+The video source gateway's production source now names the same replacement
+Hyperdrive as the other production Workers. A read-only deployment listing on
+October 6 returned Worker-not-found for that production gateway. This source
+repair does not create or deploy it; the current release excludes that Worker.
+
+The optional production `/services/spaces-operator` folder admits only
+`SPACES_BACKUP_AGE_RECIPIENT`, `SPACES_BACKUP_B2_KEY_ID` and
+`SPACES_BACKUP_B2_APPLICATION_KEY` for the
+maintained operator backup uploader. These names are not Worker runtime inputs.
+The absence of this optional folder is not a missing-secret finding; an
+unknown folder or additional stored name remains a violation. Staging Spaces
+operator names admit only the verified observer node/DB pair and Yahoo
+assignment, capability report, funding report and registry tokens. They remain
+operator-only; no HTTP/jobs distribution or feature activation is implied.

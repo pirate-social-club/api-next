@@ -7,6 +7,10 @@ const alias = {
     "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/spaces-community-route-attachment-repository": new URL(
+    "../../packages/platform-cf/src/spaces-community-route-attachment-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/spaces-operator-assignment-repository": new URL(
     "../../packages/platform-cf/src/spaces-operator-assignment-repository.ts",
     import.meta.url,

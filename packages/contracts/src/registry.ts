@@ -124,6 +124,12 @@ import {
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
 import {
+  CommitSpacesRouteAttachment,
+  GetCurrentSpacesRouteAttachment,
+  ProveSpacesRouteAttachment,
+  StartSpacesRouteAttachment,
+} from "./spaces-community-route-attachment.ts";
+import {
   ConfirmSpacesOperatorAssignment,
   GetSpacesOperatorAssignments,
 } from "./spaces-operator-assignment.ts";
@@ -208,6 +214,10 @@ export const registry = {
   StartNamespaceOwnership,
   StartSpacesOwnership,
   PollSpacesOwnership,
+  StartSpacesRouteAttachment,
+  GetCurrentSpacesRouteAttachment,
+  ProveSpacesRouteAttachment,
+  CommitSpacesRouteAttachment,
   GetSpacesOperatorAssignments,
   ConfirmSpacesOperatorAssignment,
   PollNamespaceOwnership,
