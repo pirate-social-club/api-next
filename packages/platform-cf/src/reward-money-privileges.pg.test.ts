@@ -5,6 +5,7 @@ import {
   moneyTableInventoryViolations,
   REWARDS_MONEY_TABLE_PATTERN,
   REWARDS_MONEY_TABLES,
+  REWARDS_MONEY_TABLES_AFTER_0232,
 } from "../../../scripts/rewards-money-write-contract.ts";
 
 import { assertRuntimeMoneyInventory } from "../../../scripts/runtime-role-release-preflight.ts";
@@ -20,6 +21,13 @@ const migration = () =>
       import.meta.url,
     ),
   ).text();
+
+// Tables created after 0232 are outside what that migration revoked. Their own
+// migrations restrict them, which is tested where they are introduced.
+const laterTables = Object.values(REWARDS_MONEY_TABLES_AFTER_0232).flat();
+const coveredBy0232: readonly string[] = REWARDS_MONEY_TABLES.filter(
+  (table) => !laterTables.includes(table),
+);
 
 suite("reviewed rewards money destructive privileges", () => {
   test("revokes direct, inherited and PUBLIC destruction while retaining runtime writes and unrelated defaults", async () => {
@@ -40,6 +48,12 @@ suite("reviewed rewards money destructive privileges", () => {
       await admin.query(
         `CREATE ROLE "${parent}"; CREATE ROLE "${runtime}"; CREATE ROLE "${direct}"; GRANT "${parent}" TO "${runtime}"; GRANT USAGE ON SCHEMA "${schema}" TO "${parent}","${direct}"; GRANT SELECT,INSERT,UPDATE,DELETE,TRUNCATE ON ALL TABLES IN SCHEMA "${schema}" TO "${parent}","${direct}" WITH GRANT OPTION; SET ROLE "${parent}"; GRANT DELETE ON reward_ledger_credits TO "${runtime}"; RESET ROLE; GRANT DELETE,TRUNCATE ON reward_ledger_credits TO PUBLIC; ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO "${parent}"; CREATE TABLE unrelated_retention(id text)`,
       );
+      // The blanket grant above also reached the later tables. Their creating
+      // migration leaves runtime roles read access only, so that is restored
+      // here; 0232 is not expected to touch them.
+      await admin.query(
+        `REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON ${laterTables.join(",")} FROM "${parent}","${direct}" CASCADE`,
+      );
       await writer.query(`SET search_path TO "${schema}"; SET ROLE "${runtime}"`);
       const grants = () =>
         writer.query<{
@@ -55,12 +69,26 @@ suite("reviewed rewards money destructive privileges", () => {
         );
       const before = (await grants()).rows;
       expect(moneyTableInventoryViolations(before.map((row) => row.object))).toEqual([]);
-      expect(before.every((row) => row.remove && row.truncate)).toBe(true);
+      const inScope = <Row extends { object: string }>(rows: readonly Row[]) =>
+        rows.filter((row) => coveredBy0232.includes(row.object));
+      const outOfScope = <Row extends { object: string }>(rows: readonly Row[]) =>
+        rows.filter((row) => laterTables.includes(row.object));
+      expect(inScope(before)).toHaveLength(coveredBy0232.length);
+      expect(inScope(before).every((row) => row.remove && row.truncate)).toBe(true);
       await admin.query(await migration());
       const after = (await grants()).rows;
       expect(after).toHaveLength(REWARDS_MONEY_TABLES.length);
       expect(
-        after.every((row) => row.read && row.insert && row.update && !row.remove && !row.truncate),
+        inScope(after).every(
+          (row) => row.read && row.insert && row.update && !row.remove && !row.truncate,
+        ),
+      ).toBe(true);
+      // 0232 neither widened nor narrowed the later tables: still read only.
+      expect(outOfScope(after)).toHaveLength(laterTables.length);
+      expect(
+        outOfScope(after).every(
+          (row) => row.read && !row.insert && !row.update && !row.remove && !row.truncate,
+        ),
       ).toBe(true);
       await expect(writer.query("DELETE FROM reward_ledger_credits")).rejects.toMatchObject({
         code: "42501",

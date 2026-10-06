@@ -73,6 +73,9 @@ export async function finishAdmittedRefund(input: {
     },
     readReceipt: async () => {
       receiptReads++;
+      // A receipt exists only for a transaction that was sent. The coordinator
+      // looks for one before it sends, in case an earlier send went unrecorded.
+      if (sends === 0) return null;
       return {
         chainId: reservation.chainId,
         status: "success",
@@ -100,6 +103,7 @@ export async function finishAdmittedRefund(input: {
     readBlock: async (blockNumber) => ({ blockNumber, blockHash: input.blockHash }),
   };
   const coordinator = makeRewardRefundCoordinator({
+    authority: { ensure: () => Effect.void },
     store: input.store,
     rpc,
     requiredConfirmations: 3,

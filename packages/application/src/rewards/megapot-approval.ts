@@ -1,5 +1,5 @@
 import { Data, type Effect } from "effect";
-import type { RewardOperationsPaused } from "./reward-operations.ts";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 export class MegapotApprovalStorageFailed extends Data.TaggedError("MegapotApprovalStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -12,7 +12,8 @@ export class MegapotApprovalRejected extends Data.TaggedError("MegapotApprovalRe
 export type MegapotApprovalFailure =
   | MegapotApprovalRejected
   | MegapotApprovalStorageFailed
-  | RewardOperationsPaused;
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type MegapotApprovalCandidate = Readonly<{
   attestationId: string;

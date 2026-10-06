@@ -241,6 +241,7 @@
     "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
     "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
     "0240_telegram_interface_preferences.sql": "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404",
-    "0241_song_owner_policy_head_lock_runtime_grant.sql": "4a19a6351fa156a4cf7de8196895882d152bcd05388f284032d9b023992cfbf7"
+    "0241_song_owner_policy_head_lock_runtime_grant.sql": "4a19a6351fa156a4cf7de8196895882d152bcd05388f284032d9b023992cfbf7",
+    "0242_reward_operations_run_lease.sql": "2c183509506a71cc73e8fd0441aa73662e949a1ba44ca662a3896f2073195e43"
   }
 }

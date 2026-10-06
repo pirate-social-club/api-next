@@ -441,6 +441,7 @@ suite("Composed current-policy Megapot settlement", () => {
         ).rows,
       ).toEqual(leaves.rows);
       const commitment = makeMegapotCommitmentCoordinator({
+        authority: { ensure: () => Effect.void },
         store: makeControlPlaneMegapotCommitmentStore(layer),
         now: () => freezeAt + 1000,
         signer: {
