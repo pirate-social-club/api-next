@@ -62,6 +62,11 @@ import { makeKaraokeFinalizationRecoveryJob } from "./karaoke-finalization-recov
 import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
+import {
+  MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+} from "./megapot-rewards-cycle";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
@@ -267,6 +272,18 @@ function makeMegapotOptions(
   }
   return {
     environment: config.API_NEXT_ENV,
+    // Funding observation and the liveness projection run on a bounded session
+    // so that an interrupted transaction has a short, counted tail; see the
+    // cycle's deadlines.
+    ...(env.CONTROL_PLANE === undefined
+      ? {}
+      : {
+          boundedControlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+            statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+            connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+            closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+          }),
+        }),
     workerVersion: env.CF_VERSION_METADATA,
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
@@ -504,6 +521,7 @@ const runScheduledJob = Effect.fn("runScheduledJob")(function* <Failure, Require
   const runContext = {
     owner,
     attemptId: `${owner}:${job.name}`,
+    startedAtMs: Date.now(),
     lease: () => state.currentLease,
     adapterSafety: {
       markAbortedOrFenced: () => {
