@@ -2,8 +2,9 @@ import { writeFileSync } from "node:fs";
 import { createPublicClient, createWalletClient, http, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
+import { fixtureCustody, fixtureSponsorWallet } from "./run-evidence.mjs";
 import { executeOnce } from "./single-use.mjs";
-import { reserveSpending } from "./spending-ledger.mjs";
+import { feeCeilings, reserveSpending } from "./spending-ledger.mjs";
 export const fixtureJackpot = "0xf856b59a9a9a5397aba89c647742b2a69d03d3c8";
 export const fixtureToken = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
 export const fixtureOperator = "0x8fb9941a4782e4fc05467f9a3138c66c7f2aacaf";
@@ -101,7 +102,7 @@ async function sendFixtureTransaction(chain, plan, run, check) {
       const fees = await chain.publicClient.estimateFeesPerGas();
       const gasLimit = (gas * 125n) / 100n;
       const maximumFee = gasLimit * fees.maxFeePerGas;
-      if (maximumFee > 5000000000000000n) throw Error("Fixture fee exceeds limit");
+      if (maximumFee > feeCeilings.fixtureTransactionWei) throw Error("Fixture fee exceeds limit");
       await reserveSpending(run.ledgerDirectory, {
         authoritySha256: run.authoritySha256,
         chainId: 84532,
@@ -130,13 +131,29 @@ async function sendFixtureTransaction(chain, plan, run, check) {
     { recheck: check, deadline: run.deadline },
   );
 }
-export async function fundFixturePrize(chain, run, check) {
-  const balance = await chain.publicClient.readContract({
+/**
+ * The ETH the Workers and the sponsor wallet can spend on their own. It is one
+ * exposure, reserved once for the authorization and not again per run.
+ */
+export async function readManagedFloat(chain) {
+  const balances = await Promise.all(
+    [fixtureCustody, fixtureSponsorWallet, "0x85ea2bce79f4cf8489457577ce75f98c47c90c6a"].map(
+      (address) => chain.publicClient.getBalance({ address }),
+    ),
+  );
+  return balances.reduce((sum, value) => sum + value, 0n);
+}
+/** The prize the fixture can pay out now; the pair budget counts a refill when it is short. */
+export function readFixturePrize(chain) {
+  return chain.publicClient.readContract({
     address: fixtureToken,
     abi: tokenAbi,
     functionName: "balanceOf",
     args: [fixtureJackpot],
   });
+}
+export async function fundFixturePrize(chain, run, check) {
+  const balance = await readFixturePrize(chain);
   if (balance >= 1000000n) return { alreadyFunded: true, balanceAtomic: balance.toString() };
   return sendFixtureTransaction(
     chain,

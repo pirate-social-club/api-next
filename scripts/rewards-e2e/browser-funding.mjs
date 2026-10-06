@@ -103,12 +103,52 @@ export async function confirmWalletFunding(page, dialog, consumeTransfer) {
 }
 
 /**
- * The app observes a submitted transfer once and then waits for the sponsor to ask again.
- * The control only re-reads the bound hash; it cannot sign or send another transfer.
+ * Watches every HTTP observation of one funding that the sponsor's page makes.
+ * The server acts on a request whether or not the page waits for the answer, so
+ * a request with no answer yet, or one that failed in transit, may still confirm
+ * the funding later. Only answered observations say what the server decided.
  */
-export async function checkWalletFundingStatus(dialog) {
-  const button = dialog.getByRole("button", { name: "Check status", exact: true });
-  if (!(await button.isVisible()) || !(await button.isEnabled())) return false;
-  await button.click();
-  return true;
+export function trackFundingObservations(page, legId, fundingEffectId) {
+  const path = `/reward-offer-legs/${legId}/funding/${fundingEffectId}/observations`;
+  const mine = (request) =>
+    request.method() === "POST" && new URL(request.url()).pathname.endsWith(path);
+  /** @type {{ started: number, answers: string[], unanswered: number }} */
+  const state = { started: 0, answers: [], unanswered: 0 };
+  const pending = new Set();
+  const onRequest = (request) => {
+    if (!mine(request)) return;
+    state.started += 1;
+    state.unanswered += 1;
+    pending.add(request);
+  };
+  const onResponse = async (response) => {
+    const request = response.request();
+    if (!pending.has(request)) return;
+    let status = `http-${response.status()}`;
+    try {
+      const body = await response.json();
+      if (response.status() === 200 && typeof body?.funding?.status === "string")
+        status = body.funding.status;
+    } catch {
+      // An unreadable answer is not evidence that the funding was left waiting.
+      status = "unreadable";
+    }
+    if (!pending.delete(request)) return;
+    state.unanswered -= 1;
+    state.answers.push(status);
+  };
+  // A request that fails in transit keeps counting as unanswered: the server may have it.
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  return {
+    snapshot: () => ({
+      started: state.started,
+      answers: [...state.answers],
+      unanswered: state.unanswered,
+    }),
+    stop: () => {
+      page.off("request", onRequest);
+      page.off("response", onResponse);
+    },
+  };
 }
