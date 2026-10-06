@@ -7,6 +7,7 @@ import {
   findDeployedVersion,
   parseWorkerDeploymentArgs,
   parseWorkerVersions,
+  resolveDeploymentRepository,
   verifyDeploymentSource,
 } from "./deploy-worker-with-provenance";
 
@@ -361,4 +362,49 @@ describe("Worker deployment provenance", () => {
     ).rejects.toThrow("differs from the reviewed deploy pin");
     expect(refused.commands.some((command) => command.includes("deploy"))).toBe(false);
   });
+});
+
+test("external deployment source requires accepted clean tooling in the same repository", async () => {
+  const { runner, commands } = queueRunner([
+    { exitCode: 0, stdout: sourceSha },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0, stdout: input.configPath },
+    { exitCode: 0, stdout: "/repo/.git" },
+    { exitCode: 0, stdout: "/repo/.git" },
+  ]);
+  await expect(
+    resolveDeploymentRepository({ ...input, repositoryRoot: "/target" }, runner, "/tooling"),
+  ).resolves.toBe("/target");
+  expect(commands[0]).toContain("origin/main^{commit}");
+  const wrong = queueRunner([
+    { exitCode: 0, stdout: sourceSha },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0 },
+    { exitCode: 0, stdout: input.configPath },
+    { exitCode: 0, stdout: "/repo/.git" },
+    { exitCode: 0, stdout: "/other/.git" },
+  ]);
+  await expect(
+    resolveDeploymentRepository({ ...input, repositoryRoot: "/target" }, wrong.runner, "/tooling"),
+  ).rejects.toThrow("share");
+  await expect(
+    resolveDeploymentRepository(
+      { ...input, environment: "prod", repositoryRoot: "/target" },
+      runner,
+      "/tooling",
+    ),
+  ).rejects.toThrow("staging");
+  expect(() =>
+    parseWorkerDeploymentArgs([
+      "--config",
+      input.configPath,
+      "--env",
+      "staging",
+      "--repository-root",
+      "relative",
+    ]),
+  ).toThrow("absolute");
 });
