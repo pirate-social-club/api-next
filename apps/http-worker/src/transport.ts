@@ -17,6 +17,7 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesRouteAttachmentStore } from "@pirate/platform-cf/spaces-community-route-attachment-repository";
 import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
@@ -58,6 +59,7 @@ import {
   makeSpacesRegistryTransport,
   type SpacesRegistryTransportOptions,
 } from "./spaces-registry-transport.ts";
+import { makeSpacesRouteAttachmentHandlers } from "./spaces-route-attachment-handlers.ts";
 import { telegramLinkBrowser } from "./telegram-linking-browser.ts";
 
 export interface Principal {
@@ -172,6 +174,8 @@ export interface HttpWorkerOptions {
   readonly spacesRegistry?: SpacesRegistryTransportOptions;
   /** Absent in production until scoped verifier credentials are installed. */
   readonly spacesOwnerProof?: SpacesOwnerProofStore;
+  /** Absent unless the trusted public origin for Spaces community routes is configured. */
+  readonly spacesRouteAttachment?: SpacesRouteAttachmentStore;
   /** Absent until scoped host credentials and an independent verifier are composed. */
   readonly spacesOperatorAssignments?: SpacesOperatorAssignmentStore;
 }
@@ -687,6 +691,10 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "GetPublicProfileActivity",
   "StartSpacesOwnership",
   "PollSpacesOwnership",
+  "StartSpacesRouteAttachment",
+  "GetCurrentSpacesRouteAttachment",
+  "ProveSpacesRouteAttachment",
+  "CommitSpacesRouteAttachment",
   "GetSpacesOperatorAssignments",
   "ConfirmSpacesOperatorAssignment",
   "GetHandleNationalityAuthoring",
@@ -788,6 +796,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     options.spacesOwnerProof === undefined
       ? undefined
       : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
+  const spacesRouteAttachmentHandlers =
+    options.spacesRouteAttachment === undefined
+      ? undefined
+      : makeSpacesRouteAttachmentHandlers(options.spacesRouteAttachment);
   const spacesOperatorAssignmentHandlers =
     options.spacesOperatorAssignments === undefined
       ? undefined
@@ -805,6 +817,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
         spacesOwnerProofHandlers?.[binding.name] !== undefined ||
+        spacesRouteAttachmentHandlers?.[binding.name] !== undefined ||
         spacesOperatorAssignmentHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
@@ -923,6 +936,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
           spacesOwnerProofHandlers?.[binding.name] ??
+          spacesRouteAttachmentHandlers?.[binding.name] ??
           spacesOperatorAssignmentHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined

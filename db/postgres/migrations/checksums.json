@@ -240,6 +240,7 @@
     "0237_telegram_learner_linking.sql": "0c3954ae61007d5e5488b214b1e66b19b3b6d5a750b1fd62beb9adc852334a22",
     "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
     "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
-    "0240_telegram_interface_preferences.sql": "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404"
+    "0240_telegram_interface_preferences.sql": "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404",
+    "0241_spaces_community_route_attachments.sql": "99045e92f4fecb5dad21a0b3e410519af902ada0d4a75b0a5435866ff66a6581"
   }
 }

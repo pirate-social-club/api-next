@@ -13825,6 +13825,53 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_spaces_community_route_attachment_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'spaces community route attachment is append-only';
+  END IF;
+  IF ROW(
+    NEW.attachment_intent_id, NEW.ceremony_intent_id, NEW.generation, NEW.environment,
+    NEW.canonical_root, NEW.community_id, NEW.account_id, NEW.start_idempotency_key,
+    NEW.start_request_hash, NEW.nonce_hex, NEW.root_outpoint, NEW.root_key_hex,
+    NEW.public_origin, NEW.canonical_href, NEW.provider_id, NEW.provider_configuration_digest,
+    NEW.requirement_hash, NEW.challenge_message, NEW.challenge_digest_hex,
+    NEW.start_observation, NEW.start_observation_sha256_hex, NEW.created_at, NEW.expires_at
+  ) IS DISTINCT FROM ROW(
+    OLD.attachment_intent_id, OLD.ceremony_intent_id, OLD.generation, OLD.environment,
+    OLD.canonical_root, OLD.community_id, OLD.account_id, OLD.start_idempotency_key,
+    OLD.start_request_hash, OLD.nonce_hex, OLD.root_outpoint, OLD.root_key_hex,
+    OLD.public_origin, OLD.canonical_href, OLD.provider_id, OLD.provider_configuration_digest,
+    OLD.requirement_hash, OLD.challenge_message, OLD.challenge_digest_hex,
+    OLD.start_observation, OLD.start_observation_sha256_hex, OLD.created_at, OLD.expires_at
+  ) THEN
+    RAISE EXCEPTION 'spaces community route challenge is immutable';
+  END IF;
+  -- A challenge moves forward only, and only while its lease is live by the
+  -- database clock. Expiry itself may be recorded at any later time.
+  IF NOT (
+    (OLD.status = 'awaiting_signature' AND NEW.status IN (
+      'proved','expired','root_changed','signature_rejected'))
+    OR (OLD.status = 'proved' AND NEW.status IN ('committed','expired','root_changed'))
+  ) THEN
+    RAISE EXCEPTION 'spaces community route attachment transition is not allowed';
+  END IF;
+  IF NEW.status IN ('proved','committed') AND OLD.expires_at <= clock_timestamp() THEN
+    RAISE EXCEPTION 'spaces community route challenge has expired';
+  END IF;
+  IF OLD.status = 'proved' AND ROW(
+    NEW.signature_hex, NEW.proof_observation, NEW.proof_observation_sha256_hex, NEW.proved_at
+  ) IS DISTINCT FROM ROW(
+    OLD.signature_hex, OLD.proof_observation, OLD.proof_observation_sha256_hex, OLD.proved_at
+  ) AND NEW.status = 'committed' THEN
+    RAISE EXCEPTION 'spaces community route proof is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_spaces_final_conflict_evidence_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -26796,6 +26843,122 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_spaces_route_attachment_binding_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+  attachment spaces_community_route_attachments%ROWTYPE;
+BEGIN
+  SELECT * INTO evidence_record
+    FROM community_route_ownership_evidence
+   WHERE evidence_ref = NEW.verified_evidence_ref;
+  IF evidence_record.evidence_ref IS NULL
+    OR evidence_record.origin <> 'spaces_route_attachment' THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO attachment
+    FROM spaces_community_route_attachments
+   WHERE attachment_intent_id = evidence_record.spaces_route_attachment_intent_id
+   FOR UPDATE;
+  SELECT * INTO community_record
+    FROM communities WHERE community_id = NEW.community_id FOR UPDATE;
+  IF community_record.community_id IS NULL
+    OR community_record.status <> 'active'
+    OR community_record.route_authority_version <> 'optional_route_v2'
+    OR community_record.canonical_route_binding_id IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM community_canonical_route_bindings AS existing
+       WHERE existing.community_id = NEW.community_id
+    )
+    OR attachment.community_id <> NEW.community_id
+    OR attachment.status <> 'proved'
+    OR attachment.expires_at <= clock_timestamp()
+    OR NEW.family <> 'spaces'
+    OR NEW.root_label <> attachment.canonical_root
+    OR NEW.root_label_display <> evidence_record.root_label_display
+    OR NEW.binding_generation <> 1
+    OR NEW.ownership_status <> 'verified'
+    OR NEW.route_lifecycle_status <> 'active'
+    OR NEW.route_authority_kind <> 'verified_namespace_v1' THEN
+    RAISE EXCEPTION 'spaces route commit requires a never-bound community and a live proof';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_spaces_route_attachment_evidence_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  attachment spaces_community_route_attachments%ROWTYPE;
+  guard_at timestamptz := clock_timestamp();
+BEGIN
+  SELECT * INTO attachment
+    FROM spaces_community_route_attachments
+   WHERE attachment_intent_id = NEW.spaces_route_attachment_intent_id
+   FOR UPDATE;
+  IF attachment.attachment_intent_id IS NULL
+    OR attachment.status <> 'proved'
+    OR attachment.expires_at <= guard_at
+    OR NEW.root_label <> attachment.canonical_root
+    OR NEW.verified_by_actor_id <> attachment.account_id
+    OR NEW.binding_generation <> 1
+    OR NEW.provider_id <> attachment.provider_id
+    OR NEW.requirement_hash <> attachment.requirement_hash
+    OR NEW.verified_at <> attachment.proved_at
+    OR NEW.expires_at <= guard_at
+    OR has_community_route_authority(attachment.community_id, attachment.account_id) IS NOT TRUE
+  THEN
+    RAISE EXCEPTION 'spaces route evidence requires a live proved attachment';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_spaces_route_renewal_evidence_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  renewal spaces_community_route_renewals%ROWTYPE;
+  binding community_canonical_route_bindings%ROWTYPE;
+  prior community_route_ownership_evidence%ROWTYPE;
+  guard_at timestamptz := clock_timestamp();
+BEGIN
+  SELECT * INTO renewal
+    FROM spaces_community_route_renewals WHERE renewal_id = NEW.spaces_route_renewal_id;
+  SELECT * INTO binding
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = renewal.route_binding_id
+   FOR UPDATE;
+  SELECT * INTO prior
+    FROM community_route_ownership_evidence WHERE evidence_ref = binding.verified_evidence_ref;
+  -- Renewal continues a lease that is still live. An expired or suspended
+  -- binding needs a new owner ceremony, never a silent system revival.
+  IF renewal.renewal_id IS NULL
+    OR renewal.outcome <> 'renewed'
+    OR binding.route_binding_id IS NULL
+    OR binding.family <> 'spaces'
+    OR binding.route_lifecycle_status <> 'active'
+    OR binding.ownership_status <> 'verified'
+    OR binding.binding_generation <> renewal.expected_binding_generation
+    OR prior.evidence_ref IS NULL
+    OR prior.expires_at IS NULL
+    OR prior.expires_at <= guard_at
+    OR NEW.root_label <> binding.root_label
+    OR NEW.binding_generation <> renewal.expected_binding_generation + 1
+    OR NEW.provider_id <> prior.provider_id
+    OR NEW.provider_identity_digest <> prior.provider_identity_digest
+    OR NEW.verified_at <> renewal.observed_at
+    OR NEW.expires_at <= guard_at
+  THEN
+    RAISE EXCEPTION 'spaces route renewal requires a live binding with an unchanged owner';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION validate_text_content_submission_relations() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -28894,12 +29057,14 @@ CREATE TABLE community_route_ownership_evidence (
     route_attachment_ceremony_intent_id text,
     operator_control_promotion_receipt_id text,
     active_lease_renewal_attempt_id text,
+    spaces_route_attachment_intent_id text,
+    spaces_route_renewal_id text,
     CONSTRAINT community_route_ownership_eviden_provider_identity_digest_check CHECK ((provider_identity_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_binding_generation_check CHECK ((binding_generation > 0)),
     CONSTRAINT community_route_ownership_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
     CONSTRAINT community_route_ownership_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
-    CONSTRAINT community_route_ownership_evidence_origin_shape_v2 CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL)) OR ((origin = 'active_lease_renewal'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NOT NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)) OR ((origin = 'route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NOT NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'operator_control_observation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NOT NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)))),
+    CONSTRAINT community_route_ownership_evidence_origin_shape_v3 CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NULL)) OR ((origin = 'active_lease_renewal'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NOT NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)) OR ((origin = 'route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NOT NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'operator_control_observation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NOT NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NULL) AND (verified_by_actor_id IS NULL) AND (family = 'hns'::text)) OR ((origin = 'spaces_route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NOT NULL) AND (spaces_route_renewal_id IS NULL) AND (verified_by_actor_id IS NOT NULL) AND (family = 'spaces'::text) AND (expires_at IS NOT NULL)) OR ((origin = 'spaces_route_renewal'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (active_lease_renewal_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (operator_control_promotion_receipt_id IS NULL) AND (spaces_route_attachment_intent_id IS NULL) AND (spaces_route_renewal_id IS NOT NULL) AND (verified_by_actor_id IS NULL) AND (family = 'spaces'::text) AND (expires_at IS NOT NULL)))),
     CONSTRAINT community_route_ownership_evidence_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
@@ -35805,6 +35970,86 @@ CREATE TABLE song_streaks (
     CONSTRAINT song_streaks_day_order CHECK ((last_day >= started_day))
 );
 
+CREATE TABLE spaces_community_route_attachments (
+    attachment_intent_id text NOT NULL,
+    ceremony_intent_id text NOT NULL,
+    generation bigint NOT NULL,
+    environment text NOT NULL,
+    canonical_root text NOT NULL,
+    community_id text NOT NULL,
+    account_id text NOT NULL,
+    start_idempotency_key text NOT NULL,
+    start_request_hash text NOT NULL,
+    nonce_hex text NOT NULL,
+    root_outpoint text NOT NULL,
+    root_key_hex text NOT NULL,
+    public_origin text NOT NULL,
+    canonical_href text NOT NULL,
+    provider_id text NOT NULL,
+    provider_configuration_digest text NOT NULL,
+    requirement_hash text NOT NULL,
+    challenge_message text NOT NULL,
+    challenge_digest_hex text NOT NULL,
+    start_observation bytea NOT NULL,
+    start_observation_sha256_hex text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    signature_hex text,
+    proof_observation bytea,
+    proof_observation_sha256_hex text,
+    proved_at timestamp with time zone,
+    route_binding_id text,
+    evidence_ref text,
+    committed_response jsonb,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_community_route_attac_proof_observation_sha256_hex_check CHECK ((proof_observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attac_provider_configuration_diges_check CHECK ((provider_configuration_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attac_start_observation_sha256_hex_check CHECK ((start_observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_attachment_intent_id_check CHECK ((attachment_intent_id ~ '^sroute_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_canonical_root_check CHECK ((is_community_route_root_label('spaces'::text, canonical_root) IS TRUE)),
+    CONSTRAINT spaces_community_route_attachments_ceremony_intent_id_check CHECK ((ceremony_intent_id ~ '^srcer_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_challenge_digest_hex_check CHECK ((challenge_digest_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_challenge_message_check CHECK (((octet_length(challenge_message) >= 1) AND (octet_length(challenge_message) <= 4096))),
+    CONSTRAINT spaces_community_route_attachments_commit_shape CHECK (((status = 'committed'::text) = ((route_binding_id IS NOT NULL) AND (evidence_ref IS NOT NULL) AND (committed_response IS NOT NULL)))),
+    CONSTRAINT spaces_community_route_attachments_environment_check CHECK ((environment = ANY (ARRAY['development'::text, 'staging'::text, 'production'::text]))),
+    CONSTRAINT spaces_community_route_attachments_generation_check CHECK ((generation > 0)),
+    CONSTRAINT spaces_community_route_attachments_href CHECK ((canonical_href = ((public_origin || '/c/@'::text) || canonical_root))),
+    CONSTRAINT spaces_community_route_attachments_nonce_hex_check CHECK ((nonce_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_proof_observation_check CHECK (((octet_length(proof_observation) >= 1) AND (octet_length(proof_observation) <= 1048576))),
+    CONSTRAINT spaces_community_route_attachments_proof_shape CHECK (((status <> ALL (ARRAY['proved'::text, 'committed'::text])) OR ((signature_hex IS NOT NULL) AND (proof_observation IS NOT NULL) AND (proof_observation_sha256_hex IS NOT NULL) AND (proved_at IS NOT NULL)))),
+    CONSTRAINT spaces_community_route_attachments_provider_id_check CHECK ((provider_id = 'spaces.root-route.v1'::text)),
+    CONSTRAINT spaces_community_route_attachments_public_origin_check CHECK ((public_origin ~ '^https://[a-z0-9.-]{1,253}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text)),
+    CONSTRAINT spaces_community_route_attachments_signature_hex_check CHECK ((signature_hex ~ '^[0-9a-f]{128}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_start_idempotency_key_check CHECK (((octet_length(start_idempotency_key) >= 1) AND (octet_length(start_idempotency_key) <= 255))),
+    CONSTRAINT spaces_community_route_attachments_start_observation_check CHECK (((octet_length(start_observation) >= 1) AND (octet_length(start_observation) <= 1048576))),
+    CONSTRAINT spaces_community_route_attachments_start_request_hash_check CHECK ((start_request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_attachments_status_check CHECK ((status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text, 'committed'::text, 'expired'::text, 'root_changed'::text, 'signature_rejected'::text]))),
+    CONSTRAINT spaces_community_route_attachments_time_order CHECK (((expires_at > created_at) AND (updated_at >= created_at) AND ((proved_at IS NULL) OR ((proved_at >= created_at) AND (proved_at < expires_at)))))
+);
+
+CREATE TABLE spaces_community_route_renewals (
+    renewal_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    expected_binding_generation bigint NOT NULL,
+    outcome text NOT NULL,
+    root_outpoint text NOT NULL,
+    root_key_hex text NOT NULL,
+    observation bytea NOT NULL,
+    observation_sha256_hex text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    CONSTRAINT spaces_community_route_renewa_expected_binding_generation_check CHECK ((expected_binding_generation > 0)),
+    CONSTRAINT spaces_community_route_renewals_observation_check CHECK (((octet_length(observation) >= 1) AND (octet_length(observation) <= 1048576))),
+    CONSTRAINT spaces_community_route_renewals_observation_sha256_hex_check CHECK ((observation_sha256_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_renewals_outcome_check CHECK ((outcome = ANY (ARRAY['renewed'::text, 'owner_changed'::text]))),
+    CONSTRAINT spaces_community_route_renewals_renewal_id_check CHECK ((renewal_id ~ '^srenew_[0-9a-f]{32}$'::text)),
+    CONSTRAINT spaces_community_route_renewals_root_key_hex_check CHECK ((root_key_hex ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT spaces_community_route_renewals_root_outpoint_check CHECK ((root_outpoint ~ '^[0-9a-f]{64}:(0|[1-9][0-9]{0,9})$'::text))
+);
+
 CREATE TABLE spaces_external_conflict_observations (
     observation_id text NOT NULL,
     family text NOT NULL,
@@ -39746,6 +39991,24 @@ ALTER TABLE ONLY song_streak_days
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_pkey PRIMARY KEY (account_id, post_id);
 
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_ceremony_intent_id_key UNIQUE (ceremony_intent_id);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_pkey PRIMARY KEY (attachment_intent_id);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_root_generation UNIQUE (environment, canonical_root, generation);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_start_replay UNIQUE (account_id, community_id, start_idempotency_key);
+
+ALTER TABLE ONLY spaces_community_route_renewals
+    ADD CONSTRAINT spaces_community_route_renewals_generation UNIQUE (route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY spaces_community_route_renewals
+    ADD CONSTRAINT spaces_community_route_renewals_pkey PRIMARY KEY (renewal_id);
+
 ALTER TABLE ONLY spaces_external_conflict_observations
     ADD CONSTRAINT spaces_external_conflict_key_unique UNIQUE (observation_id, family, namespace_root, handle_label);
 
@@ -40273,6 +40536,10 @@ CREATE UNIQUE INDEX community_route_ownership_evidence_renewal_attempt_uidx ON c
 
 CREATE UNIQUE INDEX community_route_ownership_evidence_revalidation_attempt_uidx ON community_route_ownership_evidence USING btree (route_revalidation_attempt_id) WHERE (origin = 'route_revalidation'::text);
 
+CREATE UNIQUE INDEX community_route_ownership_evidence_spaces_attachment_uidx ON community_route_ownership_evidence USING btree (spaces_route_attachment_intent_id) WHERE (spaces_route_attachment_intent_id IS NOT NULL);
+
+CREATE UNIQUE INDEX community_route_ownership_evidence_spaces_renewal_uidx ON community_route_ownership_evidence USING btree (spaces_route_renewal_id) WHERE (spaces_route_renewal_id IS NOT NULL);
+
 CREATE INDEX community_route_revalidation_attempts_lease_idx ON community_route_revalidation_completion_attempts USING btree (state, lease_expires_at);
 
 CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON community_route_revalidation_completion_attempts USING btree (revalidation_session_id) WHERE (state = 'leased'::text);
@@ -40612,6 +40879,14 @@ CREATE INDEX song_streaks_live_leaderboard_idx ON song_streaks USING btree (comm
 CREATE INDEX song_video_excerpt_grants_attempt ON media_song_video_excerpt_grants USING btree (attempt_id);
 
 CREATE UNIQUE INDEX song_video_provider_job_identity ON media_song_video_render_attempts USING btree (provider_job_id) WHERE (provider_job_id IS NOT NULL);
+
+CREATE UNIQUE INDEX spaces_community_route_attachments_committed_community_uidx ON spaces_community_route_attachments USING btree (community_id) WHERE (status = 'committed'::text);
+
+CREATE UNIQUE INDEX spaces_community_route_attachments_committed_root_uidx ON spaces_community_route_attachments USING btree (environment, canonical_root) WHERE (status = 'committed'::text);
+
+CREATE UNIQUE INDEX spaces_community_route_attachments_open_community_uidx ON spaces_community_route_attachments USING btree (community_id) WHERE (status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text]));
+
+CREATE UNIQUE INDEX spaces_community_route_attachments_open_root_uidx ON spaces_community_route_attachments USING btree (environment, canonical_root) WHERE (status = ANY (ARRAY['awaiting_signature'::text, 'proved'::text]));
 
 CREATE UNIQUE INDEX spaces_driver_root_enablement_live_uidx ON spaces_issuance_driver_root_enablements USING btree (network, canonical_root) WHERE (status = 'enabled'::text);
 
@@ -41028,6 +41303,12 @@ CREATE TRIGGER community_route_revalidation_start_guard_legacy_delete BEFORE DEL
 CREATE TRIGGER community_route_revalidation_start_guard_owner_change BEFORE INSERT OR UPDATE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((new.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_start();
 
 CREATE TRIGGER community_route_revalidation_start_guard_owner_delete BEFORE DELETE ON community_route_revalidation_start_reservations FOR EACH ROW WHEN ((old.operation_mode = 'same_root_recovery'::text)) EXECUTE FUNCTION guard_hns_owner_recovery_start();
+
+CREATE TRIGGER community_route_spaces_attachment_binding_insert_guard BEFORE INSERT ON community_canonical_route_bindings FOR EACH ROW EXECUTE FUNCTION validate_spaces_route_attachment_binding_insert();
+
+CREATE TRIGGER community_route_spaces_attachment_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'spaces_route_attachment'::text)) EXECUTE FUNCTION validate_spaces_route_attachment_evidence_insert();
+
+CREATE TRIGGER community_route_spaces_renewal_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'spaces_route_renewal'::text)) EXECUTE FUNCTION validate_spaces_route_renewal_evidence_insert();
 
 CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON community_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
 
@@ -41897,6 +42178,10 @@ CREATE TRIGGER song_video_provider_seal_deadline BEFORE INSERT ON media_song_vid
 
 CREATE TRIGGER spaces_activation_owner_proof_fresh_guard BEFORE INSERT ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION guard_spaces_activation_owner_proof_fresh_v1();
 
+CREATE TRIGGER spaces_community_route_attachment_change_guard BEFORE DELETE OR UPDATE ON spaces_community_route_attachments FOR EACH ROW EXECUTE FUNCTION guard_spaces_community_route_attachment_change();
+
+CREATE TRIGGER spaces_community_route_renewals_append_only BEFORE DELETE OR UPDATE ON spaces_community_route_renewals FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
 CREATE TRIGGER spaces_driver_root_enablement_change_guard BEFORE INSERT OR DELETE OR UPDATE ON spaces_issuance_driver_root_enablements FOR EACH ROW EXECUTE FUNCTION guard_spaces_issuance_driver_root_enablement_v1();
 
 CREATE TRIGGER spaces_external_conflict_observations_append_only BEFORE DELETE OR UPDATE ON spaces_external_conflict_observations FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
@@ -42729,6 +43014,12 @@ ALTER TABLE ONLY community_route_ownership_evidence
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_revalidation_attempt_fk FOREIGN KEY (route_revalidation_attempt_id) REFERENCES community_route_revalidation_completion_attempts(route_revalidation_attempt_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_ownership_evidence
+    ADD CONSTRAINT community_route_ownership_evidence_spaces_attachment_fk FOREIGN KEY (spaces_route_attachment_intent_id) REFERENCES spaces_community_route_attachments(attachment_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_ownership_evidence
+    ADD CONSTRAINT community_route_ownership_evidence_spaces_renewal_fk FOREIGN KEY (spaces_route_renewal_id) REFERENCES spaces_community_route_renewals(renewal_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_verified_by_actor_id_fkey FOREIGN KEY (verified_by_actor_id) REFERENCES users(user_id);
@@ -44571,6 +44862,18 @@ ALTER TABLE ONLY media_video_reservation_song_plans
 
 ALTER TABLE ONLY media_video_reservation_song_plans
     ADD CONSTRAINT song_video_reservation_plan_timing_fk FOREIGN KEY (song_post_id, audio_revision, canonical_audio_sha256, song_duration_samples) REFERENCES media_song_canonical_timings(song_post_id, audio_revision, canonical_audio_sha256, duration_samples) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY spaces_community_route_attachments
+    ADD CONSTRAINT spaces_community_route_attachments_route_binding_id_fkey FOREIGN KEY (route_binding_id) REFERENCES community_canonical_route_bindings(route_binding_id);
+
+ALTER TABLE ONLY spaces_community_route_renewals
+    ADD CONSTRAINT spaces_community_route_renewals_route_binding_id_fkey FOREIGN KEY (route_binding_id) REFERENCES community_canonical_route_bindings(route_binding_id);
 
 ALTER TABLE ONLY spaces_issuance_driver_root_enablements
     ADD CONSTRAINT spaces_driver_root_enablement_driver_fk FOREIGN KEY (driver_family, driver_id, driver_version) REFERENCES handle_issuance_driver_revisions(family, driver_id, driver_version);

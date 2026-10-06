@@ -41,6 +41,7 @@ export * from "./rewards-song-offers.ts";
 export * from "./song-library.ts";
 export * from "./song-owner-video-policy.ts";
 export * from "./song-playback.ts";
+export * from "./spaces-community-route-attachment.ts";
 export * from "./spaces-operator-assignment.ts";
 export * from "./spaces-owner-proof.ts";
 export * from "./study-v2.ts";
