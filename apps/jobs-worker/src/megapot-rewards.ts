@@ -1,4 +1,4 @@
-import { AlertCollector, ControlPlaneDb } from "@pirate/application";
+import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import {
   type AlertSink,
   deriveBaseSepoliaMegapotAddress,
@@ -9,13 +9,16 @@ import {
   makeControlPlaneMegapotDrawingObservationStore,
   makeControlPlaneMegapotWorkStore,
   makeControlPlaneRewardEffectAttestationStore,
+  makeControlPlaneRewardFundingStore,
   makeControlPlaneRewardGasTopupSendStore,
   makeControlPlaneRewardOfferTerminalStore,
   makeControlPlaneRewardPayoutStore,
   makeControlPlaneRewardRefundStore,
   makeMegapotAllocationCoordinator,
   makeMegapotCutoffCoordinator,
+  makeRewardFundingCoordinator,
   makeRewardGasTopupCoordinator,
+  type RewardFundingCoordinator,
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 import {
@@ -23,6 +26,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_LANE,
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
   type MegapotRewardsRuntime,
   megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
@@ -134,6 +138,9 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "MegapotSweepRejected",
   "MegapotSweepStorageFailed",
   "MegapotWorkStorageFailed",
+  "RewardFundingCoordinatorFailed",
+  "RewardFundingRejected",
+  "RewardFundingStorageFailed",
   "RewardGasTopupCoordinatorFailed",
   "RewardGasTopupRejected",
   "RewardGasTopupStorageFailed",
@@ -163,6 +170,12 @@ export type MegapotRewardsJobOptions = Readonly<{
   rpcUrl: string;
   custodyPrivateKey: string;
   retainedCustodyPrivateKeys?: string;
+  /**
+   * A session for funding observation and the liveness projection, with the
+   * statement and close limits the cycle's deadlines assume. Absent in tests,
+   * which then use the job's session.
+   */
+  boundedControlPlane?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
   /** Null when MEGAPOT_GAS_TOPUP_PRIVATE_KEY is unset; the top-up step is then skipped. */
   gasTopupPrivateKey: string | null;
   commitmentBucket: MegapotCommitmentBucket;
@@ -261,6 +274,38 @@ export function makeMegapotRewardsJob(
         });
       }
     }
+    // Funding is observed against the deployment its own effect resolves to: the
+    // one a megapot-pool leg froze, or the custody deployment in force when an
+    // asset-bonus transfer was planned. Either may be a retained deployment. The
+    // clients are built on demand, live for this cycle and use a short request
+    // bound so that the step's time budget holds.
+    const fundingPlane = options.boundedControlPlane ?? controlPlane;
+    const boundedWork = makeControlPlaneMegapotWorkStore(fundingPlane);
+    const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
+    const fundingAttestations = makeControlPlaneMegapotDrawingObservationStore(fundingPlane);
+    const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
+    const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (fundingEffectId) =>
+      Effect.gen(function* () {
+        const intent = yield* fundingStore.find(fundingEffectId);
+        if (intent === null) {
+          return yield* new MegapotRewardRoutingRejected({ reason: "invalid-config" });
+        }
+        let coordinator = fundingCoordinators.get(intent.attestationId);
+        if (coordinator === undefined) {
+          const deployment = yield* fundingAttestations.loadCandidate(intent.attestationId);
+          coordinator = makeRewardFundingCoordinator({
+            store: fundingStore,
+            rpc: makeMegapotAttestedRpc(
+              deployment,
+              options.rpcUrl,
+              undefined,
+              MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+            ),
+          });
+          fundingCoordinators.set(intent.attestationId, coordinator);
+        }
+        return yield* coordinator.reconcile(fundingEffectId);
+      });
     const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const cutoff = makeMegapotCutoffCoordinator({
       store: makeControlPlaneMegapotCutoffStore(controlPlane),
@@ -274,9 +319,16 @@ export function makeMegapotRewardsJob(
     });
 
     const summary = yield* runMegapotRewardsCycle({
-      work: makeControlPlaneMegapotWorkStore(controlPlane),
+      // Funding observation is bounded against the runner's timeout clock.
+      jobStartedAt: job.startedAtMs ?? startedAt,
+      work: {
+        ...makeControlPlaneMegapotWorkStore(controlPlane),
+        loadPendingFunding: boundedWork.loadPendingFunding,
+        loadAgedPending: boundedWork.loadAgedPending,
+      },
       runtime: {
         reconcile: routing.reconcile,
+        reconcileFunding,
         observeDrawing: () =>
           routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
         observeSolvency: () =>
