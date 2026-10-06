@@ -1,11 +1,14 @@
-import { fileURLToPath } from "node:url";
-import { parseWorkerDeploymentArgs, runCommand } from "./deploy-worker-with-provenance.ts";
+import {
+  parseWorkerDeploymentArgs,
+  resolveDeploymentRepository,
+  runCommand,
+} from "./deploy-worker-with-provenance.ts";
 import { prepareStagingBindingGuard } from "./staging-serving-bindings-preflight.ts";
 
 /** Read-only source preview; never calls deploy, upload or a provider operation. */
 async function main(): Promise<void> {
-  const root = fileURLToPath(new URL("../", import.meta.url));
   const input = parseWorkerDeploymentArgs(Bun.argv.slice(2));
+  const root = await resolveDeploymentRepository(input);
   if (input.environment !== "staging") throw Error("binding preview requires staging");
   const sha = await runCommand(
     ["git", "rev-parse", "--verify", `${input.sourceRef}^{commit}`],

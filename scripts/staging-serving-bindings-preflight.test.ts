@@ -22,6 +22,13 @@ const runtime = {
   migration_tag: "v1",
   usage_model: "standard",
 };
+const telegramConfig = JSON.stringify({
+  version: 1,
+  enabled: false,
+  linking_enabled: false,
+  practice_enabled: false,
+});
+const telegramBinding = { name: "TELEGRAM_CONFIG_JSON", type: "plain_text", text: telegramConfig };
 const binding = (text: string) => ({
   name: "SONG_VIDEO_PCM_ADMISSION_ENABLED",
   type: "plain_text",
@@ -29,7 +36,7 @@ const binding = (text: string) => ({
 });
 const candidate = (text: string): CandidateBindings => ({
   worker_name: "jobs-staging",
-  bindings: [binding(text)],
+  bindings: [binding(text), telegramBinding],
   runtime,
   required_secrets: [],
 });
@@ -50,6 +57,8 @@ function fixture(
   options: {
     text?: string;
     servingRace?: boolean;
+    telegram?: string;
+    telegramGuard?: typeof withTelegramActivationDeployment;
     incomplete?: boolean;
     sourceRace?: boolean;
     controlConnectionLost?: boolean;
@@ -74,6 +83,8 @@ function fixture(
       if (command[1] === "rev-parse")
         stdout = ++sourceReads > 1 && options.sourceRace ? "b".repeat(40) : currentSource;
       if (command[1] === "ls-files" && command.includes("--error-unmatch")) stdout = configPath;
+    } else if (command[0] === "bun" && command[1] === "scripts/telegram-activation-preflight.ts") {
+      stdout = "Telegram privilege admission ready";
     } else if (command.includes("deployments")) {
       const version_id =
         ++allocations > 2 && options.servingRace ? "other-version" : currentServing;
@@ -88,7 +99,14 @@ function fixture(
       stdout = JSON.stringify({
         id: command[4],
         resources: {
-          ...(options.incomplete ? {} : { bindings: [binding("true")] }),
+          ...(options.incomplete
+            ? {}
+            : {
+                bindings: [
+                  binding("true"),
+                  { ...telegramBinding, text: options.telegram ?? telegramConfig },
+                ],
+              }),
           script_runtime: runtime,
         },
       });
@@ -120,7 +138,7 @@ function fixture(
         ? async (_root, _config, _environment, operation) => operation(cancellation.signal)
         : allowRewards,
       guard,
-      allowTelegram,
+      options.telegramGuard ?? allowTelegram,
     );
   return { execute, commands, diagnostics };
 }
@@ -185,4 +203,50 @@ describe("normal staging deployment binding preflight", () => {
     await expect(run.execute()).rejects.toThrow("deployment source changed before upload");
     expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
   });
+});
+
+test("same serving Telegram configuration reaches permission check and actual upload", async () => {
+  const enabled = JSON.stringify({
+    version: 1,
+    enabled: true,
+    linking_enabled: false,
+    practice_enabled: false,
+    public_origin: "https://web.example",
+    webhook_origin: "https://api.example",
+    credential_active_version: "v1",
+  });
+  let checked: string | undefined;
+  const telegramGuard: typeof withTelegramActivationDeployment = async (
+    _root,
+    _config,
+    _env,
+    operation,
+    effective,
+    preflight,
+  ) => {
+    checked = effective;
+    await preflight?.("managed-runtime-connection");
+    return operation();
+  };
+  const run = fixture({ telegram: enabled, telegramGuard });
+  await run.execute();
+  expect(checked).toBe(enabled);
+  expect(
+    run.commands.some(
+      (command) => command.join(" ") === "bun scripts/telegram-activation-preflight.ts",
+    ),
+  ).toBe(true);
+  const upload = run.commands.find((command) => command.includes("deploy"));
+  expect(upload).toContain(`TELEGRAM_CONFIG_JSON:${enabled}`);
+  expect(upload).toContain("--var");
+});
+test("effective Telegram privilege refusal prevents upload", async () => {
+  const run = fixture({
+    telegramGuard: async (_root, _config, _env, _operation, effective) => {
+      expect(effective).toBe(telegramConfig);
+      throw Error("privilege refused");
+    },
+  });
+  await expect(run.execute()).rejects.toThrow("privilege refused");
+  expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
 });
