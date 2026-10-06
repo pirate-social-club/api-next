@@ -29,6 +29,10 @@ function fixture(approvalKind: "submitted" | "confirmed") {
   const work: MegapotWorkStore = {
     loadChainEffects: () =>
       Effect.succeed([{ effectId: "effect-1", effectKind: "ticket_purchase" }]),
+    loadPendingFunding: ({ limit, cursor }) =>
+      Effect.sync(() => calls.push(`load-pending-funding:${limit}:${cursor}`)).pipe(
+        Effect.as(["funding-pending-1"]),
+      ),
     loadDrawings: ({ statuses }) => Effect.succeed(statuses.map(drawing)),
     loadCredits: () => Effect.succeed(["credit-1"]),
     loadRefunds: () => Effect.succeed(["funding-1"]),
@@ -41,6 +45,8 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     });
   const runtime: MegapotRewardsRuntime = {
     reconcile: () => call("reconcile"),
+    reconcileFunding: (fundingEffectId) =>
+      call(`reconcile-funding:${fundingEffectId}`).pipe(Effect.as({ kind: "confirmed" })),
     observeDrawing: () => call("observe-drawing").pipe(Effect.as(true)),
     observeSolvency: () => call("observe-solvency"),
     freezeDue: () => call("cutoff").pipe(Effect.as([{}])),
@@ -64,6 +70,9 @@ describe("Megapot rewards scheduled cycle", () => {
     const written = writeMegapotRewardsCycleSnapshot(
       {
         reconciled: 1,
+        fundingObserved: 3,
+        fundingConfirmed: 1,
+        fundingDeferred: 2,
         observed: 1,
         drawingObservationFailed: false,
         frozen: 0,
@@ -101,10 +110,13 @@ describe("Megapot rewards scheduled cycle", () => {
         event: "megapot.rewards.cycle",
         fields: expect.objectContaining({
           event: "megapot.rewards.cycle",
-          schema_version: 3,
+          schema_version: 4,
           environment: "staging",
           worker_version_id: "worker-version-1",
           duration_ms: 1_234,
+          funding_observed_count: 3,
+          funding_confirmed_count: 1,
+          funding_deferred_count: 2,
           observed_count: 1,
           swept_count: 1,
           terminal_offer_count: 1,
@@ -216,7 +228,7 @@ describe("Megapot rewards scheduled cycle", () => {
 
   test("advances every persisted phase sequentially under one custody lane", async () => {
     const { calls, runtime, work } = fixture("confirmed");
-    const result = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime }));
+    const result = await Effect.runPromise(runMegapotRewardsCycle({ work, runtime, now: () => 0 }));
     expect(calls).toEqual([
       "reconcile",
       "observe-drawing",
@@ -232,10 +244,14 @@ describe("Megapot rewards scheduled cycle", () => {
       "close-expired",
       "refund",
       "payout",
+      "load-pending-funding:10:0",
+      "reconcile-funding:funding-pending-1",
       "load-aged-pending",
     ]);
     expect(result).toMatchObject({
       reconciled: 1,
+      fundingObserved: 1,
+      fundingConfirmed: 1,
       observed: 1,
       drawingObservationFailed: false,
       frozen: 1,
@@ -639,6 +655,221 @@ describe("Megapot rewards scheduled cycle", () => {
     expect(result.refunded).toBe(1);
     expect(calls).toContain("close-expired");
   });
+});
+
+test("sponsor funding is observed last, one failure does not stop the rest, and the window rotates", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: ({ limit, cursor }) =>
+          Effect.sync(() => calls.push(`load-pending-funding:${limit}:${cursor}`)).pipe(
+            Effect.as(["refused", "waiting", "confirmed"]),
+          ),
+      },
+      runtime: {
+        ...runtime,
+        reconcileFunding: (fundingEffectId) =>
+          Effect.sync(() => calls.push(`reconcile-funding:${fundingEffectId}`)).pipe(
+            Effect.andThen(
+              fundingEffectId === "refused"
+                ? Effect.fail({ _tag: "RewardFundingCoordinatorFailed" })
+                : Effect.succeed({
+                    kind: fundingEffectId === "confirmed" ? "confirmed" : "confirming",
+                  }),
+            ),
+          ),
+      },
+      // A large cycle limit must not widen the chain reads spent on funding.
+      limit: 100,
+      // Seven scheduled minutes in: the selection window has moved seven batches.
+      now: () => 7 * 60_000,
+    }),
+  );
+  expect(calls.slice(calls.indexOf("payout") + 1)).toEqual([
+    "load-pending-funding:10:7",
+    "reconcile-funding:refused",
+    "reconcile-funding:waiting",
+    "reconcile-funding:confirmed",
+    "load-aged-pending",
+  ]);
+  expect(result).toMatchObject({ fundingObserved: 3, fundingConfirmed: 1, paid: 1 });
+  expect(result).not.toHaveProperty("fundingDeferred");
+  expect(result.failures).toEqual(["RewardFundingCoordinatorFailed"]);
+});
+
+test("slow funding observations stop at the time budget after every obligation has run", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  let clock = 0;
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: () => Effect.succeed(["slow-1", "slow-2", "slow-3", "slow-4"]),
+      },
+      runtime: {
+        ...runtime,
+        // Each observation uses six seconds of chain time and then fails.
+        reconcileFunding: (fundingEffectId) =>
+          Effect.sync(() => {
+            calls.push(`reconcile-funding:${fundingEffectId}`);
+            clock += 6_000;
+          }).pipe(Effect.andThen(Effect.fail({ _tag: "RewardFundingCoordinatorFailed" }))),
+      },
+      now: () => clock,
+    }),
+  );
+  const funding = calls.filter((call) => call.startsWith("reconcile-funding:"));
+  expect(funding).toEqual(["reconcile-funding:slow-1", "reconcile-funding:slow-2"]);
+  for (const obligation of ["close-expired", "refund", "payout"])
+    expect(calls.indexOf(obligation)).toBeLessThan(calls.indexOf(funding[0] ?? ""));
+  expect(calls.at(-1)).toBe("load-aged-pending");
+  expect(result).toMatchObject({
+    fundingObserved: 2,
+    fundingDeferred: 2,
+    terminalOffers: 1,
+    refunded: 1,
+    paid: 1,
+  });
+  expect(result).not.toHaveProperty("fundingConfirmed");
+});
+
+test("a cycle that is already late skips funding observation without a chain read", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  let clock = 0;
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime: {
+        ...runtime,
+        // Payouts alone carry the cycle past the latest funding start.
+        payout: () =>
+          Effect.sync(() => {
+            calls.push("payout");
+            clock = 31_000;
+            return { kind: "complete" };
+          }),
+      },
+      now: () => clock,
+    }),
+  );
+  expect(calls.some((call) => call.includes("funding"))).toBe(false);
+  expect(calls.at(-1)).toBe("load-aged-pending");
+  expect(result).not.toHaveProperty("fundingObserved");
+});
+
+test("setup that used most of the job leaves no room and funding is skipped", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime,
+      // The runner's clock started 29 seconds before the cycle did.
+      jobStartedAt: 1_000_000 - 29_000,
+      now: () => 1_000_000,
+    }),
+  );
+  expect(calls.some((call) => call.includes("funding"))).toBe(false);
+  expect(result).toMatchObject({ paid: 1, refunded: 1, agedPending: [] });
+  expect(result).not.toHaveProperty("fundingObserved");
+});
+
+const tightDeadlines = { budgetMs: 40, latestStartMs: 40, hardStopMs: 80, reportByMs: 120 };
+
+test("a database statement that never returns is cut off and the cycle still reports", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: () => Effect.succeed(["hung", "after-hung"]),
+      },
+      runtime: {
+        ...runtime,
+        reconcileFunding: (fundingEffectId) =>
+          Effect.sync(() => calls.push(`reconcile-funding:${fundingEffectId}`)).pipe(
+            Effect.andThen(Effect.never),
+          ),
+      },
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+  expect(calls.filter((call) => call.startsWith("reconcile-funding:"))).toEqual([
+    "reconcile-funding:hung",
+  ]);
+  expect(calls.at(-1)).toBe("load-aged-pending");
+  expect(result).toMatchObject({ fundingObserved: 1, fundingDeferred: 1, paid: 1, refunded: 1 });
+  expect(result.failures).toEqual(["MegapotRewardsFundingDeadlineExceeded"]);
+  expect(result.agedPending).toEqual([]);
+});
+
+test("a funding listing that never returns is cut off without observing anything", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: { ...work, loadPendingFunding: () => Effect.never },
+      runtime,
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(calls.some((call) => call.startsWith("reconcile-funding:"))).toBe(false);
+  expect(result.failures).toEqual(["MegapotRewardsFundingDeadlineExceeded"]);
+  expect(result).toMatchObject({ paid: 1, agedPending: [] });
+});
+
+test("a liveness projection that never returns is reported unavailable, not lost", async () => {
+  const { runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: { ...work, loadAgedPending: () => Effect.never },
+      runtime,
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(4_000);
+  expect(result.agedPending).toBeNull();
+  expect(result).toMatchObject({ fundingObserved: 1, fundingConfirmed: 1, paid: 1 });
+});
+
+test("a cycle past its reporting bound never starts the liveness read", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime,
+      // The runner's clock started 49 seconds before the cycle did.
+      jobStartedAt: 1_000_000 - 49_000,
+      now: () => 1_000_000,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(500);
+  expect(calls).not.toContain("load-aged-pending");
+  expect(calls.some((call) => call.includes("funding"))).toBe(false);
+  expect(result.agedPending).toBeNull();
+  expect(result.paid).toBe(1);
+});
+
+test("a failed funding listing is recorded and liveness is still reported", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: () =>
+          Effect.fail(new MegapotWorkStorageFailed({ reason: "unavailable" })),
+      },
+      runtime,
+      now: () => 0,
+    }),
+  );
+  expect(result.failures).toEqual(["MegapotWorkStorageFailed"]);
+  expect(result.paid).toBe(1);
+  expect(calls.at(-1)).toBe("load-aged-pending");
 });
 
 test("a paused cycle records holds, keeps reconciling and does not report storage failures", async () => {

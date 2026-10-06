@@ -65,9 +65,11 @@ export function makeMegapotAttestedRpc(
   deployment: MegapotDrawingObserverCandidate,
   rpcUrl: string,
   onReceiptRead?: (observation: MegapotReceiptReadObservation) => void,
+  timeoutMs?: number,
 ) {
   return makeMegapotV2RpcClient({
     rpcUrl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(onReceiptRead === undefined ? {} : { onReceiptRead }),
     reuseSuccessfulAttestation: true,
     minimumRequestIntervalMs: 250,
