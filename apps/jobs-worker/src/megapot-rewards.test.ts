@@ -834,6 +834,25 @@ test("a liveness projection that never returns is reported unavailable, not lost
   expect(result).toMatchObject({ fundingObserved: 1, fundingConfirmed: 1, paid: 1 });
 });
 
+test("a cycle past its reporting bound never starts the liveness read", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime,
+      // The runner's clock started 49 seconds before the cycle did.
+      jobStartedAt: 1_000_000 - 49_000,
+      now: () => 1_000_000,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(500);
+  expect(calls).not.toContain("load-aged-pending");
+  expect(calls.some((call) => call.includes("funding"))).toBe(false);
+  expect(result.agedPending).toBeNull();
+  expect(result.paid).toBe(1);
+});
+
 test("a failed funding listing is recorded and liveness is still reported", async () => {
   const { calls, runtime, work } = fixture("confirmed");
   const result = await Effect.runPromise(

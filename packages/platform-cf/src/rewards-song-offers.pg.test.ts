@@ -56,7 +56,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 27;
+const testCount = 28;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -4130,6 +4130,92 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id='funding-jobs-unbound'",
       );
       expect(unbound.rows).toEqual([{ state: "reclaimable_failed" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("a confirmation whose commit is applied but never acknowledged is not credited twice", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-lost-ack", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-lost-ack",
+      });
+      const transactionHash = bytes32("b") as Hex;
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-lost-ack",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 500n,
+        transactionHash,
+      });
+      const chain = fundingChain({ transactionHash, amountAtomic: 500n });
+      chain.state.head = 202n;
+
+      // A real session whose COMMIT reaches the server and applies, but whose
+      // answer never comes back: the caller cannot tell whether it committed.
+      let commitsApplied = 0;
+      const unacknowledged = makeDirectPostgresControlPlaneLayer(scopedConnection, {
+        statementTimeoutMs: 400,
+        logger: { info: () => undefined, error: () => undefined },
+        clientFactory: (_connectionString, config) => {
+          const client = new Client(config);
+          return {
+            connection: { stream: { destroy: () => undefined } },
+            connect: () => client.connect(),
+            end: () => client.end(),
+            query: async ({ text, values }) => {
+              const result = await client.query({ text, values: [...(values ?? [])] });
+              if (text === "COMMIT") {
+                commitsApplied += 1;
+                return new Promise(() => undefined);
+              }
+              return result;
+            },
+          };
+        },
+      });
+      const interrupted = await Effect.runPromise(
+        makeRewardFundingCoordinator({
+          store: makeControlPlaneRewardFundingStore(unacknowledged),
+          rpc: chain.rpc,
+        })
+          .reconcile("funding-lost-ack")
+          .pipe(
+            Effect.map((outcome) => outcome.kind),
+            Effect.catch((error) => Effect.succeed(`failed:${(error as { _tag?: string })._tag}`)),
+          ),
+      );
+      // The caller is told it failed, and must not treat that as a confirmation.
+      expect(interrupted.startsWith("failed:")).toBe(true);
+      expect(commitsApplied).toBeGreaterThan(0);
+      // The server did apply it, exactly once.
+      expect(await fundingRow(admin, "funding-lost-ack")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+
+      // The next cycle, on an ordinary session, finds it confirmed and does nothing more.
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const readsBefore = chain.state.receiptReads;
+      const repeated = await Effect.runPromise(
+        makeRewardFundingCoordinator({
+          store: makeControlPlaneRewardFundingStore(layer),
+          rpc: chain.rpc,
+        }).reconcile("funding-lost-ack"),
+      );
+      expect(repeated.kind).toBe("confirmed");
+      expect(chain.state.receiptReads).toBe(readsBefore);
+      expect(await fundingRow(admin, "funding-lost-ack")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+      expect(
+        await Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(layer).loadPendingFunding({ limit: 10, cursor: 0 }),
+        ),
+      ).toEqual([]);
     });
     completedTestCount += 1;
   });

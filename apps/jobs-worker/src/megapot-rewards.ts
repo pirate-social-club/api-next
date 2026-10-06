@@ -1,4 +1,4 @@
-import { AlertCollector, ControlPlaneDb } from "@pirate/application";
+import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import {
   type AlertSink,
   deriveBaseSepoliaMegapotAddress,
@@ -170,6 +170,11 @@ export type MegapotRewardsJobOptions = Readonly<{
   rpcUrl: string;
   custodyPrivateKey: string;
   retainedCustodyPrivateKeys?: string;
+  /**
+   * A session for funding observation only, with the short statement limit the
+   * step's deadlines assume. Absent in tests, which then use the job's session.
+   */
+  fundingControlPlane?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
   /** Null when MEGAPOT_GAS_TOPUP_PRIVATE_KEY is unset; the top-up step is then skipped. */
   gasTopupPrivateKey: string | null;
   commitmentBucket: MegapotCommitmentBucket;
@@ -273,7 +278,9 @@ export function makeMegapotRewardsJob(
     // asset-bonus transfer was planned. Either may be a retained deployment. The
     // clients are built on demand, live for this cycle and use a short request
     // bound so that the step's time budget holds.
-    const fundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+    const fundingPlane = options.fundingControlPlane ?? controlPlane;
+    const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
+    const fundingAttestations = makeControlPlaneMegapotDrawingObservationStore(fundingPlane);
     const fundingCoordinators = new Map<string, RewardFundingCoordinator>();
     const reconcileFunding: MegapotRewardsRuntime["reconcileFunding"] = (fundingEffectId) =>
       Effect.gen(function* () {
@@ -283,7 +290,7 @@ export function makeMegapotRewardsJob(
         }
         let coordinator = fundingCoordinators.get(intent.attestationId);
         if (coordinator === undefined) {
-          const deployment = yield* observationStore.loadCandidate(intent.attestationId);
+          const deployment = yield* fundingAttestations.loadCandidate(intent.attestationId);
           coordinator = makeRewardFundingCoordinator({
             store: fundingStore,
             rpc: makeMegapotAttestedRpc(
@@ -312,7 +319,10 @@ export function makeMegapotRewardsJob(
     const summary = yield* runMegapotRewardsCycle({
       // Funding observation is bounded against the runner's timeout clock.
       jobStartedAt: job.startedAtMs ?? startedAt,
-      work: makeControlPlaneMegapotWorkStore(controlPlane),
+      work: {
+        ...makeControlPlaneMegapotWorkStore(controlPlane),
+        loadPendingFunding: makeControlPlaneMegapotWorkStore(fundingPlane).loadPendingFunding,
+      },
       runtime: {
         reconcile: routing.reconcile,
         reconcileFunding,
