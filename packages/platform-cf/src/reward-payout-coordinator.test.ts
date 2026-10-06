@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  RewardPayoutCandidate,
-  RewardPayoutProgress,
-  RewardPayoutStore,
+import {
+  RewardOperationsPaused,
+  type RewardPayoutCandidate,
+  type RewardPayoutProgress,
+  RewardPayoutStorageFailed,
+  type RewardPayoutStore,
 } from "@pirate/application";
 import { Effect } from "effect";
 import {
@@ -192,23 +194,36 @@ function harness() {
       sends += 1;
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => receipt(),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (sends > 0 ? receipt() : null),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("c") }),
   } as unknown as MegapotV2RpcClient;
+  let signatures = 0;
   const signer: MegapotV2TransactionSigner = {
     address: CUSTODY,
-    sign: async () => ({
-      signedTransaction: SIGNED_TRANSACTION,
-      signedTransactionHash: SIGNED_TRANSACTION_HASH,
-    }),
+    sign: async () => {
+      signatures += 1;
+      return {
+        signedTransaction: SIGNED_TRANSACTION,
+        signedTransactionHash: SIGNED_TRANSACTION_HASH,
+      };
+    },
   };
-  return { store, rpc, signer, sends: () => sends };
+  return {
+    store,
+    rpc,
+    signer,
+    sends: () => sends,
+    signatures: () => signatures,
+    state: () => progress?.state ?? null,
+  };
 }
 
 describe("reward payout coordinator", () => {
   test("pays one bonus-token liability exactly once and replays the confirmed receipt", async () => {
     const state = harness();
     const coordinator = makeRewardPayoutCoordinator({
+      authority: { ensure: () => Effect.void },
       store: state.store,
       rpc: state.rpc,
       signer: state.signer,
@@ -239,6 +254,7 @@ describe("reward payout coordinator", () => {
       readReceipt: async () => (available ? receipt() : null),
     };
     const coordinator = makeRewardPayoutCoordinator({
+      authority: { ensure: () => Effect.void },
       store: state.store,
       rpc,
       signer: state.signer,
@@ -276,6 +292,7 @@ describe("reward payout coordinator", () => {
           : readBlock(blockNumber),
     };
     const coordinator = makeRewardPayoutCoordinator({
+      authority: { ensure: () => Effect.void },
       store,
       rpc,
       signer: state.signer,
@@ -291,5 +308,267 @@ describe("reward payout coordinator", () => {
     const confirmed = await Effect.runPromise(coordinator.reconcile(first.effectId));
     expect(confirmed).toMatchObject({ kind: "confirmed", creditId: candidate.creditId });
     expect(state.sends()).toBe(1);
+  });
+});
+
+// A run lease that has expired, or a brake that is paused, refuses new authority.
+// The switch is flipped by the test at the moment it wants the lease to lapse.
+function leasedAuthority() {
+  let live = true;
+  let asked = 0;
+  return {
+    authority: {
+      ensure: () =>
+        Effect.suspend(() => {
+          asked += 1;
+          return live ? Effect.void : Effect.fail(new RewardOperationsPaused({ reason: "paused" }));
+        }),
+    },
+    expire: () => {
+      live = false;
+    },
+    asked: () => asked,
+  };
+}
+const settings = {
+  requiredConfirmations: 3,
+  gasLimitMultiplierBps: 12_000,
+  nativeGasReserveFloorWei: 1_000n,
+  now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+};
+const outcome = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.map((value) => ({ ok: true as const, value })),
+      Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+    ),
+  );
+
+describe("reward payout under a run lease", () => {
+  test("authority is asked before the signature and again before the send", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    const order: string[] = [];
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: {
+        ensure: () =>
+          Effect.sync(() => void order.push("authority")).pipe(
+            Effect.andThen(lease.authority.ensure()),
+          ),
+      },
+      store: state.store,
+      rpc: {
+        ...state.rpc,
+        sendRawTransaction: async (signed) => {
+          order.push("send");
+          return state.rpc.sendRawTransaction(signed);
+        },
+      },
+      signer: {
+        ...state.signer,
+        sign: async (request) => {
+          order.push("sign");
+          return state.signer.sign(request);
+        },
+      },
+    });
+    const paid = await Effect.runPromise(coordinator.payout(candidate.creditId));
+    expect(paid.kind).toBe("confirmed");
+    expect(order).toEqual(["authority", "sign", "authority", "send"]);
+  });
+
+  test("without authority nothing is signed, stored or sent", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    lease.expire();
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: lease.authority,
+      store: state.store,
+      rpc: state.rpc,
+      signer: state.signer,
+    });
+    const refused = await outcome(coordinator.payout(candidate.creditId));
+    expect(refused).toMatchObject({ ok: false, error: { _tag: "RewardOperationsPaused" } });
+    expect(state.signatures()).toBe(0);
+    expect(state.sends()).toBe(0);
+    // The nonce was reserved while admission was open; it stays reserved.
+    expect(state.state()).toBe("nonce_reserved");
+  });
+
+  test("a reservation made before expiry is not signed when reconciled after it", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    let failSigner = true;
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: lease.authority,
+      store: state.store,
+      rpc: state.rpc,
+      signer: {
+        ...state.signer,
+        sign: async (request) => {
+          if (failSigner) throw new Error("signer offline");
+          return state.signer.sign(request);
+        },
+      },
+    });
+    // The first attempt reserves a nonce and then loses its signer.
+    const first = await outcome(coordinator.payout(candidate.creditId));
+    expect(first.ok).toBe(false);
+    expect(state.state()).toBe("nonce_reserved");
+    failSigner = false;
+    lease.expire();
+    const resumed = await outcome(
+      coordinator.reconcile(deriveRewardPayoutEffectId(candidate.creditId)),
+    );
+    expect(resumed).toMatchObject({ ok: false, error: { _tag: "RewardOperationsPaused" } });
+    expect(state.signatures()).toBe(0);
+    expect(state.sends()).toBe(0);
+    expect(state.state()).toBe("nonce_reserved");
+  });
+
+  test("a signature stored before expiry is not sent after it, and is not called uncertain", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    const submissions: string[] = [];
+    const recordSubmission = state.store.recordSubmission;
+    let expireAtSend = true;
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      // The lease lapses between the signature being stored and the send.
+      authority: {
+        ensure: () =>
+          Effect.suspend(() => {
+            if (expireAtSend && state.state() === "prepared") lease.expire();
+            return lease.authority.ensure();
+          }),
+      },
+      store: {
+        ...state.store,
+        recordSubmission: (input) => {
+          submissions.push(input.outcome);
+          return recordSubmission(input);
+        },
+      },
+      rpc: state.rpc,
+      signer: state.signer,
+    });
+    const refused = await outcome(coordinator.payout(candidate.creditId));
+    expect(refused).toMatchObject({ ok: false, error: { _tag: "RewardOperationsPaused" } });
+    expect(state.signatures()).toBe(1);
+    expect(state.sends()).toBe(0);
+    // Refusal is not a broadcast of unknown outcome: nothing was recorded as sent.
+    expect(submissions).toEqual([]);
+    expect(state.state()).toBe("prepared");
+    // Reconciling again after expiry looks for it on chain, finds nothing, and stops.
+    expireAtSend = false;
+    const again = await outcome(
+      coordinator.reconcile(deriveRewardPayoutEffectId(candidate.creditId)),
+    );
+    expect(again).toMatchObject({ ok: false, error: { _tag: "RewardOperationsPaused" } });
+    expect(state.signatures()).toBe(1);
+    expect(state.sends()).toBe(0);
+    expect(state.state()).toBe("prepared");
+  });
+
+  test("a send that succeeded but was never recorded is recovered after expiry with no signature or send", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    const recordSubmission = state.store.recordSubmission;
+    let failRecord = true;
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: lease.authority,
+      store: {
+        ...state.store,
+        // The transaction reaches the chain; the write that says so is lost.
+        recordSubmission: (input) =>
+          failRecord
+            ? Effect.fail(new RewardPayoutStorageFailed({ reason: "outcome-unknown" }))
+            : recordSubmission(input),
+      },
+      rpc: state.rpc,
+      signer: state.signer,
+    });
+    const lost = await outcome(coordinator.payout(candidate.creditId));
+    expect(lost.ok).toBe(false);
+    expect(state.sends()).toBe(1);
+    expect(state.state()).toBe("prepared");
+
+    failRecord = false;
+    lease.expire();
+    const recovered = await Effect.runPromise(
+      coordinator.reconcile(deriveRewardPayoutEffectId(candidate.creditId)),
+    );
+    // Found on chain by its stored hash, recorded, and carried to confirmation.
+    expect(recovered).toMatchObject({ kind: "confirmed", creditId: candidate.creditId });
+    expect(state.signatures()).toBe(1);
+    expect(state.sends()).toBe(1);
+    expect(state.state()).toBe("confirmed");
+  });
+
+  test("a lease that expires during the send does not stop the result being recorded", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: lease.authority,
+      store: state.store,
+      rpc: {
+        ...state.rpc,
+        sendRawTransaction: async (signed) => {
+          // Authorized when it started; the lease lapses while it is in progress.
+          lease.expire();
+          return state.rpc.sendRawTransaction(signed);
+        },
+      },
+      signer: state.signer,
+    });
+    const paid = await Effect.runPromise(coordinator.payout(candidate.creditId));
+    expect(paid).toMatchObject({ kind: "confirmed", creditId: candidate.creditId });
+    expect(state.sends()).toBe(1);
+    expect(state.state()).toBe("confirmed");
+  });
+
+  test("a receipt read that fails is not taken as proof the transaction was never sent", async () => {
+    const state = harness();
+    const lease = leasedAuthority();
+    let failSend = true;
+    let failReceipt = false;
+    const coordinator = makeRewardPayoutCoordinator({
+      ...settings,
+      authority: lease.authority,
+      store: {
+        ...state.store,
+        recordSubmission: () =>
+          Effect.fail(new RewardPayoutStorageFailed({ reason: "outcome-unknown" })),
+      },
+      rpc: {
+        ...state.rpc,
+        readReceipt: async (hash) => {
+          if (failReceipt) throw new Error("rpc unavailable");
+          return state.rpc.readReceipt(hash);
+        },
+        sendRawTransaction: async (signed) => {
+          if (failSend) return state.rpc.sendRawTransaction(signed);
+          throw new Error("must not send");
+        },
+      },
+      signer: state.signer,
+    });
+    await outcome(coordinator.payout(candidate.creditId));
+    expect(state.sends()).toBe(1);
+    failSend = false;
+    failReceipt = true;
+    lease.expire();
+    // The chain cannot be read and authority is gone: nothing is sent again.
+    const held = await outcome(
+      coordinator.reconcile(deriveRewardPayoutEffectId(candidate.creditId)),
+    );
+    expect(held).toMatchObject({ ok: false, error: { _tag: "RewardOperationsPaused" } });
+    expect(state.sends()).toBe(1);
+    expect(state.signatures()).toBe(1);
   });
 });

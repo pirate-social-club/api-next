@@ -1,6 +1,6 @@
 import type { MegapotTicket } from "@pirate/domain";
 import { Data, type Effect } from "effect";
-import type { RewardOperationsPaused } from "./reward-operations.ts";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 export type MegapotPurchaseStorageReason =
   | "conflict"
@@ -25,7 +25,8 @@ export class MegapotPurchaseRejected extends Data.TaggedError("MegapotPurchaseRe
 export type MegapotPurchaseFailure =
   | MegapotPurchaseRejected
   | MegapotPurchaseStorageFailed
-  | RewardOperationsPaused;
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type MegapotPreBroadcastCloseReason =
   | "cutoff_safety_margin"

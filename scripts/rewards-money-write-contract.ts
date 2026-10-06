@@ -1,4 +1,16 @@
 /** Reviewed destructive-write boundary; legitimate runtime deletes live outside this inventory. */
+/**
+ * Money tables created after migration 0232, which revoked destructive
+ * privileges from every table that existed then. Each of these has its
+ * inherited privileges removed by the migration that creates it instead.
+ */
+export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly string[]>> = {
+  "0242_reward_operations_run_lease.sql": [
+    "reward_operations_run_lease",
+    "reward_operations_run_lease_events",
+  ],
+};
+
 export const REWARDS_MONEY_TABLES = [
   "custody_solvency_observations",
   "megapot_allocation_batches",
@@ -41,6 +53,8 @@ export const REWARDS_MONEY_TABLES = [
   "reward_native_transfer_receipt_evidence",
   "reward_operations_control",
   "reward_operations_control_events",
+  "reward_operations_run_lease",
+  "reward_operations_run_lease_events",
   "reward_payout_effects",
   "reward_refund_effects",
   "reward_signer_nonces",

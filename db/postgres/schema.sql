@@ -158,6 +158,55 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION acquire_reward_run_lease_v1(requested_run_id text, ttl_seconds integer, max_seconds integer) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  control_record reward_operations_control%ROWTYPE;
+  lease_record reward_operations_run_lease%ROWTYPE;
+  observed_at TIMESTAMPTZ;
+  deadline TIMESTAMPTZ;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR UPDATE;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR UPDATE;
+  observed_at := clock_timestamp();
+  IF requested_run_id IS NULL OR requested_run_id !~ '^[a-z0-9][a-z0-9-]{0,99}$'
+     OR ttl_seconds IS NULL OR ttl_seconds NOT BETWEEN 30 AND 600
+     OR max_seconds IS NULL OR max_seconds NOT BETWEEN ttl_seconds AND 7200 THEN
+    RAISE EXCEPTION 'invalid reward run lease request' USING ERRCODE='PR003';
+  END IF;
+  IF control_record.paused IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'reward run lease is acquired only while operations are paused'
+      USING ERRCODE='PR003';
+  END IF;
+  IF lease_record.run_id IS NOT NULL AND observed_at < lease_record.expires_at
+     AND observed_at < lease_record.absolute_deadline THEN
+    RAISE EXCEPTION 'reward run lease is held' USING ERRCODE='PR003';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM reward_operations_run_lease_events WHERE run_id = requested_run_id
+  ) THEN
+    RAISE EXCEPTION 'reward run identifier was already used' USING ERRCODE='PR003';
+  END IF;
+  deadline := observed_at + make_interval(secs => max_seconds);
+  UPDATE reward_operations_run_lease
+     SET run_id = requested_run_id, fence = lease_record.fence + 1,
+         acquired_at = observed_at,
+         expires_at = LEAST(observed_at + make_interval(secs => ttl_seconds), deadline),
+         absolute_deadline = deadline
+   WHERE singleton
+  RETURNING * INTO lease_record;
+  INSERT INTO reward_operations_run_lease_events(
+    event_kind, run_id, fence, expires_at, absolute_deadline, actor_role, recorded_at
+  ) VALUES (
+    'acquired', lease_record.run_id, lease_record.fence, lease_record.expires_at,
+    lease_record.absolute_deadline, session_user, observed_at
+  );
+  RETURN lease_record.fence;
+END
+$_$;
+
 CREATE FUNCTION activate_hns_community_app_host_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_community_id text, input_canonical_root text, input_route_binding_id text, input_route_authority_kind text, input_route_authority_reference text, input_route_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, input_gateway_deployment_reference text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
     LANGUAGE plpgsql
     AS $$
@@ -12797,6 +12846,33 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_operations_run_lease() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP <> 'UPDATE' OR NEW.singleton IS DISTINCT FROM OLD.singleton
+     OR NEW.fence < OLD.fence THEN
+    RAISE EXCEPTION 'invalid reward run lease transition' USING ERRCODE='PR003';
+  END IF;
+  IF NEW.required IS DISTINCT FROM OLD.required
+     AND COALESCE(current_setting('pirate.reward_run_lease_requirement_change', TRUE), '')
+         <> 'deployment' THEN
+    RAISE EXCEPTION 'reward run lease requirement is deployment owned' USING ERRCODE='PR003';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_operations_run_lease_event() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'reward run lease evidence is append-only';
+END
+$$;
+
 CREATE FUNCTION guard_reward_payout_effect() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12971,6 +13047,56 @@ BEGIN
      OR solvency_record.balance_atomic < live_reserved_purchase
        + live_outstanding_credit + live_pending_refund + live_shared_sponsorship THEN
     RAISE EXCEPTION 'reward refund does not match terminal pro-rata contribution';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_run_lease_admission() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lease_required BOOLEAN;
+  lease_live BOOLEAN;
+BEGIN
+  SELECT required INTO lease_required FROM reward_operations_run_lease WHERE singleton;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  IF lease_required IS DISTINCT FROM TRUE THEN RETURN NEW; END IF;
+  PERFORM 1 FROM reward_operations_control WHERE singleton FOR SHARE;
+  SELECT run_id IS NOT NULL AND clock_timestamp() < expires_at
+         AND clock_timestamp() < absolute_deadline
+    INTO lease_live FROM reward_operations_run_lease WHERE singleton FOR SHARE;
+  IF lease_live IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_run_lease_signature() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lease_required BOOLEAN;
+  operations_paused BOOLEAN;
+  lease_live BOOLEAN;
+BEGIN
+  SELECT required INTO lease_required FROM reward_operations_run_lease WHERE singleton;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  IF lease_required IS DISTINCT FROM TRUE THEN RETURN NEW; END IF;
+  SELECT paused INTO operations_paused FROM reward_operations_control
+   WHERE singleton FOR SHARE;
+  SELECT run_id IS NOT NULL AND clock_timestamp() < expires_at
+         AND clock_timestamp() < absolute_deadline
+    INTO lease_live FROM reward_operations_run_lease WHERE singleton FOR SHARE;
+  IF operations_paused IS DISTINCT FROM FALSE OR lease_live IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
   END IF;
   RETURN NEW;
 END
@@ -16682,6 +16808,37 @@ CREATE FUNCTION operator_managed_registry_has_active_root(expected_reference tex
   )
 $$;
 
+CREATE FUNCTION pause_reward_operations_on_lease_expiry_v1() RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  control_record reward_operations_control%ROWTYPE;
+  lease_record reward_operations_run_lease%ROWTYPE;
+  observed_at TIMESTAMPTZ;
+BEGIN
+  SELECT * INTO control_record FROM reward_operations_control WHERE singleton FOR UPDATE;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR UPDATE;
+  observed_at := clock_timestamp();
+  IF lease_record.required IS DISTINCT FROM TRUE OR control_record.paused IS DISTINCT FROM FALSE
+     OR (lease_record.run_id IS NOT NULL AND observed_at < lease_record.expires_at
+         AND observed_at < lease_record.absolute_deadline) THEN
+    RETURN FALSE;
+  END IF;
+  UPDATE reward_operations_control
+     SET paused = TRUE, revision = revision + 1, reason = 'reward_run_lease_expired',
+         changed_at = clock_timestamp()
+   WHERE singleton;
+  INSERT INTO reward_operations_run_lease_events(
+    event_kind, run_id, fence, expires_at, absolute_deadline, actor_role, recorded_at
+  ) VALUES (
+    'expiry_paused', lease_record.run_id, lease_record.fence, lease_record.expires_at,
+    lease_record.absolute_deadline, session_user, observed_at
+  );
+  RETURN TRUE;
+END
+$$;
+
 CREATE FUNCTION persona_community_binding_evidence_digest_v1() RETURNS text
     LANGUAGE sql STABLE
     AS $$
@@ -18997,6 +19154,34 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION release_reward_run_lease_v1(holder_run_id text, holder_fence bigint) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lease_record reward_operations_run_lease%ROWTYPE;
+  observed_at TIMESTAMPTZ;
+BEGIN
+  PERFORM 1 FROM reward_operations_control WHERE singleton FOR UPDATE;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR UPDATE;
+  observed_at := clock_timestamp();
+  IF lease_record.run_id IS NULL OR holder_run_id IS NULL OR holder_fence IS NULL
+     OR lease_record.run_id <> holder_run_id OR lease_record.fence <> holder_fence THEN
+    RAISE EXCEPTION 'reward run lease release refused' USING ERRCODE='PR003';
+  END IF;
+  UPDATE reward_operations_run_lease
+     SET expires_at = LEAST(lease_record.expires_at, observed_at, lease_record.absolute_deadline)
+   WHERE singleton
+  RETURNING * INTO lease_record;
+  INSERT INTO reward_operations_run_lease_events(
+    event_kind, run_id, fence, expires_at, absolute_deadline, actor_role, recorded_at
+  ) VALUES (
+    'released', lease_record.run_id, lease_record.fence, lease_record.expires_at,
+    lease_record.absolute_deadline, session_user, observed_at
+  );
+END
+$$;
+
 CREATE FUNCTION renew_hns_community_root_import_challenge_v1(input_actor_id text, input_community_id text, input_attachment_intent_id text, input_new_ceremony_intent_id text, input_reservation_request jsonb, input_reservation_request_hash text) RETURNS TABLE(outcome text, ceremony_intent_id text, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -19145,6 +19330,43 @@ BEGIN
   RETURN QUERY SELECT 'renewed'::text, input_new_ceremony_intent_id, current_generation + 1;
 END;
 $_$;
+
+CREATE FUNCTION renew_reward_run_lease_v1(holder_run_id text, holder_fence bigint, ttl_seconds integer) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lease_record reward_operations_run_lease%ROWTYPE;
+  observed_at TIMESTAMPTZ;
+BEGIN
+  PERFORM 1 FROM reward_operations_control WHERE singleton FOR UPDATE;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR UPDATE;
+  observed_at := clock_timestamp();
+  IF ttl_seconds IS NULL OR ttl_seconds NOT BETWEEN 30 AND 600 THEN
+    RAISE EXCEPTION 'invalid reward run lease request' USING ERRCODE='PR003';
+  END IF;
+  IF lease_record.run_id IS NULL OR holder_run_id IS NULL OR holder_fence IS NULL
+     OR lease_record.run_id <> holder_run_id OR lease_record.fence <> holder_fence
+     OR observed_at >= lease_record.expires_at
+     OR observed_at >= lease_record.absolute_deadline THEN
+    RAISE EXCEPTION 'reward run lease renewal refused' USING ERRCODE='PR003';
+  END IF;
+  UPDATE reward_operations_run_lease
+     SET fence = lease_record.fence + 1,
+         expires_at = LEAST(
+           observed_at + make_interval(secs => ttl_seconds), lease_record.absolute_deadline
+         )
+   WHERE singleton
+  RETURNING * INTO lease_record;
+  INSERT INTO reward_operations_run_lease_events(
+    event_kind, run_id, fence, expires_at, absolute_deadline, actor_role, recorded_at
+  ) VALUES (
+    'renewed', lease_record.run_id, lease_record.fence, lease_record.expires_at,
+    lease_record.absolute_deadline, session_user, observed_at
+  );
+  RETURN lease_record.fence;
+END
+$$;
 
 CREATE FUNCTION request_media_song_video_pcm_admission() RETURNS trigger
     LANGUAGE plpgsql
@@ -19503,6 +19725,35 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
+$$;
+
+CREATE FUNCTION require_reward_run_authority_v1() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  lease_record reward_operations_run_lease%ROWTYPE;
+  operations_paused BOOLEAN;
+  observed_at TIMESTAMPTZ;
+BEGIN
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  IF lease_record.required IS DISTINCT FROM TRUE THEN RETURN; END IF;
+  SELECT paused INTO operations_paused FROM reward_operations_control
+   WHERE singleton FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  SELECT * INTO lease_record FROM reward_operations_run_lease WHERE singleton FOR SHARE;
+  observed_at := clock_timestamp();
+  IF operations_paused IS DISTINCT FROM FALSE OR lease_record.run_id IS NULL
+     OR observed_at >= lease_record.expires_at
+     OR observed_at >= lease_record.absolute_deadline THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+END
 $$;
 
 CREATE FUNCTION require_song_video_projection_edge() RETURNS trigger
@@ -35501,6 +35752,42 @@ CREATE TABLE reward_operations_control_events (
     CONSTRAINT reward_operations_control_events_revision_check CHECK ((revision >= 0))
 );
 
+CREATE TABLE reward_operations_run_lease (
+    singleton boolean DEFAULT true NOT NULL,
+    required boolean DEFAULT false NOT NULL,
+    run_id text,
+    fence bigint DEFAULT 0 NOT NULL,
+    acquired_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    absolute_deadline timestamp with time zone,
+    CONSTRAINT reward_operations_run_lease_deadline CHECK ((expires_at <= absolute_deadline)),
+    CONSTRAINT reward_operations_run_lease_fence_check CHECK ((fence >= 0)),
+    CONSTRAINT reward_operations_run_lease_run_id_check CHECK (((run_id IS NULL) OR (run_id ~ '^[a-z0-9][a-z0-9-]{0,99}$'::text))),
+    CONSTRAINT reward_operations_run_lease_shape CHECK ((((run_id IS NULL) AND (acquired_at IS NULL) AND (expires_at IS NULL) AND (absolute_deadline IS NULL)) OR ((run_id IS NOT NULL) AND (acquired_at IS NOT NULL) AND (expires_at IS NOT NULL) AND (absolute_deadline IS NOT NULL)))),
+    CONSTRAINT reward_operations_run_lease_singleton_check CHECK (singleton)
+);
+
+CREATE TABLE reward_operations_run_lease_events (
+    event_id bigint NOT NULL,
+    event_kind text NOT NULL,
+    run_id text,
+    fence bigint NOT NULL,
+    expires_at timestamp with time zone,
+    absolute_deadline timestamp with time zone,
+    actor_role text NOT NULL,
+    recorded_at timestamp with time zone NOT NULL,
+    CONSTRAINT reward_operations_run_lease_events_event_kind_check CHECK ((event_kind = ANY (ARRAY['acquired'::text, 'renewed'::text, 'released'::text, 'expiry_paused'::text])))
+);
+
+ALTER TABLE reward_operations_run_lease_events ALTER COLUMN event_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME reward_operations_run_lease_events_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE reward_payout_effects (
     payout_effect_id text NOT NULL,
     attestation_id text NOT NULL,
@@ -37596,6 +37883,8 @@ INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00'
 INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
 
 INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_run_lease VALUES (true, false, NULL, 0, NULL, NULL, NULL);
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');
@@ -39894,6 +40183,12 @@ ALTER TABLE ONLY reward_operations_control_events
 ALTER TABLE ONLY reward_operations_control
     ADD CONSTRAINT reward_operations_control_pkey PRIMARY KEY (singleton);
 
+ALTER TABLE ONLY reward_operations_run_lease_events
+    ADD CONSTRAINT reward_operations_run_lease_events_pkey PRIMARY KEY (event_id);
+
+ALTER TABLE ONLY reward_operations_run_lease
+    ADD CONSTRAINT reward_operations_run_lease_pkey PRIMARY KEY (singleton);
+
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_credit_id_key UNIQUE (credit_id);
 
@@ -42143,9 +42438,25 @@ CREATE TRIGGER reward_operations_control_change_guard BEFORE INSERT OR DELETE OR
 
 CREATE TRIGGER reward_operations_control_events_change_guard BEFORE DELETE OR UPDATE ON reward_operations_control_events FOR EACH ROW EXECUTE FUNCTION guard_reward_operations_control_event();
 
+CREATE TRIGGER reward_operations_run_lease_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_operations_run_lease FOR EACH ROW EXECUTE FUNCTION guard_reward_operations_run_lease();
+
+CREATE TRIGGER reward_operations_run_lease_events_change_guard BEFORE DELETE OR UPDATE ON reward_operations_run_lease_events FOR EACH ROW EXECUTE FUNCTION guard_reward_operations_run_lease_event();
+
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
 CREATE TRIGGER reward_refund_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_refund_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_refund_effect();
+
+CREATE TRIGGER reward_run_lease_admission_guard BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_run_lease_admission();
+
+CREATE TRIGGER reward_run_lease_admission_guard BEFORE INSERT ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_reward_run_lease_admission();
+
+CREATE TRIGGER reward_run_lease_admission_guard BEFORE INSERT ON song_reward_offers FOR EACH ROW EXECUTE FUNCTION guard_reward_run_lease_admission();
+
+CREATE TRIGGER reward_run_lease_nonce_advance_guard BEFORE UPDATE ON reward_signer_nonces FOR EACH ROW WHEN ((new.next_nonce > old.next_nonce)) EXECUTE FUNCTION guard_reward_run_lease_admission();
+
+CREATE TRIGGER reward_run_lease_nonce_insert_guard BEFORE INSERT ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_run_lease_admission();
+
+CREATE TRIGGER reward_run_lease_signature_guard BEFORE UPDATE ON reward_chain_effects FOR EACH ROW WHEN (((old.state = 'nonce_reserved'::text) AND (new.state = 'prepared'::text))) EXECUTE FUNCTION guard_reward_run_lease_signature();
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 

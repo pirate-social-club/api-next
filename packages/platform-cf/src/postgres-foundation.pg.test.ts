@@ -1562,6 +1562,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_native_transfer_receipt_evidence",
         "reward_operations_control",
         "reward_operations_control_events",
+        "reward_operations_run_lease",
+        "reward_operations_run_lease_events",
         "reward_payout_effects",
         "reward_refund_effects",
         "reward_signer_nonces",

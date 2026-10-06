@@ -1,5 +1,5 @@
 import { Data, type Effect } from "effect";
-import type { RewardOperationsPaused } from "./reward-operations.ts";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 export class RewardPayoutStorageFailed extends Data.TaggedError("RewardPayoutStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -19,7 +19,8 @@ export class RewardPayoutRejected extends Data.TaggedError("RewardPayoutRejected
 export type RewardPayoutFailure =
   | RewardPayoutRejected
   | RewardPayoutStorageFailed
-  | RewardOperationsPaused;
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type RewardPayoutCandidate = Readonly<{
   creditId: string;

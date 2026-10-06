@@ -20,6 +20,10 @@ import {
   makeRewardGasTopupCoordinator,
   type RewardFundingCoordinator,
 } from "@pirate/platform-cf";
+import {
+  makeControlPlaneRewardLeaseExpiryPause,
+  makeControlPlaneRewardRunAuthority,
+} from "@pirate/platform-cf/reward-operations-control";
 import { Effect, Layer } from "effect";
 import {
   MEGAPOT_REWARDS_CYCLE_JOB,
@@ -30,6 +34,7 @@ import {
   type MegapotRewardsRuntime,
   megapotRewardsDrawingObservationAlert,
   megapotRewardsLivenessAlerts,
+  pauseOnRunLeaseExpiry,
   resolveGasTopupRuntime,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
@@ -146,6 +151,7 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "RewardGasTopupStorageFailed",
   "RewardPayoutCoordinatorFailed",
   "RewardOperationsPaused",
+  "RewardRunAuthorityUnavailable",
   "RewardPayoutRejected",
   "RewardPayoutStorageFailed",
   "RewardOfferTerminalStorageFailed",
@@ -250,6 +256,7 @@ export function makeMegapotRewardsJob(
         makeRuntime: (activeSigner) => {
           const gasTopup = makeRewardGasTopupCoordinator({
             store: gasTopupStore,
+            authority: makeControlPlaneRewardRunAuthority(controlPlane),
             rpc,
             signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
               privateKey: gasTopupPrivateKey,
@@ -318,6 +325,10 @@ export function makeMegapotRewardsJob(
       store: makeControlPlaneMegapotAllocationStore(controlPlane),
     });
 
+    const leaseAlert = yield* pauseOnRunLeaseExpiry(
+      makeControlPlaneRewardLeaseExpiryPause(controlPlane),
+    );
+    if (leaseAlert !== null) yield* collector.emit(leaseAlert);
     const summary = yield* runMegapotRewardsCycle({
       // Funding observation is bounded against the runner's timeout clock.
       jobStartedAt: job.startedAtMs ?? startedAt,

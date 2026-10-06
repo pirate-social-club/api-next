@@ -17,6 +17,7 @@ import {
 } from "./megapot-v2.ts";
 import { findMegapotV2ClaimRevert, type MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 export class MegapotClaimCoordinatorFailed extends Data.TaggedError(
   "MegapotClaimCoordinatorFailed",
@@ -153,6 +154,7 @@ export function makeMegapotClaimCoordinator(input: {
   readonly store: MegapotClaimStore;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;
@@ -365,6 +367,23 @@ export function makeMegapotClaimCoordinator(input: {
     claim: MegapotPreparedClaim,
   ) {
     if (claim.state !== "prepared") return yield* reconcilePrepared(claim);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(input.rpc, claim.signedTransactionHash)) {
+      yield* input.store.recordSubmission({
+        effectId: claim.effectId,
+        transactionHash: claim.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...claim,
+        state: "broadcast_pending",
+        transactionHash: claim.signedTransactionHash,
+      });
+    }
     yield* attest(claim);
     const calldata = encodeMegapotClaimWinnings([claim.ticketId]);
     const calldataHash = yield* sha256Hex(hexToBytes(calldata));
@@ -375,6 +394,9 @@ export function makeMegapotClaimCoordinator(input: {
     ) {
       return yield* failed("receipt_evidence_invalid", "prepare");
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       input.rpc.sendRawTransaction(claim.signedTransaction as Hex),
     ).pipe(
@@ -476,6 +498,8 @@ export function makeMegapotClaimCoordinator(input: {
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       input.signer.sign({
         chainId: reservation.chainId,
