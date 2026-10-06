@@ -14,7 +14,7 @@ import {
   runLeaseQuery,
 } from "./database-evidence.mjs";
 import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
-import { assertKaraokeRecording } from "./karaoke-recording.mjs";
+import { readFixtureMicrophone } from "./fixture-microphone.mjs";
 import { rehearseRunLease } from "./lease-rehearsal.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import {
@@ -161,7 +161,7 @@ try {
 // Checked here, before any lock is taken or anything is funded.
 let karaokeRecording;
 try {
-  karaokeRecording = assertKaraokeRecording(process.env.REWARDS_E2E_KARAOKE_WAV);
+  karaokeRecording = readFixtureMicrophone("karaoke", process.env.REWARDS_E2E_KARAOKE_WAV);
 } catch (error) {
   if (process.argv.includes("--execute")) throw error;
   karaokeRecording = { refused: error instanceof Error ? error.message : "refused" };
@@ -177,7 +177,9 @@ const plan = {
   branch: identity.branchId,
   simulatedClaimVerification: true,
   order: ["win", "loss"],
-  karaokeRecording: karaokeRecording.refused ? karaokeRecording : { bytes: karaokeRecording.bytes },
+  karaokeRecording: karaokeRecording.refused
+    ? karaokeRecording
+    : { sha256: karaokeRecording.sha256, bytes: karaokeRecording.bytes },
   budget,
   runLease,
 };

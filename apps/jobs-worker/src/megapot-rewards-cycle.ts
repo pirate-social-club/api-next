@@ -352,7 +352,11 @@ export function writeMegapotRewardsCycleSnapshot(
           : agedPendingCount(summary.agedPending, "refund_liabilities"),
       oldest_aged_pending_seconds: oldestAgedPendingSeconds,
       outcome:
-        summary.failures.length === 0 && livenessAvailable && agedTotal === 0
+        summary.failures.length === 0 &&
+        livenessAvailable &&
+        agedTotal === 0 &&
+        // A cycle that looked at no sponsor transfers has not shown funding is healthy.
+        summary.fundingStep !== "skipped_deadline_passed"
           ? "healthy"
           : "degraded",
       sampled: false,
