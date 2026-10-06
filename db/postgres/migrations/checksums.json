@@ -241,6 +241,6 @@
     "0238_hns_attachment_control_identity.sql": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
     "0239_telegram_study_practice.sql": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
     "0240_telegram_interface_preferences.sql": "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404",
-    "0241_spaces_community_route_attachments.sql": "b9930d945f780e236e2eca893f52bd679fb45fa54cf77667ac3305acc4afa4a9"
+    "0241_spaces_community_route_attachments.sql": "e778abb7096b1fd5bef118535355f97a6dac3794dbbd16f9176baf1390a42fc9"
   }
 }

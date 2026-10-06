@@ -3,8 +3,9 @@ import type {
   SpacesReconciliationStore,
   SpacesSaleNamespaceStore,
 } from "@pirate/application";
+import { ControlPlaneDb } from "@pirate/application";
 import type { JobsWorkerConfigValue } from "@pirate/platform-cf/config";
-import { ControlPlaneDb, type makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import type { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import {
   renewDueSpacesRouteBindings,
   type SpacesRouteRenewalOutcome,

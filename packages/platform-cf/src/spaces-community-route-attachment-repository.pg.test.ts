@@ -397,6 +397,19 @@ suite("Spaces community route attachment", () => {
         },
       ]);
 
+      // Start, prove and commit each keep their exact observation bytes, so
+      // every ownership decision can be re-audited later.
+      const retained = await admin.query(
+        `SELECT encode(sha256(start_observation),'hex')=start_observation_sha256_hex AS start_ok,
+                encode(sha256(proof_observation),'hex')=proof_observation_sha256_hex AS proof_ok,
+                encode(sha256(commit_observation),'hex')=commit_observation_sha256_hex AS commit_ok,
+                convert_from(commit_observation,'UTF8')::jsonb->>'owner_signature_verified' AS unsigned
+           FROM spaces_community_route_attachments WHERE status='committed' ORDER BY canonical_root`,
+      );
+      expect(retained.rows).toEqual([
+        { start_ok: true, proof_ok: true, commit_ok: true, unsigned: null },
+        { start_ok: true, proof_ok: true, commit_ok: true, unsigned: null },
+      ]);
       // A bound community and a bound root are both taken for good.
       expect(await refusal(harness.start(communities.yahoo, "csca", "rebind"))).toBe("conflict");
       expect(await refusal(harness.start(communities.spare, "csca", "steal"))).toBe("conflict");

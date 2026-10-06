@@ -44,6 +44,7 @@ CREATE TABLE spaces_community_route_attachments (
   route_binding_id text REFERENCES community_canonical_route_bindings(route_binding_id),
   evidence_ref text,
   committed_response jsonb,
+  commit_observation bytea CHECK (octet_length(commit_observation) BETWEEN 1 AND 1048576),
   commit_observation_sha256_hex text CHECK (commit_observation_sha256_hex ~ '^[0-9a-f]{64}$'),
   updated_at timestamptz NOT NULL,
   CONSTRAINT spaces_community_route_attachments_purpose_shape CHECK (
@@ -68,7 +69,7 @@ CREATE TABLE spaces_community_route_attachments (
   CONSTRAINT spaces_community_route_attachments_commit_shape CHECK (
     (status = 'committed') = (
       route_binding_id IS NOT NULL AND evidence_ref IS NOT NULL AND committed_response IS NOT NULL
-      AND commit_observation_sha256_hex IS NOT NULL
+      AND commit_observation IS NOT NULL AND commit_observation_sha256_hex IS NOT NULL
     )
   ),
   CONSTRAINT spaces_community_route_attachments_start_replay UNIQUE (

@@ -635,7 +635,8 @@ export function makeSpacesRouteAttachmentStore(
           "spaces-route.commit.attachment",
           `UPDATE spaces_community_route_attachments
               SET status='committed',route_binding_id=$2,evidence_ref=$3,
-                  committed_response=$4::jsonb,commit_observation_sha256_hex=$5,
+                  committed_response=$4::jsonb,commit_observation=$6,
+                  commit_observation_sha256_hex=$5,
                   updated_at=clock_timestamp()
             WHERE attachment_intent_id=$1 AND status='proved'`,
           [
@@ -644,6 +645,7 @@ export function makeSpacesRouteAttachmentStore(
             evidenceRef,
             JSON.stringify(response),
             commitObservationDigest,
+            current.bytes,
           ],
         );
         return response;
