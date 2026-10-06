@@ -310,6 +310,8 @@ export function makeMegapotRewardsJob(
     });
 
     const summary = yield* runMegapotRewardsCycle({
+      // Funding observation is bounded against the runner's timeout clock.
+      jobStartedAt: job.startedAtMs ?? startedAt,
       work: makeControlPlaneMegapotWorkStore(controlPlane),
       runtime: {
         reconcile: routing.reconcile,

@@ -504,6 +504,7 @@ const runScheduledJob = Effect.fn("runScheduledJob")(function* <Failure, Require
   const runContext = {
     owner,
     attemptId: `${owner}:${job.name}`,
+    startedAtMs: Date.now(),
     lease: () => state.currentLease,
     adapterSafety: {
       markAbortedOrFenced: () => {

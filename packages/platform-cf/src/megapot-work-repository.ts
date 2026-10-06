@@ -67,8 +67,9 @@ export interface MegapotWorkStore {
   ) => Effect.Effect<readonly MegapotChainEffectWork[], MegapotWorkStorageFailed>;
   /**
    * Funding whose transfer is bound but neither confirmed nor reverted, for
-   * megapot-pool and asset-bonus legs alike. The cursor moves the window by one
-   * batch, so transfers that never resolve cannot hold newer ones out forever.
+   * megapot-pool and asset-bonus legs alike. Each cursor step moves the first
+   * candidate by one position, so neither transfers that never resolve nor a
+   * caller that only gets through part of a batch can hold any transfer out.
    */
   readonly loadPendingFunding: (input: {
     readonly limit: number;
@@ -354,7 +355,7 @@ export function makeControlPlaneMegapotWorkRepository() {
                     SELECT pending.funding_effect_id,
                            mod(
                              pending.position
-                               - mod($2::numeric * $1::numeric, pending.total::numeric)
+                               - mod($2::numeric, pending.total::numeric)
                                + pending.total::numeric,
                              pending.total::numeric
                            ) AS turn

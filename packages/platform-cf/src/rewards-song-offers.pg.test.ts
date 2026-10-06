@@ -4182,16 +4182,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       const first = await window(0);
       expect(first).toHaveLength(10);
       expect(first).not.toContain("funding-rotation-11");
-      // The same cycle minute reads the same window; the next minute moves it.
+      // The same cycle minute reads the same window; the next minute moves its
+      // first candidate by one, which brings the newest transfer in.
       expect(await window(0)).toEqual(first);
       const second = await window(1);
-      expect(second[0]).toBe("funding-rotation-11");
       expect(second).toHaveLength(10);
-      // Every transfer is reached within two consecutive windows from any start.
-      for (const cursor of [0, 5, 10, 11, 1_000_003]) {
-        const seen = new Set([...(await window(cursor)), ...(await window(cursor + 1))]);
-        expect(seen.size).toBe(11);
+      expect(second[0]).toBe(first[1]);
+      expect(second.at(-1)).toBe("funding-rotation-11");
+      // Each transfer leads the window exactly once in eleven consecutive minutes.
+      const leaders = new Set<string>();
+      for (let cursor = 1_000_003; cursor < 1_000_014; cursor++) {
+        const batch = await window(cursor);
+        expect(batch).toHaveLength(10);
+        leaders.add(batch[0] ?? "");
       }
+      expect(leaders.size).toBe(11);
       // Selection wrote nothing, so pending age still measures the wait.
       expect(await ages()).toEqual(before);
 

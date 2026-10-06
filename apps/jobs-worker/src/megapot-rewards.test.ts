@@ -758,6 +758,82 @@ test("a cycle that is already late skips funding observation without a chain rea
   expect(result).not.toHaveProperty("fundingObserved");
 });
 
+test("setup that used most of the job leaves no room and funding is skipped", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work,
+      runtime,
+      // The runner's clock started 29 seconds before the cycle did.
+      jobStartedAt: 1_000_000 - 29_000,
+      now: () => 1_000_000,
+    }),
+  );
+  expect(calls.some((call) => call.includes("funding"))).toBe(false);
+  expect(result).toMatchObject({ paid: 1, refunded: 1, agedPending: [] });
+  expect(result).not.toHaveProperty("fundingObserved");
+});
+
+const tightDeadlines = { budgetMs: 40, latestStartMs: 40, hardStopMs: 80, reportByMs: 120 };
+
+test("a database statement that never returns is cut off and the cycle still reports", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: {
+        ...work,
+        loadPendingFunding: () => Effect.succeed(["hung", "after-hung"]),
+      },
+      runtime: {
+        ...runtime,
+        reconcileFunding: (fundingEffectId) =>
+          Effect.sync(() => calls.push(`reconcile-funding:${fundingEffectId}`)).pipe(
+            Effect.andThen(Effect.never),
+          ),
+      },
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+  expect(calls.filter((call) => call.startsWith("reconcile-funding:"))).toEqual([
+    "reconcile-funding:hung",
+  ]);
+  expect(calls.at(-1)).toBe("load-aged-pending");
+  expect(result).toMatchObject({ fundingObserved: 1, fundingDeferred: 1, paid: 1, refunded: 1 });
+  expect(result.failures).toEqual(["MegapotRewardsFundingDeadlineExceeded"]);
+  expect(result.agedPending).toEqual([]);
+});
+
+test("a funding listing that never returns is cut off without observing anything", async () => {
+  const { calls, runtime, work } = fixture("confirmed");
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: { ...work, loadPendingFunding: () => Effect.never },
+      runtime,
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(calls.some((call) => call.startsWith("reconcile-funding:"))).toBe(false);
+  expect(result.failures).toEqual(["MegapotRewardsFundingDeadlineExceeded"]);
+  expect(result).toMatchObject({ paid: 1, agedPending: [] });
+});
+
+test("a liveness projection that never returns is reported unavailable, not lost", async () => {
+  const { runtime, work } = fixture("confirmed");
+  const startedAt = Date.now();
+  const result = await Effect.runPromise(
+    runMegapotRewardsCycle({
+      work: { ...work, loadAgedPending: () => Effect.never },
+      runtime,
+      fundingDeadlines: tightDeadlines,
+    }),
+  );
+  expect(Date.now() - startedAt).toBeLessThan(4_000);
+  expect(result.agedPending).toBeNull();
+  expect(result).toMatchObject({ fundingObserved: 1, fundingConfirmed: 1, paid: 1 });
+});
+
 test("a failed funding listing is recorded and liveness is still reported", async () => {
   const { calls, runtime, work } = fixture("confirmed");
   const result = await Effect.runPromise(

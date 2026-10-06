@@ -15,11 +15,30 @@ export const MEGAPOT_REWARDS_CYCLE_SCHEDULE = "* * * * *";
 export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
 const MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS = 10 * 60;
 const MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT = 10;
-// Funding observation is the last chain work of a cycle. No observation starts
-// after either bound, which leaves the slowest one room inside the job timeout.
-const MEGAPOT_REWARDS_FUNDING_BUDGET_MS = 10_000;
-const MEGAPOT_REWARDS_FUNDING_LATEST_START_MS = 30_000;
-/** One request bound for the funding chain client; see the budget above. */
+/**
+ * Funding observation is the last chain work of a cycle and is bounded against
+ * the job's own start, not the cycle's, so setup and retries are counted. No
+ * observation starts after `budgetMs` of funding work or after `latestStartMs`
+ * of the job. Whatever is still running at `hardStopMs` — a listing, a chain
+ * read or a database statement — is interrupted, and the liveness projection is
+ * given until `reportByMs`. The remainder of the 50 second job timeout is left
+ * for the summary and alerts. An interrupted observation is safe to repeat: the
+ * store credits a transfer only while its effect is unconfirmed.
+ */
+export type MegapotRewardsFundingDeadlines = Readonly<{
+  budgetMs: number;
+  latestStartMs: number;
+  hardStopMs: number;
+  reportByMs: number;
+}>;
+const MEGAPOT_REWARDS_FUNDING_DEADLINES: MegapotRewardsFundingDeadlines = {
+  budgetMs: 10_000,
+  latestStartMs: 28_000,
+  hardStopMs: 38_000,
+  reportByMs: 44_000,
+};
+const MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG = "MegapotRewardsFundingDeadlineExceeded";
+/** One request bound for the funding chain client; the hard stop is the guarantee. */
 export const MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS = 1_500;
 
 export function observeMegapotDrawingForCycle<A>(
@@ -329,10 +348,14 @@ export function runMegapotRewardsCycle(input: {
   readonly runtime: MegapotRewardsRuntime;
   readonly limit?: number;
   readonly now?: () => number;
+  /** When the job attempt began, before setup and any retry; defaults to now. */
+  readonly jobStartedAt?: number;
+  readonly fundingDeadlines?: MegapotRewardsFundingDeadlines;
 }): Effect.Effect<MegapotRewardsCycleSummary, unknown> {
   return Effect.gen(function* () {
     const now = input.now ?? Date.now;
-    const cycleStartedAt = now();
+    const jobStartedAt = input.jobStartedAt ?? now();
+    const deadlines = input.fundingDeadlines ?? MEGAPOT_REWARDS_FUNDING_DEADLINES;
     const limit = input.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       return yield* Effect.fail(new Error("invalid Megapot rewards cycle limit"));
@@ -480,53 +503,63 @@ export function runMegapotRewardsCycle(input: {
     // and before it can have its confirmations. Without this step a sponsor who
     // pays and leaves is never confirmed, and the bound effect holds the offer's
     // expiry. It runs after every obligation above so that slow or failing
-    // observations can only delay funding, never a refund or a payout. A failed
-    // listing is recorded like any candidate failure.
+    // observations can only delay funding, never a refund or a payout.
     const fundingStartedAt = now();
-    const fundingDeadline = Math.min(
-      fundingStartedAt + MEGAPOT_REWARDS_FUNDING_BUDGET_MS,
-      cycleStartedAt + MEGAPOT_REWARDS_FUNDING_LATEST_START_MS,
+    const latestStart = Math.min(
+      fundingStartedAt + deadlines.budgetMs,
+      jobStartedAt + deadlines.latestStartMs,
     );
-    const pendingFunding =
-      fundingStartedAt >= fundingDeadline
-        ? null
-        : yield* input.work
-            .loadPendingFunding({
-              limit: Math.min(limit, MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT),
-              // One step per scheduled minute moves the window by one batch.
-              cursor: Math.floor(cycleStartedAt / 60_000),
-            })
-            .pipe(
-              Effect.catch((error) =>
-                Effect.sync(() => {
-                  recordFailures([error]);
-                  return [] as readonly string[];
-                }),
-              ),
-            );
+    const hardStop = jobStartedAt + deadlines.hardStopMs;
+    type Bounded<A> =
+      | Readonly<{ kind: "done"; value: A }>
+      | Readonly<{ kind: "failed"; error: unknown }>
+      | Readonly<{ kind: "interrupted" }>;
+    const untilHardStop = <A>(effect: Effect.Effect<A, unknown>): Effect.Effect<Bounded<A>> =>
+      effect.pipe(
+        Effect.map((value): Bounded<A> => ({ kind: "done", value })),
+        Effect.catch(
+          (error): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "failed", error }),
+        ),
+        Effect.timeout(Math.max(0, hardStop - now())),
+        Effect.catch((): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "interrupted" })),
+      );
     let fundingObserved = 0;
     let fundingConfirmed = 0;
     let fundingDeferred = 0;
-    for (const fundingEffectId of pendingFunding ?? []) {
-      if (now() >= fundingDeadline) {
-        fundingDeferred += 1;
-        continue;
-      }
-      fundingObserved += 1;
-      const outcome = yield* input.runtime.reconcileFunding(fundingEffectId).pipe(
-        Effect.catch((error) =>
-          Effect.sync(() => {
-            recordFailures([error]);
-            return null;
-          }),
-        ),
+    if (fundingStartedAt < latestStart) {
+      const listing = yield* untilHardStop(
+        input.work.loadPendingFunding({
+          limit: Math.min(limit, MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT),
+          // One step per scheduled minute moves the first candidate by one, so a
+          // batch cut short by the budget still reaches every transfer in turn.
+          cursor: Math.floor(jobStartedAt / 60_000),
+        }),
       );
-      if (outcome?.kind === "confirmed") fundingConfirmed += 1;
+      if (listing.kind === "failed") recordFailures([listing.error]);
+      if (listing.kind === "interrupted")
+        recordFailures([{ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG }]);
+      for (const fundingEffectId of listing.kind === "done" ? listing.value : []) {
+        if (now() >= latestStart) {
+          fundingDeferred += 1;
+          continue;
+        }
+        fundingObserved += 1;
+        const outcome = yield* untilHardStop(input.runtime.reconcileFunding(fundingEffectId));
+        if (outcome.kind === "failed") recordFailures([outcome.error]);
+        if (outcome.kind === "interrupted")
+          recordFailures([{ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG }]);
+        if (outcome.kind === "done" && outcome.value.kind === "confirmed") fundingConfirmed += 1;
+      }
     }
 
+    // The projection is read-only; past its bound the cycle reports it unavailable
+    // rather than losing the whole summary to the job timeout.
     const agedPending = yield* input.work
       .loadAgedPending(MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
+      .pipe(
+        Effect.timeout(Math.max(2_000, jobStartedAt + deadlines.reportByMs - now())),
+        Effect.catch(() => Effect.succeed(null)),
+      );
 
     return {
       reconciled: reconciled.length,
