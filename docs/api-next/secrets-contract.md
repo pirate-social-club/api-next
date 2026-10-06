@@ -1176,3 +1176,13 @@ The video source gateway's production source now names the same replacement
 Hyperdrive as the other production Workers. A read-only deployment listing on
 October 6 returned Worker-not-found for that production gateway. This source
 repair does not create or deploy it; the current release excludes that Worker.
+
+The optional production `/services/spaces-operator` folder admits only
+`SPACES_BACKUP_AGE_RECIPIENT`, `SPACES_BACKUP_B2_KEY_ID` and
+`SPACES_BACKUP_B2_APPLICATION_KEY` for the
+maintained operator backup uploader. These names are not Worker runtime inputs.
+The absence of this optional folder is not a missing-secret finding; an
+unknown folder or additional stored name remains a violation. Staging Spaces
+operator names admit only the verified observer node/DB pair and Yahoo
+assignment, capability report, funding report and registry tokens. They remain
+operator-only; no HTTP/jobs distribution or feature activation is implied.

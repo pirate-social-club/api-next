@@ -14,7 +14,8 @@ export type InfisicalPath =
   | "/agents"
   | "/agents/codex"
   | "/services/api-next"
-  | "/services/api-next/operator";
+  | "/services/api-next/operator"
+  | "/services/spaces-operator";
 export type InfisicalDriftKind =
   | "unexpected-folder"
   | "missing-folder"
@@ -271,6 +272,29 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...PRODUCTION_HNS_OPERATOR_SECRET_NAMES,
     ],
   },
+  {
+    environment: "staging",
+    path: "/services/spaces-operator",
+    requiredNames: [],
+    allowedNames: [
+      "SPACES_REFRESH_OBSERVER_NODE_KEY",
+      "SPACES_REFRESH_OBSERVER_POSTGRES_URL",
+      "SPACES_YAHOO_ASSIGNMENT_PREPARE_TOKEN",
+      "SPACES_YAHOO_CAPABILITY_REPORT_TOKEN",
+      "SPACES_YAHOO_FUNDING_REPORT_TOKEN",
+      "SPACES_YAHOO_REGISTRY_TOKEN",
+    ],
+  },
+  {
+    environment: "prod",
+    path: "/services/spaces-operator",
+    requiredNames: [],
+    allowedNames: [
+      "SPACES_BACKUP_AGE_RECIPIENT",
+      "SPACES_BACKUP_B2_KEY_ID",
+      "SPACES_BACKUP_B2_APPLICATION_KEY",
+    ],
+  },
 ];
 
 export const EXPECTED_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, readonly string[]>> =
@@ -279,6 +303,12 @@ export const EXPECTED_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, r
     staging: ["/services", "/services/api-next", "/services/api-next/operator"],
     prod: ["/services", "/services/api-next", "/services/api-next/operator"],
   };
+
+const OPTIONAL_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, readonly string[]>> = {
+  dev: [],
+  staging: ["/services/spaces-operator"],
+  prod: ["/services/spaces-operator"],
+};
 
 export type InfisicalExpectedDrift = Readonly<{
   environment: InfisicalEnvironment;
@@ -293,7 +323,7 @@ export const EXPECTED_INFISICAL_DRIFT: readonly InfisicalExpectedDrift[] = [];
 export type InfisicalSnapshot = Readonly<{
   environment: InfisicalEnvironment;
   folders: readonly string[];
-  secrets: Readonly<Record<InfisicalPath, readonly string[]>>;
+  secrets: Readonly<Partial<Record<InfisicalPath, readonly string[]>>>;
 }>;
 
 export type InfisicalDrift = Readonly<{
@@ -345,9 +375,13 @@ export function auditInfisicalSnapshots(
 
   for (const snapshot of snapshots) {
     const expectedFolders = new Set(EXPECTED_INFISICAL_FOLDERS[snapshot.environment]);
+    const allowedFolders = new Set([
+      ...expectedFolders,
+      ...OPTIONAL_INFISICAL_FOLDERS[snapshot.environment],
+    ]);
     const observedFolders = new Set(snapshot.folders.map(normalisePath));
     for (const path of [...observedFolders].sort()) {
-      if (!expectedFolders.has(path)) {
+      if (!allowedFolders.has(path)) {
         record({
           environment: snapshot.environment,
           path,
