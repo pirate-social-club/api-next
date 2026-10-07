@@ -65,7 +65,7 @@ async function reinstallPublicationMigration(admin: Client) {
   await admin.query(
     await readFile(
       new URL(
-        "../../../db/postgres/migrations/0244_hns_member_host_publication.sql",
+        "../../../db/postgres/migrations/0246_hns_member_host_publication.sql",
         import.meta.url,
       ),
       "utf8",

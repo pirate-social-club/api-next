@@ -11489,6 +11489,22 @@ BEGIN
   IF NEW.version <> OLD.version + 1 OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'Megapot pool drawing transition requires next version and time';
   END IF;
+  IF NEW.status='closed_purchase_unavailable' AND NEW.purchase_effect_id IS NOT NULL
+    AND OLD.status <> 'purchase_pending' THEN
+    RAISE EXCEPTION 'only an unsigned reserved purchase may retain its effect when closed';
+  END IF;
+  IF OLD.status='purchase_pending' AND NEW.status='closed_purchase_unavailable' AND (
+    NEW.purchase_effect_id IS DISTINCT FROM OLD.purchase_effect_id
+    OR NEW.terminal_reason IS DISTINCT FROM 'unsigned_purchase_released'
+    OR NOT EXISTS (SELECT 1 FROM reward_chain_effects effect
+      JOIN reward_chain_effect_transitions event ON event.effect_id=effect.effect_id
+        AND event.target_version=effect.version
+      WHERE effect.effect_id=OLD.purchase_effect_id AND effect.state='terminal_failed'
+        AND effect.nonce IS NULL AND effect.signed_transaction IS NULL
+        AND effect.transaction_hash IS NULL AND event.event_type='unsigned_purchase_released')
+  ) THEN
+    RAISE EXCEPTION 'closing reserved purchase requires unsigned release evidence';
+  END IF;
   IF NOT (
     (OLD.status = 'entry_open' AND NEW.status IN (
       'cutoff_frozen', 'closed_no_entries', 'closed_unfunded',
@@ -11499,7 +11515,7 @@ BEGIN
     OR (OLD.status = 'committed' AND NEW.status IN (
       'purchase_pending', 'closed_purchase_unavailable', 'operational_hold'
     ))
-    OR (OLD.status = 'purchase_pending' AND NEW.status IN ('tickets_confirmed', 'operational_hold'))
+    OR (OLD.status = 'purchase_pending' AND NEW.status IN ('tickets_confirmed', 'closed_purchase_unavailable', 'operational_hold'))
     OR (OLD.status = 'tickets_confirmed' AND NEW.status IN ('drawing_pending', 'operational_hold'))
     OR (OLD.status = 'drawing_pending' AND NEW.status IN (
       'no_win', 'winnings_detected', 'operational_hold'
@@ -13122,13 +13138,38 @@ CREATE FUNCTION guard_reward_signer_nonce() RETURNS trigger
     AS $$
 DECLARE
   operations_paused BOOLEAN;
+  tail_release BOOLEAN := FALSE;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'reward signer nonce fences cannot be deleted';
   END IF;
+  IF TG_OP = 'UPDATE' AND NEW.next_nonce < OLD.next_nonce THEN
+    -- SECURITY DEFINER makes current_user the trigger owner. Inspect the actual
+    -- login/SET ROLE identity instead; SET ROLE cannot impersonate an owner.
+    tail_release :=
+      (CASE WHEN current_setting('role') = 'none' THEN session_user::text
+        ELSE current_setting('role') END)
+        = pg_get_userbyid((SELECT relowner FROM pg_class
+            WHERE oid = 'reward_signer_nonces'::regclass))
+      AND NEW.next_nonce = OLD.next_nonce - 1
+      AND EXISTS (
+        SELECT 1 FROM reward_chain_effects effect
+        JOIN reward_chain_effect_transitions event ON event.effect_id=effect.effect_id
+          AND event.target_version=effect.version
+        JOIN megapot_pool_drawings drawing ON drawing.purchase_effect_id=effect.effect_id
+        WHERE effect.chain_id=OLD.chain_id AND effect.signer_address=OLD.signer_address
+          AND effect.state='terminal_failed' AND effect.nonce IS NULL
+          AND effect.signed_transaction IS NULL AND effect.transaction_hash IS NULL
+          AND event.event_type='unsigned_purchase_released'
+          AND event.event->>'nonce'=NEW.next_nonce::text
+          AND event.event->>'nonce_fence'=OLD.fence_version::text
+          AND drawing.status='closed_purchase_unavailable'
+      );
+  END IF;
   IF TG_OP = 'UPDATE' AND (
     NEW.chain_id <> OLD.chain_id OR NEW.signer_address <> OLD.signer_address
-    OR NEW.next_nonce < OLD.next_nonce OR NEW.fence_version <> OLD.fence_version + 1
+    OR (NEW.next_nonce < OLD.next_nonce AND NOT tail_release)
+    OR NEW.fence_version <> OLD.fence_version + 1
     OR NEW.observed_block_number < OLD.observed_block_number
     OR NEW.observed_at < OLD.observed_at OR NEW.updated_at <= OLD.updated_at
   ) THEN
@@ -15030,6 +15071,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_text_publication_mode_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.publication_mode <> OLD.publication_mode THEN
+    RAISE EXCEPTION 'text publication mode is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_unresolved_rating_hold_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -16285,8 +16337,8 @@ CREATE TABLE text_content_submissions (
     status text NOT NULL,
     moderation_decision text NOT NULL,
     public_reason_code text,
-    policy_revision_id text NOT NULL,
-    policy_hash text NOT NULL,
+    policy_revision_id text,
+    policy_hash text,
     input_sha256 text NOT NULL,
     internal_reason_codes jsonb NOT NULL,
     evidence_ref text,
@@ -16311,6 +16363,7 @@ CREATE TABLE text_content_submissions (
     matched_categories jsonb,
     category_decisions jsonb,
     effective_policy_decision text,
+    publication_mode text DEFAULT 'moderated'::text NOT NULL,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
@@ -16318,6 +16371,7 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_policy_evidence_shape CHECK ((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 4]))),
     CONSTRAINT text_content_submissions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_public_reason_code_check CHECK (((public_reason_code IS NULL) OR (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'policy_violation'::text])))),
+    CONSTRAINT text_content_submissions_publication_mode_check CHECK ((publication_mode = ANY (ARRAY['moderated'::text, 'author_declared'::text]))),
     CONSTRAINT text_content_submissions_reasons_array CHECK ((valid_text_moderation_reason_codes(internal_reason_codes) AND (((moderation_decision = 'allow'::text) AND (jsonb_array_length(internal_reason_codes) = 0)) OR ((moderation_decision = 'manual_review'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ? 'sexual_minors'::text))) OR ((moderation_decision = 'blocked'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ?| ARRAY['age_gate_required'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))))),
     CONSTRAINT text_content_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
@@ -16329,7 +16383,8 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
     CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
     CONSTRAINT text_content_submissions_v2_decision_evidence_shape CHECK (((num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = ANY (ARRAY[0, 5])) AND ((author_declared_rating IS NULL) OR ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (jsonb_typeof(matched_categories) = 'array'::text) AND (jsonb_typeof(category_decisions) = 'object'::text) AND (effective_policy_decision = ANY (ARRAY['permit'::text, 'review'::text, 'block'::text])))))),
-    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
+    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL)))),
+    CONSTRAINT text_submission_publication_mode_shape CHECK ((((publication_mode = 'moderated'::text) AND (policy_revision_id IS NOT NULL) AND (policy_hash IS NOT NULL)) OR ((publication_mode = 'author_declared'::text) AND (num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = 5) AND (status = 'published'::text) AND (moderation_decision = 'allow'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (evidence_ref IS NULL) AND (internal_reason_codes = '[]'::jsonb) AND (matched_categories = '[]'::jsonb) AND (category_decisions = '{}'::jsonb) AND (effective_policy_decision = 'permit'::text) AND (num_nonnulls(policy_revision_id, policy_hash, platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = 0))))
 );
 
 CREATE FUNCTION is_current_text_rating_raise_v2(previous text_content_submissions, following text_content_submissions) RETURNS boolean
@@ -19313,6 +19368,106 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION release_unsigned_test_purchase_v1(expected_effect_id text, expected_effect_version bigint, expected_nonce_fence bigint, expected_brake_revision bigint, observed_latest_nonce numeric, observed_pending_nonce numeric, observed_block_number bigint, observed_block_hash text, observed_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  brake reward_operations_control%ROWTYPE;
+  lease reward_operations_run_lease%ROWTYPE;
+  effect reward_chain_effects%ROWTYPE;
+  nonce_record reward_signer_nonces%ROWTYPE;
+  drawing megapot_pool_drawings%ROWTYPE;
+  leg song_reward_offer_legs%ROWTYPE;
+  attestation_environment TEXT;
+BEGIN
+  IF expected_effect_id IS NULL OR expected_effect_version IS NULL
+    OR expected_nonce_fence IS NULL OR expected_brake_revision IS NULL THEN
+    RAISE EXCEPTION 'unsigned purchase recovery requires exact versions';
+  END IF;
+  SELECT * INTO brake FROM reward_operations_control WHERE singleton FOR SHARE;
+  SELECT * INTO lease FROM reward_operations_run_lease WHERE singleton FOR SHARE;
+  IF brake.paused IS DISTINCT FROM TRUE OR brake.revision <> expected_brake_revision
+    OR lease.required IS DISTINCT FROM TRUE
+    OR (lease.expires_at > clock_timestamp() AND lease.absolute_deadline > clock_timestamp()) THEN
+    RAISE EXCEPTION 'unsigned purchase recovery requires paused isolated authority';
+  END IF;
+  SELECT * INTO effect FROM reward_chain_effects WHERE effect_id=expected_effect_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'unsigned purchase recovery effect missing'; END IF;
+  SELECT * INTO nonce_record FROM reward_signer_nonces
+    WHERE chain_id=effect.chain_id AND signer_address=effect.signer_address FOR UPDATE;
+  SELECT * INTO effect FROM reward_chain_effects WHERE effect_id=expected_effect_id FOR UPDATE;
+  SELECT * INTO drawing FROM megapot_pool_drawings
+    WHERE purchase_effect_id=expected_effect_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'unsigned purchase recovery drawing missing'; END IF;
+  SELECT * INTO leg FROM song_reward_offer_legs WHERE leg_id=drawing.pool_leg_id FOR UPDATE;
+  SELECT environment INTO attestation_environment FROM megapot_deployment_attestations
+    WHERE attestation_id=leg.attestation_id;
+  IF effect.effect_kind <> 'ticket_purchase' OR effect.chain_id <> 84532
+    OR attestation_environment IS DISTINCT FROM 'test'
+    OR effect.state <> 'nonce_reserved' OR effect.version <> expected_effect_version
+    OR effect.nonce IS NULL OR effect.calldata IS NOT NULL OR effect.calldata_hash IS NOT NULL
+    OR effect.signed_transaction IS NOT NULL OR effect.signed_transaction_hash IS NOT NULL
+    OR effect.transaction_hash IS NOT NULL OR effect.prepared_at IS NOT NULL
+    OR effect.broadcast_at IS NOT NULL OR effect.replacement_of_effect_id IS NOT NULL
+    OR effect.replaced_by_effect_id IS NOT NULL
+    OR NOT EXISTS (SELECT 1 FROM megapot_ticket_purchase_effects purchase
+      JOIN megapot_deployment_attestations attestation
+        ON attestation.attestation_id=purchase.attestation_id
+      WHERE purchase.purchase_effect_id=effect.effect_id
+        AND purchase.pool_leg_id=drawing.pool_leg_id AND purchase.drawing_id=drawing.drawing_id
+        AND purchase.attestation_id=leg.attestation_id
+        AND attestation.custody_address=effect.signer_address
+        AND attestation.jackpot_address=effect.target_address
+        AND purchase.ticket_price_atomic=effect.reserved_amount_atomic)
+    OR drawing.status <> 'purchase_pending' OR drawing.entry_cutoff_at > clock_timestamp()
+    OR drawing.actual_ticket_cost_atomic <> 0 OR drawing.claim_effect_id IS NOT NULL
+    OR drawing.fallback_beneficiary OR leg.funding_source <> 'leg_budget'
+    OR leg.reserved_atomic < drawing.reserved_ticket_cost_atomic
+    OR nonce_record.fence_version <> expected_nonce_fence
+    OR nonce_record.next_nonce <> effect.nonce + 1
+    OR observed_latest_nonce IS DISTINCT FROM effect.nonce
+    OR observed_pending_nonce IS DISTINCT FROM effect.nonce
+    OR observed_block_number IS NULL OR observed_block_number < nonce_record.observed_block_number
+    OR observed_block_hash IS NULL OR observed_block_hash !~ '^0x[0-9a-f]{64}$'
+    OR observed_at IS NULL OR observed_at < clock_timestamp() - interval '60 seconds'
+    OR observed_at > clock_timestamp() + interval '5 seconds'
+    OR EXISTS (SELECT 1 FROM reward_chain_effects other
+      WHERE other.chain_id=effect.chain_id AND other.signer_address=effect.signer_address
+        AND other.effect_id<>effect.effect_id AND other.nonce>=effect.nonce)
+    OR EXISTS (SELECT 1 FROM megapot_ticket_inventory WHERE purchase_effect_id=effect.effect_id)
+    OR EXISTS (SELECT 1 FROM megapot_purchase_receipt_evidence
+      WHERE purchase_effect_id=effect.effect_id) THEN
+    RAISE EXCEPTION 'unsigned purchase recovery scope or chain proof changed';
+  END IF;
+  INSERT INTO reward_chain_effect_transitions(effect_id,target_version,event_type,event)
+    VALUES (effect.effect_id,effect.version+1,'unsigned_purchase_released',jsonb_build_object(
+      'nonce',effect.nonce::text,'nonce_fence',nonce_record.fence_version::text,
+      'brake_revision',brake.revision::text,'latest_nonce',observed_latest_nonce::text,
+      'pending_nonce',observed_pending_nonce::text,'block_number',observed_block_number::text,
+      'block_hash',observed_block_hash,'observed_at',observed_at));
+  UPDATE reward_chain_effects SET state='terminal_failed',version=version+1,nonce=NULL,
+    failure_class='unsigned_purchase_released',failure_reason='drawing-window-expired',
+    updated_at=clock_timestamp() WHERE effect_id=effect.effect_id;
+  INSERT INTO megapot_pool_drawing_transitions(pool_leg_id,drawing_id,target_version,event_type,event)
+    VALUES (drawing.pool_leg_id,drawing.drawing_id,drawing.version+1,
+      'closed_purchase_unavailable',jsonb_build_object(
+        'reason','unsigned_purchase_released','effect_id',effect.effect_id));
+  UPDATE megapot_pool_drawings SET status='closed_purchase_unavailable',version=version+1,
+    terminal_reason='unsigned_purchase_released',terminal_at=clock_timestamp(),
+    updated_at=clock_timestamp()
+    WHERE pool_leg_id=drawing.pool_leg_id AND drawing_id=drawing.drawing_id;
+  UPDATE song_reward_offer_legs SET reserved_atomic=reserved_atomic-drawing.reserved_ticket_cost_atomic,
+    updated_at=clock_timestamp() WHERE leg_id=leg.leg_id;
+  UPDATE reward_signer_nonces SET next_nonce=effect.nonce,fence_version=fence_version+1,
+    observed_pending_nonce=release_unsigned_test_purchase_v1.observed_pending_nonce,
+    observed_block_number=release_unsigned_test_purchase_v1.observed_block_number,
+    observed_block_hash=release_unsigned_test_purchase_v1.observed_block_hash,
+    observed_at=release_unsigned_test_purchase_v1.observed_at,updated_at=clock_timestamp()
+    WHERE chain_id=effect.chain_id AND signer_address=effect.signer_address;
+END
+$_$;
+
 CREATE FUNCTION renew_hns_community_root_import_challenge_v1(input_actor_id text, input_community_id text, input_attachment_intent_id text, input_new_ceremony_intent_id text, input_reservation_request jsonb, input_reservation_request_hash text) RETURNS TABLE(outcome text, ceremony_intent_id text, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -20025,16 +20180,17 @@ CREATE FUNCTION require_text_moderation_v2_submission() RETURNS trigger
 DECLARE
   current_provider_policy TEXT;
 BEGIN
+  IF NEW.publication_mode = 'author_declared' THEN
+    IF NEW.resulting_content_rating IS DISTINCT FROM NEW.author_declared_rating THEN
+      RAISE EXCEPTION 'unmoderated publication must retain the author declared rating';
+    END IF;
+    RETURN NEW;
+  END IF;
   SELECT policy_revision_id INTO current_provider_policy
-    FROM text_moderation_policy_current
-   WHERE singleton = TRUE;
+    FROM text_moderation_policy_current WHERE singleton = TRUE;
   IF current_provider_policy = 'text-moderation-policy-openai-omni-2024-09-26-v1'
-    AND num_nonnulls(
-      NEW.platform_policy_revision_id,
-      NEW.platform_policy_hash,
-      NEW.community_policy_revision_id,
-      NEW.community_policy_hash
-    ) <> 4
+    AND num_nonnulls(NEW.platform_policy_revision_id, NEW.platform_policy_hash,
+      NEW.community_policy_revision_id, NEW.community_policy_hash) <> 4
   THEN
     RAISE EXCEPTION 'new text moderation submissions require complete V2 policy evidence';
   END IF;
@@ -34488,7 +34644,7 @@ CREATE TABLE megapot_pool_drawings (
     cutoff_frozen_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     terminal_at timestamp with time zone,
-    CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['committed'::text, 'closed_purchase_unavailable'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
+    CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
     CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))),
     CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))),
     CONSTRAINT megapot_pool_drawing_reservation CHECK (((actual_ticket_cost_atomic <= reserved_ticket_cost_atomic) AND (reserved_ticket_cost_atomic <= ticket_price_ceiling_atomic) AND (net_winnings_atomic <= gross_winnings_atomic))),
@@ -42836,6 +42992,8 @@ CREATE TRIGGER text_moderation_evidence_append_only BEFORE DELETE OR UPDATE ON t
 CREATE TRIGGER text_moderation_evidence_require_v2 BEFORE INSERT ON text_moderation_evidence FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_evidence();
 
 CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON text_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
+
+CREATE TRIGGER text_publication_mode_update_guard BEFORE UPDATE OF publication_mode ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_publication_mode_update();
 
 CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
 

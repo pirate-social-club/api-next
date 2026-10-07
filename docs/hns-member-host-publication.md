@@ -1,7 +1,7 @@
 # HNS member publication
 
 A hosted HNS grant enqueues publication in its issuing transaction. Migration
-0244 also queues existing hosted HNS grants. The provisioner reconciles the
+0246 also queues existing hosted HNS grants. The provisioner reconciles the
 current authority and accepted zone configuration under the existing root
 session lock. Claim reads expose a host only while the publication receipt,
 namespace authority and DNS health remain current. Publication failure does
@@ -16,7 +16,7 @@ existing root, app and wildcard record sets are retained.
 ## Runtime privileges and release order
 
 Do not infer the connected database role from an example role name. Migration
-0244 supplies its grants to api_next_app and the separate
+0246 supplies its grants to api_next_app and the separate
 hns_root_import_executor_login_v1 only when those roles exist. Shared staging
 logins and other deployed Worker logins require an explicit reviewed mapping.
 Reobserve the connected provisioner and Worker roles through the established

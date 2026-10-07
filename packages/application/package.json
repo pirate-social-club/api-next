@@ -11,6 +11,7 @@
     "./post-slug": "./src/post-slug.ts",
     "./use-cases/content/community-moderation-runtime": "./src/use-cases/content/community-moderation-runtime.ts",
     "./text-moderation-runtime": "./src/text-moderation-runtime.ts",
+    "./text-publication-store": "./src/text-publication-store.ts",
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",

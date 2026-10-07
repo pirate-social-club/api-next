@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { writeMegapotRewardsCycleSnapshot } from "./megapot-rewards-cycle.ts";
+import { makeMegapotReceiptReadLogger } from "./megapot-rewards-runtime.ts";
 
 // The runner's scripts are plain modules outside this project's type check, so
 // they are loaded by location and described here.
@@ -72,6 +73,7 @@ test("the cycle summary the isolated jobs Worker writes is the one the runner re
       fundingObserved: 3,
       fundingConfirmed: 1,
       fundingDeferred: 2,
+      fundingStep: "ran",
       failureTags: ["RewardFundingCoordinatorFailed"],
     },
   ]);
@@ -108,4 +110,75 @@ test("a summary written under any other environment is refused by the runner", (
       envelopes.push({ logs: [{ message: [event, JSON.parse(JSON.stringify(fields))] }] }),
   );
   expect(() => cycleEvents(envelopes[0])).toThrow("Invalid isolated cycle summary");
+});
+
+const { receiptEvents, firstJobsReceiptRead } = (await runner("receipt-evidence.mjs")) as {
+  receiptEvents: (envelope: unknown) => readonly unknown[];
+  firstJobsReceiptRead: (capture: unknown, expected: unknown) => unknown;
+};
+
+test("the isolated receipt logger output is accepted as the first purchase read", () => {
+  const configuration = readFileSync(
+    new URL("../../../tests/rewards-e2e/jobs.wrangler.jsonc", import.meta.url),
+    "utf8",
+  );
+  const environments = [...configuration.matchAll(/"API_NEXT_ENV":\s*"([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+  expect(new Set(environments)).toEqual(new Set([isolatedEnvironment]));
+  const messages: string[] = [];
+  const at = new Date().toISOString();
+  const transactionHash = `0x${"a".repeat(64)}`;
+  const observer = makeMegapotReceiptReadLogger({
+    log: (message) => messages.push(message),
+    environment: environments[0] ?? "",
+    attemptId: "attempt-public",
+    cycleStartedAt: at,
+    workerVersion: { id: "jobs-version", tag: "", timestamp: at },
+  });
+  observer({
+    chainId: 84532,
+    attestationId: "fixture-1",
+    rpcClientId: "rpc-1",
+    clientReadSequence: 1,
+    transactionReadSequence: 1,
+    observedAt: at,
+    requestedTransactionHash: transactionHash,
+    providerTransactionHash: null,
+    blockHash: null,
+    blockNumber: null,
+    failureReason: null,
+    result: "not_found",
+  });
+  const events = receiptEvents({ logs: [{ message: messages }] });
+  expect(events).toHaveLength(1);
+  const read = firstJobsReceiptRead(
+    {
+      worker: "pirate-jobs-worker-megapot-e2e-staging",
+      outcome: "subscribed",
+      connectedAt: at,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      subscriptionGaps: 0,
+      parseFailures: 0,
+      events,
+    },
+    {
+      transactionHash,
+      effectId: "purchase-1",
+      jobsVersionId: "jobs-version",
+      attestationId: "fixture-1",
+    },
+  );
+  expect(read).toMatchObject({
+    source: "jobs-worker",
+    attempt: 1,
+    transactionHash,
+    effectId: "purchase-1",
+  });
+  for (const environment of ["test", "staging", "production"]) {
+    const event = JSON.parse(messages[0] ?? "null");
+    expect(() => receiptEvents({ logs: [{ message: [{ ...event, environment }] }] })).toThrow(
+      "Invalid isolated receipt observation",
+    );
+  }
 });

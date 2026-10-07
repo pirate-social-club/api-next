@@ -4,7 +4,8 @@ import { isolatedEnvironment } from "./worker-plan.mjs";
 
 const summary = (overrides = {}) => ({
   event: "megapot.rewards.cycle",
-  schema_version: 4,
+  schema_version: 5,
+  funding_step_status: "ran",
   environment: isolatedEnvironment,
   worker_version_id: "jobs-version",
   emitted_at: "2026-10-06T12:01:03.000Z",
@@ -27,6 +28,7 @@ test("a cycle summary is reduced to its public counts however it was logged", ()
     fundingObserved: 1,
     fundingConfirmed: 1,
     fundingDeferred: 0,
+    fundingStep: "ran",
     failureTags: [],
   };
   // The sink logs the event name as a label followed by the fields object.
@@ -58,6 +60,7 @@ const cycle = (overrides = {}) => ({
   fundingObserved: 1,
   fundingConfirmed: 1,
   fundingDeferred: 0,
+  fundingStep: "ran",
   failureTags: [],
   ...overrides,
 });
