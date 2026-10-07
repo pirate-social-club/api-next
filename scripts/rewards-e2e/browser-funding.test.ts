@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { trackFundingObservations, verifyTransferReview } from "./browser-funding.mjs";
+import {
+  reviewWalletFunding,
+  trackFundingObservations,
+  verifyTransferReview,
+} from "./browser-funding.mjs";
 
 const expected = {
   chainId: 84532,
@@ -114,4 +118,49 @@ test("a request that never gets an answer stays unanswered, and stopping ends th
   tracker.stop();
   await page.emit("request", request());
   expect(tracker.snapshot().started).toBe(1);
+});
+
+test("funding failure identifies its UI phase while suppressing credentials and provider bodies", async () => {
+  for (const phase of ["authorization-form", "code-form", "prepare-review"]) {
+    const page = {
+      url: () => "https://web-megapot-e2e-staging.pirate.sc",
+      evaluate: async () => ({
+        status: 200,
+        accountId: "usr_87b732b0-6ab4-45fe-a91b-9b4c9f54e15e",
+      }),
+    };
+    const dialog = {
+      getByRole: (_role: string, { name }: { name?: string } = {}) => ({
+        count: async () => 1,
+        fill: async () => {
+          if (phase === "authorization-form" && name === "Email for your wallet")
+            throw Error("secret@example.invalid provider-secret");
+        },
+        click: async () => {
+          if (phase === "prepare-review" && name === "Review transfer")
+            throw Error("123456 provider-secret");
+        },
+        waitFor: async () => {
+          if (phase === "code-form" && name === "Code") throw Error("123456 provider-secret");
+        },
+      }),
+    };
+    try {
+      await reviewWalletFunding(page, dialog, expected, {
+        MODERATION_E2E_MEMBER_EMAIL: "secret@example.invalid",
+        MODERATION_E2E_MEMBER_OTP: "123456",
+      });
+      throw Error("expected refusal");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : "").toBe(
+        `Wallet authorization or transfer review refused at ${phase}; credentials suppressed`,
+      );
+      expect(error).toMatchObject({
+        fundingReview: { phase, emailFields: 1, codeFields: 1, confirmButtons: 1, alerts: 1 },
+      });
+      expect(JSON.stringify(error)).not.toContain("secret@example.invalid");
+      expect(JSON.stringify(error)).not.toContain("123456");
+      expect(JSON.stringify(error)).not.toContain("provider-secret");
+    }
+  }
 });

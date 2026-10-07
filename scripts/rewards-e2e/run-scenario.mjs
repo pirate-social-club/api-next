@@ -39,7 +39,7 @@ import { verifyConfirmedFunding } from "./funding-evidence.mjs";
 import { claimParticipantCredit } from "./participant-claims.mjs";
 import { singleParticipantCredit } from "./participant-policy.mjs";
 import { firstJobsReceiptRead } from "./receipt-evidence.mjs";
-import { subscribeJobsCycles, subscribeJobsReceipts } from "./receipt-observer.mjs";
+import { subscribeJobsEvidence } from "./receipt-observer.mjs";
 import {
   assertActivityShares,
   expectedTicketLogs,
@@ -199,10 +199,9 @@ export async function runScenario(options) {
     const backingAudio = await verifyBackingAudio(host.pages.karaoke);
     run.chain = fixtureChain();
     const driver = await buildBrowserWalletDriver(process.env.REWARDS_E2E_SOLID_ROOT);
-    observer = await subscribeJobsReceipts(run.directory);
-    // Losing this second capture never stops a run; it only leaves jobs funding
-    // confirmation unproven.
-    cycleObserver = await subscribeJobsCycles(run.directory).catch(() => undefined);
+    observer = await subscribeJobsEvidence(run.directory);
+    // Both evidence classes share the provider's single Worker tail and cleanup.
+    cycleObserver = observer;
     stageSave("prepared", {
       accounts: host.report.accounts,
       routes: route.route.activity_paths,
@@ -664,6 +663,14 @@ export async function runScenario(options) {
   } catch (error) {
     failure = error;
     failureStage = stage;
+    // Report the existing sanitized failure before bounded settlement cleanup waits for expiry.
+    const evidence = {
+      failureStage,
+      reason: failure?.message,
+      fundingReview: failure?.fundingReview,
+    };
+    saveRunEvidence(run, "failure", evidence);
+    console.error(JSON.stringify({ runId: run.runId, stage: "failure", ...evidence }));
   } finally {
     const errors = [];
     let brake;

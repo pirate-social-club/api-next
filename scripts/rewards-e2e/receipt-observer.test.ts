@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firstJobsReceiptRead, receiptEvents } from "./receipt-evidence.mjs";
-import { subscribeJobsReceipts } from "./receipt-observer.mjs";
+import { subscribeJobsEvidence, subscribeJobsReceipts } from "./receipt-observer.mjs";
 
 const transactionHash = `0x${"a".repeat(64)}`;
 const expected = {
@@ -206,4 +206,68 @@ test("metadata storage failure taints evidence and still deletes the owned tail"
     "POST /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails",
     "DELETE /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails/tail-storage",
   ]);
+});
+
+test("one shared jobs tail captures receipts and cycles and is deleted only once", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "rewards-jobs-tail-"));
+  const calls: string[] = [];
+  try {
+    const observer = await subscribeJobsEvidence(directory, {
+      Socket,
+      api: async (path: string, init: RequestInit) => {
+        calls.push(`${init.method} ${path}`);
+        if (init.method === "POST")
+          expect(JSON.parse(String(init.body))).toEqual({ filters: [{ query: "megapot" }] });
+        if (calls.filter((call) => call.startsWith("DELETE")).length > 1)
+          throw Error("already deleted");
+        return {
+          id: "shared-tail",
+          url: "wss://fixture.invalid/private-tail-token",
+          expires_at: new Date(Date.now() + 60000).toISOString(),
+        };
+      },
+    });
+    Socket.last.message({
+      logs: [
+        {
+          message: [
+            observation(),
+            {
+              event: "megapot.rewards.cycle",
+              schema_version: 5,
+              environment: "development",
+              worker_version_id: "jobs-1",
+              emitted_at: new Date().toISOString(),
+              duration_ms: 30000,
+              funding_step_status: "ran",
+              funding_observed_count: 1,
+              funding_confirmed_count: 1,
+              funding_deferred_count: 0,
+              failure_tags: [],
+              secret: "must-not-copy",
+            },
+          ],
+        },
+      ],
+    });
+    await observer.flush();
+    expect(firstJobsReceiptRead(observer.capture, expected).attempt).toBe(1);
+    expect(observer.capture.events).toHaveLength(2);
+    expect(
+      observer.capture.events.find(
+        (event: { event: string }) => event.event === "megapot.rewards.cycle",
+      ),
+    ).toMatchObject({ fundingConfirmed: 1 });
+    const closed = await Promise.all([observer.close(), observer.close()]);
+    expect(closed.every((capture) => capture.outcome === "capture-ended")).toBe(true);
+    expect(calls).toEqual([
+      "POST /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails",
+      "DELETE /workers/scripts/pirate-jobs-worker-megapot-e2e-staging/tails/shared-tail",
+    ]);
+    expect(readFileSync(join(directory, "jobs-observations.jsonl"), "utf8")).not.toContain(
+      "must-not-copy",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
