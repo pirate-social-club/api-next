@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { fixtureAccounts, signInFixture } from "./browser-accounts.mjs";
-import { karaokeSpeechSha256 } from "./karaoke-speech-fixture.mjs";
+import { readFixtureMicrophone } from "./fixture-microphone.mjs";
 import { isolatedOrigins } from "./worker-plan.mjs";
 
 export async function closeOwnedBrowsers(browsers, report, save) {
@@ -21,18 +20,8 @@ export async function prepareFixtureBrowsers(directory, audioPaths, verifyPrepar
   await verifyPreparation();
   const audio = {};
   for (const role of Object.keys(fixtureAccounts)) {
-    const path = resolve(audioPaths[role]);
-    const bytes = readFileSync(path);
-    if (
-      bytes.length < 44 ||
-      bytes.length > 256_000_000 ||
-      bytes.subarray(0, 4).toString() !== "RIFF" ||
-      bytes.subarray(8, 12).toString() !== "WAVE"
-    )
-      throw new Error("Fixture microphone must be a bounded WAV file");
-    audio[role] = { path, sha256: createHash("sha256").update(bytes).digest("hex") };
-    if (role === "karaoke" && audio[role].sha256 !== karaokeSpeechSha256)
-      throw new Error("Accepted Karaoke microphone fixture differs");
+    const { path, sha256 } = readFixtureMicrophone(role, audioPaths[role]);
+    audio[role] = { path, sha256 };
   }
   const marker = resolve(directory, "browser-host.json");
   const ownership = openSync(marker, "wx", 0o600);

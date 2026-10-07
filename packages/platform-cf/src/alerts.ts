@@ -190,7 +190,7 @@ export type OperationsBalanceSnapshotFields = Readonly<{
 
 export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly event: "megapot.rewards.cycle";
-  readonly schema_version: 4;
+  readonly schema_version: 5;
   readonly emitted_at: string;
   readonly environment: string;
   readonly worker_version_id: string;
@@ -201,6 +201,7 @@ export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly funding_observed_count: number;
   readonly funding_confirmed_count: number;
   readonly funding_deferred_count: number;
+  readonly funding_step_status: "ran" | "skipped_deadline_passed";
   readonly observed_count: number;
   readonly frozen_count: number;
   readonly committed_count: number;
@@ -229,12 +230,21 @@ export type MegapotRewardsCycleSnapshotFields = Readonly<{
   readonly sampled: false;
 }>;
 
+/** Where one rewards cycle's time went: milliseconds since its job began, by step. */
+type MegapotRewardsCycleTimingFields = Readonly<{
+  readonly event: "megapot.rewards.cycle.timing";
+  readonly worker_version_id: string;
+  readonly elapsed_ms: Readonly<Record<string, number>>;
+  readonly funding_step_status: "ran" | "skipped_deadline_passed";
+}>;
+
 export type PipelineLogFields =
   | AlertLogFields
   | AlertSuppressionObservationFields
   | PipelineHealthSnapshotFields
   | OperationsBalanceSnapshotFields
-  | MegapotRewardsCycleSnapshotFields;
+  | MegapotRewardsCycleSnapshotFields
+  | MegapotRewardsCycleTimingFields;
 export type PipelineLogEvent = PipelineLogFields["event"];
 
 export type PipelineHealthSnapshotInput = Readonly<{

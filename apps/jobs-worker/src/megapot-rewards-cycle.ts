@@ -16,9 +16,10 @@ export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
 const MEGAPOT_REWARDS_AGED_PENDING_THRESHOLD_SECONDS = 10 * 60;
 const MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT = 10;
 /**
- * Funding observation and the liveness projection are the last work of a cycle
- * and are bounded against the job's own start, not the cycle's, so setup and
- * retries are counted.
+ * Funding observation and the liveness projection are bounded against the
+ * job's own start, not the cycle's, so setup and retries are counted. The job
+ * starts funding observation at once, on its own session, beside the cycle's
+ * other work; the liveness projection is the cycle's last work.
  *
  * No funding observation starts after `budgetMs` of funding work or after
  * `latestStartMs` of the job. At `hardStopMs` whatever funding work is still
@@ -148,6 +149,8 @@ export type MegapotRewardsCycleSummary = Readonly<{
   fundingObserved?: number;
   fundingConfirmed?: number;
   fundingDeferred?: number;
+  /** Absent only in summaries built by hand in tests; a cycle always sets it. */
+  fundingStep?: MegapotFundingStepStatus;
   observed: number;
   drawingObservationFailed: boolean;
   frozen: number;
@@ -301,7 +304,7 @@ export function writeMegapotRewardsCycleSnapshot(
         : Math.max(...summary.agedPending.map((entry) => entry.oldestAgeSeconds));
     writer("megapot.rewards.cycle", {
       event: "megapot.rewards.cycle",
-      schema_version: 4,
+      schema_version: 5,
       emitted_at: input.emittedAt,
       environment: input.environment,
       worker_version_id: input.workerVersion.id,
@@ -312,6 +315,7 @@ export function writeMegapotRewardsCycleSnapshot(
       funding_observed_count: summary.fundingObserved ?? 0,
       funding_confirmed_count: summary.fundingConfirmed ?? 0,
       funding_deferred_count: summary.fundingDeferred ?? 0,
+      funding_step_status: summary.fundingStep ?? "ran",
       observed_count: summary.observed,
       frozen_count: summary.frozen,
       committed_count: summary.committed,
@@ -348,7 +352,11 @@ export function writeMegapotRewardsCycleSnapshot(
           : agedPendingCount(summary.agedPending, "refund_liabilities"),
       oldest_aged_pending_seconds: oldestAgedPendingSeconds,
       outcome:
-        summary.failures.length === 0 && livenessAvailable && agedTotal === 0
+        summary.failures.length === 0 &&
+        livenessAvailable &&
+        agedTotal === 0 &&
+        // A cycle that looked at no sponsor transfers has not shown funding is healthy.
+        summary.fundingStep !== "skipped_deadline_passed"
           ? "healthy"
           : "degraded",
       sampled: false,
@@ -390,6 +398,107 @@ function failureDiagnostic(error: unknown): string | null {
   return `${error._tag}:${error.phase}:${error.reason}`;
 }
 
+/**
+ * `ran` means pending funding was listed, whatever was found. The other value
+ * means the step never listed anything because its start deadline had already
+ * passed; the counts are then zero because nothing was looked at, not because
+ * nothing was pending.
+ */
+type MegapotFundingStepStatus = "ran" | "skipped_deadline_passed";
+type MegapotFundingStepResult = Readonly<{
+  status: MegapotFundingStepStatus;
+  observed: number;
+  confirmed: number;
+  /** Listed but not started before the budget ran out. Zero when never listed. */
+  deferred: number;
+  failures: readonly unknown[];
+  startedElapsedMs: number;
+  endedElapsedMs: number;
+}>;
+
+/**
+ * The HTTP Worker observes a sponsor transfer once, right after it is sent and
+ * before it can have its confirmations. Without this step a sponsor who pays
+ * and leaves is never confirmed, and the bound effect holds the offer's expiry.
+ *
+ * It never fails and is bounded by the deadlines above, so it can run beside
+ * the cycle's other work on a session of its own without delaying a refund or
+ * a payout, and without waiting for them either. Run last on a slow stack it
+ * would find its start deadline already gone on every cycle.
+ */
+export function runMegapotFundingStep(input: {
+  readonly loadPendingFunding: MegapotWorkStore["loadPendingFunding"];
+  readonly reconcileFunding: MegapotRewardsRuntime["reconcileFunding"];
+  readonly jobStartedAt: number;
+  readonly limit?: number;
+  readonly now?: () => number;
+  readonly deadlines?: MegapotRewardsFundingDeadlines;
+}): Effect.Effect<MegapotFundingStepResult> {
+  return Effect.gen(function* () {
+    const now = input.now ?? Date.now;
+    const deadlines = input.deadlines ?? MEGAPOT_REWARDS_FUNDING_DEADLINES;
+    const { jobStartedAt } = input;
+    const limit = input.limit ?? 50;
+    const fundingStartedAt = now();
+    const latestStart = Math.min(
+      fundingStartedAt + deadlines.budgetMs,
+      jobStartedAt + deadlines.latestStartMs,
+    );
+    const hardStop = jobStartedAt + deadlines.hardStopMs;
+    type Bounded<A> =
+      | Readonly<{ kind: "done"; value: A }>
+      | Readonly<{ kind: "failed"; error: unknown }>
+      | Readonly<{ kind: "interrupted" }>;
+    const untilHardStop = <A>(effect: Effect.Effect<A, unknown>): Effect.Effect<Bounded<A>> =>
+      effect.pipe(
+        Effect.map((value): Bounded<A> => ({ kind: "done", value })),
+        Effect.catch(
+          (error): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "failed", error }),
+        ),
+        Effect.timeout(Math.max(0, hardStop - now())),
+        Effect.catch((): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "interrupted" })),
+      );
+    const failures: unknown[] = [];
+    let observed = 0;
+    let confirmed = 0;
+    let deferred = 0;
+    const result = (status: MegapotFundingStepStatus): MegapotFundingStepResult => ({
+      status,
+      observed,
+      confirmed,
+      deferred,
+      failures,
+      startedElapsedMs: fundingStartedAt - jobStartedAt,
+      endedElapsedMs: now() - jobStartedAt,
+    });
+    if (fundingStartedAt >= latestStart) return result("skipped_deadline_passed");
+    const listing = yield* untilHardStop(
+      input.loadPendingFunding({
+        limit: Math.min(limit, MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT),
+        // One step per scheduled minute moves the first candidate by one, so a
+        // batch cut short by the budget still reaches every transfer in turn.
+        cursor: Math.floor(jobStartedAt / 60_000),
+      }),
+    );
+    if (listing.kind === "failed") failures.push(listing.error);
+    if (listing.kind === "interrupted")
+      failures.push({ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG });
+    for (const fundingEffectId of listing.kind === "done" ? listing.value : []) {
+      if (now() >= latestStart) {
+        deferred += 1;
+        continue;
+      }
+      observed += 1;
+      const outcome = yield* untilHardStop(input.reconcileFunding(fundingEffectId));
+      if (outcome.kind === "failed") failures.push(outcome.error);
+      if (outcome.kind === "interrupted")
+        failures.push({ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG });
+      if (outcome.kind === "done" && outcome.value.kind === "confirmed") confirmed += 1;
+    }
+    return result("ran");
+  });
+}
+
 const partition = <A, B>(values: readonly A[], f: (value: A) => Effect.Effect<B, unknown>) =>
   Effect.partition(values, f, { concurrency: 1 });
 
@@ -401,6 +510,13 @@ export function runMegapotRewardsCycle(input: {
   /** When the job attempt began, before setup and any retry; defaults to now. */
   readonly jobStartedAt?: number;
   readonly fundingDeadlines?: MegapotRewardsFundingDeadlines;
+  /** Told when each step ends, with milliseconds since the job began. */
+  readonly onStep?: (step: string, elapsedMs: number) => void;
+  /**
+   * The funding step already started by the job on its own session, to be
+   * awaited. Absent, the cycle runs the step itself after its other work.
+   */
+  readonly funding?: Effect.Effect<MegapotFundingStepResult>;
 }): Effect.Effect<MegapotRewardsCycleSummary, unknown> {
   return Effect.gen(function* () {
     const now = input.now ?? Date.now;
@@ -428,9 +544,12 @@ export function runMegapotRewardsCycle(input: {
       );
     };
 
+    const mark = (step: string) => input.onStep?.(step, now() - jobStartedAt);
+    mark("cycle_started");
     const pending = yield* input.work.loadChainEffects(limit);
     const [reconcileFailures, reconciled] = yield* partition(pending, input.runtime.reconcile);
     recordFailures(reconcileFailures);
+    mark("chain_effects");
 
     // A malformed, uninitialized or unobservable new drawing must not stop
     // reconciliation of already-created obligations: held credits never
@@ -453,6 +572,7 @@ export function runMegapotRewardsCycle(input: {
       recordFailures([drawingObservation.failure]);
     }
     const drawingObserved = drawingObservation.observed;
+    mark("drawing_observed");
     const solvencyFailure = yield* input.runtime.observeSolvency().pipe(
       Effect.as(null),
       Effect.catch((failure: unknown) => Effect.succeed(failure)),
@@ -460,7 +580,9 @@ export function runMegapotRewardsCycle(input: {
     if (solvencyFailure !== null) {
       recordFailures([solvencyFailure]);
     }
+    mark("solvency_observed");
     const frozen = yield* input.runtime.freezeDue(limit);
+    mark("frozen");
 
     const frozenDrawings = yield* input.work.loadDrawings({
       statuses: ["cutoff_frozen"],
@@ -471,6 +593,7 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.publishCommitment,
     );
     recordFailures(commitFailures);
+    mark("committed");
 
     const committedDrawings = yield* input.work.loadDrawings({ statuses: ["committed"], limit });
     const [purchaseFailures, purchaseResults] = yield* partition(committedDrawings, (work) =>
@@ -497,6 +620,7 @@ export function runMegapotRewardsCycle(input: {
       }),
     );
     recordFailures(purchaseFailures);
+    mark("purchased");
 
     const purchasedDrawings = yield* input.work.loadDrawings({
       statuses: ["tickets_confirmed", "drawing_pending"],
@@ -504,6 +628,7 @@ export function runMegapotRewardsCycle(input: {
     });
     const [sweepFailures, swept] = yield* partition(purchasedDrawings, input.runtime.sweep);
     recordFailures(sweepFailures);
+    mark("swept");
 
     const winningDrawings = yield* input.work.loadDrawings({
       statuses: ["winnings_detected"],
@@ -511,6 +636,7 @@ export function runMegapotRewardsCycle(input: {
     });
     const [claimFailures, claimed] = yield* partition(winningDrawings, input.runtime.claim);
     recordFailures(claimFailures);
+    mark("claimed");
 
     const claimedDrawings = yield* input.work.loadDrawings({ statuses: ["claimed"], limit });
     const [allocationFailures, allocated] = yield* partition(
@@ -518,18 +644,22 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.allocate,
     );
     recordFailures(allocationFailures);
+    mark("allocated");
 
     const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);
+    mark("offers_closed");
 
     const refunds = yield* input.work.loadRefunds(limit);
     // Settlement callbacks refresh the immutable obligation's attestation/token,
     // rather than the active deployment's custody balance.
     const [refundFailures, refunded] = yield* partition(refunds, input.runtime.refund);
     recordFailures(refundFailures);
+    mark("refunded");
 
     const credits = yield* input.work.loadCredits(limit);
     const [payoutFailures, paid] = yield* partition(credits, input.runtime.payout);
     recordFailures(payoutFailures);
+    mark("paid");
 
     let gasTopups = 0;
     const gasTopupRuntime = input.runtime.gasTopups ?? null;
@@ -549,58 +679,26 @@ export function runMegapotRewardsCycle(input: {
       gasTopups = sent.length;
     }
 
-    // The HTTP Worker observes a sponsor transfer once, right after it is sent
-    // and before it can have its confirmations. Without this step a sponsor who
-    // pays and leaves is never confirmed, and the bound effect holds the offer's
-    // expiry. It runs after every obligation above so that slow or failing
-    // observations can only delay funding, never a refund or a payout.
-    const fundingStartedAt = now();
-    const latestStart = Math.min(
-      fundingStartedAt + deadlines.budgetMs,
-      jobStartedAt + deadlines.latestStartMs,
-    );
-    const hardStop = jobStartedAt + deadlines.hardStopMs;
-    type Bounded<A> =
-      | Readonly<{ kind: "done"; value: A }>
-      | Readonly<{ kind: "failed"; error: unknown }>
-      | Readonly<{ kind: "interrupted" }>;
-    const untilHardStop = <A>(effect: Effect.Effect<A, unknown>): Effect.Effect<Bounded<A>> =>
-      effect.pipe(
-        Effect.map((value): Bounded<A> => ({ kind: "done", value })),
-        Effect.catch(
-          (error): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "failed", error }),
-        ),
-        Effect.timeout(Math.max(0, hardStop - now())),
-        Effect.catch((): Effect.Effect<Bounded<A>> => Effect.succeed({ kind: "interrupted" })),
-      );
-    let fundingObserved = 0;
-    let fundingConfirmed = 0;
-    let fundingDeferred = 0;
-    if (fundingStartedAt < latestStart) {
-      const listing = yield* untilHardStop(
-        input.work.loadPendingFunding({
-          limit: Math.min(limit, MEGAPOT_REWARDS_FUNDING_RECONCILE_LIMIT),
-          // One step per scheduled minute moves the first candidate by one, so a
-          // batch cut short by the budget still reaches every transfer in turn.
-          cursor: Math.floor(jobStartedAt / 60_000),
-        }),
-      );
-      if (listing.kind === "failed") recordFailures([listing.error]);
-      if (listing.kind === "interrupted")
-        recordFailures([{ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG }]);
-      for (const fundingEffectId of listing.kind === "done" ? listing.value : []) {
-        if (now() >= latestStart) {
-          fundingDeferred += 1;
-          continue;
-        }
-        fundingObserved += 1;
-        const outcome = yield* untilHardStop(input.runtime.reconcileFunding(fundingEffectId));
-        if (outcome.kind === "failed") recordFailures([outcome.error]);
-        if (outcome.kind === "interrupted")
-          recordFailures([{ _tag: MEGAPOT_REWARDS_FUNDING_DEADLINE_TAG }]);
-        if (outcome.kind === "done" && outcome.value.kind === "confirmed") fundingConfirmed += 1;
-      }
-    }
+    mark("gas_topups");
+
+    // A sponsor who pays and leaves is confirmed only here. Where the job has
+    // started the step on its own session it has been running beside everything
+    // above and is only awaited now; otherwise it runs here, last.
+    const funding = yield* input.funding ??
+      runMegapotFundingStep({
+        loadPendingFunding: input.work.loadPendingFunding,
+        reconcileFunding: input.runtime.reconcileFunding,
+        limit,
+        now,
+        jobStartedAt,
+        deadlines,
+      });
+    recordFailures(funding.failures);
+    input.onStep?.("funding_started", funding.startedElapsedMs);
+    input.onStep?.("funding_ended", funding.endedElapsedMs);
+    const { observed: fundingObserved, confirmed: fundingConfirmed } = funding;
+    const fundingDeferred = funding.deferred;
+    mark("funding_awaited");
 
     // The projection is read-only. It is given what remains before its bound and
     // is not started at all once the bound has passed; the cycle then reports it
@@ -619,6 +717,7 @@ export function runMegapotRewardsCycle(input: {
       ...(fundingObserved > 0 ? { fundingObserved } : {}),
       ...(fundingConfirmed > 0 ? { fundingConfirmed } : {}),
       ...(fundingDeferred > 0 ? { fundingDeferred } : {}),
+      fundingStep: funding.status,
       observed: drawingObserved ? 1 : 0,
       drawingObservationFailed: drawingObservation.failure !== null,
       frozen: frozen.length,
