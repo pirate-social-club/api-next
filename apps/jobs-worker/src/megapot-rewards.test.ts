@@ -539,6 +539,39 @@ describe("Megapot rewards scheduled cycle", () => {
     );
   });
 
+  test("records purchase failure phase without leaking unrecognized provider details", async () => {
+    const { runtime, work } = fixture("confirmed");
+    for (const [phase, reason, expected] of [
+      [
+        "prepare",
+        "cutoff_safety_margin",
+        "MegapotPurchaseCoordinatorFailed:prepare:cutoff_safety_margin",
+      ],
+      ["preflight", "drawing_locked", "MegapotPurchaseCoordinatorFailed:preflight:drawing_locked"],
+      ["prepare", "secret-provider-detail", null],
+      ["secret-provider-detail", "drawing_locked", null],
+    ] as const) {
+      const result = await Effect.runPromise(
+        runMegapotRewardsCycle({
+          work,
+          runtime: {
+            ...runtime,
+            purchase: () =>
+              Effect.fail({
+                _tag: "MegapotPurchaseCoordinatorFailed",
+                phase,
+                reason,
+              }),
+          },
+        }),
+      );
+      expect(result.failures).toContain("MegapotPurchaseCoordinatorFailed");
+      expect(result.failureDiagnostics).toEqual(expected === null ? [] : [expected]);
+      expect(result.refunded).toBe(1);
+      expect(result.paid).toBe(1);
+    }
+  });
+
   test("fails closed to the outer tag for unrecognized refund diagnostics", async () => {
     const { runtime, work } = fixture("confirmed");
     const result = await Effect.runPromise(
