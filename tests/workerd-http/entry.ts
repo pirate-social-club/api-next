@@ -11,7 +11,6 @@ import {
   type PersonaStoreService,
   reportCommunityContent,
   TextPostRepositoryError,
-  type TextPostStore,
 } from "@pirate/application";
 import {
   hnsCompletionRequestHash,
@@ -21,6 +20,7 @@ import {
   type NamespaceOwnershipStartServices,
   type NamespaceOwnershipStoredCompletion,
 } from "@pirate/application/namespace-ownership";
+import type { TextPublicationStoreService } from "@pirate/application/text-publication-store";
 import { getCurrentUser } from "@pirate/application/use-cases/current-user";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
@@ -264,12 +264,11 @@ const personaStore: PersonaStoreService = {
 };
 
 const routeAuthorityFixtureId = "community-very-staging-fixture-acceptance-v1";
-const missingRouteTextPostStore: TextPostStore["Service"] = {
-  readModerationPolicy: () => Effect.die("missing route must fail before policy lookup"),
+const missingRouteTextPostStore: TextPublicationStoreService = {
   replay: () => Effect.succeed({ kind: "none" as const }),
   checkAuthority: () =>
     Effect.fail(new TextPostRepositoryError({ operation: "authority", reason: "not-found" })),
-  commitTerminal: () => Effect.die("missing route must fail before moderation or commit"),
+  commitPublished: () => Effect.die("missing route must fail before moderation or commit"),
   getForAuthor: () => Effect.succeed(null),
 };
 
@@ -494,8 +493,7 @@ const namespaceCompletion: NamespaceOwnershipCompletionServices = {
   },
 };
 
-const moderationFixture: TextPostStore["Service"] = {
-  readModerationPolicy: () => Effect.die("comment fixture must fail before policy lookup"),
+const moderationFixture: TextPublicationStoreService = {
   checkAuthority: ({ communityId }) =>
     communityId === "community_nonmember"
       ? Effect.fail(
@@ -510,7 +508,7 @@ const moderationFixture: TextPostStore["Service"] = {
         ? { kind: "conflict" as const, submissionId: "submission-comment-winner" }
         : { kind: "none" as const },
     ),
-  commitTerminal: () => Effect.die("unused moderation fixture operation"),
+  commitPublished: () => Effect.die("unused moderation fixture operation"),
   getForAuthor: () => Effect.succeed(null),
   resolveCommentTarget: ({ targetId }) =>
     Effect.succeed({
