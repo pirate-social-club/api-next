@@ -710,6 +710,142 @@ function rewriteAppArtifact(
   });
 }
 
+// Independently derived from the provisioner's canonical DS-object representation.
+const producerKeysetDigest = "c6fe4d3ce7a2a337c8a42b348d28690f63b7fe7e0847f629bf089224f4a21846";
+
+async function candidateWithKeysetVersion(
+  input: CandidatePreparationInput,
+  version: string,
+): Promise<CandidatePreparationInput> {
+  return {
+    ...input,
+    artifacts: {
+      ...input.artifacts,
+      dns_zone_activation: await rewriteDnsArtifact(input.artifacts.dns_zone_activation, (dns) => ({
+        ...dns,
+        dnssec_keyset_version: version,
+      })),
+      health_observation: rewriteHealthArtifact(input.artifacts.health_observation, {
+        observed_dnssec_keyset_version: version,
+      }),
+    },
+  };
+}
+
+test("preserves the producer DS-object digest with reordered authenticated authority views", async () => {
+  const input = await candidateWithKeysetVersion(
+    await canonicalCandidateInput(),
+    producerKeysetDigest,
+  );
+  const reversed = {
+    ...input,
+    authority_views: input.authority_views.map((view) => ({
+      ...view,
+      derived_ds: [...chainDs].reverse(),
+    })),
+  };
+  const prepared = await prepareHnsAuthoritySuccessorCandidateV1(reversed);
+  const dns = prepared.candidate.artifacts.find(
+    (artifact) => artifact.name === "dns_zone_activation",
+  );
+  const health = prepared.candidate.artifacts.find(
+    (artifact) => artifact.name === "health_observation",
+  );
+  expect(dns).toBeDefined();
+  expect(health).toBeDefined();
+  expect(
+    (await decodeHnsDnsZonePersistenceDocumentV1(Buffer.from(dns?.bytes_hex ?? "", "hex")))
+      .dnssec_keyset_version,
+  ).toBe(producerKeysetDigest);
+  expect(
+    decodeHnsDnsHealthDocumentV1(Buffer.from(health?.bytes_hex ?? "", "hex"))
+      .observed_dnssec_keyset_version,
+  ).toBe(producerKeysetDigest);
+});
+
+test("refuses wrong hashes, tuple hashes and noncanonical DS-object hashes", async () => {
+  const tupleDigest = await digest(encoder.encode(JSON.stringify(chainDs)));
+  const unorderedObjectDigest = await digest(
+    encoder.encode(
+      JSON.stringify(
+        chainDs.map(([key_tag, algorithm, digest_type, value]) => ({
+          key_tag,
+          algorithm,
+          digest_type,
+          digest: value,
+        })),
+      ),
+    ),
+  );
+  for (const version of ["f".repeat(64), tupleDigest, unorderedObjectDigest]) {
+    expect(version).not.toBe(producerKeysetDigest);
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1(
+        await candidateWithKeysetVersion(await canonicalCandidateInput(), version),
+      ),
+    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  }
+});
+
+test("refuses unauthenticated DS sets through the complete digest candidate primitive", async () => {
+  type Records = NonNullable<CandidatePreparationInput["authority_views"][number]["derived_ds"]>;
+  const cases: ReadonlyArray<
+    readonly [string, ReadonlyArray<readonly [number, number, number, string]>]
+  > = [
+    ["empty DS", []],
+    ["duplicate DS", [chainDs[0], chainDs[0]]],
+    [
+      "unsupported algorithm",
+      chainDs.map(([tag, _algorithm, kind, value]) => [tag, 8, kind, value] as const),
+    ],
+    [
+      "unsupported digest type",
+      chainDs.map(([tag, algorithm, _kind, value]) => [tag, algorithm, 3, value] as const),
+    ],
+    [
+      "wrong key tag",
+      chainDs.map(([_tag, algorithm, kind, value]) => [39280, algorithm, kind, value] as const),
+    ],
+    [
+      "chain DS mismatch",
+      chainDs.map(
+        ([tag, algorithm, kind, value]) =>
+          [tag, algorithm, kind, "f".repeat(value.length)] as const,
+      ),
+    ],
+  ];
+  for (const [label, records] of cases) {
+    const input = await candidateWithKeysetVersion(
+      await canonicalCandidateInput(),
+      producerKeysetDigest,
+    );
+    await expect(
+      prepareHnsAuthoritySuccessorCandidateV1({
+        ...input,
+        // Deliberately exercise invalid external values at the runtime validation boundary.
+        authority_views: input.authority_views.map((view) => ({
+          ...view,
+          derived_ds: records as Records,
+        })),
+      }),
+      label,
+    ).rejects.toMatchObject({ reason: "dnskey_ds_mismatch" });
+  }
+  const input = await candidateWithKeysetVersion(
+    await canonicalCandidateInput(),
+    producerKeysetDigest,
+  );
+  await expect(
+    prepareHnsAuthoritySuccessorCandidateV1({
+      ...input,
+      authority_views: input.authority_views.map((view, index) => ({
+        ...view,
+        derived_ds: index === 0 ? chainDs : [chainDs[0]],
+      })),
+    }),
+  ).rejects.toMatchObject({ reason: "authority_view_mismatch" });
+});
+
 test("refuses every divergent semantic join between canonical review artifacts", async () => {
   const cases: ReadonlyArray<
     readonly [
@@ -966,12 +1102,14 @@ test("refuses every divergent semantic join between canonical review artifacts",
     ),
   ];
 
-  for (const [label, mutate] of cases) {
-    const input = await canonicalCandidateInput();
-    await expect(
-      prepareHnsAuthoritySuccessorCandidateV1(await mutate(input)),
-      label,
-    ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+  for (const version of ["key-tag-10875", producerKeysetDigest]) {
+    for (const [label, mutate] of cases) {
+      const input = await candidateWithKeysetVersion(await canonicalCandidateInput(), version);
+      await expect(
+        prepareHnsAuthoritySuccessorCandidateV1(await mutate(input)),
+        `${label} with ${version}`,
+      ).rejects.toMatchObject({ reason: "artifact_semantics_mismatch" });
+    }
   }
 });
 
