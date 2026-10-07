@@ -23,9 +23,11 @@ Reobserve the connected provisioner and Worker roles through the established
 credential workflow before release, without exporting credentials.
 
 For the observed provisioner role, require EXECUTE on
-prepare_hns_member_host_publication_v1(), SELECT and UPDATE on
-hns_member_host_publications, and its existing authority-read privileges used
-by hns_member_host_authorized_v1(text). It does not need INSERT, DELETE or
+prepare_hns_member_host_publication_v1() and
+hns_member_host_authorized_v1(text), plus SELECT and UPDATE on
+hns_member_host_publications. The authorization helper uses a pinned
+SECURITY DEFINER boundary, so the provisioner does not require direct reads
+of member or persona tables. It does not need INSERT, DELETE or
 TRUNCATE on the queue. The grant trigger is a pinned SECURITY DEFINER function.
 For the observed Worker role, require SELECT on the queue and EXECUTE on the
 authorized and ready projection functions, together with its existing handle

@@ -133,8 +133,6 @@ suite("durable HNS member publication", () => {
       await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
       try {
         await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${role}"`);
-        // Existing authority reads are separate from the new queue capability.
-        await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO "${role}"`);
         await admin.query(`SET ROLE "${role}"`);
         await expect(
           admin.query("SELECT prepare_hns_member_host_publication_v1()"),
@@ -143,7 +141,10 @@ suite("durable HNS member publication", () => {
         await admin.query(
           `GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO "${role}"`,
         );
-        await admin.query(`GRANT UPDATE ON hns_member_host_publications TO "${role}"`);
+        await admin.query(
+          `GRANT EXECUTE ON FUNCTION hns_member_host_authorized_v1(TEXT) TO "${role}"`,
+        );
+        await admin.query(`GRANT SELECT,UPDATE ON hns_member_host_publications TO "${role}"`);
         await admin.query(`SET ROLE "${role}"`);
         await admin.query("BEGIN");
         const prepared = await admin.query(
@@ -151,16 +152,24 @@ suite("durable HNS member publication", () => {
         );
         expect(prepared.rows[0].job.grant_id).toBe("member-grant");
         await admin.query(
-          "UPDATE hns_member_host_publications SET attempts=attempts+1 WHERE grant_id='member-grant'",
+          "UPDATE hns_member_host_publications SET attempts=attempts+1, state=CASE WHEN hns_member_host_authorized_v1(grant_id) THEN 'ready' ELSE 'preparing' END WHERE grant_id='member-grant'",
         );
         expect(
           (
             await admin.query(`SELECT
+          has_table_privilege(current_user,'personas','SELECT') AS can_read_personas,
+          has_table_privilege(current_user,'handle_grants','SELECT') AS can_read_grants,
           has_table_privilege(current_user,'hns_member_host_publications','INSERT') AS can_insert,
           has_table_privilege(current_user,'hns_member_host_publications','DELETE') AS can_delete,
           has_table_privilege(current_user,'hns_member_host_publications','TRUNCATE') AS can_truncate`)
           ).rows[0],
-        ).toEqual({ can_insert: false, can_delete: false, can_truncate: false });
+        ).toEqual({
+          can_read_personas: false,
+          can_read_grants: false,
+          can_insert: false,
+          can_delete: false,
+          can_truncate: false,
+        });
         await admin.query("ROLLBACK");
       } finally {
         await admin.query("ROLLBACK");

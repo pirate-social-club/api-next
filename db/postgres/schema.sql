@@ -15377,7 +15377,8 @@ END;
 $$;
 
 CREATE FUNCTION hns_member_host_authorized_v1(input_grant_id text) RETURNS boolean
-    LANGUAGE sql STABLE
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
  SELECT EXISTS (
    SELECT 1 FROM handle_grants AS g

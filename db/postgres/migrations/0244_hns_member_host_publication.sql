@@ -35,7 +35,7 @@ INSERT INTO hns_member_host_publications(grant_id)
 SELECT grant_id FROM handle_grants WHERE family='hns' AND fulfillment_kind='hosted_persona_v1';
 
 CREATE FUNCTION hns_member_host_authorized_v1(input_grant_id TEXT) RETURNS BOOLEAN
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
  SELECT EXISTS (
    SELECT 1 FROM handle_grants AS g
    JOIN personas AS p ON p.persona_id=g.owner_persona_id AND p.status='active'
@@ -153,10 +153,12 @@ DO $pin$
 DECLARE installed_schema TEXT := current_schema();
 BEGIN
   EXECUTE format('ALTER FUNCTION enqueue_hns_member_host_publication_v1() SET search_path TO %I, pg_temp',installed_schema);
+  EXECUTE format('ALTER FUNCTION hns_member_host_authorized_v1(TEXT) SET search_path TO %I, pg_temp',installed_schema);
   EXECUTE format('ALTER FUNCTION prepare_hns_member_host_publication_v1() SET search_path TO %I, pg_temp',installed_schema);
 END;
 $pin$;
 REVOKE ALL ON FUNCTION enqueue_hns_member_host_publication_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION hns_member_host_authorized_v1(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION prepare_hns_member_host_publication_v1() FROM PUBLIC;
 
 DO $runtime_grants$
@@ -165,11 +167,13 @@ BEGIN
     GRANT SELECT,INSERT,UPDATE ON hns_member_host_publications TO api_next_app;
     REVOKE DELETE,TRUNCATE ON hns_member_host_publications FROM api_next_app;
     GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO api_next_app;
+    GRANT EXECUTE ON FUNCTION hns_member_host_authorized_v1(TEXT) TO api_next_app;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='hns_root_import_executor_login_v1') THEN
     GRANT SELECT,UPDATE ON hns_member_host_publications TO hns_root_import_executor_login_v1;
     REVOKE INSERT,DELETE,TRUNCATE ON hns_member_host_publications FROM hns_root_import_executor_login_v1;
     GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO hns_root_import_executor_login_v1;
+    GRANT EXECUTE ON FUNCTION hns_member_host_authorized_v1(TEXT) TO hns_root_import_executor_login_v1;
   END IF;
 END;
 $runtime_grants$;
