@@ -328,9 +328,18 @@ for (const capabilityStatus of ["active", "suspended"] as const)
           handle_grant_active: capabilityStatus === "active",
           owner_persona_id: persona,
         });
+        // The claim itself is unchanged by recovery; its host status follows the
+        // sale namespace, which this case leaves suspended.
         expect(
           await run(sales.getClaim({ accountId: buyer, claimId: claim.claim.claim_id })),
-        ).toEqual(claim.claim);
+        ).toEqual({
+          ...claim.claim,
+          host: {
+            kind: "unavailable",
+            reason:
+              capabilityStatus === "active" ? "host_not_activated" : "namespace_authority_lost",
+          },
+        });
         const lease = (
           await ready.admin.query(
             `SELECT extract(epoch FROM expires_at-verified_at)::int AS seconds
