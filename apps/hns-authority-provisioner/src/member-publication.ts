@@ -77,8 +77,8 @@ export function makeHnsMemberPublicationRunner(
     client.on("error", disconnected);
     client.on("end", disconnected);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await client.connect();
     try {
+      await client.connect();
       await client.query("BEGIN");
       await client.query("SET LOCAL lock_timeout='5s'");
       await client.query("SET LOCAL statement_timeout='10s'");
