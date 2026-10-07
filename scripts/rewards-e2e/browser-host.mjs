@@ -2,6 +2,7 @@ import { closeSync, openSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { fixtureAccounts, signInFixture } from "./browser-accounts.mjs";
+import { installKaraokeMicrophone } from "./browser-karaoke-microphone.mjs";
 import { readFixtureMicrophone } from "./fixture-microphone.mjs";
 import { isolatedOrigins } from "./worker-plan.mjs";
 
@@ -50,6 +51,7 @@ export async function prepareFixtureBrowsers(directory, audioPaths, verifyPrepar
         timezoneId: "UTC",
         permissions: ["microphone"],
       });
+      if (role === "karaoke") await installKaraokeMicrophone(context, audio[role].path);
       const page = await context.newPage();
       const response = await page.goto(isolatedOrigins.web, { waitUntil: "domcontentloaded" });
       if (response?.status() !== 200) throw new Error("Isolated browser document refused");
@@ -61,6 +63,7 @@ export async function prepareFixtureBrowsers(directory, audioPaths, verifyPrepar
         accountId: fixture.accountId,
         verifiedAt: new Date().toISOString(),
         microphoneSha256: audio[role].sha256,
+        microphonePlayback: role === "karaoke" ? "backing-track" : "device-open",
       });
       save();
     }

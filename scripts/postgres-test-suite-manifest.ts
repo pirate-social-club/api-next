@@ -34,6 +34,7 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/reward-unsigned-purchase-recovery.pg.test.ts",
   "packages/platform-cf/src/sidebar-profile-reads.pg.test.ts",
   "apps/http-worker/src/hns-provisional-safe-ownership.pg.test.ts",
   "packages/platform-cf/src/reward-money-privileges.pg.test.ts",

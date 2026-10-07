@@ -46,6 +46,7 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     "acquire_reward_run_lease_v1(text,integer,integer)",
     "renew_reward_run_lease_v1(text,bigint,integer)",
     "release_reward_run_lease_v1(text,bigint)",
+    "release_unsigned_test_purchase_v1(text,bigint,bigint,bigint,numeric,numeric,bigint,text,timestamptz)",
     "guard_reward_run_lease_admission()",
     "guard_reward_run_lease_signature()",
   ].map((object) => ({ object, privilege: "EXECUTE" as const, allowed: false })),

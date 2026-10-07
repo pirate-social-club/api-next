@@ -186,6 +186,21 @@ const REFUND_COORDINATOR_FAILURE_PHASES = [
   "receipt",
 ] as const;
 
+const PURCHASE_COORDINATOR_FAILURE_REASONS = [
+  "allowance_insufficient",
+  "balance_insufficient",
+  "cutoff_safety_margin",
+  "deployment_attestation_mismatch",
+  "drawing_locked",
+  "drawing_rolled_over",
+  "drawing_state_changed",
+  "gas_floor_insufficient",
+  "invalid_config",
+  "production_disabled",
+  "receipt_evidence_invalid",
+  "signer_mismatch",
+] as const;
+
 const AGED_PENDING_FAMILIES = [
   "chain_effects",
   "funding_effects",
@@ -387,14 +402,18 @@ function failureDiagnostic(error: unknown): string | null {
     typeof error !== "object" ||
     error === null ||
     !("_tag" in error) ||
-    error._tag !== "RewardRefundCoordinatorFailed" ||
     !("reason" in error) ||
-    !memberOf(error.reason, REFUND_COORDINATOR_FAILURE_REASONS) ||
     !("phase" in error) ||
     !memberOf(error.phase, REFUND_COORDINATOR_FAILURE_PHASES)
   ) {
     return null;
   }
+  const allowed =
+    (error._tag === "RewardRefundCoordinatorFailed" &&
+      memberOf(error.reason, REFUND_COORDINATOR_FAILURE_REASONS)) ||
+    (error._tag === "MegapotPurchaseCoordinatorFailed" &&
+      memberOf(error.reason, PURCHASE_COORDINATOR_FAILURE_REASONS));
+  if (!allowed) return null;
   return `${error._tag}:${error.phase}:${error.reason}`;
 }
 
