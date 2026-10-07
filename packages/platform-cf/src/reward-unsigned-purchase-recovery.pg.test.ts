@@ -54,15 +54,19 @@ suite("unsigned isolated purchase recovery", () => {
     await db.query(`CREATE SCHEMA ${schema}`);
     await db.query(`SET search_path TO ${schema},pg_temp`);
     const migrations = await loadPostgresMigrations();
-    for (const migration of migrations.slice(0, -1)) await db.query(migration.sql);
+    const recoveryIndex = migrations.findIndex(
+      (migration) => migration.version === "0245_reward_unsigned_purchase_recovery.sql",
+    );
+    if (recoveryIndex < 0) throw Error("Unsigned purchase recovery migration missing");
+    for (const migration of migrations.slice(0, recoveryIndex)) await db.query(migration.sql);
     await db.query(`CREATE ROLE ${role} NOLOGIN`);
     await db.query(`GRANT USAGE ON SCHEMA ${schema} TO ${role}`);
     await db.query(`GRANT SELECT,INSERT,UPDATE ON ALL TABLES IN SCHEMA ${schema} TO ${role}`);
     await db.query(
       `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schema} GRANT EXECUTE ON FUNCTIONS TO ${role}`,
     );
-    expect(migrations.at(-1)?.version).toBe("0245_reward_unsigned_purchase_recovery.sql");
-    await db.query(migrations.at(-1)?.sql ?? "");
+    await db.query(migrations[recoveryIndex]?.sql ?? "");
+    for (const migration of migrations.slice(recoveryIndex + 1)) await db.query(migration.sql);
   }, 180_000);
 
   afterAll(async () => {
@@ -188,6 +192,7 @@ suite("unsigned isolated purchase recovery", () => {
          'commitment',$2,$3,10000,1,2,3,4,5,6)`,
       [legId, hash("6"), address("4")],
     );
+    await db.query("SAVEPOINT committed_before_purchase");
     await db.query(
       "INSERT INTO megapot_pool_drawing_transitions(pool_leg_id,drawing_id,target_version,event_type,event) VALUES ($1,101,4,'purchase_pending','{}')",
       [legId],
@@ -207,6 +212,31 @@ suite("unsigned isolated purchase recovery", () => {
 
   afterEach(async () => {
     await db.query("ROLLBACK");
+  });
+
+  test("closing a committed drawing cannot attach a purchase pointer", async () => {
+    await db.query("ROLLBACK TO SAVEPOINT committed_before_purchase");
+    await db.query("SAVEPOINT refused_close");
+    await db.query(
+      "INSERT INTO megapot_pool_drawing_transitions(pool_leg_id,drawing_id,target_version,event_type,event) VALUES ($1,101,4,'closed_purchase_unavailable','{}')",
+      [legId],
+    );
+    await expect(
+      db.query(
+        `UPDATE megapot_pool_drawings SET status='closed_purchase_unavailable',
+          purchase_effect_id='purchase',version=4,updated_at=clock_timestamp(),
+          terminal_reason='unavailable',terminal_at=clock_timestamp() WHERE pool_leg_id=$1`,
+        [legId],
+      ),
+    ).rejects.toThrow("only an unsigned reserved purchase");
+    await db.query("ROLLBACK TO SAVEPOINT refused_close");
+    const drawing = (
+      await db.query(
+        "SELECT status,purchase_effect_id FROM megapot_pool_drawings WHERE pool_leg_id=$1",
+        [legId],
+      )
+    ).rows[0];
+    expect(drawing).toEqual({ status: "committed", purchase_effect_id: null });
   });
 
   test("atomically retires the unsigned purchase, preserves evidence and frees the tail nonce", async () => {

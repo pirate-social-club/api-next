@@ -11475,6 +11475,10 @@ BEGIN
   IF NEW.version <> OLD.version + 1 OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'Megapot pool drawing transition requires next version and time';
   END IF;
+  IF NEW.status='closed_purchase_unavailable' AND NEW.purchase_effect_id IS NOT NULL
+    AND OLD.status <> 'purchase_pending' THEN
+    RAISE EXCEPTION 'only an unsigned reserved purchase may retain its effect when closed';
+  END IF;
   IF OLD.status='purchase_pending' AND NEW.status='closed_purchase_unavailable' AND (
     NEW.purchase_effect_id IS DISTINCT FROM OLD.purchase_effect_id
     OR NEW.terminal_reason IS DISTINCT FROM 'unsigned_purchase_released'
