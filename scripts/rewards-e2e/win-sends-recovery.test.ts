@@ -39,6 +39,8 @@ type Faults = {
   foreignOpen?: string;
   foreignSend?: boolean;
   sendFails?: string;
+  /** Only this credit's send fails, before the app records anything for it. */
+  failCredit?: string;
   karaokeAlreadyConfirmed?: boolean;
   liveLease?: boolean;
 };
@@ -131,7 +133,8 @@ function world(faults: Faults = {}) {
         ) => {
           await check();
           log.push(`send:${credit.credit_id}`);
-          if (faults.sendFails) throw new Error(faults.sendFails);
+          if (faults.sendFails && (!faults.failCredit || faults.failCredit === credit.credit_id))
+            throw new Error(faults.sendFails);
           const existing = sends.find((send) => send.credit_id === credit.credit_id);
           if (existing) existing.status = "confirmed";
           else
@@ -223,4 +226,17 @@ test("the gas wallet check accepts only the isolated gas wallet", () => {
   expect(assertGasWalletRegistered([{ signer_address: isolatedGasWallet }])).toEqual({
     gasWallet: isolatedGasWallet,
   });
+});
+
+test("flags stay on when a send failed before it had a row, so the recovery can be retried", async () => {
+  const w = world({ sendFails: "App command refused: HTTP 503", failCredit: "credit-karaoke" });
+  const result = await w.run();
+  expect(result.passed).toBe(false);
+  // Study confirmed and Karaoke has no row, so every shutdown category reads zero.
+  expect(result.shutdown?.unresolved_winner_sends).toBe("0");
+  expect(w.state().flags).toEqual({ http: "true", jobs: "true" });
+  expect(w.state()).toMatchObject({ paused: true, lockCleared: false, leaseLive: false });
+  expect(result.errors.some((error: string) => error.includes("onward sends not confirmed"))).toBe(
+    true,
+  );
 });

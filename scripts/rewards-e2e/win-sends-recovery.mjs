@@ -154,6 +154,10 @@ export async function completeWinnerSends({
     result.shutdown = await readShutdownInventory();
     const open = Object.entries(result.shutdown).filter(([, count]) => count !== "0");
     if (open.length > 0) throw Error(open.map(([category]) => category).join(", "));
+    // A send that failed before its row existed is not counted anywhere, so
+    // zero is not enough: the flags stay on until both sends are confirmed,
+    // and a retry of this recovery still finds them on.
+    if (result.confirmed === undefined) throw Error("onward sends not confirmed");
     let read = null;
     for (let attempt = 0; attempt < 2 && !bothOff(read); attempt++) {
       await flags.disableAll().catch(() => {});
