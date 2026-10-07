@@ -7,7 +7,7 @@
  * be starved by another's backlog, and the starting class rotates so no class is
  * permanently first when several are contended.
  *
- * Teardown is not a fourth class here. Teardown work is claimed by the same
+ * Teardown is not a separate class here. Teardown work is claimed by the same
  * function that claims readiness observation, which offers teardown first, so
  * teardown takes the observation turn. With lifecycle-managed operations now
  * excluded from the older readiness path, that turn is mostly teardown.

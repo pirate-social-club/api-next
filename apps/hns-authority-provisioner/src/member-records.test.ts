@@ -34,7 +34,10 @@ describe("explicit HNS member records", () => {
 
   test("recovers a provider success whose database acknowledgement was lost", () => {
     const first = buildHnsMemberRecordPatch(target, roots);
-    expect(buildHnsMemberRecordPatch(target, [...roots, ...first])).toEqual(first);
+    expect(buildHnsMemberRecordPatch(target, [...roots, ...first])).toEqual([]);
+    expect(
+      buildHnsMemberRecordPatch({ ...target, ttl_seconds: 60 }, [...roots, ...first]),
+    ).toHaveLength(3);
   });
 
   test("rotates both address and certificate from its own retained records", () => {
@@ -124,8 +127,8 @@ describe("explicit HNS member records", () => {
     );
     const input = { ...target, challenge_txt_value: challenge };
     await expect(writer(input)).rejects.toThrow("lost response");
-    expect(await writer(input)).toBe(3);
-    expect(methods).toEqual(["GET", "PATCH", "GET", "PATCH", "PUT", "PUT", "GET"]);
+    expect(await writer(input)).toBe(2);
+    expect(methods).toEqual(["GET", "PATCH", "GET", "PUT", "PUT", "GET"]);
     assertHnsMemberRecords(target, rrsets);
   });
 

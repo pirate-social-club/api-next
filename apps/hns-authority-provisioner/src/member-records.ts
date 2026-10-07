@@ -118,6 +118,21 @@ export function buildHnsMemberRecordPatch(
     [names.tlsa, "TLSA", tlsa],
     [names.marker, "TXT", [ownership(input.grant_id, desired, tlsa)]],
   ] as const;
+  const current =
+    input.publish &&
+    entries.every(
+      ([name, type, values]) =>
+        JSON.stringify(contents(rrsets, name, type)) === JSON.stringify(values) &&
+        rrsets.some(
+          (row) =>
+            row !== null &&
+            typeof row === "object" &&
+            Reflect.get(row, "name") === name &&
+            Reflect.get(row, "type") === type &&
+            Reflect.get(row, "ttl") === input.ttl_seconds,
+        ),
+    );
+  if (current) return [];
   return entries.map(([name, type, values]) => ({
     name,
     type,
@@ -209,11 +224,11 @@ export function makePowerDnsMemberWriter(config: Provider, fetcher: PowerDnsFetc
     )
       throw new Error("HNS member zone reservation differs");
     const patch = buildHnsMemberRecordPatch(input, before.rrsets);
-    if (patch.length > 0) {
-      await request("PATCH", path, { rrsets: patch });
-      await request("PUT", `${path}/rectify`);
-      await request("PUT", `${path}/notify`);
-    }
+    if (patch.length > 0) await request("PATCH", path, { rrsets: patch });
+    // A prior PATCH can have succeeded before its acknowledgement was lost.
+    // Complete signing/notification on retry without needlessly advancing SOA.
+    await request("PUT", `${path}/rectify`);
+    await request("PUT", `${path}/notify`);
     const after = zone(await request("GET", path), input.root_label);
     if (after.account !== before.account) throw new Error("HNS member zone reservation changed");
     assertHnsMemberRecords(input, after.rrsets);

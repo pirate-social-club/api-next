@@ -53,3 +53,20 @@ require the authenticated same-origin session. Recovery never repeats quote,
 reservation or claim writes. The main merge hold and guarded published-main
 staging deployment requirement remain binding. Production migration, backfill
 and DNS changes require separate explicit authorization.
+
+## Disposable authority acceptance
+
+Run `bun run test:hns-member-publication` with Docker, dig and delv installed
+and the test's exact pinned PowerDNS image available locally. The test creates
+a unique loopback-only authority with synthetic values and removes only that
+container and its temporary files. Docker is capped at one CPU and 512 MB
+without swap. It cannot be pointed at a deployed authority.
+
+The test executes the product provisioner and member writer, simulates a lost
+acknowledgement after the real provider accepts a write, retries, validates A
+and TLSA answers with delv, rotates the address and certificate, refuses
+unowned/conflicting records, withdraws the member twice, and verifies retained
+root/app/wildcard and operator records. The DNSSEC anchor is the local zone key;
+this proves zone validation, not the Handshake chain or browser routing. It
+is explicit opt-in so the ordinary unit suite does not start Docker. It does
+not substitute for queue-to-secondary or staging browser acceptance.

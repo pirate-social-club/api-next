@@ -476,7 +476,7 @@ suite("community handle sales on PostgreSQL 17", () => {
         [claim.claim.grant?.grant_id],
       );
       expect(publication.rows).toEqual([{ state: "preparing" }]);
-      expect(claim.claim.host?.kind).toBe("unavailable");
+      expect(claim.claim).toMatchObject({ host: { kind: "unavailable" } });
       const evidenceAfterClaim = await admin.query<{ readonly count: number }>(
         `SELECT count(*)::int AS count FROM evidence_receipts WHERE user_id=$1`,
         ["open-buyer-account"],
