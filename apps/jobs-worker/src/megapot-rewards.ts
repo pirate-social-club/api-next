@@ -24,7 +24,7 @@ import {
   makeControlPlaneRewardLeaseExpiryPause,
   makeControlPlaneRewardRunAuthority,
 } from "@pirate/platform-cf/reward-operations-control";
-import { Effect, Layer } from "effect";
+import { Effect, Exit, Fiber, Layer } from "effect";
 import {
   MEGAPOT_REWARDS_CYCLE_JOB,
   MEGAPOT_REWARDS_CYCLE_LANE,
@@ -36,6 +36,7 @@ import {
   megapotRewardsLivenessAlerts,
   pauseOnRunLeaseExpiry,
   resolveGasTopupRuntime,
+  runMegapotFundingStep,
   runMegapotRewardsCycle,
   writeMegapotRewardsCycleSnapshot,
 } from "./megapot-rewards-cycle.ts";
@@ -212,80 +213,21 @@ export function makeMegapotRewardsJob(
       environment: options.environment,
       workerVersion: options.workerVersion,
     });
+    const jobStartedAt = job.startedAtMs ?? startedAt;
+    const steps: Record<string, number> = { job_run: startedAt - jobStartedAt };
     const db = yield* ControlPlaneDb;
+    steps.session = Date.now() - jobStartedAt;
     const collector = yield* AlertCollector;
     const controlPlane = Layer.succeed(ControlPlaneDb, db);
-    const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
-    const resolveCustodyKey = yield* Effect.try({
-      try: () =>
-        makeMegapotCustodyKeyResolver(
-          options.custodyPrivateKey,
-          options.retainedCustodyPrivateKeys,
-        ),
-      catch: () => new MegapotRewardRoutingRejected({ reason: "invalid-config" }),
-    });
-    const payoutStore = makeControlPlaneRewardPayoutStore(controlPlane);
-    const refundStore = makeControlPlaneRewardRefundStore(controlPlane);
-    const effectAttestations = makeControlPlaneRewardEffectAttestationStore(controlPlane);
-    const routing = makeMegapotRewardsRouting({
-      activeAttestationId: options.attestationId,
-      environment: options.environment,
-      loadDeployment: observationStore.loadCandidate,
-      loadEffectAttestation: effectAttestations.load,
-      loadPayoutAuthority: payoutStore.loadAuthority,
-      loadRefundAuthority: refundStore.loadAuthority,
-      makeRuntime: (deployment) =>
-        makeMegapotAttestationRuntime({
-          deployment,
-          controlPlane,
-          options,
-          resolveCustodyKey,
-          onReceiptRead,
-        }),
-    });
-    const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
-    let gasTopups: MegapotRewardsRuntime["gasTopups"] = null;
-    const gasTopupPrivateKey = options.gasTopupPrivateKey;
-    if (gasTopupPrivateKey !== null) {
-      const deployment = yield* observationStore.loadCandidate(options.attestationId);
-      const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl, onReceiptRead);
-      // The gas signer must be the registered active gas wallet, never custody.
-      const resolved = yield* resolveGasTopupRuntime({
-        loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
-        configuredSigner: deriveBaseSepoliaMegapotAddress(gasTopupPrivateKey),
-        makeRuntime: (activeSigner) => {
-          const gasTopup = makeRewardGasTopupCoordinator({
-            store: gasTopupStore,
-            authority: makeControlPlaneRewardRunAuthority(controlPlane),
-            rpc,
-            signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
-              privateKey: gasTopupPrivateKey,
-              expectedAddress: activeSigner,
-            }),
-            requiredConfirmations: options.requiredConfirmations,
-            gasLimitMultiplierBps: options.gasLimitMultiplierBps,
-            nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
-          });
-          return {
-            listOpen: (limit) => gasTopupStore.listOpen(limit),
-            send: (topupId) => gasTopup.send(topupId),
-          };
-        },
-      });
-      gasTopups = resolved.runtime;
-      if (resolved.signerMismatch) {
-        yield* collector.emit({
-          key: "megapot-rewards:gas-topup-signer-mismatch",
-          severity: "high",
-          body: "The configured gas top-up signer is not the active gas wallet; top-ups are skipped.",
-        });
-      }
-    }
     // Funding is observed against the deployment its own effect resolves to: the
     // one a megapot-pool leg froze, or the custody deployment in force when an
     // asset-bonus transfer was planned. Either may be a retained deployment. The
     // clients are built on demand, live for this cycle and use a short request
     // bound so that the step's time budget holds.
+    //
+    // On its own session the step is started here, before any setup, and runs
+    // beside the rest of the cycle. Left until last it never ran on a live
+    // stack, where the work before it outlasts its start deadline every minute.
     const fundingPlane = options.boundedControlPlane ?? controlPlane;
     const boundedWork = makeControlPlaneMegapotWorkStore(fundingPlane);
     const fundingStore = makeControlPlaneRewardFundingStore(fundingPlane);
@@ -313,77 +255,189 @@ export function makeMegapotRewardsJob(
         }
         return yield* coordinator.reconcile(fundingEffectId);
       });
-    const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
-    const cutoff = makeMegapotCutoffCoordinator({
-      store: makeControlPlaneMegapotCutoffStore(controlPlane),
-      externalSponsorDailyTicketCeiling: options.externalSponsorDailyTicketCeiling,
-      externalSponsorDailySpendCeilingAtomic: options.externalSponsorDailySpendCeilingAtomic,
-      sharedSponsorDailyTicketCeiling: options.sharedSponsorDailyTicketCeiling,
-      sharedSponsorDailySpendCeilingAtomic: options.sharedSponsorDailySpendCeilingAtomic,
-    });
-    const allocation = makeMegapotAllocationCoordinator({
-      store: makeControlPlaneMegapotAllocationStore(controlPlane),
-    });
-
-    const leaseAlert = yield* pauseOnRunLeaseExpiry(
-      makeControlPlaneRewardLeaseExpiryPause(controlPlane),
-    );
-    if (leaseAlert !== null) yield* collector.emit(leaseAlert);
-    const summary = yield* runMegapotRewardsCycle({
-      // Funding observation is bounded against the runner's timeout clock.
-      jobStartedAt: job.startedAtMs ?? startedAt,
-      work: {
-        ...makeControlPlaneMegapotWorkStore(controlPlane),
-        loadPendingFunding: boundedWork.loadPendingFunding,
-        loadAgedPending: boundedWork.loadAgedPending,
-      },
-      runtime: {
-        reconcile: routing.reconcile,
-        reconcileFunding,
-        observeDrawing: () =>
-          routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
-        observeSolvency: () =>
-          routing.active().pipe(Effect.flatMap((runtime) => runtime.observeSolvency())),
-        freezeDue: (limit) => cutoff.freezeDue({ limit }),
-        publishCommitment: routing.publishCommitment,
-        approve: routing.approve,
-        purchase: routing.purchase,
-        closeUnavailablePurchase: routing.closeUnavailablePurchase,
-        sweep: routing.sweep,
-        claim: routing.claim,
-        allocate: (work) =>
-          allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
-        closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
-        refund: routing.refund,
-        payout: routing.payout,
-        gasTopups,
-      },
-    });
-    writeMegapotRewardsCycleSnapshot(
-      summary,
-      {
-        environment: options.environment,
-        emittedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt,
-        workerVersion: options.workerVersion,
-      },
-      sink.log ?? ((event, fields) => console.info(event, fields)),
-    );
-    for (const alert of megapotRewardsLivenessAlerts(summary.agedPending)) {
-      yield* collector.emit(alert);
-    }
-    const drawingObservationAlert = megapotRewardsDrawingObservationAlert(summary);
-    if (drawingObservationAlert !== null) {
-      yield* collector.emit(drawingObservationAlert);
-    }
-    if (summary.failures.length > 0) {
-      yield* collector.emit({
-        key: "megapot-rewards:candidate-failures",
-        severity: "high",
-        body: "Megapot reward candidates require a later reconciliation pass.",
-        entity: `cycle-failures:${summary.failures.length}`,
+    const fundingFiber =
+      options.boundedControlPlane === undefined
+        ? null
+        : yield* Effect.forkChild(
+            runMegapotFundingStep({
+              loadPendingFunding: boundedWork.loadPendingFunding,
+              reconcileFunding,
+              jobStartedAt,
+            }),
+            { startImmediately: true },
+          );
+    // Everything from here is the attempt's own work. The funding step belongs
+    // to this attempt for all of it, setup included: however the attempt ends,
+    // it does not return while the step is still running, so a retry can never
+    // overlap the step it would start again. A failure lets the bounded step
+    // finish; an interruption stops it and waits for it to stop.
+    const attempt = Effect.gen(function* () {
+      const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
+      const resolveCustodyKey = yield* Effect.try({
+        try: () =>
+          makeMegapotCustodyKeyResolver(
+            options.custodyPrivateKey,
+            options.retainedCustodyPrivateKeys,
+          ),
+        catch: () => new MegapotRewardRoutingRejected({ reason: "invalid-config" }),
       });
-    }
+      const payoutStore = makeControlPlaneRewardPayoutStore(controlPlane);
+      const refundStore = makeControlPlaneRewardRefundStore(controlPlane);
+      const effectAttestations = makeControlPlaneRewardEffectAttestationStore(controlPlane);
+      const routing = makeMegapotRewardsRouting({
+        activeAttestationId: options.attestationId,
+        environment: options.environment,
+        loadDeployment: observationStore.loadCandidate,
+        loadEffectAttestation: effectAttestations.load,
+        loadPayoutAuthority: payoutStore.loadAuthority,
+        loadRefundAuthority: refundStore.loadAuthority,
+        makeRuntime: (deployment) =>
+          makeMegapotAttestationRuntime({
+            deployment,
+            controlPlane,
+            options,
+            resolveCustodyKey,
+            onReceiptRead,
+          }),
+      });
+      const gasTopupStore = makeControlPlaneRewardGasTopupSendStore(controlPlane);
+      let gasTopups: MegapotRewardsRuntime["gasTopups"] = null;
+      const gasTopupPrivateKey = options.gasTopupPrivateKey;
+      if (gasTopupPrivateKey !== null) {
+        const deployment = yield* observationStore.loadCandidate(options.attestationId);
+        const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl, onReceiptRead);
+        // The gas signer must be the registered active gas wallet, never custody.
+        const resolved = yield* resolveGasTopupRuntime({
+          loadActiveSigner: () => gasTopupStore.loadActiveSigner(deployment.chainId),
+          configuredSigner: deriveBaseSepoliaMegapotAddress(gasTopupPrivateKey),
+          makeRuntime: (activeSigner) => {
+            const gasTopup = makeRewardGasTopupCoordinator({
+              store: gasTopupStore,
+              authority: makeControlPlaneRewardRunAuthority(controlPlane),
+              rpc,
+              signer: makeBaseSepoliaMegapotV2PrivateKeySigner({
+                privateKey: gasTopupPrivateKey,
+                expectedAddress: activeSigner,
+              }),
+              requiredConfirmations: options.requiredConfirmations,
+              gasLimitMultiplierBps: options.gasLimitMultiplierBps,
+              nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
+            });
+            return {
+              listOpen: (limit) => gasTopupStore.listOpen(limit),
+              send: (topupId) => gasTopup.send(topupId),
+            };
+          },
+        });
+        gasTopups = resolved.runtime;
+        if (resolved.signerMismatch) {
+          yield* collector.emit({
+            key: "megapot-rewards:gas-topup-signer-mismatch",
+            severity: "high",
+            body: "The configured gas top-up signer is not the active gas wallet; top-ups are skipped.",
+          });
+        }
+      }
+      const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
+      const cutoff = makeMegapotCutoffCoordinator({
+        store: makeControlPlaneMegapotCutoffStore(controlPlane),
+        externalSponsorDailyTicketCeiling: options.externalSponsorDailyTicketCeiling,
+        externalSponsorDailySpendCeilingAtomic: options.externalSponsorDailySpendCeilingAtomic,
+        sharedSponsorDailyTicketCeiling: options.sharedSponsorDailyTicketCeiling,
+        sharedSponsorDailySpendCeilingAtomic: options.sharedSponsorDailySpendCeilingAtomic,
+      });
+      const allocation = makeMegapotAllocationCoordinator({
+        store: makeControlPlaneMegapotAllocationStore(controlPlane),
+      });
+
+      const leaseAlert = yield* pauseOnRunLeaseExpiry(
+        makeControlPlaneRewardLeaseExpiryPause(controlPlane),
+      );
+      if (leaseAlert !== null) yield* collector.emit(leaseAlert);
+      steps.setup = Date.now() - jobStartedAt;
+      const summary = yield* runMegapotRewardsCycle({
+        ...(fundingFiber === null ? {} : { funding: Fiber.join(fundingFiber) }),
+        // Funding observation is bounded against the runner's timeout clock.
+        jobStartedAt,
+        onStep: (step, elapsedMs) => {
+          steps[step] = elapsedMs;
+        },
+        work: {
+          ...makeControlPlaneMegapotWorkStore(controlPlane),
+          loadPendingFunding: boundedWork.loadPendingFunding,
+          loadAgedPending: boundedWork.loadAgedPending,
+        },
+        runtime: {
+          reconcile: routing.reconcile,
+          reconcileFunding,
+          observeDrawing: () =>
+            routing.active().pipe(Effect.flatMap((runtime) => runtime.observeDrawing())),
+          observeSolvency: () =>
+            routing.active().pipe(Effect.flatMap((runtime) => runtime.observeSolvency())),
+          freezeDue: (limit) => cutoff.freezeDue({ limit }),
+          publishCommitment: routing.publishCommitment,
+          approve: routing.approve,
+          purchase: routing.purchase,
+          closeUnavailablePurchase: routing.closeUnavailablePurchase,
+          sweep: routing.sweep,
+          claim: routing.claim,
+          allocate: (work) =>
+            allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+          closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
+          refund: routing.refund,
+          payout: routing.payout,
+          gasTopups,
+        },
+      });
+      (sink.log ?? ((event, fields) => console.info(event, fields)))(
+        "megapot.rewards.cycle.timing",
+        {
+          event: "megapot.rewards.cycle.timing",
+          worker_version_id: options.workerVersion.id,
+          elapsed_ms: { ...steps, liveness: Date.now() - jobStartedAt },
+          funding_step_status: summary.fundingStep ?? "ran",
+        },
+      );
+      writeMegapotRewardsCycleSnapshot(
+        summary,
+        {
+          environment: options.environment,
+          emittedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt,
+          workerVersion: options.workerVersion,
+        },
+        sink.log ?? ((event, fields) => console.info(event, fields)),
+      );
+      for (const alert of megapotRewardsLivenessAlerts(summary.agedPending)) {
+        yield* collector.emit(alert);
+      }
+      if (summary.fundingStep === "skipped_deadline_passed") {
+        yield* collector.emit({
+          key: "megapot-rewards:funding-observation-skipped",
+          severity: "high",
+          body: "Funding observation did not start before its deadline; sponsor transfers were not looked at this cycle.",
+        });
+      }
+      const drawingObservationAlert = megapotRewardsDrawingObservationAlert(summary);
+      if (drawingObservationAlert !== null) {
+        yield* collector.emit(drawingObservationAlert);
+      }
+      if (summary.failures.length > 0) {
+        yield* collector.emit({
+          key: "megapot-rewards:candidate-failures",
+          severity: "high",
+          body: "Megapot reward candidates require a later reconciliation pass.",
+          entity: `cycle-failures:${summary.failures.length}`,
+        });
+      }
+    });
+    return yield* fundingFiber === null
+      ? attempt
+      : attempt.pipe(
+          Effect.onExit((exit) =>
+            Exit.hasInterrupts(exit) ? Fiber.interrupt(fundingFiber) : Fiber.await(fundingFiber),
+          ),
+        );
   }).pipe(
     Effect.onInterrupt(() =>
       JobContext.use((context) => Effect.sync(context.adapterSafety.markAbortedOrFenced)),

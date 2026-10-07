@@ -64,6 +64,48 @@ function fixture(approvalKind: "submitted" | "confirmed") {
   return { calls, runtime, work };
 }
 
+test("a cycle that skipped funding observation is never written as healthy", () => {
+  const outcomeFor = (fundingStep: "ran" | "skipped_deadline_passed") => {
+    const events: Array<{ fields: object }> = [];
+    const written = writeMegapotRewardsCycleSnapshot(
+      {
+        reconciled: 0,
+        fundingStep,
+        observed: 1,
+        drawingObservationFailed: false,
+        frozen: 0,
+        committed: 0,
+        purchased: 0,
+        swept: 0,
+        claimed: 0,
+        allocated: 0,
+        terminalOffers: 0,
+        refunded: 0,
+        paid: 0,
+        gasTopups: 0,
+        failures: [],
+        failureDiagnostics: [],
+        agedPending: [],
+      },
+      {
+        environment: "staging",
+        emittedAt: "2026-10-06T12:00:00.000Z",
+        durationMs: 1,
+        workerVersion: { id: "v", tag: "", timestamp: "2026-10-06T00:00:00.000Z" },
+      },
+      (_event, fields) => events.push({ fields }),
+    );
+    expect(written).toBe(true);
+    return events[0]?.fields;
+  };
+  // Nothing failed and nothing is aged in either; only whether funding was looked at differs.
+  expect(outcomeFor("ran")).toMatchObject({ funding_step_status: "ran", outcome: "healthy" });
+  expect(outcomeFor("skipped_deadline_passed")).toMatchObject({
+    funding_step_status: "skipped_deadline_passed",
+    outcome: "degraded",
+  });
+});
+
 describe("Megapot rewards scheduled cycle", () => {
   test("writes one versioned cycle summary without entity identifiers", () => {
     const events: unknown[] = [];
@@ -110,7 +152,8 @@ describe("Megapot rewards scheduled cycle", () => {
         event: "megapot.rewards.cycle",
         fields: expect.objectContaining({
           event: "megapot.rewards.cycle",
-          schema_version: 4,
+          schema_version: 5,
+          funding_step_status: "ran",
           environment: "staging",
           worker_version_id: "worker-version-1",
           duration_ms: 1_234,

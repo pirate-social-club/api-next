@@ -165,7 +165,8 @@ export function assertNothingOwed(inventory) {
   return { nothingOwed: true };
 }
 
-const shutdownPredicates = [
+/** The canonical shutdown categories, with the runner's own winner sends. */
+export const shutdownPredicates = [
   ...REWARD_SHUTDOWN_PREDICATES,
   ["unresolved_winner_sends", "reward_winner_sends", "status <> 'confirmed'"],
 ];
