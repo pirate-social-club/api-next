@@ -172,6 +172,61 @@ export async function readSpendingTotals(directory, authoritySha256) {
 }
 
 /**
+ * What a forced loss run alone reserves: its offer principal and every fixture
+ * and funding action at its ceiling. It has no winners, so no onward sends; a
+ * prize refill is added by the check when the fixture does not hold the prize.
+ */
+export const lossBudget = Object.freeze({
+  usdcAtomic: 1_000_000n,
+  prizeAtomic: pairBudget.prizeAtomic,
+  ethWei:
+    pairShape.fixtureTransactionsPerScenario * feeCeilings.fixtureTransactionWei +
+    feeCeilings.fundingWei,
+});
+
+function assertRunBudget(
+  label,
+  base,
+  directory,
+  { authoritySha256, fixturePrizeAtomic, managedFloatWei },
+) {
+  if (typeof fixturePrizeAtomic !== "bigint" || fixturePrizeAtomic < 0n)
+    throw new Error(`Fixture prize balance required for the ${label} budget`);
+  if (typeof managedFloatWei !== "bigint" || managedFloatWei < 0n)
+    throw new Error(`Managed float balance required for the ${label} budget`);
+  return readSpendingTotals(directory, authoritySha256).then((reserved) => {
+    const firstRefill = fixturePrizeAtomic >= base.prizeAtomic ? 0n : base.prizeAtomic;
+    const unreservedFloat = reserved.managedFloatReserved ? 0n : managedFloatWei;
+    const run = {
+      usdcAtomic: base.usdcAtomic + firstRefill,
+      ethWei: base.ethWei + unreservedFloat,
+    };
+    const after = {
+      usdcAtomic: reserved.usdcAtomic + run.usdcAtomic + recoveryHeadroom.usdcAtomic,
+      ethWei: reserved.ethWei + run.ethWei + recoveryHeadroom.ethWei,
+    };
+    const report = {
+      reservedUsdcAtomic: reserved.usdcAtomic.toString(),
+      reservedEthWei: reserved.ethWei.toString(),
+      pairUsdcAtomic: run.usdcAtomic.toString(),
+      pairEthWei: run.ethWei.toString(),
+      unreservedManagedFloatWei: unreservedFloat.toString(),
+      headroomUsdcAtomic: recoveryHeadroom.usdcAtomic.toString(),
+      headroomEthWei: recoveryHeadroom.ethWei.toString(),
+      limitUsdcAtomic: spendingLimits.usdcAtomic.toString(),
+      limitEthWei: spendingLimits.ethWei.toString(),
+    };
+    const name = label === "pair" ? "Whole-pair" : "Loss-run";
+    const what = label === "pair" ? "a pair" : "a loss run";
+    if (after.usdcAtomic > spendingLimits.usdcAtomic)
+      throw new Error(`${name} budget refused: USDC allowance cannot cover ${what} and recovery`);
+    if (after.ethWei > spendingLimits.ethWei)
+      throw new Error(`${name} budget refused: ETH allowance cannot cover ${what} and recovery`);
+    return report;
+  });
+}
+
+/**
  * Refuses before any funded action unless the whole pair, run at every fee
  * ceiling, and its recovery headroom fit under both limits. The managed gas
  * float is reserved once per authorization; if that has not happened yet, the
@@ -179,39 +234,11 @@ export async function readSpendingTotals(directory, authoritySha256) {
  * It reserves nothing: each action still makes its own durable reservation, and
  * a refund never gives allowance back.
  */
-export async function assertPairBudget(
-  directory,
-  { authoritySha256, fixturePrizeAtomic, managedFloatWei },
-) {
-  if (typeof fixturePrizeAtomic !== "bigint" || fixturePrizeAtomic < 0n)
-    throw new Error("Fixture prize balance required for the pair budget");
-  if (typeof managedFloatWei !== "bigint" || managedFloatWei < 0n)
-    throw new Error("Managed float balance required for the pair budget");
-  const reserved = await readSpendingTotals(directory, authoritySha256);
-  const firstRefill = fixturePrizeAtomic >= pairBudget.prizeAtomic ? 0n : pairBudget.prizeAtomic;
-  const unreservedFloat = reserved.managedFloatReserved ? 0n : managedFloatWei;
-  const pair = {
-    usdcAtomic: pairBudget.usdcAtomic + firstRefill,
-    ethWei: pairBudget.ethWei + unreservedFloat,
-  };
-  const after = {
-    usdcAtomic: reserved.usdcAtomic + pair.usdcAtomic + recoveryHeadroom.usdcAtomic,
-    ethWei: reserved.ethWei + pair.ethWei + recoveryHeadroom.ethWei,
-  };
-  const report = {
-    reservedUsdcAtomic: reserved.usdcAtomic.toString(),
-    reservedEthWei: reserved.ethWei.toString(),
-    pairUsdcAtomic: pair.usdcAtomic.toString(),
-    pairEthWei: pair.ethWei.toString(),
-    unreservedManagedFloatWei: unreservedFloat.toString(),
-    headroomUsdcAtomic: recoveryHeadroom.usdcAtomic.toString(),
-    headroomEthWei: recoveryHeadroom.ethWei.toString(),
-    limitUsdcAtomic: spendingLimits.usdcAtomic.toString(),
-    limitEthWei: spendingLimits.ethWei.toString(),
-  };
-  if (after.usdcAtomic > spendingLimits.usdcAtomic)
-    throw new Error("Whole-pair budget refused: USDC allowance cannot cover a pair and recovery");
-  if (after.ethWei > spendingLimits.ethWei)
-    throw new Error("Whole-pair budget refused: ETH allowance cannot cover a pair and recovery");
-  return report;
+export async function assertPairBudget(directory, options) {
+  return assertRunBudget("pair", pairBudget, directory, options);
+}
+
+/** The same check for a forced loss run on its own, after a win already ran. */
+export async function assertLossBudget(directory, options) {
+  return assertRunBudget("loss", lossBudget, directory, options);
 }
