@@ -9,7 +9,7 @@ export type CreatePostInput = Readonly<{
   readonly body: unknown;
 }>;
 
-/** CreatePost is enabled only through the target-owned moderated text runtime. */
+/** CreatePost publishes through the target-owned text submission runtime. */
 export const createPost = Effect.fn("createPost")(function* (
   input: CreatePostInput,
   services: ContentUseCaseServices,

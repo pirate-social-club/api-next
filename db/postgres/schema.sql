@@ -15016,6 +15016,17 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_text_publication_mode_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.publication_mode <> OLD.publication_mode THEN
+    RAISE EXCEPTION 'text publication mode is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_unresolved_rating_hold_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -16217,8 +16228,8 @@ CREATE TABLE text_content_submissions (
     status text NOT NULL,
     moderation_decision text NOT NULL,
     public_reason_code text,
-    policy_revision_id text NOT NULL,
-    policy_hash text NOT NULL,
+    policy_revision_id text,
+    policy_hash text,
     input_sha256 text NOT NULL,
     internal_reason_codes jsonb NOT NULL,
     evidence_ref text,
@@ -16243,6 +16254,7 @@ CREATE TABLE text_content_submissions (
     matched_categories jsonb,
     category_decisions jsonb,
     effective_policy_decision text,
+    publication_mode text DEFAULT 'moderated'::text NOT NULL,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
@@ -16250,6 +16262,7 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_policy_evidence_shape CHECK ((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = ANY (ARRAY[0, 4]))),
     CONSTRAINT text_content_submissions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_public_reason_code_check CHECK (((public_reason_code IS NULL) OR (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'policy_violation'::text])))),
+    CONSTRAINT text_content_submissions_publication_mode_check CHECK ((publication_mode = ANY (ARRAY['moderated'::text, 'author_declared'::text]))),
     CONSTRAINT text_content_submissions_reasons_array CHECK ((valid_text_moderation_reason_codes(internal_reason_codes) AND (((moderation_decision = 'allow'::text) AND (jsonb_array_length(internal_reason_codes) = 0)) OR ((moderation_decision = 'manual_review'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ? 'sexual_minors'::text))) OR ((moderation_decision = 'blocked'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ?| ARRAY['age_gate_required'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))))),
     CONSTRAINT text_content_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
@@ -16261,7 +16274,8 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
     CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at)),
     CONSTRAINT text_content_submissions_v2_decision_evidence_shape CHECK (((num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = ANY (ARRAY[0, 5])) AND ((author_declared_rating IS NULL) OR ((author_declared_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (resulting_content_rating = ANY (ARRAY['general'::text, 'adult_18'::text])) AND (jsonb_typeof(matched_categories) = 'array'::text) AND (jsonb_typeof(category_decisions) = 'object'::text) AND (effective_policy_decision = ANY (ARRAY['permit'::text, 'review'::text, 'block'::text])))))),
-    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL))))
+    CONSTRAINT text_content_submissions_v2_evidence_shape CHECK (((platform_policy_revision_id IS NULL) OR ((internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text]) AND (evidence_ref IS NULL)) OR ((NOT (internal_reason_codes ?| ARRAY['provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])) AND (evidence_ref IS NOT NULL)))),
+    CONSTRAINT text_submission_publication_mode_shape CHECK ((((publication_mode = 'moderated'::text) AND (policy_revision_id IS NOT NULL) AND (policy_hash IS NOT NULL)) OR ((publication_mode = 'author_declared'::text) AND (num_nonnulls(author_declared_rating, resulting_content_rating, matched_categories, category_decisions, effective_policy_decision) = 5) AND (status = 'published'::text) AND (moderation_decision = 'allow'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (evidence_ref IS NULL) AND (internal_reason_codes = '[]'::jsonb) AND (matched_categories = '[]'::jsonb) AND (category_decisions = '{}'::jsonb) AND (effective_policy_decision = 'permit'::text) AND (num_nonnulls(policy_revision_id, policy_hash, platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = 0))))
 );
 
 CREATE FUNCTION is_current_text_rating_raise_v2(previous text_content_submissions, following text_content_submissions) RETURNS boolean
@@ -19894,16 +19908,17 @@ CREATE FUNCTION require_text_moderation_v2_submission() RETURNS trigger
 DECLARE
   current_provider_policy TEXT;
 BEGIN
+  IF NEW.publication_mode = 'author_declared' THEN
+    IF NEW.resulting_content_rating IS DISTINCT FROM NEW.author_declared_rating THEN
+      RAISE EXCEPTION 'unmoderated publication must retain the author declared rating';
+    END IF;
+    RETURN NEW;
+  END IF;
   SELECT policy_revision_id INTO current_provider_policy
-    FROM text_moderation_policy_current
-   WHERE singleton = TRUE;
+    FROM text_moderation_policy_current WHERE singleton = TRUE;
   IF current_provider_policy = 'text-moderation-policy-openai-omni-2024-09-26-v1'
-    AND num_nonnulls(
-      NEW.platform_policy_revision_id,
-      NEW.platform_policy_hash,
-      NEW.community_policy_revision_id,
-      NEW.community_policy_hash
-    ) <> 4
+    AND num_nonnulls(NEW.platform_policy_revision_id, NEW.platform_policy_hash,
+      NEW.community_policy_revision_id, NEW.community_policy_hash) <> 4
   THEN
     RAISE EXCEPTION 'new text moderation submissions require complete V2 policy evidence';
   END IF;
@@ -42681,6 +42696,8 @@ CREATE TRIGGER text_moderation_evidence_append_only BEFORE DELETE OR UPDATE ON t
 CREATE TRIGGER text_moderation_evidence_require_v2 BEFORE INSERT ON text_moderation_evidence FOR EACH ROW EXECUTE FUNCTION require_text_moderation_v2_evidence();
 
 CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON text_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
+
+CREATE TRIGGER text_publication_mode_update_guard BEFORE UPDATE OF publication_mode ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_publication_mode_update();
 
 CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
 
