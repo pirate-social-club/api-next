@@ -22,15 +22,25 @@ function countingRunners(
     lifecycle: runner("lifecycle"),
     provisioning: runner("provisioning"),
     observation: runner("observation"),
+    members: runner("members"),
   };
 }
 
 describe("fair turns across the provisioner's job classes", () => {
   test("every class takes a turn in a round, and the starting class rotates", () => {
-    expect(hnsExecutorRoundOrderV1(0)).toEqual(["lifecycle", "provisioning", "observation"]);
-    expect(hnsExecutorRoundOrderV1(1)).toEqual(["provisioning", "observation", "lifecycle"]);
-    expect(hnsExecutorRoundOrderV1(2)).toEqual(["observation", "lifecycle", "provisioning"]);
-    expect(hnsExecutorRoundOrderV1(3)).toEqual(hnsExecutorRoundOrderV1(0));
+    expect(hnsExecutorRoundOrderV1(0)).toEqual([
+      "lifecycle",
+      "provisioning",
+      "observation",
+      "members",
+    ]);
+    expect(hnsExecutorRoundOrderV1(1)).toEqual([
+      "provisioning",
+      "observation",
+      "members",
+      "lifecycle",
+    ]);
+    expect(hnsExecutorRoundOrderV1(4)).toEqual(hnsExecutorRoundOrderV1(0));
     for (const cursor of [0, 1, 2, 3, 17, 100]) {
       expect([...hnsExecutorRoundOrderV1(cursor)].sort()).toEqual(
         [...HNS_EXECUTOR_CLASSES_V1].sort(),
@@ -43,19 +53,20 @@ describe("fair turns across the provisioner's job classes", () => {
     const runners = countingRunners(log, {
       lifecycle: true,
       provisioning: true,
+      members: true,
       observation: true,
     });
     let cursor = 0;
-    for (let round = 0; round < 9; round += 1) {
+    for (let round = 0; round < 12; round += 1) {
       cursor = (await runHnsExecutorRoundV1(cursor, runners)).next_cursor;
     }
     const turns = (executorClass: HnsExecutorClassV1) =>
       log.filter((entry) => entry === executorClass).length;
-    expect(turns("lifecycle")).toBe(9);
-    expect(turns("provisioning")).toBe(9);
-    expect(turns("observation")).toBe(9);
-    // Each class led three of the nine rounds.
-    const leaders = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((index) => log[index]);
+    expect(turns("lifecycle")).toBe(12);
+    expect(turns("provisioning")).toBe(12);
+    expect(turns("observation")).toBe(12);
+    // Each class led three of the twelve rounds.
+    const leaders = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44].map((index) => log[index]);
     expect(leaders.filter((entry) => entry === "lifecycle")).toHaveLength(3);
     expect(leaders.filter((entry) => entry === "provisioning")).toHaveLength(3);
     expect(leaders.filter((entry) => entry === "observation")).toHaveLength(3);
@@ -65,12 +76,22 @@ describe("fair turns across the provisioner's job classes", () => {
     const log: HnsExecutorClassV1[] = [];
     const idle = await runHnsExecutorRoundV1(
       0,
-      countingRunners(log, { lifecycle: false, provisioning: false, observation: false }),
+      countingRunners(log, {
+        lifecycle: false,
+        provisioning: false,
+        members: false,
+        observation: false,
+      }),
     );
     expect(idle.idle).toBe(true);
     const busy = await runHnsExecutorRoundV1(
       0,
-      countingRunners(log, { lifecycle: true, provisioning: false, observation: false }),
+      countingRunners(log, {
+        lifecycle: true,
+        provisioning: false,
+        members: false,
+        observation: false,
+      }),
     );
     expect(busy.idle).toBe(false);
   });
@@ -78,11 +99,16 @@ describe("fair turns across the provisioner's job classes", () => {
   test("one class throwing does not cancel the round or lose the other classes' turns", async () => {
     const log: HnsExecutorClassV1[] = [];
     const runners: HnsExecutorRunnersV1 = {
-      ...countingRunners(log, { lifecycle: true, provisioning: true, observation: true }),
+      ...countingRunners(log, {
+        lifecycle: true,
+        provisioning: true,
+        members: true,
+        observation: true,
+      }),
       provisioning: () => Promise.reject(new Error("provider unreachable")),
     };
     const round = await runHnsExecutorRoundV1(0, runners);
-    expect(log).toEqual(["lifecycle", "observation"]);
+    expect(log).toEqual(["lifecycle", "observation", "members"]);
     const provisioning = round.turns.find((turn) => turn.executor_class === "provisioning");
     expect(provisioning?.result).toEqual({
       claimed: false,

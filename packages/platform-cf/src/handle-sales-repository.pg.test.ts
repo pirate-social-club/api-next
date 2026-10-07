@@ -471,6 +471,12 @@ suite("community handle sales on PostgreSQL 17", () => {
         display_identifier: "openlabel.charizard",
         grant: { status: "active", owner_persona_id: buyerPersona },
       });
+      const publication = await admin.query(
+        "SELECT state FROM hns_member_host_publications WHERE grant_id=$1",
+        [claim.claim.grant?.grant_id],
+      );
+      expect(publication.rows).toEqual([{ state: "preparing" }]);
+      expect(claim.claim.host?.kind).toBe("unavailable");
       const evidenceAfterClaim = await admin.query<{ readonly count: number }>(
         `SELECT count(*)::int AS count FROM evidence_receipts WHERE user_id=$1`,
         ["open-buyer-account"],
@@ -718,12 +724,7 @@ suite("community handle sales on PostgreSQL 17", () => {
         sale_namespace_activation_id: activationId,
         sale_namespace_activation_generation: 1,
         fulfillment: { kind: "hosted_persona_v1" },
-        host: {
-          kind: "available",
-          normalized_host: "longname.charizard",
-          sale_namespace_activation_generation: 1,
-          grant_generation: 1,
-        },
+        host: { kind: "unavailable", reason: "host_not_activated" },
       });
       await expect(
         run(sales.getPublicPersona({ personaId: recipientPersona })),
@@ -1534,6 +1535,23 @@ suite("community handle sales on PostgreSQL 17", () => {
         },
       });
       expect(resolveActiveHnsHostAuthority(refreshedAuthority)).not.toBeNull();
+      // Root health alone does not make an explicit member host ready.
+      await expect(
+        run(
+          sales.getPublicGrant({
+            family: "hns",
+            namespaceRoot: "charizard",
+            handleLabel: "livehost",
+          }),
+        ),
+      ).resolves.toMatchObject({ host: { kind: "unavailable", reason: "host_not_activated" } });
+      await admin.query(
+        `UPDATE hns_member_host_publications SET state='ready',sale_generation=2,
+        dns_generation=2,configuration_sha256=$2,checked_at=clock_timestamp(),
+        valid_until=clock_timestamp()+interval '5 minutes' WHERE grant_id=$1`,
+        [claim.claim.grant?.grant_id, successor.zoneDigest],
+      );
+
       await expect(
         run(
           sales.getPublicGrant({

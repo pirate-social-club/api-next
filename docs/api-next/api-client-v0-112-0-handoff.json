@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.112.0",
+  "sourceBranch": "fix/hns-member-host-publication",
+  "sourceBase": "ed50933ea61395dbae7f7a29764e37e5ce7322a6",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds the optional host readiness projection to HNS claim reads and claim submission/replay responses. Issued ownership remains distinct from explicit member DNS publication. Existing public grant host availability now requires a current publication receipt. Spaces issuance is unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.112.0.tgz",
+    "sha256": "3adfd2234ca9c608613471d2e3ec816082a00c9d9bd438fa2b344aab2e1da2ed"
+  },
+  "validation": {
+    "status": "Implementation candidate; focused unit and PostgreSQL tests passed. Full repository gates and frontend/staging acceptance remain open.",
+    "passed": [
+      "13 focused writer and scheduler unit tests",
+      "8 focused PostgreSQL tests for claim queueing, backfill, replay, locks and retries"
+    ],
+    "remaining": [
+      "Full repository checks and regression suites",
+      "Storybook and storefront recovery acceptance",
+      "Guarded staging rollout after the existing main merge hold is released"
+    ],
+    "operationalBoundary": "No merge, deployment, production or live backfill authorized by this artifact."
+  }
+}

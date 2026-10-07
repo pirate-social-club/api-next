@@ -17,6 +17,7 @@ import {
 } from "./lifecycle-queue.ts";
 import { runHnsRootImportReadinessOnce } from "./lifecycle-readiness.ts";
 import { makeLiveHnsRootReadinessObserverV1 } from "./live-readiness.ts";
+import { makeHnsMemberPublicationRunner } from "./member-publication.ts";
 import { makePostgresHnsRootObservationQueue } from "./observation-queue.ts";
 import {
   makePowerDnsRootInspector,
@@ -620,6 +621,11 @@ async function main(serve: boolean): Promise<void> {
   } as const;
 
   const runners: HnsExecutorRunnersV1 = {
+    members: makeHnsMemberPublicationRunner(
+      connectionString,
+      powerDnsConfig,
+      secondaryPowerDnsConfig,
+    ),
     lifecycle: async () => {
       const result = await runHnsRootImportLifecycleJobOnce(
         executorId,

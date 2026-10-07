@@ -16,7 +16,12 @@
  * long to wait. That keeps the scheduler testable without a database.
  */
 
-export const HNS_EXECUTOR_CLASSES_V1 = ["lifecycle", "provisioning", "observation"] as const;
+export const HNS_EXECUTOR_CLASSES_V1 = [
+  "lifecycle",
+  "provisioning",
+  "observation",
+  "members",
+] as const;
 
 export type HnsExecutorClassV1 = (typeof HNS_EXECUTOR_CLASSES_V1)[number];
 
