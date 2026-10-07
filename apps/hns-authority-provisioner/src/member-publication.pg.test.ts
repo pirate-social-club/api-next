@@ -54,24 +54,29 @@ async function withQueue(use: (admin: Client, connection: string) => Promise<voi
   }
 }
 
-suite("durable HNS member publication", () => {
-  test("the migration backfills existing grants through the same durable queue", async () => {
-    await withQueue(async (admin) => {
-      await admin.query(`DROP TRIGGER hns_member_host_publication_enqueue ON handle_grants;
+// Baseline dumps omit ACLs; privilege tests must apply the actual migration.
+async function reinstallPublicationMigration(admin: Client) {
+  await admin.query(`DROP TRIGGER hns_member_host_publication_enqueue ON handle_grants;
         DROP FUNCTION enqueue_hns_member_host_publication_v1();
         DROP FUNCTION prepare_hns_member_host_publication_v1();
         DROP FUNCTION hns_member_host_ready_v1(TEXT);
         DROP FUNCTION hns_member_host_authorized_v1(TEXT);
         DROP TABLE hns_member_host_publications`);
-      await admin.query(
-        await readFile(
-          new URL(
-            "../../../db/postgres/migrations/0244_hns_member_host_publication.sql",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-      );
+  await admin.query(
+    await readFile(
+      new URL(
+        "../../../db/postgres/migrations/0244_hns_member_host_publication.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+}
+
+suite("durable HNS member publication", () => {
+  test("the migration backfills existing grants through the same durable queue", async () => {
+    await withQueue(async (admin) => {
+      await reinstallPublicationMigration(admin);
       expect(
         (await admin.query("SELECT grant_id,state FROM hns_member_host_publications")).rows,
       ).toEqual([{ grant_id: "member-grant", state: "preparing" }]);
@@ -116,6 +121,54 @@ suite("durable HNS member publication", () => {
       } finally {
         await first.end();
         await second.end();
+      }
+    });
+  }, 30000);
+
+  test("requires explicit executor privileges and does not grant queue deletion", async () => {
+    await withQueue(async (admin) => {
+      await reinstallPublicationMigration(admin);
+      const role = `member_executor_${crypto.randomUUID().replaceAll("-", "")}`;
+      const schema = (await admin.query("SELECT current_schema() AS name")).rows[0].name;
+      await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${role}"`);
+        // Existing authority reads are separate from the new queue capability.
+        await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO "${role}"`);
+        await admin.query(`SET ROLE "${role}"`);
+        await expect(
+          admin.query("SELECT prepare_hns_member_host_publication_v1()"),
+        ).rejects.toMatchObject({ code: "42501" });
+        await admin.query("RESET ROLE");
+        await admin.query(
+          `GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO "${role}"`,
+        );
+        await admin.query(`GRANT UPDATE ON hns_member_host_publications TO "${role}"`);
+        await admin.query(`SET ROLE "${role}"`);
+        await admin.query("BEGIN");
+        const prepared = await admin.query(
+          "SELECT prepare_hns_member_host_publication_v1() AS job",
+        );
+        expect(prepared.rows[0].job.grant_id).toBe("member-grant");
+        await admin.query(
+          "UPDATE hns_member_host_publications SET attempts=attempts+1 WHERE grant_id='member-grant'",
+        );
+        expect(
+          (
+            await admin.query(`SELECT
+          has_table_privilege(current_user,'hns_member_host_publications','INSERT') AS can_insert,
+          has_table_privilege(current_user,'hns_member_host_publications','DELETE') AS can_delete,
+          has_table_privilege(current_user,'hns_member_host_publications','TRUNCATE') AS can_truncate`)
+          ).rows[0],
+        ).toEqual({ can_insert: false, can_delete: false, can_truncate: false });
+        await admin.query("ROLLBACK");
+      } finally {
+        await admin.query("ROLLBACK");
+        await admin.query("RESET ROLE");
+        await admin.query(`REVOKE ALL ON ALL TABLES IN SCHEMA "${schema}" FROM "${role}"`);
+        await admin.query(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA "${schema}" FROM "${role}"`);
+        await admin.query(`REVOKE ALL ON SCHEMA "${schema}" FROM "${role}"`);
+        await admin.query(`DROP ROLE "${role}"`);
       }
     });
   }, 30000);

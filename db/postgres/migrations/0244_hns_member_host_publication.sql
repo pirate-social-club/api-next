@@ -166,5 +166,10 @@ BEGIN
     REVOKE DELETE,TRUNCATE ON hns_member_host_publications FROM api_next_app;
     GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO api_next_app;
   END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='hns_root_import_executor_login_v1') THEN
+    GRANT SELECT,UPDATE ON hns_member_host_publications TO hns_root_import_executor_login_v1;
+    REVOKE INSERT,DELETE,TRUNCATE ON hns_member_host_publications FROM hns_root_import_executor_login_v1;
+    GRANT EXECUTE ON FUNCTION prepare_hns_member_host_publication_v1() TO hns_root_import_executor_login_v1;
+  END IF;
 END;
 $runtime_grants$;
