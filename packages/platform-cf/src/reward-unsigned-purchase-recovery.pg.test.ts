@@ -61,7 +61,7 @@ suite("unsigned isolated purchase recovery", () => {
     await db.query(
       `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schema} GRANT EXECUTE ON FUNCTIONS TO ${role}`,
     );
-    expect(migrations.at(-1)?.version).toBe("0244_reward_unsigned_purchase_recovery.sql");
+    expect(migrations.at(-1)?.version).toBe("0245_reward_unsigned_purchase_recovery.sql");
     await db.query(migrations.at(-1)?.sql ?? "");
   }, 180_000);
 
