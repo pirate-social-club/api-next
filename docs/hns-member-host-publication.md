@@ -1,5 +1,29 @@
 # HNS member publication
 
+## Not enableable as designed
+
+Do not merge or enable this change. A second independent review, confirmed in
+the source, found that it conflicts with root renewal. Every root renews
+through `prepare_hns_root_inventory_renewal_v1`, which accepts a renewal only
+when the digest of the zone observed by transfer equals the digest of the zone
+the current DNS revision retained. That digest covers every record except
+signatures, and it covers the SOA serial. Publishing one member record adds
+three record sets and advances the serial, so the root's next renewal ends
+`terminal` with `evidence_mismatch`, and the scheduler does not enqueue
+another job for that generation. With a seven-day validity and a three-day
+renewal threshold the root's inventory and health then lapse within days, and
+the whole namespace stops being effective, not just the member host.
+
+The retained zone is frozen between authority successors by design. Explicit
+member records therefore need a decision this change does not make: either
+the retained digest stops covering member-owned records and the serial, which
+changes a hash-bound contract and every tool that recomputes it, or members
+are served without per-member records. Until that is settled the rest of this
+document describes source that must stay off. Merging it with the switch
+unset is not neutral either: its API reports a member host as available only
+while a publication receipt is current, so with nothing publishing every
+member host would read as unavailable.
+
 A hosted HNS grant enqueues publication in its issuing transaction. Migration
 0246 also queues existing active hosted HNS grants. The provisioner reconciles
 the current authority and accepted zone configuration under the existing root
@@ -114,9 +138,8 @@ five-minute recheck also bounds how many ready hosts one provisioner can keep
 current. Neither limit is close for the first communities; both need a
 different design before a large one.
 
-Member writes change the zone between the root's own readiness observations.
-The observer records whatever it reads and retries on disagreement, but that
-interaction has only been reasoned about, not measured.
+Member writes change the zone between the root's own renewals. The renewal
+does not tolerate that; see the first section.
 
 ## Disposable authority acceptance
 
