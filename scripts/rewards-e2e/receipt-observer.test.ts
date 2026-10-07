@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firstJobsReceiptRead, receiptEvents } from "./receipt-evidence.mjs";
 import { subscribeJobsEvidence, subscribeJobsReceipts } from "./receipt-observer.mjs";
+import { isolatedEnvironment } from "./worker-plan.mjs";
 
 const transactionHash = `0x${"a".repeat(64)}`;
 const expected = {
@@ -16,7 +17,7 @@ function observation(sequence = 1) {
   return {
     event: "megapot_receipt_read",
     job: "megapot-rewards.cycle",
-    environment: "test",
+    environment: isolatedEnvironment,
     chainId: 84532,
     workerVersion: { id: "jobs-1", secret: "must-not-copy" },
     attemptId: "attempt-1",
