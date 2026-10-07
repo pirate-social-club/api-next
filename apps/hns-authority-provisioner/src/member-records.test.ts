@@ -132,24 +132,50 @@ describe("explicit HNS member records", () => {
     assertHnsMemberRecords(target, rrsets);
   });
 
-  test("refuses a zone from another reservation before mutation", async () => {
+  test("refuses a zone that does not publish this session's challenge before mutation", async () => {
+    const methods: string[] = [];
+    const account = await reservationAccount(challenge);
+    const writer = makePowerDnsMemberWriter(
+      { api_url: "http://provider.test", api_key: "test", server_id: "localhost" },
+      async (_url, init) => {
+        methods.push(init?.method ?? "GET");
+        return Response.json({ name: "example.", account, dnssec: true, serial: 1, rrsets: roots });
+      },
+    );
+    await expect(
+      writer({ ...target, challenge_txt_value: `${challenge}-from-another-session` }),
+    ).rejects.toThrow("reservation differs");
+    expect(methods).toEqual(["GET"]);
+  });
+
+  test("publishes into an adopted zone that keeps an earlier reservation account", async () => {
+    // Root provisioning adopts a delegated zone without rewriting its account;
+    // the published challenge, not the account, binds it to the session.
+    let rrsets: readonly unknown[] = roots;
+    let serial = 1;
     const methods: string[] = [];
     const writer = makePowerDnsMemberWriter(
       { api_url: "http://provider.test", api_key: "test", server_id: "localhost" },
       async (_url, init) => {
         methods.push(init?.method ?? "GET");
-        return Response.json({
-          name: "example.",
-          account: "other",
-          dnssec: true,
-          serial: 1,
-          rrsets: roots,
-        });
+        if (init?.method === "PATCH") {
+          const patch = JSON.parse(String(init.body)) as { rrsets: readonly unknown[] };
+          rrsets = [...roots, ...patch.rrsets];
+          serial++;
+        }
+        return init?.method === "GET"
+          ? Response.json({
+              name: "example.",
+              account: "earlier-reservation",
+              dnssec: true,
+              serial,
+              rrsets,
+            })
+          : new Response(null, { status: 204 });
       },
     );
-    await expect(writer({ ...target, challenge_txt_value: challenge })).rejects.toThrow(
-      "reservation differs",
-    );
-    expect(methods).toEqual(["GET"]);
+    expect(await writer({ ...target, challenge_txt_value: challenge })).toBe(2);
+    expect(methods).toEqual(["GET", "PATCH", "PUT", "PUT", "GET"]);
+    assertHnsMemberRecords(target, rrsets);
   });
 });

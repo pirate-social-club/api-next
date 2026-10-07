@@ -625,6 +625,7 @@ async function main(serve: boolean): Promise<void> {
       connectionString,
       powerDnsConfig,
       secondaryPowerDnsConfig,
+      { enabled: process.env.HNS_AUTHORITY_MEMBER_PUBLICATION === "enabled" },
     ),
     lifecycle: async () => {
       const result = await runHnsRootImportLifecycleJobOnce(

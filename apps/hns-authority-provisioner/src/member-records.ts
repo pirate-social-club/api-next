@@ -3,7 +3,6 @@ import { isIP } from "node:net";
 import {
   type PowerDnsFetch,
   readBoundedJson,
-  reservationAccount,
   validEndpoint,
   withExchangeDeadline,
 } from "./powerdns.ts";
@@ -215,12 +214,15 @@ export function makePowerDnsMemberWriter(config: Provider, fetcher: PowerDnsFetc
     recordNames(input);
     const path = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(`${input.root_label}.`)}`;
     const before = zone(await request("GET", path), input.root_label);
+    // The published challenge binds the zone to this session. The account is
+    // deliberately not compared: root provisioning adopts a delegated zone
+    // that still carries an earlier reservation and never rewrites its
+    // account, and members of such a root must still be publishable.
     if (
-      before.account !== (await reservationAccount(input.challenge_txt_value)) ||
       JSON.stringify(contents(before.rrsets, `_pirate.${input.root_label}.`, "TXT")) !==
-        JSON.stringify([
-          `"${input.challenge_txt_value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
-        ])
+      JSON.stringify([
+        `"${input.challenge_txt_value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`,
+      ])
     )
       throw new Error("HNS member zone reservation differs");
     const patch = buildHnsMemberRecordPatch(input, before.rrsets);
