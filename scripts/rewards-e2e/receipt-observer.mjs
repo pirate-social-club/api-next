@@ -7,10 +7,20 @@ import { isolatedWorkers } from "./worker-plan.mjs";
 
 const receiptStream = { name: "receipt", query: "megapot_receipt_read", parse: receiptEvents };
 const cycleStream = { name: "cycle", query: "megapot.rewards.cycle", parse: cycleEvents };
+const jobsStream = {
+  name: "jobs",
+  query: "megapot",
+  parse: (envelope) => [...receiptEvents(envelope), ...cycleEvents(envelope)],
+};
+
+/** The provider shares one tail per Worker. Capture both kinds on one socket and close once. */
+export function subscribeJobsEvidence(directory, dependencies = {}) {
+  return subscribeJobsReceipts(directory, { ...dependencies, stream: jobsStream });
+}
 
 /**
- * The jobs Worker's own cycle summaries, on a second subscription. They are the
- * only evidence that the jobs Worker, and not a browser, confirmed a payment.
+ * A standalone cycle subscription for diagnostics. Counts corroborate confirmation;
+ * browser observation closure establishes which Worker confirmed.
  */
 export function subscribeJobsCycles(directory, dependencies = {}) {
   return subscribeJobsReceipts(directory, { ...dependencies, stream: cycleStream });

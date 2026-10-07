@@ -1,3 +1,5 @@
+import { isolatedEnvironment } from "./worker-plan.mjs";
+
 const hash = /^0x[0-9a-f]{64}$/i;
 const positive = (value) => Number.isSafeInteger(value) && value > 0;
 const results = new Set([
@@ -28,7 +30,7 @@ export function receiptEvents(envelope) {
       if (event?.event !== "megapot_receipt_read") continue;
       if (
         event.job !== "megapot-rewards.cycle" ||
-        event.environment !== "test" ||
+        event.environment !== isolatedEnvironment ||
         event.chainId !== 84532 ||
         !positive(event.clientReadSequence) ||
         !(event.transactionReadSequence === null || positive(event.transactionReadSequence)) ||

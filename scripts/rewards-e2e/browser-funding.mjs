@@ -45,16 +45,21 @@ export async function reviewWalletFunding(page, dialog, expected, credentials = 
   const code = credentials[`${fixture.credentialPrefix}_OTP`];
   if (typeof email !== "string" || !email.includes("@") || !/^[0-9]{6}$/.test(code ?? ""))
     throw new Error("Wallet credentials unavailable; values suppressed");
+  let phase = "authorization-form";
   try {
     await dialog.getByRole("textbox", { name: "Email for your wallet", exact: true }).fill(email);
+    phase = "send-code";
     await dialog.getByRole("button", { name: "Send code", exact: true }).click();
+    phase = "code-form";
     const field = dialog.getByRole("textbox", { name: "Code", exact: true });
     await field.waitFor({ timeout: 15000 });
     await field.fill(code);
+    phase = "prepare-review";
     await dialog.getByRole("button", { name: "Review transfer", exact: true }).click();
     await dialog
       .getByRole("button", { name: "Confirm transfer", exact: true })
       .waitFor({ timeout: 30000 });
+    phase = "transfer-details";
     const details = dialog
       .locator("details")
       .filter({ has: page.locator("summary", { hasText: "Transfer details" }) });
@@ -76,10 +81,32 @@ export async function reviewWalletFunding(page, dialog, expected, credentials = 
       recipient: await value("Recipient"),
       confirmations: await value("Confirmations required"),
     };
+    phase = "verify-transfer";
     verifyTransferReview(review, expected);
     return review;
   } catch {
-    throw new Error("Wallet authorization or transfer review refused; credentials suppressed");
+    // Counts describe the rendered boundary without reading form values, alerts or provider bodies.
+    let ui;
+    try {
+      ui = {
+        emailFields: await dialog
+          .getByRole("textbox", { name: "Email for your wallet", exact: true })
+          .count(),
+        codeFields: await dialog.getByRole("textbox", { name: "Code", exact: true }).count(),
+        confirmButtons: await dialog
+          .getByRole("button", { name: "Confirm transfer", exact: true })
+          .count(),
+        alerts: await dialog.getByRole("alert").count(),
+      };
+    } catch {
+      ui = { unavailable: true };
+    }
+    throw Object.assign(
+      new Error(
+        `Wallet authorization or transfer review refused at ${phase}; credentials suppressed`,
+      ),
+      { fundingReview: { phase, ...ui } },
+    );
   }
 }
 
