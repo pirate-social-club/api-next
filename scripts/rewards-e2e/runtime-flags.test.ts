@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { disableIsolatedRewards, setIsolatedRewardsFlag } from "./runtime-flags.mjs";
+import {
+  disableIsolatedRewards,
+  readIsolatedRewardsFlags,
+  setIsolatedRewardsFlag,
+} from "./runtime-flags.mjs";
 
 const source = "a".repeat(40);
 function fixture(mode = "ok") {
@@ -89,4 +93,13 @@ test("closeout tries both Workers even when one read fails, and never enables", 
   expect(result.flagsOff).toBe(false);
   expect(paths.some((path) => path.includes("jobs-worker"))).toBe(true);
   expect(f.mutations.length).toBe(0);
+});
+test("reading the flags reports what each Worker serves and changes nothing", async () => {
+  const f = fixture();
+  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "false", jobs: "false" });
+  await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
+  const mutations = f.mutations.length;
+  // The fixture serves one version for both names, so both now read on.
+  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "true", jobs: "true" });
+  expect(f.mutations.length).toBe(mutations);
 });

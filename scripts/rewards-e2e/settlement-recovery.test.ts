@@ -206,3 +206,111 @@ test("a missing leg settles on the whole stack's inventory alone", async () => {
   expect(result.settled).toBe(true);
   expect(calls).toEqual([]);
 });
+
+// Everything a failed run can still owe at once: a purchased ticket awaiting
+// settlement and an unpaid credit for each participant.
+const owed = () =>
+  inventory({
+    legs: [leg("0", "10000")],
+    purchases: [{ state: "confirmed", ticket_id: "7", ticket_status: "held" }],
+    drawings: [{ status: "tickets_confirmed" }],
+    credits: ["study-account", "karaoke-account"].map((account_id) => ({
+      account_id,
+      state: "credited",
+      amount_atomic: "500000",
+      paid_atomic: "0",
+      reserved_atomic: "0",
+    })),
+  });
+
+test("with the lease lost nothing is settled, though the brake still says running", async () => {
+  let controlReads = 0;
+  const { run, calls } = harness([owed()], {
+    // The database has not been paused yet: the brake row still reads running.
+    readControl: async () => {
+      controlReads += 1;
+      return { paused: false, revision: "3" };
+    },
+    assertAuthority: () => {
+      throw new Error("Run lease lost: renewal refused by the database");
+    },
+  });
+  const result = await run();
+  expect(controlReads).toBe(1);
+  // No fixture send and no claim: zero new mutations of any kind.
+  expect(calls).toEqual([]);
+  expect(result.actions).toEqual([]);
+  expect(result.settled).toBe(false);
+  expect(result.reason).toBe(
+    "Run lease lost: renewal refused by the database; automatic settlement stopped, recovery needs approval",
+  );
+  // What is outstanding is handed back for the record.
+  expect(result.inventory).toEqual(owed());
+});
+
+test("a lease lost part-way through recovery stops every later send and claim", async () => {
+  let lost = false;
+  const { run, calls } = harness([owed()], {
+    advance: async () => {
+      calls.push("advance");
+      // The lease runs out while the fixture settlement is in progress.
+      lost = true;
+    },
+    assertAuthority: () => {
+      if (lost) throw new Error("Run lease lost: lease expired before it could be renewed");
+    },
+  });
+  const result = await run();
+  // The settlement that was already under way is recorded; no claim follows it.
+  expect(calls).toEqual(["advance"]);
+  expect(result.actions).toEqual([{ id: "advance-purchased-drawing", outcome: "completed" }]);
+  expect(result.settled).toBe(false);
+  expect(result.reason).toContain("automatic settlement stopped, recovery needs approval");
+});
+
+test("a lease lost between two claims stops the second", async () => {
+  let lost = false;
+  const unpaid = inventory({
+    legs: [leg("990000", "10000")],
+    purchases: [{ state: "confirmed", ticket_id: "7", ticket_status: "claimed" }],
+    drawings: [{ status: "credited" }],
+    refunds: [{ state: "confirmed", amount_atomic: "990000" }],
+    credits: owed().credits,
+  });
+  const { run, calls } = harness([unpaid], {
+    claim: async (role: string) => {
+      calls.push(`claim-${role}`);
+      lost = true;
+    },
+    assertAuthority: () => {
+      if (lost) throw new Error("Run lease lost: renewal refused by the database");
+    },
+  });
+  const result = await run();
+  expect(calls).toEqual(["claim-study"]);
+  expect(result.settled).toBe(false);
+});
+
+test("recovery that keeps its lease still settles as before", async () => {
+  const ticket = { state: "confirmed", ticket_id: "7", ticket_status: "held" };
+  const lostDrawing = inventory({
+    legs: [leg("990000", "10000")],
+    purchases: [{ ...ticket, ticket_status: "no_win" }],
+    drawings: [{ status: "no_win" }],
+    refunds: [{ state: "confirmed", amount_atomic: "990000" }],
+  });
+  let asked = 0;
+  const { run, calls } = harness(
+    [inventory({ purchases: [ticket], drawings: [{ status: "tickets_confirmed" }] }), lostDrawing],
+    {
+      assertAuthority: () => {
+        asked += 1;
+      },
+    },
+  );
+  const result = await run();
+  expect(result.settled).toBe(true);
+  expect(calls).toEqual(["advance"]);
+  // Asked on each pass and again before the action it authorizes.
+  expect(asked).toBeGreaterThanOrEqual(3);
+});

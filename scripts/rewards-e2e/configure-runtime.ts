@@ -71,6 +71,13 @@ export async function configureIsolatedRewardsRuntime(input: {
         `${command} ${requirement.privilege} ON ${objectKind} api_next.${requirement.object} ${direction} ${quotedRole}`,
       );
     }
+    // The isolated stack runs unattended, so it admits rewards work only under
+    // a live run lease. This is the deployment that owns that requirement; no
+    // shared database is ever configured through here.
+    await admin.query("SET LOCAL pirate.reward_run_lease_requirement_change = 'deployment'");
+    await admin.query(
+      "UPDATE api_next.reward_operations_run_lease SET required = TRUE WHERE singleton AND NOT required",
+    );
     await admin.query("COMMIT");
   } catch (error) {
     await admin.query("ROLLBACK").catch(() => undefined);
