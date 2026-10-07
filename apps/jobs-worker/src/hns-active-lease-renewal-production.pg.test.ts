@@ -408,9 +408,18 @@ for (const capabilityStatus of ["active", "suspended"] as const)
           sale_namespace_activation_status: capabilityStatus,
           owner_persona_id: persona,
         });
+        // The claim itself is unchanged by renewal; its host status follows the
+        // sale namespace, which this case leaves suspended.
         expect(
           await run(sales.getClaim({ accountId: buyer, claimId: claim.claim.claim_id })),
-        ).toEqual(claim.claim);
+        ).toEqual({
+          ...claim.claim,
+          host: {
+            kind: "unavailable",
+            reason:
+              capabilityStatus === "active" ? "host_not_activated" : "namespace_authority_lost",
+          },
+        });
         const calls = providerCalls;
         await tick();
         expect(providerCalls).toBe(calls);

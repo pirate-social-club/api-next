@@ -457,28 +457,6 @@ export const HandleGrantPrivateV2 = Schema.Struct({
 });
 export type HandleGrantPrivateV2 = Schema.Schema.Type<typeof HandleGrantPrivateV2>;
 
-export const HandleClaimV2 = Schema.Struct({
-  claim_id: BoundedIdentifier,
-  owner_persona_id: PersonaIdV1,
-  offering_id: BoundedIdentifier,
-  offering_hash: Sha256Hex,
-  quote_id: BoundedIdentifier,
-  reservation_id: BoundedIdentifier,
-  reservation_hash: Sha256Hex,
-  sale_namespace_activation_id: BoundedIdentifier,
-  sale_namespace_activation_generation: PositiveInteger,
-  fulfillment: Schema.Struct({ kind: HandleFulfillmentKindV1 }),
-  handle: CommunityHandleKeyV1,
-  display_identifier: Schema.String,
-  payment: HandlePaymentV1,
-  state: Schema.Literals(["issuance_pending", "issued", "blocked", "issuance_failed"]),
-  safe_reason: Schema.NullOr(HandleSafeReasonV2),
-  grant: Schema.NullOr(HandleGrantPrivateV2),
-  created_at: CanonicalInstant,
-  updated_at: CanonicalInstant,
-});
-export type HandleClaimV2 = Schema.Schema.Type<typeof HandleClaimV2>;
-
 export const HandleHostProjectionV1 = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("not_applicable") }),
   Schema.Struct({
@@ -498,6 +476,29 @@ export const HandleHostProjectionV1 = Schema.Union([
     ]),
   }),
 ]);
+
+export const HandleClaimV2 = Schema.Struct({
+  claim_id: BoundedIdentifier,
+  owner_persona_id: PersonaIdV1,
+  offering_id: BoundedIdentifier,
+  offering_hash: Sha256Hex,
+  quote_id: BoundedIdentifier,
+  reservation_id: BoundedIdentifier,
+  reservation_hash: Sha256Hex,
+  sale_namespace_activation_id: BoundedIdentifier,
+  sale_namespace_activation_generation: PositiveInteger,
+  fulfillment: Schema.Struct({ kind: HandleFulfillmentKindV1 }),
+  handle: CommunityHandleKeyV1,
+  display_identifier: Schema.String,
+  payment: HandlePaymentV1,
+  state: Schema.Literals(["issuance_pending", "issued", "blocked", "issuance_failed"]),
+  safe_reason: Schema.NullOr(HandleSafeReasonV2),
+  grant: Schema.NullOr(HandleGrantPrivateV2),
+  host: Schema.optional(HandleHostProjectionV1),
+  created_at: CanonicalInstant,
+  updated_at: CanonicalInstant,
+});
+export type HandleClaimV2 = Schema.Schema.Type<typeof HandleClaimV2>;
 
 export const PublicHandleGrantV2 = Schema.Struct({
   grant_id: BoundedIdentifier,

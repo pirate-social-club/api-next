@@ -305,14 +305,18 @@ const publicGrantFromRow = (row: Row): PublicHandleGrantV4 => {
     ...common,
     fulfillment: { kind: fulfillment },
     handle: { family: "hns", namespace_root: namespaceRoot, handle_label: handleLabel },
-    host: activationEffective
-      ? {
-          kind: "available",
-          normalized_host: `${handleLabel}.${namespaceRoot}`,
-          sale_namespace_activation_generation: activationGeneration,
-          grant_generation: grantGeneration,
-        }
-      : { kind: "unavailable", reason: "sale_namespace_inactive" },
+    host:
+      activationEffective && row.publication_ready === true
+        ? {
+            kind: "available",
+            normalized_host: `${handleLabel}.${namespaceRoot}`,
+            sale_namespace_activation_generation: activationGeneration,
+            grant_generation: grantGeneration,
+          }
+        : {
+            kind: "unavailable",
+            reason: activationEffective ? "host_not_activated" : "sale_namespace_inactive",
+          },
   };
 };
 
@@ -689,12 +693,32 @@ const hnsClaimFromRow = (row: Row): HandleClaimV2 => ({
   state: text(row, "state") as HandleClaimV2["state"],
   safe_reason: nullableText(row, "safe_reason") as HandleClaimV2["safe_reason"],
   grant: row.grant_id === null ? null : grantFromRow(row, "grant_"),
+  host:
+    row.publication_ready === true
+      ? {
+          kind: "available",
+          normalized_host: `${text(row, "handle_label")}.${text(row, "namespace_root")}`,
+          sale_namespace_activation_generation: integer(
+            row,
+            "sale_namespace_activation_generation",
+          ),
+          grant_generation: integer(row, "grant_grant_generation"),
+        }
+      : {
+          kind: "unavailable",
+          reason:
+            row.publication_authorized === false && row.grant_id !== null
+              ? "namespace_authority_lost"
+              : "host_not_activated",
+        },
   created_at: instant(row.created_at),
   updated_at: instant(row.updated_at),
 });
 
 const CLAIM_SELECT = `
   SELECT claim.*,
+         hns_member_host_ready_v1(claim.grant_id) AS publication_ready,
+         hns_member_host_authorized_v1(claim.grant_id) AS publication_authorized,
          handle_grant.grant_id AS grant_grant_id,
          handle_grant.grant_generation AS grant_grant_generation,
          handle_grant.community_id AS grant_community_id,
@@ -3625,6 +3649,8 @@ export function makeControlPlaneHandleSalesRepository(
               const replay = yield* transaction.execute<Row>({
                 label: "handle-sales.claim.replay.read",
                 text: `SELECT action.request_hash,claim.*,
+                              hns_member_host_ready_v1(claim.grant_id) AS publication_ready,
+                              hns_member_host_authorized_v1(claim.grant_id) AS publication_authorized,
                               handle_grant.grant_id AS grant_grant_id,
                               handle_grant.grant_generation AS grant_grant_generation,
                               handle_grant.community_id AS grant_community_id,
@@ -4054,7 +4080,7 @@ export function makeControlPlaneHandleSalesRepository(
         const result = yield* mapped(
           db.execute<Row>({
             label: "handle-sales.grant.list-public-persona",
-            text: `SELECT handle_grant.*,public_persona_projection(handle_grant.owner_persona_id) AS owner_persona,
+            text: `SELECT handle_grant.*,hns_member_host_ready_v1(handle_grant.grant_id) AS publication_ready,public_persona_projection(handle_grant.owner_persona_id) AS owner_persona,
                           EXISTS (
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,$2::timestamptz
@@ -4134,7 +4160,7 @@ export function makeControlPlaneHandleSalesRepository(
         const result = yield* mapped(
           db.execute<Row>({
             label: "handle-sales.grant.read-public-key",
-            text: `SELECT handle_grant.*,public_persona_projection(handle_grant.owner_persona_id) AS owner_persona,
+            text: `SELECT handle_grant.*,hns_member_host_ready_v1(handle_grant.grant_id) AS publication_ready,public_persona_projection(handle_grant.owner_persona_id) AS owner_persona,
                           EXISTS (
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,clock_timestamp()
@@ -4185,6 +4211,7 @@ export function makeControlPlaneHandleSalesRepository(
                      JOIN persona_profiles AS profile ON profile.persona_id=persona.persona_id
                      LEFT JOIN LATERAL (
                        SELECT persona_grant.*,
+                              hns_member_host_ready_v1(persona_grant.grant_id) AS publication_ready,
                               EXISTS (
                                 SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                                   persona_grant.sale_namespace_activation_id,clock_timestamp()

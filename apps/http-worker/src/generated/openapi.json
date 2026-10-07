@@ -65072,6 +65072,97 @@
                                 }
                               ]
                             },
+                            "host": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_applicable"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "available"
+                                          ]
+                                        },
+                                        "normalized_host": {
+                                          "type": "string"
+                                        },
+                                        "sale_namespace_activation_generation": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        },
+                                        "grant_generation": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "normalized_host",
+                                        "sale_namespace_activation_generation",
+                                        "grant_generation"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "unavailable"
+                                          ]
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "namespace_suspended",
+                                            "namespace_authority_lost",
+                                            "sale_namespace_inactive",
+                                            "dns_or_gateway_unhealthy",
+                                            "host_not_activated"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "created_at": {
                               "type": "string"
                             },
@@ -65647,6 +65738,97 @@
                                     "issued_at"
                                   ],
                                   "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "host": {
+                              "anyOf": [
+                                {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_applicable"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "available"
+                                          ]
+                                        },
+                                        "normalized_host": {
+                                          "type": "string"
+                                        },
+                                        "sale_namespace_activation_generation": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        },
+                                        "grant_generation": {
+                                          "type": "integer",
+                                          "allOf": [
+                                            {
+                                              "minimum": 1,
+                                              "maximum": 9007199254740991
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "normalized_host",
+                                        "sale_namespace_activation_generation",
+                                        "grant_generation"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "unavailable"
+                                          ]
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "namespace_suspended",
+                                            "namespace_authority_lost",
+                                            "sale_namespace_inactive",
+                                            "dns_or_gateway_unhealthy",
+                                            "host_not_activated"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
                                 },
                                 {
                                   "type": "null"
@@ -66608,6 +66790,97 @@
                                 "issued_at"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "host": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "not_applicable"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "available"
+                                      ]
+                                    },
+                                    "normalized_host": {
+                                      "type": "string"
+                                    },
+                                    "sale_namespace_activation_generation": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    "grant_generation": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "normalized_host",
+                                    "sale_namespace_activation_generation",
+                                    "grant_generation"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "unavailable"
+                                      ]
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "enum": [
+                                        "namespace_suspended",
+                                        "namespace_authority_lost",
+                                        "sale_namespace_inactive",
+                                        "dns_or_gateway_unhealthy",
+                                        "host_not_activated"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "reason"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             },
                             {
                               "type": "null"
