@@ -180,10 +180,16 @@ suite("Telegram practice through the webhook's inline path", () => {
       // The first prompt for a new learner says once who can hear their voice notes.
       expect(prompt?.text).toBe(`Say this back:\n${lines[0]}\n\n${notice}`);
       expect(prompt?.reply_markup).toEqual({ force_reply: true, selective: true });
+      // Until the learner answers by voice, a repeated prompt repeats the notice.
       await receive(inline, message(555, "/resume"));
-      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}`);
-      // Nothing asked about age, and nothing pointed at the website.
-      expect(JSON.stringify(sent)).not.toContain("16");
+      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}\n\n${notice}`);
+      // Nothing asked about age, and nothing pointed at the website. Only what the learner
+      // reads is searched: a button's random token may contain any digits.
+      const shown = sent.flatMap((call) => [
+        call.body.text ?? "",
+        ...(call.body.reply_markup?.inline_keyboard ?? []).flat().map((button) => button.text),
+      ]);
+      expect(shown.join("\n")).not.toContain("16");
       expect(JSON.stringify(sent)).not.toContain("https://");
       // Replies were sent inline; the queue holds only the delayed backstop for each update.
       expect(queued).toHaveLength(6);

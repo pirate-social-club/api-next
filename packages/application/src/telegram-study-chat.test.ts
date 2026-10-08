@@ -334,6 +334,8 @@ function fixture() {
     },
   };
 }
+const notice =
+  "The community bot owner can access and listen to voice messages sent here. Pirate also receives this recording for transcription and grading.";
 test("a new learner reaches the first prompt in one song tap, with no question or sign-in", async () => {
   const f = fixture();
   f.grant(null);
@@ -346,7 +348,7 @@ test("a new learner reaches the first prompt in one song tap, with no question o
   expect(f.counts().starts).toBe(1);
   expect(f.keys).toEqual(["telegram:choose:start"]);
   const prompt = f.replies.at(-1);
-  expect(prompt?.text).toStartWith("Say this back:\nHold on\n\nThe community bot owner");
+  expect(prompt?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
   expect(prompt?.keyboard).toEqual({ force_reply: true, selective: true });
   expect(prompt?.buttons).toEqual([]);
   expect(f.state().grantRevision).toBe(0);
@@ -388,7 +390,7 @@ test("a retried song tap replays one identity and one lesson; a refused identity
   await f.press("choose", data);
   expect(f.enrollments()).toBe(1);
   expect(f.counts().starts).toBe(1);
-  expect(f.replies.at(-1)?.text).toStartWith("Say this back:\nHold on");
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
   const g = fixture();
   g.grant(null);
   g.enrollmentUnavailable();
@@ -416,16 +418,62 @@ test("feedback is its own message, answers the voice note and precedes the next 
   expect(f.sent.map((entry) => entry.slot)).toEqual(["feedback", "reply"]);
   expect(f.counts().answers).toBe(1);
 });
-test("a new learner's first prompt says who can hear them, once; completion is two short lines", async () => {
-  const notice = "The community bot owner can access and listen to voice messages sent here.";
+test("each prompt says who can hear the learner until their first voice answer", async () => {
   const f = fixture();
   f.grant(null);
   await f.begin();
-  expect(f.replies.at(-1)?.text).toBe(
-    `Say this back:\nHold on\n\n${notice} Pirate also receives this recording for transcription and grading.`,
-  );
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
+  // The first prompt may never have arrived, so repeating it repeats the notice.
   await f.send("again", "/resume");
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
+  expect(f.state().disclosed).toBeUndefined();
+  // The repeated prompt is the second one delivered, so it is the one to reply to.
+  await f.voice("answer", 100);
+  expect(f.state().disclosed).toBe(true);
   expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
+  await f.send("later", "/resume");
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
+});
+test("a start that fails after the identity was issued does not lose the notice", async () => {
+  // The update is retried after the identity already exists.
+  const f = fixture();
+  f.grant(null);
+  await f.send("picker", "/study");
+  const data = `study:${f.state().token}:0`;
+  const start = f.study.start;
+  Object.assign(f.study, {
+    start: async () => {
+      throw Error("database unavailable");
+    },
+  });
+  await expect(f.press("choose", data)).rejects.toThrow("database unavailable");
+  Object.assign(f.study, { start });
+  await f.press("choose", data);
+  expect(f.enrollments()).toBe(1);
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
+  // The lesson is refused, and the learner chooses again.
+  const g = fixture();
+  g.grant(null);
+  await g.send("picker", "/study");
+  Object.assign(g.study, {
+    start: async () => {
+      throw new StudyV2CommandRejected({ reason: "not-found" });
+    },
+  });
+  await g.press("choose");
+  expect(g.replies.at(-1)?.text).toBe("This lesson is unavailable. Use /study to start again.");
+  Object.assign(g.study, { start });
+  await g.send("picker-again", "/study");
+  await g.press("choose-again");
+  expect(g.enrollments()).toBe(1);
+  expect(g.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
+});
+test("a learner whose identity was not issued here still sees the notice; completion is two short lines", async () => {
+  // The fixture's default grant stands for a linked account, which never passes enrolment.
+  const f = fixture();
+  await f.begin();
+  expect(f.enrollments()).toBe(0);
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
   const g = fixture();
   g.session({
     ...session,
@@ -448,8 +496,8 @@ test("real session determines count and threshold; callback tokens rotate withou
   await f.send("picker", "/study");
   const token = f.state().token;
   await f.press("choose");
-  // The prompt is only the instruction and the line: no counts, threshold or persona.
-  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
+  // The prompt is the instruction, the line and the notice: no counts, threshold or persona.
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\nHold on\n\n${notice}`);
   expect(f.replies.at(-1)?.keyboard).toEqual({ force_reply: true, selective: true });
   await f.press("old", `study:${token}:0`);
   expect(f.counts().starts).toBe(1);

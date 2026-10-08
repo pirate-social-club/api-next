@@ -100,8 +100,7 @@ export async function handleTelegramStudyChat(
     await persist();
     await send(message, feedback);
   };
-  // A learner's first prompt in this bot also says who can hear their voice notes.
-  let disclose = false;
+  // Until a learner has answered by voice in this bot, each prompt says who can hear them.
   const showSession = async (
     session: StudySessionV2,
     feedback: TelegramStudyReply | null = null,
@@ -148,7 +147,7 @@ export async function handleTelegramStudyChat(
         ...text(
           [
             t("sayThis", { line: item.presentation.reference_text }),
-            ...(disclose ? [t("disclosure")] : []),
+            ...(state.disclosed === true ? [] : [t("disclosure")]),
           ].join("\n\n"),
         ),
         keyboard: { force_reply: true, selective: true },
@@ -256,7 +255,6 @@ export async function handleTelegramStudyChat(
         return;
       }
       grant = enrolled;
-      disclose = true;
     }
     if (state.sessionId !== null && state.grantRevision !== grant.revision) {
       state = { ...state, sessionId: null, turn: null, pendingAnswer: null, grantRevision: null };
@@ -312,10 +310,6 @@ export async function handleTelegramStudyChat(
           await respond(text(t("replyToLine")));
           return;
         }
-        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
-          await oversized();
-          return;
-        }
         pending = {
           inboxId: inbox.id,
           sessionId: state.sessionId,
@@ -325,6 +319,12 @@ export async function handleTelegramStudyChat(
           durationMs: message.voice.duration * 1000,
           messageId: message.message_id,
         };
+        // A voice reply to a delivered prompt: the learner has seen the notice it carried.
+        state = { ...state, disclosed: true };
+        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
+          await oversized();
+          return;
+        }
       }
       if (pending.durationMs > 60000) {
         state = { ...state, pendingAnswer: null };

@@ -23,11 +23,14 @@ screen by that question are answered as stale choices.
 
 A prompt is the localized instruction and the line, for example "Say this
 back:" followed by the lyric. It carries no card count, threshold, persona or
-command footer. A learner's first prompt in a bot also carries one paragraph
-saying that the community bot owner can listen to voice messages sent there and
-that Pirate receives the recording for transcription and grading; later prompts
-do not repeat it. The learner answers by replying to the prompt with a voice
-note. The verdict is its own short message, sent as a reply to the voice note:
+command footer. Until a learner has answered by voice in a bot, each prompt
+also carries one paragraph saying that the community bot owner can listen to
+voice messages sent there and that Pirate receives the recording for
+transcription and grading. In the ordinary run that is the first prompt only.
+The rule is kept in the conversation state rather than tied to enrolment, so a
+retried update, a refused lesson start, a first prompt that never arrived, a
+linked account or a replaced bot cannot lose the notice. The learner answers by
+replying to the prompt with a voice note. The verdict is its own short message, sent as a reply to the voice note:
 "✅ Correct", or "❌ Incorrect" with what was heard, or a request to record
 again. The next prompt follows as a separate message. The two are stored as
 separate deliveries, and the prompt is ordered after the verdict, so a retry or
