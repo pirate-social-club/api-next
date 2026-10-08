@@ -163,9 +163,6 @@ suite("Telegram practice through the webhook's inline path", () => {
         ).toEqual({ ok: true });
         await Promise.all(background.splice(0));
       };
-      const notice =
-        "The community bot owner can access and listen to voice messages sent here. Pirate also receives this recording for transcription and grading.";
-
       await receive(inline, message(555, "/start"));
       expectPracticePicker(lastMessage(), "Choose a song to study:");
       await receive(inline, callback(555, "tg-menu:songs"));
@@ -177,12 +174,11 @@ suite("Telegram practice through the webhook's inline path", () => {
       expectPracticePicker(lastMessage(), "Choose a song to study:");
       await receive(inline, callback(555, songButton(lastMessage())));
       const prompt = lastMessage();
-      // The first prompt for a new learner says once who can hear their voice notes.
-      expect(prompt?.text).toBe(`Say this back:\n${lines[0]}\n\n${notice}`);
+      // The first prompt is the instruction and the line, with nothing after it.
+      expect(prompt?.text).toBe(`Say this back:\n${lines[0]}`);
       expect(prompt?.reply_markup).toEqual({ force_reply: true, selective: true });
-      // Until the learner answers by voice, a repeated prompt repeats the notice.
       await receive(inline, message(555, "/resume"));
-      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}\n\n${notice}`);
+      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}`);
       // Nothing asked about age, and nothing pointed at the website. Only what the learner
       // reads is searched: a button's random token may contain any digits.
       const shown = sent.flatMap((call) => [
@@ -218,7 +214,7 @@ suite("Telegram practice through the webhook's inline path", () => {
       expectPracticePicker(lastMessage(), "Choose a song to study:");
       await receive(consumer, callback(777, songButton(lastMessage())));
       await drain();
-      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}\n\n${notice}`);
+      expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}`);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();

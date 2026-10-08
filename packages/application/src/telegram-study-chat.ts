@@ -100,7 +100,6 @@ export async function handleTelegramStudyChat(
     await persist();
     await send(message, feedback);
   };
-  // Until a learner has answered by voice in this bot, each prompt says who can hear them.
   const showSession = async (
     session: StudySessionV2,
     feedback: TelegramStudyReply | null = null,
@@ -117,15 +116,36 @@ export async function handleTelegramStudyChat(
       selectedUntil: 0,
     };
     if (session.status === "completed" || current === null) {
-      state = { ...state, turn: null };
+      // "Practice again" is a song choice from a one-song list: the lesson just finished.
+      state = {
+        ...state,
+        turn: null,
+        songs: [
+          {
+            postId: session.post_id,
+            title: state.songs.find((song) => song.postId === session.post_id)?.title ?? "",
+          },
+        ],
+        selectedUntil: services.now() + 15 * 60 * 1000,
+      };
       observe("completion", session.items.length);
       await respond(
-        text(
-          t("complete", {
-            correct: session.progress.first_pass_correct,
-            total: session.items.length,
-          }),
-        ),
+        {
+          ...text(
+            t("complete", {
+              correct: session.progress.first_pass_correct,
+              total: session.items.length,
+            }),
+          ),
+          keyboard: {
+            inline_keyboard: [
+              [
+                { text: t("chooseSongAction"), callback_data: "tg-menu:songs" },
+                { text: t("practiceAgain"), callback_data: `study:${state.token}:0` },
+              ],
+            ],
+          },
+        },
         feedback,
       );
       return;
@@ -142,14 +162,10 @@ export async function handleTelegramStudyChat(
         deliveryId: await services.vault.hash(`${inbox.id}:reply`),
       },
     };
+    // The prompt is the instruction and the line, nothing else.
     await respond(
       {
-        ...text(
-          [
-            t("sayThis", { line: item.presentation.reference_text }),
-            ...(state.disclosed === true ? [] : [t("disclosure")]),
-          ].join("\n\n"),
-        ),
+        ...text(t("sayThis", { line: item.presentation.reference_text })),
         keyboard: { force_reply: true, selective: true },
       },
       feedback,
@@ -310,6 +326,10 @@ export async function handleTelegramStudyChat(
           await respond(text(t("replyToLine")));
           return;
         }
+        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
+          await oversized();
+          return;
+        }
         pending = {
           inboxId: inbox.id,
           sessionId: state.sessionId,
@@ -319,12 +339,6 @@ export async function handleTelegramStudyChat(
           durationMs: message.voice.duration * 1000,
           messageId: message.message_id,
         };
-        // A voice reply to a delivered prompt: the learner has seen the notice it carried.
-        state = { ...state, disclosed: true };
-        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
-          await oversized();
-          return;
-        }
       }
       if (pending.durationMs > 60000) {
         state = { ...state, pendingAnswer: null };
