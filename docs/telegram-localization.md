@@ -1,9 +1,9 @@
 # Telegram interface localization
 
 The bot owns English, Russian and Georgian interface catalogs in
-packages/application/src/telegram/copy.ts. First contact names the community,
-explains English voice-note practice and owner access when practice is enabled,
-and offers actions plus English / Русский / ქართული before sign-in. Discovery-only
+packages/application/src/telegram/copy.ts. Practice bots open on the song list
+and offer one Songs action, with no sign-in step. The language picker offers
+English / Русский / ქართული when those catalogs are enabled. Discovery-only
 bots offer browsing and help without advertising disabled practice.
 
 ## Offered languages
@@ -14,7 +14,7 @@ the bot offers English only: Telegram language suggestions, saved choices and
 language callbacks for any other catalog fall back to English, and the language
 picker row is hidden while only one language is offered. A code deploy therefore
 cannot enable a catalog by itself. Add ru or ka to interface_locales only after
-that catalog, including the study-first age and practice strings, has had
+that catalog, including the song picker, practice and completion strings, has had
 language-qualified review.
 
 ## Preference authority
@@ -96,9 +96,8 @@ created or changed by implementation tests.
 ## Acceptance boundary
 
 The owned Russian/Georgian copy is a draft for review. The audit handoff exports
-every catalog key alongside English. Review owner recording access,
-cross-bot identity correlation, no-reward wording, voice instructions and
-feedback for accuracy, natural language and consent clarity.
+every catalog key alongside English. Review song selection, voice instructions,
+feedback, completion scores and next actions for accuracy and natural language.
 
 This API change does not translate the website. The separately registered Solid
 task owns sign-in, persona, consent, account management and return pages. A

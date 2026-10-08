@@ -23,20 +23,27 @@ screen by that question are answered as stale choices.
 
 A prompt is the localized instruction and the line, for example "Say this
 back:" followed by the lyric. It carries no card count, threshold, persona or
-command footer. Until a learner has answered by voice in a bot, each prompt
-also carries one paragraph saying that the community bot owner can listen to
-voice messages sent there and that Pirate receives the recording for
-transcription and grading. In the ordinary run that is the first prompt only.
-The rule is kept in the conversation state rather than tied to enrolment, so a
-retried update, a refused lesson start, a first prompt that never arrived, a
-linked account or a replaced bot cannot lose the notice. The learner answers by
-replying to the prompt with a voice note. The verdict is its own short message, sent as a reply to the voice note:
+command footer, and nothing follows the line. The bot says nowhere, in a
+prompt, in /help or elsewhere, who can hear a learner's voice notes: the
+workspace_owner removed that notice completely on 2026-10-08, after it had
+moved from the welcome line to the first prompt. A decision to release Telegram
+practice to production has to take that into account. The learner answers by
+replying to the prompt with a voice note. The verdict is its own short message,
+sent as a reply to the voice note:
 "✅ Correct", or "❌ Incorrect" with what was heard, or a request to record
 again. The next prompt follows as a separate message. The two are stored as
 separate deliveries, and the prompt is ordered after the verdict, so a retry or
-a queue reordering cannot swap them. Completion is "Lesson complete" and the
-first-try score. The optional account connection is not offered at completion,
-because the Telegram login it leads to still fails.
+a queue reordering cannot swap them. Completion is "🎉 Lesson complete!" and
+the first-try score, for example "8/10 correct on the first try.", with two
+buttons: "Choose a song", which shows the song list, and "Practice again",
+which starts a new lesson on the same song and expires with the song choice
+after fifteen minutes. /resume on a completed lesson shows that ending again
+with fresh buttons and a new fifteen-minute choice window; it does not restart
+the lesson. An active lesson that has expired instead gets restart guidance;
+completed lessons are exempt from that session expiry. Nothing restarts by
+itself and nothing links to the website. The optional
+account connection is not offered at completion, because
+the Telegram login it leads to still fails.
 
 ## Restricted practice identity
 

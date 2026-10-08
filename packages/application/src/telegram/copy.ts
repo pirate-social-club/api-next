@@ -61,7 +61,7 @@ export const telegramCatalogs = {
     helperChinese: "Chinese",
     helperArabic: "Arabic",
     studyHelp:
-      "/study shows the songs, /resume repeats the current line, /cancel stops. Answer each line by replying to it with a voice note. The community owner can read your messages and hear your voice notes.",
+      "/study shows the songs, /resume repeats the current line, /cancel stops. Answer each line by replying to it with a voice note.",
     discoveryHelp:
       "Use /songs to browse. Native Study is not available in this bot yet; open Pirate for Study, rewards and account changes. Use /help for these commands.",
     begin: "Send /start to begin, then /study or /songs. Use /help for help.",
@@ -78,13 +78,13 @@ export const telegramCatalogs = {
       "Use /songs to browse, or /help. Send /study to check whether practice is available.",
     messageLimit: "The daily message limit has been reached. Please try again tomorrow.",
     voiceUnavailable: "Voice input is unavailable. Send a text message instead.",
-    complete: "Lesson complete\n✅ {correct}/{total}",
+    complete: "🎉 Lesson complete!\n{correct}/{total} correct on the first try.",
+    chooseSongAction: "Choose a song",
+    practiceAgain: "Practice again",
     stopped: "Stopped. Use /resume to continue or /study for the songs.",
     processing: "Still checking your last answer.",
     chooseSong: "Choose a song to study:",
     sayThis: "Say this back:\n{line}",
-    disclosure:
-      "The community bot owner can access and listen to voice messages sent here. Pirate also receives this recording for transcription and grading.",
     noReadySongs: "No songs are ready to study in this community yet.",
     selectionExpired: "That choice has expired. Use /study to choose again.",
     songUnavailable: "That song is not ready. Use /study to choose another.",
@@ -124,7 +124,7 @@ export const telegramCatalogs = {
     helperChinese: "Китайский",
     helperArabic: "Арабский",
     studyHelp:
-      "/study показывает песни, /resume повторяет текущую строку, /cancel останавливает урок. Отвечайте на каждую строку голосовым сообщением. Владелец сообщества может читать ваши сообщения и слушать голосовые сообщения.",
+      "/study показывает песни, /resume повторяет текущую строку, /cancel останавливает урок. Отвечайте на каждую строку голосовым сообщением.",
     discoveryHelp:
       "Отправьте /songs, чтобы посмотреть песни. Обучение в чате этого бота пока недоступно; откройте Pirate для обучения, наград и настроек аккаунта. /help показывает эти команды.",
     begin: "Отправьте /start, затем /study или /songs. Для помощи используйте /help.",
@@ -140,13 +140,13 @@ export const telegramCatalogs = {
       "Посмотрите песни через /songs или помощь через /help. Отправьте /study, чтобы проверить доступность практики.",
     messageLimit: "Дневной лимит сообщений достигнут. Попробуйте завтра.",
     voiceUnavailable: "Голосовой ввод недоступен. Отправьте текстовое сообщение.",
-    complete: "Урок завершён\n✅ {correct}/{total}",
+    complete: "🎉 Урок завершён!\n{correct}/{total} с первой попытки.",
+    chooseSongAction: "Выбрать песню",
+    practiceAgain: "Ещё раз",
     stopped: "Остановлено. Отправьте /resume, чтобы продолжить, или /study, чтобы открыть песни.",
     processing: "Предыдущий ответ ещё проверяется.",
     chooseSong: "Выберите песню для изучения:",
     sayThis: "Произнесите:\n{line}",
-    disclosure:
-      "Владелец бота сообщества может получить доступ к отправленным сюда голосовым сообщениям и прослушать их. Pirate также получает запись для расшифровки и оценки.",
     noReadySongs: "В этом сообществе пока нет готовых для изучения песен.",
     selectionExpired: "Срок выбора истёк. Отправьте /study и выберите снова.",
     songUnavailable: "Эта песня не готова. Отправьте /study и выберите другую.",
@@ -186,7 +186,7 @@ export const telegramCatalogs = {
     helperChinese: "ჩინური",
     helperArabic: "არაბული",
     studyHelp:
-      "/study აჩვენებს სიმღერებს, /resume იმეორებს მიმდინარე სტრიქონს, /cancel აჩერებს გაკვეთილს. თითოეულ სტრიქონს უპასუხეთ ხმოვანი შეტყობინებით. თემის მფლობელს შეუძლია თქვენი შეტყობინებების წაკითხვა და ხმოვანი შეტყობინებების მოსმენა.",
+      "/study აჩვენებს სიმღერებს, /resume იმეორებს მიმდინარე სტრიქონს, /cancel აჩერებს გაკვეთილს. თითოეულ სტრიქონს უპასუხეთ ხმოვანი შეტყობინებით.",
     discoveryHelp:
       "სიმღერების სანახავად გამოიყენეთ /songs. ამ ბოტში ჩატით სწავლა ჯერ მიუწვდომელია; სწავლისთვის, ჯილდოებისა და ანგარიშის პარამეტრებისთვის გახსენით Pirate. /help ამ ბრძანებებს აჩვენებს.",
     begin: "დასაწყებად გაგზავნეთ /start, შემდეგ /study ან /songs. დახმარებისთვის გამოიყენეთ /help.",
@@ -203,13 +203,13 @@ export const telegramCatalogs = {
       "სიმღერებისთვის გამოიყენეთ /songs, დახმარებისთვის — /help. ვარჯიშის ხელმისაწვდომობის შესამოწმებლად გაგზავნეთ /study.",
     messageLimit: "დღიური შეტყობინებების ლიმიტი ამოიწურა. სცადეთ ხვალ.",
     voiceUnavailable: "ხმოვანი შეყვანა მიუწვდომელია. გაგზავნეთ ტექსტური შეტყობინება.",
-    complete: "გაკვეთილი დასრულდა\n✅ {correct}/{total}",
+    complete: "🎉 გაკვეთილი დასრულდა!\n{correct}/{total} პირველივე ცდაზე.",
+    chooseSongAction: "სიმღერის არჩევა",
+    practiceAgain: "კიდევ ერთხელ",
     stopped: "შეჩერებულია. გასაგრძელებლად გაგზავნეთ /resume, სიმღერებისთვის — /study.",
     processing: "წინა პასუხი ჯერ მოწმდება.",
     chooseSong: "აირჩიეთ სასწავლი სიმღერა:",
     sayThis: "თქვით:\n{line}",
-    disclosure:
-      "თემის ბოტის მფლობელს აქ გაგზავნილი ხმოვანი შეტყობინებების მოსმენა შეუძლია. Pirate-იც იღებს ჩანაწერს ტრანსკრიფციისა და შეფასებისთვის.",
     noReadySongs: "ამ თემში სასწავლად მზად სიმღერები ჯერ არ არის.",
     selectionExpired: "არჩევანის ვადა გავიდა. /study-ით აირჩიეთ ხელახლა.",
     songUnavailable: "ეს სიმღერა მზად არ არის. /study-ით აირჩიეთ სხვა.",
