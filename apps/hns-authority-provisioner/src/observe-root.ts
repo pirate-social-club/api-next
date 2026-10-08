@@ -21,6 +21,7 @@ import {
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson, validCommunityRouteRoot } from "@pirate/domain";
 import type { HnsRootLiveReadinessResultV1 } from "./live-readiness.ts";
+import { PowerDnsManagedProfileMismatchError } from "./powerdns.ts";
 import {
   HNS_AUTHORITY_NAMESERVERS,
   HNS_AUTHORITY_PROVISION_RESULT_VERSION,
@@ -34,11 +35,13 @@ export type HnsRootReadinessObservationPorts = Readonly<{
   readonly inspect_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
+    readonly expected_managed_rrset_sha256?: string;
   }) => Promise<HnsAuthorityZoneResult>;
   readonly reconcile_zone: (input: {
     readonly root_label: string;
     readonly challenge_txt_value: string;
     readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+    readonly expected_managed_rrset_sha256: string;
     readonly mutation_lease?: HnsZoneMutationLease;
   }) => Promise<void>;
   readonly observe_live: (input: {
@@ -462,10 +465,18 @@ export async function observeHnsRootReadinessV1(input: {
         root_label: input.request.root_label,
         challenge_txt_value: input.request.challenge_txt_value,
         expected_ds_records: provision.ds_records,
+        expected_managed_rrset_sha256: provision.managed_rrset_sha256,
         mutation_lease: input.observation_attempt,
       });
-    } catch {
-      throw new HnsRootReadinessObservationError("authority_unavailable");
+    } catch (error) {
+      // Configuration that no longer reproduces the provision result is a
+      // mismatch, as it was when reconciliation wrote it and inspection then
+      // disagreed; anything else is the provider being unreachable.
+      throw new HnsRootReadinessObservationError(
+        error instanceof PowerDnsManagedProfileMismatchError
+          ? "authority_mismatch"
+          : "authority_unavailable",
+      );
     }
   }
   let zone: HnsAuthorityZoneResult;
@@ -473,6 +484,7 @@ export async function observeHnsRootReadinessV1(input: {
     zone = await input.ports.inspect_zone({
       root_label: input.request.root_label,
       challenge_txt_value: input.request.challenge_txt_value,
+      expected_managed_rrset_sha256: provision.managed_rrset_sha256,
     });
   } catch {
     throw new HnsRootReadinessObservationError("authority_unavailable");

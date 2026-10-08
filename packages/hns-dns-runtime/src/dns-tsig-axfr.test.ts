@@ -515,6 +515,102 @@ describe("canonical authority zone derivation", () => {
     expect(compressedZone).toEqual(uncompressedZone);
   });
 
+  test("carries wildcard AAAA and HTTPS record sets, with the HTTPS target in canonical form", () => {
+    const wildcard = `*.${zoneName}`;
+    const derive = (records: readonly Uint8Array[]) => {
+      const current = session();
+      const response = appendTsig(
+        unsignedResponse([soa(), apexNs, appA, ...records, soa()], true),
+        requestMac(current.request_bytes),
+        0,
+      );
+      return deriveCanonicalHnsAuthorityZoneBytesV1({
+        zone_name: zoneName,
+        response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([response.message]),
+      });
+    };
+    const mapped = record(
+      wildcard,
+      28,
+      300,
+      new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 94, 103, 168, 161]),
+    );
+    // alpn=h2,http/1.1: key 1, twelve octets, two length-prefixed protocol names.
+    const alpn = concat([
+      uint16(1),
+      uint16(12),
+      new Uint8Array([2, ...new TextEncoder().encode("h2")]),
+      new Uint8Array([8, ...new TextEncoder().encode("http/1.1")]),
+    ]);
+    const https = (target: Uint8Array) =>
+      record(wildcard, 65, 300, concat([uint16(1), target, alpn]));
+    const hexOf = (bytes: Uint8Array) =>
+      [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+    const zone = JSON.parse(
+      new TextDecoder().decode(derive([mapped, https(new Uint8Array([0]))])),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(zone.records.filter((entry) => entry[0] === wildcard)).toEqual([
+      [wildcard, 28, 1, 300, "00000000000000000000ffff5e67a8a1"],
+      [wildcard, 65, 1, 300, `000100${hexOf(alpn)}`],
+    ]);
+
+    // A named target is canonical like any other name: its letter case does not change the zone.
+    const lower = derive([https(name(`edge.${zoneName}`))]);
+    const upper = derive([https(name(`EDGE.${zoneName}`))]);
+    expect(upper).toEqual(lower);
+    expect(new TextDecoder().decode(lower)).toContain(`0001${hexOf(name(`edge.${zoneName}`))}`);
+
+    // Parameters are kept exactly as transferred, so different parameters are a different zone.
+    const onlyH2 = concat([
+      uint16(1),
+      uint16(3),
+      new Uint8Array([2, ...new TextEncoder().encode("h2")]),
+    ]);
+    const withOnlyH2 = JSON.parse(
+      new TextDecoder().decode(
+        derive([record(wildcard, 65, 300, concat([uint16(1), new Uint8Array([0]), onlyH2]))]),
+      ),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(withOnlyH2.records.find((entry) => entry[1] === 65)?.[4]).toBe(`000100${hexOf(onlyH2)}`);
+
+    // A target written with a compression pointer is the same record as its
+    // uncompressed form. Offset 12 is the question name, which is the zone.
+    const pointerToZone = new Uint8Array([4, ...new TextEncoder().encode("edge"), 0xc0, 12]);
+    expect(derive([https(pointerToZone)])).toEqual(lower);
+
+    // Alias mode, priority zero with a named target and no parameters, is carried too.
+    const alias = JSON.parse(
+      new TextDecoder().decode(
+        derive([record(wildcard, 65, 300, concat([uint16(0), name(`edge.${zoneName}`)]))]),
+      ),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(alias.records.find((entry) => entry[1] === 65)?.[4]).toBe(
+      `0000${hexOf(name(`edge.${zoneName}`))}`,
+    );
+
+    // Refused: a record with no room for a target, and a target whose labels
+    // run past the end of its own record into the next one.
+    expect(() => derive([record(wildcard, 65, 300, uint16(1))])).toThrow(
+      "invalid AXFR service-binding data",
+    );
+    const overrun = concat([uint16(1), new Uint8Array([9, ...new TextEncoder().encode("edge")])]);
+    expect(() => derive([record(wildcard, 65, 300, overrun)])).toThrow(HnsDnsTsigAxfrError);
+
+    // The same overrun where every octet the target borrows still reads as a
+    // label, so only the record boundary can refuse it. The target's first
+    // label claims two octets and its record holds one. The next record's
+    // owner lends the rest: its length octet 0x22 completes that label, and
+    // its first character, "!", is a length of 33 that spans the remainder of
+    // the owner's first label, after which the reader is back in step with
+    // the owner name and ends where that name ends.
+    const spill = concat([uint16(1), new Uint8Array([2, 0x61])]);
+    const lender = record(`!${"x".repeat(33)}.${zoneName}`, 1, 300, new Uint8Array([192, 0, 2, 1]));
+    expect(() => derive([record(wildcard, 65, 300, spill), lender])).toThrow(
+      "invalid AXFR service-binding data",
+    );
+  });
+
   test("omits online RRSIG bytes but detects a changed stable record", () => {
     const firstSession = session();
     const first = appendTsig(

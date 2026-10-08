@@ -23,6 +23,7 @@ export function makeFencedHnsRootZoneReconciler(
   readonly root_label: string;
   readonly challenge_txt_value: string;
   readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+  readonly expected_managed_rrset_sha256: string;
   readonly mutation_lease?: HnsZoneMutationLease;
 }) => Promise<void> {
   return (input) =>
