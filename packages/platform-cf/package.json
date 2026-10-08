@@ -188,6 +188,7 @@
     "./media-immutable-object-key": "./src/media-immutable-object-key.ts",
     "./video-source-grant-issuer": "./src/video-source-grant-issuer.ts",
     "./video-source-grant-resolver": "./src/video-source-grant-resolver.ts",
+    "./worker-background": "./src/worker-background.ts",
     "./worker-request-diagnostics": "./src/worker-request-diagnostics.ts",
     "./hns-authority-diagnostics": "./src/hns-authority-diagnostics.ts",
     "./video-recognition-provider": "./src/video-recognition-provider.ts",

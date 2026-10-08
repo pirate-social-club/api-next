@@ -36,9 +36,46 @@ export interface TelegramBindings
   };
 }
 
+/**
+ * `defer` continues work after the current response. A Worker that supplies it processes an
+ * accepted update and sends its reply itself; the queue then only recovers interrupted work.
+ */
+export interface TelegramRuntimeOptions {
+  readonly defer?: (work: () => Promise<unknown>) => boolean;
+}
+
+type TelegramWork = { kind: "inbox" | "delivery"; id: string };
+
+/**
+ * Without `defer`, work goes to the queue. With it, the caller's own Worker does the work:
+ * a stored reply is sent at once, and a stored update is processed after the response. The
+ * queue remains the fallback, and the scheduled scanner recovers anything interrupted.
+ */
+export function makeTelegramWake(input: {
+  readonly queue: { send(body: TelegramWork): Promise<void> };
+  readonly defer: TelegramRuntimeOptions["defer"];
+  readonly inbox: (id: string) => Promise<void>;
+  readonly delivery: (id: string) => Promise<void>;
+}): (work: TelegramWork) => Promise<void> {
+  const { queue, defer } = input;
+  if (defer === undefined) return (work) => queue.send(work);
+  return async (work) => {
+    if (work.kind === "delivery") {
+      try {
+        await input.delivery(work.id);
+      } catch {
+        await queue.send(work);
+      }
+      return;
+    }
+    if (!defer(() => input.inbox(work.id).catch(() => undefined))) await queue.send(work);
+  };
+}
+
 async function buildTelegramServices(
   bindings: TelegramBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: TelegramRuntimeOptions,
 ): Promise<TelegramServices | null> {
   const config = decodeTelegramConfiguration(bindings);
   if (!config.enabled) return null;
@@ -65,7 +102,12 @@ async function buildTelegramServices(
     webhookOrigin: config.webhook_origin,
     interfaceLocales: config.interface_locales ?? ["en"],
     now: Date.now,
-    wake: (work) => queue.send(work),
+    wake: makeTelegramWake({
+      queue,
+      defer: options.defer,
+      inbox: (id) => processTelegramInbox(services, id),
+      delivery: (id) => processTelegramDelivery(services, id),
+    }),
   };
   const study = makeTelegramStudyServices(
     {
@@ -108,9 +150,10 @@ export async function consumeTelegramWork(services: TelegramServices, body: unkn
 export async function makeTelegramServices(
   bindings: TelegramBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: TelegramRuntimeOptions = {},
 ): Promise<TelegramServices | null> {
   try {
-    return await buildTelegramServices(bindings, runtime);
+    return await buildTelegramServices(bindings, runtime, options);
   } catch (error) {
     logTelegramSetupFailure("chat", error);
     return null;

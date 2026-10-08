@@ -8,7 +8,7 @@ import {
   telegramConfigurationFixture,
 } from "../../testing/src/telegram-configuration-fixture.ts";
 import { makeTelegramLinkServices } from "./telegram-linking-runtime.ts";
-import { makeTelegramServices } from "./telegram-runtime.ts";
+import { makeTelegramServices, makeTelegramWake } from "./telegram-runtime.ts";
 import { makeTelegramStudyServices } from "./telegram-study-runtime.ts";
 
 function fixture() {
@@ -121,4 +121,54 @@ test("chat and linking query failures never log database errors or connection de
   } finally {
     log.mockRestore();
   }
+});
+
+test("a Worker that can defer handles updates and replies itself; the queue is only a fallback", async () => {
+  const queued: string[] = [],
+    handled: string[] = [];
+  const base = {
+    queue: {
+      send: async (work: { kind: string; id: string }) => {
+        queued.push(`${work.kind}:${work.id}`);
+      },
+    },
+    inbox: async (id: string) => {
+      handled.push(`inbox:${id}`);
+      if (id === "fails") throw Error("processing failed");
+    },
+    delivery: async (id: string) => {
+      handled.push(`delivery:${id}`);
+      if (id === "fails") throw Error("send failed");
+    },
+  };
+  // A queue consumer has nothing to defer with and keeps queueing.
+  const queueOnly = makeTelegramWake({ ...base, defer: undefined });
+  await queueOnly({ kind: "inbox", id: "a" });
+  await queueOnly({ kind: "delivery", id: "b" });
+  expect(queued).toEqual(["inbox:a", "delivery:b"]);
+  expect(handled).toEqual([]);
+  queued.length = 0;
+  const background: Promise<unknown>[] = [];
+  const inline = makeTelegramWake({
+    ...base,
+    defer: (work) => {
+      background.push(work());
+      return true;
+    },
+  });
+  await inline({ kind: "inbox", id: "c" });
+  await inline({ kind: "inbox", id: "fails" });
+  await inline({ kind: "delivery", id: "d" });
+  await inline({ kind: "delivery", id: "fails" });
+  await Promise.all(background);
+  expect(handled).toEqual(["inbox:c", "inbox:fails", "delivery:d", "delivery:fails"]);
+  // A failed update is left to the scanner; a failed send falls back to the queue.
+  expect(queued).toEqual(["delivery:fails"]);
+  queued.length = 0;
+  handled.length = 0;
+  // Outside a request nothing can be deferred, so the update is queued instead.
+  const noRequest = makeTelegramWake({ ...base, defer: () => false });
+  await noRequest({ kind: "inbox", id: "e" });
+  expect(queued).toEqual(["inbox:e"]);
+  expect(handled).toEqual([]);
 });

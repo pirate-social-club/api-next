@@ -242,6 +242,7 @@ import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video
 import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
 import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
 import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
+import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect, Redacted, Schema } from "effect";
 import {
   makeTelegramServices,
@@ -923,7 +924,8 @@ export async function createProductionHttpWorker(
     config.API_NEXT_ENV,
   );
   const telegramHandlers = makeRecoveringTelegramHandlers({
-    chat: () => makeTelegramServices(bindings, controlPlane),
+    // This Worker is placed beside the database, so it handles each update itself.
+    chat: () => makeTelegramServices(bindings, controlPlane, { defer: workerBackground.defer }),
     linking: (telegram) => makeTelegramLinkServices(bindings, controlPlane, telegram),
   });
   const danceReferenceHandlers = makeDanceReferenceHandlers(
