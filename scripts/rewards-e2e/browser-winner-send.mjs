@@ -1,13 +1,22 @@
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from "node:fs";
+import { resolve } from "node:path";
 import { fixtureAccounts, readBrowserAccount } from "./browser-accounts.mjs";
 import { browserApi } from "./browser-api.mjs";
 import { installBrowserWalletDriver } from "./browser-wallet-build.mjs";
 import { canonicalFixtureTransaction, fixtureOperator, fixtureToken } from "./fixture-chain.mjs";
-import { waitForEvidence } from "./run-evidence.mjs";
 import { executeOnce } from "./single-use.mjs";
 import { feeCeilings, reserveSpending } from "./spending-ledger.mjs";
 
 /** All credentials and provider state remain in the browser; only fee facts and the public hash return. */
-export async function sendPaidCredit(page, role, credit, run, driver, check) {
+export async function submitPaidCredit(page, role, credit, run, driver, check) {
   const fixture = fixtureAccounts[role];
   if (
     !fixture ||
@@ -17,7 +26,6 @@ export async function sendPaidCredit(page, role, credit, run, driver, check) {
   )
     throw Error("Confirmed participant credit required");
   await check();
-  await installBrowserWalletDriver(page, driver);
   const id = `winner-send-${role}`;
   const record = await executeOnce(
     run.directory,
@@ -42,6 +50,31 @@ export async function sendPaidCredit(page, role, credit, run, driver, check) {
     !Number.isSafeInteger(Number(record.nonce))
   )
     throw Error("Prepared onward transfer differs");
+  const evidencePath = winnerSubmissionPath(run, role);
+  let durable;
+  try {
+    durable = JSON.parse(readFileSync(evidencePath, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (durable) {
+    assertSubmissionMatches(durable, record, credit, run);
+    // Recording the exact known transaction is evidence, even if its earlier
+    // attachment response was lost. Never enter the wallet path again.
+    await attachWinnerSubmission(page, durable);
+    return durable;
+  }
+  const hashes = record.transaction_hashes;
+  if (!Array.isArray(hashes) || hashes.some((hash) => !/^0x[0-9a-f]{64}$/.test(hash)))
+    throw Error("Winner transaction evidence unreadable");
+  if (hashes.length > 0) {
+    return { creditId: credit.credit_id, sendId: record.send_id, hashes, observationOnly: true };
+  }
+  if (record.status !== "retryable" || record.cancellation_hashes?.length > 0)
+    throw Error("Winner send requires observation, not a new signature");
+  if (existsSync(resolve(run.ledgerDirectory, `${run.runId}--${id}.json`)))
+    throw Error("Winner spending already reserved without recoverable hash; never replay");
+  await installBrowserWalletDriver(page, driver);
   const account = await readBrowserAccount(page);
   if (account.status !== 200 || account.accountId !== fixture.accountId)
     throw Error("Winner browser account differs");
@@ -145,24 +178,108 @@ export async function sendPaidCredit(page, role, credit, run, driver, check) {
     { recheck: check, deadline: run.deadline },
   );
   if (!/^0x[0-9a-f]{64}$/.test(hash)) throw Error("Onward transaction identity uncertain");
-  await canonicalFixtureTransaction(run.chain, hash, run.deadline);
-  const attached = await browserApi(
-    page,
-    `/api/rewards/winner-sends/${record.send_id}/transactions`,
-    { method: "POST", body: { transaction_hash: hash } },
-  );
-  const confirmed = await waitForEvidence(
-    "Onward send chain readback",
-    run.deadline,
-    () => browserApi(page, `/api/rewards/winner-sends/${record.send_id}`),
-    (result) => result.status === "confirmed" && result.transaction_hashes.includes(hash),
-    check,
-  );
-  return {
+  const submitted = {
+    runId: run.runId,
+    creditId: credit.credit_id,
     sendId: record.send_id,
     hash,
-    record: confirmed,
-    attachedStatus: attached.status,
+    hashes: [hash],
+    sender: record.sender.toLowerCase(),
+    recipient: record.recipient.toLowerCase(),
+    token: record.token_address.toLowerCase(),
+    amountAtomic: record.amount_atomic,
+    nonce: String(record.nonce),
+    chainId: record.chain_id,
     walletSource: driver.solidSource,
   };
+  // Persist the public hash before waiting for a receipt or recording it in
+  // the app. A restart can recover only this hash, never another signature.
+  mkdirSync(resolve(evidencePath, ".."), { recursive: true, mode: 0o700 });
+  const evidenceFile = openSync(evidencePath, "wx", 0o600);
+  try {
+    writeSync(evidenceFile, `${JSON.stringify(submitted)}\n`);
+    fsyncSync(evidenceFile);
+  } finally {
+    closeSync(evidenceFile);
+  }
+  const evidenceDirectory = openSync(resolve(evidencePath, ".."), "r");
+  try {
+    fsyncSync(evidenceDirectory);
+  } finally {
+    closeSync(evidenceDirectory);
+  }
+  await canonicalFixtureTransaction(run.chain, hash, run.deadline);
+  await attachWinnerSubmission(page, submitted);
+  return submitted;
+}
+
+export function winnerSubmissionPath(run, role) {
+  if (!/^win-[0-9]+$/.test(run.runId) || !["study", "karaoke"].includes(role))
+    throw Error("Winner submission identity differs");
+  return resolve(
+    run.ledgerDirectory,
+    "..",
+    "winner-send-submissions",
+    `${run.runId}--${role}.json`,
+  );
+}
+
+export function assertSubmissionMatches(submitted, record, credit, run) {
+  if (
+    submitted.runId !== run.runId ||
+    submitted.creditId !== credit.credit_id ||
+    submitted.sendId !== record.send_id ||
+    submitted.sender !== record.sender?.toLowerCase() ||
+    submitted.recipient !== fixtureOperator ||
+    submitted.recipient !== record.recipient?.toLowerCase() ||
+    submitted.token !== fixtureToken ||
+    submitted.token !== record.token_address?.toLowerCase() ||
+    submitted.amountAtomic !== credit.amount_atomic ||
+    submitted.amountAtomic !== record.amount_atomic ||
+    submitted.chainId !== 84532 ||
+    record.chain_id !== 84532 ||
+    submitted.nonce !== String(record.nonce) ||
+    !/^0x[0-9a-f]{64}$/.test(submitted.hash) ||
+    !Array.isArray(submitted.hashes) ||
+    submitted.hashes.length !== 1 ||
+    submitted.hashes[0] !== submitted.hash
+  )
+    throw Error("Durable winner submission differs");
+}
+
+export async function attachWinnerSubmission(page, submitted) {
+  // The endpoint itself validates sender, nonce, calldata and the exact token
+  // transfer. One lost response gets one evidence-only retry of the same hash.
+  const path = `/api/rewards/winner-sends/${submitted.sendId}/transactions`;
+  try {
+    return await browserApi(page, path, {
+      method: "POST",
+      body: { transaction_hash: submitted.hash },
+    });
+  } catch {
+    const read = await browserApi(page, `/api/rewards/winner-sends/${submitted.sendId}`);
+    if (read.transaction_hashes?.includes(submitted.hash)) return read;
+    return browserApi(page, path, { method: "POST", body: { transaction_hash: submitted.hash } });
+  }
+}
+
+/** No wallet, gas request, spending reservation or signature is reachable here. */
+export async function observePaidCredit(page, credit, submission) {
+  const record = await browserApi(page, `/api/rewards/credits/${credit.credit_id}/send`);
+  if (
+    record.credit_id !== credit.credit_id ||
+    record.chain_id !== 84532 ||
+    record.recipient?.toLowerCase() !== fixtureOperator ||
+    record.token_address?.toLowerCase() !== fixtureToken ||
+    record.amount_atomic !== credit.amount_atomic ||
+    !Array.isArray(record.transaction_hashes) ||
+    record.transaction_hashes.length === 0 ||
+    (submission &&
+      (record.send_id !== submission.sendId ||
+        !submission.hashes.every((hash) => record.transaction_hashes.includes(hash))))
+  )
+    throw Error("Observed winner send differs");
+  if (["reverted", "cancelled", "settled_unverified"].includes(record.status))
+    throw Error("Winner send reached a failed terminal outcome");
+  return record;
 }

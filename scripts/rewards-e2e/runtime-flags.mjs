@@ -94,6 +94,20 @@ export async function readIsolatedRewardsFlags(api = cloudflareApi) {
   return { http, jobs };
 }
 
+export async function assertIsolatedServingSource(source, api = cloudflareApi) {
+  if (!/^[a-f0-9]{40}$/.test(source ?? "")) throw Error("Isolated source invalid");
+  const versions = await Promise.all(
+    ["http", "jobs"].map((kind) => inspectIsolatedWorker(kind, api)),
+  );
+  for (const version of versions) {
+    if (
+      !(version.annotations?.["workers/message"] ?? "").startsWith(`git:${source}`) ||
+      flagOf(version) !== "true"
+    )
+      throw Error("Isolated serving source or enabled flag differs");
+  }
+}
+
 export async function disableIsolatedRewards(source, options) {
   const results = await Promise.allSettled(
     ["http", "jobs"].map((kind) => setIsolatedRewardsFlag(kind, "false", source, options)),
