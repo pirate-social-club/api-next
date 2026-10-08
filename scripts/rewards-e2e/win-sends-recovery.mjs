@@ -43,6 +43,8 @@ export async function completeWinnerSends({
   readLegSends,
   openHost,
   sendFor,
+  observeFor,
+  checkServing,
   clearLock,
   record,
   timing = leaseTiming,
@@ -50,8 +52,9 @@ export async function completeWinnerSends({
   now = Date.now,
   sleep = (ms) => Bun.sleep(ms),
   waitMs = 12 * 60_000,
+  passiveWaitMs = 60 * 60_000,
 }) {
-  /** @type {{ runId: string, legId: string, errors: string[], sends: unknown[], passed?: boolean, confirmed?: unknown, brake?: unknown, lease?: unknown, shutdown?: Record<string, string>, flags?: unknown }} */
+  /** @type {{ runId: string, legId: string, errors: string[], sends: Array<{creditId: string}>, passed?: boolean, confirmed?: unknown, brake?: {paused: boolean, revision: string}, lease?: unknown, shutdown?: Record<string, string>, flags?: unknown }} */
   const result = { runId: pinned.runId, legId: pinned.legId, errors: [], sends: [] };
   const control = async () =>
     (
@@ -114,23 +117,9 @@ export async function completeWinnerSends({
         continue;
       result.sends.push(await sendFor(host, credit, { deadline }, check));
     }
-    for (;;) {
-      await check();
-      const sends = await readLegSends();
-      if (sends.length === 2 && sends.every((send) => send.status === "confirmed")) {
-        result.confirmed = sends;
-        break;
-      }
-      await sleep(5_000);
-    }
   } catch (error) {
     result.errors.push(error instanceof Error ? error.message : "failed");
   } finally {
-    try {
-      await host?.close();
-    } catch {
-      result.errors.push("browser closeout failed");
-    }
     // Pause, then release. Nothing below resumes.
     try {
       const current = await control();
@@ -147,6 +136,61 @@ export async function completeWinnerSends({
       result.lease = { ...state, ...release };
       if (state.lost !== null) result.errors.push(`run lease lost: ${state.lost}`);
       else if (release.released !== true) result.errors.push("run lease release refused");
+    }
+  }
+  // Finality can lag the receipt by more than the signing lease. Once both
+  // hashes are submitted, authority ends; only bounded evidence reads remain.
+  try {
+    if (result.errors.length === 0) {
+      const passiveDeadline = now() + passiveWaitMs;
+      const pausedRevision = result.brake.revision;
+      const passiveCheck = async () => {
+        if (now() >= passiveDeadline) throw Error("Passive winner finality deadline expired");
+        const current = await control();
+        const lease = (await db.read(pinned.leaseQuery))[0];
+        if (
+          !current.paused ||
+          current.revision !== pausedRevision ||
+          lease?.required !== true ||
+          lease.live !== false
+        )
+          throw Error("Passive observation requires the same paused brake and no live lease");
+        await checkServing();
+      };
+      record({
+        stage: "passive-finality",
+        deadline: new Date(passiveDeadline).toISOString(),
+        sends: result.sends,
+      });
+      for (;;) {
+        await passiveCheck();
+        const observations = await Promise.allSettled(
+          credits.map((credit) =>
+            observeFor(
+              host,
+              credit,
+              result.sends.find((send) => send.creditId === credit.credit_id),
+            ),
+          ),
+        );
+        const failed = observations.find((observation) => observation.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        await passiveCheck();
+        const sends = await readLegSends();
+        if (sends.length === 2 && sends.every((send) => send.status === "confirmed")) {
+          result.confirmed = sends;
+          break;
+        }
+        await sleep(5_000);
+      }
+    }
+  } catch (error) {
+    result.errors.push(error instanceof Error ? error.message : "Passive observation failed");
+  } finally {
+    try {
+      await host?.close();
+    } catch {
+      result.errors.push("browser closeout failed");
     }
   }
   // Flags go off only when nothing is owed anywhere, believed from a fresh read.

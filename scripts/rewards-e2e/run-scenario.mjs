@@ -13,7 +13,6 @@ import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { verifyBackingAudio } from "./browser-media.mjs";
 import { completeStudy } from "./browser-study.mjs";
 import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
-import { sendPaidCredit } from "./browser-winner-send.mjs";
 import { fundingConfirmationEvidence } from "./cycle-evidence.mjs";
 import {
   assertNothingOwed,
@@ -36,8 +35,8 @@ import {
   settleDueDrawing,
 } from "./fixture-chain.mjs";
 import { verifyConfirmedFunding } from "./funding-evidence.mjs";
+import { completeNormalWin, passiveSettlementClock } from "./normal-win-sends.mjs";
 import { claimParticipantCredit } from "./participant-claims.mjs";
-import { singleParticipantCredit } from "./participant-policy.mjs";
 import { firstJobsReceiptRead } from "./receipt-evidence.mjs";
 import { subscribeJobsEvidence } from "./receipt-observer.mjs";
 import {
@@ -86,6 +85,9 @@ export async function runScenario(options) {
   let jobsVersionId;
   let cycleObserver;
   let runLease;
+  let settlementCheck, settlementDeadline;
+  let onwardStarted = false;
+  let onwardConfirmed = false;
   /**
    * The one gate for settling a purchased drawing, in the run and in recovery:
    * the pinned jobs Worker's first receipt read and an independently canonical
@@ -613,37 +615,32 @@ export async function runScenario(options) {
         (inventory) => inventory.credits.length === 2,
         check,
       );
-      const sends = [];
-      for (const role of ["study", "karaoke"]) {
-        const paid = await claimParticipantCredit(host.pages[role], role, allocated, run, check);
-        sends.push(
-          await sendPaidCredit(
-            host.pages[role],
-            role,
-            singleParticipantCredit(paid.credits, role),
-            run,
-            driver,
-            check,
-          ),
-        );
-      }
-      await waitForEvidence(
-        "both onward sends confirmed",
-        run.deadline,
-        () =>
-          options.db.read(
-            "SELECT send.status FROM reward_winner_sends send JOIN megapot_allocations allocation USING(credit_id) JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1",
-            [legId],
-          ),
-        (rows) => rows.length === 2 && rows.every((row) => row.status === "confirmed"),
+      onwardStarted = true;
+      const sends = await completeNormalWin({
+        run,
+        legId,
+        host,
+        allocated,
+        driver,
+        db: options.db,
+        lease: runLease,
         check,
-      );
+        record: (entry) =>
+          appendFileSync(`${run.directory}/onward-events.jsonl`, `${JSON.stringify(entry)}\n`),
+      });
+      onwardConfirmed = true;
+      // The shared completion has ended authority and verified global zero.
+      // Remaining settlement evidence is read-only, on its own finite clock.
+      ({ deadline: settlementDeadline, check: settlementCheck } = passiveSettlementClock(
+        options.db,
+        sends.brake,
+      ));
       stageSave("onward-sends-confirmed", { sends });
     }
     stage = "settlement-and-zero-obligations";
     const settled = await waitForEvidence(
       "zero obligations",
-      run.deadline,
+      settlementDeadline ?? run.deadline,
       () => run.inventory(),
       (inventory) => {
         try {
@@ -653,11 +650,14 @@ export async function runScenario(options) {
           return false;
         }
       },
-      check,
+      settlementCheck ?? check,
     );
     if (run.outcome === "loss" && settled.credits.length !== 0)
       throw Error("Forced loss unexpectedly credited");
-    const receipts = await verifySettlementReceipts({ ...run, db: options.db, legId }, settled);
+    const receipts = await verifySettlementReceipts(
+      { ...run, deadline: settlementDeadline ?? run.deadline, db: options.db, legId },
+      settled,
+    );
     stageSave("settlement-complete", { inventory: settled, receipts, nothingOwed: true });
     passed = true;
   } catch (error) {
@@ -782,7 +782,7 @@ export async function runScenario(options) {
     }
     // Flags stay on while anything is owed, so obligations remain visible and payable.
     let disabled;
-    if (nothingOwedAnywhere) {
+    if (nothingOwedAnywhere && (!onwardStarted || onwardConfirmed)) {
       disabled = await disableIsolatedRewards(run.apiSource);
       if (!disabled.flagsOff) errors.push("flags disable uncertain");
     } else if (flagsEnabled) {
