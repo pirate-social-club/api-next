@@ -132,6 +132,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/song-video-render-repository.pg.test.ts",
   "packages/platform-cf/src/study-v2-foundation.pg.test.ts",
   "packages/platform-cf/src/study-v2-lifecycle.pg.test.ts",
+  "packages/platform-cf/src/telegram-http-practice.pg.test.ts",
   "packages/platform-cf/src/telegram-study-learner.pg.test.ts",
   "packages/platform-cf/src/study-v2-spoken-retry.pg.test.ts",
   "packages/platform-cf/src/study-translation-repository.pg.test.ts",
