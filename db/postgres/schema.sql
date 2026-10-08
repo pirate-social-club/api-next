@@ -37820,15 +37820,18 @@ CREATE TABLE telegram_link_transactions (
 );
 
 CREATE TABLE telegram_restricted_learners (
-    telegram_user_id text NOT NULL,
     account_id text NOT NULL,
+    telegram_user_id text NOT NULL,
+    local_bot_id text,
     evidence text DEFAULT 'ingress_observed'::text NOT NULL,
     affirmed_community_id text NOT NULL,
     affirmed_bot_id text NOT NULL,
     affirmed_bot_epoch text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT telegram_restricted_learners_affirmed_bot_id_check CHECK ((affirmed_bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_restricted_learners_check CHECK (((local_bot_id IS NULL) OR (local_bot_id = affirmed_bot_id))),
     CONSTRAINT telegram_restricted_learners_evidence_check CHECK ((evidence = 'ingress_observed'::text)),
+    CONSTRAINT telegram_restricted_learners_local_bot_id_check CHECK ((local_bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
     CONSTRAINT telegram_restricted_learners_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
 );
 
@@ -40867,10 +40870,7 @@ ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_pkey PRIMARY KEY (transaction_id);
 
 ALTER TABLE ONLY telegram_restricted_learners
-    ADD CONSTRAINT telegram_restricted_learners_account_id_key UNIQUE (account_id);
-
-ALTER TABLE ONLY telegram_restricted_learners
-    ADD CONSTRAINT telegram_restricted_learners_pkey PRIMARY KEY (telegram_user_id);
+    ADD CONSTRAINT telegram_restricted_learners_pkey PRIMARY KEY (account_id);
 
 ALTER TABLE ONLY telegram_restricted_study_personas
     ADD CONSTRAINT telegram_restricted_study_personas_persona_id_key UNIQUE (persona_id);
@@ -41498,6 +41498,10 @@ CREATE INDEX telegram_link_transactions_account ON telegram_link_transactions US
 CREATE INDEX telegram_link_transactions_expiry ON telegram_link_transactions USING btree (expires_at);
 
 CREATE INDEX telegram_link_transactions_pending_callback_idx ON telegram_link_transactions USING btree (state_hash, account_id, session_hash, browser_hash) WHERE (state = 'pending'::text);
+
+CREATE UNIQUE INDEX telegram_restricted_learners_one_account ON telegram_restricted_learners USING btree (telegram_user_id) WHERE (local_bot_id IS NULL);
+
+CREATE UNIQUE INDEX telegram_restricted_learners_one_local_owner ON telegram_restricted_learners USING btree (telegram_user_id, local_bot_id) WHERE (local_bot_id IS NOT NULL);
 
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
 

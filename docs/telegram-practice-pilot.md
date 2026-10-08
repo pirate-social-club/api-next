@@ -51,11 +51,18 @@ Enrollment rechecks the current bot, ingress generation, private-chat start and
 the sender's own conversation lease. Both tables are immutable by trigger.
 
 An explicit linked-account grant is resolved first and keeps its authority.
-Without one, the sender uses the restricted identity, including when a private
-account association exists: that account is not read, written or revealed. This
-is a deliberate simplification of the amendment's bot-local owner wording, since
-one restricted account per Telegram user gives the same isolation with one
-resume path. Phase two must decide promotion for such senders.
+A sender whose Telegram identity is independently associated with a Pirate
+account, but who has no grant for this bot, gets an isolated practice owner for
+this bot alone: a separate reservation row naming local_bot_id, with its own
+explicit age answer, its own neutral persona and no link to the associated
+account. Only the existence of the association is consulted. The associated
+account is never read, written or revealed, and no second promotable account is
+created for that person. Another bot isolates the same sender separately.
+
+An identity already in use for a community is always reused before that rule
+is applied, so linking or unlinking an account later never moves or discards
+local progress. Only a reservation with no local_bot_id is a candidate for the
+phase-two recovery and promotion contract.
 
 Sessions for a restricted learner are practice only. The Telegram admission
 freezes the marker, and a trigger on study_sessions_v2 refuses any session for a

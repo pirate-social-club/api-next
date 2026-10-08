@@ -186,7 +186,8 @@ suite("restricted Telegram practice identity", () => {
         ]),
       ).toBe(1);
 
-      // A linked account without this bot's grant is never read, written or revealed.
+      // A linked account without this bot's grant gets an isolated owner for this bot only.
+      // The linked account is never read, written or revealed, and no promotable account is added.
       await admin.query(
         "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('321','study-account')",
       );
@@ -195,8 +196,22 @@ suite("restricted Telegram practice identity", () => {
       expect(await known.learners.enroll(known.lease, false)).toBe("age_required");
       const isolated = restrictedGrant(await known.learners.enroll(known.lease, true));
       expect(isolated.accountId).not.toBe("study-account");
+      expect(
+        (
+          await admin.query(
+            "SELECT account_id,local_bot_id FROM telegram_restricted_learners WHERE telegram_user_id='321'",
+          )
+        ).rows,
+      ).toEqual([{ account_id: isolated.accountId, local_bot_id: "123" }]);
       expect(await count("personas WHERE account_id='study-account'")).toBe(1);
       expect(await count("telegram_bot_grants")).toBe(0);
+      // Unlinking later keeps the same local progress owner.
+      await admin.query("DELETE FROM telegram_account_associations WHERE telegram_user_id='321'");
+      expect(await known.learners.resolve(known.sender)).toEqual(isolated);
+      expect(await known.learners.enroll(known.lease, false)).toEqual(isolated);
+      await admin.query(
+        "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('321','study-account')",
+      );
 
       // Other bots reuse the account with a new persona, up to the ordinary daily limit.
       const personas = new Set([grant.personaId]);
@@ -212,6 +227,39 @@ suite("restricted Telegram practice identity", () => {
         personas.add(issued.personaId);
       }
       expect(personas.size).toBe(3);
+      // Each bot isolates a linked sender separately and asks for its own age answer.
+      await startChat("second-community", "321");
+      const knownElsewhere = await open("second-community", "456", "321");
+      expect(await knownElsewhere.learners.enroll(knownElsewhere.lease, false)).toBe(
+        "age_required",
+      );
+      const isolatedElsewhere = restrictedGrant(
+        await knownElsewhere.learners.enroll(knownElsewhere.lease, true),
+      );
+      expect(isolatedElsewhere.accountId).not.toBe(isolated.accountId);
+      expect(
+        await count(
+          "telegram_restricted_learners WHERE telegram_user_id='321' AND local_bot_id IS NULL",
+        ),
+      ).toBe(0);
+      // A learner who links later keeps existing progress; new bots do not extend that account.
+      const racedGrant = restrictedGrant(raced[0]);
+      await admin.query(
+        "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('777','study-account')",
+      );
+      expect(await racing.learners.resolve(racing.sender)).toEqual(racedGrant);
+      expect(await racing.learners.enroll(racing.lease, false)).toEqual(racedGrant);
+      await startChat("second-community", "777");
+      const linkedLater = await open("second-community", "456", "777");
+      expect(await linkedLater.learners.enroll(linkedLater.lease, false)).toBe("age_required");
+      expect(
+        restrictedGrant(await linkedLater.learners.enroll(linkedLater.lease, true)).accountId,
+      ).not.toBe(racedGrant.accountId);
+      expect(
+        await count("telegram_restricted_study_personas WHERE account_id=$1", [
+          racedGrant.accountId,
+        ]),
+      ).toBe(1);
       await connectBot("fourth-community", "1011");
       await startChat("fourth-community", "555");
       const exhausted = await open("fourth-community", "1011", "555");

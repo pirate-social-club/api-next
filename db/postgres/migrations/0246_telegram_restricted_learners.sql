@@ -1,19 +1,30 @@
 -- Phase-one restricted Telegram practice identity (Specs 006, 014 and 026).
--- One private learner account per numeric Telegram user across every bot. The
--- evidence is authenticated bot ingress only: it is never an independent
+-- The evidence is authenticated bot ingress only: it is never an independent
 -- account association, a credential or a browser principal.
+--
+-- A row with no local_bot_id is the one private learner account reserved for a
+-- numeric Telegram user across every bot. A row naming local_bot_id is an
+-- isolated practice owner for that bot alone. It is issued when the sender
+-- already has an independently associated Pirate account but no grant for the
+-- bot, so that no second promotable account exists for the same person.
 CREATE TABLE telegram_restricted_learners (
-  telegram_user_id text PRIMARY KEY CHECK (telegram_user_id ~ '^[1-9][0-9]{0,15}$'),
-  account_id text NOT NULL UNIQUE REFERENCES users(user_id),
+  account_id text PRIMARY KEY REFERENCES users(user_id),
+  telegram_user_id text NOT NULL CHECK (telegram_user_id ~ '^[1-9][0-9]{0,15}$'),
+  local_bot_id text CHECK (local_bot_id ~ '^[1-9][0-9]{0,15}$'),
   evidence text NOT NULL DEFAULT 'ingress_observed' CHECK (evidence = 'ingress_observed'),
   -- The ingress that carried the explicit 16-or-older chat action.
   affirmed_community_id text NOT NULL REFERENCES communities(community_id),
   affirmed_bot_id text NOT NULL CHECK (affirmed_bot_id ~ '^[1-9][0-9]{0,15}$'),
   affirmed_bot_epoch text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  CHECK (local_bot_id IS NULL OR local_bot_id = affirmed_bot_id)
 );
+CREATE UNIQUE INDEX telegram_restricted_learners_one_account
+  ON telegram_restricted_learners(telegram_user_id) WHERE local_bot_id IS NULL;
+CREATE UNIQUE INDEX telegram_restricted_learners_one_local_owner
+  ON telegram_restricted_learners(telegram_user_id, local_bot_id) WHERE local_bot_id IS NOT NULL;
 
--- One neutral study persona per learner account and community, reused forever.
+-- One neutral study persona per practice account and community, reused forever.
 CREATE TABLE telegram_restricted_study_personas (
   account_id text NOT NULL REFERENCES telegram_restricted_learners(account_id),
   community_id text NOT NULL REFERENCES communities(community_id),

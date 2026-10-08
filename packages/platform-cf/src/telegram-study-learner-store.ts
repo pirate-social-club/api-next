@@ -29,6 +29,10 @@ export interface TelegramStudyLearnerStore {
  * Restricted Telegram practice identity (Specs 006, 014 and 026, phase one). One private
  * learner account per numeric Telegram user and one neutral study persona per community,
  * issued from authenticated bot ingress without sign-in, a wallet provider or profile data.
+ *
+ * A sender who already has an independently associated Pirate account, but no grant for
+ * this bot, gets an isolated practice owner for this bot alone instead. Only the existence
+ * of the association is consulted; the associated account is never read or written.
  */
 export function makeTelegramStudyLearnerStore(
   db: TelegramDatabase,
@@ -45,11 +49,13 @@ export function makeTelegramStudyLearnerStore(
         JOIN communities c ON c.community_id=s.community_id
         JOIN community_telegram_integrations i ON i.community_id=s.community_id
         WHERE l.telegram_user_id=$3 AND s.community_id=$1 AND u.status='active' AND c.status='active'
+          AND (l.local_bot_id IS NULL OR l.local_bot_id=$2)
           AND p.account_id=s.account_id AND p.status='active'
           AND b.account_id=s.account_id AND b.community_id=s.community_id
           AND i.record->>'status'='ready' AND i.record->>'botId'=$2 AND i.record->>'botEpoch'=$4
           AND EXISTS(SELECT 1 FROM community_telegram_private_chats started WHERE started.community_id=$1
-            AND started.bot_epoch=$4 AND started.telegram_user_id=$3)`,
+            AND started.bot_epoch=$4 AND started.telegram_user_id=$3)
+        ORDER BY l.local_bot_id NULLS FIRST LIMIT 1`,
         [sender.communityId, sender.botId, sender.telegramUserId, sender.epoch],
       );
       const row = rows[0];
@@ -77,10 +83,33 @@ export function makeTelegramStudyLearnerStore(
         await query("SELECT pg_advisory_xact_lock(hashtextextended($1, 26000014))", [
           sender.telegramUserId,
         ]);
+        // Whatever identity this sender already uses here is kept, so progress resumes even
+        // if an account is linked or unlinked later. It is never replaced by a sibling.
+        const existing = await query(
+          `SELECT s.account_id,s.persona_id,p.status='active' AND u.status='active' AS usable
+          FROM telegram_restricted_learners l JOIN telegram_restricted_study_personas s USING(account_id)
+          JOIN personas p USING(persona_id) JOIN users u ON u.user_id=l.account_id
+          WHERE l.telegram_user_id=$1 AND s.community_id=$2
+            AND (l.local_bot_id IS NULL OR l.local_bot_id=$3)
+          ORDER BY l.local_bot_id NULLS FIRST LIMIT 1`,
+          [sender.telegramUserId, sender.communityId, sender.botId],
+        );
+        if (existing[0])
+          return existing[0].usable === true
+            ? restricted(String(existing[0].account_id), String(existing[0].persona_id))
+            : "unavailable";
+        // An associated account must not gain a second promotable account. Its sender gets
+        // an isolated owner for this bot, which needs its own explicit age answer.
+        const associated = await query(
+          "SELECT 1 FROM telegram_account_associations WHERE telegram_user_id=$1",
+          [sender.telegramUserId],
+        );
+        const localBotId = associated.length ? sender.botId : null;
         const learners = await query(
           `SELECT l.account_id,u.status FROM telegram_restricted_learners l
-          JOIN users u ON u.user_id=l.account_id WHERE l.telegram_user_id=$1 FOR UPDATE OF u`,
-          [sender.telegramUserId],
+          JOIN users u ON u.user_id=l.account_id
+          WHERE l.telegram_user_id=$1 AND l.local_bot_id IS NOT DISTINCT FROM $2 FOR UPDATE OF u`,
+          [sender.telegramUserId, localBotId],
         );
         let accountId: string;
         if (learners[0]) {
@@ -98,23 +127,18 @@ export function makeTelegramStudyLearnerStore(
           );
           await query(
             `INSERT INTO telegram_restricted_learners(
-              telegram_user_id,account_id,affirmed_community_id,affirmed_bot_id,affirmed_bot_epoch)
-            VALUES($1,$2,$3,$4,$5)`,
-            [sender.telegramUserId, accountId, sender.communityId, sender.botId, sender.epoch],
+              account_id,telegram_user_id,local_bot_id,affirmed_community_id,affirmed_bot_id,affirmed_bot_epoch)
+            VALUES($1,$2,$3,$4,$5,$6)`,
+            [
+              accountId,
+              sender.telegramUserId,
+              localBotId,
+              sender.communityId,
+              sender.botId,
+              sender.epoch,
+            ],
           );
         }
-        const existing = await query(
-          `SELECT s.persona_id FROM telegram_restricted_study_personas s
-          JOIN personas p USING(persona_id) WHERE s.account_id=$1 AND s.community_id=$2 AND p.status='active'`,
-          [accountId, sender.communityId],
-        );
-        if (existing[0]) return restricted(accountId, String(existing[0].persona_id));
-        const reserved = await query(
-          "SELECT 1 FROM telegram_restricted_study_personas WHERE account_id=$1 AND community_id=$2",
-          [accountId, sender.communityId],
-        );
-        // A suspended or retired study persona is never replaced by a sibling.
-        if (reserved.length) return "unavailable";
         // The ordinary persona limits: ten lifetime slots, three additional per rolling day.
         const capacity = await query(
           `SELECT count(*)::integer AS slots,
