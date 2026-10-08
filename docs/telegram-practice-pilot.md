@@ -10,12 +10,10 @@ account; chat navigation grants no account authority.
 
 ## Learner journey
 
-The learner sends /start and sees the song list at once: one short opening line
-saying what the bot is for and that the community owner can read messages and
-hear voice notes, then "Choose a song:" with at most eight ready English songs
-as buttons. /study and /songs show the same list without the opening line, and
-the menu offers one "Songs" action. Song selection expires after fifteen
-minutes.
+The flow follows the legacy bot. The learner sends /start and sees "Choose a
+song to study:" with at most eight ready English songs as buttons, and nothing
+else. /study and /songs show the same list, and the menu offers one "Songs"
+action. Song selection expires after fifteen minutes.
 
 Tapping a song is the deliberate lesson start. It issues the sender's practice
 identity if they have none and shows the first prompt, with no question,
@@ -25,14 +23,20 @@ screen by that question are answered as stale choices.
 
 A prompt is the localized instruction and the line, for example "Say this
 back:" followed by the lyric. It carries no card count, threshold, persona or
-command footer. The learner answers by replying to the prompt with a voice
-note. The verdict is its own short message, sent as a reply to the voice note:
-"Correct.", or "Not quite." with what was heard, or a request to record again.
-The next prompt follows as a separate message. The two are stored as separate
-deliveries, and the prompt is ordered after the verdict, so a retry or a queue
-reordering cannot swap them. Completion is one short message with the
-first-try score. The optional account connection is no longer offered at
-completion, because the Telegram login it leads to still fails.
+command footer. Until a learner has answered by voice in a bot, each prompt
+also carries one paragraph saying that the community bot owner can listen to
+voice messages sent there and that Pirate receives the recording for
+transcription and grading. In the ordinary run that is the first prompt only.
+The rule is kept in the conversation state rather than tied to enrolment, so a
+retried update, a refused lesson start, a first prompt that never arrived, a
+linked account or a replaced bot cannot lose the notice. The learner answers by
+replying to the prompt with a voice note. The verdict is its own short message, sent as a reply to the voice note:
+"✅ Correct", or "❌ Incorrect" with what was heard, or a request to record
+again. The next prompt follows as a separate message. The two are stored as
+separate deliveries, and the prompt is ordered after the verdict, so a retry or
+a queue reordering cannot swap them. Completion is "Lesson complete" and the
+first-try score. The optional account connection is not offered at completion,
+because the Telegram login it leads to still fails.
 
 ## Restricted practice identity
 
@@ -198,6 +202,13 @@ message finds nothing to claim. A send interrupted mid-flight ends uncertain
 and is not resent, as before; if it was the prompt, /resume shows it again. The
 jobs Worker and the scanner remain the recovery path, so both Workers must run
 this source. Each inline update logs only its outcome and duration.
+
+Inline work, queued work and the caller all use one services object. The first
+release of this path gave the inline callbacks a copy without the practice
+service, so a real webhook update was handled as a discovery-only bot while
+queued work behaved correctly. `telegram-http-practice.pg.test.ts` goes through
+the webhook accept function with the HTTP option against a real database to keep
+that from recurring; a test that inserts inbox rows for the queue cannot see it.
 
 A prompt ordered after a verdict is sent only once the verdict is delivered. It
 waits while the verdict is pending, being sent or awaiting a retry. A verdict

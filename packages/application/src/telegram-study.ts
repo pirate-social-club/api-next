@@ -71,6 +71,12 @@ export const TelegramStudyState = Schema.Struct({
   lastReply: Schema.NullOr(TelegramStudyReply),
   /** Feedback sent as its own message before lastReply, replayed with it on a retry. */
   lastFeedback: Schema.optional(Schema.NullOr(TelegramStudyReply)),
+  /**
+   * Set once the learner has answered a prompt in this bot by voice. Until then every
+   * prompt carries the notice saying who can hear voice notes, so a retry, a refused start
+   * or a prompt that never arrived cannot lose it.
+   */
+  disclosed: Schema.optional(Schema.Boolean),
 });
 export type TelegramStudyState = Schema.Schema.Type<typeof TelegramStudyState>;
 export const emptyTelegramStudyState = (): TelegramStudyState => ({

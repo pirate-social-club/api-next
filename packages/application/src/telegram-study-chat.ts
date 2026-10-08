@@ -38,9 +38,8 @@ const text = (value: string): TelegramStudyReply => ({
 });
 
 /**
- * Read-aloud practice in a private chat. The learner sees a song list, then one short prompt
- * per line; an answer is a voice note sent as a reply to the current prompt. `intro` is a
- * one-time line shown above the song list when the learner starts the bot.
+ * Read-aloud practice in a private chat, shaped like the legacy bot: a song list, then one
+ * short prompt per line. An answer is a voice note sent as a reply to the current prompt.
  */
 export async function handleTelegramStudyChat(
   services: TelegramServices,
@@ -51,7 +50,6 @@ export async function handleTelegramStudyChat(
   rawMessage: unknown,
   callbackData?: string,
   locale: TelegramLocale = "en",
-  intro?: string,
 ): Promise<void> {
   const t = (
     key: Parameters<typeof telegramText>[1],
@@ -102,6 +100,7 @@ export async function handleTelegramStudyChat(
     await persist();
     await send(message, feedback);
   };
+  // Until a learner has answered by voice in this bot, each prompt says who can hear them.
   const showSession = async (
     session: StudySessionV2,
     feedback: TelegramStudyReply | null = null,
@@ -145,7 +144,12 @@ export async function handleTelegramStudyChat(
     };
     await respond(
       {
-        ...text(t("sayThis", { line: item.presentation.reference_text })),
+        ...text(
+          [
+            t("sayThis", { line: item.presentation.reference_text }),
+            ...(state.disclosed === true ? [] : [t("disclosure")]),
+          ].join("\n\n"),
+        ),
         keyboard: { force_reply: true, selective: true },
       },
       feedback,
@@ -200,9 +204,8 @@ export async function handleTelegramStudyChat(
         selectedPostId: null,
         selectedUntil: services.now() + 15 * 60 * 1000,
       };
-      const heading = songs.length ? t("chooseSong") : t("noReadySongs");
       await respond({
-        ...text(intro ? `${intro}\n\n${heading}` : heading),
+        ...text(songs.length ? t("chooseSong") : t("noReadySongs")),
         keyboard: {
           inline_keyboard: songs.map((song, index) => [
             { text: song.title.slice(0, 60), callback_data: `study:${state.token}:${index}` },
@@ -307,10 +310,6 @@ export async function handleTelegramStudyChat(
           await respond(text(t("replyToLine")));
           return;
         }
-        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
-          await oversized();
-          return;
-        }
         pending = {
           inboxId: inbox.id,
           sessionId: state.sessionId,
@@ -320,6 +319,12 @@ export async function handleTelegramStudyChat(
           durationMs: message.voice.duration * 1000,
           messageId: message.message_id,
         };
+        // A voice reply to a delivered prompt: the learner has seen the notice it carried.
+        state = { ...state, disclosed: true };
+        if (message.voice.duration > 60 || (message.voice.file_size ?? 0) > 524288) {
+          await oversized();
+          return;
+        }
       }
       if (pending.durationMs > 60000) {
         state = { ...state, pendingAnswer: null };
