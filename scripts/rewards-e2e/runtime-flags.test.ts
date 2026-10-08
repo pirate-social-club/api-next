@@ -34,7 +34,9 @@ function fixture(mode = "ok") {
         (binding) => binding.name === "MEGAPOT_REWARDS_ENABLED",
       );
       if (!flag) throw Error("Fixture flag missing");
-      flag.text = "true";
+      flag.text = data.bindings.find(
+        (binding: { name: string }) => binding.name === "MEGAPOT_REWARDS_ENABLED",
+      ).text;
       // A settings-created version is always relabelled by the provider.
       version.resources.script.last_deployed_from = "api";
       if (mode === "drift") version.resources.script.etag = "different";
@@ -102,4 +104,17 @@ test("reading the flags reports what each Worker serves and changes nothing", as
   // The fixture serves one version for both names, so both now read on.
   expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "true", jobs: "true" });
   expect(f.mutations.length).toBe(mutations);
+});
+
+test("a newer recovery runner must close out using the Workers' serving source", async () => {
+  const f = fixture();
+  await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
+  const before = f.mutations.length;
+  const wrong = await disableIsolatedRewards("b".repeat(40), { api: f.api });
+  expect(wrong.flagsOff).toBe(false);
+  expect(f.mutations.length).toBe(before);
+  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "true", jobs: "true" });
+  const correct = await disableIsolatedRewards(source, { api: f.api, sleep: async () => {} });
+  expect(correct.flagsOff).toBe(true);
+  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "false", jobs: "false" });
 });

@@ -4,18 +4,24 @@ import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } fr
 import { isAbsolute, resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadPostgresMigrations } from "../postgres-migrations.ts";
+import { fixtureAccounts } from "./browser-accounts.mjs";
+import { prepareFixtureBrowsers } from "./browser-host.mjs";
+import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
+import { sendPaidCredit } from "./browser-winner-send.mjs";
 import { cloudflareApi } from "./cloudflare-api.mjs";
 import { verifyCommitmentReader } from "./commitment-reader.mjs";
 import {
   assertRunLeaseReady,
   assertShutdownInventory,
   isolatedDatabase,
+  readRunInventory,
   readShutdownInventory,
   runLeaseQuery,
 } from "./database-evidence.mjs";
 import { fixtureChain, readFixturePrize, readManagedFloat } from "./fixture-chain.mjs";
 import { readFixtureMicrophone } from "./fixture-microphone.mjs";
 import { rehearseRunLease } from "./lease-rehearsal.mjs";
+import { singleParticipantCredit } from "./participant-policy.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import {
   disableIsolatedRewards,
@@ -23,7 +29,12 @@ import {
   readIsolatedRewardsFlags,
   setIsolatedRewardsFlag,
 } from "./runtime-flags.mjs";
-import { assertPairBudget } from "./spending-ledger.mjs";
+import { assertLossBudget, assertPairBudget } from "./spending-ledger.mjs";
+import {
+  assertGasWalletRegistered,
+  completeWinnerSends,
+  gasWalletQuery,
+} from "./win-sends-recovery.mjs";
 
 /** Enter both existing approved stores without writing credentials to disk or stdout. */
 if (!process.env.REWARDS_RUNNER_CREDENTIALS_LOADED) {
@@ -101,6 +112,116 @@ if (
   )
 )
   throw Error("Isolated database source ledger differs");
+if (process.argv.includes("--complete-win-sends")) {
+  // Bounded settlement recovery for a forced win that stopped after both
+  // winners were paid. The Workers still serve this release with rewards on,
+  // which is why it runs before the dark-Worker checks of a fresh preparation.
+  const runDirectory = process.argv[process.argv.indexOf("--complete-win-sends") + 1];
+  const lock = resolve(evidenceRoot, "runner-active.json");
+  const held = JSON.parse(readFileSync(lock, "utf8"));
+  if (!runDirectory || resolve(runDirectory) !== held.directory)
+    throw Error("Recovery must name the run directory that holds the lock");
+  // The Workers keep serving the locked run's source. A newer runner may drive
+  // them only if nothing but the runner itself changed since that source.
+  if (!/^[0-9a-f]{40}$/.test(held.apiSource ?? "")) throw Error("Locked run source unreadable");
+  const changed = execFileSync("git", ["diff", "--name-only", held.apiSource, apiSource], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter(Boolean);
+  if (changed.some((path) => !path.startsWith("scripts/rewards-e2e/")))
+    throw Error("Recovery runner differs from the locked run beyond the runner scripts");
+  for (const kind of ["http", "jobs"]) {
+    const version = await inspectIsolatedWorker(kind);
+    if (!version.annotations?.["workers/message"]?.startsWith(`git:${held.apiSource}`))
+      throw Error("Isolated Workers must serve the locked run's source");
+  }
+  const winDirectory = resolve(held.directory, "win");
+  const runId = JSON.parse(
+    readFileSync(resolve(winDirectory, "run-lease-acquired.json"), "utf8"),
+  ).runId;
+  const legId = JSON.parse(readFileSync(resolve(winDirectory, "offer-created.json"), "utf8")).leg
+    .leg_id;
+  if (!/^win-[0-9]+$/.test(runId ?? "") || !/^reward_leg_[0-9a-f]{32}$/.test(legId ?? ""))
+    throw Error("Locked win identity unreadable");
+  readFixtureMicrophone("karaoke", process.env.REWARDS_E2E_KARAOKE_WAV);
+  const directory = resolve(
+    winDirectory,
+    `onward-sends-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+  );
+  mkdirSync(directory, { mode: 0o700 });
+  const record = (entry) =>
+    appendFileSync(
+      resolve(directory, "recovery.jsonl"),
+      `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
+    );
+  const driver = await buildBrowserWalletDriver(process.env.REWARDS_E2E_SOLID_ROOT);
+  const chain = fixtureChain();
+  const result = await completeWinnerSends({
+    pinned: { runId, legId, leaseQuery: runLeaseQuery },
+    db,
+    flags: {
+      read: () => readIsolatedRewardsFlags(),
+      disableAll: () => disableIsolatedRewards(held.apiSource),
+    },
+    readShutdownInventory: () => readShutdownInventory(db),
+    readLegCredits: async () => (await readRunInventory(db, legId)).credits,
+    readLegSends: () =>
+      db.read(
+        "SELECT send.send_id, send.credit_id, send.status FROM reward_winner_sends send JOIN megapot_allocations allocation USING(credit_id) JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1",
+        [legId],
+      ),
+    openHost: async (check) => {
+      const silence = resolve(directory, "silence.wav");
+      execFileSync("ffmpeg", [
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=mono",
+        "-t",
+        "1",
+        silence,
+      ]);
+      return prepareFixtureBrowsers(
+        directory,
+        { study: silence, sponsor: silence, karaoke: process.env.REWARDS_E2E_KARAOKE_WAV },
+        check,
+      );
+    },
+    // The run's own identity, so the app returns the send it already reserved.
+    sendFor: (host, credit, { deadline }, check) => {
+      const role = credit.account_id === fixtureAccounts.study.accountId ? "study" : "karaoke";
+      return sendPaidCredit(
+        host.pages[role],
+        role,
+        singleParticipantCredit([credit], role),
+        {
+          directory,
+          runId,
+          deadline,
+          chain,
+          ledgerDirectory: resolve(evidenceRoot, "spending-ledger"),
+          authoritySha256,
+        },
+        driver,
+        check,
+      );
+    },
+    clearLock: () => unlinkSync(lock),
+    record,
+  });
+  writeFileSync(resolve(directory, "recovery.json"), `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  console.log(JSON.stringify({ stage: "win-sends-recovery", passed: result.passed, directory }));
+  if (!result.passed) console.log(JSON.stringify(result.errors));
+  process.exit(result.passed ? 0 : 1);
+}
 const [http, jobs] = await Promise.all([
   inspectIsolatedWorker("http"),
   inspectIsolatedWorker("jobs"),
@@ -118,6 +239,8 @@ const control = (
 )[0];
 if (control?.paused !== true) throw Error("Preparation requires paused isolated brake");
 assertShutdownInventory(await readShutdownInventory(db));
+// A run must not pay winners who could then not send on.
+assertGasWalletRegistered(await db.read(gasWalletQuery));
 // Without a required lease a lost runner would leave the brake running.
 const runLease = assertRunLeaseReady(await db.read(runLeaseQuery));
 for (const [variable, address] of [
@@ -144,16 +267,22 @@ if (
   "https://api-megapot-e2e-staging.pirate.sc"
 )
   throw Error("Serving Solid API origin differs");
-// The whole pair and its recovery headroom must fit before anything is funded.
+// A forced loss on its own, after a win has already run and closed out clean.
+const lossOnly = process.argv.includes("--loss-only");
+const order = lossOnly ? ["loss"] : ["win", "loss"];
+// The whole run and its recovery headroom must fit before anything is funded.
 // A read-only preparation reports a refusal; an execution stops on it.
 let budget;
 try {
   const chain = fixtureChain();
-  budget = await assertPairBudget(resolve(evidenceRoot, "spending-ledger"), {
-    authoritySha256,
-    fixturePrizeAtomic: await readFixturePrize(chain),
-    managedFloatWei: await readManagedFloat(chain),
-  });
+  budget = await (lossOnly ? assertLossBudget : assertPairBudget)(
+    resolve(evidenceRoot, "spending-ledger"),
+    {
+      authoritySha256,
+      fixturePrizeAtomic: await readFixturePrize(chain),
+      managedFloatWei: await readManagedFloat(chain),
+    },
+  );
 } catch (error) {
   if (process.argv.includes("--execute")) throw error;
   budget = { refused: error instanceof Error ? error.message : "Pair budget unavailable" };
@@ -176,7 +305,7 @@ const plan = {
   authoritySha256,
   branch: identity.branchId,
   simulatedClaimVerification: true,
-  order: ["win", "loss"],
+  order,
   karaokeRecording: karaokeRecording.refused
     ? karaokeRecording
     : { sha256: karaokeRecording.sha256, bytes: karaokeRecording.bytes },
@@ -278,7 +407,7 @@ if (process.argv.includes("--execute")) {
   // A completed invocation has its own durable lock disposition. An interrupted one requires recovery.
   const results = [];
   try {
-    for (const outcome of ["win", "loss"])
+    for (const outcome of order)
       results.push(
         await runScenario({
           root,

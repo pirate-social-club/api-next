@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertLossBudget,
   assertPairBudget,
   feeCeilings,
+  lossBudget,
   pairBudget,
   readSpendingTotals,
   recoveryHeadroom,
@@ -325,4 +327,29 @@ test("an empty ledger, another authority and a leftover lock are each handled", 
         managedFloatWei: undefined as never,
       }),
     ).rejects.toThrow("float balance required");
+  }));
+
+test("a loss run alone is budgeted without winners and fits where a pair no longer does", () =>
+  withLedger(async (directory) => {
+    expect(lossBudget.usdcAtomic).toBe(1_000_000n);
+    expect(lossBudget.ethWei).toBe(8n * feeCeilings.fixtureTransactionWei + feeCeilings.fundingWei);
+    // A win and its two onward sends already reserved: 7 of 10 USDC.
+    await reserveMany(directory, [3, 2, 2], "1");
+    await expect(
+      assertPairBudget(directory, { ...authority, fixturePrizeAtomic: 1_000_000n }),
+    ).rejects.toThrow("Whole-pair budget refused");
+    // The loss with its prize refill and the recovery headroom fits exactly at 10.
+    const report = await assertLossBudget(directory, { ...authority, fixturePrizeAtomic: 0n });
+    expect(report).toMatchObject({ reservedUsdcAtomic: "7000000", pairUsdcAtomic: "2000000" });
+  }));
+
+test("a loss run is refused when its principal, refill and headroom do not fit", () =>
+  withLedger(async (directory) => {
+    await reserveMany(directory, [4, 4], "1");
+    await expect(
+      assertLossBudget(directory, { ...authority, fixturePrizeAtomic: 0n }),
+    ).rejects.toThrow("Loss-run budget refused: USDC");
+    await expect(
+      assertLossBudget(directory, { ...authority, fixturePrizeAtomic: 1_000_000n }),
+    ).resolves.toMatchObject({ pairUsdcAtomic: "1000000" });
   }));
