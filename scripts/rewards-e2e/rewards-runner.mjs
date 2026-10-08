@@ -163,7 +163,7 @@ if (process.argv.includes("--complete-win-sends")) {
     db,
     flags: {
       read: () => readIsolatedRewardsFlags(),
-      disableAll: () => disableIsolatedRewards(apiSource),
+      disableAll: () => disableIsolatedRewards(held.apiSource),
     },
     readShutdownInventory: () => readShutdownInventory(db),
     readLegCredits: async () => (await readRunInventory(db, legId)).credits,
