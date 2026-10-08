@@ -515,6 +515,64 @@ describe("canonical authority zone derivation", () => {
     expect(compressedZone).toEqual(uncompressedZone);
   });
 
+  test("carries wildcard AAAA and HTTPS record sets, with the HTTPS target in canonical form", () => {
+    const wildcard = `*.${zoneName}`;
+    const derive = (records: readonly Uint8Array[]) => {
+      const current = session();
+      const response = appendTsig(
+        unsignedResponse([soa(), apexNs, appA, ...records, soa()], true),
+        requestMac(current.request_bytes),
+        0,
+      );
+      return deriveCanonicalHnsAuthorityZoneBytesV1({
+        zone_name: zoneName,
+        response_sequence_bytes: encodeHnsDnsTcpMessageSequenceV1([response.message]),
+      });
+    };
+    const mapped = record(
+      wildcard,
+      28,
+      300,
+      new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 94, 103, 168, 161]),
+    );
+    // alpn=h2,http/1.1: key 1, twelve octets, two length-prefixed protocol names.
+    const alpn = concat([
+      uint16(1),
+      uint16(12),
+      new Uint8Array([2, ...new TextEncoder().encode("h2")]),
+      new Uint8Array([8, ...new TextEncoder().encode("http/1.1")]),
+    ]);
+    const https = (target: Uint8Array) =>
+      record(wildcard, 65, 300, concat([uint16(1), target, alpn]));
+    const hexOf = (bytes: Uint8Array) =>
+      [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+    const zone = JSON.parse(
+      new TextDecoder().decode(derive([mapped, https(new Uint8Array([0]))])),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(zone.records.filter((entry) => entry[0] === wildcard)).toEqual([
+      [wildcard, 28, 1, 300, "00000000000000000000ffff5e67a8a1"],
+      [wildcard, 65, 1, 300, `000100${hexOf(alpn)}`],
+    ]);
+
+    // A named target is canonical like any other name: its letter case does not change the zone.
+    const lower = derive([https(name(`edge.${zoneName}`))]);
+    const upper = derive([https(name(`EDGE.${zoneName}`))]);
+    expect(upper).toEqual(lower);
+    expect(new TextDecoder().decode(lower)).toContain(`0001${hexOf(name(`edge.${zoneName}`))}`);
+
+    // Changed parameters are a different zone; a record too short to hold a target is refused.
+    const onlyH2 = concat([
+      uint16(1),
+      uint16(3),
+      new Uint8Array([2, ...new TextEncoder().encode("h2")]),
+    ]);
+    expect(
+      derive([record(wildcard, 65, 300, concat([uint16(1), new Uint8Array([0]), onlyH2]))]),
+    ).not.toEqual(derive([https(new Uint8Array([0]))]));
+    expect(() => derive([record(wildcard, 65, 300, uint16(1))])).toThrow(HnsDnsTsigAxfrError);
+  });
+
   test("omits online RRSIG bytes but detects a changed stable record", () => {
     const firstSession = session();
     const first = appendTsig(

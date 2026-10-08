@@ -39,6 +39,7 @@ export type HnsRootReadinessObservationPorts = Readonly<{
     readonly root_label: string;
     readonly challenge_txt_value: string;
     readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+    readonly expected_managed_rrset_sha256?: string;
     readonly mutation_lease?: HnsZoneMutationLease;
   }) => Promise<void>;
   readonly observe_live: (input: {
@@ -462,6 +463,7 @@ export async function observeHnsRootReadinessV1(input: {
         root_label: input.request.root_label,
         challenge_txt_value: input.request.challenge_txt_value,
         expected_ds_records: provision.ds_records,
+        expected_managed_rrset_sha256: provision.managed_rrset_sha256,
         mutation_lease: input.observation_attempt,
       });
     } catch {

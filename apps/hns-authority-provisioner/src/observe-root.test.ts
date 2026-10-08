@@ -193,6 +193,7 @@ describe("HNS root readiness observation", () => {
             root_label: "newroot",
             challenge_txt_value: "pirate-verification=challenge",
             expected_ds_records: state.zone.ds_records,
+            expected_managed_rrset_sha256: state.zone.managed_rrset_sha256,
             mutation_lease: {
               job_id: "observation-job",
               executor_id: "executor",

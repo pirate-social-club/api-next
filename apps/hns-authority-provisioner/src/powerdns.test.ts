@@ -5,8 +5,10 @@ import {
   hnsChainResourceDigestV1,
   preflightEncodeHnsResourceV1,
 } from "@pirate/application/namespace-ownership";
+import { canonicalJson } from "@pirate/domain";
 import {
   buildManagedRootRrsets,
+  HNS_MANAGED_RECORD_PROFILE_FOR_NEW_ZONES,
   makePowerDnsRootProvisioner,
   makePowerDnsRootReconciler,
   makePowerDnsRootTeardown,
@@ -36,6 +38,39 @@ describe("PowerDNS managed HNS root rrsets", () => {
       "ns2.pirate.",
     ]);
     expect(rrsets[4]?.records[0]?.content).toBe('"pirate-verification=a\\"b\\\\c"');
+  });
+
+  test("the address-family profile adds only a wildcard AAAA and a wildcard HTTPS record set", () => {
+    const input = {
+      root_label: "newroot",
+      challenge_txt_value: "pirate-verification=challenge",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"A".repeat(64)}`,
+      ttl_seconds: 300,
+    };
+    const earlier = buildManagedRootRrsets(input, "wildcard-v1");
+    const current = buildManagedRootRrsets(input, "wildcard-address-family-v2");
+    expect(buildManagedRootRrsets(input)).toEqual(earlier);
+    expect(HNS_MANAGED_RECORD_PROFILE_FOR_NEW_ZONES).toBe("wildcard-address-family-v2");
+    expect(current.slice(0, earlier.length)).toEqual([...earlier]);
+    // The AAAA is the IPv4-mapped gateway address, so no IPv6 host is needed;
+    // the HTTPS record points a client back at the name's own addresses.
+    expect(JSON.parse(JSON.stringify(current.slice(earlier.length)))).toEqual([
+      {
+        name: "*.newroot.",
+        type: "AAAA",
+        ttl: 300,
+        changetype: "REPLACE",
+        records: [{ content: "::ffff:192.0.2.10", disabled: false }],
+      },
+      {
+        name: "*.newroot.",
+        type: "HTTPS",
+        ttl: 300,
+        changetype: "REPLACE",
+        records: [{ content: "1 . alpn=h2,http/1.1", disabled: false }],
+      },
+    ]);
   });
 
   test("serves the configured staging authority names at the zone apex", () => {
@@ -175,20 +210,26 @@ describe("PowerDNS managed HNS root rrsets", () => {
       ttl_seconds: 300,
     };
     let account: string | null = null;
+    let stored: readonly { name: string; type: string }[] = [];
+    let patched: readonly { name: string; type: string }[] = [];
     const methods: string[] = [];
     const provision = makePowerDnsRootProvisioner(config, async (url, init) => {
       const method = init?.method ?? "GET";
       methods.push(method);
       if (method === "POST") {
-        account = JSON.parse(String(init?.body)).account;
+        // The provider committed the zone and its record sets; only the response was lost.
+        const body = JSON.parse(String(init?.body));
+        account = body.account;
+        stored = body.rrsets;
         throw new Error("response lost after zone commit");
       }
+      if (method === "PATCH") patched = JSON.parse(String(init?.body)).rrsets;
       if (method === "GET" && String(url).endsWith("/cryptokeys"))
         return Response.json([{ active: true, ds: [`10875 13 2 ${"a".repeat(64)}`] }]);
       if (method === "GET")
         return account === null
           ? new Response(null, { status: 404 })
-          : Response.json({ name: "newroot.", serial: 5, dnssec: true, account });
+          : Response.json({ name: "newroot.", serial: 5, dnssec: true, account, rrsets: stored });
       return new Response(null, { status: 204 });
     });
     const input = {
@@ -204,9 +245,18 @@ describe("PowerDNS managed HNS root rrsets", () => {
     ).rejects.toThrow("another reservation");
     expect(methods).toEqual(["GET", "GET"]);
     methods.length = 0;
-    expect(await provision(input)).toMatchObject({ created: true, dnssec: true });
+    const recovered = await provision(input);
+    expect(recovered).toMatchObject({ created: true, dnssec: true });
     expect(methods).not.toContain("POST");
     expect(methods).toContain("PATCH");
+    // The zone was created with the current profile, and the retry keeps it:
+    // the same record sets are written again and the result records their digest.
+    const current = buildManagedRootRrsets({ ...config, ...input }, "wildcard-address-family-v2");
+    expect(stored.slice(1).map(({ name, type }) => `${name} ${type}`)).toEqual(
+      current.map(({ name, type }) => `${name} ${type}`),
+    );
+    expect(patched).toEqual(JSON.parse(JSON.stringify(current)));
+    expect(new TextDecoder().decode(recovered.managed_zone_bytes)).toContain("::ffff:192.0.2.10");
     const cleanupMethods: string[] = [];
     let remove = false;
     const teardown = makePowerDnsRootTeardown(config, async (_url, init) => {
@@ -253,6 +303,7 @@ describe("PowerDNS managed HNS root rrsets", () => {
       { key_tag: 10_875, algorithm: 13, digest_type: 4 as const, digest: "b".repeat(96) },
     ];
     const calls: string[] = [];
+    const patches: { name: string; type: string }[][] = [];
     const fetcher = async (url: Request | string | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const path = new URL(String(url)).pathname;
@@ -272,8 +323,10 @@ describe("PowerDNS managed HNS root rrsets", () => {
           serial: 12,
           dnssec: true,
           account: "older-reservation",
+          rrsets: [],
         });
       }
+      if (method === "PATCH") patches.push(JSON.parse(String(init?.body)).rrsets);
       return new Response(null, { status: 204 });
     };
     const provision = makePowerDnsRootProvisioner(config, fetcher);
@@ -300,10 +353,16 @@ describe("PowerDNS managed HNS root rrsets", () => {
 
     calls.length = 0;
     const reconcile = makePowerDnsRootReconciler(config, fetcher);
-    await reconcile({
+    const reconcileInput = {
       root_label: "dankmeme",
       challenge_txt_value: "pirate-verification=fresh",
       expected_ds_records: ds,
+    };
+    // An adopted zone is recorded with the current profile, and reconciliation
+    // writes the profile the provision result recorded.
+    await reconcile({
+      ...reconcileInput,
+      expected_managed_rrset_sha256: result.managed_rrset_sha256,
     });
     expect(calls).toEqual([
       "GET /api/v1/servers/localhost/zones/dankmeme.",
@@ -313,6 +372,34 @@ describe("PowerDNS managed HNS root rrsets", () => {
       "PUT /api/v1/servers/localhost/zones/dankmeme./rectify",
       "PUT /api/v1/servers/localhost/zones/dankmeme./notify",
     ]);
+    const types = (rrsets: readonly { name: string; type: string }[] | undefined) =>
+      (rrsets ?? []).filter(({ name }) => name === "*.dankmeme.").map(({ type }) => type);
+    expect(types(patches[0])).toEqual(["A", "TLSA", "AAAA", "HTTPS"]);
+
+    // A root provisioned before the profile existed keeps its own record sets.
+    const earlier = buildManagedRootRrsets({ ...config, ...reconcileInput }, "wildcard-v1");
+    const earlierDigest = [
+      ...new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalJson(earlier))),
+      ),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    await reconcile({ ...reconcileInput, expected_managed_rrset_sha256: earlierDigest });
+    expect(types(patches[1])).toEqual(["A", "TLSA"]);
+
+    // A digest neither profile reproduces means the configuration changed since
+    // provisioning; nothing is written.
+    calls.length = 0;
+    await expect(
+      reconcile({ ...reconcileInput, expected_managed_rrset_sha256: "0".repeat(64) }),
+    ).rejects.toThrow("managed profile is not recognized");
+    expect(calls.filter((call) => call.startsWith("PATCH"))).toEqual([]);
+
+    // Without a recorded digest the zone's own content decides, and an empty
+    // zone carries no address-family record sets.
+    await reconcile(reconcileInput);
+    expect(types(patches[2])).toEqual(["A", "TLSA"]);
   });
 
   test("idempotently deletes one exact abandoned root zone and confirms it is gone", async () => {

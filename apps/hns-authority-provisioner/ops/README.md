@@ -27,6 +27,30 @@ observation. Database leases and finalization fences make a service restart
 safe; PowerDNS reconciliation is idempotent. HSD and PowerDNS calls have
 five-second request deadlines.
 
+## Managed record profiles
+
+A root's zone is managed to one of two record profiles. `wildcard-v1` is the
+original set: apex, `app` and wildcard A and TLSA records with the ownership
+challenge. `wildcard-address-family-v2` adds two record sets at the wildcard
+owner, an AAAA holding the IPv4-mapped form of the gateway address and an
+HTTPS record in service mode whose target is the owner itself. A Handshake
+client in use rejects the wildcard no-data answers the first profile gives
+for AAAA and HTTPS, so member names, which have no record of their own,
+fail there; with the second profile every type that client asks for gets a
+positive wildcard answer. The mapped address means the gateway needs no IPv6
+address.
+
+Zones created by this provisioner get the second profile. A root keeps the
+profile it was provisioned with: reconciliation selects it from the managed
+digest in the root's provision result, and the inspector reads it from the
+zone and then requires that whole profile, so a zone that mixes the two is
+refused. An activated root is not upgraded in place. Its retained zone is
+frozen between authority successors, and renewal requires the transferred
+zone to equal it, so adding the two record sets to a serving root by hand
+would end that root's next renewal. Moving an existing root to the second
+profile needs a new provision result and a new retained zone, through a
+fresh import or an authority successor, and is planned separately.
+
 ## Single-owner readiness cutover
 
 The cutover is one reviewed deployment sequence, not a bare migration run. The
