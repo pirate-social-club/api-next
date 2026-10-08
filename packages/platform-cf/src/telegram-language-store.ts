@@ -14,7 +14,17 @@ export function makeTelegramLanguageStore(
               AND t.bot_epoch=i.bot_epoch AND (t.state->>'grantRevision')::bigint=g.revision
               AND s.account_id=g.account_id AND s.persona_id=g.persona_id
               AND persona.persona_id IS NOT NULL AND binding.persona_id IS NOT NULL
-              AND s.status='active' AND s.expires_at>clock_timestamp()) AS resume_available
+              AND s.status='active' AND s.expires_at>clock_timestamp())
+          -- A restricted practice identity resumes without any linked-account grant.
+          OR (g.revision IS NULL AND EXISTS(SELECT 1 FROM telegram_study_conversations t
+            JOIN study_sessions_v2 s ON s.session_id=t.state->>'sessionId'
+            JOIN telegram_restricted_learners l ON l.telegram_user_id=t.telegram_user_id AND l.account_id=s.account_id
+            JOIN telegram_restricted_study_personas r ON r.account_id=s.account_id
+              AND r.community_id=t.community_id AND r.persona_id=s.persona_id
+            JOIN users learner ON learner.user_id=l.account_id AND learner.status='active'
+            WHERE t.community_id=i.community_id AND t.bot_id=i.bot_id AND t.telegram_user_id=$3
+              AND t.bot_epoch=i.bot_epoch AND (t.state->>'grantRevision')::bigint=0
+              AND s.status='active' AND s.expires_at>clock_timestamp())) AS resume_available
          FROM community_telegram_integrations i JOIN communities c USING(community_id)
          LEFT JOIN telegram_interface_preferences p ON p.community_id=i.community_id AND p.bot_id=i.bot_id AND p.telegram_user_id=$3
          LEFT JOIN telegram_bot_grants g ON g.community_id=i.community_id AND g.bot_id=i.bot_id AND g.telegram_user_id=$3 AND g.active

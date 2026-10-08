@@ -24,6 +24,8 @@ export const TelegramStudyState = Schema.Struct({
   selectionInboxId: Schema.NullOr(Schema.String),
   navigationUrl: Schema.NullOr(Schema.String),
   selectedUntil: Schema.Number,
+  /** The inbox item whose explicit chat action affirmed the learner is 16 or older. */
+  ageInboxId: Schema.optional(Schema.NullOr(Schema.String)),
   sessionId: Schema.NullOr(Schema.String),
   grantRevision: Schema.NullOr(Schema.Number),
   turn: Schema.NullOr(
@@ -48,6 +50,7 @@ export const TelegramStudyState = Schema.Struct({
       stage: Schema.Literals([
         "selection",
         "linking",
+        "age",
         "card",
         "completion",
         "cancel",
@@ -69,6 +72,7 @@ export const emptyTelegramStudyState = (): TelegramStudyState => ({
   selectionInboxId: null,
   navigationUrl: null,
   selectedUntil: 0,
+  ageInboxId: null,
   sessionId: null,
   grantRevision: null,
   turn: null,
@@ -87,8 +91,13 @@ export interface TelegramStudyGrant {
   readonly accountId: string;
   readonly personaId: string;
   readonly personaLabel?: string;
+  /** Linked grants carry their consent revision; restricted practice identities use zero. */
   readonly revision: number;
+  /** Automatic practice-only identity created from bot ingress, never from account login. */
+  readonly restricted?: true;
 }
+/** No account exists and no affirmation was given, or the practice identity cannot be issued. */
+export type TelegramStudyEnrollment = TelegramStudyGrant | "age_required" | "unavailable";
 export interface TelegramStudyLease {
   readonly token: string;
   readonly sender: TelegramStudySender;
@@ -108,6 +117,14 @@ export interface TelegramStudyServices {
   readonly communityId: string;
   readonly store: TelegramStudyStore;
   readonly grant: (sender: TelegramStudySender) => Promise<TelegramStudyGrant | null>;
+  /**
+   * Issues the sender's restricted practice identity for this community on a deliberate
+   * lesson start. A new learner account requires the explicit 16-or-older affirmation.
+   */
+  readonly enroll: (
+    lease: TelegramStudyLease,
+    input: { readonly affirmed: boolean },
+  ) => Promise<TelegramStudyEnrollment>;
   readonly navigation: (sender: TelegramStudySender, postId: string) => Promise<string>;
   readonly start: (
     lease: TelegramStudyLease,

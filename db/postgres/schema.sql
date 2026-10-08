@@ -18238,6 +18238,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION protect_telegram_restricted_identity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Restricted Telegram practice identity is immutable' USING ERRCODE='23514';
+END;
+$$;
+
 CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19879,6 +19887,19 @@ BEGIN
     RAISE EXCEPTION 'video rights basis does not match the submission intent';
   END IF;
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT NEW.telegram_practice_only AND EXISTS (
+    SELECT 1 FROM telegram_restricted_learners WHERE account_id=NEW.account_id
+  ) THEN
+    RAISE EXCEPTION 'Restricted Telegram learner sessions are practice only' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -37798,6 +37819,26 @@ CREATE TABLE telegram_link_transactions (
     CONSTRAINT telegram_link_transactions_transaction_id_check CHECK ((transaction_id ~ '^[A-Za-z0-9_-]{43}$'::text))
 );
 
+CREATE TABLE telegram_restricted_learners (
+    telegram_user_id text NOT NULL,
+    account_id text NOT NULL,
+    evidence text DEFAULT 'ingress_observed'::text NOT NULL,
+    affirmed_community_id text NOT NULL,
+    affirmed_bot_id text NOT NULL,
+    affirmed_bot_epoch text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT telegram_restricted_learners_affirmed_bot_id_check CHECK ((affirmed_bot_id ~ '^[1-9][0-9]{0,15}$'::text)),
+    CONSTRAINT telegram_restricted_learners_evidence_check CHECK ((evidence = 'ingress_observed'::text)),
+    CONSTRAINT telegram_restricted_learners_telegram_user_id_check CHECK ((telegram_user_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
+CREATE TABLE telegram_restricted_study_personas (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
 CREATE TABLE telegram_study_conversations (
     community_id text NOT NULL,
     bot_id text NOT NULL,
@@ -40825,6 +40866,18 @@ ALTER TABLE ONLY telegram_link_navigation
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_pkey PRIMARY KEY (transaction_id);
 
+ALTER TABLE ONLY telegram_restricted_learners
+    ADD CONSTRAINT telegram_restricted_learners_account_id_key UNIQUE (account_id);
+
+ALTER TABLE ONLY telegram_restricted_learners
+    ADD CONSTRAINT telegram_restricted_learners_pkey PRIMARY KEY (telegram_user_id);
+
+ALTER TABLE ONLY telegram_restricted_study_personas
+    ADD CONSTRAINT telegram_restricted_study_personas_persona_id_key UNIQUE (persona_id);
+
+ALTER TABLE ONLY telegram_restricted_study_personas
+    ADD CONSTRAINT telegram_restricted_study_personas_pkey PRIMARY KEY (account_id, community_id);
+
 ALTER TABLE ONLY telegram_study_conversations
     ADD CONSTRAINT telegram_study_conversations_pkey PRIMARY KEY (community_id, bot_id, telegram_user_id);
 
@@ -42772,6 +42825,8 @@ CREATE TRIGGER study_language_profiles_immutable BEFORE DELETE OR UPDATE ON stud
 
 CREATE TRIGGER study_presentations_v2_immutable BEFORE DELETE OR UPDATE ON study_presentations_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
+CREATE TRIGGER study_restricted_learner_practice_only BEFORE INSERT ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION require_restricted_learner_practice_only();
+
 CREATE TRIGGER study_session_answers_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_answers FOR EACH ROW EXECUTE FUNCTION guard_study_session_answer();
 
 CREATE TRIGGER study_session_items_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_items FOR EACH ROW EXECUTE FUNCTION guard_study_session_item();
@@ -42799,6 +42854,10 @@ CREATE TRIGGER subject_key_binding_events_validate BEFORE INSERT ON subject_key_
 CREATE TRIGGER subject_keys_append_only BEFORE DELETE OR UPDATE ON subject_keys FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER telegram_learner_generation_fence AFTER UPDATE ON community_telegram_integrations FOR EACH ROW EXECUTE FUNCTION fence_telegram_learner_linking();
+
+CREATE TRIGGER telegram_restricted_learners_immutable BEFORE UPDATE ON telegram_restricted_learners FOR EACH ROW EXECUTE FUNCTION protect_telegram_restricted_identity();
+
+CREATE TRIGGER telegram_restricted_study_personas_immutable BEFORE UPDATE ON telegram_restricted_study_personas FOR EACH ROW EXECUTE FUNCTION protect_telegram_restricted_identity();
 
 CREATE TRIGGER text_content_held_revision_insert_guard BEFORE INSERT ON text_content_held_revisions FOR EACH ROW EXECUTE FUNCTION validate_text_review_child_insert();
 
@@ -45744,6 +45803,21 @@ ALTER TABLE ONLY telegram_link_transactions
 
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_restricted_learners
+    ADD CONSTRAINT telegram_restricted_learners_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY telegram_restricted_learners
+    ADD CONSTRAINT telegram_restricted_learners_affirmed_community_id_fkey FOREIGN KEY (affirmed_community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_restricted_study_personas
+    ADD CONSTRAINT telegram_restricted_study_personas_account_id_fkey FOREIGN KEY (account_id) REFERENCES telegram_restricted_learners(account_id);
+
+ALTER TABLE ONLY telegram_restricted_study_personas
+    ADD CONSTRAINT telegram_restricted_study_personas_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_restricted_study_personas
+    ADD CONSTRAINT telegram_restricted_study_personas_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY telegram_study_conversations
     ADD CONSTRAINT telegram_study_conversations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);

@@ -467,6 +467,8 @@ TRUNCATE TABLE
   "telegram_interface_preferences",
   "telegram_link_navigation",
   "telegram_link_transactions",
+  "telegram_restricted_learners",
+  "telegram_restricted_study_personas",
   "telegram_study_conversations",
   "text_content_held_revisions",
   "text_content_submissions",
