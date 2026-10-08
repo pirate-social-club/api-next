@@ -1,3 +1,12 @@
+import {
+  PowerDnsWildcardFamilyRefusal,
+  type PowerDnsWildcardFamilyResult,
+  type PowerDnsWildcardFamilyRrset,
+  wildcardFamilyOfZone,
+} from "./powerdns-wildcard-family-state.ts";
+
+export { PowerDnsWildcardFamilyRefusal } from "./powerdns-wildcard-family-state.ts";
+
 import type {
   HnsRootDelegationDsV1,
   HnsRootImportGlueRecordV1,
@@ -699,6 +708,173 @@ export function makePowerDnsRootReconciler(
     if (!rectify.response.ok) throw new Error("PowerDNS DNSSEC rectification failed");
     const notify = await request("PUT", `${zonePath}/notify`);
     if (!notify.response.ok) throw new Error("PowerDNS secondary notification failed");
+  };
+}
+
+/** Validates the managed profile and exact family values before inspecting or writing.
+ * DNS/keys require exclusive operator custody; database locks do not lock PowerDNS.
+ * Partial expected families may be completed or withdrawn. An unchanged target is
+ * rectified/notified again, but cannot hide a serial that never advanced.
+ */
+export function makePowerDnsWildcardFamilyWriter(
+  config: PowerDnsRootProvisionConfig,
+  fetcher: PowerDnsFetch = fetch,
+): (input: {
+  readonly root_label: string;
+  readonly challenge_txt_value: string;
+  readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
+  /** The managed digest the root's provision result recorded. */
+  readonly expected_managed_rrset_sha256: string;
+  readonly change: "add" | "remove";
+  readonly mode?: "inspect";
+  readonly retained_serial: number;
+  readonly retained_family: boolean;
+}) => Promise<PowerDnsWildcardFamilyResult> {
+  if (
+    !validEndpoint(config.api_url) ||
+    config.api_key.length === 0 ||
+    config.server_id.length === 0
+  ) {
+    throw new Error("PowerDNS wildcard family writer configuration is invalid");
+  }
+  const apiUrl = config.api_url.replace(/\/+$/u, "");
+  const request = (method: string, path: string, body?: unknown) =>
+    withExchangeDeadline(async (signal) => {
+      const response = await fetcher(`${apiUrl}/api/v1${path}`, {
+        method,
+        redirect: "manual",
+        signal,
+        headers: {
+          accept: "application/json",
+          "x-api-key": config.api_key,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { response, json: await readBoundedJson(response) };
+    });
+  return async (input) => {
+    if (input.change !== "add" && input.change !== "remove")
+      throw new Error("PowerDNS wildcard family change is invalid");
+    const zoneName = canonicalName(input.root_label);
+    const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
+    const read = async () => {
+      const retained = await request("GET", zonePath);
+      if (!retained.response.ok) throw new Error("PowerDNS zone inspection failed");
+      return { zone: parseZone(retained.json, zoneName), json: retained.json };
+    };
+    const before = await read();
+    if (!before.zone.dnssec) throw new Error("PowerDNS existing zone is not DNSSEC-enabled");
+    // EPOCH and SOA-EDIT can leave a serial unchanged; only these two
+    // policies guarantee an increment (apart from wrap, which we refuse).
+    const serialPolicy = Reflect.get(before.json as object, "soa_edit_api");
+    if (serialPolicy !== "DEFAULT" && serialPolicy !== "INCREASE")
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS zone serial policy is not DEFAULT or INCREASE",
+      );
+    const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
+    if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
+      throw new Error("PowerDNS DNSSEC key inspection failed");
+    }
+    const dsValues = (cryptokeys.json as readonly ApiCryptokey[])
+      .filter((key) => key.active !== false && key.published !== false)
+      .flatMap((key) => (Array.isArray(key.ds) ? key.ds : []));
+    if (!dsValues.every((value): value is string => typeof value === "string")) {
+      throw new Error("PowerDNS returned invalid DS data");
+    }
+    if (canonicalJson(retainedDsRecords(dsValues)) !== canonicalJson(input.expected_ds_records)) {
+      throw new Error("PowerDNS DNSSEC key changed after preparation");
+    }
+    const profile = await managedProfileForDigest(
+      { ...input, ...config },
+      input.expected_managed_rrset_sha256,
+    );
+    if (profile === undefined) throw new PowerDnsManagedProfileMismatchError();
+    // A root provisioned under the newer profile holds these record sets as
+    // managed ones; they are neither added to it nor removable from it here.
+    if (profile !== "wildcard-v1")
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS wildcard address records belong to the root's managed profile",
+      );
+    const managed = buildManagedRootRrsets({ ...input, ...config }, profile);
+    retainedManagedRrsets(before.json, managed);
+
+    const wildcard = `*.${zoneName}`;
+    const family = buildManagedRootRrsets(
+      { ...input, ...config },
+      "wildcard-address-family-v2",
+    ).filter((set) => set.name === wildcard && (set.type === "AAAA" || set.type === "HTTPS"));
+    if (family.length !== 2) throw new Error("PowerDNS wildcard address records are unavailable");
+    const familyAsRead: readonly PowerDnsWildcardFamilyRrset[] = family
+      .map((set) => ({
+        type: set.type,
+        ttl: set.ttl,
+        records: set.records.map((record) => record.content),
+      }))
+      .sort((left, right) => left.type.localeCompare(right.type));
+    const wanted = input.change === "add" ? familyAsRead : [];
+    const present = wildcardFamilyOfZone(before.json, zoneName);
+    const alreadyThere = canonicalJson(present) === canonicalJson(wanted);
+    // Anything else at those two types was not put there by this code.
+    if (
+      present.length > 2 ||
+      new Set(present.map((set) => set.type)).size !== present.length ||
+      present.some(
+        (set) => !familyAsRead.some((expected) => canonicalJson(expected) === canonicalJson(set)),
+      )
+    )
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS wildcard address records are not the expected ones",
+      );
+    const familyState =
+      present.length === 0 ? "absent" : present.length === 2 ? "complete" : "partial";
+    if (input.mode === "inspect")
+      return {
+        changed: false,
+        serial_before: before.zone.serial,
+        serial_after: before.zone.serial,
+        wildcard_family_before: present,
+        wildcard_family_after: present,
+        family_state: familyState,
+      };
+    if (
+      alreadyThere &&
+      (input.change === "add") !== input.retained_family &&
+      before.zone.serial <= input.retained_serial
+    )
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS changed family has no serial newer than the retained zone",
+      );
+    if (!alreadyThere) {
+      const patch = await request("PATCH", zonePath, {
+        rrsets:
+          input.change === "add"
+            ? family
+            : family.map((set) => ({ name: set.name, type: set.type, changetype: "DELETE" })),
+      });
+      if (!patch.response.ok) throw new Error("PowerDNS zone reconciliation failed");
+    }
+    const rectify = await request("PUT", `${zonePath}/rectify`);
+    if (!rectify.response.ok) throw new Error("PowerDNS DNSSEC rectification failed");
+    const notify = await request("PUT", `${zonePath}/notify`);
+    if (!notify.response.ok) throw new Error("PowerDNS secondary notification failed");
+
+    const after = await read();
+    retainedManagedRrsets(after.json, managed);
+    const presentAfter = wildcardFamilyOfZone(after.json, zoneName);
+    if (canonicalJson(presentAfter) !== canonicalJson(wanted))
+      throw new Error("PowerDNS wildcard address records did not take effect");
+    // Without a later serial the secondary does not transfer the change.
+    if (!alreadyThere && after.zone.serial <= before.zone.serial)
+      throw new Error("PowerDNS zone serial did not advance");
+    return {
+      changed: !alreadyThere,
+      family_state: input.change === "add" ? "complete" : "absent",
+      serial_before: before.zone.serial,
+      serial_after: after.zone.serial,
+      wildcard_family_before: present,
+      wildcard_family_after: presentAfter,
+    };
   };
 }
 

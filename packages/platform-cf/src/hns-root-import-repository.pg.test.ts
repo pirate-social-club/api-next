@@ -29,6 +29,8 @@ import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-communit
 import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
+import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
+import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -382,8 +384,12 @@ async function makeReadinessArtifact(input: {
   readonly ownershipResultHash: string;
   readonly publishPlanSha256: string;
   readonly provisionResultSha256: string;
+  /** The zone the authorities are observed to serve; the fixture's by default. */
+  readonly managedZoneBytes?: Uint8Array;
+  readonly powerdnsZoneSerial?: number;
+  readonly observedSecondsAgo?: number;
 }) {
-  const observedAt = new Date(Date.now() - 1_000).toISOString();
+  const observedAt = new Date(Date.now() - (input.observedSecondsAgo ?? 1) * 1_000).toISOString();
   const validUntil = new Date(Date.now() + (input.validForSeconds ?? 3600) * 1000).toISOString();
   const capabilities = [
     {
@@ -426,9 +432,10 @@ async function makeReadinessArtifact(input: {
     dns_write_capabilities: capabilities,
   });
   const inventory = await decodeHnsAuthorityInventoryBytes(inventoryBytes);
-  const managedZoneBytes = new TextEncoder().encode(
-    canonicalJson({ root_label: "newroot", serial: 7, managed: true }),
-  );
+  const managedZoneBytes =
+    // A canonical authority zone, so that zone adoption, which reads the
+    // retained zone, runs its real difference rule in this fixture.
+    input.managedZoneBytes ?? hnsZoneAdoptionFixtureZone("newroot", 7, false);
   const observedZoneBytesSha256 = sha256(managedZoneBytes);
   return encodeHnsRootImportReadinessResultV1({
     version: HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
@@ -439,7 +446,7 @@ async function makeReadinessArtifact(input: {
     publish_plan_sha256: input.publishPlanSha256,
     provision_result_sha256: input.provisionResultSha256,
     chain_resource_sha256: SHA_A,
-    powerdns_zone_serial: 7,
+    powerdns_zone_serial: input.powerdnsZoneSerial ?? 7,
     managed_rrset_sha256: SHA_C,
     managed_zone_bytes_hex: Buffer.from(managedZoneBytes).toString("hex"),
     observed_zone_bytes_sha256: observedZoneBytesSha256,
@@ -1174,6 +1181,22 @@ suite("Postgres 17 HNS root-import repository", () => {
                 ...(environment === undefined ? {} : { environment }),
                 ...(validForSeconds === undefined ? {} : { validForSeconds }),
               }),
+          );
+          await verifyHnsZoneAdoption(admin, connection, (observed) =>
+            makeReadinessArtifact({
+              ownershipResultHash,
+              publishPlanSha256: sha256(provisioned.planBytes),
+              provisionResultSha256: sha256(provisioned.resultBytes),
+              inventoryVersion: `adoption-${randomUUID()}`,
+              // Long enough for the adoption fence's margin, short enough
+              // that the scheduler finds the adopted root due for renewal.
+              validForSeconds: 172_800,
+              ...(observed?.zone === undefined ? {} : { managedZoneBytes: observed.zone }),
+              ...(observed?.serial === undefined ? {} : { powerdnsZoneSerial: observed.serial }),
+              ...(observed?.observed_seconds_ago === undefined
+                ? {}
+                : { observedSecondsAgo: observed.observed_seconds_ago }),
+            }),
           );
           return;
         }
