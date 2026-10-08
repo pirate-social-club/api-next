@@ -6,6 +6,8 @@ export type TelegramMessage = Readonly<{
   buttons: readonly Readonly<{ text: string; url: string }>[];
   replyTo?: number;
   keyboard?: unknown;
+  /** Delivery id that must be sent first; this message waits while that one is in flight. */
+  after?: string;
 }>;
 
 export type TelegramDeliveryState =

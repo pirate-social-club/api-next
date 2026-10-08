@@ -266,7 +266,8 @@ test("pre-link language callbacks bypass lesson state and paid providers", async
   f.services.study = { communityId: integration.communityId, store: fail } as TelegramStudyServices;
   const choice = await f.run("tg-language:ka", undefined, true);
   expect(choice?.text).toContain("შენახულია");
-  expect(JSON.stringify(choice?.keyboard)).toContain("tg-menu:study");
+  expect(JSON.stringify(choice?.keyboard)).toContain("tg-menu:songs");
+  expect(JSON.stringify(choice?.keyboard)).not.toContain("tg-menu:study");
   expect((await f.run("/preferences", "ru"))?.text).toContain("ჩინური");
 });
 test("foreign-chat and obsolete-epoch callbacks cannot change language", async () => {

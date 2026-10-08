@@ -46,6 +46,7 @@ export function makeTelegramDeliveryStore(
   | "enqueueDelivery"
   | "claimDelivery"
   | "finishDelivery"
+  | "deliveriesAfter"
   | "holdDelivery"
   | "listDeliveries"
   | "resolveDelivery"
@@ -89,6 +90,15 @@ export function makeTelegramDeliveryStore(
           return null;
         }
         if (record.state !== "pending" && record.state !== "failed") return null;
+        // A message ordered after another waits while its predecessor is still in flight.
+        // A predecessor that ended, even in failure, no longer holds it back.
+        if (record.desired?.after !== undefined) {
+          const prior = await query(
+            "SELECT 1 FROM community_telegram_deliveries WHERE delivery_id=$1 AND state IN ('pending','sending')",
+            [record.desired.after],
+          );
+          if (prior.length) return null;
+        }
         const attempt = crypto.randomUUID();
         const claimed = await query(
           `UPDATE community_telegram_deliveries SET state='sending',attempt=$2,attempt_count=attempt_count+1,
@@ -100,6 +110,15 @@ export function makeTelegramDeliveryStore(
           ? { ...record, attempt, attemptCount: Number(claimed[0].attempt_count) }
           : null;
       });
+    },
+    async deliveriesAfter(record) {
+      const rows = await db.query(
+        `SELECT delivery_id FROM community_telegram_deliveries
+        WHERE community_id=$1 AND chat_id=$2 AND state='pending' AND desired->>'after'=$3
+        ORDER BY created_at LIMIT 4`,
+        [record.communityId, record.chatId, record.id],
+      );
+      return rows.map((row) => String(row.delivery_id));
     },
     async finishDelivery(record, outcome, operation) {
       if (outcome.kind === "confirmed") {

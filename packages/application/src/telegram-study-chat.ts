@@ -7,7 +7,6 @@ import { telegramBotCredentials } from "./telegram/delivery.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./telegram/types.ts";
 import { TelegramFailure } from "./telegram/types.ts";
 import {
-  type TelegramStudyGrant,
   TelegramStudyLeaseExpired,
   type TelegramStudyReply,
   type TelegramStudyServices,
@@ -38,6 +37,11 @@ const text = (value: string): TelegramStudyReply => ({
   buttons: [],
 });
 
+/**
+ * Read-aloud practice in a private chat. The learner sees a song list, then one short prompt
+ * per line; an answer is a voice note sent as a reply to the current prompt. `intro` is a
+ * one-time line shown above the song list when the learner starts the bot.
+ */
 export async function handleTelegramStudyChat(
   services: TelegramServices,
   study: TelegramStudyServices,
@@ -47,12 +51,12 @@ export async function handleTelegramStudyChat(
   rawMessage: unknown,
   callbackData?: string,
   locale: TelegramLocale = "en",
+  intro?: string,
 ): Promise<void> {
   const t = (
     key: Parameters<typeof telegramText>[1],
     values?: Readonly<Record<string, string | number>>,
   ) => telegramText(locale, key, values);
-  const help = t("studyHelp");
   if (!integration.botId) throw new TelegramFailure({ reason: "unavailable" });
   const sender = {
     communityId: inbox.communityId,
@@ -81,21 +85,28 @@ export async function handleTelegramStudyChat(
       ].slice(-64),
     };
   };
-  const respond = async (message: TelegramStudyReply) => {
-    state = { ...state, lastInboxId: inbox.id, lastReply: message };
+  // Feedback is its own message and is always delivered before the message that follows it.
+  const send = async (message: TelegramStudyReply, feedback: TelegramStudyReply | null) => {
+    if (feedback === null) {
+      await study.reply(sender, inbox.id, senderId, message);
+      return;
+    }
+    const first = await study.reply(sender, inbox.id, senderId, feedback, "feedback");
+    await study.reply(sender, inbox.id, senderId, { ...message, after: first });
+  };
+  const respond = async (
+    message: TelegramStudyReply,
+    feedback: TelegramStudyReply | null = null,
+  ) => {
+    state = { ...state, lastInboxId: inbox.id, lastReply: message, lastFeedback: feedback };
     await persist();
-    await study.reply(sender, inbox.id, senderId, message);
+    await send(message, feedback);
   };
   const showSession = async (
     session: StudySessionV2,
-    prefix: string,
-    grant: TelegramStudyGrant,
+    feedback: TelegramStudyReply | null = null,
   ) => {
     const current = session.lesson.current;
-    // A restricted practice identity has no public persona to name.
-    const identity = grant.restricted
-      ? ""
-      : `${t("personaLine", { persona: grant.personaLabel ?? session.persona_id })}\n`;
     state = {
       ...state,
       sessionId: session.session_id,
@@ -105,36 +116,18 @@ export async function handleTelegramStudyChat(
       selectionInboxId: null,
       navigationUrl: null,
       selectedUntil: 0,
-      ageInboxId: null,
     };
     if (session.status === "completed" || current === null) {
       state = { ...state, turn: null };
       observe("completion", session.items.length);
-      const complete = t("complete", {
-        prefix,
-        identity,
-        correct: session.progress.first_pass_correct,
-        total: session.items.length,
-        required: session.progress.required_correct,
-      });
-      if (!grant.restricted) {
-        await respond(text(complete));
-        return;
-      }
-      // Connection is optional; a failed link mint must not withhold the result.
-      let url: string | null = null;
-      try {
-        url = await study.navigation(sender, session.post_id);
-      } catch {
-        url = null;
-      }
       await respond(
-        url === null
-          ? text(complete)
-          : {
-              ...text(`${complete}\n${t("connectOptional")}`),
-              buttons: [{ text: t("connectButton"), url }],
-            },
+        text(
+          t("complete", {
+            correct: session.progress.first_pass_correct,
+            total: session.items.length,
+          }),
+        ),
+        feedback,
       );
       return;
     }
@@ -150,31 +143,24 @@ export async function handleTelegramStudyChat(
         deliveryId: await services.vault.hash(`${inbox.id}:reply`),
       },
     };
-    await respond({
-      ...text(
-        t("card", {
-          prefix,
-          identity,
-          total: session.items.length,
-          required: session.progress.required_correct,
-          resolved: session.lesson.resolved_card_count,
-          correct: session.progress.first_pass_correct,
-          line: item.presentation.reference_text,
-        }),
-      ),
-      keyboard: { force_reply: true, selective: true },
-    });
+    await respond(
+      {
+        ...text(t("sayThis", { line: item.presentation.reference_text })),
+        keyboard: { force_reply: true, selective: true },
+      },
+      feedback,
+    );
   };
   try {
     if (state.lastInboxId === inbox.id && state.lastReply !== null) {
-      await study.reply(sender, inbox.id, senderId, state.lastReply);
+      await send(state.lastReply, state.lastFeedback ?? null);
       return;
     }
     const parsed = Schema.decodeUnknownOption(Incoming)(rawMessage);
     const message = parsed._tag === "Some" ? parsed.value : null;
     const command = (message?.text ?? "").trim().replace(/@[A-Za-z0-9_]+(?=\s|$)/u, "");
     if (command === "/help") {
-      await respond(text(help));
+      await respond(text(t("studyHelp")));
       return;
     }
     if (command === "/cancel") {
@@ -187,7 +173,6 @@ export async function handleTelegramStudyChat(
         selectionInboxId: null,
         navigationUrl: null,
         selectedUntil: 0,
-        ageInboxId: null,
         token: services.vault.token(),
       };
       await respond(text(t("stopped")));
@@ -213,11 +198,11 @@ export async function handleTelegramStudyChat(
         songs: [...songs],
         token: services.vault.token(),
         selectedPostId: null,
-        ageInboxId: null,
         selectedUntil: services.now() + 15 * 60 * 1000,
       };
+      const heading = songs.length ? t("chooseSong") : t("noReadySongs");
       await respond({
-        ...text(songs.length ? `${help}\n${t("chooseSong")}` : t("noReadySongs")),
+        ...text(intro ? `${intro}\n\n${heading}` : heading),
         keyboard: {
           inline_keyboard: songs.map((song, index) => [
             { text: song.title.slice(0, 60), callback_data: `study:${state.token}:${index}` },
@@ -227,56 +212,31 @@ export async function handleTelegramStudyChat(
       return;
     }
     if (callbackData !== undefined && state.selectionInboxId !== inbox.id) {
+      // Buttons from the removed age question fail this check like any other stale choice.
       const suffix = callbackData.slice(`study:${state.token}:`.length);
-      if (suffix === "age" || suffix === "minor") {
-        // Only the sender's own unexpired song choice can carry the age answer.
-        if (state.selectedPostId === null || services.now() >= state.selectedUntil) {
-          await respond(text(t("selectionExpired")));
-          return;
-        }
-        if (suffix === "minor") {
-          state = {
-            ...state,
-            selectedPostId: null,
-            selectionInboxId: null,
-            navigationUrl: null,
-            selectedUntil: 0,
-            ageInboxId: null,
-            token: services.vault.token(),
-          };
-          await respond(text(t("under16")));
-          return;
-        }
-        // The token is kept: until a lesson starts, the visible buttons must still work, so
-        // a decline sent while this item waits for a retry is honoured, not discarded.
-        state = { ...state, ageInboxId: inbox.id, selectionInboxId: inbox.id };
-        await persist();
-      } else {
-        if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
-          await respond(text(t("selectionExpired")));
-          return;
-        }
-        const song = state.songs[Number(suffix)];
-        if (!song || !(await study.store.ready(sender.communityId, song.postId))) {
-          await respond(text(t("songUnavailable")));
-          return;
-        }
-        state = {
-          ...state,
-          selectedPostId: song.postId,
-          selectionInboxId: inbox.id,
-          navigationUrl: null,
-          ageInboxId: null,
-          selectedUntil: services.now() + 15 * 60 * 1000,
-          token: services.vault.token(),
-        };
-        await persist();
+      if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
+        await respond(text(t("selectionExpired")));
+        return;
       }
+      const song = state.songs[Number(suffix)];
+      if (!song || !(await study.store.ready(sender.communityId, song.postId))) {
+        await respond(text(t("songUnavailable")));
+        return;
+      }
+      state = {
+        ...state,
+        selectedPostId: song.postId,
+        selectionInboxId: inbox.id,
+        navigationUrl: null,
+        selectedUntil: services.now() + 15 * 60 * 1000,
+        token: services.vault.token(),
+      };
+      await persist();
     }
     let grant = await study.grant(sender);
     if (!grant) {
       state = { ...state, pendingAnswer: null, turn: null };
-      // Only a deliberate lesson start, never /study or a typed command, issues an identity.
+      // Only a deliberate song choice, never /study or a typed command, issues an identity.
       if (
         callbackData === undefined ||
         state.selectedPostId === null ||
@@ -285,22 +245,7 @@ export async function handleTelegramStudyChat(
         await respond(text(t("chooseFirst")));
         return;
       }
-      const enrolled = await study.enroll(activeLease, {
-        affirmed: state.ageInboxId === inbox.id,
-      });
-      if (enrolled === "age_required") {
-        observe("age");
-        await respond({
-          ...text(t("ageQuestion")),
-          keyboard: {
-            inline_keyboard: [
-              [{ text: t("ageYes"), callback_data: `study:${state.token}:age` }],
-              [{ text: t("ageNo"), callback_data: `study:${state.token}:minor` }],
-            ],
-          },
-        });
-        return;
-      }
+      const enrolled = await study.enroll(activeLease);
       if (enrolled === "unavailable") {
         state = { ...state, selectedPostId: null, selectionInboxId: null, selectedUntil: 0 };
         await respond(text(t("practiceUnavailable")));
@@ -333,11 +278,7 @@ export async function handleTelegramStudyChat(
         `telegram:${inbox.id}:start`,
       );
       state = { ...state, grantRevision: grant.revision };
-      await showSession(
-        session,
-        grant.restricted ? `${t("practiceOnly")} ${t("noReferenceAudio")}` : t("noReferenceAudio"),
-        grant,
-      );
+      await showSession(session);
       return;
     }
     if (state.sessionId !== null && (await study.store.expired(state.sessionId))) {
@@ -346,11 +287,7 @@ export async function handleTelegramStudyChat(
       return;
     }
     if (command === "/resume" && state.sessionId !== null) {
-      await showSession(
-        await study.session(activeLease, grant, state.sessionId),
-        t("resuming"),
-        grant,
-      );
+      await showSession(await study.session(activeLease, grant, state.sessionId));
       return;
     }
     if (
@@ -361,6 +298,7 @@ export async function handleTelegramStudyChat(
       const oversized = () => respond(text(t("shorterVoice")));
       let pending = state.pendingAnswer;
       if (pending === null) {
+        // An answer is a voice note sent as a reply to the current prompt, nothing else.
         if (
           !message?.voice ||
           message.reply_to_message?.message_id !==
@@ -380,6 +318,7 @@ export async function handleTelegramStudyChat(
           attemptNumber: state.turn.attemptNumber,
           fileId: message.voice.file_id,
           durationMs: message.voice.duration * 1000,
+          messageId: message.message_id,
         };
       }
       if (pending.durationMs > 60000) {
@@ -409,50 +348,27 @@ export async function handleTelegramStudyChat(
         audio,
         durationMs: pending.durationMs,
       });
-      const feedback = result.feedback.kind === "transcript_diff" ? result.feedback : null;
-      const notes =
-        feedback === null
-          ? ""
-          : [
-              t("heard", { answer: feedback.heard_transcript.slice(0, 500) || t("nothingClear") }),
-              ...(feedback.missing.length
-                ? [
-                    t("trySaying", {
-                      words: feedback.missing
-                        .map((word) => word.token)
-                        .join(" ")
-                        .slice(0, 300),
-                    }),
-                  ]
-                : []),
-              ...(feedback.substituted.length
-                ? [
-                    t("trySaying", {
-                      words: feedback.substituted
-                        .map((word) => word.expected.token)
-                        .join(" ")
-                        .slice(0, 300),
-                    }),
-                  ]
-                : []),
-            ].join("\n");
-      await showSession(
-        result.session,
-        [
-          result.outcome === "correct"
-            ? t("correct")
-            : result.outcome === "ungraded_rerecord"
-              ? t("rerecord")
-              : t("incorrect"),
-          notes,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        grant,
-      );
+      const heard =
+        result.feedback.kind === "transcript_diff"
+          ? result.feedback.heard_transcript.slice(0, 200)
+          : "";
+      const verdict =
+        result.outcome === "correct"
+          ? t("correct")
+          : result.outcome === "ungraded_rerecord"
+            ? t("rerecord")
+            : heard
+              ? `${t("incorrect")}\n${t("heard", { answer: heard })}`
+              : t("incorrect");
+      // The verdict answers the learner's voice note; the next prompt is a separate message.
+      await showSession(result.session, {
+        ...text(verdict),
+        ...(pending.messageId === undefined ? {} : { replyTo: pending.messageId }),
+      });
       return;
     }
-    await respond(text(state.sessionId !== null ? t("voiceRequired") : help));
+    // Anything else leaves the lesson and its attempts untouched.
+    await respond(text(state.sessionId !== null ? t("voiceRequired") : t("chooseFirst")));
   } catch (error) {
     if (
       (error instanceof StudyV2CommandRejected && error.reason !== "command-in-flight") ||
@@ -489,12 +405,13 @@ export async function handleTelegramStudyChat(
         if (current) {
           await showSession(
             current,
-            error instanceof TelegramStudyLeaseExpired
-              ? t("gradingTimeout")
-              : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
-                ? t("gradingUnavailable")
-                : t("answerUnavailable"),
-            currentGrant,
+            text(
+              error instanceof TelegramStudyLeaseExpired
+                ? t("gradingTimeout")
+                : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
+                  ? t("gradingUnavailable")
+                  : t("answerUnavailable"),
+            ),
           );
           return;
         }

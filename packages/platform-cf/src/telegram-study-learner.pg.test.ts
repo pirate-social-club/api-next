@@ -52,11 +52,13 @@ suite("restricted Telegram practice identity", () => {
         );
       }
       await admin.query(
-        `REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners, telegram_restricted_study_personas, telegram_restricted_bot_affirmations FROM ${servingRole}`,
+        `REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners, telegram_restricted_study_personas FROM ${servingRole}`,
       );
       await admin.query(
         `REVOKE ALL ON telegram_restricted_learners, telegram_restricted_study_personas, telegram_restricted_bot_affirmations FROM ${websiteRole}`,
       );
+      // The per-bot age answers of the first release are no longer read or written at all.
+      await admin.query(`REVOKE ALL ON telegram_restricted_bot_affirmations FROM ${servingRole}`);
       const scopedAs = (role: string) =>
         `${connectionString}${connectionString.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema} -c role=${role}`)}`;
       const runtime = makeDirectPostgresControlPlaneLayer(scopedAs(servingRole));
@@ -116,30 +118,27 @@ suite("restricted Telegram practice identity", () => {
       };
       await connectBot("study-community", "123");
 
-      // Nothing is issued before /start, without the conversation lease, or without the answer.
+      // Nothing is issued before /start or without the sender's own conversation lease.
       const first = await open("study-community", "123", "555");
-      expect(await first.learners.enroll(first.lease, true)).toBe("unavailable");
+      expect(await first.learners.enroll(first.lease)).toBe("unavailable");
       await startChat("study-community", "555");
-      expect(await first.learners.enroll({ ...first.lease, token: "another" }, true)).toBe(
-        "unavailable",
-      );
-      expect(await first.learners.enroll(first.lease, false)).toBe("age_required");
+      expect(await first.learners.enroll({ ...first.lease, token: "another" })).toBe("unavailable");
       expect(await first.learners.resolve(first.sender)).toBeNull();
       expect(await count("users")).toBe(1);
       expect(await count("telegram_restricted_learners")).toBe(0);
       expect(await count("account_minimum_age_attestations")).toBe(0);
 
-      const grant = restrictedGrant(await first.learners.enroll(first.lease, true));
+      const grant = restrictedGrant(await first.learners.enroll(first.lease));
       expect(grant).toMatchObject({ revision: 0, restricted: true });
       expect(grant.accountId).toMatch(/^usr_[0-9a-f]{32}$/u);
       expect(grant.accountId).not.toContain("555");
       expect(
         (
           await admin.query(
-            `SELECT u.status,u.account,a.version,a.minimum_age,a.affirmed,l.evidence,
+            `SELECT u.status,u.account,l.evidence,
                l.affirmed_community_id,l.affirmed_bot_id,l.affirmed_bot_epoch
-             FROM users u JOIN account_minimum_age_attestations a ON a.account_id=u.user_id
-             JOIN telegram_restricted_learners l ON l.account_id=u.user_id WHERE u.user_id=$1`,
+             FROM users u JOIN telegram_restricted_learners l ON l.account_id=u.user_id
+             WHERE u.user_id=$1`,
             [grant.accountId],
           )
         ).rows,
@@ -147,9 +146,6 @@ suite("restricted Telegram practice identity", () => {
         {
           status: "active",
           account: {},
-          version: "minimum-age-attestation-v1",
-          minimum_age: 16,
-          affirmed: true,
           evidence: "ingress_observed",
           affirmed_community_id: "study-community",
           affirmed_bot_id: "123",
@@ -178,6 +174,8 @@ suite("restricted Telegram practice identity", () => {
           privy_wallet_id: null,
         },
       ]);
+      // No age answer was asked for, so none is recorded for the learner.
+      expect(await count("account_minimum_age_attestations")).toBe(0);
       // No login, link, membership, handle or provisioned wallet exists for the learner.
       for (const [table, column] of [
         ["identity_credentials", "canonical_user_id"],
@@ -195,7 +193,7 @@ suite("restricted Telegram practice identity", () => {
       ).toBe(0);
 
       // Retries, later lessons and a reconnected ingress reuse the same identity.
-      expect(await first.learners.enroll(first.lease, false)).toEqual(grant);
+      expect(await first.learners.enroll(first.lease)).toEqual(grant);
       expect(await first.learners.resolve(first.sender)).toEqual(grant);
       expect(await first.learners.resolve({ ...first.sender, epoch: "older" })).toBeNull();
       expect(await count("telegram_restricted_study_personas")).toBe(1);
@@ -204,7 +202,7 @@ suite("restricted Telegram practice identity", () => {
       await startChat("study-community", "777");
       const racing = await open("study-community", "123", "777");
       const raced = await Promise.all(
-        Array.from({ length: 4 }, () => racing.learners.enroll(racing.lease, true)),
+        Array.from({ length: 4 }, () => racing.learners.enroll(racing.lease)),
       );
       expect(new Set(raced.map((value) => JSON.stringify(value))).size).toBe(1);
       expect(await count("telegram_restricted_learners WHERE telegram_user_id='777'")).toBe(1);
@@ -221,8 +219,7 @@ suite("restricted Telegram practice identity", () => {
       );
       await startChat("study-community", "321");
       const known = await open("study-community", "123", "321");
-      expect(await known.learners.enroll(known.lease, false)).toBe("age_required");
-      const isolated = restrictedGrant(await known.learners.enroll(known.lease, true));
+      const isolated = restrictedGrant(await known.learners.enroll(known.lease));
       expect(isolated.accountId).not.toBe("study-account");
       expect(
         (
@@ -236,7 +233,7 @@ suite("restricted Telegram practice identity", () => {
       // Unlinking later keeps the same local progress owner.
       await admin.query("DELETE FROM telegram_account_associations WHERE telegram_user_id='321'");
       expect(await known.learners.resolve(known.sender)).toEqual(isolated);
-      expect(await known.learners.enroll(known.lease, false)).toEqual(isolated);
+      expect(await known.learners.enroll(known.lease)).toEqual(isolated);
       await admin.query(
         "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('321','study-account')",
       );
@@ -250,22 +247,17 @@ suite("restricted Telegram practice identity", () => {
         await connectBot(communityId, botId);
         await startChat(communityId, "555");
         const elsewhere = await open(communityId, botId, "555");
-        // Every sender is asked once per community, so the question reveals nothing.
-        expect(await elsewhere.learners.enroll(elsewhere.lease, false)).toBe("age_required");
-        const issued = restrictedGrant(await elsewhere.learners.enroll(elsewhere.lease, true));
+        const issued = restrictedGrant(await elsewhere.learners.enroll(elsewhere.lease));
         expect(issued.accountId).toBe(grant.accountId);
-        expect(await elsewhere.learners.enroll(elsewhere.lease, false)).toEqual(issued);
+        expect(await elsewhere.learners.enroll(elsewhere.lease)).toEqual(issued);
         personas.add(issued.personaId);
       }
       expect(personas.size).toBe(3);
-      // Each bot isolates a linked sender separately and asks for its own age answer.
+      // Each bot isolates a linked sender in its own owner.
       await startChat("second-community", "321");
       const knownElsewhere = await open("second-community", "456", "321");
-      expect(await knownElsewhere.learners.enroll(knownElsewhere.lease, false)).toBe(
-        "age_required",
-      );
       const isolatedElsewhere = restrictedGrant(
-        await knownElsewhere.learners.enroll(knownElsewhere.lease, true),
+        await knownElsewhere.learners.enroll(knownElsewhere.lease),
       );
       expect(isolatedElsewhere.accountId).not.toBe(isolated.accountId);
       expect(
@@ -279,12 +271,11 @@ suite("restricted Telegram practice identity", () => {
         "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('777','study-account')",
       );
       expect(await racing.learners.resolve(racing.sender)).toEqual(racedGrant);
-      expect(await racing.learners.enroll(racing.lease, false)).toEqual(racedGrant);
+      expect(await racing.learners.enroll(racing.lease)).toEqual(racedGrant);
       await startChat("second-community", "777");
       const linkedLater = await open("second-community", "456", "777");
-      expect(await linkedLater.learners.enroll(linkedLater.lease, false)).toBe("age_required");
       expect(
-        restrictedGrant(await linkedLater.learners.enroll(linkedLater.lease, true)).accountId,
+        restrictedGrant(await linkedLater.learners.enroll(linkedLater.lease)).accountId,
       ).not.toBe(racedGrant.accountId);
       expect(
         await count("telegram_restricted_study_personas WHERE account_id=$1", [
@@ -294,7 +285,7 @@ suite("restricted Telegram practice identity", () => {
       await connectBot("fourth-community", "1011");
       await startChat("fourth-community", "555");
       const exhausted = await open("fourth-community", "1011", "555");
-      expect(await exhausted.learners.enroll(exhausted.lease, true)).toBe("unavailable");
+      expect(await exhausted.learners.enroll(exhausted.lease)).toBe("unavailable");
       expect(await count("telegram_restricted_learners WHERE telegram_user_id='555'")).toBe(1);
       expect(await count("personas WHERE account_id=$1", [grant.accountId])).toBe(4);
       expect(
@@ -420,8 +411,9 @@ suite("restricted Telegram practice identity", () => {
       ).rejects.toMatchObject({ reason: "not-found" });
       expect(await count("activity_qualifications")).toBe(0);
 
-      // A replaced bot is a new bot identity: every sender is asked again, whichever kind of
-      // practice account they hold, so the question cannot reveal an association.
+      // After a bot is replaced the cross-bot learner keeps the same account and persona,
+      // and the linked sender, whose owner was local to the old bot, gets a new one. Neither
+      // is asked anything, so the bot's behaviour does not reveal which is which.
       await admin.query(
         `UPDATE community_telegram_integrations SET bot_id='999',bot_epoch='replaced',
            record=record||'{"botId":"999","botEpoch":"replaced","botUsername":"fixture_999_bot"}'::jsonb
@@ -431,24 +423,15 @@ suite("restricted Telegram practice identity", () => {
         await startChat("study-community", telegramUserId, "replaced");
       const unlinkedAgain = await open("study-community", "999", "555", "replaced");
       const linkedAgain = await open("study-community", "999", "321", "replaced");
-      expect(await unlinkedAgain.learners.resolve(unlinkedAgain.sender)).toBeNull();
-      expect(await linkedAgain.learners.resolve(linkedAgain.sender)).toBeNull();
-      expect(await unlinkedAgain.learners.enroll(unlinkedAgain.lease, false)).toBe("age_required");
-      expect(await linkedAgain.learners.enroll(linkedAgain.lease, false)).toBe("age_required");
-      // The cross-bot learner keeps the same account and persona; the linked sender's owner
-      // is local to the old bot, so the new bot gets its own.
-      expect(await unlinkedAgain.learners.enroll(unlinkedAgain.lease, true)).toEqual(grant);
       expect(await unlinkedAgain.learners.resolve(unlinkedAgain.sender)).toEqual(grant);
-      const replacedOwner = restrictedGrant(
-        await linkedAgain.learners.enroll(linkedAgain.lease, true),
-      );
+      expect(await unlinkedAgain.learners.enroll(unlinkedAgain.lease)).toEqual(grant);
+      expect(await linkedAgain.learners.resolve(linkedAgain.sender)).toBeNull();
+      const replacedOwner = restrictedGrant(await linkedAgain.learners.enroll(linkedAgain.lease));
       expect(replacedOwner.accountId).not.toBe(isolated.accountId);
-      expect(
-        await count(
-          "telegram_restricted_bot_affirmations WHERE account_id=$1 AND community_id='study-community'",
-          [grant.accountId],
-        ),
-      ).toBe(2);
+      expect(await linkedAgain.learners.resolve(linkedAgain.sender)).toEqual(replacedOwner);
+      // No age answer or attestation was written anywhere in this run.
+      expect(await count("account_minimum_age_attestations")).toBe(0);
+      expect(await count("telegram_restricted_bot_affirmations")).toBe(0);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       for (const role of ["serving", "website"])

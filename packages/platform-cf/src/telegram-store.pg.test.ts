@@ -193,6 +193,49 @@ suite("community Telegram persistence", () => {
       expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("uncertain");
     }));
 
+  test("a message ordered after another waits only while its predecessor is in flight", () =>
+    fixture(async (store) => {
+      const message = (id: string, after?: string) => ({
+        id,
+        communityId: "telegram-community",
+        botEpoch: "epoch",
+        chatId: "123",
+        kind: "reply" as const,
+        postId: null,
+        state: "pending" as const,
+        desired: {
+          kind: "text" as const,
+          text: id,
+          media: null,
+          buttons: [],
+          ...(after === undefined ? {} : { after }),
+        },
+        desiredHash: id,
+      });
+      await store.enqueueDelivery(message("feedback"));
+      await store.enqueueDelivery(message("prompt", "feedback"));
+      // Pending or sending feedback holds the prompt back without spending an attempt.
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      const feedback = await store.claimDelivery("feedback");
+      if (!feedback) throw new Error("Missing feedback claim");
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      expect(await store.deliveriesAfter(feedback)).toEqual(["prompt"]);
+      await store.finishDelivery(feedback, { kind: "confirmed", messageId: 7 }, "send");
+      const prompt = await store.claimDelivery("prompt");
+      expect(prompt?.attemptCount).toBe(1);
+      expect(prompt?.desired?.after).toBe("feedback");
+      // A predecessor that failed for good no longer blocks what follows it.
+      await store.enqueueDelivery(message("lost"));
+      await store.enqueueDelivery(message("next", "lost"));
+      const lost = await store.claimDelivery("lost");
+      if (!lost) throw new Error("Missing claim");
+      await store.finishDelivery(
+        lost,
+        { kind: "rejected", code: "telegram_400", retryAfter: null },
+        "send",
+      );
+      expect((await store.claimDelivery("next"))?.id).toBe("next");
+    }));
   test("failed edits retain confirmed content and can be claimed again after retry_after", () =>
     fixture(async (store, admin) => {
       const base = {

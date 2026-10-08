@@ -193,6 +193,41 @@ test("speech failure reserves usage first and fails only the separate voice deli
   expect(finished).toBe(true);
 });
 
+test("a confirmed message sends the message ordered after it in the same pass", async () => {
+  const dispatched: string[] = [];
+  const text = (id: string, after?: string) => ({
+    ...voiceDelivery,
+    id,
+    kind: "reply" as const,
+    desired: {
+      kind: "text" as const,
+      text: id,
+      media: null,
+      buttons: [],
+      ...(after === undefined ? {} : { after }),
+    },
+    desiredHash: id,
+  });
+  const service = services({
+    claimDelivery: async (id) =>
+      id === "feedback" ? text("feedback") : text("prompt", "feedback"),
+    integration: async () => integration,
+    finishDelivery: async () => {},
+    deliveriesAfter: async (delivery) => (delivery.id === "feedback" ? ["prompt"] : []),
+  });
+  service.vault.open = async () =>
+    JSON.stringify({ token: "fixture-token", secret: "fixture-secret" });
+  service.api = {
+    ...service.api,
+    dispatch: async (_token, delivery) => {
+      dispatched.push(delivery.id);
+      return { kind: "confirmed", messageId: dispatched.length };
+    },
+  };
+  await processTelegramDelivery(service, "feedback");
+  expect(dispatched).toEqual(["feedback", "prompt"]);
+});
+
 test("rotated bot epochs fence already claimed work before provider access", async () => {
   let held = false;
   const service = services({

@@ -97,7 +97,7 @@ export function makeTelegramStudyServices(
         sender.epoch,
         sender.telegramUserId,
       )) ?? (await learners.resolve(sender)),
-    enroll: (lease, input) => learners.enroll(lease, input.affirmed),
+    enroll: (lease) => learners.enroll(lease),
     async navigation(sender, postId) {
       const reference = telegram.vault.token();
       await links.createNavigation({
@@ -147,8 +147,14 @@ export function makeTelegramStudyServices(
           audioDurationMs: input.durationMs,
         }),
       ),
-    async reply(sender, inboxId, chatId, message) {
-      const id = await telegram.vault.hash(`${inboxId}:reply`);
+    async reply(sender, inboxId, chatId, message, slot = "reply") {
+      const id = await telegram.vault.hash(`${inboxId}:${slot}`);
+      const { replyTo, after, ...rest } = message;
+      const desired = {
+        ...rest,
+        ...(replyTo === undefined ? {} : { replyTo }),
+        ...(after === undefined ? {} : { after }),
+      };
       await telegram.store.enqueueDelivery({
         id,
         communityId: sender.communityId,
@@ -157,14 +163,15 @@ export function makeTelegramStudyServices(
         kind: "reply",
         postId: null,
         state: "pending",
-        desired: message,
-        desiredHash: await telegram.vault.hash(JSON.stringify(message)),
+        desired,
+        desiredHash: await telegram.vault.hash(JSON.stringify(desired)),
       });
       try {
         await telegram.wake({ kind: "delivery", id });
       } catch {
         /* Durable pending work resumes delivery. */
       }
+      return id;
     },
   };
 }

@@ -15,6 +15,10 @@ export const TelegramStudyReply = Schema.Struct({
   media: Schema.Null,
   buttons: Schema.Array(Schema.Struct({ text: Schema.String, url: Schema.String })),
   keyboard: Schema.optional(Schema.Unknown),
+  /** Telegram message this one answers, such as the learner's voice note. */
+  replyTo: Schema.optional(Schema.Number),
+  /** Delivery that must be sent first, so feedback always precedes the next prompt. */
+  after: Schema.optional(Schema.String),
 });
 export type TelegramStudyReply = Schema.Schema.Type<typeof TelegramStudyReply>;
 export const TelegramStudyState = Schema.Struct({
@@ -24,7 +28,7 @@ export const TelegramStudyState = Schema.Struct({
   selectionInboxId: Schema.NullOr(Schema.String),
   navigationUrl: Schema.NullOr(Schema.String),
   selectedUntil: Schema.Number,
-  /** The inbox item whose explicit chat action affirmed the learner is 16 or older. */
+  /** Unused since the age question was removed; older saved states may still carry it. */
   ageInboxId: Schema.optional(Schema.NullOr(Schema.String)),
   sessionId: Schema.NullOr(Schema.String),
   grantRevision: Schema.NullOr(Schema.Number),
@@ -43,6 +47,8 @@ export const TelegramStudyState = Schema.Struct({
       attemptNumber: Schema.Number,
       fileId: Schema.String,
       durationMs: Schema.Number,
+      /** The learner's voice message, so feedback can be sent as a reply to it. */
+      messageId: Schema.optional(Schema.Number),
     }),
   ),
   observations: Schema.Array(
@@ -63,6 +69,8 @@ export const TelegramStudyState = Schema.Struct({
   ).check(Schema.isMaxLength(64)),
   lastInboxId: Schema.NullOr(Schema.String),
   lastReply: Schema.NullOr(TelegramStudyReply),
+  /** Feedback sent as its own message before lastReply, replayed with it on a retry. */
+  lastFeedback: Schema.optional(Schema.NullOr(TelegramStudyReply)),
 });
 export type TelegramStudyState = Schema.Schema.Type<typeof TelegramStudyState>;
 export const emptyTelegramStudyState = (): TelegramStudyState => ({
@@ -72,7 +80,6 @@ export const emptyTelegramStudyState = (): TelegramStudyState => ({
   selectionInboxId: null,
   navigationUrl: null,
   selectedUntil: 0,
-  ageInboxId: null,
   sessionId: null,
   grantRevision: null,
   turn: null,
@@ -96,8 +103,8 @@ export interface TelegramStudyGrant {
   /** Automatic practice-only identity created from bot ingress, never from account login. */
   readonly restricted?: true;
 }
-/** No account exists and no affirmation was given, or the practice identity cannot be issued. */
-export type TelegramStudyEnrollment = TelegramStudyGrant | "age_required" | "unavailable";
+/** The restricted practice identity, or a refusal such as an exhausted persona limit. */
+export type TelegramStudyEnrollment = TelegramStudyGrant | "unavailable";
 export interface TelegramStudyLease {
   readonly token: string;
   readonly sender: TelegramStudySender;
@@ -119,12 +126,9 @@ export interface TelegramStudyServices {
   readonly grant: (sender: TelegramStudySender) => Promise<TelegramStudyGrant | null>;
   /**
    * Issues the sender's restricted practice identity for this community on a deliberate
-   * lesson start. A first lesson in a community requires the explicit 16-or-older affirmation.
+   * lesson start. It records no age assertion: none is asked for.
    */
-  readonly enroll: (
-    lease: TelegramStudyLease,
-    input: { readonly affirmed: boolean },
-  ) => Promise<TelegramStudyEnrollment>;
+  readonly enroll: (lease: TelegramStudyLease) => Promise<TelegramStudyEnrollment>;
   readonly navigation: (sender: TelegramStudySender, postId: string) => Promise<string>;
   readonly start: (
     lease: TelegramStudyLease,
@@ -149,10 +153,12 @@ export interface TelegramStudyServices {
       durationMs: number;
     },
   ) => Promise<StudyAnswerResultV2>;
+  /** Durably queues one outgoing message for this inbox item and returns its delivery id. */
   readonly reply: (
     sender: TelegramStudySender,
     inboxId: string,
     chatId: string,
     message: TelegramStudyReply,
-  ) => Promise<void>;
+    slot?: "reply" | "feedback",
+  ) => Promise<string>;
 }

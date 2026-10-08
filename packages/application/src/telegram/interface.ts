@@ -79,7 +79,8 @@ export function interfaceKeyboard(
             })),
           ]
         : []),
-      [...(practice ? [button("study")] : []), button("songs")],
+      // One song-list action: in a practice bot it opens the practice picker.
+      [button("songs")],
       [...(practice && resume ? [button("resume")] : []), button("help"), button("settings")],
     ],
   };

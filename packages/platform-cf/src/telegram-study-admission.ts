@@ -25,9 +25,6 @@ const RESTRICTED_ACCEPTANCE_SQL = `
     AND chat.bot_id=$2 AND chat.telegram_user_id=l.telegram_user_id
   WHERE s.community_id=$1 AND l.telegram_user_id=$3 AND s.account_id=$4 AND s.persona_id=$5
     AND (l.local_bot_id IS NULL OR l.local_bot_id=$2)
-    AND EXISTS (SELECT 1 FROM telegram_restricted_bot_affirmations affirmed
-      WHERE affirmed.account_id=s.account_id AND affirmed.community_id=s.community_id
-        AND affirmed.bot_id=$2)
     AND u.status='active' AND c.status='active'
     AND p.account_id=s.account_id AND p.status='active'
     AND b.account_id=s.account_id AND b.community_id=s.community_id

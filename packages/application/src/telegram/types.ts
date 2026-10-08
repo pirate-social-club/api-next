@@ -219,6 +219,8 @@ export interface TelegramStore {
     operation: "send" | "edit" | "delete",
   ): Promise<void>;
   holdDelivery(record: DeliveryRecord, code: string): Promise<void>;
+  /** Pending deliveries that were waiting for this one, so they can be sent straight after. */
+  deliveriesAfter(record: DeliveryRecord): Promise<readonly string[]>;
   listDeliveries(
     communityId: string,
     before?: string,
