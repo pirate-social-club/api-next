@@ -36,6 +36,18 @@ const Catalogue = Schema.Array(Schema.NonEmptyString.check(Schema.isMaxLength(12
   Schema.isMinLength(1),
   Schema.isMaxLength(8),
 );
+/** JSON with object keys in a fixed order, so equal values always serialize identically. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
 export function makeTelegramStudyServices(
   bindings: TelegramPracticeBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -164,7 +176,9 @@ export function makeTelegramStudyServices(
         postId: null,
         state: "pending",
         desired,
-        desiredHash: await telegram.vault.hash(JSON.stringify(desired)),
+        // The message is replayed from stored state, where key order is not preserved. Hash
+        // a canonical form so an identical replay is not mistaken for changed content.
+        desiredHash: await telegram.vault.hash(canonicalJson(desired)),
       });
       try {
         await telegram.wake({ kind: "delivery", id });

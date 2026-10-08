@@ -167,7 +167,7 @@ access are refused throughout.
 The reservation and study-persona tables need SELECT and INSERT only: admission
 reads them without a row lock, because a row lock would require UPDATE. The
 affirmations table needs no access. Enrollment
-also inserts into users, account_minimum_age_attestations, personas,
+also inserts into users, personas,
 persona_profiles, persona_wallet_assignments and persona_community_bindings
 through the serving role. They are not part of the six-object guard, because a
 staging role with broad default privileges would fail it and silently disable
@@ -185,10 +185,24 @@ be placed beside the database. On 2026-10-08 the first release took 16 to 25
 seconds per interaction on staging, with the chat running in the unplaced jobs
 consumer behind two queue hops. The HTTP Worker has targeted placement at the
 database host, so it now does the work itself: after storing an update it
-processes it in the request's background and sends each stored reply directly.
-Updates and replies are still written durably first. The queue and the jobs
-Worker remain the recovery path, and the scheduled scanner re-drives anything
-interrupted. Both Workers must run this source.
+processes it in the request's background and sends the replies that update
+produces directly. Updates and replies are still written durably first.
+Messages enqueued by anything else, such as an owner publishing posts, are
+queued as before.
+
+Background work is cut off about thirty seconds after the response. Each
+inline update therefore also sends a queue message delayed 130 seconds, just
+past the two-minute inbox lease, so the jobs Worker re-drives an interrupted
+update without waiting for the scheduled scanner. For a finished update that
+message finds nothing to claim. A send interrupted mid-flight ends uncertain
+and is not resent, as before; if it was the prompt, /resume shows it again. The
+jobs Worker and the scanner remain the recovery path, so both Workers must run
+this source. Each inline update logs only its outcome and duration.
+
+A prompt ordered after a verdict is sent only once the verdict is delivered. It
+waits while the verdict is pending, being sent or awaiting a retry. A verdict
+that can never be sent, or whose outcome is unknown, is cancelled first, so it
+cannot arrive after the prompt.
 
 Migration 0240 and bounded SELECT/INSERT/UPDATE access to
 telegram_interface_preferences are required whenever Telegram is enabled,

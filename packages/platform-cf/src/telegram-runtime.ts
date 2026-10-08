@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import {
   configureTelegramBots,
@@ -32,7 +33,10 @@ export interface TelegramBindings
       | "TELEGRAM_STUDY_PRACTICE_POST_IDS_JSON"
     > {
   readonly TELEGRAM_QUEUE?: {
-    send(body: { kind: "inbox" | "delivery"; id: string }): Promise<void>;
+    send(
+      body: { kind: "inbox" | "delivery"; id: string },
+      options?: { delaySeconds?: number },
+    ): Promise<void>;
   };
 }
 
@@ -45,14 +49,26 @@ export interface TelegramRuntimeOptions {
 }
 
 type TelegramWork = { kind: "inbox" | "delivery"; id: string };
+type TelegramWorkQueue = {
+  send(body: TelegramWork, options?: { delaySeconds?: number }): Promise<void>;
+};
+/** True while this Worker is processing an update it accepted itself. */
+const inlineUpdate = new AsyncLocalStorage<true>();
+/**
+ * Background work is cut off about 30 seconds after the response. The inbox lease lasts two
+ * minutes, so a queue message delayed just past it re-drives an interrupted update without
+ * waiting for the scheduled scanner. For a finished update it finds nothing to claim.
+ */
+const INTERRUPTED_UPDATE_BACKSTOP_SECONDS = 130;
 
 /**
  * Without `defer`, work goes to the queue. With it, the caller's own Worker does the work:
- * a stored reply is sent at once, and a stored update is processed after the response. The
- * queue remains the fallback, and the scheduled scanner recovers anything interrupted.
+ * a stored update is processed after the response, and the replies it stores are sent at
+ * once. Anything else, such as a publication, is still queued. The queue remains the
+ * fallback, and the scheduled scanner recovers anything interrupted.
  */
 export function makeTelegramWake(input: {
-  readonly queue: { send(body: TelegramWork): Promise<void> };
+  readonly queue: TelegramWorkQueue;
   readonly defer: TelegramRuntimeOptions["defer"];
   readonly inbox: (id: string) => Promise<void>;
   readonly delivery: (id: string) => Promise<void>;
@@ -61,6 +77,12 @@ export function makeTelegramWake(input: {
   if (defer === undefined) return (work) => queue.send(work);
   return async (work) => {
     if (work.kind === "delivery") {
+      // Only replies produced by an update being handled here are sent here. A request
+      // that enqueues many messages must not wait for each of them to be sent.
+      if (inlineUpdate.getStore() !== true) {
+        await queue.send(work);
+        return;
+      }
       try {
         await input.delivery(work.id);
       } catch {
@@ -68,7 +90,26 @@ export function makeTelegramWake(input: {
       }
       return;
     }
-    if (!defer(() => input.inbox(work.id).catch(() => undefined))) await queue.send(work);
+    const started = Date.now();
+    // Timing only, never ids or content: recovery by the scanner must not hide a slow path.
+    const record = (outcome: "handled" | "failed") =>
+      console.info("telegram.inline_update", { outcome, elapsed_ms: Date.now() - started });
+    const run = () =>
+      inlineUpdate.run(true, () =>
+        input.inbox(work.id).then(
+          () => record("handled"),
+          () => record("failed"),
+        ),
+      );
+    if (!defer(run)) {
+      await queue.send(work);
+      return;
+    }
+    try {
+      await queue.send(work, { delaySeconds: INTERRUPTED_UPDATE_BACKSTOP_SECONDS });
+    } catch {
+      /* The scheduled scanner still recovers an interrupted update. */
+    }
   };
 }
 
