@@ -122,9 +122,11 @@ function rrset(name: string, type: string, ttl: number, records: readonly string
  * positive wildcard answer. The AAAA is the IPv4-mapped form of the gateway
  * address, so the gateway needs no IPv6 address of its own.
  *
- * A root keeps the profile it was provisioned with: its managed digest is
- * bound into its provision result, and its retained zone is frozen between
- * authority successors. Only zones created from now on get the newer profile.
+ * A root keeps the profile its provision result recorded: the managed digest
+ * is bound into that result, and an activated root's retained zone is frozen
+ * between authority successors. A zone gets the newer profile when this code
+ * creates it, or when a root is imported again over an existing zone, where
+ * the new session's reconciliation rewrites the managed record sets anyway.
  */
 const HNS_MANAGED_RECORD_PROFILES = ["wildcard-v1", "wildcard-address-family-v2"] as const;
 export type HnsManagedRecordProfile = (typeof HNS_MANAGED_RECORD_PROFILES)[number];
@@ -171,10 +173,13 @@ export function buildManagedRootRrsets(
 }
 
 /**
- * The profile a retained zone carries, read from the zone itself. A zone holds
+ * The profile a retained zone carries, read from the zone itself, for callers
+ * that have no provision result to consult. A zone the provisioner made holds
  * the wildcard address-family record sets from its creation or not at all, so
  * either one marks the newer profile; the caller then requires the whole
- * profile exactly, and a zone that mixes the two is refused there.
+ * profile exactly. Callers that do hold a provision result use its digest
+ * instead, so an unmanaged record at the wildcard owner cannot change which
+ * profile an existing root is held to.
  */
 function managedProfileOfZone(value: unknown, zoneName: string): HnsManagedRecordProfile {
   const rrsets =
@@ -193,6 +198,30 @@ function managedProfileOfZone(value: unknown, zoneName: string): HnsManagedRecor
   )
     ? "wildcard-address-family-v2"
     : "wildcard-v1";
+}
+
+/**
+ * Raised when neither profile, built from current configuration, reproduces the
+ * managed digest a root's provision result recorded. The configuration changed
+ * after provisioning, which the caller reports as an authority mismatch.
+ */
+export class PowerDnsManagedProfileMismatchError extends Error {
+  constructor() {
+    super("PowerDNS managed profile does not match the provision result");
+    this.name = "PowerDnsManagedProfileMismatchError";
+  }
+}
+
+async function managedProfileForDigest(
+  input: Parameters<typeof buildManagedRootRrsets>[0],
+  expectedSha256: string,
+): Promise<HnsManagedRecordProfile | undefined> {
+  for (const candidate of HNS_MANAGED_RECORD_PROFILES) {
+    if ((await managedRrsetSha256(buildManagedRootRrsets(input, candidate))) === expectedSha256) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 async function managedRrsetSha256(managed: readonly PowerDnsRrset[]): Promise<string> {
@@ -602,7 +631,7 @@ export function makePowerDnsRootReconciler(
   readonly challenge_txt_value: string;
   readonly expected_ds_records: readonly HnsRootDelegationDsV1[];
   /** The managed digest the root's provision result recorded; it selects the profile. */
-  readonly expected_managed_rrset_sha256?: string;
+  readonly expected_managed_rrset_sha256: string;
 }) => Promise<void> {
   if (
     !validEndpoint(config.api_url) ||
@@ -650,20 +679,14 @@ export function makePowerDnsRootReconciler(
     if (canonicalJson(actualDs) !== canonicalJson(input.expected_ds_records)) {
       throw new Error("PowerDNS DNSSEC key changed after preparation");
     }
-    let profile: HnsManagedRecordProfile | undefined;
-    if (input.expected_managed_rrset_sha256 === undefined) {
-      profile = managedProfileOfZone(retained.json, zoneName);
-    } else {
-      for (const candidate of HNS_MANAGED_RECORD_PROFILES) {
-        const digest = await managedRrsetSha256(
-          buildManagedRootRrsets({ ...input, ...config }, candidate),
-        );
-        if (digest === input.expected_managed_rrset_sha256) profile = candidate;
-      }
-      // Neither profile reproduces what was provisioned: the configuration
-      // changed since, and writing either would not be what was recorded.
-      if (profile === undefined) throw new Error("PowerDNS managed profile is not recognized");
-    }
+    // Neither profile reproducing what was provisioned means the configuration
+    // changed since. Writing either would not be what was recorded, so nothing
+    // is written and the caller reports the mismatch.
+    const profile = await managedProfileForDigest(
+      { ...input, ...config },
+      input.expected_managed_rrset_sha256,
+    );
+    if (profile === undefined) throw new PowerDnsManagedProfileMismatchError();
     const managed = buildManagedRootRrsets({ ...input, ...config }, profile);
     const patch = await request("PATCH", zonePath, { rrsets: managed });
     if (!patch.response.ok) throw new Error("PowerDNS zone reconciliation failed");
@@ -814,6 +837,8 @@ export function makePowerDnsRootInspector(
 ): (input: {
   readonly root_label: string;
   readonly challenge_txt_value: string;
+  /** The managed digest the root's provision result recorded, when the caller has one. */
+  readonly expected_managed_rrset_sha256?: string;
 }) => Promise<HnsAuthorityZoneResult> {
   if (
     !validEndpoint(config.api_url) ||
@@ -841,7 +866,18 @@ export function makePowerDnsRootInspector(
     const zonePath = `/servers/${encodeURIComponent(config.server_id)}/zones/${encodeURIComponent(zoneName)}`;
     const retained = await request(zonePath);
     const zone = parseZone(retained, zoneName);
-    const profile = managedProfileOfZone(retained, zoneName);
+    // A recorded digest decides the profile, so an existing root is inspected
+    // exactly as before whatever else its zone holds. When no profile
+    // reproduces it the zone decides, and the caller's own comparison of the
+    // digests then reports the mismatch, as it did before profiles existed.
+    const recorded =
+      input.expected_managed_rrset_sha256 === undefined
+        ? undefined
+        : await managedProfileForDigest(
+            { ...input, ...config },
+            input.expected_managed_rrset_sha256,
+          );
+    const profile = recorded ?? managedProfileOfZone(retained, zoneName);
     retainedManagedRrsets(retained, buildManagedRootRrsets({ ...input, ...config }, profile));
     const cryptokeys = await request(`${zonePath}/cryptokeys`);
     if (!Array.isArray(cryptokeys)) throw new Error("PowerDNS DNSSEC key inspection failed");

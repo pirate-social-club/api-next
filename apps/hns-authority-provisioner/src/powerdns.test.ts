@@ -9,9 +9,12 @@ import { canonicalJson } from "@pirate/domain";
 import {
   buildManagedRootRrsets,
   HNS_MANAGED_RECORD_PROFILE_FOR_NEW_ZONES,
+  makePowerDnsRootInspector,
   makePowerDnsRootProvisioner,
   makePowerDnsRootReconciler,
   makePowerDnsRootTeardown,
+  PowerDnsManagedProfileMismatchError,
+  reservationAccount,
 } from "./powerdns.ts";
 
 describe("PowerDNS managed HNS root rrsets", () => {
@@ -389,17 +392,218 @@ describe("PowerDNS managed HNS root rrsets", () => {
     expect(types(patches[1])).toEqual(["A", "TLSA"]);
 
     // A digest neither profile reproduces means the configuration changed since
-    // provisioning; nothing is written.
+    // provisioning; nothing is written and the caller is told which failure it is.
     calls.length = 0;
     await expect(
       reconcile({ ...reconcileInput, expected_managed_rrset_sha256: "0".repeat(64) }),
-    ).rejects.toThrow("managed profile is not recognized");
-    expect(calls.filter((call) => call.startsWith("PATCH"))).toEqual([]);
+    ).rejects.toBeInstanceOf(PowerDnsManagedProfileMismatchError);
+    expect(calls.filter((call) => !call.startsWith("GET"))).toEqual([]);
+  });
 
-    // Without a recorded digest the zone's own content decides, and an empty
-    // zone carries no address-family record sets.
-    await reconcile(reconcileInput);
-    expect(types(patches[2])).toEqual(["A", "TLSA"]);
+  test("provision, reconciliation and inspection agree on one profile for each kind of root", async () => {
+    const config = {
+      api_url: "http://powerdns.test:8081",
+      api_key: "secret-not-logged",
+      server_id: "localhost",
+      soa_content: "ns1.pirate. hostmaster.pirate. 0 3600 900 1209600 300",
+      axfr_tsig_key_name: "secondary-transfer.",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"a".repeat(64)}`,
+      gateway_deployment_reference: "gateway-deployment-v1",
+      gateway_certificate_spki_sha256: "a".repeat(64),
+      ttl_seconds: 300,
+    };
+    const input = { root_label: "newroot", challenge_txt_value: "pirate-verification=session" };
+    const dsText = `10875 13 2 ${"a".repeat(64)}`;
+    type Stored = { name: string; type: string; ttl: number; records: unknown };
+    // A provider that keeps what it is given: create stores the record sets,
+    // a patch replaces whole record sets, and every read returns them.
+    const provider = (initial: { account: string; rrsets: readonly Stored[] } | null) => {
+      let zone =
+        initial === null ? null : { account: initial.account, rrsets: [...initial.rrsets] };
+      const writes: string[] = [];
+      const fetcher = async (url: Request | string | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const path = new URL(String(url)).pathname;
+        if (method === "GET" && path.endsWith("/cryptokeys"))
+          return Response.json([{ active: true, published: true, ds: [dsText] }]);
+        if (method === "GET")
+          return zone === null
+            ? new Response(null, { status: 404 })
+            : Response.json({ name: "newroot.", serial: 7, dnssec: true, ...zone });
+        if (method === "POST") {
+          if (zone !== null) return new Response(null, { status: 409 });
+          const body = JSON.parse(String(init?.body));
+          zone = { account: body.account, rrsets: body.rrsets };
+          writes.push("POST");
+          return Response.json({}, { status: 201 });
+        }
+        if (method === "PATCH" && zone !== null) {
+          const changed: Stored[] = JSON.parse(String(init?.body)).rrsets;
+          zone.rrsets = [
+            ...zone.rrsets.filter(
+              (kept) => !changed.some((next) => next.name === kept.name && next.type === kept.type),
+            ),
+            ...changed,
+          ];
+          writes.push("PATCH");
+        }
+        return new Response(null, { status: 204 });
+      };
+      const wildcardTypes = () =>
+        (zone?.rrsets ?? [])
+          .filter(({ name }) => name === "*.newroot.")
+          .map(({ type }) => type)
+          .sort();
+      return { fetcher, writes, wildcardTypes };
+    };
+    const through = async (
+      fetcher: ReturnType<typeof provider>["fetcher"],
+      currentRecords: Parameters<
+        ReturnType<typeof makePowerDnsRootProvisioner>
+      >[0]["current_records"],
+    ) => {
+      const provisioned = await makePowerDnsRootProvisioner(
+        config,
+        fetcher,
+      )({
+        ...input,
+        current_records: currentRecords,
+      });
+      await makePowerDnsRootReconciler(
+        config,
+        fetcher,
+      )({
+        ...input,
+        expected_ds_records: provisioned.ds_records,
+        expected_managed_rrset_sha256: provisioned.managed_rrset_sha256,
+      });
+      const inspected = await makePowerDnsRootInspector(
+        config,
+        fetcher,
+      )({
+        ...input,
+        expected_managed_rrset_sha256: provisioned.managed_rrset_sha256,
+      });
+      return { provisioned, inspected };
+    };
+    const digestOf = async (profile: "wildcard-v1" | "wildcard-address-family-v2") =>
+      [
+        ...new Uint8Array(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(
+              canonicalJson(buildManagedRootRrsets({ ...config, ...input }, profile)),
+            ),
+          ),
+        ),
+      ]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    const earlier = await digestOf("wildcard-v1");
+    const current = await digestOf("wildcard-address-family-v2");
+    const reservation = await reservationAccount(input.challenge_txt_value);
+    const earlierZone = buildManagedRootRrsets({ ...config, ...input }, "wildcard-v1");
+
+    // A new root is created, reconciled and inspected under the current profile.
+    const fresh = provider(null);
+    const created = await through(fresh.fetcher, []);
+    expect(created.provisioned.managed_rrset_sha256).toBe(current);
+    expect(created.inspected.managed_rrset_sha256).toBe(current);
+    expect(fresh.wildcardTypes()).toEqual(["A", "AAAA", "HTTPS", "TLSA"]);
+
+    // A root whose zone this session created under the earlier profile keeps it
+    // through a provisioning retry, reconciliation and inspection: no record
+    // set is added, so its retained zone and its digest stay what they were.
+    const retained = provider({ account: reservation, rrsets: earlierZone });
+    const kept = await through(retained.fetcher, []);
+    expect(kept.provisioned.managed_rrset_sha256).toBe(earlier);
+    expect(kept.inspected.managed_rrset_sha256).toBe(earlier);
+    expect(retained.wildcardTypes()).toEqual(["A", "TLSA"]);
+    expect(retained.writes).not.toContain("POST");
+
+    // A root imported again over a zone from an earlier session records the
+    // current profile before any write, and reconciliation then brings the
+    // zone to it.
+    const adopted = provider({ account: "earlier-reservation", rrsets: earlierZone });
+    const provision = makePowerDnsRootProvisioner(config, adopted.fetcher);
+    const result = await provision({
+      ...input,
+      current_records: [
+        { type: "NS", ns: "ns1.pirate." },
+        { type: "NS", ns: "ns2.pirate." },
+        { type: "DS", keyTag: 10_875, algorithm: 13, digestType: 2, digest: "a".repeat(64) },
+      ],
+    });
+    expect(result).toMatchObject({ created: false, managed_rrset_sha256: current });
+    expect(adopted.writes).toEqual([]);
+    expect(adopted.wildcardTypes()).toEqual(["A", "TLSA"]);
+    await makePowerDnsRootReconciler(
+      config,
+      adopted.fetcher,
+    )({
+      ...input,
+      expected_ds_records: result.ds_records,
+      expected_managed_rrset_sha256: result.managed_rrset_sha256,
+    });
+    expect(adopted.wildcardTypes()).toEqual(["A", "AAAA", "HTTPS", "TLSA"]);
+    expect(
+      (
+        await makePowerDnsRootInspector(
+          config,
+          adopted.fetcher,
+        )({
+          ...input,
+          expected_managed_rrset_sha256: result.managed_rrset_sha256,
+        })
+      ).managed_rrset_sha256,
+    ).toBe(current);
+  });
+
+  test("a create that loses a race to the same reservation keeps the profile already in the zone", async () => {
+    const config = {
+      api_url: "http://powerdns.test:8081",
+      api_key: "secret-not-logged",
+      server_id: "localhost",
+      soa_content: "ns1.pirate. hostmaster.pirate. 0 3600 900 1209600 300",
+      axfr_tsig_key_name: "secondary-transfer.",
+      gateway_ipv4: "192.0.2.10",
+      shared_tlsa_association: `3 1 1 ${"a".repeat(64)}`,
+      gateway_deployment_reference: "gateway-deployment-v1",
+      gateway_certificate_spki_sha256: "a".repeat(64),
+      ttl_seconds: 300,
+    };
+    const input = { root_label: "newroot", challenge_txt_value: "pirate-verification=session" };
+    const account = await reservationAccount(input.challenge_txt_value);
+    const earlierZone = buildManagedRootRrsets({ ...config, ...input }, "wildcard-v1");
+    let reads = 0;
+    let patched: readonly { name: string; type: string }[] = [];
+    const provision = makePowerDnsRootProvisioner(config, async (url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET" && String(url).endsWith("/cryptokeys"))
+        return Response.json([{ active: true, ds: [`10875 13 2 ${"a".repeat(64)}`] }]);
+      // The first read finds nothing; another executor of this session then creates the zone.
+      if (method === "GET")
+        return reads++ === 0
+          ? new Response(null, { status: 404 })
+          : Response.json({
+              name: "newroot.",
+              serial: 3,
+              dnssec: true,
+              account,
+              rrsets: earlierZone,
+            });
+      if (method === "POST") return new Response(null, { status: 409 });
+      if (method === "PATCH") patched = JSON.parse(String(init?.body)).rrsets;
+      return new Response(null, { status: 204 });
+    });
+    const result = await provision({ ...input, current_records: [] });
+    expect(result.created).toBe(true);
+    expect(patched.filter(({ name }) => name === "*.newroot.").map(({ type }) => type)).toEqual([
+      "A",
+      "TLSA",
+    ]);
+    expect(new TextDecoder().decode(result.managed_zone_bytes)).not.toContain("AAAA");
   });
 
   test("idempotently deletes one exact abandoned root zone and confirms it is gone", async () => {

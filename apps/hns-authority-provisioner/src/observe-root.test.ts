@@ -15,6 +15,7 @@ import {
   initialHnsRootImportLifecycleStateV1,
 } from "@pirate/domain";
 import { HnsRootReadinessObservationError, observeHnsRootReadinessV1 } from "./observe-root.ts";
+import { PowerDnsManagedProfileMismatchError } from "./powerdns.ts";
 import {
   HNS_AUTHORITY_PROVISION_REQUEST_VERSION,
   type HnsAuthorityZoneResult,
@@ -202,7 +203,15 @@ describe("HNS root readiness observation", () => {
           });
           reconciledZone = true;
         },
-        inspect_zone: async () => ({ ...state.zone, created: false }),
+        inspect_zone: async (input) => {
+          // Inspection is held to the profile the provision result recorded.
+          expect(input).toEqual({
+            root_label: "newroot",
+            challenge_txt_value: "pirate-verification=challenge",
+            expected_managed_rrset_sha256: state.zone.managed_rrset_sha256,
+          });
+          return { ...state.zone, created: false };
+        },
         observe_live: async () => state.live,
       },
       config: {
@@ -354,6 +363,39 @@ describe("HNS root readiness observation", () => {
     ).rejects.toEqual(new HnsRootReadinessObservationError("owner_update_pending"));
     expect(reconciledZone).toBe(false);
     expect(inspectedZone).toBe(false);
+  });
+
+  test("configuration that no longer reproduces the provision result is a mismatch; any other reconcile failure is an outage", async () => {
+    const state = await fixture();
+    let inspected = 0;
+    const observe = (failure: Error) =>
+      observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
+        operation_kind: "observe_root_v1",
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () =>
+            observedCurrent([...state.plan.replacement_records].reverse()),
+          reconcile_zone: async () => {
+            throw failure;
+          },
+          inspect_zone: async () => {
+            inspected++;
+            return state.zone;
+          },
+          observe_live: async () => state.live,
+        },
+        config: { environment: "test", valid_for_seconds: 86_400 },
+      });
+    await expect(observe(new PowerDnsManagedProfileMismatchError())).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_mismatch"),
+    );
+    await expect(observe(new Error("provider unreachable"))).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_unavailable"),
+    );
+    expect(inspected).toBe(0);
   });
 
   test("refuses forged health facts and mismatched authority-zone evidence", async () => {

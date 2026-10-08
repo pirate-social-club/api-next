@@ -561,16 +561,41 @@ describe("canonical authority zone derivation", () => {
     expect(upper).toEqual(lower);
     expect(new TextDecoder().decode(lower)).toContain(`0001${hexOf(name(`edge.${zoneName}`))}`);
 
-    // Changed parameters are a different zone; a record too short to hold a target is refused.
+    // Parameters are kept exactly as transferred, so different parameters are a different zone.
     const onlyH2 = concat([
       uint16(1),
       uint16(3),
       new Uint8Array([2, ...new TextEncoder().encode("h2")]),
     ]);
-    expect(
-      derive([record(wildcard, 65, 300, concat([uint16(1), new Uint8Array([0]), onlyH2]))]),
-    ).not.toEqual(derive([https(new Uint8Array([0]))]));
-    expect(() => derive([record(wildcard, 65, 300, uint16(1))])).toThrow(HnsDnsTsigAxfrError);
+    const withOnlyH2 = JSON.parse(
+      new TextDecoder().decode(
+        derive([record(wildcard, 65, 300, concat([uint16(1), new Uint8Array([0]), onlyH2]))]),
+      ),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(withOnlyH2.records.find((entry) => entry[1] === 65)?.[4]).toBe(`000100${hexOf(onlyH2)}`);
+
+    // A target written with a compression pointer is the same record as its
+    // uncompressed form. Offset 12 is the question name, which is the zone.
+    const pointerToZone = new Uint8Array([4, ...new TextEncoder().encode("edge"), 0xc0, 12]);
+    expect(derive([https(pointerToZone)])).toEqual(lower);
+
+    // Alias mode, priority zero with a named target and no parameters, is carried too.
+    const alias = JSON.parse(
+      new TextDecoder().decode(
+        derive([record(wildcard, 65, 300, concat([uint16(0), name(`edge.${zoneName}`)]))]),
+      ),
+    ) as { records: readonly (readonly unknown[])[] };
+    expect(alias.records.find((entry) => entry[1] === 65)?.[4]).toBe(
+      `0000${hexOf(name(`edge.${zoneName}`))}`,
+    );
+
+    // Refused: a record with no room for a target, and a target whose labels
+    // run past the end of its own record into the next one.
+    expect(() => derive([record(wildcard, 65, 300, uint16(1))])).toThrow(
+      "invalid AXFR service-binding data",
+    );
+    const overrun = concat([uint16(1), new Uint8Array([9, ...new TextEncoder().encode("edge")])]);
+    expect(() => derive([record(wildcard, 65, 300, overrun)])).toThrow(HnsDnsTsigAxfrError);
   });
 
   test("omits online RRSIG bytes but detects a changed stable record", () => {

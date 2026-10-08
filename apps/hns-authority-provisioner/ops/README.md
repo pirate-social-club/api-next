@@ -41,15 +41,38 @@ positive wildcard answer. The mapped address means the gateway needs no IPv6
 address.
 
 Zones created by this provisioner get the second profile. A root keeps the
-profile it was provisioned with: reconciliation selects it from the managed
-digest in the root's provision result, and the inspector reads it from the
-zone and then requires that whole profile, so a zone that mixes the two is
-refused. An activated root is not upgraded in place. Its retained zone is
-frozen between authority successors, and renewal requires the transferred
-zone to equal it, so adding the two record sets to a serving root by hand
-would end that root's next renewal. Moving an existing root to the second
-profile needs a new provision result and a new retained zone, through a
-fresh import or an authority successor, and is planned separately.
+profile its provision result recorded: reconciliation and inspection select
+it from the managed digest in that result, and a zone inspected without one
+is read from its own content and then held to that whole profile, so a zone
+that mixes the two is refused. Configuration that no longer reproduces the
+recorded digest under either profile is reported as an authority mismatch and
+nothing is written.
+
+An activated root is not upgraded in place. Its retained zone is frozen
+between authority successors, and renewal requires the transferred zone to
+equal it, so adding the two record sets to a serving root by hand would end
+that root's next renewal. A root does move to the second profile when it is
+imported again over its existing zone: the new session's provision result
+records the second profile and its reconciliation rewrites the managed record
+sets, as it already rewrote the ownership challenge. Moving a serving root
+without a new import needs an authority successor and is planned separately.
+
+Deployment is one-way once a root exists under the second profile. An
+earlier provisioner computes the first profile's digest for that root, which
+no longer equals its provision result, and readiness or renewal then ends as
+an authority mismatch. Every other reader of the canonical zone must also
+contain the encoder change that accepts the HTTPS record type before it meets
+such a root: the observer driver and the operator continuity scripts derive
+the same canonical zone and refuse an unknown type. Install those before the
+first root is provisioned under the second profile, and do not roll the
+provisioner back past this change afterwards.
+
+The evidence for client behaviour is one Android client on a network without
+IPv6, plus the local resolver checks. Platforms that treat an IPv4-mapped
+address as IPv4 connect normally; others are expected to fail that attempt
+and use the A record, which has not been observed. The HTTPS record advertises
+`h2` and `http/1.1`, matching the gateway's listener configuration in
+`staging-host/caddy-tls.json`; nothing ties the two together automatically.
 
 ## Single-owner readiness cutover
 

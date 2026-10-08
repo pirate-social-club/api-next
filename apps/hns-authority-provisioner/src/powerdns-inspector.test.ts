@@ -97,6 +97,35 @@ describe("PowerDNS root inspector", () => {
     );
     await expect(inspect(input)).rejects.toThrow("PowerDNS managed rrset does not match");
 
+    // A root with a recorded digest is inspected under that profile whatever
+    // else sits at the wildcard owner, as it was before profiles existed: an
+    // unmanaged record there must not start failing an existing root.
+    const stray = {
+      name: "*.newroot.",
+      type: "AAAA",
+      ttl: 60,
+      records: [{ content: "2001:db8::1", disabled: false }],
+    };
+    rrsets = [...earlier, stray];
+    expect(
+      (
+        await inspect({
+          ...input,
+          expected_managed_rrset_sha256: earlierResult.managed_rrset_sha256,
+        })
+      ).managed_rrset_sha256,
+    ).toBe(earlierResult.managed_rrset_sha256);
+    // Without a recorded digest the same zone reads as the newer profile and is
+    // refused, because that record set is not the one the profile manages.
+    await expect(inspect(input)).rejects.toThrow("PowerDNS managed rrset does not match");
+    // A recorded digest neither profile reproduces leaves the zone to decide,
+    // and the result then differs from what was recorded for the caller to report.
+    rrsets = current;
+    expect(
+      (await inspect({ ...input, expected_managed_rrset_sha256: "0".repeat(64) }))
+        .managed_rrset_sha256,
+    ).toBe(currentResult.managed_rrset_sha256);
+
     // Unmanaged record sets elsewhere in the zone do not select a profile.
     rrsets = [
       ...earlier,
