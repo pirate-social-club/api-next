@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import type { HnsRootResourceRecordV1 } from "@pirate/application/namespace-ownership";
@@ -38,6 +39,10 @@ import {
 } from "./schema-compatibility.ts";
 import type { PowerDnsSecondaryAxfrConfig } from "./secondary-axfr.ts";
 import { type HnsExecutorRunnersV1, runHnsExecutorRoundV1 } from "./service-loop.ts";
+import {
+  type HnsZoneAdoptionCommandDependenciesV1,
+  runHnsZoneAdoptionCommandV1,
+} from "./zone-adoption-command.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
 // Handshake publication is block-bound: the legacy bounded 20-attempt
@@ -697,6 +702,121 @@ async function main(serve: boolean): Promise<void> {
   }
 }
 
+/**
+ * The adoption command's view of the serving configuration: the same
+ * environment names, read through the same validation, building the same
+ * chain reader, primary provider configuration and live observer the service
+ * builds. It starts no executor and claims nothing.
+ */
+async function zoneAdoptionDependencies(): Promise<HnsZoneAdoptionCommandDependenciesV1> {
+  const executorId = required("HNS_AUTHORITY_EXECUTOR_ID");
+  const gatewayIpv4 = required("HNS_AUTHORITY_GATEWAY_IPV4");
+  const sharedTlsa = tlsaAssociation();
+  const environment = required("HNS_AUTHORITY_ENVIRONMENT");
+  const chainNetwork = required("HNS_AUTHORITY_CHAIN_NETWORK");
+  const authorityProfile = parseHnsAuthorityRuntimeProfileV1({
+    environment,
+    chain_network: chainNetwork,
+    required,
+  });
+  if (!boundedId(executorId) || isIP(gatewayIpv4) !== 4) {
+    throw new Error("HNS authority provisioner configuration is invalid");
+  }
+  const connectionString = required("CONTROL_PLANE_POSTGRES_URL");
+  const observeChain = makeHsdRootResourceObserver(
+    {
+      rpc_url: required("HNS_AUTHORITY_HSD_RPC_URL"),
+      authorization: required("HNS_AUTHORITY_HSD_AUTHORIZATION"),
+      chain_network: chainNetwork,
+      genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
+      tree_interval_blocks: chainInteger("HNS_AUTHORITY_TREE_INTERVAL_BLOCKS", 1, 2_000),
+      safe_minimum_confirmations: chainInteger("HNS_AUTHORITY_SAFE_CONFIRMATIONS", 0, 1_000),
+      maximum_tip_age_seconds: chainInteger("HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS", 60, 86_400),
+      maximum_future_tip_seconds: chainInteger(
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS",
+        0,
+        3_600,
+      ),
+    },
+    fetch,
+  );
+  const powerDnsConfig: PowerDnsRootProvisionConfig = {
+    nameservers: authorityProfile.nameservers,
+    glue_records: authorityProfile.glue_records,
+    api_url: required("HNS_AUTHORITY_PDNS_API_URL"),
+    api_key: required("HNS_AUTHORITY_PDNS_API_KEY"),
+    server_id: required("HNS_AUTHORITY_PDNS_SERVER_ID"),
+    soa_content: required("HNS_AUTHORITY_PDNS_SOA_CONTENT"),
+    axfr_tsig_key_name: required("HNS_AUTHORITY_AXFR_TSIG_KEY_NAME"),
+    gateway_ipv4: gatewayIpv4,
+    shared_tlsa_association: sharedTlsa.association,
+    gateway_deployment_reference: required("HNS_AUTHORITY_GATEWAY_DEPLOYMENT_REFERENCE"),
+    gateway_certificate_spki_sha256: sharedTlsa.spki_sha256,
+    ttl_seconds: ttlSeconds(),
+  };
+  return {
+    connect: async () => {
+      const client = new Client({ connectionString });
+      await client.connect();
+      return client;
+    },
+    powerdns: powerDnsConfig,
+    fetch,
+    observe: {
+      observe_current_resource: (rootLabel: string) => observeChain(rootLabel, "current"),
+      inspect_zone: makePowerDnsRootInspector(powerDnsConfig),
+      observe_live: makeLiveHnsRootReadinessObserverV1({
+        chain_network: chainNetwork,
+        chain_genesis_block_hash: required("HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH"),
+        authorities: authorityProfile.endpoints,
+        axfr_credential: {
+          key_name: powerDnsConfig.axfr_tsig_key_name,
+          algorithm: "hmac-sha256",
+          secret_bytes: await axfrSecret(),
+        },
+        gateway_address: gatewayIpv4,
+        gateway_local_address: required("HNS_AUTHORITY_GATEWAY_LOCAL_IPV4"),
+        expected_gateway_certificate_spki_sha256: sharedTlsa.spki_sha256,
+        timeout_ms: readinessTimeoutMs(),
+      }),
+    },
+    observation_config: {
+      environment,
+      valid_for_seconds: readinessValidForSeconds(),
+      nameservers: authorityProfile.nameservers,
+      glue_records: authorityProfile.glue_records,
+    },
+    executor_id: executorId,
+    read_file: async (path) => {
+      const file = Bun.file(path);
+      if ((await file.exists()) !== true || file.size > 2_097_152) {
+        throw new Error("HNS zone adoption observation file is unavailable");
+      }
+      return new Uint8Array(await file.arrayBuffer());
+    },
+    write_new_file: (path, bytes) => writeFile(path, bytes, { flag: "wx", mode: 0o600 }),
+    write: (line) => console.log(line),
+  };
+}
+
+/**
+ * Operator entrypoint for adopting a changed zone. It refuses a schema this
+ * service generation is not admitted to, exactly as serving does, before it
+ * reads or changes anything.
+ */
+async function runZoneAdoption(arguments_: readonly string[]): Promise<number> {
+  const cutover = await hnsLifecycleSchemaCutoverCheck({
+    connection_string: required("CONTROL_PLANE_POSTGRES_URL"),
+    service_version: HNS_AUTHORITY_SERVICE_VERSION,
+    job_envelope_version: HNS_LIFECYCLE_JOB_ENVELOPE_VERSION,
+  });
+  if (cutover.refusal !== null) {
+    console.error(JSON.stringify({ command: "adopt-zone", ...cutover.refusal }));
+    return 1;
+  }
+  return runHnsZoneAdoptionCommandV1(arguments_, await zoneAdoptionDependencies());
+}
+
 function schemaVerificationRefusal(outcome: string, detail: string): number {
   console.error(JSON.stringify({ command: "verify-schema", outcome, detail }));
   return 2;
@@ -843,6 +963,26 @@ if (import.meta.main) {
         process.exitCode = 1;
       });
     }
+  } else if (arguments_[0] === "--adopt-zone") {
+    // The operator path that brings an activated root's zone to a changed
+    // shape and has the control plane adopt it. See zone-adoption-command.ts.
+    await runZoneAdoption(arguments_.slice(1))
+      .then((code) => {
+        if (code !== 0) process.exitCode = code;
+      })
+      .catch((error: unknown) => {
+        console.error(
+          JSON.stringify({
+            command: "adopt-zone",
+            outcome: "failed",
+            detail:
+              error instanceof Error && error.message.startsWith("HNS ")
+                ? error.message
+                : "adoption command failed",
+          }),
+        );
+        process.exitCode = 1;
+      });
   } else {
     const serve = arguments_.length === 1 && arguments_[0] === "--serve";
     if (arguments_.length > (serve ? 1 : 0)) {

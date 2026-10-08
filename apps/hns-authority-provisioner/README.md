@@ -70,6 +70,85 @@ before claiming production acceptance. Retained operator roots remain outside
 this queue until adoption; their manual checkpoints and certificate renewal
 remain required.
 
+## Adopting a changed zone for an activated root
+
+An activated root's retained zone is frozen between authority successors, and
+a renewal promotes a successor only when the zone the authorities serve still
+equals it byte for byte. A root provisioned under the `wildcard-v1` record
+profile therefore cannot simply be given the wildcard AAAA and HTTPS record
+sets that new zones get: once its served zone changes, its next renewal ends
+with `evidence_mismatch`. The `--adopt-zone` command is the supported way to
+make that change. It changes the zone at the primary authority, takes the same
+observation a renewal takes, and promotes a successor that adopts the observed
+zone through the promotion body renewal and the continuity command share.
+
+Adoption admits three differences between the retained zone and the observed
+one, and refuses every other. `wildcard_family_added` is one wildcard AAAA
+holding the IPv4-mapped form of the wildcard A address and one wildcard HTTPS
+record `1 . alpn=h2,http/1.1`, together with the two records those force to
+change: the SOA in its serial alone and the wildcard owner's NSEC in exactly
+those two types. `wildcard_family_removed` is the exact reverse.
+`serial_only` is a later serial with nothing else changed, which is what a
+zone looks like when a change was undone before it was adopted. Zones that
+use NSEC3 are refused. The operator names the difference intended, and a
+different one found is a refusal, not a substitution.
+
+The steps are run in order from the staged bundle, under the service's
+environment, and each prints one JSON line. Keep those lines: together with
+the observation file they are the record of what was changed and from what.
+
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone status --root <label>
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone write-records --root <label> --change add-wildcard-family
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone observe --root <label> --out <absolute path>
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone adopt --observation <absolute path> \
+      --expect-result-sha256 <digest observe printed> --expect-delta wildcard_family_added --mode dry-run
+
+`status` reads the root's generation, retained zone digest, open renewal jobs
+and remaining validity in a read-only transaction. `write-records` writes the
+two record sets, built by the function that builds them for a new zone, after
+confirming that the zone's DNSSEC keys are the provisioned ones, its managed
+record sets are intact, and the wildcard AAAA and HTTPS sets are either absent
+or exactly those two. It then rectifies and notifies, and reads the zone back.
+A zone already as asked is not written again but is still rectified and
+notified, so a run that stopped part way is finished by running it again.
+`observe` writes the observation to a new file, never over an existing one,
+and reports the difference it found, whether the two authorities' zone equals
+the retained one, and any keyset, gateway or chain reference that is not the
+current revision's. `adopt` is run as `dry-run`, which only reads, then
+`rehearse`, which promotes the successor and rolls it back, then `commit`. A
+rehearsal exercises every privilege and constraint the commit needs. The
+observation is bound to the digest given, so the file committed is the file
+that was reviewed, and it must be less than an hour old at commit.
+
+Adoption is fenced against renewal in three ways. `write-records` and the
+writing modes of `adopt` hold the session and DNS pointer rows that a renewal
+claim and a renewal preparation both lock, so neither can run for that root
+meanwhile. Both refuse while a renewal job for the root's current generation
+is queued, leased or delayed. And `write-records` refuses a root with less
+than four days of serving validity left, a day more than the scheduler's
+threshold, because between the record write and the committed adoption the
+served zone no longer equals the retained one and a renewal that ran in that
+gap would end its job. `--minimum-validity-seconds` lowers that margin to as
+little as an hour for an operator who knows no renewal can be scheduled.
+
+Once `write-records` has changed the zone, finish. The root must end in a
+committed adoption of what its authorities serve, or its next renewal fails.
+To withdraw before committing, run `write-records` with
+`--change remove-wildcard-family`, observe again, and adopt `serial_only`. To
+withdraw after committing, do the same and adopt `wildcard_family_removed`.
+Each generation's revision keeps its own zone bytes, so the earlier zone stays
+readable after either. A root provisioned under the newer profile holds the
+two record sets as managed ones and is refused by `write-records`. After a
+commit, read `status` again, and confirm that the root's next renewal
+completes: it now requires the adopted zone.
+
+The command uses the service's database connection. Beyond what renewal
+already uses it reads the session, provision job, renewal job, health and
+inventory rows directly and takes row locks on the session and DNS pointer
+tables, which needs UPDATE on those two. Where the provisioner's role is
+narrower than the template's serving role, read those privileges back before
+the first use; `dry-run` proves the reads and `rehearse` proves the rest.
+
 ## Single-owner readiness cutover execution
 
 The reviewed cutover endpoint is

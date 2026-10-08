@@ -29,6 +29,7 @@ import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-communit
 import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
+import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -382,6 +383,8 @@ async function makeReadinessArtifact(input: {
   readonly ownershipResultHash: string;
   readonly publishPlanSha256: string;
   readonly provisionResultSha256: string;
+  /** The zone the authorities are observed to serve; the fixture's by default. */
+  readonly managedZoneBytes?: Uint8Array;
 }) {
   const observedAt = new Date(Date.now() - 1_000).toISOString();
   const validUntil = new Date(Date.now() + (input.validForSeconds ?? 3600) * 1000).toISOString();
@@ -426,9 +429,9 @@ async function makeReadinessArtifact(input: {
     dns_write_capabilities: capabilities,
   });
   const inventory = await decodeHnsAuthorityInventoryBytes(inventoryBytes);
-  const managedZoneBytes = new TextEncoder().encode(
-    canonicalJson({ root_label: "newroot", serial: 7, managed: true }),
-  );
+  const managedZoneBytes =
+    input.managedZoneBytes ??
+    new TextEncoder().encode(canonicalJson({ root_label: "newroot", serial: 7, managed: true }));
   const observedZoneBytesSha256 = sha256(managedZoneBytes);
   return encodeHnsRootImportReadinessResultV1({
     version: HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
@@ -1174,6 +1177,18 @@ suite("Postgres 17 HNS root-import repository", () => {
                 ...(environment === undefined ? {} : { environment }),
                 ...(validForSeconds === undefined ? {} : { validForSeconds }),
               }),
+          );
+          await verifyHnsZoneAdoption(admin, connection, (zone) =>
+            makeReadinessArtifact({
+              ownershipResultHash,
+              publishPlanSha256: sha256(provisioned.planBytes),
+              provisionResultSha256: sha256(provisioned.resultBytes),
+              inventoryVersion: `adoption-${randomUUID()}`,
+              // Long enough for the adoption fence's margin, short enough
+              // that the scheduler finds the adopted root due for renewal.
+              validForSeconds: 172_800,
+              ...(zone === undefined ? {} : { managedZoneBytes: zone }),
+            }),
           );
           return;
         }
