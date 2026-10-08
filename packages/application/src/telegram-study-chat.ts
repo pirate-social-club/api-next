@@ -171,6 +171,7 @@ export async function handleTelegramStudyChat(
       feedback,
     );
   };
+  let startingLesson = false;
   try {
     if (state.lastInboxId === inbox.id && state.lastReply !== null) {
       await send(state.lastReply, state.lastFeedback ?? null);
@@ -290,6 +291,7 @@ export async function handleTelegramStudyChat(
         await respond(text(t("selectionUnavailable")));
         return;
       }
+      startingLesson = true;
       const session = await study.start(
         activeLease,
         grant,
@@ -425,18 +427,21 @@ export async function handleTelegramStudyChat(
           await showSession(
             current,
             text(
-              error instanceof TelegramStudyLeaseExpired
-                ? t("gradingTimeout")
-                : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
-                  ? t("gradingUnavailable")
-                  : t("answerUnavailable"),
+              startingLesson
+                ? t("practiceUnavailable")
+                : error instanceof TelegramStudyLeaseExpired
+                  ? t("gradingTimeout")
+                  : error instanceof StudyV2CommandRejected &&
+                      error.reason === "provider-unavailable"
+                    ? t("gradingUnavailable")
+                    : t("answerUnavailable"),
             ),
           );
           return;
         }
       }
       state = { ...state, turn: null, sessionId: null };
-      await respond(text(t("grantUnavailable")));
+      await respond(text(t(startingLesson ? "practiceUnavailable" : "grantUnavailable")));
     } else throw error;
   } finally {
     await study.store.release(activeLease);

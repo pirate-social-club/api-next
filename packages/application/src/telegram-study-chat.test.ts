@@ -132,7 +132,7 @@ function strictPort<T extends object>(values: Partial<T>): T {
       }),
   }) as T;
 }
-function fixture() {
+function fixture(songs = [{ postId: "post-1", title: "Song" }]) {
   let state = emptyTelegramStudyState(),
     now = 1000,
     sequence = 0,
@@ -145,6 +145,7 @@ function fixture() {
     revision: 1,
   };
   let current: StudySessionV2 = session;
+  let startFailure: StudyV2CommandRejected | StudyV2StoreFailed | null = null;
   let busy = false,
     failReply = false,
     failNavigation = false,
@@ -162,6 +163,7 @@ function fixture() {
   const replies: TelegramStudyReply[] = [];
   const promptIds = new Map<string, number>();
   const keys: string[] = [];
+  const startedPosts: string[] = [];
   const missing = new Proxy(
     {},
     {
@@ -197,7 +199,7 @@ function fixture() {
         state = next;
       },
       release: async () => {},
-      catalogue: async () => [{ postId: "post-1", title: "Song" }],
+      catalogue: async () => songs,
       ready: async () => true,
       promptMessageId: async (id) => promptIds.get(id) ?? null,
       expired: async () => expired,
@@ -214,9 +216,12 @@ function fixture() {
       if (failNavigation) throw Error("navigation unavailable");
       return "https://pirate.example.invalid/telegram/link?navigation_reference=public";
     },
-    start: async (_lease, _grant, _post, key) => {
+    start: async (_lease, _grant, post, key) => {
+      if (startFailure) throw startFailure;
       starts++;
       keys.push(key);
+      startedPosts.push(post);
+      current = { ...current, post_id: post };
       return current;
     },
     session: async () => current,
@@ -304,6 +309,10 @@ function fixture() {
     begin,
     replies,
     keys,
+    startedPosts,
+    refuseStart: (error: StudyV2CommandRejected | StudyV2StoreFailed) => {
+      startFailure = error;
+    },
     state: () => state,
     counts: () => ({ starts, answers, downloads }),
     grant: (value: TelegramStudyGrant | null) => {
@@ -461,13 +470,18 @@ test("Practice again starts a new lesson on the same song, and its button expire
     completed_at: "2026-10-03T00:00:00Z",
     lesson: { ...session.lesson, current: null, completion_reason: "all_resolved" as const },
   };
-  const f = fixture();
+  const f = fixture([
+    { postId: "post-other", title: "Another song" },
+    { postId: "post-1", title: "Song" },
+  ]);
   f.session(completed);
-  await f.begin();
+  await f.send("picker", "/study");
+  await f.press("choose", `study:${f.state().token}:1`);
   const again = `study:${f.state().token}:0`;
   f.session(session);
   await f.press("again", again);
   expect(f.counts().starts).toBe(2);
+  expect(f.startedPosts).toEqual(["post-1", "post-1"]);
   expect(f.keys.at(-1)).toBe("telegram:again:start");
   expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   // The same button a second time is an old choice, not a third lesson.
@@ -481,6 +495,32 @@ test("Practice again starts a new lesson on the same song, and its button expire
   await late.press("late");
   expect(late.counts().starts).toBe(1);
   expect(late.replies.at(-1)?.text).toContain("expired");
+});
+test("a refused first lesson start gives practice guidance without spending an attempt", async () => {
+  const f = fixture();
+  f.grant(null);
+  f.refuseStart(new StudyV2CommandRejected({ reason: "not-found" }));
+  await f.begin();
+  expect(f.replies.at(-1)?.text).toBe("Practice cannot start right now. Try /study again later.");
+  expect(f.state().sessionId).toBeNull();
+  expect(f.counts()).toEqual({ starts: 0, answers: 0, downloads: 0 });
+  expect(f.enrollments()).toBe(1);
+});
+test("a refused Practice again keeps the completed lesson and reports a start failure", async () => {
+  const f = fixture();
+  f.session({
+    ...session,
+    status: "completed",
+    completed_at: "2026-10-03T00:00:00Z",
+    lesson: { ...session.lesson, current: null, completion_reason: "all_resolved" },
+  });
+  await f.begin();
+  f.refuseStart(new StudyV2StoreFailed({ reason: "constraint" }));
+  await f.press("again");
+  expect(f.replies.at(-2)?.text).toBe("Practice cannot start right now. Try /study again later.");
+  expect(f.replies.at(-1)?.text).toBe("🎉 Lesson complete!\n1/4 correct on the first try.");
+  expect(f.state().sessionId).toBe("session-1");
+  expect(f.counts()).toEqual({ starts: 1, answers: 0, downloads: 0 });
 });
 test("real session determines count and threshold; callback tokens rotate without answer keys", async () => {
   const f = fixture();

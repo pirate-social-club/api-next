@@ -37,8 +37,11 @@ a queue reordering cannot swap them. Completion is "🎉 Lesson complete!" and
 the first-try score, for example "8/10 correct on the first try.", with two
 buttons: "Choose a song", which shows the song list, and "Practice again",
 which starts a new lesson on the same song and expires with the song choice
-after fifteen minutes. Nothing restarts by itself and nothing links to the
-website. The optional account connection is not offered at completion, because
+after fifteen minutes. /resume on a completed lesson shows that ending again
+with fresh buttons and a new fifteen-minute choice window; it does not restart
+the lesson. Once the session has expired, /resume instead explains how to start
+again. Nothing restarts by itself and nothing links to the website. The optional
+account connection is not offered at completion, because
 the Telegram login it leads to still fails.
 
 ## Restricted practice identity
