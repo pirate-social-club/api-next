@@ -120,7 +120,6 @@ async function buildTelegramServices(
 ): Promise<TelegramServices | null> {
   const config = decodeTelegramConfiguration(bindings);
   if (!config.enabled) return null;
-  const credentials = decodeTelegramCredentials(bindings);
   if (
     !config.public_origin ||
     !config.webhook_origin ||
@@ -128,19 +127,48 @@ async function buildTelegramServices(
     !bindings.TELEGRAM_QUEUE
   )
     throw new Error("Telegram configuration incomplete");
-  const keys = credentials.credential_keys;
+  // Credentials are validated before the database is consulted, as before.
+  decodeTelegramCredentials(bindings);
   await assertTelegramRuntimePrivileges(runtime);
-  const queue = bindings.TELEGRAM_QUEUE;
-  const services: TelegramServices = {
-    store: makeControlPlaneTelegramStore(runtime, config.public_origin),
-    api: makeTelegramApi(fetch),
-    providers: makeTelegramAssistantProviders(fetch),
-    vault: await makeTelegramCredentialVault({
-      activeVersion: config.credential_active_version,
-      keys,
-    }),
+  return composeTelegramServices({
+    bindings,
+    runtime,
+    options,
+    queue: bindings.TELEGRAM_QUEUE,
     publicOrigin: config.public_origin,
     webhookOrigin: config.webhook_origin,
+    credentialActiveVersion: config.credential_active_version,
+  });
+}
+
+/**
+ * Builds the services after admission. Inline work, queued work and the caller all receive
+ * this one object, so an update handled in the request's background has exactly the
+ * capabilities, practice included, that the queue consumer has.
+ */
+export async function composeTelegramServices(input: {
+  readonly bindings: TelegramBindings;
+  readonly runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+  readonly options: TelegramRuntimeOptions;
+  readonly queue: TelegramWorkQueue;
+  readonly publicOrigin: string;
+  readonly webhookOrigin: string;
+  readonly credentialActiveVersion: string;
+  readonly fetcher?: typeof fetch;
+}): Promise<TelegramServices> {
+  const { bindings, runtime, options, queue } = input;
+  const config = decodeTelegramConfiguration(bindings);
+  const fetcher = input.fetcher ?? fetch;
+  const services: TelegramServices = {
+    store: makeControlPlaneTelegramStore(runtime, input.publicOrigin),
+    api: makeTelegramApi(fetcher),
+    providers: makeTelegramAssistantProviders(fetcher),
+    vault: await makeTelegramCredentialVault({
+      activeVersion: input.credentialActiveVersion,
+      keys: decodeTelegramCredentials(bindings).credential_keys,
+    }),
+    publicOrigin: input.publicOrigin,
+    webhookOrigin: input.webhookOrigin,
     interfaceLocales: config.interface_locales ?? ["en"],
     now: Date.now,
     wake: makeTelegramWake({
@@ -162,7 +190,10 @@ async function buildTelegramServices(
     runtime,
     services,
   );
-  return study === undefined ? services : { ...services, study };
+  // Attach practice to this same object. The wake callbacks above close over it, so a copy
+  // carrying the practice service would leave inline work running without practice.
+  if (study !== undefined) services.study = study;
+  return services;
 }
 
 export async function runTelegramMaintenance(services: TelegramServices) {

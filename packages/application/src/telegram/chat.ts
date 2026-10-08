@@ -254,7 +254,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         "setup",
       );
     } else if (study)
-      // A practice bot opens on its song list; the one-line welcome sits above it.
+      // A practice bot opens on its song list, as the legacy bot did.
       await handleTelegramStudyChat(
         services,
         study,
@@ -264,7 +264,6 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         { ...message, text: "/study" },
         undefined,
         ui.locale,
-        t("welcome"),
       );
     else
       await reply(services, item, chatId, {
