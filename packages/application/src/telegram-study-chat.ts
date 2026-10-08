@@ -7,6 +7,7 @@ import { telegramBotCredentials } from "./telegram/delivery.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./telegram/types.ts";
 import { TelegramFailure } from "./telegram/types.ts";
 import {
+  type TelegramStudyGrant,
   TelegramStudyLeaseExpired,
   type TelegramStudyReply,
   type TelegramStudyServices,
@@ -88,9 +89,13 @@ export async function handleTelegramStudyChat(
   const showSession = async (
     session: StudySessionV2,
     prefix: string,
-    personaLabel = session.persona_id,
+    grant: TelegramStudyGrant,
   ) => {
     const current = session.lesson.current;
+    // A restricted practice identity has no public persona to name.
+    const identity = grant.restricted
+      ? ""
+      : `${t("personaLine", { persona: grant.personaLabel ?? session.persona_id })}\n`;
     state = {
       ...state,
       sessionId: session.session_id,
@@ -100,20 +105,36 @@ export async function handleTelegramStudyChat(
       selectionInboxId: null,
       navigationUrl: null,
       selectedUntil: 0,
+      ageInboxId: null,
     };
     if (session.status === "completed" || current === null) {
       state = { ...state, turn: null };
       observe("completion", session.items.length);
+      const complete = t("complete", {
+        prefix,
+        identity,
+        correct: session.progress.first_pass_correct,
+        total: session.items.length,
+        required: session.progress.required_correct,
+      });
+      if (!grant.restricted) {
+        await respond(text(complete));
+        return;
+      }
+      // Connection is optional; a failed link mint must not withhold the result.
+      let url: string | null = null;
+      try {
+        url = await study.navigation(sender, session.post_id);
+      } catch {
+        url = null;
+      }
       await respond(
-        text(
-          t("complete", {
-            prefix,
-            persona: personaLabel,
-            correct: session.progress.first_pass_correct,
-            total: session.items.length,
-            required: session.progress.required_correct,
-          }),
-        ),
+        url === null
+          ? text(complete)
+          : {
+              ...text(`${complete}\n${t("connectOptional")}`),
+              buttons: [{ text: t("connectButton"), url }],
+            },
       );
       return;
     }
@@ -133,7 +154,7 @@ export async function handleTelegramStudyChat(
       ...text(
         t("card", {
           prefix,
-          persona: personaLabel,
+          identity,
           total: session.items.length,
           required: session.progress.required_correct,
           resolved: session.lesson.resolved_card_count,
@@ -166,6 +187,7 @@ export async function handleTelegramStudyChat(
         selectionInboxId: null,
         navigationUrl: null,
         selectedUntil: 0,
+        ageInboxId: null,
         token: services.vault.token(),
       };
       await respond(text(t("stopped")));
@@ -191,6 +213,7 @@ export async function handleTelegramStudyChat(
         songs: [...songs],
         token: services.vault.token(),
         selectedPostId: null,
+        ageInboxId: null,
         selectedUntil: services.now() + 15 * 60 * 1000,
       };
       await respond({
@@ -205,39 +228,85 @@ export async function handleTelegramStudyChat(
     }
     if (callbackData !== undefined && state.selectionInboxId !== inbox.id) {
       const suffix = callbackData.slice(`study:${state.token}:`.length);
-      if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
-        await respond(text(t("selectionExpired")));
-        return;
+      if (suffix === "age" || suffix === "minor") {
+        // Only the sender's own unexpired song choice can carry the age answer.
+        if (state.selectedPostId === null || services.now() >= state.selectedUntil) {
+          await respond(text(t("selectionExpired")));
+          return;
+        }
+        if (suffix === "minor") {
+          state = {
+            ...state,
+            selectedPostId: null,
+            selectionInboxId: null,
+            navigationUrl: null,
+            selectedUntil: 0,
+            ageInboxId: null,
+            token: services.vault.token(),
+          };
+          await respond(text(t("under16")));
+          return;
+        }
+        // The token is kept: until a lesson starts, the visible buttons must still work, so
+        // a decline sent while this item waits for a retry is honoured, not discarded.
+        state = { ...state, ageInboxId: inbox.id, selectionInboxId: inbox.id };
+        await persist();
+      } else {
+        if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
+          await respond(text(t("selectionExpired")));
+          return;
+        }
+        const song = state.songs[Number(suffix)];
+        if (!song || !(await study.store.ready(sender.communityId, song.postId))) {
+          await respond(text(t("songUnavailable")));
+          return;
+        }
+        state = {
+          ...state,
+          selectedPostId: song.postId,
+          selectionInboxId: inbox.id,
+          navigationUrl: null,
+          ageInboxId: null,
+          selectedUntil: services.now() + 15 * 60 * 1000,
+          token: services.vault.token(),
+        };
+        await persist();
       }
-      const song = state.songs[Number(suffix)];
-      if (!song || !(await study.store.ready(sender.communityId, song.postId))) {
-        await respond(text(t("songUnavailable")));
-        return;
-      }
-      state = {
-        ...state,
-        selectedPostId: song.postId,
-        selectionInboxId: inbox.id,
-        navigationUrl: null,
-        selectedUntil: services.now() + 15 * 60 * 1000,
-        token: services.vault.token(),
-      };
-      await persist();
     }
-    const grant = await study.grant(sender);
+    let grant = await study.grant(sender);
     if (!grant) {
       state = { ...state, pendingAnswer: null, turn: null };
-      if (state.selectedPostId !== null && services.now() < state.selectedUntil) {
-        observe("linking");
-        const url = state.navigationUrl ?? (await study.navigation(sender, state.selectedPostId));
-        state = { ...state, navigationUrl: url };
-        await persist();
+      // Only a deliberate lesson start, never /study or a typed command, issues an identity.
+      if (
+        callbackData === undefined ||
+        state.selectedPostId === null ||
+        services.now() >= state.selectedUntil
+      ) {
+        await respond(text(t("chooseFirst")));
+        return;
+      }
+      const enrolled = await study.enroll(activeLease, {
+        affirmed: state.ageInboxId === inbox.id,
+      });
+      if (enrolled === "age_required") {
+        observe("age");
         await respond({
-          ...text(t("link")),
-          buttons: [{ text: t("linkButton"), url }],
+          ...text(t("ageQuestion")),
+          keyboard: {
+            inline_keyboard: [
+              [{ text: t("ageYes"), callback_data: `study:${state.token}:age` }],
+              [{ text: t("ageNo"), callback_data: `study:${state.token}:minor` }],
+            ],
+          },
         });
-      } else await respond(text(t("chooseBeforeLink")));
-      return;
+        return;
+      }
+      if (enrolled === "unavailable") {
+        state = { ...state, selectedPostId: null, selectionInboxId: null, selectedUntil: 0 };
+        await respond(text(t("practiceUnavailable")));
+        return;
+      }
+      grant = enrolled;
     }
     if (state.sessionId !== null && state.grantRevision !== grant.revision) {
       state = { ...state, sessionId: null, turn: null, pendingAnswer: null, grantRevision: null };
@@ -264,7 +333,11 @@ export async function handleTelegramStudyChat(
         `telegram:${inbox.id}:start`,
       );
       state = { ...state, grantRevision: grant.revision };
-      await showSession(session, t("noReferenceAudio"), grant.personaLabel);
+      await showSession(
+        session,
+        grant.restricted ? `${t("practiceOnly")} ${t("noReferenceAudio")}` : t("noReferenceAudio"),
+        grant,
+      );
       return;
     }
     if (state.sessionId !== null && (await study.store.expired(state.sessionId))) {
@@ -276,7 +349,7 @@ export async function handleTelegramStudyChat(
       await showSession(
         await study.session(activeLease, grant, state.sessionId),
         t("resuming"),
-        grant.personaLabel,
+        grant,
       );
       return;
     }
@@ -375,7 +448,7 @@ export async function handleTelegramStudyChat(
         ]
           .filter(Boolean)
           .join("\n"),
-        grant.personaLabel,
+        grant,
       );
       return;
     }
@@ -421,7 +494,7 @@ export async function handleTelegramStudyChat(
               : error instanceof StudyV2CommandRejected && error.reason === "provider-unavailable"
                 ? t("gradingUnavailable")
                 : t("answerUnavailable"),
-            currentGrant.personaLabel,
+            currentGrant,
           );
           return;
         }

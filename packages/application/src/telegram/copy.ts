@@ -63,7 +63,7 @@ export const telegramCatalogs = {
     helperChinese: "Chinese",
     helperArabic: "Arabic",
     studyHelp:
-      "Use /study to choose a ready song, /resume to continue, and /cancel to stop. Practice only: read each line aloud and reply to it with a voice note. Voice answers are required. The community owner can read your messages and listen to your voice notes. Manage your link and persona on Pirate.",
+      "Use /study to choose a ready song, /resume to continue, and /cancel to stop. Practice only: read each line aloud and reply to it with a voice note. Voice answers are required. The community owner can read your messages and listen to your voice notes. No sign-in is needed.",
     discoveryHelp:
       "Use /songs to browse. Native Study is not available in this bot yet; open Pirate for Study, rewards and account changes. Use /help for these commands.",
     begin: "Send /start to begin, then /study or /songs. Use /help for help.",
@@ -81,8 +81,8 @@ export const telegramCatalogs = {
     messageLimit: "The daily message limit has been reached. Please try again tomorrow.",
     voiceUnavailable: "Voice input is unavailable. Send a text message instead.",
     complete:
-      "{prefix}\nPersona: {persona}\nPractice complete. {correct}/{total} correct on the first try; the threshold was {required}. No reward or pool share was earned.",
-    card: "{prefix}\nPersona: {persona}\nPractice only. {total} cards; {required} first-try correct to meet the threshold.\nProgress: {resolved}/{total}; first-try correct: {correct}.\nRead aloud:\n{line}\nReply to this message with a voice note. /resume repeats the prompt; /cancel stops.",
+      "{prefix}\n{identity}Practice complete. {correct}/{total} correct on the first try; the threshold was {required}. No reward or pool share was earned.",
+    card: "{prefix}\n{identity}Practice only. {total} cards; {required} first-try correct to meet the threshold.\nProgress: {resolved}/{total}; first-try correct: {correct}.\nRead aloud:\n{line}\nReply to this message with a voice note. /resume repeats the prompt; /cancel stops.",
     stopped:
       "Practice stopped. Your Study progress is saved. Use /resume to return within the session lifetime, or /study to choose a song.",
     processing:
@@ -91,10 +91,17 @@ export const telegramCatalogs = {
     noReadySongs: "No ready practice songs are available here yet. Use /help for help.",
     selectionExpired: "This song selection has expired. Use /study to choose again.",
     songUnavailable: "This song is not ready for practice. Use /study to choose another.",
-    link: "Practice only. Voice answers are required: you will read lines aloud and send voice notes. The community owner can read your messages and listen to your voice notes. Link on Pirate, explicitly choose your community persona, then return here and use /resume. Owners of multiple bots can correlate your Telegram identity across them.",
-    linkButton: "Link with Pirate",
-    chooseBeforeLink:
-      "Use /study to choose a ready song before linking. Manage your Telegram link and community persona on Pirate.",
+    personaLine: "Persona: {persona}",
+    practiceOnly: "This lesson is practice only. No rewards are earned in this lesson.",
+    ageQuestion:
+      "This lesson is practice only. No rewards are earned in this lesson. You will read lines aloud and send voice notes. The community owner can read your messages and listen to your voice notes. Pirate keeps a private practice profile for you so your progress resumes in this bot. No sign-in is needed. Are you 16 or older?",
+    ageYes: "I'm 16 or older",
+    ageNo: "I'm under 16",
+    under16: "Practice in this bot is for learners aged 16 or older.",
+    chooseFirst: "Use /study to choose a ready song.",
+    practiceUnavailable: "Practice cannot start right now. Use /study to try again later.",
+    connectOptional: "Optional: you can connect an existing Pirate account.",
+    connectButton: "Connect an existing Pirate account",
     selectionUnavailable: "This song selection is unavailable. Use /study to choose again.",
     noReferenceAudio: "Read-aloud practice; there is no reference audio.",
     sessionExpired: "This practice session has expired. Use /study to start again.",
@@ -111,13 +118,11 @@ export const telegramCatalogs = {
     incorrect: "This presentation was incorrect. Continue with the line shown below.",
     voiceRequired:
       "This read-aloud lesson requires a voice note replying to the current line. Typed text does not use an attempt. Use /resume or /cancel.",
-    gradingTimeout:
-      "Voice grading took too long. Your link does not need to be changed. Resuming current practice.",
+    gradingTimeout: "Voice grading took too long. Resuming current practice.",
     gradingUnavailable:
       "Voice grading is temporarily unavailable. No attempt was used. Resuming current practice.",
     answerUnavailable: "That answer could not be accepted. Resuming current practice.",
-    grantUnavailable:
-      "This lesson or its authorization is unavailable. Check your link and persona on Pirate, then use /study.",
+    grantUnavailable: "This lesson is unavailable. Use /study to start again.",
   },
   ru: {
     welcome:
@@ -141,7 +146,7 @@ export const telegramCatalogs = {
     helperChinese: "Китайский",
     helperArabic: "Арабский",
     studyHelp:
-      "Отправьте /study, чтобы выбрать готовую песню, /resume, чтобы продолжить, или /cancel, чтобы остановиться. Это только практика: читайте каждую строку вслух и отвечайте на неё голосовым сообщением. Нужны голосовые ответы. Владелец сообщества может читать ваши сообщения и слушать ваши голосовые сообщения. Привязкой аккаунта и персоной можно управлять в Pirate.",
+      "Отправьте /study, чтобы выбрать готовую песню, /resume, чтобы продолжить, или /cancel, чтобы остановиться. Это только практика: читайте каждую строку вслух и отвечайте на неё голосовым сообщением. Нужны голосовые ответы. Владелец сообщества может читать ваши сообщения и слушать ваши голосовые сообщения. Вход в аккаунт не нужен.",
     discoveryHelp:
       "Отправьте /songs, чтобы посмотреть песни. Обучение в чате этого бота пока недоступно; откройте Pirate для обучения, наград и настроек аккаунта. /help показывает эти команды.",
     begin: "Отправьте /start, затем /study или /songs. Для помощи используйте /help.",
@@ -158,8 +163,8 @@ export const telegramCatalogs = {
     messageLimit: "Дневной лимит сообщений достигнут. Попробуйте завтра.",
     voiceUnavailable: "Голосовой ввод недоступен. Отправьте текстовое сообщение.",
     complete:
-      "{prefix}\nПерсона: {persona}\nПрактика завершена. С первой попытки верно: {correct}/{total}; порог: {required}. Ни награда, ни доля в пуле не начислены.",
-    card: "{prefix}\nПерсона: {persona}\nТолько практика. Карточек: {total}; для достижения порога нужно {required} верных ответов с первой попытки.\nПрогресс: {resolved}/{total}; верно с первой попытки: {correct}.\nПрочитайте вслух:\n{line}\nОтветьте на это сообщение голосовым сообщением. /resume повторяет задание; /cancel останавливает практику.",
+      "{prefix}\n{identity}Практика завершена. С первой попытки верно: {correct}/{total}; порог: {required}. Ни награда, ни доля в пуле не начислены.",
+    card: "{prefix}\n{identity}Только практика. Карточек: {total}; для достижения порога нужно {required} верных ответов с первой попытки.\nПрогресс: {resolved}/{total}; верно с первой попытки: {correct}.\nПрочитайте вслух:\n{line}\nОтветьте на это сообщение голосовым сообщением. /resume повторяет задание; /cancel останавливает практику.",
     stopped:
       "Практика остановлена. Прогресс сохранён. Отправьте /resume до истечения срока сессии или /study, чтобы выбрать песню.",
     processing:
@@ -168,10 +173,17 @@ export const telegramCatalogs = {
     noReadySongs: "Здесь пока нет песен, готовых для практики. Для помощи используйте /help.",
     selectionExpired: "Срок выбора песни истёк. Отправьте /study и выберите снова.",
     songUnavailable: "Эта песня не готова для практики. Отправьте /study и выберите другую.",
-    link: "Это только практика. Нужны голосовые ответы: вы будете читать строки вслух и отправлять голосовые сообщения. Владелец сообщества может читать ваши сообщения и слушать ваши голосовые сообщения. Привяжите аккаунт к Pirate, явно выберите персону сообщества, затем вернитесь сюда и отправьте /resume. Владельцы нескольких ботов могут понять, что в них пишет один и тот же аккаунт Telegram.",
-    linkButton: "Привязать к Pirate",
-    chooseBeforeLink:
-      "Перед привязкой аккаунта выберите готовую песню через /study. Привязкой аккаунта Telegram и персоной сообщества можно управлять в Pirate.",
+    personaLine: "Персона: {persona}",
+    practiceOnly: "Этот урок — только практика. Награды за него не начисляются.",
+    ageQuestion:
+      "Этот урок — только практика. Награды за него не начисляются. Вы будете читать строки вслух и отправлять голосовые сообщения. Владелец сообщества может читать ваши сообщения и слушать ваши голосовые сообщения. Pirate сохранит для вас закрытый учебный профиль, чтобы прогресс продолжался в этом боте. Вход в аккаунт не нужен. Вам уже есть 16 лет?",
+    ageYes: "Мне 16 лет или больше",
+    ageNo: "Мне меньше 16 лет",
+    under16: "Практика в этом боте доступна с 16 лет.",
+    chooseFirst: "Отправьте /study, чтобы выбрать готовую песню.",
+    practiceUnavailable: "Сейчас практику начать нельзя. Отправьте /study позже.",
+    connectOptional: "По желанию можно подключить существующий аккаунт Pirate.",
+    connectButton: "Подключить аккаунт Pirate",
     selectionUnavailable: "Выбор песни недоступен. Отправьте /study и выберите снова.",
     noReferenceAudio: "Практика чтения вслух; аудиопримера нет.",
     sessionExpired: "Срок этой практики истёк. Отправьте /study, чтобы начать снова.",
@@ -189,12 +201,11 @@ export const telegramCatalogs = {
     voiceRequired:
       "Для этого урока нужен голосовой ответ на текущую строку. Текст не использует попытку. Используйте /resume или /cancel.",
     gradingTimeout:
-      "Проверка голосового сообщения заняла слишком много времени. Менять привязку аккаунта не нужно. Продолжаем текущую практику.",
+      "Проверка голосового сообщения заняла слишком много времени. Продолжаем текущую практику.",
     gradingUnavailable:
       "Проверка голосовых сообщений временно недоступна. Попытка не использована. Продолжаем текущую практику.",
     answerUnavailable: "Не удалось принять ответ. Продолжаем текущую практику.",
-    grantUnavailable:
-      "Урок или разрешение недоступны. Проверьте привязку аккаунта и персону в Pirate, затем отправьте /study.",
+    grantUnavailable: "Этот урок недоступен. Отправьте /study, чтобы начать снова.",
   },
   ka: {
     welcome:
@@ -218,7 +229,7 @@ export const telegramCatalogs = {
     helperChinese: "ჩინური",
     helperArabic: "არაბული",
     studyHelp:
-      "მზა სიმღერას ირჩევთ /study-ით, აგრძელებთ /resume-ით და აჩერებთ /cancel-ით. ეს მხოლოდ ვარჯიშია: თითოეული სტრიქონი ხმამაღლა წაიკითხეთ და უპასუხეთ ხმოვანი შეტყობინებით. აუცილებელია ხმოვანი პასუხი. თემის მფლობელს შეუძლია თქვენი შეტყობინებების წაკითხვა და ხმოვანი შეტყობინებების მოსმენა. ანგარიშის დაკავშირება და პერსონა Pirate-ში მართეთ.",
+      "მზა სიმღერას ირჩევთ /study-ით, აგრძელებთ /resume-ით და აჩერებთ /cancel-ით. ეს მხოლოდ ვარჯიშია: თითოეული სტრიქონი ხმამაღლა წაიკითხეთ და უპასუხეთ ხმოვანი შეტყობინებით. აუცილებელია ხმოვანი პასუხი. თემის მფლობელს შეუძლია თქვენი შეტყობინებების წაკითხვა და ხმოვანი შეტყობინებების მოსმენა. ანგარიშში შესვლა საჭირო არ არის.",
     discoveryHelp:
       "სიმღერების სანახავად გამოიყენეთ /songs. ამ ბოტში ჩატით სწავლა ჯერ მიუწვდომელია; სწავლისთვის, ჯილდოებისა და ანგარიშის პარამეტრებისთვის გახსენით Pirate. /help ამ ბრძანებებს აჩვენებს.",
     begin: "დასაწყებად გაგზავნეთ /start, შემდეგ /study ან /songs. დახმარებისთვის გამოიყენეთ /help.",
@@ -236,8 +247,8 @@ export const telegramCatalogs = {
     messageLimit: "დღიური შეტყობინებების ლიმიტი ამოიწურა. სცადეთ ხვალ.",
     voiceUnavailable: "ხმოვანი შეყვანა მიუწვდომელია. გაგზავნეთ ტექსტური შეტყობინება.",
     complete:
-      "{prefix}\nპერსონა: {persona}\nვარჯიში დასრულებულია. პირველი ცდიდან სწორია {correct}/{total}; საჭირო ზღვარია {required}. ჯილდო ან ფონდის წილი არ მიგიღიათ.",
-    card: "{prefix}\nპერსონა: {persona}\nმხოლოდ ვარჯიში. ბარათები: {total}; ზღვრის მისაღწევად პირველი ცდიდან საჭიროა {required} სწორი პასუხი.\nპროგრესი: {resolved}/{total}; პირველი ცდიდან სწორია: {correct}.\nხმამაღლა წაიკითხეთ:\n{line}\nამ შეტყობინებას უპასუხეთ ხმოვანი ჩანაწერით. /resume დავალებას იმეორებს; /cancel ვარჯიშს აჩერებს.",
+      "{prefix}\n{identity}ვარჯიში დასრულებულია. პირველი ცდიდან სწორია {correct}/{total}; საჭირო ზღვარია {required}. ჯილდო ან ფონდის წილი არ მიგიღიათ.",
+    card: "{prefix}\n{identity}მხოლოდ ვარჯიში. ბარათები: {total}; ზღვრის მისაღწევად პირველი ცდიდან საჭიროა {required} სწორი პასუხი.\nპროგრესი: {resolved}/{total}; პირველი ცდიდან სწორია: {correct}.\nხმამაღლა წაიკითხეთ:\n{line}\nამ შეტყობინებას უპასუხეთ ხმოვანი ჩანაწერით. /resume დავალებას იმეორებს; /cancel ვარჯიშს აჩერებს.",
     stopped:
       "ვარჯიში შეჩერებულია. პროგრესი შენახულია. სესიის ვადის გასვლამდე დაბრუნდით /resume-ით, ან /study-ით აირჩიეთ სიმღერა.",
     processing:
@@ -246,10 +257,17 @@ export const telegramCatalogs = {
     noReadySongs: "აქ სავარჯიშოდ მზა სიმღერები ჯერ არ არის. დახმარებისთვის გამოიყენეთ /help.",
     selectionExpired: "სიმღერის არჩევის ვადა გავიდა. /study-ით აირჩიეთ ხელახლა.",
     songUnavailable: "ეს სიმღერა სავარჯიშოდ მზად არ არის. /study-ით აირჩიეთ სხვა.",
-    link: "ეს მხოლოდ ვარჯიშია. აუცილებელია ხმოვანი პასუხები: სტრიქონებს ხმამაღლა წაიკითხავთ და ხმოვან შეტყობინებებს გაგზავნით. თემის მფლობელს შეუძლია თქვენი შეტყობინებების წაკითხვა და ხმოვანი შეტყობინებების მოსმენა. ანგარიში Pirate-ში დააკავშირეთ, თავად აირჩიეთ თემის პერსონა, შემდეგ დაბრუნდით აქ და გაგზავნეთ /resume. რამდენიმე ბოტის მფლობელს შეუძლია მათ შორის თქვენი Telegram-ის ვინაობის დაკავშირება.",
-    linkButton: "Pirate-თან დაკავშირება",
-    chooseBeforeLink:
-      "დაკავშირებამდე /study-ით აირჩიეთ მზა სიმღერა. Telegram-ის კავშირი და თემის პერსონა Pirate-ში მართეთ.",
+    personaLine: "პერსონა: {persona}",
+    practiceOnly: "ეს გაკვეთილი მხოლოდ ვარჯიშია. ამ გაკვეთილში ჯილდოები არ გაიცემა.",
+    ageQuestion:
+      "ეს გაკვეთილი მხოლოდ ვარჯიშია. ამ გაკვეთილში ჯილდოები არ გაიცემა. სტრიქონებს ხმამაღლა წაიკითხავთ და ხმოვან შეტყობინებებს გაგზავნით. თემის მფლობელს შეუძლია თქვენი შეტყობინებების წაკითხვა და ხმოვანი შეტყობინებების მოსმენა. Pirate თქვენთვის დახურულ სავარჯიშო პროფილს შეინახავს, რათა პროგრესი ამ ბოტში გაგრძელდეს. ანგარიშში შესვლა საჭირო არ არის. ხართ თუ არა 16 წლის ან მეტის?",
+    ageYes: "16 წლის ან მეტის ვარ",
+    ageNo: "16 წელზე ნაკლების ვარ",
+    under16: "ამ ბოტში ვარჯიში 16 წლიდანაა შესაძლებელი.",
+    chooseFirst: "მზა სიმღერის ასარჩევად გაგზავნეთ /study.",
+    practiceUnavailable: "ვარჯიშის დაწყება ახლა ვერ ხერხდება. მოგვიანებით გაგზავნეთ /study.",
+    connectOptional: "სურვილისამებრ შეგიძლიათ არსებული Pirate-ის ანგარიშის დაკავშირება.",
+    connectButton: "Pirate-ის ანგარიშის დაკავშირება",
     selectionUnavailable: "სიმღერის არჩევა მიუწვდომელია. /study-ით აირჩიეთ ხელახლა.",
     noReferenceAudio: "ხმამაღლა კითხვის ვარჯიში; აუდიო ნიმუში არ არის.",
     sessionExpired: "ამ ვარჯიშის ვადა გავიდა. თავიდან დასაწყებად გაგზავნეთ /study.",
@@ -266,13 +284,11 @@ export const telegramCatalogs = {
     incorrect: "ეს პასუხი არასწორი იყო. გააგრძელეთ ქვემოთ ნაჩვენები სტრიქონით.",
     voiceRequired:
       "ამ გაკვეთილს მიმდინარე სტრიქონზე ხმოვანი პასუხი სჭირდება. ტექსტი ცდას არ იყენებს. გამოიყენეთ /resume ან /cancel.",
-    gradingTimeout:
-      "ჩანაწერის შემოწმება დიდხანს გაგრძელდა. ანგარიშის კავშირის შეცვლა არ გჭირდებათ. მიმდინარე ვარჯიშს ვაგრძელებთ.",
+    gradingTimeout: "ჩანაწერის შემოწმება დიდხანს გაგრძელდა. მიმდინარე ვარჯიშს ვაგრძელებთ.",
     gradingUnavailable:
       "ხმოვანი პასუხების შემოწმება დროებით მიუწვდომელია. ცდა არ გამოყენებულა. მიმდინარე ვარჯიშს ვაგრძელებთ.",
     answerUnavailable: "პასუხის მიღება ვერ მოხერხდა. მიმდინარე ვარჯიშს ვაგრძელებთ.",
-    grantUnavailable:
-      "გაკვეთილი ან ნებართვა მიუწვდომელია. Pirate-ში შეამოწმეთ ანგარიშის კავშირი და პერსონა, შემდეგ გაგზავნეთ /study.",
+    grantUnavailable: "ეს გაკვეთილი მიუწვდომელია. თავიდან დასაწყებად გაგზავნეთ /study.",
   },
 } as const satisfies Record<TelegramLocale, Record<string, string>>;
 

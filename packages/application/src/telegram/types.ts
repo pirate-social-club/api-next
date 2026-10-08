@@ -273,6 +273,11 @@ export interface TelegramServices {
   vault: CredentialVault;
   publicOrigin: string;
   webhookOrigin: string;
+  /**
+   * Interface languages offered to learners. Omitted means every catalog. A deployment
+   * lists only language-qualified catalogs; anything else falls back to English.
+   */
+  interfaceLocales?: readonly import("./copy.ts").TelegramLocale[];
   now: () => number;
   wake: (work: { kind: "inbox" | "delivery"; id: string }) => Promise<void>;
 }

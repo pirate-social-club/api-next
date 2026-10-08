@@ -21,6 +21,7 @@ import { makeControlPlaneStudyV2Store } from "./study-v2-repository.ts";
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { telegramStudyAdmission } from "./telegram-study-admission.ts";
+import { makeTelegramStudyLearnerStore } from "./telegram-study-learner-store.ts";
 import { makeTelegramStudyStore } from "./telegram-study-store.ts";
 
 export interface TelegramPracticeBindings {
@@ -58,8 +59,10 @@ export function makeTelegramStudyServices(
   );
   if (new Set(postIds).size !== postIds.length)
     throw Error("Telegram practice catalogue has duplicate songs");
-  const store = makeTelegramStudyStore(makeTelegramDatabase(runtime), communityId, postIds);
+  const database = makeTelegramDatabase(runtime);
+  const store = makeTelegramStudyStore(database, communityId, postIds);
   const links = makeControlPlaneTelegramLinkStore(runtime);
+  const learners = makeTelegramStudyLearnerStore(database, communityId);
   const spoken = {
     transcriber: makeElevenLabsStudyBatchTranscriber({ apiKey }),
     archive: makeR2StudyAudioArchive(bindings.LEARNER_AUDIO),
@@ -86,8 +89,15 @@ export function makeTelegramStudyServices(
   return {
     communityId,
     store,
-    grant: (sender) =>
-      links.resolveGrant(sender.communityId, sender.botId, sender.epoch, sender.telegramUserId),
+    // An explicit linked-account grant keeps its authority; otherwise practice is restricted.
+    grant: async (sender) =>
+      (await links.resolveGrant(
+        sender.communityId,
+        sender.botId,
+        sender.epoch,
+        sender.telegramUserId,
+      )) ?? (await learners.resolve(sender)),
+    enroll: (lease, input) => learners.enroll(lease, input.affirmed),
     async navigation(sender, postId) {
       const reference = telegram.vault.token();
       await links.createNavigation({

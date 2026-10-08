@@ -75,6 +75,16 @@ suite("Telegram linking runtime privileges", () => {
       expect((await runtime.query("SELECT current_user AS role")).rows).toEqual([
         { role: runtimeRole },
       ]);
+      // Migration 0246's definer trigger function is runnable by its trigger alone.
+      expect(
+        (
+          await admin.query(
+            `SELECT has_function_privilege($1,'require_restricted_learner_practice_only()','EXECUTE') AS runtime,
+               has_function_privilege($2,'require_restricted_learner_practice_only()','EXECUTE') AS reader`,
+            [runtimeRole, readerRole],
+          )
+        ).rows,
+      ).toEqual([{ runtime: false, reader: false }]);
       await admin.query("SET session_replication_role=replica");
       try {
         await admin.query(

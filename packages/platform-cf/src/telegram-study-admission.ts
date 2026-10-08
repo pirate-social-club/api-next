@@ -8,6 +8,36 @@ import { Effect } from "effect";
 import type { StudyV2Admission } from "./study-v2-repository.ts";
 import { TELEGRAM_STUDY_READY_SQL } from "./telegram-study-store.ts";
 
+/**
+ * The restricted practice identity: bot ingress evidence, never a linked-account grant.
+ * The reservation tables are immutable and the serving role holds no UPDATE on them, so
+ * they are read without a row lock.
+ */
+const RESTRICTED_ACCEPTANCE_SQL = `
+  SELECT chat.lease_until>clock_timestamp() AS lease_valid FROM telegram_restricted_study_personas s
+  JOIN telegram_restricted_learners l USING(account_id)
+  JOIN users u ON u.user_id=s.account_id
+  JOIN communities c ON c.community_id=s.community_id
+  JOIN community_telegram_integrations i ON i.community_id=s.community_id
+  JOIN personas p ON p.persona_id=s.persona_id
+  JOIN persona_community_bindings b ON b.persona_id=s.persona_id
+  JOIN telegram_study_conversations chat ON chat.community_id=s.community_id
+    AND chat.bot_id=$2 AND chat.telegram_user_id=l.telegram_user_id
+  WHERE s.community_id=$1 AND l.telegram_user_id=$3 AND s.account_id=$4 AND s.persona_id=$5
+    AND (l.local_bot_id IS NULL OR l.local_bot_id=$2)
+    AND EXISTS (SELECT 1 FROM telegram_restricted_bot_affirmations affirmed
+      WHERE affirmed.account_id=s.account_id AND affirmed.community_id=s.community_id
+        AND affirmed.bot_id=$2)
+    AND u.status='active' AND c.status='active'
+    AND p.account_id=s.account_id AND p.status='active'
+    AND b.account_id=s.account_id AND b.community_id=s.community_id
+    AND i.record->>'status'='ready' AND i.record->>'botId'=$2
+    AND i.record->>'botEpoch'=$6 AND chat.bot_epoch=$6
+    AND chat.lease_token=$7
+    AND EXISTS (SELECT 1 FROM community_telegram_private_chats started
+      WHERE started.community_id=$1 AND started.bot_epoch=$6 AND started.telegram_user_id=$3)
+  FOR SHARE OF p,b,chat`;
+
 export function telegramStudyAdmission(
   lease: TelegramStudyLease,
   grant: TelegramStudyGrant,
@@ -44,9 +74,25 @@ export function telegramStudyAdmission(
           values: [grant.accountId],
           readonly: false,
         });
-        const authority = yield* transaction.execute<{ readonly lease_valid: boolean }>({
-          label: "telegram-study.acceptance",
-          text: `
+        const authority = yield* transaction.execute<{ readonly lease_valid: boolean }>(
+          grant.restricted
+            ? {
+                label: "telegram-study.restricted-acceptance",
+                text: RESTRICTED_ACCEPTANCE_SQL,
+                values: [
+                  sender.communityId,
+                  sender.botId,
+                  sender.telegramUserId,
+                  grant.accountId,
+                  grant.personaId,
+                  sender.epoch,
+                  lease.token,
+                ],
+                readonly: false,
+              }
+            : {
+                label: "telegram-study.acceptance",
+                text: `
         SELECT g.revision, chat.lease_until>clock_timestamp() AS lease_valid FROM telegram_bot_grants g
         JOIN telegram_account_associations a USING(telegram_user_id)
         JOIN users u ON u.user_id=g.account_id
@@ -67,18 +113,19 @@ export function telegramStudyAdmission(
           AND EXISTS (SELECT 1 FROM community_telegram_private_chats started
             WHERE started.community_id=$1 AND started.bot_epoch=$7 AND started.telegram_user_id=$3)
         FOR SHARE OF g,a,p,b,chat`,
-          values: [
-            sender.communityId,
-            sender.botId,
-            sender.telegramUserId,
-            grant.accountId,
-            grant.personaId,
-            grant.revision,
-            sender.epoch,
-            lease.token,
-          ],
-          readonly: false,
-        });
+                values: [
+                  sender.communityId,
+                  sender.botId,
+                  sender.telegramUserId,
+                  grant.accountId,
+                  grant.personaId,
+                  grant.revision,
+                  sender.epoch,
+                  lease.token,
+                ],
+                readonly: false,
+              },
+        );
         if (authority.rows.length !== 1) return yield* refuse();
         if (authority.rows[0]?.lease_valid !== true) return yield* new TelegramStudyLeaseExpired();
         if (input.personaId !== undefined) {

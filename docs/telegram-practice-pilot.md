@@ -2,24 +2,92 @@
 
 This source implements native read-aloud practice in one explicitly configured
 community bot. It does not enable Telegram, provision a bot or admit production
-rewards. Every community retains its own owner-controlled Study bot. Pirate's
-separate Telegram login client proves identity on Pirate; chat navigation grants
-no account authority. Website account confirmation and explicit community
-persona consent remain mandatory.
+rewards. Every community retains its own owner-controlled Study bot. Phase one
+of the study-first amendment (Specs 006, 014 and 026, approved 2026-10-06) lets a
+learner practise without website sign-in. Pirate's separate Telegram login client
+still proves identity on Pirate for the optional connection of an existing
+account; chat navigation grants no account authority.
 
 ## Learner journey
 
 The learner sends /start, then /study or /songs. The curated picker lists at most
-eight ready English songs. Before linking it explains that practice requires
-voice notes, has no reference audio, earns no money, and is readable by the
-community owner. Owners controlling several bots can correlate Telegram IDs.
-Song selection and navigation expire after fifteen minutes.
+eight ready English songs. Song selection expires after fifteen minutes.
 
-The learner links on Pirate and explicitly chooses an active community persona.
-After returning they send /resume. The bot creates or recovers the actual Study
-session before displaying its real card count and first-pass threshold. It
-shows the linked persona's display name when available, together with its ID.
-The same persona accompanies subsequent prompts and completion.
+Choosing a song is the deliberate lesson start. A sender with no practice
+identity is then asked one question in chat. The message says the lesson is
+practice only and earns no rewards, that voice notes are required, that the
+community owner can read messages and listen to voice notes, and that no
+sign-in is needed. It offers "I'm 16 or older" and "I'm under 16". Only the
+affirmative button, pressed by the same sender against their current unexpired
+song choice, creates anything. Declining, a stale or expired button, typed text,
+/study and /resume create no account. The first card follows immediately. Both
+buttons stay valid until a lesson actually starts, so a decline sent while an
+interrupted affirmation waits for its retry is honoured.
+
+The question is asked once per community bot for every sender, whether or not
+a practice account or an account association already exists. Each answer is
+recorded in telegram_restricted_bot_affirmations, keyed by practice account,
+community and bot ID. A replaced bot is a new bot identity, so every sender is
+asked again there, in the same way that linked-account consent is per bot ID.
+The age attestation itself is recorded once, when the account is created.
+Asking uniformly keeps the question from telling a bot owner anything about the
+sender.
+
+The bot creates or recovers the actual Study session before displaying its real
+card count and first-pass threshold. A restricted learner sees no persona line.
+A learner with an explicit linked-account grant keeps the earlier behaviour and
+sees the linked persona's display name. Completion offers every restricted
+learner the same optional "Connect an existing Pirate account" button, which
+opens the existing independent sign-in, persona choice and per-bot consent
+flow. The copy promises no recovery or portability.
+
+## Restricted practice identity
+
+Migration 0246 adds telegram_restricted_learners,
+telegram_restricted_study_personas and telegram_restricted_bot_affirmations. One private learner account is reserved per
+numeric Telegram user across every bot, with evidence class ingress_observed and
+the community, bot and ingress generation that carried the affirmation. The
+account row, minimum-age-attestation-v1 (minimum_age 16, affirmed) and the
+reservation commit in one transaction. The account has no credential, handle,
+membership, browser session or Telegram association.
+
+Each community gets one new active study persona with a neutral "Learner NNNNNN"
+label, bound through activity_participation. No Telegram profile data is copied
+and no wallet provider is called; a pending wallet assignment reserves the
+ordinary persona slot for later promotion. The existing limits apply: ten
+lifetime slots and three additional personas per rolling twenty-four hours.
+Exhausted limits start nothing and never reuse a sibling persona. A per-user
+advisory lock makes concurrent first use, retries and other bots converge.
+Enrollment rechecks the current bot, ingress generation, private-chat start and
+the sender's own conversation lease. All three tables are immutable by trigger.
+
+The persona limits apply to the one cross-bot learner account. An isolated
+owner holds a single study persona, so those limits never reach it. That
+asymmetry is unobservable while one practice community is admitted and needs an
+owner decision before a second community is.
+
+An explicit linked-account grant is resolved first and keeps its authority.
+A sender whose Telegram identity is independently associated with a Pirate
+account, but who has no grant for this bot, gets an isolated practice owner for
+this bot alone: a separate reservation row naming local_bot_id, with its own
+explicit age answer, its own neutral persona and no link to the associated
+account. Only the existence of the association is consulted. The associated
+account is never read, written or revealed, and no second promotable account is
+created for that person. Another bot isolates the same sender separately.
+
+An identity already in use for a community is always reused before that rule
+is applied, so linking or unlinking an account later never moves or discards
+local progress. Only a reservation with no local_bot_id is a candidate for the
+phase-two recovery and promotion contract.
+
+Sessions for a restricted learner are practice only. The Telegram admission
+freezes the marker, and a trigger on study_sessions_v2 refuses any session for a
+restricted learner account that is not practice only, whichever path starts it.
+That trigger runs on every Study session insert, including ordinary website
+Study, so it reads the reservation with definer rights and needs no table grant
+on the serving role. EXECUTE on the function is revoked from every role, so
+nothing but the trigger can run it.
+Recovery, claiming, promotion and erasure tooling are phase-two work.
 
 Each card shows the line's text. The learner replies to that message with a
 native voice note. Telegram's reply-to-message ID must identify the confirmed
@@ -99,6 +167,19 @@ objects, SELECT/INSERT/UPDATE, DELETE only on the three temporary/link tables,
 and no DELETE on consent revisions, chat progress or interface preferences. TRUNCATE and owner-equivalent
 access are refused throughout.
 
+The three restricted-identity tables need SELECT and INSERT only: admission reads
+them without a row lock, because a row lock would require UPDATE. Enrollment
+also inserts into users, account_minimum_age_attestations, personas,
+persona_profiles, persona_wallet_assignments and persona_community_bindings
+through the serving role. They are not part of the six-object guard, because a
+staging role with broad default privileges would fail it and silently disable
+the whole bot. The bounded block is in roles.sql.example.
+
+Apply migration 0246 and that block before serving this source with Telegram
+enabled in any mode. The learner interface reads the three tables on every
+private update to decide whether to offer Resume, including for a discovery-only
+bot with practice disabled.
+
 Migration 0240 and bounded SELECT/INSERT/UPDATE access to
 telegram_interface_preferences are required whenever Telegram is enabled,
 including discovery-only operation with linking and practice disabled.
@@ -112,7 +193,7 @@ default DELETE. This source authorizes no serving grants or revocations.
 ## Measurements and acceptance
 
 Chat state stores at most 64 stage observations with time, card ordinal
-and presentation number. It records selection, linking, prompts, completion,
+and presentation number. It records selection, the age question, prompts, completion,
 cancellation and unavailable grading. No voice inference, transcript, Telegram
 profile snapshot or recording is placed in those observations. Shared Study
 presentations and commands retain their existing timing and outcome evidence.

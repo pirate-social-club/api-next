@@ -232,6 +232,27 @@ test("manual English survives Russian suggestions, missing language, and a fresh
   expect((await f.run("/settings"))?.text).toContain("Interface language: English");
   expect(f.preferences.get("community:123:7")).toEqual({ locale: "en", explicit: true });
 });
+test("a deployment offering only English never shows, suggests or saves another catalog", async () => {
+  const f = fixture();
+  f.services.interfaceLocales = ["en"];
+  const welcome = await f.run("/start", "ru");
+  expect(welcome?.text).toContain("Welcome to Music");
+  expect(JSON.stringify(welcome?.keyboard)).not.toContain("tg-language:");
+  expect(JSON.stringify(welcome?.keyboard)).toContain("tg-menu:songs");
+  const refused = await f.run("tg-language:ru", "ru", true);
+  expect(refused?.text).toBe("Unknown command. Use /help or /songs.");
+  expect((await f.run("tg-language:ka", undefined, true))?.text).toContain("Unknown command");
+  expect(f.preferences.get("community:123:7")).toEqual({ locale: "en", explicit: false });
+  // A choice saved while the catalog was offered is not shown once it is withdrawn.
+  f.preferences.set("community:123:7", { locale: "ka", explicit: true });
+  expect((await f.run("/help", "ka"))?.text).toContain("Use /songs");
+  const offered = fixture();
+  offered.services.interfaceLocales = ["en", "ru"];
+  const picker = JSON.stringify((await offered.run("/start", "ka"))?.keyboard);
+  expect(picker).toContain("tg-language:ru");
+  expect(picker).not.toContain("tg-language:ka");
+  expect((await offered.run("tg-language:ru", undefined, true))?.text).toContain("сохранён");
+});
 test("pre-link language callbacks bypass lesson state and paid providers", async () => {
   const f = fixture();
   const fail = new Proxy(

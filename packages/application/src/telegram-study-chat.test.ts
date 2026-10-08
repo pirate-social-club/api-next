@@ -147,7 +147,19 @@ function fixture() {
   let current: StudySessionV2 = session;
   let busy = false,
     failReply = false,
+    failNavigation = false,
     expired = false;
+  // The restricted practice identity the platform would issue for this sender.
+  let learnerAccount = false,
+    enrollment: "issue" | "unavailable" = "issue";
+  const enrollments: boolean[] = [];
+  let failEnrollment = false;
+  const restrictedGrant: TelegramStudyGrant = {
+    accountId: "restricted-learner",
+    personaId: "restricted-persona",
+    revision: 0,
+    restricted: true,
+  };
   const replies: TelegramStudyReply[] = [];
   const promptIds = new Map<string, number>();
   const keys: string[] = [];
@@ -193,8 +205,19 @@ function fixture() {
       cleanup: async () => {},
     },
     grant: async () => granted,
-    navigation: async () =>
-      "https://pirate.example.invalid/telegram/link?navigation_reference=public",
+    enroll: async (_lease, input) => {
+      enrollments.push(input.affirmed);
+      if (failEnrollment) throw Error("enrollment unavailable");
+      if (enrollment === "unavailable") return "unavailable";
+      if (!learnerAccount && !input.affirmed) return "age_required";
+      learnerAccount = true;
+      granted = restrictedGrant;
+      return restrictedGrant;
+    },
+    navigation: async () => {
+      if (failNavigation) throw Error("navigation unavailable");
+      return "https://pirate.example.invalid/telegram/link?navigation_reference=public";
+    },
     start: async (_lease, _grant, _post, key) => {
       starts++;
       keys.push(key);
@@ -297,6 +320,22 @@ function fixture() {
     deliveryFailure: (value: boolean) => {
       failReply = value;
     },
+    navigationFailure: () => {
+      failNavigation = true;
+    },
+    enrollments,
+    knownLearner: () => {
+      learnerAccount = true;
+    },
+    enrollmentUnavailable: () => {
+      enrollment = "unavailable";
+    },
+    enrollmentFailure: (value: boolean) => {
+      failEnrollment = value;
+    },
+    learnerExists: () => learnerAccount,
+    age: (id: string, answer: "age" | "minor" = "age") =>
+      press(id, `study:${state.token}:${answer}`),
     expire: () => {
       expired = true;
     },
@@ -305,18 +344,150 @@ function fixture() {
     },
   };
 }
-test("selection discloses voice, practice and owner access before linking; expiry grants nothing", async () => {
+test("a new learner practises after one explicit 16-or-older action, with no sign-in step", async () => {
+  const f = fixture();
+  f.grant(null);
+  await f.send("picker", "/study");
+  expect(f.enrollments).toEqual([]);
+  await f.press("choose");
+  const question = f.replies.at(-1);
+  expect(question?.text).toContain("practice only. No rewards are earned in this lesson");
+  expect(question?.text).toContain("voice notes");
+  expect(question?.text).toContain("community owner");
+  expect(question?.text).toContain("16 or older");
+  expect(question?.buttons).toEqual([]);
+  expect(JSON.stringify(question?.keyboard)).toContain("I'm 16 or older");
+  expect(f.enrollments).toEqual([false]);
+  expect(f.counts().starts).toBe(0);
+  expect(f.state().observations.at(-1)?.stage).toBe("age");
+  await f.age("affirm");
+  expect(f.enrollments).toEqual([false, true]);
+  expect(f.counts().starts).toBe(1);
+  expect(f.keys).toEqual(["telegram:affirm:start"]);
+  const card = f.replies.at(-1);
+  expect(card?.text).toContain(
+    "This lesson is practice only. No rewards are earned in this lesson.",
+  );
+  expect(card?.text).not.toContain("Persona:");
+  expect(card?.text).not.toContain("restricted-persona");
+  expect(f.state().grantRevision).toBe(0);
+  expect(f.state().ageInboxId ?? null).toBeNull();
+});
+test("declined, stale, expired or typed answers never affirm an age or start a lesson", async () => {
+  const declined = fixture();
+  declined.grant(null);
+  await declined.begin();
+  await declined.age("no", "minor");
+  expect(declined.replies.at(-1)?.text).toBe(
+    "Practice in this bot is for learners aged 16 or older.",
+  );
+  expect(declined.state().selectedPostId).toBeNull();
+  const stale = fixture();
+  stale.grant(null);
+  await stale.begin();
+  const old = `study:${stale.state().token}:age`;
+  await stale.send("again", "/study");
+  await stale.press("old", old);
+  expect(stale.replies.at(-1)?.text).toContain("ended");
+  // The age answer needs the sender's own current song choice.
+  await stale.age("no-song");
+  expect(stale.replies.at(-1)?.text).toContain("expired");
+  await stale.send("typed", "I'm 16 or older");
+  await stale.send("resume", "/resume");
+  expect(stale.replies.at(-1)?.text).toContain("/study");
+  const late = fixture();
+  late.grant(null);
+  await late.begin();
+  late.advance();
+  await late.age("late");
+  expect(late.replies.at(-1)?.text).toContain("expired");
+  for (const f of [declined, stale, late]) {
+    expect(f.enrollments).not.toContain(true);
+    expect(f.counts().starts).toBe(0);
+  }
+});
+test("a retried affirmation replays one identity and one lesson start", async () => {
   const f = fixture();
   f.grant(null);
   await f.begin();
-  expect(f.replies.at(-1)?.text).toContain("Voice answers are required");
-  expect(f.replies.at(-1)?.text).toContain("community owner");
+  f.deliveryFailure(true);
+  await expect(f.age("affirm")).rejects.toThrow("delivery unavailable");
+  f.deliveryFailure(false);
+  const data = "study:stale-token:age";
+  await f.press("affirm", data);
+  expect(f.enrollments).toEqual([false, true]);
+  expect(f.counts().starts).toBe(1);
+  expect(f.replies.at(-1)?.text).toContain("Read aloud");
+});
+test("a decline sent while a failed affirmation awaits retry is honoured", async () => {
+  const f = fixture();
+  f.grant(null);
+  await f.begin();
+  const visible = f.state().token;
+  f.enrollmentFailure(true);
+  await expect(f.age("affirm")).rejects.toThrow("enrollment unavailable");
+  f.enrollmentFailure(false);
+  // The buttons the learner can still see keep working until a lesson starts.
+  expect(f.state().token).toBe(visible);
+  await f.press("decline", `study:${visible}:minor`);
+  expect(f.replies.at(-1)?.text).toContain("learners aged 16 or older");
+  await f.press("affirm", `study:${visible}:age`);
+  expect(f.replies.at(-1)?.text).toContain("ended");
+  expect(f.learnerExists()).toBe(false);
   expect(f.counts().starts).toBe(0);
-  f.advance();
-  f.grant({ accountId: "learner", personaId: "persona-1", revision: 1 });
-  await f.send("resume", "/resume");
-  expect(f.counts().starts).toBe(0);
-  expect(f.replies.at(-1)?.text).toContain("unavailable");
+  expect(f.enrollments.filter(Boolean)).toHaveLength(1);
+});
+test("a known restricted learner starts without another age question; exhausted limits start nothing", async () => {
+  const f = fixture();
+  f.grant(null);
+  f.knownLearner();
+  await f.begin();
+  expect(f.enrollments).toEqual([false]);
+  expect(f.counts().starts).toBe(1);
+  expect(f.replies.at(-1)?.text).toContain("Read aloud");
+  const g = fixture();
+  g.grant(null);
+  g.enrollmentUnavailable();
+  await g.begin();
+  expect(g.counts().starts).toBe(0);
+  expect(g.replies.at(-1)?.text).toContain("cannot start right now");
+  expect(g.state().selectedPostId).toBeNull();
+});
+test("completion offers the optional connection to restricted learners only", async () => {
+  const completed: StudySessionV2 = {
+    ...session,
+    status: "completed",
+    completed_at: "2026-10-03T00:00:00Z",
+    lesson: { ...session.lesson, current: null, completion_reason: "all_resolved" },
+  };
+  const f = fixture();
+  f.grant(null);
+  f.knownLearner();
+  f.session(completed);
+  await f.begin();
+  expect(f.replies.at(-1)?.text).toContain("No reward or pool share was earned");
+  expect(f.replies.at(-1)?.text).toContain("Optional");
+  expect(f.replies.at(-1)?.text).not.toContain("Persona:");
+  expect(f.replies.at(-1)?.buttons).toEqual([
+    {
+      text: "Connect an existing Pirate account",
+      url: "https://pirate.example.invalid/telegram/link?navigation_reference=public",
+    },
+  ]);
+  const unlinked = fixture();
+  unlinked.grant(null);
+  unlinked.knownLearner();
+  unlinked.navigationFailure();
+  unlinked.session(completed);
+  await unlinked.begin();
+  expect(unlinked.replies.at(-1)?.text).toContain("Practice complete");
+  expect(unlinked.replies.at(-1)?.buttons).toEqual([]);
+  const linked = fixture();
+  linked.session(completed);
+  await linked.begin();
+  expect(linked.replies.at(-1)?.text).toContain("Persona: persona-1");
+  expect(linked.replies.at(-1)?.buttons).toEqual([]);
+  expect(linked.enrollments).toEqual([]);
 });
 test("real session determines count and threshold; callback tokens rotate without answer keys", async () => {
   const f = fixture();
@@ -662,7 +833,7 @@ test("an in-flight command retains the answer identity for retry", async () => {
   expect(f.state().pendingAnswer?.inboxId).toBe("busy-answer");
 });
 
-test("slow grading reacquires the lease and recovers without blaming the link", async () => {
+test("slow grading reacquires the lease and recovers without blaming the learner", async () => {
   const f = fixture();
   await f.begin();
   let token: string | null = null;
@@ -691,7 +862,7 @@ test("slow grading reacquires the lease and recovers without blaming the link", 
   await f.voice("slow");
   expect(f.state().pendingAnswer).toBeNull();
   expect(f.replies.at(-1)?.text).toContain("took too long");
-  expect(f.replies.at(-1)?.text).not.toContain("Check your link");
+  expect(f.replies.at(-1)?.text).not.toContain("unavailable");
   await f.send("after-slow", "/resume");
   expect(f.state().turn?.itemId).toBe("item-0");
 });

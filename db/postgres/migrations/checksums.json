@@ -245,6 +245,7 @@
     "0242_reward_operations_run_lease.sql": "2c183509506a71cc73e8fd0441aa73662e949a1ba44ca662a3896f2073195e43",
     "0243_spaces_community_route_attachments.sql": "e778abb7096b1fd5bef118535355f97a6dac3794dbbd16f9176baf1390a42fc9",
     "0244_unmoderated_text_publication.sql": "c1a0eb3ead1940484ce869217b602f0f66aba17b2a47506df542fd001d482c16",
-    "0245_reward_unsigned_purchase_recovery.sql": "5e8307196b983c2920b0ec6cfdea4e85d24c1d1b092e0c4651d86a59d1e90293"
+    "0245_reward_unsigned_purchase_recovery.sql": "5e8307196b983c2920b0ec6cfdea4e85d24c1d1b092e0c4651d86a59d1e90293",
+    "0246_telegram_restricted_learners.sql": "bdf58c8c9dce49a66779a800671f77daca9b19b96696079e525f2ae7f028747d"
   }
 }
