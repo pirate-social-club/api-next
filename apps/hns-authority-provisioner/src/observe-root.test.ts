@@ -322,9 +322,11 @@ describe("HNS root readiness observation", () => {
     const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
     expect(decoded.result.root_label).toBe(state.request.root_label);
 
-    // Grant and generation continuity: renewal reports the same authority
-    // identity it was issued against, so a renewal cannot quietly migrate an
-    // operation onto different infrastructure.
+    // Grant and generation continuity: renewal reports the same delegation
+    // and inventory identity it was issued against. That a renewal cannot
+    // quietly move an operation onto a different gateway deployment is held
+    // by the renewal preparation in the database, which accepts only the
+    // current revision's reference; the observation no longer compares it.
     const baseline = await decodeHnsRootImportReadinessResultV1(
       (await renew(state.plan.replacement_records)).result_bytes,
     );
