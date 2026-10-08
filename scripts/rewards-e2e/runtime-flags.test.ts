@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  assertIsolatedServingSource,
   disableIsolatedRewards,
   readIsolatedRewardsFlags,
   setIsolatedRewardsFlag,
@@ -55,6 +56,16 @@ test("an uncertain settings write is never retried", async () => {
     setIsolatedRewardsFlag("http", "true", source, { api: f.api, sleep: async () => {} }),
   ).rejects.toThrow("Lost response");
   expect(f.mutations.length).toBe(1);
+});
+
+test("passive finality requires both enabled Workers at the pinned source without mutation", async () => {
+  const f = fixture();
+  await expect(assertIsolatedServingSource(source, f.api)).rejects.toThrow("enabled flag");
+  await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
+  const before = f.mutations.length;
+  await assertIsolatedServingSource(source, f.api);
+  await expect(assertIsolatedServingSource("b".repeat(40), f.api)).rejects.toThrow("source");
+  expect(f.mutations.length).toBe(before);
 });
 test("the provider's source relabel alone does not refuse the flag change", async () => {
   const f = fixture();

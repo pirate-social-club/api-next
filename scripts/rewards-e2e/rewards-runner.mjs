@@ -7,7 +7,7 @@ import { loadPostgresMigrations } from "../postgres-migrations.ts";
 import { fixtureAccounts } from "./browser-accounts.mjs";
 import { prepareFixtureBrowsers } from "./browser-host.mjs";
 import { buildBrowserWalletDriver } from "./browser-wallet-build.mjs";
-import { sendPaidCredit } from "./browser-winner-send.mjs";
+import { observePaidCredit, submitPaidCredit } from "./browser-winner-send.mjs";
 import { cloudflareApi } from "./cloudflare-api.mjs";
 import { verifyCommitmentReader } from "./commitment-reader.mjs";
 import {
@@ -24,6 +24,7 @@ import { rehearseRunLease } from "./lease-rehearsal.mjs";
 import { singleParticipantCredit } from "./participant-policy.mjs";
 import { runScenario } from "./run-scenario.mjs";
 import {
+  assertIsolatedServingSource,
   disableIsolatedRewards,
   inspectIsolatedWorker,
   readIsolatedRewardsFlags,
@@ -195,7 +196,7 @@ if (process.argv.includes("--complete-win-sends")) {
     // The run's own identity, so the app returns the send it already reserved.
     sendFor: (host, credit, { deadline }, check) => {
       const role = credit.account_id === fixtureAccounts.study.accountId ? "study" : "karaoke";
-      return sendPaidCredit(
+      return submitPaidCredit(
         host.pages[role],
         role,
         singleParticipantCredit([credit], role),
@@ -211,6 +212,11 @@ if (process.argv.includes("--complete-win-sends")) {
         check,
       );
     },
+    observeFor: (host, credit, submission) => {
+      const role = credit.account_id === fixtureAccounts.study.accountId ? "study" : "karaoke";
+      return observePaidCredit(host.pages[role], credit, submission);
+    },
+    checkServing: () => assertIsolatedServingSource(held.apiSource),
     clearLock: () => unlinkSync(lock),
     record,
   });

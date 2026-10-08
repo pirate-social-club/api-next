@@ -43,10 +43,14 @@ type Faults = {
   failCredit?: string;
   karaokeAlreadyConfirmed?: boolean;
   liveLease?: boolean;
+  finalityLagMs?: number;
+  observationFails?: string;
+  studyImmediatelyConfirmed?: boolean;
 };
 
 /** The isolated stack after the failed win: paused, flags on, one study send retryable. */
 function world(faults: Faults = {}) {
+  let clock = 0;
   let paused = true;
   let revision = 34;
   let leaseLive = faults.liveLease ?? false;
@@ -136,21 +140,40 @@ function world(faults: Faults = {}) {
           if (faults.sendFails && (!faults.failCredit || faults.failCredit === credit.credit_id))
             throw new Error(faults.sendFails);
           const existing = sends.find((send) => send.credit_id === credit.credit_id);
-          if (existing) existing.status = "confirmed";
+          if (existing)
+            existing.status = faults.studyImmediatelyConfirmed ? "confirmed" : "pending";
           else
             sends.push({
               send_id: `send-${credit.credit_id}`,
               credit_id: credit.credit_id,
-              status: "confirmed",
+              status: "pending",
             });
-          return { sendId: credit.credit_id };
+          return { creditId: credit.credit_id, sendId: credit.credit_id };
+        },
+        observeFor: async (_host: unknown, credit: { credit_id: string }) => {
+          expect(paused).toBe(true);
+          expect(leaseLive).toBe(false);
+          log.push(`observe:${credit.credit_id}`);
+          if (faults.observationFails) throw Error(faults.observationFails);
+          if (clock >= (faults.finalityLagMs ?? 0)) {
+            const send = sends.find((send) => send.credit_id === credit.credit_id);
+            if (send) send.status = "confirmed";
+          }
+        },
+        checkServing: async () => {
+          expect(flags).toEqual({ http: "true", jobs: "true" });
         },
         clearLock: () => {
           lockCleared = true;
         },
         record: (entry: unknown) => records.push(entry),
         leaseClock: { setTimer: () => 0, clearTimer: () => undefined },
-        sleep: async () => undefined,
+        now: () => clock,
+        waitMs: 1000,
+        passiveWaitMs: 30000,
+        sleep: async () => {
+          clock += 5000;
+        },
       }),
   };
 }
@@ -166,13 +189,38 @@ test("both winners send on, the run closes out clean and the lock is cleared", a
     "host",
     "send:credit-study",
     "send:credit-karaoke",
-    "host-closed",
     "pause",
     "release",
+    "observe:credit-study",
+    "observe:credit-karaoke",
+    "host-closed",
     "flags-off",
   ]);
   expect(w.state()).toMatchObject({ paused: true, lockCleared: true, leaseLive: false });
   expect(w.state().flags).toEqual({ http: "false", jobs: "false" });
+});
+
+test("both hashes are submitted before delayed finality, then observed beyond the signing deadline while paused", async () => {
+  const w = world({ finalityLagMs: 15000 });
+  expect((await w.run()).passed).toBe(true);
+  const release = w.log.indexOf("release");
+  expect(w.log.indexOf("send:credit-study")).toBeLessThan(release);
+  expect(w.log.indexOf("send:credit-karaoke")).toBeLessThan(release);
+  expect(w.log.slice(release + 1).some((entry) => entry.startsWith("send:"))).toBe(false);
+  expect(w.log.filter((entry) => entry.startsWith("observe:")).length).toBe(8);
+});
+
+test("passive finality timeout or a failed observation keeps flags and lock while authority is ended", async () => {
+  for (const faults of [{ finalityLagMs: 60000 }, { observationFails: "RPC unavailable" }]) {
+    const w = world(faults);
+    expect((await w.run()).passed).toBe(false);
+    expect(w.state()).toMatchObject({
+      paused: true,
+      leaseLive: false,
+      lockCleared: false,
+      flags: { http: "true", jobs: "true" },
+    });
+  }
 });
 
 test("a send already confirmed is not sent again", async () => {
@@ -187,7 +235,7 @@ test("a failed send pauses, releases and leaves the flags on and the lock in pla
   expect(result.passed).toBe(false);
   expect(result.errors[0]).toContain("HTTP 502");
   expect(result.errors.some((error: string) => error.startsWith("obligations remain"))).toBe(true);
-  expect(w.log.slice(-3)).toEqual(["host-closed", "pause", "release"]);
+  expect(w.log.slice(-3)).toEqual(["pause", "release", "host-closed"]);
   expect(w.state()).toMatchObject({ paused: true, lockCleared: false, leaseLive: false });
   expect(w.state().flags).toEqual({ http: "true", jobs: "true" });
 });
@@ -229,7 +277,11 @@ test("the gas wallet check accepts only the isolated gas wallet", () => {
 });
 
 test("flags stay on when a send failed before it had a row, so the recovery can be retried", async () => {
-  const w = world({ sendFails: "App command refused: HTTP 503", failCredit: "credit-karaoke" });
+  const w = world({
+    sendFails: "App command refused: HTTP 503",
+    failCredit: "credit-karaoke",
+    studyImmediatelyConfirmed: true,
+  });
   const result = await w.run();
   expect(result.passed).toBe(false);
   // Study confirmed and Karaoke has no row, so every shutdown category reads zero.
