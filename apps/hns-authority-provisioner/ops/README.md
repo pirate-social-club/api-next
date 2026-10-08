@@ -44,9 +44,17 @@ Zones created by this provisioner get the second profile. A root keeps the
 profile its provision result recorded: reconciliation and inspection select
 it from the managed digest in that result, and a zone inspected without one
 is read from its own content and then held to that whole profile, so a zone
-that mixes the two is refused. Configuration that no longer reproduces the
-recorded digest under either profile is reported as an authority mismatch and
-nothing is written.
+that mixes the two is refused.
+
+Configuration that no longer reproduces the recorded digest under either
+profile is handled differently at the two points a root is inspected. At first
+readiness the reconciliation writes nothing and the job ends as an authority
+mismatch. A renewal does not reconcile. Its inspection checks the earlier
+profile's record sets against the changed configuration, so while the zone
+still holds the earlier values it fails as the provider being unavailable and
+is retried, and once the zone agrees with the changed configuration it ends as
+an authority mismatch. The renewal behaviour is older than the profiles and is
+unchanged by them.
 
 An activated root is not upgraded in place. Its retained zone is frozen
 between authority successors, and renewal requires the transferred zone to
@@ -66,6 +74,15 @@ such a root: the observer driver and the operator continuity scripts derive
 the same canonical zone and refuse an unknown type. Install those before the
 first root is provisioned under the second profile, and do not roll the
 provisioner back past this change afterwards.
+
+The encoder requirement is about the record, not the profile. A root on the
+first profile that is given an HTTPS record by hand meets it too: a
+provisioner without the encoder change refuses that zone's transfer, and the
+root's readiness or renewal is then retried as the provider being unavailable.
+Such a root keeps its recorded profile and its recorded digest, and the added
+record sets are unmanaged as far as the provisioner is concerned. Its retained
+zone no longer equals the zone it serves, so it also needs an authority
+successor before its next renewal.
 
 The evidence for client behaviour is one Android client on a network without
 IPv6, plus the local resolver checks. Platforms that treat an IPv4-mapped

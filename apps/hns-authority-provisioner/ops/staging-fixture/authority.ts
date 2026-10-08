@@ -278,12 +278,17 @@ export async function runLocalAuthorityFixture(
       const second = (await query(authorityAddresses[1], name, type)).split("\n").sort().join("\n");
       if (!first || first !== second) throw new Error(`Authority agreement failed for ${type}`);
     }
-    const inspected = await makePowerDnsRootInspector(config)({
-      root_label: root,
-      challenge_txt_value: challenge,
-    });
-    if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
-      throw new Error("Managed resource readback drift");
+    // Inspect the way the service does, with the digest the provision result
+    // recorded, and once without it so the zone's own content is read too.
+    for (const recorded of [result.managed_rrset_sha256, undefined]) {
+      const inspected = await makePowerDnsRootInspector(config)({
+        root_label: root,
+        challenge_txt_value: challenge,
+        ...(recorded === undefined ? {} : { expected_managed_rrset_sha256: recorded }),
+      });
+      if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
+        throw new Error("Managed resource readback drift");
+    }
     if (withChain) {
       const observed = await publishFixtureResource(root, challenge, result.ds_records, (observe) =>
         provisionHnsAuthorityRootV1(

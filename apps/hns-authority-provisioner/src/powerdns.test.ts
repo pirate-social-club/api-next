@@ -398,6 +398,17 @@ describe("PowerDNS managed HNS root rrsets", () => {
       reconcile({ ...reconcileInput, expected_managed_rrset_sha256: "0".repeat(64) }),
     ).rejects.toBeInstanceOf(PowerDnsManagedProfileMismatchError);
     expect(calls.filter((call) => !call.startsWith("GET"))).toEqual([]);
+
+    // The digest is required by type. A caller that reaches the reconciler
+    // without one anyway is refused the same way; the zone never decides what
+    // reconciliation writes.
+    calls.length = 0;
+    await expect(
+      reconcile(
+        reconcileInput as typeof reconcileInput & { expected_managed_rrset_sha256: string },
+      ),
+    ).rejects.toBeInstanceOf(PowerDnsManagedProfileMismatchError);
+    expect(calls.filter((call) => !call.startsWith("GET"))).toEqual([]);
   });
 
   test("provision, reconciliation and inspection agree on one profile for each kind of root", async () => {

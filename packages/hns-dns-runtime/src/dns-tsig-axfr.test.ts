@@ -596,6 +596,19 @@ describe("canonical authority zone derivation", () => {
     );
     const overrun = concat([uint16(1), new Uint8Array([9, ...new TextEncoder().encode("edge")])]);
     expect(() => derive([record(wildcard, 65, 300, overrun)])).toThrow(HnsDnsTsigAxfrError);
+
+    // The same overrun where every octet the target borrows still reads as a
+    // label, so only the record boundary can refuse it. The target's first
+    // label claims two octets and its record holds one. The next record's
+    // owner lends the rest: its length octet 0x22 completes that label, and
+    // its first character, "!", is a length of 33 that spans the remainder of
+    // the owner's first label, after which the reader is back in step with
+    // the owner name and ends where that name ends.
+    const spill = concat([uint16(1), new Uint8Array([2, 0x61])]);
+    const lender = record(`!${"x".repeat(33)}.${zoneName}`, 1, 300, new Uint8Array([192, 0, 2, 1]));
+    expect(() => derive([record(wildcard, 65, 300, spill), lender])).toThrow(
+      "invalid AXFR service-binding data",
+    );
   });
 
   test("omits online RRSIG bytes but detects a changed stable record", () => {

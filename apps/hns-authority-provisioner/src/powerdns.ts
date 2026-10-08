@@ -867,17 +867,19 @@ export function makePowerDnsRootInspector(
     const retained = await request(zonePath);
     const zone = parseZone(retained, zoneName);
     // A recorded digest decides the profile, so an existing root is inspected
-    // exactly as before whatever else its zone holds. When no profile
-    // reproduces it the zone decides, and the caller's own comparison of the
-    // digests then reports the mismatch, as it did before profiles existed.
-    const recorded =
+    // exactly as before whatever else its zone holds. When configuration no
+    // longer reproduces that digest under either profile the earlier set is
+    // checked, which is all an inspection checked before profiles existed,
+    // and the caller's own comparison of the digests reports the mismatch.
+    // Only an inspection without a recorded digest reads the profile from
+    // the zone.
+    const profile =
       input.expected_managed_rrset_sha256 === undefined
-        ? undefined
-        : await managedProfileForDigest(
+        ? managedProfileOfZone(retained, zoneName)
+        : ((await managedProfileForDigest(
             { ...input, ...config },
             input.expected_managed_rrset_sha256,
-          );
-    const profile = recorded ?? managedProfileOfZone(retained, zoneName);
+          )) ?? "wildcard-v1");
     retainedManagedRrsets(retained, buildManagedRootRrsets({ ...input, ...config }, profile));
     const cryptokeys = await request(`${zonePath}/cryptokeys`);
     if (!Array.isArray(cryptokeys)) throw new Error("PowerDNS DNSSEC key inspection failed");
