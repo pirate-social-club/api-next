@@ -1,3 +1,12 @@
+import {
+  PowerDnsWildcardFamilyRefusal,
+  type PowerDnsWildcardFamilyResult,
+  type PowerDnsWildcardFamilyRrset,
+  wildcardFamilyOfZone,
+} from "./powerdns-wildcard-family-state.ts";
+
+export { PowerDnsWildcardFamilyRefusal } from "./powerdns-wildcard-family-state.ts";
+
 import type {
   HnsRootDelegationDsV1,
   HnsRootImportGlueRecordV1,
@@ -702,81 +711,10 @@ export function makePowerDnsRootReconciler(
   };
 }
 
-type PowerDnsWildcardFamilyRrset = Readonly<{
-  readonly type: string;
-  readonly ttl: number;
-  readonly records: readonly string[];
-}>;
-
-export type PowerDnsWildcardFamilyResult = Readonly<{
-  /** False when the zone already held what was asked for and nothing was sent to change it. */
-  readonly changed: boolean;
-  readonly serial_before: number;
-  readonly serial_after: number;
-  readonly wildcard_family_before: readonly PowerDnsWildcardFamilyRrset[];
-  readonly wildcard_family_after: readonly PowerDnsWildcardFamilyRrset[];
-}>;
-
-/** The wildcard owner's AAAA and HTTPS record sets as the provider holds them. */
-function wildcardFamilyOfZone(
-  value: unknown,
-  zoneName: string,
-): readonly PowerDnsWildcardFamilyRrset[] {
-  const rrsets =
-    value !== null && typeof value === "object" && !Array.isArray(value)
-      ? (value as ApiZone).rrsets
-      : undefined;
-  if (!Array.isArray(rrsets)) throw new Error("PowerDNS retained rrsets are unavailable");
-  const wildcard = `*.${zoneName}`;
-  return rrsets
-    .filter(
-      (candidate): candidate is Record<string, unknown> =>
-        candidate !== null &&
-        typeof candidate === "object" &&
-        !Array.isArray(candidate) &&
-        Reflect.get(candidate, "name") === wildcard &&
-        (Reflect.get(candidate, "type") === "AAAA" || Reflect.get(candidate, "type") === "HTTPS"),
-    )
-    .map((candidate) => {
-      const records = candidate.records;
-      if (typeof candidate.ttl !== "number" || !Array.isArray(records))
-        throw new Error("PowerDNS returned invalid zone data");
-      return {
-        type: String(candidate.type),
-        ttl: candidate.ttl,
-        records: records.map((record) => {
-          const content =
-            record !== null && typeof record === "object" && !Array.isArray(record)
-              ? Reflect.get(record, "content")
-              : undefined;
-          if (typeof content !== "string" || Reflect.get(record, "disabled") !== false)
-            throw new Error("PowerDNS returned invalid zone data");
-          return content;
-        }),
-      };
-    })
-    .sort((left, right) => left.type.localeCompare(right.type));
-}
-
-/**
- * Adds the wildcard address-family record sets to, or removes them from, the
- * zone of a root that was provisioned under `wildcard-v1`.
- *
- * Such a root's managed record sets and its recorded digest stay what they
- * were: the two record sets are extra to its profile, and what holds them in
- * place afterwards is the retained zone a renewal compares the served zone
- * with. The caller is an operator adopting that changed zone, and holds the
- * fence that keeps a renewal of the root from running meanwhile.
- *
- * The two record sets written are the ones a new zone gets, built by the same
- * function. Before any write the zone must be the provisioned one as far as
- * the provider can show: its DNSSEC keys the provisioned ones, its managed
- * record sets intact, its serial advanced by API changes, and the wildcard
- * AAAA and HTTPS sets either absent or exactly those two. Whether the whole
- * served zone equals the retained one is the observation's to say. A zone already in
- * the state asked for is not written again, but it is still rectified and
- * notified, so a run that stopped between the write and those two steps is
- * finished by running it again.
+/** Validates the managed profile and exact family values before inspecting or writing.
+ * DNS/keys require exclusive operator custody; database locks do not lock PowerDNS.
+ * Partial expected families may be completed or withdrawn. An unchanged target is
+ * rectified/notified again, but cannot hide a serial that never advanced.
  */
 export function makePowerDnsWildcardFamilyWriter(
   config: PowerDnsRootProvisionConfig,
@@ -788,6 +726,9 @@ export function makePowerDnsWildcardFamilyWriter(
   /** The managed digest the root's provision result recorded. */
   readonly expected_managed_rrset_sha256: string;
   readonly change: "add" | "remove";
+  readonly mode?: "inspect";
+  readonly retained_serial: number;
+  readonly retained_family: boolean;
 }) => Promise<PowerDnsWildcardFamilyResult> {
   if (
     !validEndpoint(config.api_url) ||
@@ -824,13 +765,13 @@ export function makePowerDnsWildcardFamilyWriter(
     };
     const before = await read();
     if (!before.zone.dnssec) throw new Error("PowerDNS existing zone is not DNSSEC-enabled");
-    // A zone that does not move its serial on an API change would be changed
-    // without the secondary transferring it, and a second run could not tell.
-    // Zones this provisioner creates are set to; one that is not is refused
-    // before anything is written.
+    // EPOCH and SOA-EDIT can leave a serial unchanged; only these two
+    // policies guarantee an increment (apart from wrap, which we refuse).
     const serialPolicy = Reflect.get(before.json as object, "soa_edit_api");
-    if (typeof serialPolicy !== "string" || serialPolicy.length === 0)
-      throw new Error("PowerDNS zone does not advance its serial on API changes");
+    if (serialPolicy !== "DEFAULT" && serialPolicy !== "INCREASE")
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS zone serial policy is not DEFAULT or INCREASE",
+      );
     const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
     if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
       throw new Error("PowerDNS DNSSEC key inspection failed");
@@ -852,7 +793,9 @@ export function makePowerDnsWildcardFamilyWriter(
     // A root provisioned under the newer profile holds these record sets as
     // managed ones; they are neither added to it nor removable from it here.
     if (profile !== "wildcard-v1")
-      throw new Error("PowerDNS wildcard address records belong to the root's managed profile");
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS wildcard address records belong to the root's managed profile",
+      );
     const managed = buildManagedRootRrsets({ ...input, ...config }, profile);
     retainedManagedRrsets(before.json, managed);
 
@@ -870,12 +813,38 @@ export function makePowerDnsWildcardFamilyWriter(
       }))
       .sort((left, right) => left.type.localeCompare(right.type));
     const wanted = input.change === "add" ? familyAsRead : [];
-    const start = input.change === "add" ? [] : familyAsRead;
     const present = wildcardFamilyOfZone(before.json, zoneName);
     const alreadyThere = canonicalJson(present) === canonicalJson(wanted);
     // Anything else at those two types was not put there by this code.
-    if (!alreadyThere && canonicalJson(present) !== canonicalJson(start))
-      throw new Error("PowerDNS wildcard address records are not the expected ones");
+    if (
+      present.length > 2 ||
+      new Set(present.map((set) => set.type)).size !== present.length ||
+      present.some(
+        (set) => !familyAsRead.some((expected) => canonicalJson(expected) === canonicalJson(set)),
+      )
+    )
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS wildcard address records are not the expected ones",
+      );
+    const familyState =
+      present.length === 0 ? "absent" : present.length === 2 ? "complete" : "partial";
+    if (input.mode === "inspect")
+      return {
+        changed: false,
+        serial_before: before.zone.serial,
+        serial_after: before.zone.serial,
+        wildcard_family_before: present,
+        wildcard_family_after: present,
+        family_state: familyState,
+      };
+    if (
+      alreadyThere &&
+      (input.change === "add") !== input.retained_family &&
+      before.zone.serial <= input.retained_serial
+    )
+      throw new PowerDnsWildcardFamilyRefusal(
+        "PowerDNS changed family has no serial newer than the retained zone",
+      );
     if (!alreadyThere) {
       const patch = await request("PATCH", zonePath, {
         rrsets:
@@ -900,6 +869,7 @@ export function makePowerDnsWildcardFamilyWriter(
       throw new Error("PowerDNS zone serial did not advance");
     return {
       changed: !alreadyThere,
+      family_state: input.change === "add" ? "complete" : "absent",
       serial_before: before.zone.serial,
       serial_after: after.zone.serial,
       wildcard_family_before: present,

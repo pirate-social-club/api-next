@@ -96,6 +96,8 @@ const request = async (change: "add" | "remove") => ({
   expected_ds_records: ds,
   expected_managed_rrset_sha256: await digestOf("wildcard-v1"),
   change,
+  retained_serial: 7,
+  retained_family: false,
 });
 
 describe("PowerDNS wildcard address family writer", () => {
@@ -107,6 +109,7 @@ describe("PowerDNS wildcard address family writer", () => {
     )(await request("add"));
     expect(result).toEqual({
       changed: true,
+      family_state: "complete",
       serial_before: 7,
       serial_after: 8,
       wildcard_family_before: [],
@@ -236,15 +239,17 @@ describe("PowerDNS wildcard address family writer", () => {
     expect(writes(current.calls)).toEqual([]);
   });
 
-  test("refuses, before any write, a zone that does not advance its serial on API changes", async () => {
+  test("refuses, before any write, a zone that serial policy is not DEFAULT or INCREASE", async () => {
     // Such a zone would be changed without the secondary transferring it, and
     // a second run, finding the records present, could not tell.
-    const pdns = provider(earlierZone(), { serialPolicy: "" });
-    await expect(
-      makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),
-    ).rejects.toThrow("does not advance its serial on API changes");
-    expect(pdns.calls).toEqual(["GET newroot."]);
-    expect(pdns.wildcardTypes()).toEqual(["A", "TLSA"]);
+    for (const serialPolicy of ["", "EPOCH", "SOA-EDIT", "unknown"]) {
+      const pdns = provider(earlierZone(), { serialPolicy });
+      await expect(
+        makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),
+      ).rejects.toThrow("serial policy is not DEFAULT or INCREASE");
+      expect(pdns.calls).toEqual(["GET newroot."]);
+      expect(pdns.wildcardTypes()).toEqual(["A", "TLSA"]);
+    }
   });
 
   test("still reports a serial that did not advance after a write", async () => {
@@ -252,5 +257,10 @@ describe("PowerDNS wildcard address family writer", () => {
     await expect(
       makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),
     ).rejects.toThrow("serial did not advance");
+    const beforeRetry = pdns.calls.length;
+    await expect(
+      makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),
+    ).rejects.toThrow("no serial newer than the retained zone");
+    expect(pdns.calls.slice(beforeRetry).every((call) => call.startsWith("GET"))).toBe(true);
   });
 });

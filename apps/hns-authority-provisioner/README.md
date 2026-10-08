@@ -106,47 +106,48 @@ the observation file they are the record of what was changed and from what.
 `status` reads the root's generation, retained zone digest, open renewal jobs
 and remaining validity in a read-only transaction. `write-records` writes the
 two record sets, built by the function that builds them for a new zone, after
-confirming what the provider can show: that the zone's DNSSEC keys are the
-provisioned ones, its managed record sets are intact, its serial advances on
-API changes, and the wildcard AAAA and HTTPS sets are either absent or exactly
-those two. Whether the whole served zone equals the retained one is for
-`observe` to say. It then rectifies and notifies, and reads the zone back. A
-zone already as asked is not written again but is still rectified and
-notified, so a run that stopped between the write and those steps is finished
-by running it again. `observe` writes the observation to a new file, never
-over an existing one, and reports the difference it found, whether the two
-authorities' zone equals the retained one, and any keyset, gateway or chain
-reference that is not the current revision's. `adopt` is run as `dry-run`,
-which only reads, then `rehearse`, which promotes the successor and rolls it
-back, then `commit`. A rehearsal exercises every privilege and constraint the
-commit needs.
+confirming the provisioned DNSSEC keys and managed record sets. The serial
+policy must be `DEFAULT` or `INCREASE`. The wildcard family must be absent,
+complete, or an exact subset of the expected two record sets; foreign values
+are refused. A patch must advance the serial. A retry that finds the requested
+family already present must also find a serial newer than the retained one
+when that family differs from the retained family. It then rectifies,
+notifies, and reads back. Retrying can finish an interrupted patch or notify;
+it cannot turn a frozen serial into success.
 
-An observation is good for adoption only while it still describes the zone.
-It is bound to the digest given, so the file committed is the file that was
-reviewed. It must be less than fifteen minutes old, in a dry run as in a
-commit. And with the root's rows held, `adopt` reads the primary's serial and
-refuses unless it is the serial the observation was taken at, so a file from
-before a later change to the zone cannot be committed. When either refuses,
-observe again.
+`observe` writes a new file, never overwrites one, and reports the zone
+difference and changed keyset, gateway or chain references. `adopt` runs as
+`dry-run`, then `rehearse`, then `commit`. Rehearsal executes promotion and
+forces deferred constraints with `SET CONSTRAINTS ALL IMMEDIATE`, then rolls
+back. It exercises the promotion privileges and deferred pointer foreign keys.
+It cannot prove a later commit's concurrency outcome or acknowledgement.
 
-Adoption and renewal exclude each other through the session and DNS pointer
-rows, which a renewal claim and a renewal preparation both lock;
-`write-records` and the writing modes of `adopt` hold them. `write-records`
-also distinguishes two directions. A change that takes the served zone away
-from the retained one, which is adding the records to a root retained without
-them or removing them from a root retained with them, is refused while a
-renewal job for the root's current generation is queued, leased or delayed,
-and when the root has less than four days of serving validity left, a day
-more than the scheduler's threshold. Between that write and the committed
-adoption the served zone does not equal the retained one, and a renewal that
-ran in the gap would end its job with `evidence_mismatch`.
-`--minimum-validity-seconds` lowers the margin to as little as an hour for an
-operator who knows no renewal can be scheduled. A change that brings the zone
-back towards the retained one is refused for neither reason, and `adopt` is
-not refused by an open job either: a stalled or stopped provisioner must not
-leave a changed zone that can be neither adopted nor withdrawn. A job left
-open at the superseded generation ends as `generation_superseded` when it is
-next claimed or prepared, and the receipt counts it.
+The reviewed file is bound to the supplied digest. Its timestamp comes from
+the database clock, and adoption uses that clock for the fifteen-minute age
+limit in every mode. Under the root's database fence, adoption runs the full
+observer again: both authority zones, DNSSEC keys, chain and gateway must still
+match the reviewed stable bindings. The provider serial must match the SOA in
+the canonical zone bytes. Age and validity are checked again after observation.
+Same-serial content drift is therefore refused too. Observe again after a
+refusal. Database locks do not lock DNS: the operator must hold exclusive
+custody of all authority writers, including key changes, from the first write
+through commit. This is a required execution condition, not an atomic
+transaction spanning DNS and PostgreSQL.
+
+Adoption and renewal serialize through the session and DNS pointer rows.
+`write-records` derives its decision from the retained zone, intended change,
+and validated provider family read under those locks. Starting a departure
+from the retained family is refused with a queued, leased or delayed renewal
+job, or less than four days of validity. `--minimum-validity-seconds` may lower
+the margin to an hour for an operator who knows no renewal can be scheduled.
+Completing an interrupted change or restoring the retained family remains
+possible with an open job or near expiry. Foreign partial values are refused.
+
+Between DNS change and adoption, a renewal can fail with `evidence_mismatch`.
+Adoption therefore admits an open renewal job and counts it in the receipt.
+After adoption, a later claim ends the old job as `generation_superseded`.
+A preparation already waiting on an old serializable snapshot instead fails
+with a serialization error; the job ends only at a later claim.
 
 Once `write-records` has changed the zone, finish. The root must end in a
 committed adoption of what its authorities serve, or its next renewal fails.
@@ -160,20 +161,24 @@ zone whose serial does not advance on API changes. After a commit, read
 `status` again, and confirm that the root's next renewal completes: it now
 requires the adopted zone.
 
-The command refuses a schema this service generation is not admitted to and,
-past the cutover, a bundle whose digest is not the one its deployment manifest
-names, so `HNS_AUTHORITY_DEPLOYMENT_MANIFEST` must name the manifest of the
-bundle being run. It does not run the cutover probe, which belongs to the
-serving process. It uses the service's database connection. Beyond what
-renewal already uses it reads the session, provision job, renewal job, health
-and inventory rows directly and takes no-key row locks on the session and DNS
-pointer tables, which needs UPDATE on those two. A role granted only SELECT on
-the session table cannot take them and fails at the fence before any provider
-write. Where the provisioner's role is narrower than the template's serving
-role, read those privileges back before the first use; `dry-run` proves the
-reads and `rehearse` proves the rest. What it prints about a failure is one of
-its own fixed sentences or an error class and code, never a driver or
-provider message.
+The command checks schema admission and, past cutover, compares the running
+entry file's digest with `HNS_AUTHORITY_DEPLOYMENT_MANIFEST`. That measures the
+entry file against the supplied manifest only. It does not establish that the
+manifest is approved or independently bind source, runtime, external imports,
+or custody. The operator must use the reviewed self-contained release bundle
+and its exact manifest. The command does not run the cutover probe.
+
+The service database role needs renewal privileges plus reads of session,
+provision job, renewal job, health and inventory rows and UPDATE privileges
+for no-key locks on session and DNS pointer tables. A missing lock privilege
+refuses before any provider write. Read back privileges before first use;
+a dry run exercises reads and a rehearsal exercises promotion and constraints.
+
+Failures print typed refusal reasons, an exact allowlist of fixed internal
+messages, or `unclassified` with a bounded error class and code. Arbitrary
+messages are not trusted by prefix. A refusal before a write is distinguished
+from an uncertain provider operation; a lost commit acknowledgement requires
+reading the current generation before any retry.
 
 ## Single-owner readiness cutover execution
 

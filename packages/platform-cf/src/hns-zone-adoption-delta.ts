@@ -165,6 +165,17 @@ function only<A>(items: readonly A[], what: string): A {
 
 const key = (record: CanonicalRecord) => JSON.stringify(record);
 
+/** The serial encoded in the canonical zone, never a separate provider field. */
+export function hnsZoneAdoptionSerialV1(rootLabel: string, bytes: Uint8Array): number {
+  const soa = only(
+    decodeZone(bytes, rootLabel, "observed").filter(
+      (record) => record[0] === rootLabel && record[1] === TYPE_SOA,
+    ),
+    "observed SOA",
+  );
+  return splitSoa(soa[4], "observed").serial;
+}
+
 /** Whether a canonical zone holds a wildcard AAAA or HTTPS record for the root. */
 export function hnsZoneHoldsWildcardAddressFamilyV1(input: {
   readonly root_label: string;

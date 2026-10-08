@@ -43,6 +43,7 @@ import {
   type HnsZoneAdoptionCommandDependenciesV1,
   runHnsZoneAdoptionCommandV1,
 } from "./zone-adoption-command.ts";
+import { describeZoneAdoptionFailure } from "./zone-adoption-errors.ts";
 import { withHnsRootZoneMutation } from "./zone-mutation.ts";
 
 // Handshake publication is block-bound: the legacy bounded 20-attempt
@@ -802,8 +803,8 @@ async function zoneAdoptionDependencies(): Promise<HnsZoneAdoptionCommandDepende
 /**
  * Operator entrypoint for adopting a changed zone. Before it reads or changes
  * anything it refuses a schema this service generation is not admitted to,
- * and, past the cutover, a bundle that is not the one its deployment manifest
- * names, as serving does. It does not run the cutover probe: that probe
+ * and, past cutover, an entry-file digest unlike the supplied manifest's.
+ * Release approval and external dependencies remain operator checks. The probe
  * proves a serving process to the lifecycle path and records its identity,
  * and this command is not a serving process and claims no job.
  */
@@ -997,10 +998,7 @@ if (import.meta.main) {
           JSON.stringify({
             command: "adopt-zone",
             outcome: "failed",
-            detail:
-              error instanceof Error && error.message.startsWith("HNS ")
-                ? error.message
-                : "adoption command failed",
+            ...describeZoneAdoptionFailure(error),
           }),
         );
         process.exitCode = 1;

@@ -4,6 +4,8 @@ import { decodeHnsRootImportReadinessResultV1 } from "../../application/src/name
 import { promoteImportedHnsInventorySuccessor } from "./hns-imported-inventory-successor.ts";
 import {
   type HnsZoneAdoptionDeltaKind,
+  hnsZoneAdoptionSerialV1,
+  hnsZoneHoldsWildcardAddressFamilyV1,
   requireHnsZoneAdoptionDeltaV1,
 } from "./hns-zone-adoption-delta.ts";
 
@@ -19,26 +21,23 @@ import {
  * against the same rows. It is not a job: an operator runs it between
  * renewals.
  *
- * A renewal's observation is at most one lease old. An adoption has no lease,
- * so it bounds the observation's age itself and, with the rows locked, asks
- * the primary authority for its current serial and refuses unless that is the
- * serial the observation was taken at. A file observed before a later change
- * to the zone therefore cannot be committed.
+ * Adoption bounds the reviewed observation's age on the database clock, then
+ * runs the full observer again under the database fence. It compares the
+ * canonical zone, serial, keyset, chain and gateway bindings. DNS has no
+ * transaction shared with PostgreSQL: exclusive authority-writer custody is
+ * required until commit even after that check.
  *
- * Adoption and renewal exclude each other through the session and DNS
- * pointer rows, which a renewal claim and a renewal preparation both lock. A
- * renewal job left open at the generation an adoption supersedes ends as
- * `generation_superseded` when it is next claimed or prepared, so an open job
- * does not stop an adoption; if it did, a stalled provisioner could leave a
- * changed zone that could neither be adopted nor withdrawn.
+ * The session and DNS pointer locks serialize adoption with renewal. An open
+ * job does not block adoption; a later claim ends it as generation_superseded.
+ * A preparation already waiting on the old snapshot instead aborts with a
+ * serialization error, leaving termination to a later claim.
  *
- * The zone itself is changed first, at the authorities, inside
- * `withHnsRootZoneAdoptionFence`. Between that change and a committed adoption
- * the served zone no longer equals the retained one, so a renewal that ran in
- * the gap would end its job. The fence therefore refuses a change that takes
- * the zone away from the retained one while a renewal job is open or the root
- * is close enough to expiry for one to be scheduled. A change that brings the
- * zone back towards the retained one is never refused for those reasons.
+ * The zone changes first, under withHnsRootZoneAdoptionFence. The fence refuses
+ * starting a departure from the retained wildcard family while a renewal job
+ * is open or expiry is near. It permits completion of an interrupted change
+ * and restoration of the retained family, so a queued job cannot strand a
+ * partly changed zone. The operator must finish adoption or restoration.
+
  */
 
 /** How old an observation may be when it is adopted, dry runs included. */
@@ -296,23 +295,24 @@ export async function readHnsRootZoneAdoptionState(
 }
 
 /**
- * Runs a change to the root's served zone while no renewal of that root can
- * be claimed or prepared. The transaction writes nothing; it exists to hold
- * the rows. `departs` says, from the state read under the lock, whether the
- * change takes the zone away from the retained one. A departing change is
- * refused while a renewal job for the current generation is open, and when
- * the root's serving validity leaves less than the given margin before a
- * renewal could be scheduled, because that renewal would end its job. A
- * change that returns the zone towards the retained one is refused for
- * neither. The signal aborts when the database connection, and so the fence,
- * is lost.
+ * Holds the session and DNS pointer rows while the provider change runs.
+ * Policy is derived here from the retained bytes, intended change and provider
+ * family facts read under the lock. Starting a departure is refused with an
+ * open job or insufficient validity; recovery remains possible. The signal
+ * aborts on loss of the database connection and thus the fence.
+
  */
 export async function withHnsRootZoneAdoptionFence<A>(
   client: Client,
   input: {
     readonly root_label: string;
     readonly minimum_serving_validity_seconds: number;
-    readonly departs: (state: HnsRootZoneAdoptionState) => boolean;
+    readonly change: "add" | "remove";
+    /** Validated provider state read under the fence; this supplies facts, not policy. */
+    readonly read_family: (
+      state: HnsRootZoneAdoptionState,
+      signal: AbortSignal,
+    ) => Promise<"absent" | "partial" | "complete">;
   },
   change: (state: HnsRootZoneAdoptionState, signal: AbortSignal) => Promise<A>,
 ): Promise<A> {
@@ -330,7 +330,21 @@ export async function withHnsRootZoneAdoptionFence<A>(
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout TO '10s'");
     const state = await selectState(client, input.root_label, null, true);
-    if (input.departs(state)) {
+    const retained = hnsZoneHoldsWildcardAddressFamilyV1({
+      root_label: state.root_label,
+      zone_bytes: state.retained_zone_bytes,
+    });
+    const present = await input.read_family(state, controller.signal);
+    if (
+      !["absent", "partial", "complete"].includes(present) ||
+      !["add", "remove"].includes(input.change)
+    )
+      refuse("invalid wildcard family state");
+    // Only starting a departure is barred. Completing an interrupted change,
+    // or restoring the retained shape, remains possible with a queued job.
+    const startsDeparture =
+      (input.change === "add") !== retained && present === (retained ? "complete" : "absent");
+    if (startsDeparture) {
       if (state.open_renewal_jobs !== 0)
         refuse("a renewal job for the root's current generation is open");
       if (
@@ -362,12 +376,8 @@ export async function adoptHnsRootZone(
     /** The difference the operator intends; any other is refused. */
     readonly expected_delta: HnsZoneAdoptionDeltaKind;
     readonly mode: HnsZoneAdoptionMode;
-    /**
-     * The primary authority's zone serial now, read while the root's rows are
-     * held. Adoption refuses unless it is the serial the observation was
-     * taken at.
-     */
-    readonly served_zone_serial: (state: HnsRootZoneAdoptionState) => Promise<number>;
+    /** Fresh full observer result, read under the same database fence. */
+    readonly observe_current: (state: HnsRootZoneAdoptionState) => Promise<Uint8Array>;
   },
 ): Promise<HnsZoneAdoptionReceipt> {
   if (!["dry-run", "rehearse", "commit"].includes(input.mode)) refuse("invalid adoption mode");
@@ -383,6 +393,12 @@ export async function adoptHnsRootZone(
   const result = decoded.result;
   if (sha256(decoded.managed_zone_bytes) !== result.observed_zone_bytes_sha256)
     refuse("the observation's zone does not match its own digest");
+
+  if (
+    hnsZoneAdoptionSerialV1(result.root_label, decoded.managed_zone_bytes) !==
+    result.powerdns_zone_serial
+  )
+    refuse("the observation serial disagrees with its zone bytes");
 
   const writing = input.mode !== "dry-run";
   await client.query(
@@ -429,7 +445,7 @@ export async function adoptHnsRootZone(
     const observed = Date.parse(result.observed_at);
     const remaining = Math.floor((Date.parse(result.valid_until) - now) / 1000);
     if (
-      !(observed <= now + 60_000) ||
+      !(observed <= now) ||
       !(now - observed <= MAXIMUM_OBSERVATION_AGE_SECONDS * 1_000) ||
       !(remaining >= 1 && remaining <= 604_800)
     )
@@ -441,10 +457,49 @@ export async function adoptHnsRootZone(
     });
     if (delta !== input.expected_delta)
       refuse(`the zone difference is ${delta}, not the one intended`);
-    // Last, and with the rows held when writing: the zone has not been
-    // changed again since it was observed.
-    if ((await input.served_zone_serial(state)) !== result.powerdns_zone_serial)
+    // DNS and its keys have no transaction shared with PostgreSQL. The
+    // operator must retain exclusive authority-writer custody through commit.
+    // Reobserve both authorities, keys, chain and gateway here; a serial alone
+    // cannot identify content. The port uses state.database_time as its clock.
+    const fresh = await decodeHnsRootImportReadinessResultV1(await input.observe_current(state));
+    const stableFields = [
+      "root_label",
+      "root_import_session_id",
+      "namespace_session_id",
+      "ownership_result_sha256",
+      "publish_plan_sha256",
+      "provision_result_sha256",
+      "observed_zone_bytes_sha256",
+      "powerdns_zone_serial",
+      "dnssec_keyset_reference",
+      "dnssec_keyset_version",
+      "gateway_deployment_reference",
+      "gateway_certificate_spki_sha256",
+      "chain_resource_sha256",
+      "delegation_matches",
+      "ds_authenticates_zone",
+      "retained_zone_digest_matches",
+      "gateway_healthy",
+    ] as const;
+    if (
+      stableFields.some((field) => fresh.result[field] !== result[field]) ||
+      sha256(fresh.managed_zone_bytes) !== result.observed_zone_bytes_sha256 ||
+      hnsZoneAdoptionSerialV1(result.root_label, fresh.managed_zone_bytes) !==
+        fresh.result.powerdns_zone_serial ||
+      fresh.result.observed_at !== state.database_time
+    )
       refuse("the authorities no longer serve the zone that was observed; observe the root again");
+    const finished = await client.query<{ database_time: Date }>(
+      "SELECT clock_timestamp() AS database_time",
+    );
+    const checkedAt = finished.rows[0]?.database_time.getTime();
+    if (
+      checkedAt === undefined ||
+      checkedAt < now ||
+      checkedAt - observed > MAXIMUM_OBSERVATION_AGE_SECONDS * 1_000 ||
+      Date.parse(result.valid_until) <= checkedAt
+    )
+      refuse("the observation is stale; observe the root again");
 
     const receipt = (committed: boolean): HnsZoneAdoptionReceipt => ({
       mode: input.mode,
@@ -489,6 +544,8 @@ export async function adoptHnsRootZone(
       after.rows[0]?.zone_bytes_digest !== result.observed_zone_bytes_sha256
     )
       refuse("the successor did not become the current generation with the observed zone");
+    // Exercise deferred pointer foreign keys before either rollback or commit.
+    await client.query("SET CONSTRAINTS ALL IMMEDIATE");
     if (input.mode === "rehearse") {
       await client.query("ROLLBACK");
       transactionOpen = false;

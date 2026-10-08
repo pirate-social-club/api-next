@@ -10,7 +10,10 @@ import {
   withHnsRootZoneAdoptionFence,
 } from "./hns-zone-adoption.ts";
 import type { HnsZoneAdoptionDeltaKind } from "./hns-zone-adoption-delta.ts";
-import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
+import {
+  hnsZoneAdoptionFixtureZone,
+  redateHnsZoneAdoptionFixture,
+} from "./hns-zone-adoption-fixture.ts";
 
 type Artifact = Readonly<{ result_bytes: Uint8Array; result_sha256: string }>;
 type Observed = Readonly<{ zone?: Uint8Array; serial?: number; observed_seconds_ago?: number }>;
@@ -19,8 +22,8 @@ type Observed = Readonly<{ zone?: Uint8Array; serial?: number; observed_seconds_
  * Adoption against an activated, already renewed root whose retained zone is
  * the fixture's canonical zone at serial 7 without the wildcard address
  * records. Every case runs the real difference rule. The observations are the
- * fixture's readiness results carrying a later zone; the primary's serial,
- * which adoption reads through a port, is a variable here.
+ * fixture's readiness results carrying a later zone. The live observer port
+ * supplies a separately encoded result, with the database observation clock.
  */
 export async function verifyHnsZoneAdoption(
   admin: Client,
@@ -66,12 +69,21 @@ export async function verifyHnsZoneAdoption(
     expected_result_sha256: observed.result_sha256,
     expected_delta: delta,
     mode,
-    served_zone_serial: async () => served,
+    observe_current: async (state: { database_time: string }) => {
+      const fresh = await artifact({
+        zone: zone(served, served < 9 || served >= 12),
+        serial: served,
+      });
+      return (await redateHnsZoneAdoptionFixture(fresh.result_bytes, state.database_time))
+        .result_bytes;
+    },
   });
+  let retainedFamily = false;
   const fence = (departs: boolean, minimum = 3_600) => ({
     root_label: "newroot",
     minimum_serving_validity_seconds: minimum,
-    departs: () => departs,
+    change: departs !== retainedFamily ? ("add" as const) : ("remove" as const),
+    read_family: async () => (retainedFamily ? ("complete" as const) : ("absent" as const)),
   });
   const operator = new Client({ connectionString: connection });
   await operator.connect();
@@ -167,6 +179,9 @@ export async function verifyHnsZoneAdoption(
       ["dnssec_keyset_version", "f".repeat(64), "not the current revision's"],
       ["chain_resource_sha256", "f".repeat(64), "not the current revision's"],
       ["ownership_result_sha256", "f".repeat(64), "not bound to the root's session"],
+      ["namespace_session_id", "namespace-other", "not bound to the root's session"],
+      ["publish_plan_sha256", "f".repeat(64), "not bound to the root's session"],
+      ["dnssec_keyset_reference", "pdns-keyset:other", "not the current revision's"],
       ["provision_result_sha256", "f".repeat(64), "not bound to the root's session"],
     ] as const) {
       await expect(
@@ -177,15 +192,29 @@ export async function verifyHnsZoneAdoption(
 
     // An observation older than adoption admits, in a dry run as in a commit,
     // and a zone whose serial at the primary moved after it was observed.
-    await expect(
-      adoptHnsRootZone(
-        operator,
-        request(
-          "dry-run",
-          await artifact({ zone: zone(8, true), serial: 8, observed_seconds_ago: 1_000 }),
+    for (const mode of ["dry-run", "rehearse", "commit"] as const) {
+      await expect(
+        adoptHnsRootZone(
+          operator,
+          request(
+            mode,
+            await artifact({ zone: zone(8, true), serial: 8, observed_seconds_ago: 1_000 }),
+          ),
         ),
-      ),
-    ).rejects.toThrow("the observation is stale");
+      ).rejects.toThrow("the observation is stale");
+    }
+    for (const mode of ["dry-run", "rehearse", "commit"] as const) {
+      await expect(
+        adoptHnsRootZone(operator, {
+          ...request(mode),
+          observe_current: async (state) => {
+            const fresh = await artifact({ zone: elsewhere, serial: 8 });
+            return (await redateHnsZoneAdoptionFixture(fresh.result_bytes, state.database_time))
+              .result_bytes;
+          },
+        }),
+      ).rejects.toThrow("no longer serve the zone that was observed");
+    }
     served = 9;
     for (const mode of ["dry-run", "rehearse", "commit"] as const) {
       await expect(adoptHnsRootZone(operator, request(mode))).rejects.toThrow(
@@ -209,10 +238,56 @@ export async function verifyHnsZoneAdoption(
     expect(await pointers()).toEqual(before);
     expect(await retainedDigest()).toBe(priorDigest);
 
+    // Probe the adoption itself, while its live observation is under the locks.
+    expect(
+      (
+        await adoptHnsRootZone(operator, {
+          ...request("rehearse"),
+          observe_current: async (state) => {
+            for (const [table, column] of [
+              ["hns_dns_zone_activation_current", "canonical_root"],
+              ["hns_root_import_sessions", "root_label"],
+            ] as const) {
+              await expect(probe(table, column, "UPDATE")).rejects.toMatchObject({ code: "55P03" });
+              await expect(probe(table, column, "SHARE")).rejects.toMatchObject({ code: "55P03" });
+            }
+            await probe("hns_root_import_sessions", "root_label", "KEY SHARE");
+            return request("rehearse").observe_current(state);
+          },
+        })
+      ).committed,
+    ).toBe(false);
+    await probe("hns_dns_zone_activation_current", "canonical_root", "UPDATE");
+
+    // A deferred pointer violation must fail rehearsal too, before rollback.
+    const invalidPointer = new Proxy(operator, {
+      get(target, key) {
+        if (key === "query")
+          return async (text: string, ...args: unknown[]) => {
+            if (text === "SET CONSTRAINTS ALL IMMEDIATE")
+              await target.query(
+                "UPDATE hns_dns_zone_activation_current SET current_generation = current_generation + 1, updated_at = clock_timestamp()",
+              );
+            return (target.query as (...parameters: unknown[]) => unknown).call(
+              target,
+              text,
+              ...args,
+            );
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    await expect(adoptHnsRootZone(invalidPointer, request("rehearse"))).rejects.toMatchObject({
+      code: "23503",
+    });
+    expect(await pointers()).toEqual(before);
+
     // Commit: DNS, app host and sale advance together, a new inventory exists,
     // the retained zone is the observed one, the app host still resolves, and
     // the successor's operations carry adoption's own identifiers.
     expect((await adoptHnsRootZone(operator, request("commit"))).committed).toBe(true);
+    retainedFamily = true;
     const adopted = await pointers();
     expect(adopted).toEqual([
       {
@@ -352,6 +427,7 @@ export async function verifyHnsZoneAdoption(
     expect(
       await adoptHnsRootZone(operator, request("commit", removed, "wildcard_family_removed")),
     ).toMatchObject({ committed: true, next_generation: generation + 3 });
+    retainedFamily = false;
     expect(await retainedDigest()).toBe(sha256(zone(9, false)));
 
     // A change made and undone before it was adopted leaves a later serial
@@ -398,6 +474,32 @@ export async function verifyHnsZoneAdoption(
         )
       ).rows,
     ).toEqual([{ state: "terminal", failure_code: "generation_superseded" }]);
+    served = 13;
+    const final = await artifact({ zone: zone(13, true), serial: 13 });
+    const lostAck = new Proxy(operator, {
+      get(target, key) {
+        if (key === "query")
+          return async (text: string, ...args: unknown[]) => {
+            const value = await (target.query as (...parameters: unknown[]) => unknown).call(
+              target,
+              text,
+              ...args,
+            );
+            if (text === "COMMIT")
+              throw Object.assign(new Error("lost acknowledgement"), { code: "ECONNRESET" });
+            return value;
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    await expect(
+      adoptHnsRootZone(lostAck, request("commit", final, "serial_only")),
+    ).rejects.toThrow("commit outcome is unknown");
+    expect((await readHnsRootZoneAdoptionState(bystander, "newroot")).current_generation).toBe(
+      generation + 6,
+    );
+    expect(await retainedDigest()).toBe(sha256(zone(13, true)));
   } finally {
     await operator.end();
     await bystander.end();

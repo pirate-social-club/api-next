@@ -1,3 +1,25 @@
+import { createHash } from "node:crypto";
+import {
+  decodeHnsRootImportReadinessResultV1,
+  encodeHnsAuthorityInventory,
+  encodeHnsRootImportReadinessResultV1,
+} from "@pirate/application/namespace-ownership";
+
+/** Change the fixture clock without breaking its inventory binding. */
+export async function redateHnsZoneAdoptionFixture(bytes: Uint8Array, observedAt: string) {
+  const decoded = await decodeHnsRootImportReadinessResultV1(bytes);
+  const inventory = await encodeHnsAuthorityInventory({
+    ...decoded.authority_inventory,
+    published_at: observedAt,
+  });
+  return encodeHnsRootImportReadinessResultV1({
+    ...decoded.result,
+    observed_at: observedAt,
+    authority_inventory_bytes_hex: Buffer.from(inventory).toString("hex"),
+    authority_inventory_digest: createHash("sha256").update(inventory).digest("hex"),
+  });
+}
+
 /**
  * A small canonical authority zone for tests of zone adoption: a root with
  * its SOA, an app host and a wildcard owner, with or without the two wildcard

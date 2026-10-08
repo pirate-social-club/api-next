@@ -14,6 +14,7 @@ import {
   HNS_ZONE_ADOPTION_DELTA_KINDS,
   type HnsZoneAdoptionDeltaKind,
   HnsZoneAdoptionDeltaRefusal,
+  hnsZoneAdoptionSerialV1,
   hnsZoneHoldsWildcardAddressFamilyV1,
   requireHnsZoneAdoptionDeltaV1,
 } from "../../../packages/platform-cf/src/hns-zone-adoption-delta.ts";
@@ -30,6 +31,7 @@ import {
   type PowerDnsFetch,
   type PowerDnsRootProvisionConfig,
 } from "./powerdns.ts";
+import { describeZoneAdoptionFailure, zoneAdoptionRefusalReason } from "./zone-adoption-errors.ts";
 
 /**
  * The operator command that brings an activated root's zone to a changed
@@ -47,14 +49,14 @@ import {
  * - `write-records` adds or removes the two wildcard record sets at the
  *   primary authority, inside the adoption fence, after confirming that the
  *   zone's keys and managed record sets are the provisioned ones and that
- *   those two sets are absent or exactly the expected two.
+ *   those sets are absent, complete, or an exact subset of the expected two.
  * - `observe` takes the same observation a renewal takes, with the same
  *   observer, and writes its result to a new file. It reports how the served
  *   zone differs from the retained one. It changes nothing in the database.
  * - `adopt` promotes the successor from that file as a dry run, a rehearsal
  *   that is rolled back, or a commit. It refuses any difference other than
  *   the one named, an observation more than fifteen minutes old, and a zone
- *   whose serial at the primary is no longer the one observed.
+ *   whose full live observation no longer matches the reviewed zone and bindings.
  *
  * Every step prints one JSON line. It reuses the serving path's
  * configuration, observer and successor promotion, and adds no second
@@ -202,26 +204,6 @@ export type HnsZoneAdoptionCommandDependenciesV1 = Readonly<{
 /** Exit codes: 0 done, 1 failed or misused, 2 refused, 3 commit outcome unknown. */
 export type HnsZoneAdoptionExitCode = 0 | 1 | 2 | 3;
 
-/**
- * What may be printed about a failure: the fixed sentences this code and the
- * provider adapters raise, which all begin with the subsystem's name and
- * hold nothing but words, and otherwise only the error's class and its short
- * machine code, such as a SQLSTATE or a system error name. Driver and
- * runtime messages, which can carry a host, a path or provider output, are
- * never printed.
- */
-function describeFailure(error: unknown): Readonly<Record<string, string>> {
-  if (!(error instanceof Error)) return { reason: "unclassified" };
-  const code = "code" in error ? error.code : undefined;
-  return {
-    reason: /^(?:HNS|PowerDNS) [A-Za-z0-9 ,;'-]{1,180}$/u.test(error.message)
-      ? error.message
-      : "unclassified",
-    ...(/^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name) ? { error_name: error.name } : {}),
-    ...(typeof code === "string" && /^[0-9A-Z_]{3,32}$/u.test(code) ? { code } : {}),
-  };
-}
-
 async function withClient<A>(
   deps: HnsZoneAdoptionCommandDependenciesV1,
   use: (client: Client) => Promise<A>,
@@ -253,7 +235,7 @@ function traced<A extends unknown[], R>(
         port: name,
         outcome: "threw",
         ms: Date.now() - started,
-        ...describeFailure(error),
+        ...describeZoneAdoptionFailure(error),
       });
       throw error;
     }
@@ -272,24 +254,38 @@ function retainedZoneHoldsFamily(state: HnsRootZoneAdoptionState): boolean | nul
   }
 }
 
-/** The primary authority's serial for the root's zone, read as the serving path reads it. */
-async function servedZoneSerial(
+/** The same full observation used for the file and the final adoption check.
+ * Its time originates in the database, not this host's wall clock.
+ */
+async function observeCurrent(
   state: HnsRootZoneAdoptionState,
   deps: HnsZoneAdoptionCommandDependenciesV1,
-): Promise<number> {
-  if (state.challenge_txt_value === null || state.provision_result_bytes === null)
-    throw new HnsZoneAdoptionRefusal("the root's session holds no provision result");
-  const provision = decodeHnsAuthorityProvisionResultV1(
-    state.provision_result_bytes,
-    deps.observation_config.nameservers,
-  );
-  return (
-    await deps.observe.inspect_zone({
-      root_label: state.root_label,
-      challenge_txt_value: state.challenge_txt_value,
-      expected_managed_rrset_sha256: provision.managed_rrset_sha256,
-    })
-  ).serial;
+  steps: Step[] = [],
+) {
+  if (state.publish_plan_bytes === null || state.provision_result_bytes === null)
+    throw new HnsZoneAdoptionRefusal("the root's session holds no plan or provision result");
+  return observeHnsRootReadinessV1({
+    observation_attempt: {
+      job_id: `hns-zone-adoption:${state.root_import_session_id}`,
+      executor_id: deps.executor_id,
+      lease_fence: 1,
+    },
+    operation_kind: "renew_health_v1",
+    request: decodeHnsRootReadinessObservationRequestV1(
+      hnsRootZoneAdoptionObservationRequestBytes(state),
+    ),
+    publish_plan_bytes: state.publish_plan_bytes,
+    provision_result_bytes: state.provision_result_bytes,
+    ports: {
+      observe_current_resource: traced(steps, "chain", deps.observe.observe_current_resource),
+      inspect_zone: traced(steps, "inspect", deps.observe.inspect_zone),
+      observe_live: traced(steps, "live", deps.observe.observe_live),
+      reconcile_zone: async () => {
+        throw new Error("reconciliation is not part of an adoption");
+      },
+    },
+    config: { ...deps.observation_config, now: () => Date.parse(state.database_time) },
+  });
 }
 
 async function status(
@@ -321,51 +317,57 @@ async function writeRecords(
   command: Extract<HnsZoneAdoptionCommandV1, { step: "write-records" }>,
   deps: HnsZoneAdoptionCommandDependenciesV1,
 ): Promise<Step> {
-  // Adding to a zone retained without the records, or removing from one
-  // retained with them, takes the served zone away from the retained one.
-  // The other two cases bring it back, and must stay possible whatever the
-  // state of the root's renewal.
-  const departs = (state: HnsRootZoneAdoptionState) => {
-    const held = retainedZoneHoldsFamily(state);
-    if (held === null) throw new HnsZoneAdoptionRefusal("the retained zone cannot be read");
-    return (command.change === "add") !== held;
+  const write = async (state: HnsRootZoneAdoptionState, signal: AbortSignal, inspect: boolean) => {
+    if (state.challenge_txt_value === null || state.provision_result_bytes === null)
+      throw new HnsZoneAdoptionRefusal("the root's session holds no provision result");
+    const provision = decodeHnsAuthorityProvisionResultV1(
+      state.provision_result_bytes,
+      deps.observation_config.nameservers,
+    );
+    const fenced: PowerDnsFetch = (url, init) =>
+      deps.fetch(url, {
+        ...init,
+        signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+      });
+    return makePowerDnsWildcardFamilyWriter(
+      deps.powerdns,
+      fenced,
+    )({
+      root_label: state.root_label,
+      challenge_txt_value: state.challenge_txt_value,
+      expected_ds_records: provision.ds_records,
+      expected_managed_rrset_sha256: provision.managed_rrset_sha256,
+      change: command.change,
+      ...(inspect ? { mode: "inspect" as const } : {}),
+      retained_serial: hnsZoneAdoptionSerialV1(state.root_label, state.retained_zone_bytes),
+      retained_family: hnsZoneHoldsWildcardAddressFamilyV1({
+        root_label: state.root_label,
+        zone_bytes: state.retained_zone_bytes,
+      }),
+    });
   };
   return withClient(deps, (client) =>
-    withHnsRootZoneAdoptionFence(client, { ...command, departs }, async (state, signal) => {
-      if (state.challenge_txt_value === null || state.provision_result_bytes === null)
-        throw new HnsZoneAdoptionRefusal("the root's session holds no provision result");
-      const provision = decodeHnsAuthorityProvisionResultV1(
-        state.provision_result_bytes,
-        deps.observation_config.nameservers,
-      );
-      // Losing the fence stops the provider exchange that is under way.
-      const fenced: PowerDnsFetch = (url, init) =>
-        deps.fetch(url, {
-          ...init,
-          signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
-        });
-      const written = await makePowerDnsWildcardFamilyWriter(
-        deps.powerdns,
-        fenced,
-      )({
-        root_label: state.root_label,
-        challenge_txt_value: state.challenge_txt_value,
-        expected_ds_records: provision.ds_records,
-        expected_managed_rrset_sha256: provision.managed_rrset_sha256,
-        change: command.change,
-      });
-      return {
-        outcome: written.changed ? "written" : "already_as_asked",
-        change: command.change,
-        departs_from_retained_zone: departs(state),
-        open_renewal_jobs: state.open_renewal_jobs,
-        root_label: state.root_label,
-        current_generation: state.current_generation,
-        retained_zone_bytes_sha256: state.retained_zone_bytes_sha256,
-        serving_valid_for_seconds: state.serving_valid_for_seconds,
-        ...written,
-      };
-    }),
+    withHnsRootZoneAdoptionFence(
+      client,
+      {
+        ...command,
+        read_family: async (state, signal) => (await write(state, signal, true)).family_state,
+      },
+      async (state, signal) => {
+        const written = await write(state, signal, false);
+        return {
+          outcome: written.changed ? "written" : "already_as_asked",
+          change: command.change,
+          departs_from_retained_zone: (command.change === "add") !== retainedZoneHoldsFamily(state),
+          open_renewal_jobs: state.open_renewal_jobs,
+          root_label: state.root_label,
+          current_generation: state.current_generation,
+          retained_zone_bytes_sha256: state.retained_zone_bytes_sha256,
+          serving_valid_for_seconds: state.serving_valid_for_seconds,
+          ...written,
+        };
+      },
+    ),
   );
 }
 
@@ -381,28 +383,7 @@ async function observe(
   const steps: Step[] = [];
   let artifact: Awaited<ReturnType<typeof observeHnsRootReadinessV1>>;
   try {
-    artifact = await observeHnsRootReadinessV1({
-      observation_attempt: {
-        job_id: `hns-zone-adoption:${state.root_import_session_id}`,
-        executor_id: deps.executor_id,
-        lease_fence: 1,
-      },
-      operation_kind: "renew_health_v1",
-      request: decodeHnsRootReadinessObservationRequestV1(
-        hnsRootZoneAdoptionObservationRequestBytes(state),
-      ),
-      publish_plan_bytes: state.publish_plan_bytes,
-      provision_result_bytes: state.provision_result_bytes,
-      ports: {
-        observe_current_resource: traced(steps, "chain", deps.observe.observe_current_resource),
-        inspect_zone: traced(steps, "inspect", deps.observe.inspect_zone),
-        observe_live: traced(steps, "live", deps.observe.observe_live),
-        reconcile_zone: async () => {
-          throw new Error("reconciliation is not part of an adoption");
-        },
-      },
-      config: deps.observation_config,
-    });
+    artifact = await observeCurrent(state, deps, steps);
   } catch (error) {
     if (!(error instanceof HnsRootReadinessObservationError)) throw error;
     return {
@@ -476,7 +457,7 @@ async function adopt(
       expected_result_sha256: command.expected_result_sha256,
       expected_delta: command.expected_delta,
       mode: command.mode,
-      served_zone_serial: (state) => servedZoneSerial(state, deps),
+      observe_current: async (state) => (await observeCurrent(state, deps)).result_bytes,
     }),
   );
   return {
@@ -519,14 +500,9 @@ export async function runHnsZoneAdoptionCommandV1(
     }
     return 0;
   } catch (error) {
-    if (
-      error instanceof HnsZoneAdoptionRefusal ||
-      error instanceof HnsZoneAdoptionDeltaRefusal ||
-      // The shared promotion's own refusals: the root changed under it, or
-      // the observation aged past its bound.
-      (error instanceof Error && error.message.startsWith("HNS successor "))
-    ) {
-      print({ outcome: "refused", reason: error.message });
+    const refusal = zoneAdoptionRefusalReason(error);
+    if (refusal !== null) {
+      print({ outcome: "refused", reason: refusal });
       return 2;
     }
     if (error instanceof HnsZoneAdoptionCommitUnknown) {
@@ -538,9 +514,9 @@ export async function runHnsZoneAdoptionCommandV1(
     }
     print({
       outcome: "failed",
-      ...describeFailure(error),
+      ...describeZoneAdoptionFailure(error),
       // A record write that failed part way may have changed the zone. The
-      // same step run again finishes it, and the observe step reads it.
+      // observer reads its state; retry is subject to the writer's guards.
       ...(command.step === "write-records" ? { zone_state: "unknown" } : {}),
     });
     return 1;
