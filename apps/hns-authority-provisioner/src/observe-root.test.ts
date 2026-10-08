@@ -326,6 +326,58 @@ describe("HNS root readiness observation", () => {
     await expect(renew(withoutType(state.plan.replacement_records, "DS"))).rejects.toThrow();
   });
 
+  test("renewal follows a rotated gateway reference; first readiness still requires the provisioned one", async () => {
+    const state = await fixture();
+    // A reviewed authority successor has moved this root to another gateway
+    // deployment, and the provisioner is configured with that one. The
+    // provision result still records the reference the root was created with.
+    const rotated = {
+      ...state.zone,
+      created: false,
+      gateway_deployment_reference: "gateway-deployment-v2",
+    };
+    const observe = (
+      operation_kind: "observe_root_v1" | "renew_health_v1",
+      zone: typeof state.zone,
+    ) =>
+      observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "rotated-gateway", executor_id: "executor", lease_fence: 1 },
+        operation_kind,
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
+          reconcile_zone: async () => {},
+          inspect_zone: async () => zone,
+          observe_live: async () => state.live,
+        },
+        config: {
+          environment: "test",
+          valid_for_seconds: 604_800,
+          now: () => Date.parse("2026-09-05T06:00:00.000Z"),
+        },
+      });
+
+    // Renewal proceeds and reports the configured reference, which the
+    // renewal preparation in the database then holds to the current revision.
+    const renewed = await decodeHnsRootImportReadinessResultV1(
+      (await observe("renew_health_v1", rotated)).result_bytes,
+    );
+    expect(renewed.result.gateway_deployment_reference).toBe("gateway-deployment-v2");
+
+    // A root that is not activated yet has no revision to hold it to.
+    await expect(observe("observe_root_v1", rotated)).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_mismatch"),
+    );
+
+    // The allowance is the reference alone. A different certificate key is
+    // still a mismatch in renewal.
+    await expect(
+      observe("renew_health_v1", { ...rotated, gateway_certificate_spki_sha256: "f".repeat(64) }),
+    ).rejects.toEqual(new HnsRootReadinessObservationError("authority_mismatch"));
+  });
+
   test("reports owner-update pending without inspecting authority", async () => {
     const state = await fixture();
     let inspectedZone = false;

@@ -483,7 +483,15 @@ export async function observeHnsRootReadinessV1(input: {
     canonicalJson(zone.ds_records) !== canonicalJson(provision.ds_records) ||
     zone.managed_rrset_sha256 !== provision.managed_rrset_sha256 ||
     zone.shared_tlsa_profile_sha256 !== provision.shared_tlsa_profile_sha256 ||
-    zone.gateway_deployment_reference !== provision.gateway_deployment_reference ||
+    // A reviewed authority successor replaces a root's gateway deployment
+    // reference, after which the current one no longer equals the one the
+    // provision result recorded. Renewal leaves the reference to the renewal
+    // preparation in the database, which accepts only the current revision's
+    // and ends the job otherwise; this result carries the configured one.
+    // First readiness has no revision yet and still requires the provisioned
+    // reference.
+    (input.operation_kind !== "renew_health_v1" &&
+      zone.gateway_deployment_reference !== provision.gateway_deployment_reference) ||
     zone.gateway_certificate_spki_sha256 !== provision.gateway_certificate_spki_sha256
   ) {
     throw new HnsRootReadinessObservationError("authority_mismatch");
