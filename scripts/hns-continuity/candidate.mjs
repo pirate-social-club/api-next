@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import * as host from "../../packages/application/src/hns-host-persistence.ts";
 import * as inv from "../../packages/application/src/namespace-ownership/hns-authority-inventory.ts";
 import * as control from "../../packages/application/src/namespace-ownership/hns-control-observer.ts";
+import { decodeStrictHnsJsonBytes } from "../../packages/application/src/namespace-ownership/hns-evidence.ts";
+import { validateHnsRootResourceRecordsV1 } from "../../packages/application/src/namespace-ownership/hns-root-import-plan.ts";
+import { canonicalJson } from "../../packages/domain/src/canonical-json.ts";
 import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "../../packages/hns-dns-runtime/src/dns-axfr-zone.ts";
 import { requireHnsReviewedGatewayRotation } from "../../packages/platform-cf/src/hns-gateway-rotation.ts";
 import { ContinuityRefusal } from "./refusal.mjs";
@@ -125,6 +128,20 @@ export async function buildContinuityCandidate({
     ),
   );
   const evidenceReference = `hns-detached-observation:continuity-${ceremonyId}`;
+  // Renewal binds the current revision to the complete chain resource. Keep
+  // that persistence identity separate from the detached ceremony evidence.
+  // Derive it from the response carried by the verified transcript, and refuse
+  // a capture whose parsed convenience result disagrees with those raw bytes.
+  const rootWire = chain.rows.find((row) => row.ref === `getnameresource:${root}`).raw;
+  // Match the maintained transcript decoder: remove only HSD's final LF.
+  const rootResponse = decodeStrictHnsJsonBytes(
+    bytes(rootWire.endsWith("\n") ? rootWire.slice(0, -1) : rootWire),
+    8 * 1024 * 1024,
+  );
+  if (canonicalJson(rootResponse.result) !== canonicalJson(get(`getnameresource:${root}`)))
+    throw new ContinuityRefusal("Captured chain result disagrees with its raw response");
+  const fullChainRecords = validateHnsRootResourceRecordsV1(rootResponse.result.records);
+  const persistenceReference = `hns-root-chain:${sha(bytes(canonicalJson(fullChainRecords)))}`;
   const transcript = chain.rows.map((r) => ({
     exchange_kind: "hns_rpc",
     vantage_reference: "hsd-vantage:primary-mainnet",
@@ -220,7 +237,7 @@ export async function buildContinuityCandidate({
         rotation?.gateway_reference ?? state.dns.gateway_deployment_reference,
         state.dns.gateway_certificate_spki_sha256,
       ],
-      stable_chain_delegation_snapshot: [evidenceReference, childDigest],
+      stable_chain_delegation_snapshot: [persistenceReference, childDigest],
     },
     zone_bytes: hex(primary.canonical_zone_bytes_hex),
   });
@@ -245,7 +262,7 @@ export async function buildContinuityCandidate({
     dns_zone_activation_id: snapshot.dns_zone_activation_id,
     activation_generation: dnsGeneration,
     expected_health_generation: snapshot.successor_dns_latest_health_generation,
-    stable_chain_delegation_snapshot_reference: evidenceReference,
+    stable_chain_delegation_snapshot_reference: persistenceReference,
     stable_chain_delegation_snapshot_digest: childDigest,
     observed_zone_bytes_digest: dns.zone_bytes_digest,
     observed_dnssec_keyset_reference: dns.dnssec_keyset_reference,
