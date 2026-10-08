@@ -1648,6 +1648,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "telegram_interface_preferences",
         "telegram_link_navigation",
         "telegram_link_transactions",
+        "telegram_restricted_bot_affirmations",
         "telegram_restricted_learners",
         "telegram_restricted_study_personas",
         "telegram_study_conversations",

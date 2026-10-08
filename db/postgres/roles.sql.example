@@ -41,10 +41,10 @@ REVOKE TRUNCATE ON telegram_account_associations, telegram_link_transactions,
   telegram_link_navigation FROM api_next_app;
 -- Migration 0246 adds the restricted practice identity. Reservations are
 -- written once and never revised or removed by the runtime role.
-GRANT SELECT, INSERT ON telegram_restricted_learners, telegram_restricted_study_personas
-  TO api_next_app;
+GRANT SELECT, INSERT ON telegram_restricted_learners, telegram_restricted_study_personas,
+  telegram_restricted_bot_affirmations TO api_next_app;
 REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners,
-  telegram_restricted_study_personas FROM api_next_app;
+  telegram_restricted_study_personas, telegram_restricted_bot_affirmations FROM api_next_app;
 -- Telegram linking deletion grants end
 
 -- Money evidence and derived receipts are append-only even if a deployment

@@ -25,9 +25,13 @@ buttons stay valid until a lesson actually starts, so a decline sent while an
 interrupted affirmation waits for its retry is honoured.
 
 The question is asked once per community bot for every sender, whether or not
-a practice account or an account association already exists. The age
-attestation is recorded once, when the account is created. Asking uniformly
-keeps the question from telling a bot owner anything about the sender.
+a practice account or an account association already exists. Each answer is
+recorded in telegram_restricted_bot_affirmations, keyed by practice account,
+community and bot ID. A replaced bot is a new bot identity, so every sender is
+asked again there, in the same way that linked-account consent is per bot ID.
+The age attestation itself is recorded once, when the account is created.
+Asking uniformly keeps the question from telling a bot owner anything about the
+sender.
 
 The bot creates or recovers the actual Study session before displaying its real
 card count and first-pass threshold. A restricted learner sees no persona line.
@@ -39,8 +43,8 @@ flow. The copy promises no recovery or portability.
 
 ## Restricted practice identity
 
-Migration 0246 adds telegram_restricted_learners and
-telegram_restricted_study_personas. One private learner account is reserved per
+Migration 0246 adds telegram_restricted_learners,
+telegram_restricted_study_personas and telegram_restricted_bot_affirmations. One private learner account is reserved per
 numeric Telegram user across every bot, with evidence class ingress_observed and
 the community, bot and ingress generation that carried the affirmation. The
 account row, minimum-age-attestation-v1 (minimum_age 16, affirmed) and the
@@ -55,7 +59,12 @@ lifetime slots and three additional personas per rolling twenty-four hours.
 Exhausted limits start nothing and never reuse a sibling persona. A per-user
 advisory lock makes concurrent first use, retries and other bots converge.
 Enrollment rechecks the current bot, ingress generation, private-chat start and
-the sender's own conversation lease. Both tables are immutable by trigger.
+the sender's own conversation lease. All three tables are immutable by trigger.
+
+The persona limits apply to the one cross-bot learner account. An isolated
+owner holds a single study persona, so those limits never reach it. That
+asymmetry is unobservable while one practice community is admitted and needs an
+owner decision before a second community is.
 
 An explicit linked-account grant is resolved first and keeps its authority.
 A sender whose Telegram identity is independently associated with a Pirate
@@ -76,7 +85,8 @@ freezes the marker, and a trigger on study_sessions_v2 refuses any session for a
 restricted learner account that is not practice only, whichever path starts it.
 That trigger runs on every Study session insert, including ordinary website
 Study, so it reads the reservation with definer rights and needs no table grant
-on the serving role.
+on the serving role. EXECUTE on the function is revoked from every role, so
+nothing but the trigger can run it.
 Recovery, claiming, promotion and erasure tooling are phase-two work.
 
 Each card shows the line's text. The learner replies to that message with a
@@ -157,13 +167,18 @@ objects, SELECT/INSERT/UPDATE, DELETE only on the three temporary/link tables,
 and no DELETE on consent revisions, chat progress or interface preferences. TRUNCATE and owner-equivalent
 access are refused throughout.
 
-The two restricted-identity tables need SELECT and INSERT only: admission reads
+The three restricted-identity tables need SELECT and INSERT only: admission reads
 them without a row lock, because a row lock would require UPDATE. Enrollment
 also inserts into users, account_minimum_age_attestations, personas,
 persona_profiles, persona_wallet_assignments and persona_community_bindings
 through the serving role. They are not part of the six-object guard, because a
 staging role with broad default privileges would fail it and silently disable
 the whole bot. The bounded block is in roles.sql.example.
+
+Apply migration 0246 and that block before serving this source with Telegram
+enabled in any mode. The learner interface reads the three tables on every
+private update to decide whether to offer Resume, including for a discovery-only
+bot with practice disabled.
 
 Migration 0240 and bounded SELECT/INSERT/UPDATE access to
 telegram_interface_preferences are required whenever Telegram is enabled,

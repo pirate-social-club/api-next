@@ -52,10 +52,10 @@ suite("restricted Telegram practice identity", () => {
         );
       }
       await admin.query(
-        `REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners, telegram_restricted_study_personas FROM ${servingRole}`,
+        `REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners, telegram_restricted_study_personas, telegram_restricted_bot_affirmations FROM ${servingRole}`,
       );
       await admin.query(
-        `REVOKE ALL ON telegram_restricted_learners, telegram_restricted_study_personas FROM ${websiteRole}`,
+        `REVOKE ALL ON telegram_restricted_learners, telegram_restricted_study_personas, telegram_restricted_bot_affirmations FROM ${websiteRole}`,
       );
       const scopedAs = (role: string) =>
         `${connectionString}${connectionString.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema} -c role=${role}`)}`;
@@ -92,13 +92,18 @@ suite("restricted Telegram practice identity", () => {
           ],
         );
       };
-      const startChat = (communityId: string, telegramUserId: string) =>
+      const startChat = (communityId: string, telegramUserId: string, epoch = "epoch") =>
         admin.query(
-          "INSERT INTO community_telegram_private_chats(community_id,bot_epoch,telegram_user_id) VALUES($1,'epoch',$2)",
-          [communityId, telegramUserId],
+          "INSERT INTO community_telegram_private_chats(community_id,bot_epoch,telegram_user_id) VALUES($1,$3,$2)",
+          [communityId, telegramUserId, epoch],
         );
-      const open = async (communityId: string, botId: string, telegramUserId: string) => {
-        const sender: TelegramStudySender = { communityId, botId, epoch: "epoch", telegramUserId };
+      const open = async (
+        communityId: string,
+        botId: string,
+        telegramUserId: string,
+        epoch = "epoch",
+      ) => {
+        const sender: TelegramStudySender = { communityId, botId, epoch, telegramUserId };
         const chat = makeTelegramStudyStore(database, communityId, ["study-post"]);
         const learners = makeTelegramStudyLearnerStore(database, communityId);
         const lease = await chat.claim(sender, `lease-${communityId}-${telegramUserId}`);
@@ -414,6 +419,36 @@ suite("restricted Telegram practice identity", () => {
         read(telegramStudyAdmission(first.lease, grant, ["study-post"])),
       ).rejects.toMatchObject({ reason: "not-found" });
       expect(await count("activity_qualifications")).toBe(0);
+
+      // A replaced bot is a new bot identity: every sender is asked again, whichever kind of
+      // practice account they hold, so the question cannot reveal an association.
+      await admin.query(
+        `UPDATE community_telegram_integrations SET bot_id='999',bot_epoch='replaced',
+           record=record||'{"botId":"999","botEpoch":"replaced","botUsername":"fixture_999_bot"}'::jsonb
+         WHERE community_id='study-community'`,
+      );
+      for (const telegramUserId of ["555", "321"])
+        await startChat("study-community", telegramUserId, "replaced");
+      const unlinkedAgain = await open("study-community", "999", "555", "replaced");
+      const linkedAgain = await open("study-community", "999", "321", "replaced");
+      expect(await unlinkedAgain.learners.resolve(unlinkedAgain.sender)).toBeNull();
+      expect(await linkedAgain.learners.resolve(linkedAgain.sender)).toBeNull();
+      expect(await unlinkedAgain.learners.enroll(unlinkedAgain.lease, false)).toBe("age_required");
+      expect(await linkedAgain.learners.enroll(linkedAgain.lease, false)).toBe("age_required");
+      // The cross-bot learner keeps the same account and persona; the linked sender's owner
+      // is local to the old bot, so the new bot gets its own.
+      expect(await unlinkedAgain.learners.enroll(unlinkedAgain.lease, true)).toEqual(grant);
+      expect(await unlinkedAgain.learners.resolve(unlinkedAgain.sender)).toEqual(grant);
+      const replacedOwner = restrictedGrant(
+        await linkedAgain.learners.enroll(linkedAgain.lease, true),
+      );
+      expect(replacedOwner.accountId).not.toBe(isolated.accountId);
+      expect(
+        await count(
+          "telegram_restricted_bot_affirmations WHERE account_id=$1 AND community_id='study-community'",
+          [grant.accountId],
+        ),
+      ).toBe(2);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       for (const role of ["serving", "website"])

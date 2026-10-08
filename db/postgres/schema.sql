@@ -37820,6 +37820,15 @@ CREATE TABLE telegram_link_transactions (
     CONSTRAINT telegram_link_transactions_transaction_id_check CHECK ((transaction_id ~ '^[A-Za-z0-9_-]{43}$'::text))
 );
 
+CREATE TABLE telegram_restricted_bot_affirmations (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    bot_id text NOT NULL,
+    bot_epoch text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT telegram_restricted_bot_affirmations_bot_id_check CHECK ((bot_id ~ '^[1-9][0-9]{0,15}$'::text))
+);
+
 CREATE TABLE telegram_restricted_learners (
     account_id text NOT NULL,
     telegram_user_id text NOT NULL,
@@ -40870,6 +40879,9 @@ ALTER TABLE ONLY telegram_link_navigation
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_pkey PRIMARY KEY (transaction_id);
 
+ALTER TABLE ONLY telegram_restricted_bot_affirmations
+    ADD CONSTRAINT telegram_restricted_bot_affirmations_pkey PRIMARY KEY (account_id, community_id, bot_id);
+
 ALTER TABLE ONLY telegram_restricted_learners
     ADD CONSTRAINT telegram_restricted_learners_pkey PRIMARY KEY (account_id);
 
@@ -42859,6 +42871,8 @@ CREATE TRIGGER subject_key_binding_events_validate BEFORE INSERT ON subject_key_
 CREATE TRIGGER subject_keys_append_only BEFORE DELETE OR UPDATE ON subject_keys FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER telegram_learner_generation_fence AFTER UPDATE ON community_telegram_integrations FOR EACH ROW EXECUTE FUNCTION fence_telegram_learner_linking();
+
+CREATE TRIGGER telegram_restricted_bot_affirmations_immutable BEFORE UPDATE ON telegram_restricted_bot_affirmations FOR EACH ROW EXECUTE FUNCTION protect_telegram_restricted_identity();
 
 CREATE TRIGGER telegram_restricted_learners_immutable BEFORE UPDATE ON telegram_restricted_learners FOR EACH ROW EXECUTE FUNCTION protect_telegram_restricted_identity();
 
@@ -45808,6 +45822,12 @@ ALTER TABLE ONLY telegram_link_transactions
 
 ALTER TABLE ONLY telegram_link_transactions
     ADD CONSTRAINT telegram_link_transactions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY telegram_restricted_bot_affirmations
+    ADD CONSTRAINT telegram_restricted_bot_affirmations_account_id_fkey FOREIGN KEY (account_id) REFERENCES telegram_restricted_learners(account_id);
+
+ALTER TABLE ONLY telegram_restricted_bot_affirmations
+    ADD CONSTRAINT telegram_restricted_bot_affirmations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY telegram_restricted_learners
     ADD CONSTRAINT telegram_restricted_learners_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

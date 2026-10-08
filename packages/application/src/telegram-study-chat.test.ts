@@ -378,8 +378,9 @@ test("declined, stale, expired or typed answers never affirm an age or start a l
   declined.grant(null);
   await declined.begin();
   await declined.age("no", "minor");
-  expect(declined.replies.at(-1)?.text).toContain("16 or older");
-  expect(declined.replies.at(-1)?.text).toContain("No profile was created");
+  expect(declined.replies.at(-1)?.text).toBe(
+    "Practice in this bot is for learners aged 16 or older.",
+  );
   expect(declined.state().selectedPostId).toBeNull();
   const stale = fixture();
   stale.grant(null);
@@ -429,7 +430,7 @@ test("a decline sent while a failed affirmation awaits retry is honoured", async
   // The buttons the learner can still see keep working until a lesson starts.
   expect(f.state().token).toBe(visible);
   await f.press("decline", `study:${visible}:minor`);
-  expect(f.replies.at(-1)?.text).toContain("No profile was created");
+  expect(f.replies.at(-1)?.text).toContain("learners aged 16 or older");
   await f.press("affirm", `study:${visible}:age`);
   expect(f.replies.at(-1)?.text).toContain("ended");
   expect(f.learnerExists()).toBe(false);
