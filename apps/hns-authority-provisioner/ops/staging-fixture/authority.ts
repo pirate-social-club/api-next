@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { deriveCanonicalHnsAuthorityZoneBytesV1 } from "@pirate/hns-dns-runtime/dns-axfr-zone";
 import { makeNodeHnsDnsTcpConnector } from "@pirate/hns-dns-runtime/dns-tcp";
 import { exchangeDirectHnsDnsTsigAxfrV1 } from "@pirate/hns-dns-runtime/dns-tsig-axfr";
 import {
@@ -224,23 +225,49 @@ export async function runLocalAuthorityFixture(
       expected_account: "isolated-staging-fixture",
       axfr_tsig_key_name: "fixture-transfer.",
     })({ root_label: root, challenge_txt_value: challenge, minimum_serial: result.serial });
-    await exchangeDirectHnsDnsTsigAxfrV1({
-      connector: makeNodeHnsDnsTcpConnector({ local_address: "127.0.0.1" }),
-      host: authorityAddresses[1],
-      family: 4,
-      zone_name: root,
-      credential: {
-        key_name: "fixture-transfer.",
-        algorithm: "hmac-sha256",
-        secret_bytes: Uint8Array.from(Buffer.from(transferKey, "base64")),
-      },
-      fudge_seconds: 300,
-      response_message_max_bytes: 65_535,
-      response_total_max_bytes: 1_048_576,
-      response_max_messages: 1_024,
-      timeout_ms: 3_000,
-      signal: AbortSignal.timeout(3_000),
-    });
+    // Readiness and renewal compare the canonical zone each authority serves,
+    // so the same derivation runs here against both real authorities: it must
+    // accept every record type the provisioner now writes, and the primary
+    // and the secondary must yield the same bytes.
+    const canonicalZones: string[] = [];
+    for (const host of authorityAddresses) {
+      const transfer = await exchangeDirectHnsDnsTsigAxfrV1({
+        connector: makeNodeHnsDnsTcpConnector({ local_address: "127.0.0.1" }),
+        host,
+        family: 4,
+        zone_name: root,
+        credential: {
+          key_name: "fixture-transfer.",
+          algorithm: "hmac-sha256",
+          secret_bytes: Uint8Array.from(Buffer.from(transferKey, "base64")),
+        },
+        fudge_seconds: 300,
+        response_message_max_bytes: 65_535,
+        response_total_max_bytes: 1_048_576,
+        response_max_messages: 1_024,
+        timeout_ms: 3_000,
+        signal: AbortSignal.timeout(3_000),
+      });
+      canonicalZones.push(
+        new TextDecoder().decode(
+          deriveCanonicalHnsAuthorityZoneBytesV1({
+            zone_name: root,
+            response_sequence_bytes: transfer.response_sequence_bytes,
+          }),
+        ),
+      );
+    }
+    if (canonicalZones[0] === undefined || canonicalZones[0] !== canonicalZones[1])
+      throw new Error("Authorities do not serve the same canonical zone");
+    const wildcardTypes = (
+      JSON.parse(canonicalZones[0]) as { records: readonly (readonly unknown[])[] }
+    ).records
+      .filter((entry) => entry[0] === `*.${root}`)
+      .map((entry) => entry[1])
+      .sort((left, right) => Number(left) - Number(right));
+    // A, AAAA, TLSA and HTTPS at the wildcard owner; other types there are not checked.
+    if ([1, 28, 52, 65].some((type) => !wildcardTypes.includes(type)))
+      throw new Error("Canonical zone lacks the wildcard address-family record sets");
     for (const [name, type] of [
       [root, "DNSKEY"],
       [root, "NS"],
@@ -251,12 +278,17 @@ export async function runLocalAuthorityFixture(
       const second = (await query(authorityAddresses[1], name, type)).split("\n").sort().join("\n");
       if (!first || first !== second) throw new Error(`Authority agreement failed for ${type}`);
     }
-    const inspected = await makePowerDnsRootInspector(config)({
-      root_label: root,
-      challenge_txt_value: challenge,
-    });
-    if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
-      throw new Error("Managed resource readback drift");
+    // Inspect the way the service does, with the digest the provision result
+    // recorded, and once without it so the zone's own content is read too.
+    for (const recorded of [result.managed_rrset_sha256, undefined]) {
+      const inspected = await makePowerDnsRootInspector(config)({
+        root_label: root,
+        challenge_txt_value: challenge,
+        ...(recorded === undefined ? {} : { expected_managed_rrset_sha256: recorded }),
+      });
+      if (inspected.managed_rrset_sha256 !== result.managed_rrset_sha256)
+        throw new Error("Managed resource readback drift");
+    }
     if (withChain) {
       const observed = await publishFixtureResource(root, challenge, result.ds_records, (observe) =>
         provisionHnsAuthorityRootV1(
