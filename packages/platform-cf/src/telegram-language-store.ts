@@ -20,8 +20,6 @@ export function makeTelegramLanguageStore(
             JOIN study_sessions_v2 s ON s.session_id=t.state->>'sessionId'
             JOIN telegram_restricted_learners l ON l.telegram_user_id=t.telegram_user_id AND l.account_id=s.account_id
               AND (l.local_bot_id IS NULL OR l.local_bot_id=t.bot_id)
-            JOIN telegram_restricted_bot_affirmations affirmed ON affirmed.account_id=s.account_id
-              AND affirmed.community_id=t.community_id AND affirmed.bot_id=t.bot_id
             JOIN telegram_restricted_study_personas r ON r.account_id=s.account_id
               AND r.community_id=t.community_id AND r.persona_id=s.persona_id
             JOIN users learner ON learner.user_id=l.account_id AND learner.status='active'

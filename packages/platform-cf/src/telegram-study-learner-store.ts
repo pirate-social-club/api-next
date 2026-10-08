@@ -7,8 +7,6 @@ import type {
 import type { TelegramDatabase } from "./telegram-database.ts";
 import { currentBot, lockLinkBot } from "./telegram-linking-context.ts";
 
-/** Spec 006 section 2.1: the only account-age assertion this path may record. */
-const MINIMUM_AGE_ATTESTATION = ["minimum-age-attestation-v1", 16, true] as const;
 const identifier = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 const neutralLabel = () =>
   `Learner ${100000 + ((crypto.getRandomValues(new Uint32Array(1))[0] ?? 0) % 900000)}`;
@@ -22,13 +20,14 @@ const restricted = (accountId: string, personaId: string): TelegramStudyGrant =>
 export interface TelegramStudyLearnerStore {
   /** Reads the sender's existing practice identity for this community; never creates one. */
   resolve(sender: TelegramStudySender): Promise<TelegramStudyGrant | null>;
-  enroll(lease: TelegramStudyLease, affirmed: boolean): Promise<TelegramStudyEnrollment>;
+  enroll(lease: TelegramStudyLease): Promise<TelegramStudyEnrollment>;
 }
 
 /**
  * Restricted Telegram practice identity (Specs 006, 014 and 026, phase one). One private
  * learner account per numeric Telegram user and one neutral study persona per community,
  * issued from authenticated bot ingress without sign-in, a wallet provider or profile data.
+ * No age question is asked, so no minimum-age attestation is recorded for these accounts.
  *
  * A sender who already has an independently associated Pirate account, but no grant for
  * this bot, gets an isolated practice owner for this bot alone instead. Only the existence
@@ -50,9 +49,6 @@ export function makeTelegramStudyLearnerStore(
         JOIN community_telegram_integrations i ON i.community_id=s.community_id
         WHERE l.telegram_user_id=$3 AND s.community_id=$1 AND u.status='active' AND c.status='active'
           AND (l.local_bot_id IS NULL OR l.local_bot_id=$2)
-          AND EXISTS(SELECT 1 FROM telegram_restricted_bot_affirmations affirmed
-            WHERE affirmed.account_id=s.account_id AND affirmed.community_id=s.community_id
-              AND affirmed.bot_id=$2)
           AND p.account_id=s.account_id AND p.status='active'
           AND b.account_id=s.account_id AND b.community_id=s.community_id
           AND i.record->>'status'='ready' AND i.record->>'botId'=$2 AND i.record->>'botEpoch'=$4
@@ -64,7 +60,7 @@ export function makeTelegramStudyLearnerStore(
       const row = rows[0];
       return row ? restricted(String(row.account_id), String(row.persona_id)) : null;
     },
-    enroll: (lease, affirmed) =>
+    enroll: (lease) =>
       db.transaction(async (query) => {
         const sender = lease.sender;
         if (sender.communityId !== communityId) return "unavailable";
@@ -88,17 +84,8 @@ export function makeTelegramStudyLearnerStore(
         ]);
         // Whatever identity this sender already uses here is kept, so progress resumes even
         // if an account is linked or unlinked later. It is never replaced by a sibling.
-        const affirm = (accountId: string) =>
-          query(
-            `INSERT INTO telegram_restricted_bot_affirmations(account_id,community_id,bot_id,bot_epoch)
-            VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-            [accountId, sender.communityId, sender.botId, sender.epoch],
-          );
         const existing = await query(
-          `SELECT s.account_id,s.persona_id,p.status='active' AND u.status='active' AS usable,
-            EXISTS(SELECT 1 FROM telegram_restricted_bot_affirmations affirmed
-              WHERE affirmed.account_id=s.account_id AND affirmed.community_id=s.community_id
-                AND affirmed.bot_id=$3) AS affirmed
+          `SELECT s.account_id,s.persona_id,p.status='active' AND u.status='active' AS usable
           FROM telegram_restricted_learners l JOIN telegram_restricted_study_personas s USING(account_id)
           JOIN personas p USING(persona_id) JOIN users u ON u.user_id=l.account_id
           WHERE l.telegram_user_id=$1 AND s.community_id=$2
@@ -106,17 +93,10 @@ export function makeTelegramStudyLearnerStore(
           ORDER BY l.local_bot_id NULLS FIRST LIMIT 1`,
           [sender.telegramUserId, sender.communityId, sender.botId],
         );
-        // Every sender answers the age question once per community bot, including after a
-        // bot is replaced, so it never tells an owner whether an account or association exists.
-        if (existing[0]) {
-          if (existing[0].usable !== true) return "unavailable";
-          if (existing[0].affirmed !== true) {
-            if (!affirmed) return "age_required";
-            await affirm(String(existing[0].account_id));
-          }
-          return restricted(String(existing[0].account_id), String(existing[0].persona_id));
-        }
-        if (!affirmed) return "age_required";
+        if (existing[0])
+          return existing[0].usable === true
+            ? restricted(String(existing[0].account_id), String(existing[0].persona_id))
+            : "unavailable";
         // An associated account must not gain a second promotable account. Its sender gets
         // an isolated owner for this bot.
         const associated = await query(
@@ -138,11 +118,8 @@ export function makeTelegramStudyLearnerStore(
           accountId = identifier("usr");
           // The account row provisions its reserved first persona; no handle or credential exists.
           await query("INSERT INTO users(user_id,status) VALUES($1,'active')", [accountId]);
-          await query(
-            `INSERT INTO account_minimum_age_attestations(account_id,version,minimum_age,affirmed)
-            VALUES($1,$2,$3,$4)`,
-            [accountId, ...MINIMUM_AGE_ATTESTATION],
-          );
+          // The affirmed_* columns below record the ingress that enrolled the learner. Their
+          // names date from the removed age question; no age answer is stored anywhere.
           await query(
             `INSERT INTO telegram_restricted_learners(
               account_id,telegram_user_id,local_bot_id,affirmed_community_id,affirmed_bot_id,affirmed_bot_epoch)
@@ -207,7 +184,6 @@ export function makeTelegramStudyLearnerStore(
           "INSERT INTO telegram_restricted_study_personas(account_id,community_id,persona_id) VALUES($1,$2,$3)",
           [accountId, sender.communityId, personaId],
         );
-        await affirm(accountId);
         return restricted(accountId, personaId);
       }),
   };

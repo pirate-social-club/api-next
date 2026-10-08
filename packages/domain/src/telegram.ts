@@ -6,6 +6,11 @@ export type TelegramMessage = Readonly<{
   buttons: readonly Readonly<{ text: string; url: string }>[];
   replyTo?: number;
   keyboard?: unknown;
+  /**
+   * Delivery id that must be delivered first. This message waits while that one is pending,
+   * being sent or awaiting a retry; if that one can never be sent it is cancelled first.
+   */
+  after?: string;
 }>;
 
 export type TelegramDeliveryState =

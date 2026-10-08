@@ -10,46 +10,46 @@ account; chat navigation grants no account authority.
 
 ## Learner journey
 
-The learner sends /start, then /study or /songs. The curated picker lists at most
-eight ready English songs. Song selection expires after fifteen minutes.
+The learner sends /start and sees the song list at once: one short opening line
+saying what the bot is for and that the community owner can read messages and
+hear voice notes, then "Choose a song:" with at most eight ready English songs
+as buttons. /study and /songs show the same list without the opening line, and
+the menu offers one "Songs" action. Song selection expires after fifteen
+minutes.
 
-Choosing a song is the deliberate lesson start. A sender with no practice
-identity is then asked one question in chat. The message says the lesson is
-practice only and earns no rewards, that voice notes are required, that the
-community owner can read messages and listen to voice notes, and that no
-sign-in is needed. It offers "I'm 16 or older" and "I'm under 16". Only the
-affirmative button, pressed by the same sender against their current unexpired
-song choice, creates anything. Declining, a stale or expired button, typed text,
-/study and /resume create no account. The first card follows immediately. Both
-buttons stay valid until a lesson actually starts, so a decline sent while an
-interrupted affirmation waits for its retry is honoured.
+Tapping a song is the deliberate lesson start. It issues the sender's practice
+identity if they have none and shows the first prompt, with no question,
+website step or sign-in. Typed text, /study and /resume create nothing. No age
+question is asked; the workspace_owner removed it on 2026-10-08. Buttons left on
+screen by that question are answered as stale choices.
 
-The question is asked once per community bot for every sender, whether or not
-a practice account or an account association already exists. Each answer is
-recorded in telegram_restricted_bot_affirmations, keyed by practice account,
-community and bot ID. A replaced bot is a new bot identity, so every sender is
-asked again there, in the same way that linked-account consent is per bot ID.
-The age attestation itself is recorded once, when the account is created.
-Asking uniformly keeps the question from telling a bot owner anything about the
-sender.
-
-The bot creates or recovers the actual Study session before displaying its real
-card count and first-pass threshold. A restricted learner sees no persona line.
-A learner with an explicit linked-account grant keeps the earlier behaviour and
-sees the linked persona's display name. Completion offers every restricted
-learner the same optional "Connect an existing Pirate account" button, which
-opens the existing independent sign-in, persona choice and per-bot consent
-flow. The copy promises no recovery or portability.
+A prompt is the localized instruction and the line, for example "Say this
+back:" followed by the lyric. It carries no card count, threshold, persona or
+command footer. The learner answers by replying to the prompt with a voice
+note. The verdict is its own short message, sent as a reply to the voice note:
+"Correct.", or "Not quite." with what was heard, or a request to record again.
+The next prompt follows as a separate message. The two are stored as separate
+deliveries, and the prompt is ordered after the verdict, so a retry or a queue
+reordering cannot swap them. Completion is one short message with the
+first-try score. The optional account connection is no longer offered at
+completion, because the Telegram login it leads to still fails.
 
 ## Restricted practice identity
 
 Migration 0246 adds telegram_restricted_learners,
 telegram_restricted_study_personas and telegram_restricted_bot_affirmations. One private learner account is reserved per
 numeric Telegram user across every bot, with evidence class ingress_observed and
-the community, bot and ingress generation that carried the affirmation. The
-account row, minimum-age-attestation-v1 (minimum_age 16, affirmed) and the
-reservation commit in one transaction. The account has no credential, handle,
-membership, browser session or Telegram association.
+the community, bot and ingress generation that enrolled the learner. Those three
+columns are still named affirmed_*, from the removed age question; renaming
+them would break a deployed Worker for no gain. The account row and the
+reservation commit in one transaction. No minimum-age attestation is written,
+because none is asked for, so these accounts carry no age assertion. Any later
+promotion to a full account must collect it then. The account has no
+credential, handle, membership, browser session or Telegram association.
+
+telegram_restricted_bot_affirmations holds the per-bot answers recorded while
+the age question existed. It is kept as history and is no longer read or
+written.
 
 Each community gets one new active study persona with a neutral "Learner NNNNNN"
 label, bound through activity_participation. No Telegram profile data is copied
@@ -70,8 +70,7 @@ An explicit linked-account grant is resolved first and keeps its authority.
 A sender whose Telegram identity is independently associated with a Pirate
 account, but who has no grant for this bot, gets an isolated practice owner for
 this bot alone: a separate reservation row naming local_bot_id, with its own
-explicit age answer, its own neutral persona and no link to the associated
-account. Only the existence of the association is consulted. The associated
+neutral persona and no link to the associated account. Only the existence of the association is consulted. The associated
 account is never read, written or revealed, and no second promotable account is
 created for that person. Another bot isolates the same sender separately.
 
@@ -89,11 +88,9 @@ on the serving role. EXECUTE on the function is revoked from every role, so
 nothing but the trigger can run it.
 Recovery, claiming, promotion and erasure tooling are phase-two work.
 
-Each card shows the line's text. The learner replies to that message with a
-native voice note. Telegram's reply-to-message ID must identify the confirmed
-current prompt. Old or unthreaded recordings are not graded. Feedback shows
-what was heard and the missing or substituted words, then the actual next card
-or repeated presentation selected by Study v2. /resume repeats the current
+Telegram's reply-to-message ID must identify the confirmed current prompt. Old
+or unthreaded recordings are not graded. After the verdict comes the actual next
+card or repeated presentation selected by Study v2. /resume repeats the current
 prompt; /cancel clears pending chat actions while keeping saved Study progress.
 Expiry explains how to start again. Typed text spends no attempt and never
 calls the assistant. Provider unavailability asks for a new recording without
@@ -167,18 +164,45 @@ objects, SELECT/INSERT/UPDATE, DELETE only on the three temporary/link tables,
 and no DELETE on consent revisions, chat progress or interface preferences. TRUNCATE and owner-equivalent
 access are refused throughout.
 
-The three restricted-identity tables need SELECT and INSERT only: admission reads
-them without a row lock, because a row lock would require UPDATE. Enrollment
-also inserts into users, account_minimum_age_attestations, personas,
+The reservation and study-persona tables need SELECT and INSERT only: admission
+reads them without a row lock, because a row lock would require UPDATE. The
+affirmations table needs no access. Enrollment
+also inserts into users, personas,
 persona_profiles, persona_wallet_assignments and persona_community_bindings
 through the serving role. They are not part of the six-object guard, because a
 staging role with broad default privileges would fail it and silently disable
 the whole bot. The bounded block is in roles.sql.example.
 
 Apply migration 0246 and that block before serving this source with Telegram
-enabled in any mode. The learner interface reads the three tables on every
-private update to decide whether to offer Resume, including for a discovery-only
-bot with practice disabled.
+enabled in any mode. The learner interface reads the reservation and
+study-persona tables on every private update to decide whether to offer Resume,
+including for a discovery-only bot with practice disabled.
+
+## Where updates are processed
+
+Cloudflare placement applies only to fetch handlers, so a queue consumer cannot
+be placed beside the database. On 2026-10-08 the first release took 16 to 25
+seconds per interaction on staging, with the chat running in the unplaced jobs
+consumer behind two queue hops. The HTTP Worker has targeted placement at the
+database host, so it now does the work itself: after storing an update it
+processes it in the request's background and sends the replies that update
+produces directly. Updates and replies are still written durably first.
+Messages enqueued by anything else, such as an owner publishing posts, are
+queued as before.
+
+Background work is cut off about thirty seconds after the response. Each
+inline update therefore also sends a queue message delayed 130 seconds, just
+past the two-minute inbox lease, so the jobs Worker re-drives an interrupted
+update without waiting for the scheduled scanner. For a finished update that
+message finds nothing to claim. A send interrupted mid-flight ends uncertain
+and is not resent, as before; if it was the prompt, /resume shows it again. The
+jobs Worker and the scanner remain the recovery path, so both Workers must run
+this source. Each inline update logs only its outcome and duration.
+
+A prompt ordered after a verdict is sent only once the verdict is delivered. It
+waits while the verdict is pending, being sent or awaiting a retry. A verdict
+that can never be sent, or whose outcome is unknown, is cancelled first, so it
+cannot arrive after the prompt.
 
 Migration 0240 and bounded SELECT/INSERT/UPDATE access to
 telegram_interface_preferences are required whenever Telegram is enabled,
@@ -193,7 +217,7 @@ default DELETE. This source authorizes no serving grants or revocations.
 ## Measurements and acceptance
 
 Chat state stores at most 64 stage observations with time, card ordinal
-and presentation number. It records selection, the age question, prompts, completion,
+and presentation number. It records selection, prompts, completion,
 cancellation and unavailable grading. No voice inference, transcript, Telegram
 profile snapshot or recording is placed in those observations. Shared Study
 presentations and commands retain their existing timing and outcome evidence.

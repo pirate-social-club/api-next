@@ -7,6 +7,7 @@
  */
 
 import type { ExecutionContext, ScheduledController } from "@cloudflare/workers-types";
+import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 import { makeRetryingPromiseCache } from "./production-app-cache.ts";
@@ -41,24 +42,31 @@ const app = {
     await worker.continuePublicationChecks(event.scheduledTime);
   },
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
-    return httpRequestDiagnostics.run(bindings.CF_VERSION_METADATA?.id ?? null, async () => {
-      const realtimeMatch = new URL(request.url).pathname.match(/^\/karaoke\/realtime\/([^/]+)$/u);
-      if (realtimeMatch !== null) {
-        const encodedSessionId = realtimeMatch[1];
-        if (encodedSessionId === undefined || bindings.KARAOKE_ATTEMPT === undefined) {
-          return new Response("Not found", { status: 404 });
-        }
-        let sessionId: string;
-        try {
-          sessionId = decodeURIComponent(encodedSessionId);
-        } catch {
-          return new Response("Bad request", { status: 400 });
-        }
-        return bindings.KARAOKE_ATTEMPT.getByName(sessionId).fetch(request);
-      }
-      const worker = await productionApp(bindings);
-      return worker.fetch(request, bindings, ctx);
-    });
+    // Durable work, such as a stored Telegram update, may continue after the response.
+    return workerBackground.run(
+      (work) => ctx.waitUntil(work),
+      () =>
+        httpRequestDiagnostics.run(bindings.CF_VERSION_METADATA?.id ?? null, async () => {
+          const realtimeMatch = new URL(request.url).pathname.match(
+            /^\/karaoke\/realtime\/([^/]+)$/u,
+          );
+          if (realtimeMatch !== null) {
+            const encodedSessionId = realtimeMatch[1];
+            if (encodedSessionId === undefined || bindings.KARAOKE_ATTEMPT === undefined) {
+              return new Response("Not found", { status: 404 });
+            }
+            let sessionId: string;
+            try {
+              sessionId = decodeURIComponent(encodedSessionId);
+            } catch {
+              return new Response("Bad request", { status: 400 });
+            }
+            return bindings.KARAOKE_ATTEMPT.getByName(sessionId).fetch(request);
+          }
+          const worker = await productionApp(bindings);
+          return worker.fetch(request, bindings, ctx);
+        }),
+    );
   },
 };
 

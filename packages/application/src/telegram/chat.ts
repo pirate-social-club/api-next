@@ -253,14 +253,25 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
         },
         "setup",
       );
-    } else
+    } else if (study)
+      // A practice bot opens on its song list; the one-line welcome sits above it.
+      await handleTelegramStudyChat(
+        services,
+        study,
+        item,
+        record,
+        userId,
+        { ...message, text: "/study" },
+        undefined,
+        ui.locale,
+        t("welcome"),
+      );
+    else
       await reply(services, item, chatId, {
-        ...textMessage(
-          t(study ? "welcome" : "discoveryWelcome", { community: ui.context.communityName }),
-        ),
+        ...textMessage(t("discoveryWelcome", { community: ui.context.communityName })),
         keyboard: interfaceKeyboard(
           ui.locale,
-          Boolean(study),
+          false,
           ui.context.resumeAvailable,
           ui.context.preference?.explicit ? undefined : from?.language_code,
           services.interfaceLocales,

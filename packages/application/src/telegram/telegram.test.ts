@@ -193,6 +193,74 @@ test("speech failure reserves usage first and fails only the separate voice deli
   expect(finished).toBe(true);
 });
 
+test("a confirmed message sends the message ordered after it in the same pass", async () => {
+  const dispatched: string[] = [];
+  const text = (id: string, after?: string) => ({
+    ...voiceDelivery,
+    id,
+    kind: "reply" as const,
+    desired: {
+      kind: "text" as const,
+      text: id,
+      media: null,
+      buttons: [],
+      ...(after === undefined ? {} : { after }),
+    },
+    desiredHash: id,
+  });
+  const service = services({
+    claimDelivery: async (id) =>
+      id === "feedback" ? text("feedback") : text("prompt", "feedback"),
+    integration: async () => integration,
+    finishDelivery: async () => {},
+    deliveriesAfter: async (delivery) => (delivery.id === "feedback" ? ["prompt"] : []),
+  });
+  service.vault.open = async () =>
+    JSON.stringify({ token: "fixture-token", secret: "fixture-secret" });
+  service.api = {
+    ...service.api,
+    dispatch: async (_token, delivery) => {
+      dispatched.push(delivery.id);
+      return { kind: "confirmed", messageId: dispatched.length };
+    },
+  };
+  await processTelegramDelivery(service, "feedback");
+  expect(dispatched).toEqual(["feedback", "prompt"]);
+});
+
+test("a message whose predecessor must retry is not sent in that pass", async () => {
+  const dispatched: string[] = [];
+  const service = services({
+    // The store refuses to claim the prompt while its feedback awaits a retry.
+    claimDelivery: async (id) =>
+      id === "feedback"
+        ? {
+            ...voiceDelivery,
+            id,
+            kind: "reply" as const,
+            desired: { kind: "text" as const, text: id, media: null, buttons: [] },
+            desiredHash: id,
+          }
+        : null,
+    integration: async () => integration,
+    finishDelivery: async (_delivery, outcome) => {
+      expect(outcome).toEqual({ kind: "rejected", code: "telegram_429", retryAfter: 5 });
+    },
+    deliveriesAfter: async () => ["prompt"],
+  });
+  service.vault.open = async () =>
+    JSON.stringify({ token: "fixture-token", secret: "fixture-secret" });
+  service.api = {
+    ...service.api,
+    dispatch: async (_token, delivery) => {
+      dispatched.push(delivery.id);
+      return { kind: "rejected", code: "telegram_429", retryAfter: 5 };
+    },
+  };
+  await processTelegramDelivery(service, "feedback");
+  expect(dispatched).toEqual(["feedback"]);
+});
+
 test("rotated bot epochs fence already claimed work before provider access", async () => {
   let held = false;
   const service = services({

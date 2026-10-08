@@ -150,16 +150,15 @@ function fixture() {
     failNavigation = false,
     expired = false;
   // The restricted practice identity the platform would issue for this sender.
-  let learnerAccount = false,
-    enrollment: "issue" | "unavailable" = "issue";
-  const enrollments: boolean[] = [];
-  let failEnrollment = false;
+  let enrollment: "issue" | "unavailable" = "issue",
+    enrollments = 0;
   const restrictedGrant: TelegramStudyGrant = {
     accountId: "restricted-learner",
     personaId: "restricted-persona",
     revision: 0,
     restricted: true,
   };
+  const sent: { slot: string; message: TelegramStudyReply }[] = [];
   const replies: TelegramStudyReply[] = [];
   const promptIds = new Map<string, number>();
   const keys: string[] = [];
@@ -205,12 +204,9 @@ function fixture() {
       cleanup: async () => {},
     },
     grant: async () => granted,
-    enroll: async (_lease, input) => {
-      enrollments.push(input.affirmed);
-      if (failEnrollment) throw Error("enrollment unavailable");
+    enroll: async () => {
+      enrollments++;
       if (enrollment === "unavailable") return "unavailable";
-      if (!learnerAccount && !input.affirmed) return "age_required";
-      learnerAccount = true;
       granted = restrictedGrant;
       return restrictedGrant;
     },
@@ -259,8 +255,9 @@ function fixture() {
         session: current,
       };
     },
-    reply: async (_sender, _id, _chat, message) => {
+    reply: async (_sender, _id, _chat, message, slot = "reply") => {
       if (failReply) throw Error("delivery unavailable");
+      sent.push({ slot, message });
       if (
         message.keyboard &&
         typeof message.keyboard === "object" &&
@@ -270,6 +267,7 @@ function fixture() {
       )
         promptIds.set(`hash:${_id}:reply`, 99 + promptIds.size);
       replies.push(message);
+      return `hash:${_id}:${slot}`;
     },
   };
   const send = (id: string, text: string) =>
@@ -323,19 +321,11 @@ function fixture() {
     navigationFailure: () => {
       failNavigation = true;
     },
-    enrollments,
-    knownLearner: () => {
-      learnerAccount = true;
-    },
+    sent,
+    enrollments: () => enrollments,
     enrollmentUnavailable: () => {
       enrollment = "unavailable";
     },
-    enrollmentFailure: (value: boolean) => {
-      failEnrollment = value;
-    },
-    learnerExists: () => learnerAccount,
-    age: (id: string, answer: "age" | "minor" = "age") =>
-      press(id, `study:${state.token}:${answer}`),
     expire: () => {
       expired = true;
     },
@@ -344,107 +334,61 @@ function fixture() {
     },
   };
 }
-test("a new learner practises after one explicit 16-or-older action, with no sign-in step", async () => {
+test("a new learner reaches the first prompt in one song tap, with no question or sign-in", async () => {
   const f = fixture();
   f.grant(null);
   await f.send("picker", "/study");
-  expect(f.enrollments).toEqual([]);
+  expect(f.replies.at(-1)?.text).toBe("Choose a song:");
+  expect(JSON.stringify(f.replies.at(-1)?.keyboard)).toContain("Song");
+  expect(f.enrollments()).toBe(0);
   await f.press("choose");
-  const question = f.replies.at(-1);
-  expect(question?.text).toContain("practice only. No rewards are earned in this lesson");
-  expect(question?.text).toContain("voice notes");
-  expect(question?.text).toContain("community owner");
-  expect(question?.text).toContain("16 or older");
-  expect(question?.buttons).toEqual([]);
-  expect(JSON.stringify(question?.keyboard)).toContain("I'm 16 or older");
-  expect(f.enrollments).toEqual([false]);
-  expect(f.counts().starts).toBe(0);
-  expect(f.state().observations.at(-1)?.stage).toBe("age");
-  await f.age("affirm");
-  expect(f.enrollments).toEqual([false, true]);
+  expect(f.enrollments()).toBe(1);
   expect(f.counts().starts).toBe(1);
-  expect(f.keys).toEqual(["telegram:affirm:start"]);
-  const card = f.replies.at(-1);
-  expect(card?.text).toContain(
-    "This lesson is practice only. No rewards are earned in this lesson.",
-  );
-  expect(card?.text).not.toContain("Persona:");
-  expect(card?.text).not.toContain("restricted-persona");
+  expect(f.keys).toEqual(["telegram:choose:start"]);
+  const prompt = f.replies.at(-1);
+  expect(prompt?.text).toBe("Say this back:\nHold on");
+  expect(prompt?.keyboard).toEqual({ force_reply: true, selective: true });
+  expect(prompt?.buttons).toEqual([]);
   expect(f.state().grantRevision).toBe(0);
-  expect(f.state().ageInboxId ?? null).toBeNull();
+  // The only messages were the song list and the prompt.
+  expect(f.replies).toHaveLength(2);
 });
-test("declined, stale, expired or typed answers never affirm an age or start a lesson", async () => {
-  const declined = fixture();
-  declined.grant(null);
-  await declined.begin();
-  await declined.age("no", "minor");
-  expect(declined.replies.at(-1)?.text).toBe(
-    "Practice in this bot is for learners aged 16 or older.",
-  );
-  expect(declined.state().selectedPostId).toBeNull();
-  const stale = fixture();
-  stale.grant(null);
-  await stale.begin();
-  const old = `study:${stale.state().token}:age`;
-  await stale.send("again", "/study");
-  await stale.press("old", old);
-  expect(stale.replies.at(-1)?.text).toContain("ended");
-  // The age answer needs the sender's own current song choice.
-  await stale.age("no-song");
-  expect(stale.replies.at(-1)?.text).toContain("expired");
-  await stale.send("typed", "I'm 16 or older");
-  await stale.send("resume", "/resume");
-  expect(stale.replies.at(-1)?.text).toContain("/study");
+test("typed commands, old age buttons and expired choices never issue an identity", async () => {
+  const f = fixture();
+  f.grant(null);
+  await f.send("resume", "/resume");
+  expect(f.replies.at(-1)?.text).toBe("Use /study to choose a song.");
+  await f.send("picker", "/study");
+  // Buttons left on screen by the removed age question are stale choices.
+  await f.press("old-age", `study:${f.state().token}:age`);
+  expect(f.replies.at(-1)?.text).toContain("expired");
+  await f.press("old-minor", "study:previous-token:minor");
+  expect(f.replies.at(-1)?.text).toContain("ended");
+  await f.send("typed", "I'm 16 or older");
+  expect(f.replies.at(-1)?.text).toBe("Use /study to choose a song.");
   const late = fixture();
   late.grant(null);
-  await late.begin();
+  await late.send("picker", "/study");
   late.advance();
-  await late.age("late");
+  await late.press("late");
   expect(late.replies.at(-1)?.text).toContain("expired");
-  for (const f of [declined, stale, late]) {
-    expect(f.enrollments).not.toContain(true);
-    expect(f.counts().starts).toBe(0);
+  for (const g of [f, late]) {
+    expect(g.enrollments()).toBe(0);
+    expect(g.counts().starts).toBe(0);
   }
 });
-test("a retried affirmation replays one identity and one lesson start", async () => {
+test("a retried song tap replays one identity and one lesson; a refused identity starts nothing", async () => {
   const f = fixture();
   f.grant(null);
-  await f.begin();
+  await f.send("picker", "/study");
+  const data = `study:${f.state().token}:0`;
   f.deliveryFailure(true);
-  await expect(f.age("affirm")).rejects.toThrow("delivery unavailable");
+  await expect(f.press("choose", data)).rejects.toThrow("delivery unavailable");
   f.deliveryFailure(false);
-  const data = "study:stale-token:age";
-  await f.press("affirm", data);
-  expect(f.enrollments).toEqual([false, true]);
+  await f.press("choose", data);
+  expect(f.enrollments()).toBe(1);
   expect(f.counts().starts).toBe(1);
-  expect(f.replies.at(-1)?.text).toContain("Read aloud");
-});
-test("a decline sent while a failed affirmation awaits retry is honoured", async () => {
-  const f = fixture();
-  f.grant(null);
-  await f.begin();
-  const visible = f.state().token;
-  f.enrollmentFailure(true);
-  await expect(f.age("affirm")).rejects.toThrow("enrollment unavailable");
-  f.enrollmentFailure(false);
-  // The buttons the learner can still see keep working until a lesson starts.
-  expect(f.state().token).toBe(visible);
-  await f.press("decline", `study:${visible}:minor`);
-  expect(f.replies.at(-1)?.text).toContain("learners aged 16 or older");
-  await f.press("affirm", `study:${visible}:age`);
-  expect(f.replies.at(-1)?.text).toContain("ended");
-  expect(f.learnerExists()).toBe(false);
-  expect(f.counts().starts).toBe(0);
-  expect(f.enrollments.filter(Boolean)).toHaveLength(1);
-});
-test("a known restricted learner starts without another age question; exhausted limits start nothing", async () => {
-  const f = fixture();
-  f.grant(null);
-  f.knownLearner();
-  await f.begin();
-  expect(f.enrollments).toEqual([false]);
-  expect(f.counts().starts).toBe(1);
-  expect(f.replies.at(-1)?.text).toContain("Read aloud");
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   const g = fixture();
   g.grant(null);
   g.enrollmentUnavailable();
@@ -453,41 +397,50 @@ test("a known restricted learner starts without another age question; exhausted 
   expect(g.replies.at(-1)?.text).toContain("cannot start right now");
   expect(g.state().selectedPostId).toBeNull();
 });
-test("completion offers the optional connection to restricted learners only", async () => {
-  const completed: StudySessionV2 = {
+test("feedback is its own message, answers the voice note and precedes the next prompt", async () => {
+  const f = fixture();
+  await f.begin();
+  f.sent.length = 0;
+  await f.voice("answer");
+  expect(f.sent.map((entry) => entry.slot)).toEqual(["feedback", "reply"]);
+  const [feedback, prompt] = f.sent.map((entry) => entry.message);
+  expect(feedback?.text).toBe("Not quite.\nHeard: Hold");
+  expect(feedback?.replyTo).toBe(2);
+  expect(feedback?.keyboard).toBeUndefined();
+  expect(prompt?.text).toBe("Say this back:\nHold on");
+  expect(prompt?.after).toBe("hash:answer:feedback");
+  expect(prompt?.keyboard).toEqual({ force_reply: true, selective: true });
+  // A retry replays both messages in order without grading again.
+  f.sent.length = 0;
+  await f.voice("answer");
+  expect(f.sent.map((entry) => entry.slot)).toEqual(["feedback", "reply"]);
+  expect(f.counts().answers).toBe(1);
+});
+test("the opening line appears once above the song list; completion is one short message", async () => {
+  const f = fixture();
+  await handleTelegramStudyChat(
+    f.services,
+    f.study,
+    inbox("start"),
+    integration,
+    "321",
+    { message_id: 1, text: "/study" },
+    undefined,
+    "en",
+    "Practice English with songs.",
+  );
+  expect(f.replies.at(-1)?.text).toBe("Practice English with songs.\n\nChoose a song:");
+  f.session({
     ...session,
     status: "completed",
     completed_at: "2026-10-03T00:00:00Z",
     lesson: { ...session.lesson, current: null, completion_reason: "all_resolved" },
-  };
-  const f = fixture();
-  f.grant(null);
-  f.knownLearner();
-  f.session(completed);
-  await f.begin();
-  expect(f.replies.at(-1)?.text).toContain("No reward or pool share was earned");
-  expect(f.replies.at(-1)?.text).toContain("Optional");
-  expect(f.replies.at(-1)?.text).not.toContain("Persona:");
-  expect(f.replies.at(-1)?.buttons).toEqual([
-    {
-      text: "Connect an existing Pirate account",
-      url: "https://pirate.example.invalid/telegram/link?navigation_reference=public",
-    },
-  ]);
-  const unlinked = fixture();
-  unlinked.grant(null);
-  unlinked.knownLearner();
-  unlinked.navigationFailure();
-  unlinked.session(completed);
-  await unlinked.begin();
-  expect(unlinked.replies.at(-1)?.text).toContain("Practice complete");
-  expect(unlinked.replies.at(-1)?.buttons).toEqual([]);
-  const linked = fixture();
-  linked.session(completed);
-  await linked.begin();
-  expect(linked.replies.at(-1)?.text).toContain("Persona: persona-1");
-  expect(linked.replies.at(-1)?.buttons).toEqual([]);
-  expect(linked.enrollments).toEqual([]);
+  });
+  await f.press("choose");
+  expect(f.replies.at(-1)?.text).toBe(
+    "Done. 1/4 correct on the first try. Use /study for another song.",
+  );
+  expect(f.replies.at(-1)?.buttons).toEqual([]);
 });
 test("real session determines count and threshold; callback tokens rotate without answer keys", async () => {
   const f = fixture();
@@ -500,8 +453,8 @@ test("real session determines count and threshold; callback tokens rotate withou
   await f.send("picker", "/study");
   const token = f.state().token;
   await f.press("choose");
-  expect(f.replies.at(-1)?.text).toContain("10 cards; 7 first-try correct");
-  expect(f.replies.at(-1)?.text).toContain("Persona: persona-1");
+  // The prompt is only the instruction and the line: no counts, threshold or persona.
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   expect(f.replies.at(-1)?.keyboard).toEqual({ force_reply: true, selective: true });
   await f.press("old", `study:${token}:0`);
   expect(f.counts().starts).toBe(1);
@@ -513,7 +466,7 @@ test("typed text and replies to old prompts never download or grade audio", asyn
   await f.send("text", "typed answer");
   await f.voice("late", 98);
   expect(f.counts()).toEqual({ starts: 1, answers: 0, downloads: 0 });
-  expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+  expect(f.replies.at(-1)?.text).toContain("Reply to the current line");
 });
 test("delivery failure replays the accepted answer and feedback without grading another card", async () => {
   const f = fixture();
@@ -524,7 +477,8 @@ test("delivery failure replays the accepted answer and feedback without grading 
   f.deliveryFailure(false);
   await f.voice("answer");
   expect(f.counts()).toEqual({ starts: 1, answers: 1, downloads: 1 });
-  expect(f.replies.at(-1)?.text).toContain("Try saying: on");
+  expect(f.replies.at(-2)?.text).toBe("Not quite.\nHeard: Hold");
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   expect(f.state().turn?.itemId).toBe("item-1");
   expect(f.keys.at(-1)).toBe("telegram:answer:answer");
 });
@@ -562,7 +516,8 @@ test("provider unavailability spends no attempt; cancel and resume preserve prog
   });
   await f.voice("failed");
   expect(f.state().pendingAnswer).toBeNull();
-  expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+  expect(f.replies.at(-2)?.text).toBe("Voice checking is unavailable right now. Try again.");
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   await f.send("cancel", "/cancel");
   expect(f.state().sessionId).toBe(session.session_id);
   expect(f.state().turn).toBeNull();
@@ -599,7 +554,9 @@ test("completion and bounded observations carry no reward or voice-derived telem
     lesson: { ...session.lesson, current: null, completion_reason: "all_resolved" },
   });
   await f.begin();
-  expect(f.replies.at(-1)?.text).toContain("No reward or pool share was earned");
+  expect(f.replies.at(-1)?.text).toBe(
+    "Done. 1/4 correct on the first try. Use /study for another song.",
+  );
   expect(f.state().observations.at(-1)?.stage).toBe("completion");
   expect(JSON.stringify(f.state().observations)).not.toContain("Hold");
 });
@@ -647,6 +604,48 @@ test("old callbacks acknowledge and reply before /start, even if acknowledgement
   await processTelegramInbox(f.services, "old");
   expect(calls).toEqual(["ack", "reply", "finish"]);
 });
+test("a practice bot answers /start with its song list, not a menu", async () => {
+  const f = fixture();
+  const item = {
+    ...inbox("start"),
+    update: {
+      update_id: 2,
+      message: {
+        message_id: 5,
+        chat: { id: 321, type: "private" },
+        from: { id: 321, is_bot: false, language_code: "en" },
+        text: "/start",
+      },
+    },
+  };
+  let started = false;
+  f.services.study = f.study;
+  f.services.store = strictPort<TelegramStore>({
+    learnerLanguageContext: async () => ({
+      preference: { locale: "en", explicit: true },
+      accountLocale: null,
+      helperLanguage: null,
+      communityName: "Fixture community",
+      resumeAvailable: false,
+    }),
+    claimInbox: async () => item,
+    integration: async () => integration,
+    startPrivateChat: async () => {
+      started = true;
+    },
+    finishInbox: async (_item: InboxRecord, error: string | null) => {
+      expect(error).toBeNull();
+    },
+  });
+  await processTelegramInbox(f.services, "start");
+  expect(started).toBe(true);
+  expect(f.replies).toHaveLength(1);
+  expect(f.replies[0]?.text).toBe(
+    "Practice English with songs. The community owner can read your messages and hear your voice notes.\n\nChoose a song:",
+  );
+  expect(JSON.stringify(f.replies[0]?.keyboard)).toContain("study:");
+  expect(JSON.stringify(f.replies[0]?.keyboard)).not.toContain("tg-menu:");
+});
 test("unknown commands never invoke the paid assistant", async () => {
   const f = fixture();
   const item = {
@@ -691,7 +690,7 @@ test("reordered voice for an already graded prompt cannot grade the next card", 
   await f.voice("late", 99);
   expect(f.counts().answers).toBe(1);
   expect(f.state().turn?.itemId).toBe("item-1");
-  expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+  expect(f.replies.at(-1)?.text).toContain("Reply to the current line");
 });
 
 test("practice is unavailable in communities outside the admitted pilot", async () => {
@@ -747,7 +746,7 @@ test.each([61, 120, 121])(
     });
     await f.voice("long", 99, duration);
     expect(f.counts()).toEqual({ starts: 1, answers: 0, downloads: 0 });
-    expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+    expect(f.replies.at(-1)?.text).toContain("Keep voice notes under a minute");
     expect(f.replies.at(-1)?.text).toContain("minute");
     await f.send("resume-long", "/resume");
     expect(f.state().turn?.itemId).toBe("item-0");
@@ -768,7 +767,7 @@ test("file metadata and downloaded bytes are both bounded before pending persist
   Object.assign(f.services.api, { downloadVoice: async () => new Uint8Array(524289) });
   await f.voice("bytes");
   expect(f.counts().answers).toBe(0);
-  expect(f.replies.at(-1)?.text).toContain("No attempt was used");
+  expect(f.replies.at(-1)?.text).toContain("Keep voice notes under a minute");
   await f.send("resume-bytes", "/resume");
   expect(f.state().turn?.itemId).toBe("item-0");
 });
@@ -861,8 +860,8 @@ test("slow grading reacquires the lease and recovers without blaming the learner
   });
   await f.voice("slow");
   expect(f.state().pendingAnswer).toBeNull();
-  expect(f.replies.at(-1)?.text).toContain("took too long");
-  expect(f.replies.at(-1)?.text).not.toContain("unavailable");
+  expect(f.replies.at(-2)?.text).toBe("Checking took too long. Try again.");
+  expect(f.replies.at(-1)?.text).toBe("Say this back:\nHold on");
   await f.send("after-slow", "/resume");
   expect(f.state().turn?.itemId).toBe("item-0");
 });
@@ -888,7 +887,7 @@ test("recovery never revives a lesson cancelled while the expired lease was rele
   await expect(f.voice("slow-cancelled")).rejects.toMatchObject({ reason: "unavailable" });
   expect(f.state().turn).toBeNull();
   expect(f.state().pendingAnswer).toBeNull();
-  expect(f.replies.at(-1)?.text).toContain("Practice stopped");
+  expect(f.replies.at(-1)?.text).toContain("Stopped.");
 });
 test("a failed session reload still clears a permanently rejected note", async () => {
   const f = fixture();
@@ -940,7 +939,7 @@ test("a pending answer gives guidance to new messages without losing its retry i
   });
   await expect(f.voice("unknown-answer")).rejects.toMatchObject({ reason: "outcome-unknown" });
   await f.send("resume-pending", "/resume");
-  expect(f.replies.at(-1)?.text).toContain("previous voice answer has not finished");
+  expect(f.replies.at(-1)?.text).toBe("Still checking your last answer.");
   expect(f.state().pendingAnswer?.inboxId).toBe("unknown-answer");
   await f.voice("second-pending");
   expect(f.state().pendingAnswer?.inboxId).toBe("unknown-answer");
@@ -968,7 +967,7 @@ for (const locale of ["ru", "ka"] as const) {
     );
     expect(f.state().turn?.itemId).toBe(before?.itemId);
     expect(f.replies.at(-1)?.text).toContain("Hold on");
-    expect(f.replies.at(-1)?.text).not.toContain("Read aloud");
+    expect(f.replies.at(-1)?.text).not.toContain("Say this back");
     expect(f.counts().answers).toBe(0);
   });
 }

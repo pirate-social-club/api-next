@@ -36,6 +36,18 @@ const Catalogue = Schema.Array(Schema.NonEmptyString.check(Schema.isMaxLength(12
   Schema.isMinLength(1),
   Schema.isMaxLength(8),
 );
+/** JSON with object keys in a fixed order, so equal values always serialize identically. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
 export function makeTelegramStudyServices(
   bindings: TelegramPracticeBindings,
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
@@ -97,7 +109,7 @@ export function makeTelegramStudyServices(
         sender.epoch,
         sender.telegramUserId,
       )) ?? (await learners.resolve(sender)),
-    enroll: (lease, input) => learners.enroll(lease, input.affirmed),
+    enroll: (lease) => learners.enroll(lease),
     async navigation(sender, postId) {
       const reference = telegram.vault.token();
       await links.createNavigation({
@@ -147,8 +159,14 @@ export function makeTelegramStudyServices(
           audioDurationMs: input.durationMs,
         }),
       ),
-    async reply(sender, inboxId, chatId, message) {
-      const id = await telegram.vault.hash(`${inboxId}:reply`);
+    async reply(sender, inboxId, chatId, message, slot = "reply") {
+      const id = await telegram.vault.hash(`${inboxId}:${slot}`);
+      const { replyTo, after, ...rest } = message;
+      const desired = {
+        ...rest,
+        ...(replyTo === undefined ? {} : { replyTo }),
+        ...(after === undefined ? {} : { after }),
+      };
       await telegram.store.enqueueDelivery({
         id,
         communityId: sender.communityId,
@@ -157,14 +175,17 @@ export function makeTelegramStudyServices(
         kind: "reply",
         postId: null,
         state: "pending",
-        desired: message,
-        desiredHash: await telegram.vault.hash(JSON.stringify(message)),
+        desired,
+        // The message is replayed from stored state, where key order is not preserved. Hash
+        // a canonical form so an identical replay is not mistaken for changed content.
+        desiredHash: await telegram.vault.hash(canonicalJson(desired)),
       });
       try {
         await telegram.wake({ kind: "delivery", id });
       } catch {
         /* Durable pending work resumes delivery. */
       }
+      return id;
     },
   };
 }
