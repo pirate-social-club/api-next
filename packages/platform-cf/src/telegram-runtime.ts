@@ -63,6 +63,7 @@ async function buildTelegramServices(
     }),
     publicOrigin: config.public_origin,
     webhookOrigin: config.webhook_origin,
+    interfaceLocales: config.interface_locales ?? ["en"],
     now: Date.now,
     wake: (work) => queue.send(work),
   };

@@ -18,6 +18,14 @@ const Configuration = Schema.Struct({
   practice_post_ids: Schema.optional(
     Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(8)),
   ),
+  // Interface catalogs offered to learners. Absent means English only, so a catalog
+  // without language-qualified review is never enabled by a code deploy alone.
+  interface_locales: Schema.optional(
+    Schema.Array(Schema.Literals(["en", "ru", "ka"])).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(3),
+    ),
+  ),
 });
 const Credentials = Schema.Struct({
   version: Schema.Literal(1),
@@ -54,6 +62,12 @@ export function decodeTelegramConfiguration(bindings: TelegramConfigurationBindi
       (!config.login_client_id ||
         !/^\d+$/.test(config.login_client_id) ||
         !https(config.login_redirect_uri))
+    )
+      throw Error();
+    if (
+      config.interface_locales &&
+      (!config.interface_locales.includes("en") ||
+        new Set(config.interface_locales).size !== config.interface_locales.length)
     )
       throw Error();
     if (

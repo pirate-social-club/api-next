@@ -6,6 +6,17 @@ explains English voice-note practice and owner access when practice is enabled,
 and offers actions plus English / Русский / ქართული before sign-in. Discovery-only
 bots offer browsing and help without advertising disabled practice.
 
+## Offered languages
+
+The compact configuration's optional interface_locales lists the catalogs a
+deployment offers. It must include en and may add ru and ka. When it is absent
+the bot offers English only: Telegram language suggestions, saved choices and
+language callbacks for any other catalog fall back to English, and the language
+picker row is hidden while only one language is offered. A code deploy therefore
+cannot enable a catalog by itself. Add ru or ka to interface_locales only after
+that catalog, including the study-first age and practice strings, has had
+language-qualified review.
+
 ## Preference authority
 
 A saved explicit bot interface choice wins. Otherwise a supported Telegram

@@ -85,3 +85,14 @@ test("credential errors never contain the input or schema diagnostics", () => {
     }
   }
 });
+test("interface languages are optional and must keep English without repeats", () => {
+  const decode = (interface_locales: unknown) =>
+    decodeTelegramConfiguration({
+      TELEGRAM_CONFIG_JSON: JSON.stringify({ ...telegramConfigurationFixture, interface_locales }),
+    });
+  expect(decodeTelegramConfiguration(telegramBindingsFixture).interface_locales).toBeUndefined();
+  expect(decode(["en"]).interface_locales).toEqual(["en"]);
+  expect(decode(["en", "ru", "ka"]).interface_locales).toEqual(["en", "ru", "ka"]);
+  for (const invalid of [[], ["ru"], ["en", "en"], ["en", "fr"], "en", ["en", "ru", "ka", "en"]])
+    expect(() => decode(invalid)).toThrow("Telegram compact configuration missing or invalid");
+});

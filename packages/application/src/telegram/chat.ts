@@ -7,7 +7,12 @@ import { Schema } from "effect";
 import { handleTelegramStudyChat } from "../telegram-study-chat.ts";
 import { TelegramLocale, telegramHelperLanguageName, telegramLanguageNames } from "./copy.ts";
 import { telegramBotCredentials } from "./delivery.ts";
-import { interfaceKeyboard, learnerInterface, TelegramMenu } from "./interface.ts";
+import {
+  interfaceKeyboard,
+  learnerInterface,
+  TelegramMenu,
+  telegramLocaleOffered,
+} from "./interface.ts";
 import { verifyTelegramChannel } from "./setup.ts";
 import type { InboxRecord, IntegrationRecord, TelegramServices } from "./types.ts";
 
@@ -82,16 +87,25 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
     let data = typeof callback.data === "string" && callback.data.length <= 64 ? callback.data : "";
     let ui = await learnerInterface(services, item, record, senderId, callbackFrom?.language_code);
     if (data.startsWith("tg-language:")) {
-      const selected = Schema.decodeUnknownOption(TelegramLocale)(
-        data.slice("tg-language:".length),
-      );
-      if (selected._tag === "Some") {
-        await services.store.saveLearnerLanguage(ui.sender, item.id, selected.value, true);
+      const decoded = Schema.decodeUnknownOption(TelegramLocale)(data.slice("tg-language:".length));
+      // A language this deployment does not offer is treated like any unknown choice.
+      const selected =
+        decoded._tag === "Some" && telegramLocaleOffered(services.interfaceLocales, decoded.value)
+          ? decoded.value
+          : null;
+      if (selected !== null) {
+        await services.store.saveLearnerLanguage(ui.sender, item.id, selected, true);
         ui = await learnerInterface(services, item, record, senderId, undefined);
       }
       await reply(services, item, senderId, {
-        ...textMessage(ui.text(selected._tag === "Some" ? "changed" : "unknown")),
-        keyboard: interfaceKeyboard(ui.locale, Boolean(study), ui.context.resumeAvailable),
+        ...textMessage(ui.text(selected !== null ? "changed" : "unknown")),
+        keyboard: interfaceKeyboard(
+          ui.locale,
+          Boolean(study),
+          ui.context.resumeAvailable,
+          undefined,
+          services.interfaceLocales,
+        ),
       });
       return;
     }
@@ -116,7 +130,13 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
                 })
               : ui.text(study ? "studyHelp" : "discoveryHelp"),
           ),
-          keyboard: interfaceKeyboard(ui.locale, Boolean(study), ui.context.resumeAvailable),
+          keyboard: interfaceKeyboard(
+            ui.locale,
+            Boolean(study),
+            ui.context.resumeAvailable,
+            undefined,
+            services.interfaceLocales,
+          ),
         });
         return;
       }
@@ -243,6 +263,7 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
           Boolean(study),
           ui.context.resumeAvailable,
           ui.context.preference?.explicit ? undefined : from?.language_code,
+          services.interfaceLocales,
         ),
       });
     return;
@@ -255,14 +276,26 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
           helper: telegramHelperLanguageName(ui.locale, ui.context.helperLanguage),
         }),
       ),
-      keyboard: interfaceKeyboard(ui.locale, Boolean(study), ui.context.resumeAvailable),
+      keyboard: interfaceKeyboard(
+        ui.locale,
+        Boolean(study),
+        ui.context.resumeAvailable,
+        undefined,
+        services.interfaceLocales,
+      ),
     });
     return;
   }
   if (/^\/help(?:@[A-Za-z0-9_]+)?\s*$/u.test(input)) {
     await reply(services, item, chatId, {
       ...textMessage(t(study ? "studyHelp" : "discoveryHelp")),
-      keyboard: interfaceKeyboard(ui.locale, Boolean(study), ui.context.resumeAvailable),
+      keyboard: interfaceKeyboard(
+        ui.locale,
+        Boolean(study),
+        ui.context.resumeAvailable,
+        undefined,
+        services.interfaceLocales,
+      ),
     });
     return;
   }
