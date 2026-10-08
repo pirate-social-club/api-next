@@ -800,9 +800,12 @@ async function zoneAdoptionDependencies(): Promise<HnsZoneAdoptionCommandDepende
 }
 
 /**
- * Operator entrypoint for adopting a changed zone. It refuses a schema this
- * service generation is not admitted to, exactly as serving does, before it
- * reads or changes anything.
+ * Operator entrypoint for adopting a changed zone. Before it reads or changes
+ * anything it refuses a schema this service generation is not admitted to,
+ * and, past the cutover, a bundle that is not the one its deployment manifest
+ * names, as serving does. It does not run the cutover probe: that probe
+ * proves a serving process to the lifecycle path and records its identity,
+ * and this command is not a serving process and claims no job.
  */
 async function runZoneAdoption(arguments_: readonly string[]): Promise<number> {
   const cutover = await hnsLifecycleSchemaCutoverCheck({
@@ -813,6 +816,25 @@ async function runZoneAdoption(arguments_: readonly string[]): Promise<number> {
   if (cutover.refusal !== null) {
     console.error(JSON.stringify({ command: "adopt-zone", ...cutover.refusal }));
     return 1;
+  }
+  if (cutover.post_cutover) {
+    const deployment = await cutoverDeploymentIdentity();
+    const measuredBundleSha256 = await measureRunningArtifactSha256();
+    if (deployment === null || measuredBundleSha256 === null) {
+      console.error(JSON.stringify({ command: "adopt-zone", outcome: "bundle_identity_missing" }));
+      return 1;
+    }
+    if (deployment.bundle_sha256 !== measuredBundleSha256) {
+      console.error(
+        JSON.stringify({
+          command: "adopt-zone",
+          outcome: "bundle_digest_mismatch",
+          expected_bundle_sha256: deployment.bundle_sha256,
+          measured_bundle_sha256: measuredBundleSha256,
+        }),
+      );
+      return 1;
+    }
   }
   return runHnsZoneAdoptionCommandV1(arguments_, await zoneAdoptionDependencies());
 }

@@ -15,17 +15,34 @@ import {
  * same function from the same kind of observation, when the served zone
  * differs from the retained one by exactly a difference
  * `requireHnsZoneAdoptionDeltaV1` admits and the operator named. Every other
- * binding the renewal preparation checks is checked here against the same
- * rows. It is not a job: an operator runs it between renewals, and it refuses
- * while a renewal job for the root's current generation is open.
+ * binding the renewal preparation checks about the root is checked here
+ * against the same rows. It is not a job: an operator runs it between
+ * renewals.
+ *
+ * A renewal's observation is at most one lease old. An adoption has no lease,
+ * so it bounds the observation's age itself and, with the rows locked, asks
+ * the primary authority for its current serial and refuses unless that is the
+ * serial the observation was taken at. A file observed before a later change
+ * to the zone therefore cannot be committed.
+ *
+ * Adoption and renewal exclude each other through the session and DNS
+ * pointer rows, which a renewal claim and a renewal preparation both lock. A
+ * renewal job left open at the generation an adoption supersedes ends as
+ * `generation_superseded` when it is next claimed or prepared, so an open job
+ * does not stop an adoption; if it did, a stalled provisioner could leave a
+ * changed zone that could neither be adopted nor withdrawn.
  *
  * The zone itself is changed first, at the authorities, inside
- * `withHnsRootZoneAdoptionFence`, which holds the rows a renewal claim and a
- * renewal preparation both lock. Between that change and a committed adoption
+ * `withHnsRootZoneAdoptionFence`. Between that change and a committed adoption
  * the served zone no longer equals the retained one, so a renewal that ran in
- * the gap would end its job; the fence therefore also refuses a root close
- * enough to expiry for one to be scheduled.
+ * the gap would end its job. The fence therefore refuses a change that takes
+ * the zone away from the retained one while a renewal job is open or the root
+ * is close enough to expiry for one to be scheduled. A change that brings the
+ * zone back towards the retained one is never refused for those reasons.
  */
+
+/** How old an observation may be when it is adopted, dry runs included. */
+const MAXIMUM_OBSERVATION_AGE_SECONDS = 900;
 
 export type HnsZoneAdoptionMode = "dry-run" | "rehearse" | "commit";
 
@@ -55,6 +72,8 @@ export type HnsZoneAdoptionReceipt = Readonly<{
   next_zone_bytes_sha256: string;
   authority_inventory_version: string;
   valid_until: string;
+  /** Renewal jobs open at the superseded generation; each ends as generation_superseded. */
+  open_renewal_jobs: number;
   database_time: string;
 }>;
 
@@ -127,7 +146,10 @@ function refuse(reason: string): never {
  * Reads the root's state inside the caller's transaction. With `lock` it takes
  * the session and DNS pointer rows the renewal preparation takes, in the same
  * order, so an adoption and a renewal of one root cannot both promote, and a
- * renewal claim, which shares those rows, waits. A session is named exactly
+ * renewal claim, which shares those rows, waits. The lock is the weaker
+ * no-key one: it excludes both of those and still lets a row that only
+ * refers to the session, such as a newly scheduled job, be inserted. A
+ * session is named exactly
  * when the caller holds an observation bound to one; otherwise the root's
  * activated session is read.
  */
@@ -184,7 +206,7 @@ async function selectState(
       WHERE session.root_label = $1 AND dns.canonical_root = $1
         AND (session.root_import_session_id = $2
              OR ($2::text IS NULL AND session.status = 'activated'))
-      ${lock ? "FOR UPDATE OF session, dns" : ""}`,
+      ${lock ? "FOR NO KEY UPDATE OF session, dns" : ""}`,
     [rootLabel, sessionId],
   );
   const row = rows.rows[0];
@@ -276,14 +298,22 @@ export async function readHnsRootZoneAdoptionState(
 /**
  * Runs a change to the root's served zone while no renewal of that root can
  * be claimed or prepared. The transaction writes nothing; it exists to hold
- * the rows. It refuses unless the root is activated, no renewal job for its
- * current generation is open, and its serving validity leaves at least the
- * given margin before a renewal could be scheduled. The signal aborts when
- * the database connection, and so the fence, is lost.
+ * the rows. `departs` says, from the state read under the lock, whether the
+ * change takes the zone away from the retained one. A departing change is
+ * refused while a renewal job for the current generation is open, and when
+ * the root's serving validity leaves less than the given margin before a
+ * renewal could be scheduled, because that renewal would end its job. A
+ * change that returns the zone towards the retained one is refused for
+ * neither. The signal aborts when the database connection, and so the fence,
+ * is lost.
  */
 export async function withHnsRootZoneAdoptionFence<A>(
   client: Client,
-  input: { readonly root_label: string; readonly minimum_serving_validity_seconds: number },
+  input: {
+    readonly root_label: string;
+    readonly minimum_serving_validity_seconds: number;
+    readonly departs: (state: HnsRootZoneAdoptionState) => boolean;
+  },
   change: (state: HnsRootZoneAdoptionState, signal: AbortSignal) => Promise<A>,
 ): Promise<A> {
   if (
@@ -300,13 +330,17 @@ export async function withHnsRootZoneAdoptionFence<A>(
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout TO '10s'");
     const state = await selectState(client, input.root_label, null, true);
-    if (state.open_renewal_jobs !== 0)
-      refuse("a renewal job for the root's current generation is open");
-    if (
-      state.serving_valid_for_seconds === null ||
-      state.serving_valid_for_seconds < input.minimum_serving_validity_seconds
-    )
-      refuse("the root is too close to expiry; let it renew first");
+    if (input.departs(state)) {
+      if (state.open_renewal_jobs !== 0)
+        refuse("a renewal job for the root's current generation is open");
+      if (
+        state.serving_valid_for_seconds === null ||
+        state.serving_valid_for_seconds < input.minimum_serving_validity_seconds
+      )
+        refuse(
+          "the root is too close to expiry for a change to be adopted before a renewal is scheduled",
+        );
+    }
     const result = await change(state, controller.signal);
     // A lost connection released the rows while the change was running.
     controller.signal.throwIfAborted();
@@ -328,8 +362,13 @@ export async function adoptHnsRootZone(
     /** The difference the operator intends; any other is refused. */
     readonly expected_delta: HnsZoneAdoptionDeltaKind;
     readonly mode: HnsZoneAdoptionMode;
+    /**
+     * The primary authority's zone serial now, read while the root's rows are
+     * held. Adoption refuses unless it is the serial the observation was
+     * taken at.
+     */
+    readonly served_zone_serial: (state: HnsRootZoneAdoptionState) => Promise<number>;
   },
-  verifyDelta: typeof requireHnsZoneAdoptionDeltaV1 = requireHnsZoneAdoptionDeltaV1,
 ): Promise<HnsZoneAdoptionReceipt> {
   if (!["dry-run", "rehearse", "commit"].includes(input.mode)) refuse("invalid adoption mode");
   const resultSha256 = sha256(input.result_bytes);
@@ -360,8 +399,6 @@ export async function adoptHnsRootZone(
       writing,
     );
     if (state.session_status !== "activated") refuse("the root's session is not activated");
-    if (state.open_renewal_jobs !== 0)
-      refuse("a renewal job for the root's current generation is open");
     if (
       state.provision_publish_plan_sha256 === null ||
       state.provision_result_sha256 === null ||
@@ -389,19 +426,25 @@ export async function adoptHnsRootZone(
     )
       refuse("the observation's keyset, gateway or chain reference is not the current revision's");
     const now = Date.parse(state.database_time);
+    const observed = Date.parse(result.observed_at);
     const remaining = Math.floor((Date.parse(result.valid_until) - now) / 1000);
     if (
-      !(Date.parse(result.observed_at) <= now + 60_000) ||
+      !(observed <= now + 60_000) ||
+      !(now - observed <= MAXIMUM_OBSERVATION_AGE_SECONDS * 1_000) ||
       !(remaining >= 1 && remaining <= 604_800)
     )
-      refuse("the observation is stale");
-    const delta = verifyDelta({
+      refuse("the observation is stale; observe the root again");
+    const delta = requireHnsZoneAdoptionDeltaV1({
       root_label: result.root_label,
       retained_zone_bytes: state.retained_zone_bytes,
       observed_zone_bytes: decoded.managed_zone_bytes,
     });
     if (delta !== input.expected_delta)
       refuse(`the zone difference is ${delta}, not the one intended`);
+    // Last, and with the rows held when writing: the zone has not been
+    // changed again since it was observed.
+    if ((await input.served_zone_serial(state)) !== result.powerdns_zone_serial)
+      refuse("the authorities no longer serve the zone that was observed; observe the root again");
 
     const receipt = (committed: boolean): HnsZoneAdoptionReceipt => ({
       mode: input.mode,
@@ -416,6 +459,7 @@ export async function adoptHnsRootZone(
       next_zone_bytes_sha256: result.observed_zone_bytes_sha256,
       authority_inventory_version: result.authority_inventory_version,
       valid_until: result.valid_until,
+      open_renewal_jobs: state.open_renewal_jobs,
       database_time: state.database_time,
     });
     if (!writing) {

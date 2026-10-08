@@ -40,7 +40,12 @@ const digestOf = async (profile: "wildcard-v1" | "wildcard-address-family-v2") =
 /** A provider that keeps what it is given and moves its serial on every change. */
 function provider(
   rrsets: readonly Stored[],
-  options: { failOnce?: string; frozenSerial?: boolean; dsText?: string } = {},
+  options: {
+    failOnce?: string;
+    frozenSerial?: boolean;
+    dsText?: string;
+    serialPolicy?: string;
+  } = {},
 ) {
   const zone = { serial: 7, rrsets: [...rrsets] };
   const calls: string[] = [];
@@ -58,7 +63,13 @@ function provider(
       return Response.json([
         { active: true, published: true, ds: [options.dsText ?? `10875 13 2 ${"a".repeat(64)}`] },
       ]);
-    if (method === "GET") return Response.json({ name: "newroot.", dnssec: true, ...zone });
+    if (method === "GET")
+      return Response.json({
+        name: "newroot.",
+        dnssec: true,
+        soa_edit_api: options.serialPolicy ?? "DEFAULT",
+        ...zone,
+      });
     if (method === "PATCH") {
       const changed: Stored[] = JSON.parse(String(init?.body)).rrsets;
       zone.rrsets = [
@@ -225,7 +236,18 @@ describe("PowerDNS wildcard address family writer", () => {
     expect(writes(current.calls)).toEqual([]);
   });
 
-  test("reports a serial that did not advance, which the secondary would not transfer", async () => {
+  test("refuses, before any write, a zone that does not advance its serial on API changes", async () => {
+    // Such a zone would be changed without the secondary transferring it, and
+    // a second run, finding the records present, could not tell.
+    const pdns = provider(earlierZone(), { serialPolicy: "" });
+    await expect(
+      makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),
+    ).rejects.toThrow("does not advance its serial on API changes");
+    expect(pdns.calls).toEqual(["GET newroot."]);
+    expect(pdns.wildcardTypes()).toEqual(["A", "TLSA"]);
+  });
+
+  test("still reports a serial that did not advance after a write", async () => {
     const pdns = provider(earlierZone(), { frozenSerial: true });
     await expect(
       makePowerDnsWildcardFamilyWriter(config, pdns.fetcher)(await request("add")),

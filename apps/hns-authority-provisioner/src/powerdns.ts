@@ -769,9 +769,11 @@ function wildcardFamilyOfZone(
  * fence that keeps a renewal of the root from running meanwhile.
  *
  * The two record sets written are the ones a new zone gets, built by the same
- * function. Before any write the zone must be the retained one: its DNSSEC
- * keys the provisioned ones, its managed record sets intact, and the wildcard
- * AAAA and HTTPS sets either absent or exactly those two. A zone already in
+ * function. Before any write the zone must be the provisioned one as far as
+ * the provider can show: its DNSSEC keys the provisioned ones, its managed
+ * record sets intact, its serial advanced by API changes, and the wildcard
+ * AAAA and HTTPS sets either absent or exactly those two. Whether the whole
+ * served zone equals the retained one is the observation's to say. A zone already in
  * the state asked for is not written again, but it is still rectified and
  * notified, so a run that stopped between the write and those two steps is
  * finished by running it again.
@@ -822,6 +824,13 @@ export function makePowerDnsWildcardFamilyWriter(
     };
     const before = await read();
     if (!before.zone.dnssec) throw new Error("PowerDNS existing zone is not DNSSEC-enabled");
+    // A zone that does not move its serial on an API change would be changed
+    // without the secondary transferring it, and a second run could not tell.
+    // Zones this provisioner creates are set to; one that is not is refused
+    // before anything is written.
+    const serialPolicy = Reflect.get(before.json as object, "soa_edit_api");
+    if (typeof serialPolicy !== "string" || serialPolicy.length === 0)
+      throw new Error("PowerDNS zone does not advance its serial on API changes");
     const cryptokeys = await request("GET", `${zonePath}/cryptokeys`);
     if (!cryptokeys.response.ok || !Array.isArray(cryptokeys.json)) {
       throw new Error("PowerDNS DNSSEC key inspection failed");

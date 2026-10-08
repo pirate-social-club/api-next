@@ -4,26 +4,32 @@ import { Client } from "pg";
 import { finalizeImportedInventoryRenewal } from "./hns-imported-inventory-renewal.ts";
 import {
   adoptHnsRootZone,
+  type HnsZoneAdoptionMode,
   hnsRootZoneAdoptionObservationRequestBytes,
   readHnsRootZoneAdoptionState,
   withHnsRootZoneAdoptionFence,
 } from "./hns-zone-adoption.ts";
+import type { HnsZoneAdoptionDeltaKind } from "./hns-zone-adoption-delta.ts";
+import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
 
 type Artifact = Readonly<{ result_bytes: Uint8Array; result_sha256: string }>;
+type Observed = Readonly<{ zone?: Uint8Array; serial?: number; observed_seconds_ago?: number }>;
 
 /**
- * Adoption against an activated, already renewed root. The fixture's zones
- * are opaque bytes, not canonical authority zones, so the database behaviour
- * is exercised with a stand-in for the difference check and the real check is
- * shown to be the default by refusing those bytes. The real check has its own
- * unit tests.
+ * Adoption against an activated, already renewed root whose retained zone is
+ * the fixture's canonical zone at serial 7 without the wildcard address
+ * records. Every case runs the real difference rule. The observations are the
+ * fixture's readiness results carrying a later zone; the primary's serial,
+ * which adoption reads through a port, is a variable here.
  */
 export async function verifyHnsZoneAdoption(
   admin: Client,
   connection: string,
-  artifact: (zone?: Uint8Array) => Promise<Artifact>,
+  artifact: (observed?: Observed) => Promise<Artifact>,
 ) {
   const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const zone = (serial: number, family: boolean) =>
+    hnsZoneAdoptionFixtureZone("newroot", serial, family);
   const pointers = async () =>
     (
       await admin.query<{ dns: string; app: string; sale: string; inventories: number }>(
@@ -46,25 +52,33 @@ export async function verifyHnsZoneAdoption(
   const before = await pointers();
   const generation = Number(before[0]?.dns);
   const priorDigest = await retainedDigest();
-  const adoptedZone = new TextEncoder().encode(
-    JSON.stringify({ root_label: "newroot", serial: 8, managed: true, adopted: true }),
-  );
-  const observation = await artifact(adoptedZone);
-  const added = () => "wildcard_family_added" as const;
-  const request = (mode: "dry-run" | "rehearse" | "commit", observed: Artifact = observation) => ({
+  expect(priorDigest).toBe(sha256(zone(7, false)));
+
+  // What the primary authority reports as its serial when adoption asks.
+  let served = 8;
+  const added = await artifact({ zone: zone(8, true), serial: 8 });
+  const request = (
+    mode: HnsZoneAdoptionMode,
+    observed: Artifact = added,
+    delta: HnsZoneAdoptionDeltaKind = "wildcard_family_added",
+  ) => ({
     result_bytes: observed.result_bytes,
     expected_result_sha256: observed.result_sha256,
-    expected_delta: "wildcard_family_added" as const,
+    expected_delta: delta,
     mode,
+    served_zone_serial: async () => served,
+  });
+  const fence = (departs: boolean, minimum = 3_600) => ({
+    root_label: "newroot",
+    minimum_serving_validity_seconds: minimum,
+    departs: () => departs,
   });
   const operator = new Client({ connectionString: connection });
   await operator.connect();
   const bystander = new Client({ connectionString: connection });
   await bystander.connect();
-  const shareRoot = () =>
-    bystander.query(
-      "SELECT 1 FROM hns_dns_zone_activation_current WHERE canonical_root = 'newroot' FOR SHARE NOWAIT",
-    );
+  const probe = (table: string, column: string, lock: string) =>
+    bystander.query(`SELECT 1 FROM ${table} WHERE ${column} = 'newroot' FOR ${lock} NOWAIT`);
   try {
     // The state an operator is shown, and the request an observation is given:
     // the same bytes the database encodes for a renewal of this session.
@@ -90,70 +104,115 @@ export async function verifyHnsZoneAdoption(
       "no single activated session",
     );
 
-    // The fence for the change at the authorities refuses a root too close to
-    // expiry for the change and its adoption to finish before a renewal is
-    // scheduled, as the fixture's root is at this point.
+    // The fixture's root is within an hour of expiry. A change that takes its
+    // zone away from the retained one is refused; one that brings it back is
+    // not, because that is how a change is withdrawn.
     await expect(
-      withHnsRootZoneAdoptionFence(
-        operator,
-        { root_label: "newroot", minimum_serving_validity_seconds: 3_600 },
-        async () => "changed",
-      ),
+      withHnsRootZoneAdoptionFence(operator, fence(true), async () => "changed"),
     ).rejects.toThrow("too close to expiry");
+    expect(
+      await withHnsRootZoneAdoptionFence(operator, fence(false), async () => "withdrawn"),
+    ).toBe("withdrawn");
     expect(await pointers()).toEqual(before);
 
-    // The observation must be the bytes that were reviewed.
+    // The observation must be the bytes that were reviewed, and the
+    // difference found must be the one the operator named.
     await expect(
-      adoptHnsRootZone(
-        operator,
-        { ...request("dry-run"), expected_result_sha256: "0".repeat(64) },
-        added,
-      ),
+      adoptHnsRootZone(operator, { ...request("dry-run"), expected_result_sha256: "0".repeat(64) }),
     ).rejects.toThrow("not the one that was reviewed");
-
-    // Without a stand-in the real difference check runs, and it refuses zones
-    // that are not canonical authority zones before anything is promoted.
-    await expect(adoptHnsRootZone(operator, request("rehearse"))).rejects.toThrow(
-      "not a canonical authority zone",
-    );
-    expect(await pointers()).toEqual(before);
-
-    // The difference found must be the one the operator named.
     await expect(
-      adoptHnsRootZone(operator, { ...request("rehearse"), expected_delta: "serial_only" }, added),
-    ).rejects.toThrow("not the one intended");
+      adoptHnsRootZone(operator, request("rehearse", added, "serial_only")),
+    ).rejects.toThrow("the zone difference is wildcard_family_added, not the one intended");
 
-    // Every other binding of the renewal preparation still applies: an
-    // observation carrying a gateway reference that is not the current
-    // revision's is refused.
-    const foreign = JSON.parse(new TextDecoder().decode(observation.result_bytes));
-    foreign.gateway_deployment_reference = `${foreign.gateway_deployment_reference}-superseded`;
-    const foreignBytes = new TextEncoder().encode(JSON.stringify(foreign));
+    // A zone that changed anywhere else, here in the app host's address, and
+    // a zone that is not a canonical one at all.
+    const elsewhere = new TextEncoder().encode(
+      new TextDecoder()
+        .decode(zone(8, true))
+        .replace('["app.newroot",1,1,300,"c000020a"]', '["app.newroot",1,1,300,"c0000263"]'),
+    );
+    expect(sha256(elsewhere)).not.toBe(sha256(zone(8, true)));
     await expect(
       adoptHnsRootZone(
         operator,
-        request("rehearse", { result_bytes: foreignBytes, result_sha256: sha256(foreignBytes) }),
-        added,
+        request("rehearse", await artifact({ zone: elsewhere, serial: 8 })),
       ),
-    ).rejects.toThrow("not the current revision's");
+    ).rejects.toThrow("the zone changed outside the wildcard address records");
+    await expect(
+      adoptHnsRootZone(
+        operator,
+        request(
+          "rehearse",
+          await artifact({ zone: new TextEncoder().encode('{"serial":8}'), serial: 8 }),
+        ),
+      ),
+    ).rejects.toThrow("not a canonical authority zone");
+
+    // Every other binding of the renewal preparation still applies. Each of
+    // these observations differs from the good one in a single field.
+    const altered = (field: string, value: unknown): Artifact => {
+      const result = JSON.parse(new TextDecoder().decode(added.result_bytes));
+      result[field] = value;
+      const bytes = new TextEncoder().encode(JSON.stringify(result));
+      return { result_bytes: bytes, result_sha256: sha256(bytes) };
+    };
+    const good = JSON.parse(new TextDecoder().decode(added.result_bytes));
+    for (const [field, value, refusal] of [
+      [
+        "gateway_deployment_reference",
+        `${good.gateway_deployment_reference}-superseded`,
+        "not the current revision's",
+      ],
+      ["gateway_certificate_spki_sha256", "f".repeat(64), "not the current revision's"],
+      ["dnssec_keyset_version", "f".repeat(64), "not the current revision's"],
+      ["chain_resource_sha256", "f".repeat(64), "not the current revision's"],
+      ["ownership_result_sha256", "f".repeat(64), "not bound to the root's session"],
+      ["provision_result_sha256", "f".repeat(64), "not bound to the root's session"],
+    ] as const) {
+      await expect(
+        adoptHnsRootZone(operator, request("rehearse", altered(field, value))),
+        field,
+      ).rejects.toThrow(refusal);
+    }
+
+    // An observation older than adoption admits, in a dry run as in a commit,
+    // and a zone whose serial at the primary moved after it was observed.
+    await expect(
+      adoptHnsRootZone(
+        operator,
+        request(
+          "dry-run",
+          await artifact({ zone: zone(8, true), serial: 8, observed_seconds_ago: 1_000 }),
+        ),
+      ),
+    ).rejects.toThrow("the observation is stale");
+    served = 9;
+    for (const mode of ["dry-run", "rehearse", "commit"] as const) {
+      await expect(adoptHnsRootZone(operator, request(mode))).rejects.toThrow(
+        "no longer serve the zone that was observed",
+      );
+    }
+    served = 8;
     expect(await pointers()).toEqual(before);
 
     // A dry run reads; a rehearsal promotes and rolls back. Neither moves anything.
-    expect(await adoptHnsRootZone(operator, request("dry-run"), added)).toMatchObject({
+    expect(await adoptHnsRootZone(operator, request("dry-run"))).toMatchObject({
       committed: false,
       delta: "wildcard_family_added",
       previous_generation: generation,
       next_generation: generation + 1,
       previous_zone_bytes_sha256: priorDigest,
-      next_zone_bytes_sha256: sha256(adoptedZone),
+      next_zone_bytes_sha256: sha256(zone(8, true)),
+      open_renewal_jobs: 0,
     });
-    expect((await adoptHnsRootZone(operator, request("rehearse"), added)).committed).toBe(false);
+    expect((await adoptHnsRootZone(operator, request("rehearse"))).committed).toBe(false);
     expect(await pointers()).toEqual(before);
     expect(await retainedDigest()).toBe(priorDigest);
 
     // Commit: DNS, app host and sale advance together, a new inventory exists,
-    // the retained zone is the observed one, and the app host still resolves.
-    expect((await adoptHnsRootZone(operator, request("commit"), added)).committed).toBe(true);
+    // the retained zone is the observed one, the app host still resolves, and
+    // the successor's operations carry adoption's own identifiers.
+    expect((await adoptHnsRootZone(operator, request("commit"))).committed).toBe(true);
     const adopted = await pointers();
     expect(adopted).toEqual([
       {
@@ -163,7 +222,7 @@ export async function verifyHnsZoneAdoption(
         inventories: (before[0]?.inventories ?? 0) + 1,
       },
     ]);
-    expect(await retainedDigest()).toBe(sha256(adoptedZone));
+    expect(await retainedDigest()).toBe(sha256(zone(8, true)));
     expect(
       (
         await admin.query(
@@ -171,29 +230,67 @@ export async function verifyHnsZoneAdoption(
         )
       ).rows[0]?.stable_chain_delegation_matches,
     ).toBe(true);
-
-    // The adopted root is valid for two days. The fence now admits a change,
-    // and while that change runs nothing else can take the root's pointer
-    // row, which a renewal claim shares. It writes nothing itself.
     expect(
-      await withHnsRootZoneAdoptionFence(
-        operator,
-        { root_label: "newroot", minimum_serving_validity_seconds: 3_600 },
-        async (fenced) => {
-          await expect(shareRoot()).rejects.toMatchObject({ code: "55P03" });
-          return fenced.current_generation;
-        },
-      ),
+      (
+        await admin.query<{ adoption: number; renewal: number }>(
+          `SELECT count(*) FILTER (WHERE operation_id LIKE 'hns-zone-adoption:%')::int AS adoption,
+                  count(*) FILTER (WHERE operation_id LIKE $1)::int AS renewal
+             FROM hns_dns_zone_health_operations`,
+          [`hns-inventory-renewal:%${added.result_sha256}`],
+        )
+      ).rows[0],
+    ).toEqual({ adoption: 1, renewal: 0 });
+    // The same observation cannot be adopted twice: its zone is now retained.
+    await expect(adoptHnsRootZone(operator, request("rehearse"))).rejects.toThrow(
+      "the SOA serial did not increase",
+    );
+
+    // The adopted root is valid for two days. The fence now admits a
+    // departing change, and while that change runs nothing else can take the
+    // session row or the pointer row, which a renewal claim shares and a
+    // renewal preparation takes; a row that only refers to the session can
+    // still be inserted. It writes nothing itself.
+    expect(
+      await withHnsRootZoneAdoptionFence(operator, fence(true), async (fenced) => {
+        for (const [table, column] of [
+          ["hns_dns_zone_activation_current", "canonical_root"],
+          ["hns_root_import_sessions", "root_label"],
+        ] as const) {
+          await expect(probe(table, column, "SHARE"), table).rejects.toMatchObject({
+            code: "55P03",
+          });
+          await expect(probe(table, column, "UPDATE"), table).rejects.toMatchObject({
+            code: "55P03",
+          });
+        }
+        await probe("hns_root_import_sessions", "root_label", "KEY SHARE");
+        return fenced.current_generation;
+      }),
     ).toBe(generation + 1);
-    await shareRoot();
+    await probe("hns_dns_zone_activation_current", "canonical_root", "SHARE");
     await expect(
-      withHnsRootZoneAdoptionFence(
-        operator,
-        { root_label: "newroot", minimum_serving_validity_seconds: 604_800 },
-        async () => "changed",
-      ),
+      withHnsRootZoneAdoptionFence(operator, fence(true, 604_800), async () => "changed"),
     ).rejects.toThrow("too close to expiry");
     expect(await pointers()).toEqual(adopted);
+
+    // A fence whose database connection is lost while the change runs fails,
+    // and tells the change so through its signal.
+    const dropped = new Client({ connectionString: connection });
+    await dropped.connect();
+    dropped.on("error", () => undefined);
+    const backend = (await dropped.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
+      ?.pid;
+    let aborted = false;
+    await expect(
+      withHnsRootZoneAdoptionFence(dropped, fence(true), async (_state, signal) => {
+        await admin.query("SELECT pg_terminate_backend($1)", [backend]);
+        for (let waited = 0; waited < 50 && !signal.aborted; waited += 1) await Bun.sleep(100);
+        aborted = signal.aborted;
+        return "changed";
+      }),
+    ).rejects.toThrow();
+    expect(aborted).toBe(true);
+    await dropped.end().catch(() => undefined);
 
     // Ordinary renewal afterwards. The preparation now holds a renewal to the
     // adopted zone: an observation of the earlier zone ends the job, and one
@@ -238,29 +335,69 @@ export async function verifyHnsZoneAdoption(
       (
         await finalizeImportedInventoryRenewal(operator, {
           ...lease,
-          ...(await artifact(adoptedZone)),
+          ...(await artifact({ zone: zone(8, true), serial: 8 })),
         })
       ).outcome,
     ).toBe("ready");
     expect((await pointers())[0]).toMatchObject({ dns: String(generation + 2) });
-    expect(await retainedDigest()).toBe(sha256(adoptedZone));
+    expect(await retainedDigest()).toBe(sha256(zone(8, true)));
 
-    // An open renewal job for the current generation fences adoption.
+    // The addition is withdrawn after it was committed: the exact reverse is
+    // adopted, and the retained zone is again one without the records.
+    served = 9;
+    const removed = await artifact({ zone: zone(9, false), serial: 9 });
+    await expect(
+      adoptHnsRootZone(operator, request("rehearse", removed, "wildcard_family_added")),
+    ).rejects.toThrow("the zone difference is wildcard_family_removed, not the one intended");
+    expect(
+      await adoptHnsRootZone(operator, request("commit", removed, "wildcard_family_removed")),
+    ).toMatchObject({ committed: true, next_generation: generation + 3 });
+    expect(await retainedDigest()).toBe(sha256(zone(9, false)));
+
+    // A change made and undone before it was adopted leaves a later serial
+    // and nothing else, which is adopted as that.
+    served = 11;
+    const undone = await artifact({ zone: zone(11, false), serial: 11 });
+    expect(
+      await adoptHnsRootZone(operator, request("commit", undone, "serial_only")),
+    ).toMatchObject({ committed: true, delta: "serial_only", next_generation: generation + 4 });
+    expect(await retainedDigest()).toBe(sha256(zone(11, false)));
+
+    // A renewal job open for the current generation refuses a departing
+    // change at the fence, and not a returning one.
     await admin.query("SELECT * FROM schedule_hns_root_health_renewals_v1(25,259200,7200)");
     await expect(
-      adoptHnsRootZone(
-        operator,
-        request("rehearse", await artifact(new TextEncoder().encode("later"))),
-        added,
-      ),
-    ).rejects.toThrow("renewal job for the root's current generation is open");
-    await expect(
-      withHnsRootZoneAdoptionFence(
-        operator,
-        { root_label: "newroot", minimum_serving_validity_seconds: 3_600 },
-        async () => "changed",
-      ),
-    ).rejects.toThrow("renewal job for the root's current generation is open");
+      withHnsRootZoneAdoptionFence(operator, fence(true), async () => "changed"),
+    ).rejects.toThrow("a renewal job for the root's current generation is open");
+    expect(
+      await withHnsRootZoneAdoptionFence(operator, fence(false), async () => "withdrawn"),
+    ).toBe("withdrawn");
+
+    // It does not stop an adoption. The receipt counts it, and the job ends
+    // as superseded when it is next claimed, without being handed out.
+    served = 12;
+    const again = await artifact({ zone: zone(12, true), serial: 12 });
+    expect(await adoptHnsRootZone(operator, request("commit", again))).toMatchObject({
+      committed: true,
+      open_renewal_jobs: 1,
+      next_generation: generation + 5,
+    });
+    expect(
+      (
+        await admin.query(
+          "SELECT * FROM claim_hns_root_health_renewal_job_v1('adoption-executor',60)",
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await admin.query<{ state: string; failure_code: string }>(
+          `SELECT state, failure_code FROM hns_root_health_renewal_jobs
+            WHERE activation_generation = $1`,
+          [generation + 4],
+        )
+      ).rows,
+    ).toEqual([{ state: "terminal", failure_code: "generation_superseded" }]);
   } finally {
     await operator.end();
     await bystander.end();

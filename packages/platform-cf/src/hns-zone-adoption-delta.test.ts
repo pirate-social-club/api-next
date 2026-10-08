@@ -200,11 +200,48 @@ describe("zone adoption delta", () => {
     expect(() => delta(retainedRecords(), elsewhere)).toThrow("more than the two added types");
   });
 
+  test("refuses malformed SOA and NSEC wire data and more than one of either", () => {
+    const withSoa = (rdata: string) =>
+      replace(adoptedRecords(8), root, 6, [root, 6, 1, 300, rdata]);
+    // A SOA cut short, one with a trailing octet, and a compressed name.
+    expect(() => delta(retainedRecords(), withSoa(soa(8).slice(0, -2)))).toThrow(
+      "SOA is malformed",
+    );
+    expect(() => delta(retainedRecords(), withSoa(`${soa(8)}00`))).toThrow("SOA is malformed");
+    expect(() => delta(retainedRecords(), withSoa(`c00c${soa(8).slice(4)}`))).toThrow(
+      "malformed name",
+    );
+    const twoSoas: Record[] = [...adoptedRecords(8), [root, 6, 1, 300, soa(9)]];
+    expect(() => delta(retainedRecords(), twoSoas)).toThrow("exactly one observed SOA");
+
+    const withNsec = (rdata: string) =>
+      replace(adoptedRecords(8), wildcard, 47, [wildcard, 47, 1, 300, rdata]);
+    const next = name(`app.${root}`);
+    // A bitmap window longer than its data, an empty window, and windows out of order.
+    expect(() => delta(retainedRecords(), withNsec(`${next}0009ff`))).toThrow("NSEC is malformed");
+    expect(() => delta(retainedRecords(), withNsec(`${next}0000`))).toThrow("NSEC is malformed");
+    expect(() => delta(retainedRecords(), withNsec(`${next}0101400001ff`))).toThrow(
+      "NSEC is malformed",
+    );
+    const twoNsecs: Record[] = [
+      ...adoptedRecords(8),
+      [wildcard, 47, 1, 300, nsec(root, [1, 28, 46, 47, 52, 65])],
+    ];
+    expect(() => delta(retainedRecords(), twoNsecs)).toThrow("exactly one wildcard NSEC");
+    // More than one wildcard address is not a zone this rule models.
+    const twoAddresses: Record[] = [...adoptedRecords(8), [wildcard, 1, 1, 300, "c0000263"]];
+    expect(() => delta(retainedRecords(), twoAddresses)).toThrow("outside the wildcard address");
+    // The serial is compared as a plain unsigned number, so a wrap is refused.
+    expect(() => delta(retainedRecords(0xffffffff), adoptedRecords(1))).toThrow("did not increase");
+  });
+
   test("refuses changed wildcard address records, NSEC3 zones and anything that is not a canonical zone for the root", () => {
     const again = replace(adoptedRecords(9), wildcard, 65, [wildcard, 65, 1, 300, "000100"]);
     expect(() => delta(adoptedRecords(8), again)).toThrow("rather than being added or removed");
     const hashed: Record[] = [...retainedRecords(), [root, 51, 1, 300, "0100000000"]];
     expect(() => delta(hashed, adoptedRecords())).toThrow("NSEC3");
+    const hashedDenial: Record[] = [...adoptedRecords(), [`a1b2.${root}`, 50, 1, 300, "01000000"]];
+    expect(() => delta(retainedRecords(), hashedDenial)).toThrow("NSEC3");
     expect(() =>
       requireHnsZoneAdoptionDeltaV1({
         root_label: root,
