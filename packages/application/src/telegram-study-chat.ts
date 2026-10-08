@@ -247,12 +247,9 @@ export async function handleTelegramStudyChat(
           await respond(text(t("under16")));
           return;
         }
-        state = {
-          ...state,
-          ageInboxId: inbox.id,
-          selectionInboxId: inbox.id,
-          token: services.vault.token(),
-        };
+        // The token is kept: until a lesson starts, the visible buttons must still work, so
+        // a decline sent while this item waits for a retry is honoured, not discarded.
+        state = { ...state, ageInboxId: inbox.id, selectionInboxId: inbox.id };
         await persist();
       } else {
         if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {

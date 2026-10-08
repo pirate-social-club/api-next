@@ -20,7 +20,14 @@ community owner can read messages and listen to voice notes, and that no
 sign-in is needed. It offers "I'm 16 or older" and "I'm under 16". Only the
 affirmative button, pressed by the same sender against their current unexpired
 song choice, creates anything. Declining, a stale or expired button, typed text,
-/study and /resume create no account. The first card follows immediately.
+/study and /resume create no account. The first card follows immediately. Both
+buttons stay valid until a lesson actually starts, so a decline sent while an
+interrupted affirmation waits for its retry is honoured.
+
+The question is asked once per community bot for every sender, whether or not
+a practice account or an account association already exists. The age
+attestation is recorded once, when the account is created. Asking uniformly
+keeps the question from telling a bot owner anything about the sender.
 
 The bot creates or recovers the actual Study session before displaying its real
 card count and first-pass threshold. A restricted learner sees no persona line.
@@ -67,6 +74,9 @@ phase-two recovery and promotion contract.
 Sessions for a restricted learner are practice only. The Telegram admission
 freezes the marker, and a trigger on study_sessions_v2 refuses any session for a
 restricted learner account that is not practice only, whichever path starts it.
+That trigger runs on every Study session insert, including ordinary website
+Study, so it reads the reservation with definer rights and needs no table grant
+on the serving role.
 Recovery, claiming, promotion and erasure tooling are phase-two work.
 
 Each card shows the line's text. The learner replies to that message with a
@@ -147,7 +157,8 @@ objects, SELECT/INSERT/UPDATE, DELETE only on the three temporary/link tables,
 and no DELETE on consent revisions, chat progress or interface preferences. TRUNCATE and owner-equivalent
 access are refused throughout.
 
-The two restricted-identity tables need SELECT and INSERT only, and enrollment
+The two restricted-identity tables need SELECT and INSERT only: admission reads
+them without a row lock, because a row lock would require UPDATE. Enrollment
 also inserts into users, account_minimum_age_attestations, personas,
 persona_profiles, persona_wallet_assignments and persona_community_bindings
 through the serving role. They are not part of the six-object guard, because a

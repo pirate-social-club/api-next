@@ -153,6 +153,7 @@ function fixture() {
   let learnerAccount = false,
     enrollment: "issue" | "unavailable" = "issue";
   const enrollments: boolean[] = [];
+  let failEnrollment = false;
   const restrictedGrant: TelegramStudyGrant = {
     accountId: "restricted-learner",
     personaId: "restricted-persona",
@@ -206,6 +207,7 @@ function fixture() {
     grant: async () => granted,
     enroll: async (_lease, input) => {
       enrollments.push(input.affirmed);
+      if (failEnrollment) throw Error("enrollment unavailable");
       if (enrollment === "unavailable") return "unavailable";
       if (!learnerAccount && !input.affirmed) return "age_required";
       learnerAccount = true;
@@ -328,6 +330,10 @@ function fixture() {
     enrollmentUnavailable: () => {
       enrollment = "unavailable";
     },
+    enrollmentFailure: (value: boolean) => {
+      failEnrollment = value;
+    },
+    learnerExists: () => learnerAccount,
     age: (id: string, answer: "age" | "minor" = "age") =>
       press(id, `study:${state.token}:${answer}`),
     expire: () => {
@@ -411,6 +417,24 @@ test("a retried affirmation replays one identity and one lesson start", async ()
   expect(f.enrollments).toEqual([false, true]);
   expect(f.counts().starts).toBe(1);
   expect(f.replies.at(-1)?.text).toContain("Read aloud");
+});
+test("a decline sent while a failed affirmation awaits retry is honoured", async () => {
+  const f = fixture();
+  f.grant(null);
+  await f.begin();
+  const visible = f.state().token;
+  f.enrollmentFailure(true);
+  await expect(f.age("affirm")).rejects.toThrow("enrollment unavailable");
+  f.enrollmentFailure(false);
+  // The buttons the learner can still see keep working until a lesson starts.
+  expect(f.state().token).toBe(visible);
+  await f.press("decline", `study:${visible}:minor`);
+  expect(f.replies.at(-1)?.text).toContain("No profile was created");
+  await f.press("affirm", `study:${visible}:age`);
+  expect(f.replies.at(-1)?.text).toContain("ended");
+  expect(f.learnerExists()).toBe(false);
+  expect(f.counts().starts).toBe(0);
+  expect(f.enrollments.filter(Boolean)).toHaveLength(1);
 });
 test("a known restricted learner starts without another age question; exhausted limits start nothing", async () => {
   const f = fixture();

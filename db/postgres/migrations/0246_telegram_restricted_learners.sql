@@ -46,7 +46,11 @@ CREATE TRIGGER telegram_restricted_study_personas_immutable BEFORE UPDATE ON tel
   FOR EACH ROW EXECUTE FUNCTION protect_telegram_restricted_identity();
 
 -- A restricted learner's sessions are practice only, whatever path started them.
-CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger LANGUAGE plpgsql AS $$
+-- Every Study session insert runs this, including ordinary website Study, so it
+-- reads the reservation with definer rights instead of requiring a table grant
+-- on each serving role.
+CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger
+  LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   IF NOT NEW.telegram_practice_only AND EXISTS (
     SELECT 1 FROM telegram_restricted_learners WHERE account_id=NEW.account_id
@@ -56,5 +60,13 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DO $restricted_learner_practice_only$
+BEGIN
+  EXECUTE format(
+    'ALTER FUNCTION require_restricted_learner_practice_only() SET search_path TO %I, pg_temp',
+    current_schema()
+  );
+END;
+$restricted_learner_practice_only$;
 CREATE TRIGGER study_restricted_learner_practice_only BEFORE INSERT ON study_sessions_v2
   FOR EACH ROW EXECUTE FUNCTION require_restricted_learner_practice_only();

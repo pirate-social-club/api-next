@@ -29,7 +29,8 @@ const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""
 suite("restricted Telegram practice identity", () => {
   test("one affirmed learner account per Telegram user, one neutral persona per community, practice only", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
-    const schema = `api_next_telegram_learner_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const schema = `api_next_telegram_learner_${suffix}`;
     const scoped = `${connectionString}${connectionString.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
     const admin = new Client({ connectionString });
     await admin.connect();
@@ -39,8 +40,30 @@ suite("restricted Telegram practice identity", () => {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
       await insertStudySongFixture(admin);
       await insertTelegramPracticeReadinessFixture(admin);
-      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      // Everything below runs as a serving role holding only the documented grants: no
+      // UPDATE or DELETE on the two reservation tables. A second role has no access to them.
+      const servingRole = `telegram_learner_serving_${suffix}`;
+      const websiteRole = `telegram_learner_website_${suffix}`;
+      for (const role of [servingRole, websiteRole]) {
+        await admin.query(`CREATE ROLE ${role} NOLOGIN`);
+        await admin.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${role}`);
+        await admin.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoteIdentifier(schema)} TO ${role}`,
+        );
+      }
+      await admin.query(
+        `REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners, telegram_restricted_study_personas FROM ${servingRole}`,
+      );
+      await admin.query(
+        `REVOKE ALL ON telegram_restricted_learners, telegram_restricted_study_personas FROM ${websiteRole}`,
+      );
+      const scopedAs = (role: string) =>
+        `${connectionString}${connectionString.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema} -c role=${role}`)}`;
+      const runtime = makeDirectPostgresControlPlaneLayer(scopedAs(servingRole));
       const database = makeTelegramDatabase(runtime);
+      expect(await database.query("SELECT current_user::text AS role")).toEqual([
+        { role: servingRole },
+      ]);
       const count = async (sql: string, values: readonly unknown[] = []) =>
         Number(
           (await admin.query(`SELECT count(*)::integer AS n FROM ${sql}`, [...values])).rows[0].n,
@@ -222,8 +245,11 @@ suite("restricted Telegram practice identity", () => {
         await connectBot(communityId, botId);
         await startChat(communityId, "555");
         const elsewhere = await open(communityId, botId, "555");
-        const issued = restrictedGrant(await elsewhere.learners.enroll(elsewhere.lease, false));
+        // Every sender is asked once per community, so the question reveals nothing.
+        expect(await elsewhere.learners.enroll(elsewhere.lease, false)).toBe("age_required");
+        const issued = restrictedGrant(await elsewhere.learners.enroll(elsewhere.lease, true));
         expect(issued.accountId).toBe(grant.accountId);
+        expect(await elsewhere.learners.enroll(elsewhere.lease, false)).toEqual(issued);
         personas.add(issued.personaId);
       }
       expect(personas.size).toBe(3);
@@ -295,11 +321,32 @@ suite("restricted Telegram practice identity", () => {
             timezone: "UTC",
           }),
         );
+      // Ordinary website Study still starts under a role with no access to the reservations.
+      const website = await Effect.runPromise(
+        Effect.scoped(
+          makeControlPlaneStudyV2Repository()
+            .startSession({
+              accountId: "study-account",
+              communityId: "study-community",
+              createdAt: new Date().toISOString(),
+              targetLanguage: null,
+              idempotencyKey: "website-session-command",
+              learnerBand: null,
+              personaId: "study-persona",
+              postId: "study-post",
+              requestHash: "6".repeat(64),
+              sessionId: "website-session",
+              timezone: "UTC",
+            })
+            .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(scopedAs(websiteRole)))),
+        ),
+      );
+      expect(website.items).toHaveLength(4);
       // Even a path without the Telegram admission cannot open a rewardable session.
       await expect(
         start(makeControlPlaneStudyV2Repository(), "ordinary-session"),
       ).rejects.toMatchObject({ _tag: "StudyV2StoreFailed", reason: "constraint" });
-      expect(await count("study_sessions_v2")).toBe(0);
+      expect(await count("study_sessions_v2 WHERE account_id=$1", [grant.accountId])).toBe(0);
       const study = makeControlPlaneStudyV2Repository(
         telegramStudyAdmission(first.lease, grant, ["study-post"]),
       );
@@ -308,7 +355,8 @@ suite("restricted Telegram practice identity", () => {
       expect(
         (
           await admin.query(
-            "SELECT account_id,persona_id,telegram_practice_only FROM study_sessions_v2",
+            "SELECT account_id,persona_id,telegram_practice_only FROM study_sessions_v2 WHERE account_id=$1",
+            [grant.accountId],
           )
         ).rows,
       ).toEqual([
@@ -368,6 +416,8 @@ suite("restricted Telegram practice identity", () => {
       expect(await count("activity_qualifications")).toBe(0);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      for (const role of ["serving", "website"])
+        await admin.query(`DROP ROLE IF EXISTS telegram_learner_${role}_${suffix}`);
       await admin.end();
     }
   }, 120_000);

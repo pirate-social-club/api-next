@@ -98,8 +98,11 @@ export function makeTelegramStudyLearnerStore(
           return existing[0].usable === true
             ? restricted(String(existing[0].account_id), String(existing[0].persona_id))
             : "unavailable";
+        // Every sender answers the age question once per community, so the question never
+        // tells a bot owner whether an account or an association already exists.
+        if (!affirmed) return "age_required";
         // An associated account must not gain a second promotable account. Its sender gets
-        // an isolated owner for this bot, which needs its own explicit age answer.
+        // an isolated owner for this bot.
         const associated = await query(
           "SELECT 1 FROM telegram_account_associations WHERE telegram_user_id=$1",
           [sender.telegramUserId],
@@ -116,7 +119,6 @@ export function makeTelegramStudyLearnerStore(
           if (learners[0].status !== "active") return "unavailable";
           accountId = String(learners[0].account_id);
         } else {
-          if (!affirmed) return "age_required";
           accountId = identifier("usr");
           // The account row provisions its reserved first persona; no handle or credential exists.
           await query("INSERT INTO users(user_id,status) VALUES($1,'active')", [accountId]);

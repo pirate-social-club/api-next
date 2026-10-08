@@ -119,7 +119,7 @@ export interface TelegramStudyServices {
   readonly grant: (sender: TelegramStudySender) => Promise<TelegramStudyGrant | null>;
   /**
    * Issues the sender's restricted practice identity for this community on a deliberate
-   * lesson start. A new learner account requires the explicit 16-or-older affirmation.
+   * lesson start. A first lesson in a community requires the explicit 16-or-older affirmation.
    */
   readonly enroll: (
     lease: TelegramStudyLease,

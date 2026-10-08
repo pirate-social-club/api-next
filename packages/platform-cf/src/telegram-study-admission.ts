@@ -8,7 +8,11 @@ import { Effect } from "effect";
 import type { StudyV2Admission } from "./study-v2-repository.ts";
 import { TELEGRAM_STUDY_READY_SQL } from "./telegram-study-store.ts";
 
-/** The restricted practice identity: bot ingress evidence, never a linked-account grant. */
+/**
+ * The restricted practice identity: bot ingress evidence, never a linked-account grant.
+ * The reservation tables are immutable and the serving role holds no UPDATE on them, so
+ * they are read without a row lock.
+ */
 const RESTRICTED_ACCEPTANCE_SQL = `
   SELECT chat.lease_until>clock_timestamp() AS lease_valid FROM telegram_restricted_study_personas s
   JOIN telegram_restricted_learners l USING(account_id)
@@ -29,7 +33,7 @@ const RESTRICTED_ACCEPTANCE_SQL = `
     AND chat.lease_token=$7
     AND EXISTS (SELECT 1 FROM community_telegram_private_chats started
       WHERE started.community_id=$1 AND started.bot_epoch=$6 AND started.telegram_user_id=$3)
-  FOR SHARE OF s,l,p,b,chat`;
+  FOR SHARE OF p,b,chat`;
 
 export function telegramStudyAdmission(
   lease: TelegramStudyLease,

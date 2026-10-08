@@ -19891,7 +19891,8 @@ END;
 $$;
 
 CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 BEGIN
   IF NOT NEW.telegram_practice_only AND EXISTS (
