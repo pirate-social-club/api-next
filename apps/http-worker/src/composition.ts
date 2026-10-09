@@ -1907,17 +1907,6 @@ export async function createProductionHttpWorker(
                 endpoint.path === "/personas/:personaId/retire");
             if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
           }
-          const ageAttestationExempt =
-            endpoint.path === "/me/minimum-age-attestation" ||
-            endpoint.path === "/auth/session/logout";
-          if (!ageAttestationExempt) {
-            const attested = yield* ageAccessStore.hasMinimumAgeAttestation({
-              accountId: input.principal?.subject ?? "",
-            });
-            if (!attested) {
-              return yield* new AuthError({ message: "Minimum age attestation required" });
-            }
-          }
         }),
       ),
   });

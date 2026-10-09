@@ -69,11 +69,6 @@ export type IdentityRegistrationInput = {
   readonly provider: "privy";
   readonly providerAppId: string;
   readonly providerSubject: string;
-  readonly minimumAgeAttestation: {
-    readonly version: "minimum-age-attestation-v1";
-    readonly minimum_age: 16;
-    readonly affirmed: true;
-  };
   readonly credentialId: string;
   readonly userId: string;
   readonly account: unknown;
@@ -547,24 +542,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         });
         if (existing.rows.length > 1) return yield* Effect.fail(invalid());
         if (existing.rows.length === 1) {
-          const outcome = yield* credentialOutcome(existing.rows[0]);
-          if (outcome.kind === "already_registered") {
-            yield* transaction.execute({
-              label: "identity.registration.backfill-minimum-age-attestation",
-              text: `INSERT INTO account_minimum_age_attestations
-                      (account_id, version, minimum_age, affirmed)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (account_id) DO NOTHING`,
-              values: [
-                outcome.canonicalUserId,
-                input.minimumAgeAttestation.version,
-                input.minimumAgeAttestation.minimum_age,
-                input.minimumAgeAttestation.affirmed,
-              ],
-              readonly: false,
-            });
-          }
-          return outcome;
+          return yield* credentialOutcome(existing.rows[0]);
         }
 
         const handleCollision = yield* transaction.execute({
@@ -590,21 +568,6 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         if (insertedUser.rowCount !== 1) {
           return yield* Effect.fail(new IdentityRegistrationRace({ reason: "user_id" }));
         }
-
-        yield* transaction.execute({
-          label: "identity.registration.insert-minimum-age-attestation",
-          text: `INSERT INTO account_minimum_age_attestations
-                  (account_id, version, minimum_age, affirmed, attested_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz)`,
-          values: [
-            input.userId,
-            input.minimumAgeAttestation.version,
-            input.minimumAgeAttestation.minimum_age,
-            input.minimumAgeAttestation.affirmed,
-            document.user.created_at,
-          ],
-          readonly: false,
-        });
 
         const insertedCredential = yield* transaction.execute({
           label: "identity.registration.insert-credential",
