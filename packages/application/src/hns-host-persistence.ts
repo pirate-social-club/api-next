@@ -1,3 +1,4 @@
+import { canonicalJson } from "@pirate/domain";
 import type { Effect } from "effect";
 import {
   decodeHnsAuthorityInventoryBytes,
@@ -1022,7 +1023,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
     throw new HnsAuthorityEmitRefusal("noncanonical_candidate_artifact");
   }
   const generations = deriveHnsAuthoritySuccessorGenerationsV1(input.generation_snapshot);
-  requireHnsAuthorityCandidateArtifactSemanticsV1({
+  await requireHnsAuthorityCandidateArtifactSemanticsV1({
     root_label: input.root_label,
     observed_at: input.observed_at,
     chain_authority_digest: chainAuthorityDigest,
@@ -1076,7 +1077,7 @@ export async function prepareHnsAuthoritySuccessorCandidateV1(
   };
 }
 
-function requireHnsAuthorityCandidateArtifactSemanticsV1(
+async function requireHnsAuthorityCandidateArtifactSemanticsV1(
   input: Readonly<{
     root_label: string;
     observed_at: string;
@@ -1097,7 +1098,7 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
       chain_anchor_median_time: number;
     }>;
   }>,
-): void {
+): Promise<void> {
   const inventory = input.inventory.inventory;
   const dns = input.dns_zone_activation;
   const app = input.app_host_transition;
@@ -1281,6 +1282,20 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     Date.parse(inventory.published_at) <= observedAt &&
     observedAt < Date.parse(inventory.expires_at);
   const observedDnsKeyTag = input.views[0].dnskey_key_tag;
+  const observedDnsKeysetDigest = await sha256Hex(
+    new TextEncoder().encode(
+      canonicalJson(
+        [...(input.views[0].derived_ds ?? [])]
+          .sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2])
+          .map(([key_tag, algorithm, digest_type, digest]) => ({
+            key_tag,
+            algorithm,
+            digest_type,
+            digest,
+          })),
+      ),
+    ),
+  );
   const healthChecksPassed =
     health.delegation_matches &&
     health.ds_authenticates_zone &&
@@ -1304,7 +1319,8 @@ function requireHnsAuthorityCandidateArtifactSemanticsV1(
     dns.dns_authority_generation !== input.generations.dns_activation_generation ||
     dns.zone_revision !== input.generations.dns_activation_generation ||
     observedDnsKeyTag === null ||
-    dns.dnssec_keyset_version !== `key-tag-${observedDnsKeyTag}` ||
+    (dns.dnssec_keyset_version !== `key-tag-${observedDnsKeyTag}` &&
+      dns.dnssec_keyset_version !== observedDnsKeysetDigest) ||
     input.views.some(
       (view) =>
         view.zone_bytes_digest !== dns.zone_bytes_digest ||
