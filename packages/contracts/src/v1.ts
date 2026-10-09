@@ -1661,7 +1661,7 @@ export const RegisterIdentity = endpoint({
   request: {
     body: Schema.Struct({
       privy_access_token: Schema.String,
-      minimum_age_attestation: MinimumAgeAttestationV1,
+      minimum_age_attestation: Schema.optionalKey(MinimumAgeAttestationV1),
     }),
   },
   response: Schema.Union([

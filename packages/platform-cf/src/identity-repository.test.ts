@@ -356,11 +356,6 @@ describe("identity credential registration", () => {
     credentialId: "credential-new",
     userId: "user-new",
     account: account("user-new", "handle-new", "generated-new.pirate"),
-    minimumAgeAttestation: {
-      version: "minimum-age-attestation-v1" as const,
-      minimum_age: 16 as const,
-      affirmed: true as const,
-    },
   };
 
   test("creates the account, handle, and credential in one transaction", async () => {
@@ -382,7 +377,6 @@ describe("identity credential registration", () => {
       "identity.registration.lock-credential",
       "identity.registration.check-handle",
       "identity.registration.insert-user",
-      "identity.registration.insert-minimum-age-attestation",
       "identity.registration.insert-credential",
     ]);
     expect(fake.labels.some((label) => label.includes("delete"))).toBe(false);
@@ -424,10 +418,7 @@ describe("identity credential registration", () => {
       canonicalUserId: "user-new",
       account: input.account,
     });
-    expect(fake.labels).toEqual([
-      "identity.registration.lock-credential",
-      "identity.registration.backfill-minimum-age-attestation",
-    ]);
+    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
   });
 
   test("classifies an unrelated credential-id conflict for bounded regeneration", async () => {

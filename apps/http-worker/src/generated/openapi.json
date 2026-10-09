@@ -75168,8 +75168,7 @@
                   }
                 },
                 "required": [
-                  "privy_access_token",
-                  "minimum_age_attestation"
+                  "privy_access_token"
                 ],
                 "additionalProperties": false
               }
