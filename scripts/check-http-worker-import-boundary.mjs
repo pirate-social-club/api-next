@@ -4,6 +4,8 @@ import { relative, resolve } from "node:path";
 const root = resolve("apps/http-worker/src");
 const violations = [];
 const canonicalApplicationImports = new Set([
+  // Frozen proved-context/account types for the disabled browser-participation adapter.
+  "@pirate/application/guest-participation-authority",
   "@pirate/application/money/community-purchase-funding",
   "@pirate/application/money/community-purchase-funding-admission",
   "@pirate/application/money/community-purchase-funding-observation",
