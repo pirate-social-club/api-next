@@ -194696,10 +194696,81 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 512
+                },
+                {
+                  "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                }
+              ]
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "community_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 512
+                      },
+                      {
+                        "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                      }
+                    ]
+                  },
+                  "karaoke_revision_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 512
+                      },
+                      {
+                        "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                      }
+                    ]
+                  },
+                  "playback_ref": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 512
+                      },
+                      {
+                        "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "community_id",
+                  "karaoke_revision_id",
+                  "playback_ref"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success",
@@ -194713,6 +194784,78 @@
                       "enum": [
                         "instrumental"
                       ]
+                    },
+                    "post_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 512
+                        },
+                        {
+                          "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                        }
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 512
+                        },
+                        {
+                          "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                        }
+                      ]
+                    },
+                    "karaoke_revision_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 512
+                        },
+                        {
+                          "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                        }
+                      ]
+                    },
+                    "playback_audio": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "instrumental"
+                          ]
+                        },
+                        "ref": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 512
+                            },
+                            {
+                              "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "ref"
+                      ],
+                      "additionalProperties": false
                     },
                     "playback_url": {
                       "type": "string"
@@ -194736,6 +194879,10 @@
                   },
                   "required": [
                     "kind",
+                    "post_id",
+                    "community_id",
+                    "karaoke_revision_id",
+                    "playback_audio",
                     "playback_url",
                     "expires_at",
                     "renew_after"

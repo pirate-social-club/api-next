@@ -231,7 +231,7 @@ suite("Karaoke playback source binding under a restricted reader", () => {
           "UPDATE media_timed_lyrics_artifacts SET artifact_sha256=repeat('d',64)",
           "UPDATE media_timed_lyrics_artifacts SET artifact_sha256=repeat('c',64)",
         ],
-      ]) {
+      ] as const) {
         await mutate(change);
         await refuse();
         await mutate(restore);

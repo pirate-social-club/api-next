@@ -213,19 +213,18 @@ const integer = (row: Row, key: string): number | null => {
 const decode = (value: unknown): KaraokeReadiness =>
   Schema.decodeUnknownSync(KaraokeReadinessSchema)(value);
 
-export const readKaraokeReadiness = (
+export const readKaraokeReadiness = Effect.fn("readKaraokeReadiness")(function* (
   input: {
     readonly communityId: string;
     readonly postId: string;
     readonly playbackViewerUserId?: string | null;
   },
   db: ControlPlaneTransaction,
-): Effect.Effect<KaraokeReadiness, ControlPlaneError> =>
-  Effect.gen(function* () {
-    const requirePlaybackAuthority = input.playbackViewerUserId !== undefined;
-    const source = yield* db.execute<Row>({
-      label: "karaoke-readiness.source",
-      text: `${requirePlaybackAuthority ? `WITH playable AS (${SONG_PLAYBACK_AUTHORITY_SQL})` : ""}
+): Effect.fn.Return<KaraokeReadiness, ControlPlaneError> {
+  const requirePlaybackAuthority = input.playbackViewerUserId !== undefined;
+  const source = yield* db.execute<Row>({
+    label: "karaoke-readiness.source",
+    text: `${requirePlaybackAuthority ? `WITH playable AS (${SONG_PLAYBACK_AUTHORITY_SQL})` : ""}
              SELECT post.post_type, post.status AS post_status, post.visibility,
                     publication.title, publication.audio_asset_ref,
                     publication.canonical_audio_sha256, publication.lyrics_status,
@@ -271,61 +270,61 @@ export const readKaraokeReadiness = (
                   : ""
               }
               WHERE post.community_id=${requirePlaybackAuthority ? "$4" : "$2"} AND post.post_id=$1`,
-      values: requirePlaybackAuthority
-        ? [input.postId, input.playbackViewerUserId, "instrumental", input.communityId]
-        : [input.postId, input.communityId],
-      readonly: true,
-    });
-    const row = source.rows[0];
-    if (
-      source.rows.length !== 1 ||
-      row === undefined ||
-      row.post_type !== "song" ||
-      row.post_status !== "published" ||
-      row.visibility !== "public"
-    ) {
-      return decode({ state: "unavailable", reason: "not_a_song" });
-    }
-    if (row.lyrics_status !== "ready" || integer(row, "lyrics_revision") === null) {
-      return decode({ state: "unavailable", reason: "lyrics_not_accepted" });
-    }
-    const instrumentalRef = string(row, "instrumental_ref");
-    const instrumentalHash = string(row, "instrumental_sha256");
-    const vocalRef = string(row, "vocal_ref");
-    const vocalHash = string(row, "vocal_sha256");
-    if (
-      instrumentalRef === null ||
-      instrumentalHash === null ||
-      vocalRef === null ||
-      vocalHash === null
-    ) {
-      return decode({ state: "unavailable", reason: "stems_missing" });
-    }
-    if (row.alignment_status === "pending" || row.alignment_status === null) {
-      return decode({ state: "processing", reason: "alignment_pending" });
-    }
-    if (row.alignment_status !== "ready") {
-      return decode({ state: "unavailable", reason: "alignment_unavailable" });
-    }
-    const lyricsRevision = integer(row, "lyrics_revision");
-    const audioRef = string(row, "audio_asset_ref");
-    const audioHash = string(row, "canonical_audio_sha256");
-    const artifactHash = string(row, "artifact_sha256");
-    const title = string(row, "title");
-    if (
-      lyricsRevision === null ||
-      audioRef === null ||
-      audioHash === null ||
-      artifactHash === null ||
-      title === null ||
-      row.artifact === null ||
-      !isVocalAlignedArtifact(row.artifact, vocalRef, vocalHash)
-    ) {
-      return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
-    }
-    const catalog = yield* db.execute<Row>({
-      label: "karaoke-readiness.catalog",
-      text: `SELECT membership.ordinal, membership.lyric_line_id, version.canonical_text
+    values: requirePlaybackAuthority
+      ? [input.postId, input.playbackViewerUserId, "instrumental", input.communityId]
+      : [input.postId, input.communityId],
+    readonly: true,
+  });
+  const row = source.rows[0];
+  if (
+    source.rows.length !== 1 ||
+    row === undefined ||
+    row.post_type !== "song" ||
+    row.post_status !== "published" ||
+    row.visibility !== "public"
+  ) {
+    return decode({ state: "unavailable", reason: "not_a_song" });
+  }
+  if (row.lyrics_status !== "ready" || integer(row, "lyrics_revision") === null) {
+    return decode({ state: "unavailable", reason: "lyrics_not_accepted" });
+  }
+  const instrumentalRef = string(row, "instrumental_ref");
+  const instrumentalHash = string(row, "instrumental_sha256");
+  const vocalRef = string(row, "vocal_ref");
+  const vocalHash = string(row, "vocal_sha256");
+  if (
+    instrumentalRef === null ||
+    instrumentalHash === null ||
+    vocalRef === null ||
+    vocalHash === null
+  ) {
+    return decode({ state: "unavailable", reason: "stems_missing" });
+  }
+  if (row.alignment_status === "pending" || row.alignment_status === null) {
+    return decode({ state: "processing", reason: "alignment_pending" });
+  }
+  if (row.alignment_status !== "ready") {
+    return decode({ state: "unavailable", reason: "alignment_unavailable" });
+  }
+  const lyricsRevision = integer(row, "lyrics_revision");
+  const audioRef = string(row, "audio_asset_ref");
+  const audioHash = string(row, "canonical_audio_sha256");
+  const artifactHash = string(row, "artifact_sha256");
+  const title = string(row, "title");
+  if (
+    lyricsRevision === null ||
+    audioRef === null ||
+    audioHash === null ||
+    artifactHash === null ||
+    title === null ||
+    row.artifact === null ||
+    !isVocalAlignedArtifact(row.artifact, vocalRef, vocalHash)
+  ) {
+    return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
+  }
+  const catalog = yield* db.execute<Row>({
+    label: "karaoke-readiness.catalog",
+    text: `SELECT membership.ordinal, membership.lyric_line_id, version.canonical_text
                FROM localization_lyrics_revision_lines AS membership
                JOIN localization_lyric_line_versions AS version
                  ON version.community_id=membership.community_id
@@ -336,47 +335,47 @@ export const readKaraokeReadiness = (
               WHERE membership.community_id=$1 AND membership.post_id=$2
                 AND membership.lyrics_revision=$3
               ORDER BY membership.ordinal`,
-      values: [input.communityId, input.postId, lyricsRevision],
-      readonly: true,
-    });
-    const catalogLines = catalog.rows.flatMap((line) => {
-      const id = string(line, "lyric_line_id");
-      const index = integer(line, "ordinal");
-      const lineText = string(line, "canonical_text");
-      return id === null || index === null || lineText === null
-        ? []
-        : [{ id, index: index - 1, text: lineText }];
-    });
-    if (catalogLines.length === 0 || catalogLines.length !== catalog.rows.length) {
-      return decode({ state: "unavailable", reason: "line_catalog_missing" });
-    }
-    const rawLyrics = typeof row.lyrics_text === "string" ? row.lyrics_text : null;
-    const lines = buildKaraokePayloadLines({
-      artifact: row.artifact,
-      catalogLines,
-      rawLyrics,
-    });
-    if (lines === null || lines.length === 0) {
-      return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
-    }
-    return decode({
-      state: "ready",
-      object: "song_karaoke_payload",
-      community_id: input.communityId,
-      post_id: input.postId,
-      title,
-      karaoke_revision_id: karaokeRevisionId({
-        audioSha256: audioHash,
-        instrumentalSha256: instrumentalHash,
-        vocalSha256: vocalHash,
-        lyricsRevision,
-        artifactSha256: artifactHash,
-      }),
-      playback_audio: { kind: "instrumental", ref: instrumentalRef },
-      playback_kind: "instrumental",
-      karaoke_lines: lines,
-    });
+    values: [input.communityId, input.postId, lyricsRevision],
+    readonly: true,
   });
+  const catalogLines = catalog.rows.flatMap((line) => {
+    const id = string(line, "lyric_line_id");
+    const index = integer(line, "ordinal");
+    const lineText = string(line, "canonical_text");
+    return id === null || index === null || lineText === null
+      ? []
+      : [{ id, index: index - 1, text: lineText }];
+  });
+  if (catalogLines.length === 0 || catalogLines.length !== catalog.rows.length) {
+    return decode({ state: "unavailable", reason: "line_catalog_missing" });
+  }
+  const rawLyrics = typeof row.lyrics_text === "string" ? row.lyrics_text : null;
+  const lines = buildKaraokePayloadLines({
+    artifact: row.artifact,
+    catalogLines,
+    rawLyrics,
+  });
+  if (lines === null || lines.length === 0) {
+    return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
+  }
+  return decode({
+    state: "ready",
+    object: "song_karaoke_payload",
+    community_id: input.communityId,
+    post_id: input.postId,
+    title,
+    karaoke_revision_id: karaokeRevisionId({
+      audioSha256: audioHash,
+      instrumentalSha256: instrumentalHash,
+      vocalSha256: vocalHash,
+      lyricsRevision,
+      artifactSha256: artifactHash,
+    }),
+    playback_audio: { kind: "instrumental", ref: instrumentalRef },
+    playback_kind: "instrumental",
+    karaoke_lines: lines,
+  });
+});
 
 export const makeControlPlaneKaraokeReadinessStore = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
