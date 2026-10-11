@@ -44,6 +44,8 @@ const SECRET_NAME =
   "authorization|proxy-authorization|cookie|set-cookie|csrf[\\w-]*|passwd|password|secret|session[\\w-]*|api[_-]?key|access[_-]?token|refresh[_-]?token|token|signature|private[_-]?key|mnemonic|seed[_-]?phrase";
 
 const REDACTIONS: readonly (readonly [RegExp, string])[] = [
+  // Dynamic guest credential/ceremony assignments are sensitive even when malformed.
+  [/__Host-pirate_guest_[^\s:=";]*["']?\s*[:=].*$/giu, "guest-cookie=[redacted]"],
   // A secret assignment and everything after it.
   [new RegExp(`"?\\b(${SECRET_NAME})\\b"?\\s*[:=].*$`, "iu"), "$1=[redacted]"],
   // `scheme://user:secret@host` in a connection string or URL.

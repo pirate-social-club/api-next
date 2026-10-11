@@ -120,6 +120,11 @@
     "./telegram-study": "./src/telegram-study.ts",
     "./telegram-linking": "./src/telegram-linking.ts",
     "./use-cases/community-navigation": "./src/use-cases/community-navigation.ts",
-    "./use-cases/profile-activity": "./src/use-cases/profile-activity.ts"
+    "./use-cases/profile-activity": "./src/use-cases/profile-activity.ts",
+    "./guest-participation-authority": "./src/guest-participation-authority.ts",
+    "./guest-study-ports": "./src/guest-study-ports.ts",
+    "./guest-learning-resource-admission": "./src/guest-learning-resource-admission.ts",
+    "./owner-learner-audio-deletion": "./src/owner-learner-audio-deletion.ts",
+    "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts"
   }
 }

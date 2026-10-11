@@ -1,4 +1,7 @@
 export * from "./community-moderation-runtime.ts";
+export * from "./guest-learning-resource-admission.ts";
+export * from "./guest-participation-authority.ts";
+export * from "./guest-study-ports.ts";
 export * from "./handles/nationality-authoring.ts";
 export * from "./handles/sales.ts";
 export * from "./handles/spaces-reconciliation.ts";
@@ -26,6 +29,8 @@ export * from "./money/community-purchase-funding-producer.ts";
 export * from "./money/community-purchase-funding-query.ts";
 export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./namespace-ownership/index.ts";
+export * from "./owner-learner-audio-deletion.ts";
+export * from "./owner-reward-credit-ports.ts";
 export * from "./ports.ts";
 export * from "./rewards/activity-qualification.ts";
 export * from "./rewards/custody-solvency.ts";
