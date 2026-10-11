@@ -119,6 +119,7 @@ export const freshSchemaPostgresTestSuites = [
   // database and a regtest node; it skips itself when either is absent.
   "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
   "packages/platform-cf/src/karaoke-finalization-recovery.pg.test.ts",
+  "packages/platform-cf/src/karaoke-playback-authority.pg.test.ts",
   "packages/platform-cf/src/learner-audio-deletion-repository.pg.test.ts",
   "packages/platform-cf/src/localization-foundation.pg.test.ts",
   "packages/platform-cf/src/optional-route-v2-migration.pg.test.ts",
