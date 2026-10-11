@@ -17,3 +17,18 @@ export const CreateSongPlaybackAccess = endpoint({
   }),
   errors: [AuthError, BadRequest, InternalError, NotFound, RateLimited],
 });
+
+/** Short-lived instrumental access for a song with both accepted stems. */
+export const CreateKaraokePlaybackAccess = endpoint({
+  method: "POST",
+  path: "/posts/:postId/karaoke/playback-access",
+  auth: Auth.user({ optionalUser: true }),
+  request: { path: Schema.Struct({ postId: Schema.String }) },
+  response: Schema.Struct({
+    kind: Schema.Literal("instrumental"),
+    playback_url: Schema.String,
+    expires_at: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    renew_after: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+  errors: [AuthError, BadRequest, InternalError, NotFound, RateLimited],
+});

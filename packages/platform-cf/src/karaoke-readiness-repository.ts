@@ -9,7 +9,7 @@ import { Effect, type Layer, Schema } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
 
-const KARAOKE_REVISION_ALGORITHM = "karaoke_revision_v1" as const;
+const KARAOKE_REVISION_ALGORITHM = "karaoke_revision_v2" as const;
 
 const TimedSegment = Schema.Struct({
   text: Schema.String,
@@ -44,6 +44,36 @@ type PayloadLine = Readonly<{
   end_ms: number;
   words: readonly TimedWord[];
 }>;
+
+export const isVocalAlignedArtifact = (artifact: unknown, vocalSha256: string): boolean =>
+  typeof artifact === "object" &&
+  artifact !== null &&
+  "alignment_source_sha256" in artifact &&
+  artifact.alignment_source_sha256 === vocalSha256;
+
+export const karaokeRevisionId = (input: {
+  audioSha256: string;
+  instrumentalSha256: string;
+  vocalSha256: string;
+  lyricsRevision: number;
+  artifactSha256: string;
+}): string => {
+  const hash = createHash("sha256")
+    .update(
+      canonicalJson({
+        algorithm: KARAOKE_REVISION_ALGORITHM,
+        audio_sha256: input.audioSha256,
+        instrumental_sha256: input.instrumentalSha256,
+        vocal_sha256: input.vocalSha256,
+        lyrics_revision: input.lyricsRevision,
+        timed_artifact_sha256: input.artifactSha256,
+        playback_kind: "instrumental",
+      }),
+      "utf8",
+    )
+    .digest("hex");
+  return `karaoke-revision-${hash}`;
+};
 
 const compact = (value: string): string => value.replace(/\s+/gu, "");
 
@@ -185,11 +215,22 @@ const repository = (input: {
                     publication.canonical_audio_sha256, publication.lyrics_status,
                     publication.lyrics_revision, alignment.status AS alignment_status,
                     publication.lyrics_text,
+                    instrumental.immutable_ref AS instrumental_ref,
+                    instrumental.canonical_sha256 AS instrumental_sha256,
+                    vocal.canonical_sha256 AS vocal_sha256,
                     artifact.artifact_sha256, artifact.artifact
                FROM posts AS post
                LEFT JOIN media_publication_projections AS publication
                  ON publication.community_id=post.community_id
                 AND publication.post_id=post.post_id
+               LEFT JOIN media_song_stems AS instrumental
+                 ON instrumental.submission_id=publication.submission_id
+                AND instrumental.community_id=publication.community_id
+                AND instrumental.slot='instrumental_audio'
+               LEFT JOIN media_song_stems AS vocal
+                 ON vocal.submission_id=publication.submission_id
+                AND vocal.community_id=publication.community_id
+                AND vocal.slot='vocal_audio'
                LEFT JOIN media_alignment_projections AS alignment
                  ON alignment.community_id=publication.community_id
                 AND alignment.post_id=publication.post_id
@@ -222,6 +263,12 @@ const repository = (input: {
     if (row.lyrics_status !== "ready" || integer(row, "lyrics_revision") === null) {
       return decode({ state: "unavailable", reason: "lyrics_not_accepted" });
     }
+    const instrumentalRef = string(row, "instrumental_ref");
+    const instrumentalHash = string(row, "instrumental_sha256");
+    const vocalHash = string(row, "vocal_sha256");
+    if (instrumentalRef === null || instrumentalHash === null || vocalHash === null) {
+      return decode({ state: "unavailable", reason: "stems_missing" });
+    }
     if (row.alignment_status === "pending" || row.alignment_status === null) {
       return decode({ state: "processing", reason: "alignment_pending" });
     }
@@ -239,7 +286,8 @@ const repository = (input: {
       audioHash === null ||
       artifactHash === null ||
       title === null ||
-      row.artifact === null
+      row.artifact === null ||
+      !isVocalAlignedArtifact(row.artifact, vocalHash)
     ) {
       return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
     }
@@ -279,27 +327,21 @@ const repository = (input: {
     if (lines === null || lines.length === 0) {
       return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
     }
-    const revisionHash = createHash("sha256")
-      .update(
-        canonicalJson({
-          algorithm: KARAOKE_REVISION_ALGORITHM,
-          audio_sha256: audioHash,
-          lyrics_revision: lyricsRevision,
-          timed_artifact_sha256: artifactHash,
-          playback_kind: "full_mix",
-        }),
-        "utf8",
-      )
-      .digest("hex");
     return decode({
       state: "ready",
       object: "song_karaoke_payload",
       community_id: input.communityId,
       post_id: input.postId,
       title,
-      karaoke_revision_id: `karaoke-revision-${revisionHash}`,
-      playback_audio: { kind: "full_mix", ref: audioRef },
-      playback_kind: "full_mix",
+      karaoke_revision_id: karaokeRevisionId({
+        audioSha256: audioHash,
+        instrumentalSha256: instrumentalHash,
+        vocalSha256: vocalHash,
+        lyricsRevision,
+        artifactSha256: artifactHash,
+      }),
+      playback_audio: { kind: "instrumental", ref: instrumentalRef },
+      playback_kind: "instrumental",
       karaoke_lines: lines,
     });
   });

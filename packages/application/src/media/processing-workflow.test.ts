@@ -57,6 +57,10 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
       contentType: "audio/mpeg",
       sizeBytes: 1024,
     },
+    vocalStem: {
+      immutableRef: "private/vocal-1",
+      canonicalSha256: "b".repeat(64),
+    },
     termsRevision: 2,
     lyrics: {
       lyricsRevision: 1,
@@ -1420,6 +1424,31 @@ describe("media processing workflow", () => {
     expect(store.alignments).toBe(1);
     expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
       "effect:alignment:l1:accepted lyrics",
+    ]);
+  });
+
+  test("alignment is unavailable without an accepted vocal stem", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+        vocalStem: null,
+      }),
+      "alignment",
+    );
+    const providerEvents: string[] = [];
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.alignmentResults).toEqual([
+      { kind: "alignment", status: "unavailable", failureCode: "audio_missing" },
     ]);
   });
 

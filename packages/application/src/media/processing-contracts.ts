@@ -140,6 +140,10 @@ export type MediaProcessingAuthority = Readonly<{
     readonly contentType: string;
     readonly sizeBytes: number;
   }> | null;
+  readonly vocalStem?: Readonly<{
+    readonly immutableRef: string;
+    readonly canonicalSha256: string;
+  }> | null;
   readonly termsRevision: number | null;
   readonly lyrics: MediaProcessingLyrics | null;
   readonly analysis: MediaProcessingAnalysis | null;
@@ -485,6 +489,8 @@ export interface MediaProcessingAlignmentPort {
       lyricsRevision: number;
       canonicalAudioSha256: string;
       audioArtifactRef: string;
+      alignmentSourceRef: string;
+      alignmentSourceSha256: string;
       lyrics: string;
       signal: AbortSignal;
     }>,

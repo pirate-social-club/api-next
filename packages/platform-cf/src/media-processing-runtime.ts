@@ -871,12 +871,12 @@ export function makeElevenLabsProcessingAlignmentPort(
 ): MediaProcessingAlignmentPort {
   return {
     align: async (input) => {
-      if (!SHA256.test(input.canonicalAudioSha256)) {
+      if (!SHA256.test(input.canonicalAudioSha256) || !SHA256.test(input.alignmentSourceSha256)) {
         return { status: "unavailable", failureCode: "audio_missing" };
       }
       let key: string;
       try {
-        key = immutableObjectKey(input.audioArtifactRef);
+        key = immutableObjectKey(input.alignmentSourceRef);
       } catch {
         return { status: "unavailable", failureCode: "audio_missing" };
       }
@@ -898,7 +898,7 @@ export function makeElevenLabsProcessingAlignmentPort(
         post_id: input.postId,
         audio: {
           audio_revision: input.audioRevision,
-          canonical_audio_sha256: input.canonicalAudioSha256,
+          canonical_audio_sha256: input.alignmentSourceSha256,
           source: r2AlignmentAudio(immutableOriginals, key, expected, digestState),
           mime_type: expected.httpMetadata?.contentType ?? "application/octet-stream",
           filename: "canonical-audio",
@@ -908,7 +908,7 @@ export function makeElevenLabsProcessingAlignmentPort(
           operation_id: input.operationId,
           audio_revision: input.audioRevision,
           analysis_revision: input.analysisRevision,
-          canonical_audio_sha256: input.canonicalAudioSha256,
+          canonical_audio_sha256: input.alignmentSourceSha256,
           transcript: input.lyrics,
         },
         signal: input.signal,
@@ -923,7 +923,7 @@ export function makeElevenLabsProcessingAlignmentPort(
       } catch {
         return { status: "unavailable", failureCode: "audio_missing" };
       }
-      if (digest.sha256 !== input.canonicalAudioSha256 || digest.bytes !== expected.size) {
+      if (digest.sha256 !== input.alignmentSourceSha256 || digest.bytes !== expected.size) {
         return { status: "unavailable", failureCode: "audio_missing" };
       }
       const segments = alignmentSegments(input.lyrics, outcome.timings);
@@ -938,6 +938,8 @@ export function makeElevenLabsProcessingAlignmentPort(
         analysis_revision: input.analysisRevision,
         lyrics_revision: input.lyricsRevision,
         canonical_audio_sha256: input.canonicalAudioSha256,
+        alignment_source_ref: input.alignmentSourceRef,
+        alignment_source_sha256: input.alignmentSourceSha256,
         adapter_revision: ELEVENLABS_ALIGNMENT_ADAPTER_REVISION,
         mode: outcome.mode,
         segments,

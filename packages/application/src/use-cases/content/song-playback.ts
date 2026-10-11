@@ -7,6 +7,7 @@ export interface SongPlaybackServices {
   readonly authorize: (input: {
     postId: string;
     viewerUserId?: string;
+    kind?: "full_mix" | "instrumental";
   }) => Effect.Effect<{ immutableRef: string } | null, unknown>;
   readonly limit: (input: {
     source: string;
@@ -22,7 +23,12 @@ export interface SongPlaybackServices {
 const unavailable = () => new InternalError({ message: "Song playback unavailable" });
 /** Every initial play and renewal repeats authorization before issuing an R2 GET grant. */
 export const getSongPlaybackAccess = Effect.fn("getSongPlaybackAccess")(function* (
-  input: { postId: string; viewerUserId?: string; trustedSource: string },
+  input: {
+    postId: string;
+    viewerUserId?: string;
+    trustedSource: string;
+    kind?: "full_mix" | "instrumental";
+  },
   services: SongPlaybackServices,
 ) {
   if (
@@ -62,9 +68,17 @@ export const getSongPlaybackAccess = Effect.fn("getSongPlaybackAccess")(function
     .sign({ ...approved, nowSeconds, lifetimeSeconds: SONG_PLAYBACK_LIFETIME_SECONDS })
     .pipe(Effect.mapError(unavailable));
   return {
-    kind: "full_mix" as const,
+    kind: input.kind ?? ("full_mix" as const),
     playback_url,
     expires_at: nowSeconds + SONG_PLAYBACK_LIFETIME_SECONDS,
     renew_after: nowSeconds + SONG_PLAYBACK_LIFETIME_SECONDS - SONG_PLAYBACK_RENEWAL_MARGIN_SECONDS,
   };
+});
+
+export const getKaraokePlaybackAccess = Effect.fn("getKaraokePlaybackAccess")(function* (
+  input: { postId: string; viewerUserId?: string; trustedSource: string },
+  services: SongPlaybackServices,
+) {
+  const grant = yield* getSongPlaybackAccess({ ...input, kind: "instrumental" }, services);
+  return { ...grant, kind: "instrumental" as const };
 });

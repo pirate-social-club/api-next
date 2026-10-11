@@ -4,6 +4,7 @@ import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
@@ -124,6 +125,13 @@ suite("Study v2 spoken lifecycle", () => {
                'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
           ["2".repeat(64), lyrics],
         );
+        await insertSongStemPairFixture(admin, {
+          submissionId: "study-submission",
+          communityId: "study-community",
+          actorUserId: "study-account",
+          operationId: "study-operation",
+          personaId: "study-persona",
+        });
         for (const [index, line] of lines.entries()) {
           const ordinal = index + 1;
           await admin.query(
@@ -209,21 +217,20 @@ suite("Study v2 spoken lifecycle", () => {
       const study = makeControlPlaneStudyV2Repository();
       const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
         Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
-      const session = await run(
-        study.startSession({
-          accountId: "study-account",
-          communityId: "study-community",
-          createdAt: "2026-09-12T12:00:00.000Z",
-          targetLanguage: null,
-          idempotencyKey: "study-session-command",
-          learnerBand: null,
-          personaId: "study-persona",
-          postId: "study-post",
-          requestHash: "5".repeat(64),
-          sessionId: "study-session-lifecycle",
-          timezone: "UTC",
-        }),
-      );
+      const startInput = {
+        accountId: "study-account",
+        communityId: "study-community",
+        createdAt: "2026-09-12T12:00:00.000Z",
+        targetLanguage: null,
+        idempotencyKey: "study-session-command",
+        learnerBand: null,
+        personaId: "study-persona",
+        postId: "study-post",
+        requestHash: "5".repeat(64),
+        sessionId: "study-session-lifecycle",
+        timezone: "UTC",
+      } as const;
+      const session = await run(study.startSession(startInput));
       expect(session.items).toHaveLength(4);
       expect(session.lesson.current?.session_item_id).toBe(session.items[0]?.session_item_id ?? "");
 
@@ -445,6 +452,44 @@ suite("Study v2 spoken lifecycle", () => {
           }),
         ),
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          "DELETE FROM media_song_stems WHERE submission_id='study-submission' AND slot='instrumental_audio'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect(
+        await run(
+          study.getAvailability({
+            accountId: "study-account",
+            communityId: "study-community",
+            postId: "study-post",
+          }),
+        ),
+      ).toEqual({ state: "unavailable", reason: "stems_missing" });
+      await expect(
+        run(
+          study.startSession({
+            ...startInput,
+            idempotencyKey: "study-session-without-stem",
+            requestHash: "6".repeat(64),
+            sessionId: "study-session-without-stem",
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "not-found" });
+      expect((await run(study.startSession(startInput))).session_id).toBe(session.session_id);
+      expect(
+        await run(
+          study.getSession({
+            accountId: "study-account",
+            communityId: "study-community",
+            sessionId: session.session_id,
+          }),
+        ),
+      ).toMatchObject({ session_id: session.session_id, status: "completed" });
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();

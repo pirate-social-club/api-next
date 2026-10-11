@@ -365,6 +365,7 @@ export const StudyAvailabilityV2 = Schema.Union([
     reason: Schema.Literals([
       "not_a_song",
       "lyrics_not_accepted",
+      "stems_missing",
       "learning_language_unsupported",
       "insufficient_exercises",
       "policy_blocked",

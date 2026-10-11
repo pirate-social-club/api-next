@@ -37,7 +37,51 @@ const MARKER_WORDS = [
 const MARKER_RAW_LYRICS = "[Verse 1]\nHello pirate light\n[Chorus]\nSing the open sea\n";
 const MARKER_CATALOG_LINES = ["Hello pirate light", "Sing the open sea"] as const;
 
+async function seedStems(
+  admin: Client,
+  input: {
+    submission: string;
+    community: string;
+    actor: string;
+    operation: string;
+    persona: string;
+  },
+): Promise<void> {
+  for (const [slot, sha256] of [
+    ["instrumental_audio", "8".repeat(64)],
+    ["vocal_audio", "9".repeat(64)],
+  ] as const) {
+    const ref = `media://immutable/${input.operation}-stem-${slot}/audio/1`;
+    await admin.query(
+      `INSERT INTO media_song_stems (
+         submission_id, slot, community_id, actor_user_id, operation_id,
+         reservation_id, immutable_ref, destination_ref, etag, object_version,
+         size_bytes, content_type, canonical_sha256, author_persona_id
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'etag','version',16,'audio/mpeg',$9,$10)`,
+      [
+        input.submission,
+        slot,
+        input.community,
+        input.actor,
+        `${input.operation}-stem-${slot}`,
+        `${input.submission}-reservation-${slot}`,
+        ref,
+        `r2://immutable/${input.operation}-stem-${slot}/audio/1`,
+        sha256,
+        input.persona,
+      ],
+    );
+  }
+}
+
 async function seedKaraokeSong(admin: Client): Promise<void> {
+  await seedStems(admin, {
+    submission: "karaoke-submission",
+    community: "karaoke-community",
+    actor: "karaoke-author",
+    operation: "karaoke-operation",
+    persona: "karaoke-author-persona",
+  });
   await admin.query(
     "UPDATE activity_registry SET status='active', current_policy_version_id='karaoke_qualification_v2@1' WHERE activity_key='karaoke'",
   );
@@ -66,6 +110,7 @@ async function seedKaraokeSong(admin: Client): Promise<void> {
   );
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
+    alignment_source_sha256: "9".repeat(64),
     mode: "word",
     segments: WORDS.map((text, index) => ({
       text,
@@ -112,6 +157,13 @@ async function seedKaraokeSong(admin: Client): Promise<void> {
 }
 
 async function seedKaraokeMarkerSong(admin: Client): Promise<void> {
+  await seedStems(admin, {
+    submission: "kmark-submission",
+    community: "kmark-community",
+    actor: "kmark-author",
+    operation: "kmark-operation",
+    persona: "kmark-author-persona",
+  });
   await admin.query(
     "UPDATE activity_registry SET status='active', current_policy_version_id='karaoke_qualification_v2@1' WHERE activity_key='karaoke'",
   );
@@ -141,6 +193,7 @@ async function seedKaraokeMarkerSong(admin: Client): Promise<void> {
   );
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
+    alignment_source_sha256: "9".repeat(64),
     mode: "word",
     segments: MARKER_WORDS.map((text, index) => ({
       text,
@@ -574,7 +627,8 @@ suite("Karaoke persona boundary", () => {
       }
 
       const runtime = makeDirectPostgresControlPlaneLayer(scoped);
-      const readiness = await makeControlPlaneKaraokeReadinessStore(runtime).get({
+      const readinessStore = makeControlPlaneKaraokeReadinessStore(runtime);
+      const readiness = await readinessStore.get({
         communityId: "kmark-community",
         postId: "kmark-post",
       });
@@ -584,26 +638,23 @@ suite("Karaoke persona boundary", () => {
       expect(readiness.karaoke_lines.every(({ text }) => !/verse|chorus/iu.test(text))).toBe(true);
 
       const repository = makeControlPlaneKaraokeRepository();
+      const sessionInput = {
+        accountId: "kmark-account",
+        artifactId: "kmark-artifact-id",
+        attemptId: "kmark-attempt-1",
+        clientContext: undefined,
+        communityId: "kmark-community",
+        createdAt: "2026-09-03T12:00:00.000Z",
+        expiresAt: "2026-09-03T12:30:00.000Z",
+        idempotencyKey: "kmark-key-1",
+        personaId: "kmark-persona",
+        postId: "kmark-post",
+        requestHash: "c".repeat(64),
+        sessionId: "kmark-session-1",
+        timezone: "UTC",
+      } as const;
       const authority = await Effect.runPromise(
-        Effect.scoped(
-          repository
-            .reserveSession({
-              accountId: "kmark-account",
-              artifactId: "kmark-artifact-id",
-              attemptId: "kmark-attempt-1",
-              clientContext: undefined,
-              communityId: "kmark-community",
-              createdAt: "2026-09-03T12:00:00.000Z",
-              expiresAt: "2026-09-03T12:30:00.000Z",
-              idempotencyKey: "kmark-key-1",
-              personaId: "kmark-persona",
-              postId: "kmark-post",
-              requestHash: "c".repeat(64),
-              sessionId: "kmark-session-1",
-              timezone: "UTC",
-            })
-            .pipe(Effect.provide(runtime)),
-        ),
+        Effect.scoped(repository.reserveSession(sessionInput).pipe(Effect.provide(runtime))),
       );
       expect(authority.karaokeRevisionId).toBe(readiness.karaoke_revision_id);
       expect(authority.lines).toEqual(readiness.karaoke_lines);
@@ -615,6 +666,81 @@ suite("Karaoke persona boundary", () => {
       expect(stored.rows).toHaveLength(1);
       expect(stored.rows[0].line_snapshot).toEqual(readiness.karaoke_lines);
       expect(stored.rows[0].karaoke_revision_id).toBe(readiness.karaoke_revision_id);
+      expect(readiness.playback_kind).toBe("instrumental");
+      expect(readiness.playback_audio.ref).toBe(
+        "media://immutable/kmark-operation-stem-instrumental_audio/audio/1",
+      );
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE media_timed_lyrics_artifacts
+              SET artifact=jsonb_set(artifact,'{alignment_source_sha256}',to_jsonb($1::text))
+            WHERE artifact_ref='kmark-timed-lyrics'`,
+          ["f".repeat(64)],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect(
+        await readinessStore.get({ communityId: "kmark-community", postId: "kmark-post" }),
+      ).toEqual({
+        state: "unavailable",
+        reason: "invalid_timed_lyrics",
+      });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            repository
+              .reserveSession({
+                ...sessionInput,
+                sessionId: "kmark-session-stale",
+                attemptId: "kmark-attempt-stale",
+                artifactId: "kmark-artifact-stale",
+                idempotencyKey: "kmark-key-stale",
+              })
+              .pipe(Effect.provide(runtime)),
+          ),
+        ),
+      ).rejects.toMatchObject({ reason: "not-found" });
+
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE media_timed_lyrics_artifacts
+              SET artifact=jsonb_set(artifact,'{alignment_source_sha256}',to_jsonb($1::text))
+            WHERE artifact_ref='kmark-timed-lyrics'`,
+          ["9".repeat(64)],
+        );
+        await admin.query(
+          "DELETE FROM media_song_stems WHERE submission_id='kmark-submission' AND slot='instrumental_audio'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect(
+        await readinessStore.get({ communityId: "kmark-community", postId: "kmark-post" }),
+      ).toEqual({
+        state: "unavailable",
+        reason: "stems_missing",
+      });
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query("DELETE FROM media_song_stems WHERE submission_id='kmark-submission'");
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      expect(
+        await readinessStore.get({ communityId: "kmark-community", postId: "kmark-post" }),
+      ).toEqual({
+        state: "unavailable",
+        reason: "stems_missing",
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(repository.reserveSession(sessionInput).pipe(Effect.provide(runtime))),
+        ),
+      ).toEqual(authority);
     } finally {
       await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();

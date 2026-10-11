@@ -1207,6 +1207,8 @@ function align(
     let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     if (current.lyrics === null) {
       result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
+    } else if (current.vocalStem == null) {
+      result = { kind: "alignment", status: "unavailable", failureCode: "audio_missing" };
     } else if (dependencies.providers === null || !dependencies.options.enabled) {
       result = {
         kind: "alignment",
@@ -1216,6 +1218,7 @@ function align(
     } else {
       const provider = dependencies.providers;
       const audio = current.audio;
+      const vocal = current.vocalStem;
       const lyrics = current.lyrics;
       const postId = current.postId;
       const aligned = yield* catchStageFailure(
@@ -1228,6 +1231,8 @@ function align(
             lyricsRevision: lyrics.lyricsRevision,
             canonicalAudioSha256: audio.canonicalSha256,
             audioArtifactRef: audio.immutableRef,
+            alignmentSourceRef: vocal.immutableRef,
+            alignmentSourceSha256: vocal.canonicalSha256,
             lyrics: lyrics.text,
             signal,
           }),

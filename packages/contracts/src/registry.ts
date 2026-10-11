@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
-import { CreateSongPlaybackAccess } from "./song-playback.ts";
+import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 
 export const Health = endpoint({
@@ -257,6 +257,7 @@ export const registry = {
   GetPublicPostSitemap,
   ListPostComments,
   CreateSongPlaybackAccess,
+  CreateKaraokePlaybackAccess,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.98.0",
+  "sourceBranch": "fix/song-stems-karaoke-runtime",
+  "sourceBase": "1d07647253447d36c3d939ae9897b820c548758b",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Karaoke readiness requires both accepted stems and vocal-sourced timing, returns an instrumental playback ref, and reports stems_missing when needed. The separate Karaoke playback grant signs the instrumental while ordinary song playback remains full mix. Study availability also reports stems_missing.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.98.0.tgz",
+    "sha256": "087944ae17ab3c02d1f67cb3f309b65737104182cd6f52bac181f9b408a1aef1"
+  },
+  "validation": {
+    "status": "Focused local validation passed; full and hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from the stem-backed Karaoke and Study contracts",
+      "Karaoke PostgreSQL 17 suite (3 passed), Study PostgreSQL 17 suites (11 passed), and focused instrumental playback and alignment tests"
+    ],
+    "remaining": [
+      "Full local check and test gates",
+      "Hosted check, postgres17, and secret-boundary gates on the pull request",
+      "Solid instrumental playback caller and entry-point explanation in its separate lane"
+    ],
+    "operationalBoundary": "No package registry publication, Worker deployment, or live product mutation occurred."
+  }
+}

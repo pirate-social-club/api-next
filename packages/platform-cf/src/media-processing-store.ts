@@ -406,6 +406,31 @@ export function makeMediaProcessingStore(
     ) {
       return null;
     }
+    const vocalRows = await run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.execute<Row>({
+          label: "media-processing.vocal-stem",
+          text: `SELECT immutable_ref, canonical_sha256 FROM media_song_stems
+                  WHERE submission_id=$1 AND community_id=$2 AND actor_user_id=$3
+                    AND author_persona_id=$4 AND slot='vocal_audio'`,
+          values: [state.submissionId, state.communityId, location.actorUserId, state.personaId],
+          readonly: true,
+        });
+      }),
+    );
+    if (vocalRows.rows.length > 1) {
+      throw new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" });
+    }
+    const vocal = vocalRows.rows[0];
+    if (
+      vocal !== undefined &&
+      (!validId(vocal.immutable_ref) ||
+        typeof vocal.canonical_sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(vocal.canonical_sha256))
+    ) {
+      throw new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" });
+    }
     return {
       communityId: state.communityId,
       actorAccountId: location.actorAccountId,
@@ -429,6 +454,13 @@ export function makeMediaProcessingStore(
           ? state.phase
           : null,
       audio: state.audio,
+      vocalStem:
+        vocal === undefined
+          ? null
+          : {
+              immutableRef: vocal.immutable_ref as string,
+              canonicalSha256: vocal.canonical_sha256 as string,
+            },
       termsRevision: location.termsRevision,
       lyrics:
         state.lyrics === null

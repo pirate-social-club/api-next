@@ -11,6 +11,7 @@ import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
 import {
   makeControlPlaneStudyTranslationPolicyResolver,
@@ -161,6 +162,13 @@ suite("Study translation generation", () => {
                'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
           ["2".repeat(64), lyrics],
         );
+        await insertSongStemPairFixture(admin, {
+          submissionId: "study-submission",
+          communityId: "study-community",
+          actorUserId: "study-account",
+          operationId: "study-operation",
+          personaId: "study-persona",
+        });
         for (const [index, line] of lines.entries()) {
           const ordinal = index + 1;
           await admin.query(

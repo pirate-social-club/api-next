@@ -422,6 +422,31 @@ export const makeControlPlaneStudyV2Repository = () => ({
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        const stems = yield* db.execute<Row>({
+          label: "study-v2.availability.stems",
+          text: `SELECT instrumental.submission_id AS instrumental_id,
+                        vocal.submission_id AS vocal_id
+                   FROM media_publication_projections publication
+                   JOIN posts post ON post.community_id=publication.community_id
+                     AND post.post_id=publication.post_id AND post.post_type='song'
+                   LEFT JOIN media_song_stems instrumental
+                     ON instrumental.submission_id=publication.submission_id
+                    AND instrumental.community_id=publication.community_id
+                    AND instrumental.slot='instrumental_audio'
+                   LEFT JOIN media_song_stems vocal
+                     ON vocal.submission_id=publication.submission_id
+                    AND vocal.community_id=publication.community_id
+                    AND vocal.slot='vocal_audio'
+                  WHERE publication.community_id=$1 AND publication.post_id=$2`,
+          values: [input.communityId, input.postId],
+          readonly: true,
+        });
+        if (
+          stems.rows.length === 1 &&
+          (stems.rows[0]?.instrumental_id == null || stems.rows[0]?.vocal_id == null)
+        ) {
+          return decode(StudyAvailabilityV2, { state: "unavailable", reason: "stems_missing" });
+        }
         const rows = yield* db.execute<Row>({
           label: "study-v2.availability",
           text: `SELECT exercise.exercise_type, exercise.target_language,
@@ -548,6 +573,22 @@ export const makeControlPlaneStudyV2Repository = () => ({
               });
               return session ?? (yield* Effect.fail(failed("invalid-row")));
             }
+            const stems = yield* transaction.execute<Row>({
+              label: "study-v2.start.stems",
+              text: `SELECT 1 FROM media_publication_projections publication
+                       JOIN media_song_stems instrumental
+                         ON instrumental.submission_id=publication.submission_id
+                        AND instrumental.community_id=publication.community_id
+                        AND instrumental.slot='instrumental_audio'
+                       JOIN media_song_stems vocal
+                         ON vocal.submission_id=publication.submission_id
+                        AND vocal.community_id=publication.community_id
+                        AND vocal.slot='vocal_audio'
+                      WHERE publication.community_id=$1 AND publication.post_id=$2`,
+              values: [input.communityId, input.postId],
+              readonly: false,
+            });
+            if (stems.rows.length !== 1) return yield* rejected("not-found");
             const clock = yield* transaction.execute<Row>({
               label: "study-v2.start.clock",
               text: `SELECT timezone FROM account_streak_clocks
