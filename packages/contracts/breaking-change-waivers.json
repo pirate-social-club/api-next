@@ -1,3 +1,24 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "3c894763c4331bd62d16f9b096c717f84d71660b",
+      "operationId": "get_communitiesCommunityIdPostsPostIdKaraoke",
+      "kind": "clean-break",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/karaoke: enum value added: \"ready\"",
+        "response GET /communities/{communityId}/posts/{postId}/karaoke: enum value added: \"stems_missing\"",
+        "response GET /communities/{communityId}/posts/{postId}/karaoke: response/request property removed: reason"
+      ],
+      "reason": "Spec 013 and Spec 019 song-stems amendment requires instrumental playback and both accepted stems for new Karaoke sessions. The response adds stems_missing and instrumental literal values; ready and reason diagnostics arise from union matching, not removed response branches. Release requires the coordinated Solid 0.113.0 consumer with instrumental grant selection and unavailable-reason handling. Existing 0.112.0 consumers must not be assumed compatible. Existing full_mix session records and policy pins remain unchanged."
+    },
+    {
+      "baselineSha": "3c894763c4331bd62d16f9b096c717f84d71660b",
+      "operationId": "get_communitiesCommunityIdPostsPostIdStudyV2",
+      "kind": "clean-break",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/study/v2: enum value added: \"stems_missing\""
+      ],
+      "reason": "Spec 013 and Spec 019 song-stems amendment requires both accepted stems for new Study sessions and adds the typed stems_missing availability reason. Release requires a coordinated Solid 0.113.0 consumer that handles this reason; existing 0.112.0 consumers must not be assumed compatible. Study authentication and existing session replay remain unchanged."
+    }
+  ]
 }
