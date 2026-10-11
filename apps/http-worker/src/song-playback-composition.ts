@@ -1,6 +1,7 @@
 import { VIDEO_PLAYBACK_ACCESS_POLICY } from "@pirate/application/video/playback-access";
 import { InternalError } from "@pirate/contracts";
 import { Effect } from "effect";
+import { makeKaraokePlaybackAuthority } from "../../../packages/platform-cf/src/karaoke-playback-authority.ts";
 import { makeSongPlaybackAuthority } from "../../../packages/platform-cf/src/song-playback-authority.ts";
 import { makeSongPlaybackSigner } from "../../../packages/platform-cf/src/song-playback-signer.ts";
 import {
@@ -65,6 +66,9 @@ export async function makeSongPlaybackHandlers(
   };
   return {
     CreateSongPlaybackAccess: makeSongPlaybackHandler(services),
-    CreateKaraokePlaybackAccess: makeKaraokePlaybackHandler(services),
+    CreateKaraokePlaybackAccess: makeKaraokePlaybackHandler({
+      ...services,
+      authorize: makeKaraokePlaybackAuthority(runtime),
+    }),
   };
 }

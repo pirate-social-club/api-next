@@ -1,19 +1,18 @@
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  type ControlPlaneTransaction,
+} from "@pirate/application";
 import type { SongPlaybackServices } from "@pirate/application/use-cases/content/song-playback";
 import { Effect, type Layer, Schema } from "effect";
 
-const Row = Schema.Struct({ immutable_ref: Schema.String });
-/** Bind the current visible post to its approved publication and sealed audio revision. */
-export const authorizeSongPlayback = Effect.fn("authorizeSongPlayback")(function* (input: {
-  postId: string;
-  viewerUserId?: string;
-  kind?: "full_mix" | "instrumental";
-}) {
-  const db = yield* ControlPlaneDb;
-  const result = yield* db.execute({
-    label: "song-playback.authorize",
-    readonly: true,
-    text: `SELECT CASE WHEN $3='instrumental' THEN instrumental.immutable_ref
+const Row = Schema.Struct({
+  immutable_ref: Schema.String,
+  post_id: Schema.String,
+  community_id: Schema.String,
+});
+export const SONG_PLAYBACK_AUTHORITY_SQL = `SELECT p.post_id, p.community_id,
+                 CASE WHEN $3='instrumental' THEN instrumental.immutable_ref
                       ELSE audio.immutable_ref END AS immutable_ref FROM posts p
       JOIN communities c ON c.community_id=p.community_id AND c.status='active'
       JOIN media_publication_projections pub ON pub.post_id=p.post_id AND pub.community_id=p.community_id AND pub.media_kind='song'
@@ -48,12 +47,34 @@ export const authorizeSongPlayback = Effect.fn("authorizeSongPlayback")(function
         AND can_account_view_content_rating_v1($2,pub.content_rating)
         AND audio.content_type LIKE 'audio/%'
         AND ($3='full_mix' OR (instrumental.immutable_ref IS NOT NULL
-          AND vocal.immutable_ref IS NOT NULL))`,
+          AND vocal.immutable_ref IS NOT NULL))`;
+
+/** Bind the current visible post to its approved publication and sealed audio revision. */
+const readSongPlaybackAuthority = Effect.fn("readSongPlaybackAuthority")(function* (
+  input: { postId: string; viewerUserId?: string; kind?: "full_mix" | "instrumental" },
+  db: ControlPlaneTransaction,
+) {
+  const result = yield* db.execute({
+    label: "song-playback.authorize",
+    readonly: true,
+    text: SONG_PLAYBACK_AUTHORITY_SQL,
     values: [input.postId, input.viewerUserId ?? null, input.kind ?? "full_mix"],
   });
   if (result.rows.length !== 1) return null;
   const row = yield* Effect.try(() => Schema.decodeUnknownSync(Row)(result.rows[0]));
-  return { immutableRef: row.immutable_ref };
+  return {
+    immutableRef: row.immutable_ref,
+    postId: row.post_id,
+    communityId: row.community_id,
+  };
+});
+
+export const authorizeSongPlayback = Effect.fn("authorizeSongPlayback")(function* (
+  input: Parameters<SongPlaybackServices["authorize"]>[0],
+) {
+  const db = yield* ControlPlaneDb;
+  const approved = yield* readSongPlaybackAuthority(input, db);
+  return approved === null ? null : { immutableRef: approved.immutableRef };
 });
 export function makeSongPlaybackAuthority(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,

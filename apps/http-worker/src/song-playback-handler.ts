@@ -1,6 +1,7 @@
 import {
   getKaraokePlaybackAccess,
   getSongPlaybackAccess,
+  type KaraokePlaybackServices,
   type SongPlaybackServices,
 } from "@pirate/application/use-cases/content/song-playback";
 import {
@@ -32,7 +33,7 @@ export function makeSongPlaybackHandler(services: SongPlaybackServices) {
   };
 }
 
-export function makeKaraokePlaybackHandler(services: SongPlaybackServices) {
+export function makeKaraokePlaybackHandler(services: KaraokePlaybackServices) {
   return async (request: DecodedRequest) => {
     const principal = request.principal;
     if (principal !== null && principal.kind !== "user" && principal.kind !== "admin")
@@ -40,10 +41,14 @@ export function makeKaraokePlaybackHandler(services: SongPlaybackServices) {
     const { postId } = Schema.decodeUnknownSync(CreateKaraokePlaybackAccess.request.path)(
       request.params,
     );
+    const target = Schema.decodeUnknownSync(CreateKaraokePlaybackAccess.request.body)(request.body);
     const body = await Effect.runPromise(
       getKaraokePlaybackAccess(
         {
           postId,
+          communityId: target.community_id,
+          karaokeRevisionId: target.karaoke_revision_id,
+          playbackRef: target.playback_ref,
           ...(principal === null ? {} : { viewerUserId: principal.subject }),
           trustedSource: request.edgeClientIp ?? "",
         },

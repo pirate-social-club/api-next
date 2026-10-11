@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  type ControlPlaneTransaction,
+} from "@pirate/application";
 import {
   type KaraokeReadiness,
   KaraokeReadiness as KaraokeReadinessSchema,
 } from "@pirate/contracts";
 import { canonicalJson, isStandaloneLyricMetadataLine } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
+import { SONG_PLAYBACK_AUTHORITY_SQL } from "./song-playback-authority.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -208,15 +213,20 @@ const integer = (row: Row, key: string): number | null => {
 const decode = (value: unknown): KaraokeReadiness =>
   Schema.decodeUnknownSync(KaraokeReadinessSchema)(value);
 
-const repository = (input: {
-  readonly communityId: string;
-  readonly postId: string;
-}): Effect.Effect<KaraokeReadiness, ControlPlaneError, ControlPlaneDb> =>
+export const readKaraokeReadiness = (
+  input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly playbackViewerUserId?: string | null;
+  },
+  db: ControlPlaneTransaction,
+): Effect.Effect<KaraokeReadiness, ControlPlaneError> =>
   Effect.gen(function* () {
-    const db = yield* ControlPlaneDb;
+    const requirePlaybackAuthority = input.playbackViewerUserId !== undefined;
     const source = yield* db.execute<Row>({
       label: "karaoke-readiness.source",
-      text: `SELECT post.post_type, post.status AS post_status, post.visibility,
+      text: `${requirePlaybackAuthority ? `WITH playable AS (${SONG_PLAYBACK_AUTHORITY_SQL})` : ""}
+             SELECT post.post_type, post.status AS post_status, post.visibility,
                     publication.title, publication.audio_asset_ref,
                     publication.canonical_audio_sha256, publication.lyrics_status,
                     publication.lyrics_revision, alignment.status AS alignment_status,
@@ -253,8 +263,17 @@ const repository = (input: {
                 AND artifact.analysis_revision=publication.analysis_revision
                 AND artifact.lyrics_revision=publication.lyrics_revision
                 AND artifact.canonical_audio_sha256=publication.canonical_audio_sha256
-              WHERE post.community_id=$1 AND post.post_id=$2`,
-      values: [input.communityId, input.postId],
+              ${
+                requirePlaybackAuthority
+                  ? `JOIN playable ON playable.post_id=post.post_id
+                AND playable.community_id=post.community_id
+                AND playable.immutable_ref=instrumental.immutable_ref`
+                  : ""
+              }
+              WHERE post.community_id=${requirePlaybackAuthority ? "$4" : "$2"} AND post.post_id=$1`,
+      values: requirePlaybackAuthority
+        ? [input.postId, input.playbackViewerUserId, "instrumental", input.communityId]
+        : [input.postId, input.communityId],
       readonly: true,
     });
     const row = source.rows[0];
@@ -367,5 +386,11 @@ export const makeControlPlaneKaraokeReadinessStore = (
     readonly postId: string;
   }) => Promise<KaraokeReadiness>;
 }> => ({
-  get: (input) => Effect.runPromise(repository(input).pipe(Effect.provide(runtime))),
+  get: (input) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* readKaraokeReadiness(input, db);
+      }).pipe(Effect.provide(runtime)),
+    ),
 });
