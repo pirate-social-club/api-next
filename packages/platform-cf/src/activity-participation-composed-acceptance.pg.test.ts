@@ -266,7 +266,15 @@ suite("Composed never-joined activity and reward acceptance", () => {
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
-      await seedFundedAssetBonus(admin);
+      const { legId } = await seedFundedAssetBonus(admin);
+      expect(
+        (
+          await admin.query(
+            "SELECT reward_leg_accepts_qualification($1,'karaoke','karaoke_qualification_v2@2') AS accepts",
+            [legId],
+          )
+        ).rows,
+      ).toEqual([{ accepts: true }]);
       await seedVeryRewardEvidence(admin, "composed-karaoke-eligible", "karaoke-eligible");
 
       const runtime = makeDirectPostgresControlPlaneLayer(scoped);
@@ -293,6 +301,10 @@ suite("Composed never-joined activity and reward acceptance", () => {
         eligible.persona_id,
         "eligible",
       );
+      expect(eligibleAuthority).toMatchObject({
+        playbackKind: "instrumental",
+        qualificationPolicyVersionId: "karaoke_qualification_v2@2",
+      });
       const eligibleAttempt = await driver.finish(
         eligibleAuthority,
         "composed-karaoke-qualification",

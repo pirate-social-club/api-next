@@ -128,7 +128,7 @@ suite("Postgres 17 activity qualification persistence", () => {
         {
           activity_key: "karaoke",
           status: "active",
-          current_policy_version_id: "karaoke_qualification_v2@1",
+          current_policy_version_id: "karaoke_qualification_v2@2",
         },
         {
           activity_key: "study",
