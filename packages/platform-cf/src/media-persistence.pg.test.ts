@@ -105,7 +105,11 @@ function personaFor(connection: string, accountId = actor): string {
   if (personaId === undefined) throw new Error(`missing test persona for ${accountId}`);
   return personaId;
 }
-async function seedAcceptedStemPairFixture(admin: Client, connection: string): Promise<void> {
+async function seedAcceptedStemPairFixture(
+  admin: Client,
+  connection: string,
+  fixture: { submission: string; operation: string } = { submission, operation },
+): Promise<void> {
   await admin.query("SET session_replication_role = replica");
   try {
     for (const slot of ["instrumental_audio", "vocal_audio"] as const) {
@@ -116,14 +120,14 @@ async function seedAcceptedStemPairFixture(admin: Client, connection: string): P
            size_bytes,content_type,canonical_sha256,author_persona_id
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'etag','version',16,'audio/mpeg',$9,$10)`,
         [
-          submission,
+          fixture.submission,
           slot,
           community,
           actor,
-          `${operation}-stem-${slot}`,
-          `${submission}-reservation-${slot}`,
-          `media://immutable/${operation}-stem-${slot}/audio/1`,
-          `r2://immutable/${operation}-stem-${slot}/audio/1`,
+          `${fixture.operation}-stem-${slot}`,
+          `${fixture.submission}-reservation-${slot}`,
+          `media://immutable/${fixture.operation}-stem-${slot}/audio/1`,
+          `r2://immutable/${fixture.operation}-stem-${slot}/audio/1`,
           slot === "instrumental_audio" ? "8".repeat(64) : "9".repeat(64),
           personaFor(connection),
         ],
@@ -1103,6 +1107,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             false,
             "accepted fixture lyrics",
           );
+          if (stage === "alignment" || stage === "alignment_commit") {
+            await seedAcceptedStemPairFixture(admin, connection);
+          }
           const current = await store.loadAuthority(submission, operation);
           if (current === null) throw new Error("missing publication fixture");
           if (stage !== "publication_commit")
@@ -4839,6 +4846,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ];
       const timedLyricsArtifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
         alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: timedTokens.map((text, index) => ({
@@ -5333,6 +5341,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
       const artifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
         alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: [
@@ -7115,6 +7124,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           false,
           fixture,
         );
+        await seedAcceptedStemPairFixture(admin, connection, fixture);
         const postId = `media-post-${fixture.operation}`;
         const alignmentOutboxId = `media_pg_recovery_alignment_outbox_${input.suffix}`;
         await run(connection, (store) =>
@@ -7929,6 +7939,7 @@ async function createRequestedAlignmentRecovery(admin: Client, connection: strin
     false,
     lyrics,
   );
+  await seedAcceptedStemPairFixture(admin, connection);
   const postId = `media-post-${operation}`;
   await run(connection, (store) =>
     store.publish({
