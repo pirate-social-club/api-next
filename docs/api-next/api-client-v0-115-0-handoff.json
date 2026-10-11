@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.115.0",
+  "sourceBranch": "feat/guest-participation-interfaces",
+  "sourceBase": "6fedd907b05251c5330d2a51817b7775e36ed4b9",
+  "semanticSourceCommit": "a14b1ae03c12e24cf4176762364033111cfb2947",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "21 disabled private/no-store guest participation, prepared Study, attachment recovery and owner-credit declarations. Closed browser authority/operation pairs, proof locators without body secrets, original-drawing participation and held sent-COMMIT outcomes. Guest sessions preserve account-v2 grading invariants without a fabricated persona. All participant owner credits require ordinary claim authority before payout. Existing account, v2 reward and historical Telegram practice contracts remain intact.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.115.0.tgz",
+    "sha256": "c5eb66bb5b7ef9cc581859e4712a524473f67edc455ea5a392b7896b6ba65e90"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.115.0",
+    "sourceIdentifier": "api-next-contracts@a2e57e886ec8651a1155343e49839453cdae203d146b46bc3d9fbf09fad83944",
+    "openapiSha256": "a2e57e886ec8651a1155343e49839453cdae203d146b46bc3d9fbf09fad83944",
+    "clientSha256": "6911a86864ef9984c97b55199aafc8de41a2c9d3a98d2d95aa731dc7893a0f26"
+  },
+  "validation": {
+    "status": "Independent semantic source review accepted a14b1ae0. Generated freshness and exact-base breaking comparison passed. Immutable package verification, full local check/test, generated artifact review, hosted checks and canonical acceptance are pending.",
+    "focusedUnits": "33 passed, 283 assertions across five policy, schema, disabled-boundary and signed HNS transport files. Generated/codegen focused suites passed separately.",
+    "operationalBoundary": "Implementation and composition disabled. No SQL migration, guest store, credential or owner issuance, paid call, qualification/share insertion, staging deployment or production activation."
+  },
+  "compatibility": {
+    "integrationBaseline": "6fedd907b05251c5330d2a51817b7775e36ed4b9",
+    "predecessorVersion": "0.114.0",
+    "disposition": "Guest wire declarations are additive over the exact combined prerequisite. Child-only obsolete main-bound readiness waivers are removed for the selected stacked comparison. Do not merge this draft into the prerequisite branch; retarget and recheck after its canonical acceptance. Original 0.113/0.114 archives and handoffs are preserved."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.115.0",
+    "guestImplementation": "Do not enable any guest endpoint from this declarative package. Accepted implementations, numeric admission limits, original-drawing accounting and composed staging acceptance remain required.",
+    "sourceOwnership": "Coordinator owns frozen authority/errors/endpoint and generated artifacts. API learning then accounting follow accepted source and handback; Solid consumes the genuine successor only after contract acceptance and a legitimate slot return.",
+    "preparedReadiness": "Guest response limits are two exercise types, six bands, 128 target-language tags and 64 characters per tag. Over-limit projections explicitly refuse; no silent truncation."
+  },
+  "prerequisite": {
+    "pullRequest": "https://github.com/pirate-social-club/api-next/pull/592",
+    "source": "6fedd907b05251c5330d2a51817b7775e36ed4b9",
+    "releaseGate": "Combined migration 0247 stems/playback/client/instrumental @2 policy remains draft until paired Solid consumer, accepted stems/current vocal alignment and a new eligible prospective @2 offer leg are verified. Existing @1 legs are unchanged. Guest migrations follow actual next free ordinal after this prerequisite."
+  },
+  "independentReviews": {
+    "authorityPorts": "8e94d296380ed67798be8dacceff70ea66710dec2382f54eea2da994cafd9b91",
+    "wireCorrections": "b4e492023183f0d5c45e3a89fef16a64aa8dbd9b0994e15313137525510583c4",
+    "stackedBase": "9ed866e94012cc3afcf1c5c3c897cc3b0f9fca3ea6e33b5ab36a4a6ec7a15ac2"
+  }
+}
