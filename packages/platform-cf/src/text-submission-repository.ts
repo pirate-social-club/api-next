@@ -23,6 +23,11 @@ import type {
   RestrictedTextModerationEvidenceV1,
   TextModerationPolicySnapshotV2,
 } from "@pirate/application/text-moderation-runtime";
+import type {
+  TextPublicationInput,
+  TextPublicationOutcome,
+  TextPublicationStoreService,
+} from "@pirate/application/text-publication-store";
 import {
   MODERATION_POLICY_CATEGORIES_V1,
   type ModerationPolicyDecisionV1,
@@ -63,6 +68,9 @@ type RepositoryService = {
   readonly commitTerminal: (
     input: CommitInput,
   ) => Effect.Effect<TextPostCommitOutcome, StoreFailure, ControlPlaneDb>;
+  readonly commitPublished: (
+    input: TextPublicationInput,
+  ) => Effect.Effect<TextPublicationOutcome, StoreFailure, ControlPlaneDb>;
   readonly readModerationPolicy: (input: {
     readonly communityId: string;
   }) => Effect.Effect<TextModerationPolicySnapshotV2, StoreFailure, ControlPlaneDb>;
@@ -348,11 +356,11 @@ const moderationPolicySnapshot = (
     };
   });
 
-const authority = (
+const requireWriteAuthority = (
   transaction: Transaction,
   communityId: string,
   actorUserId: string,
-): Effect.Effect<TextModerationPolicySnapshotV2, StoreFailure> =>
+): Effect.Effect<void, StoreFailure> =>
   Effect.gen(function* () {
     const community = yield* transaction.execute<Row>({
       label: "text-post.commit.lock-community",
@@ -383,7 +391,6 @@ const authority = (
       booleanValue(activeEffect.rows[0] as Row, "allowed") !== true
     )
       return yield* Effect.fail(failure("commit", "membership-required"));
-    return yield* moderationPolicySnapshot(transaction, communityId, true);
   });
 
 const lockCommentTarget = (
@@ -476,10 +483,13 @@ const commentBodyValid = (
   );
 };
 
-const targetFor = (input: CommitInput): TextSubmissionTarget =>
+const targetFor = (input: CommitInput | TextPublicationInput): TextSubmissionTarget =>
   input.target ?? { surface: "text_post", communityId: input.communityId };
 
-const requestHashValue = (input: CommitInput, target: TextSubmissionTarget): unknown =>
+const requestHashValue = (
+  input: CommitInput | TextPublicationInput,
+  target: TextSubmissionTarget,
+): unknown =>
   target.surface === "text_post"
     ? { community_id: input.communityId, body: input.body }
     : {
@@ -630,8 +640,13 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       return yield* moderationPolicySnapshot(db, input.communityId, false);
     });
 
-  const commitTerminal: RepositoryService["commitTerminal"] = (input) =>
+  const commitSubmission = (
+    input: CommitInput | TextPublicationInput,
+  ): Effect.Effect<TextPostCommitOutcome, StoreFailure, ControlPlaneDb> =>
     Effect.gen(function* () {
+      const evaluation = "evaluation" in input ? input.evaluation : null;
+      const restrictedEvidence =
+        "restrictedEvidence" in input ? input.restrictedEvidence : undefined;
       const target = targetFor(input);
       const surface = target.surface;
       const body = input.body as CreatePostBody;
@@ -665,22 +680,37 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       const canonical = canonicalTextModerationInput(input.moderationInput);
       if (
         canonical.kind !== "accepted" ||
-        canonical.sha256 !== input.evaluation.input_sha256 ||
+        (evaluation !== null && canonical.sha256 !== evaluation.input_sha256) ||
         (surface === "text_post" ? (body.title ?? null) : null) !== input.moderationInput.title ||
         body.body !== input.moderationInput.body
       )
         return yield* Effect.fail(failure("commit", "constraint"));
-      const providerFailure = isProviderFailure(input.evaluation);
-      if (
-        input.evaluation.version !== "text-moderation-v2" ||
-        textModerationEvaluationInvariant(input.evaluation) !== null ||
-        (providerFailure
-          ? input.restrictedEvidence !== undefined || input.evaluation.evidence_ref !== null
-          : input.restrictedEvidence === undefined ||
-            input.restrictedEvidence.community_id !== input.communityId ||
-            !restrictedEvidenceValid(input.restrictedEvidence, input.evaluation))
-      )
-        return yield* Effect.fail(failure("commit", "constraint"));
+      const authorDeclaredRating =
+        "authorDeclaredRating" in input
+          ? input.authorDeclaredRating
+          : input.evaluation.author_declared_rating;
+      const contentRating = evaluation?.resulting_content_rating ?? authorDeclaredRating;
+      if (evaluation === null) {
+        if (
+          (authorDeclaredRating !== "general" && authorDeclaredRating !== "adult_18") ||
+          authorDeclaredRating !== (body.author_declared_rating ?? "general")
+        ) {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
+      } else {
+        const providerFailure = isProviderFailure(evaluation);
+        if (
+          evaluation.version !== "text-moderation-v2" ||
+          textModerationEvaluationInvariant(evaluation) !== null ||
+          (providerFailure
+            ? restrictedEvidence !== undefined || evaluation.evidence_ref !== null
+            : restrictedEvidence === undefined ||
+              restrictedEvidence.community_id !== input.communityId ||
+              !restrictedEvidenceValid(restrictedEvidence, evaluation))
+        ) {
+          return yield* Effect.fail(failure("commit", "constraint"));
+        }
+      }
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
@@ -721,26 +751,34 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             return outcome;
           }
 
-          const current = yield* authority(transaction, input.communityId, input.actor.userId);
+          yield* requireWriteAuthority(transaction, input.communityId, input.actor.userId);
+          const current =
+            evaluation === null
+              ? null
+              : yield* moderationPolicySnapshot(transaction, input.communityId, true);
           const targetState =
             target.surface === "text_post"
               ? { parentDepth: -1 }
               : yield* lockCommentTarget(transaction, target);
-          const evaluation = input.evaluation;
           if (
-            evaluation.policy_revision !== current.policy_revision ||
-            evaluation.policy_hash !== current.policy_hash ||
-            evaluation.platform_policy_revision !== current.platform_policy_revision ||
-            evaluation.platform_policy_hash !== current.platform_policy_hash ||
-            evaluation.community_policy_revision !== current.community_policy_revision ||
-            evaluation.community_policy_hash !== current.community_policy_hash
+            evaluation !== null &&
+            current !== null &&
+            (evaluation.policy_revision !== current.policy_revision ||
+              evaluation.policy_hash !== current.policy_hash ||
+              evaluation.platform_policy_revision !== current.platform_policy_revision ||
+              evaluation.platform_policy_hash !== current.platform_policy_hash ||
+              evaluation.community_policy_revision !== current.community_policy_revision ||
+              evaluation.community_policy_hash !== current.community_policy_hash)
           )
             return {
               kind: "policy-stale" as const,
               policyRevision: current.policy_revision,
               policyHash: current.policy_hash,
             };
-          const publicResult = publicTextPublicationResult(evaluation);
+          const publicResult =
+            evaluation === null
+              ? { decision: "allow" as const, reason_code: null }
+              : publicTextPublicationResult(evaluation);
           if (publicResult === null) return yield* Effect.fail(failure("commit", "constraint"));
           const nowResult = yield* transaction.execute<Row>({
             label: "text-post.commit.database-clock",
@@ -752,7 +790,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           if (at === null) return yield* Effect.fail(failure("commit", "invalid-row"));
           const submissionId = makeId("sub");
           const status =
-            evaluation.decision === "allow"
+            evaluation === null || evaluation.decision === "allow"
               ? ("published" as const)
               : evaluation.decision === "manual_review"
                 ? ("manual_review" as const)
@@ -777,8 +815,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             return yield* Effect.fail(failure("commit", "invalid-row"));
           const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
 
-          if (input.restrictedEvidence !== undefined) {
-            const evidence = input.restrictedEvidence;
+          if (restrictedEvidence !== undefined) {
+            const evidence = restrictedEvidence;
             const categories = Object.fromEntries(
               evidence.inputs.map((entry, index) => [
                 `${index}:${entry.input_sha256}`,
@@ -903,12 +941,11 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 at,
                 input.idempotencyKey,
                 input.requestHash,
-                evaluation.author_declared_rating,
-                evaluation.resulting_content_rating,
+                authorDeclaredRating,
+                contentRating,
               ],
               readonly: false,
             });
-            const contentRating = evaluation.resulting_content_rating;
             const candidate =
               visibility === "public" && contentRating === "general"
                 ? createPostSlugCandidate({
@@ -955,8 +992,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.idempotencyKey,
                 input.requestHash,
                 depth,
-                evaluation.author_declared_rating,
-                evaluation.resulting_content_rating,
+                authorDeclaredRating,
+                contentRating,
               ],
               readonly: false,
             });
@@ -995,7 +1032,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.moderationInput.body,
                 depth,
                 at,
-                evaluation.resulting_content_rating,
+                contentRating,
               ],
               readonly: false,
             });
@@ -1013,11 +1050,11 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                     target_post_id, target_parent_comment_id,
                     created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
                     author_persona_id, author_declared_rating, resulting_content_rating,
-                    matched_categories, category_decisions, effective_policy_decision
+                    matched_categories, category_decisions, effective_policy_decision, publication_mode
                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18::jsonb, $19, $20, $21, $22, $23, $24,
                     $25, $25, $26, encode(sha256($26), 'hex'), $27, $28, $29,
-                    $30::jsonb, $31::jsonb, $32)`,
+                    $30::jsonb, $31::jsonb, $32, $33)`,
             values: [
               input.communityId,
               submissionId,
@@ -1027,17 +1064,17 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               input.idempotencyKey,
               input.requestHash,
               status,
-              evaluation.decision,
+              evaluation?.decision ?? "allow",
               publicResult.reason_code,
-              current.policy_revision,
-              current.policy_hash,
-              evaluation.platform_policy_revision,
-              evaluation.platform_policy_hash,
-              evaluation.community_policy_revision,
-              evaluation.community_policy_hash,
+              current?.policy_revision ?? null,
+              current?.policy_hash ?? null,
+              evaluation?.platform_policy_revision ?? null,
+              evaluation?.platform_policy_hash ?? null,
+              evaluation?.community_policy_revision ?? null,
+              evaluation?.community_policy_hash ?? null,
               canonical.sha256,
-              JSON.stringify(evaluation.reason_codes),
-              evaluation.evidence_ref,
+              JSON.stringify(evaluation?.reason_codes ?? []),
+              evaluation?.evidence_ref ?? null,
               postId,
               commentId,
               reviewRef,
@@ -1046,11 +1083,12 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               at,
               bytes,
               input.personaId,
-              evaluation.author_declared_rating,
-              evaluation.resulting_content_rating,
-              JSON.stringify(evaluation.matched_categories),
-              JSON.stringify(evaluation.category_decisions),
-              evaluation.effective_policy_decision,
+              authorDeclaredRating,
+              contentRating,
+              JSON.stringify(evaluation?.matched_categories ?? []),
+              JSON.stringify(evaluation?.category_decisions ?? {}),
+              evaluation?.effective_policy_decision ?? "permit",
+              evaluation === null ? "author_declared" : "moderated",
             ],
             readonly: false,
           });
@@ -1135,10 +1173,10 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 input.communityId,
                 reviewRef,
                 submissionId,
-                evaluation.platform_policy_revision,
-                evaluation.platform_policy_hash,
-                evaluation.community_policy_revision,
-                evaluation.community_policy_hash,
+                evaluation?.platform_policy_revision ?? null,
+                evaluation?.platform_policy_hash ?? null,
+                evaluation?.community_policy_revision ?? null,
+                evaluation?.community_policy_hash ?? null,
                 at,
               ],
               readonly: false,
@@ -1165,7 +1203,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               readonly: false,
             });
           }
-          if (status === "blocked" && evaluation.reason_codes.includes("sexual_minors")) {
+          if (status === "blocked" && (evaluation?.reason_codes ?? []).includes("sexual_minors")) {
             yield* transaction.execute({
               label: "text-post.commit.platform-hold-v2",
               text: `INSERT INTO community_moderation_cases_v2 (
@@ -1182,6 +1220,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         }),
       );
     });
+
+  const commitTerminal: RepositoryService["commitTerminal"] = (input) => commitSubmission(input);
+  const commitPublished: RepositoryService["commitPublished"] = (input) =>
+    commitSubmission(input).pipe(
+      Effect.flatMap((outcome) =>
+        outcome.kind === "policy-stale"
+          ? Effect.fail(failure("commit", "invalid-row"))
+          : Effect.succeed(outcome),
+      ),
+    );
 
   const resolveCommentTarget: RepositoryService["resolveCommentTarget"] = (input) =>
     Effect.gen(function* () {
@@ -1262,6 +1310,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
     replay,
     readModerationPolicy,
     commitTerminal,
+    commitPublished,
     getForAuthor,
     resolveCommentTarget,
   };
@@ -1273,7 +1322,7 @@ export function makeControlPlaneTextSubmissionRepository(): RepositoryService {
 
 export function makeControlPlaneTextSubmissionStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): TextPostStore["Service"] {
+): TextPostStore["Service"] & TextPublicationStoreService {
   const repository = makeControlPlaneTextPostRepository();
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect);
@@ -1282,6 +1331,7 @@ export function makeControlPlaneTextSubmissionStore(
     replay: (input) => provide(repository.replay(input)),
     readModerationPolicy: (input) => provide(repository.readModerationPolicy(input)),
     commitTerminal: (input) => provide(repository.commitTerminal(input)),
+    commitPublished: (input) => provide(repository.commitPublished(input)),
     getForAuthor: (input) => provide(repository.getForAuthor(input)),
     resolveCommentTarget: (input) => provide(repository.resolveCommentTarget(input)),
   };

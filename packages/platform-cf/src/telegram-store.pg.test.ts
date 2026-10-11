@@ -193,6 +193,120 @@ suite("community Telegram persistence", () => {
       expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("uncertain");
     }));
 
+  test("a message ordered after another is sent only after it is delivered or abandoned", () =>
+    fixture(async (store, admin) => {
+      const message = (id: string, after?: string) => ({
+        id,
+        communityId: "telegram-community",
+        botEpoch: "epoch",
+        chatId: "123",
+        kind: "reply" as const,
+        postId: null,
+        state: "pending" as const,
+        desired: {
+          kind: "text" as const,
+          text: id,
+          media: null,
+          buttons: [],
+          ...(after === undefined ? {} : { after }),
+        },
+        desiredHash: id,
+      });
+      const row = async (id: string) =>
+        (
+          await admin.query(
+            "SELECT state,attempt_count FROM community_telegram_deliveries WHERE delivery_id=$1",
+            [id],
+          )
+        ).rows[0];
+      const claim = async (id: string) => {
+        const claimed = await store.claimDelivery(id);
+        if (!claimed) throw new Error(`Missing claim for ${id}`);
+        return claimed;
+      };
+
+      // Pending or sending feedback holds the prompt back without spending an attempt.
+      await store.enqueueDelivery(message("feedback"));
+      await store.enqueueDelivery(message("prompt", "feedback"));
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      const first = await claim("feedback");
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      expect(await store.deliveriesAfter(first)).toEqual(["prompt"]);
+
+      // A retryable rejection is still an outstanding send: the prompt keeps waiting.
+      await store.finishDelivery(
+        first,
+        { kind: "rejected", code: "telegram_429", retryAfter: 5 },
+        "send",
+      );
+      expect(await row("feedback")).toMatchObject({ state: "failed" });
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      expect(await row("prompt")).toEqual({ state: "pending", attempt_count: 0 });
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE delivery_id='feedback'",
+      );
+      // Even once the retry is due, the prompt waits for it to be confirmed.
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      const retried = await claim("feedback");
+      expect(await store.claimDelivery("prompt")).toBeNull();
+      await store.finishDelivery(retried, { kind: "confirmed", messageId: 7 }, "send");
+      // Competing consumers claim the released prompt exactly once.
+      const claims = await Promise.all([
+        store.claimDelivery("prompt"),
+        store.claimDelivery("prompt"),
+      ]);
+      expect(claims.filter((claimed) => claimed !== null)).toHaveLength(1);
+      expect(await row("prompt")).toEqual({ state: "sending", attempt_count: 1 });
+      expect(await row("feedback")).toMatchObject({ state: "delivered" });
+
+      // Feedback that can never be sent is cancelled before the prompt is released, so it
+      // cannot arrive afterwards: a permanent rejection, an unknown outcome, an interrupted
+      // send whose lease ran out, and exhausted retries.
+      const abandon: Record<string, (id: string) => Promise<void>> = {
+        rejected: async (id) =>
+          store.finishDelivery(
+            await claim(id),
+            { kind: "rejected", code: "telegram_400", retryAfter: null },
+            "send",
+          ),
+        uncertain: async (id) =>
+          store.finishDelivery(
+            await claim(id),
+            { kind: "uncertain", code: "acknowledgement_unavailable" },
+            "send",
+          ),
+        interrupted: async (id) => {
+          await claim(id);
+          await admin.query(
+            "UPDATE community_telegram_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1",
+            [id],
+          );
+        },
+        exhausted: async (id) => {
+          await store.finishDelivery(
+            await claim(id),
+            { kind: "rejected", code: "telegram_429", retryAfter: 5 },
+            "send",
+          );
+          await admin.query(
+            "UPDATE community_telegram_deliveries SET attempt_count=10 WHERE delivery_id=$1",
+            [id],
+          );
+        },
+      };
+      for (const [name, end] of Object.entries(abandon)) {
+        await store.enqueueDelivery(message(`${name}-feedback`));
+        await store.enqueueDelivery(message(`${name}-prompt`, `${name}-feedback`));
+        await end(`${name}-feedback`);
+        expect((await store.claimDelivery(`${name}-prompt`))?.id).toBe(`${name}-prompt`);
+        expect(await row(`${name}-feedback`)).toMatchObject({ state: "cancelled" });
+        // A cancelled message can never be claimed for sending again.
+        expect(await store.claimDelivery(`${name}-feedback`)).toBeNull();
+      }
+      // A predecessor that does not exist cannot hold anything back.
+      await store.enqueueDelivery(message("orphan", "never-enqueued"));
+      expect((await store.claimDelivery("orphan"))?.id).toBe("orphan");
+    }));
   test("failed edits retain confirmed content and can be claimed again after retry_after", () =>
     fixture(async (store, admin) => {
       const base = {
@@ -237,5 +351,121 @@ suite("community Telegram persistence", () => {
       if (!withdrawn) throw new Error("Missing withdrawal");
       await store.finishDelivery(withdrawn, { kind: "confirmed", messageId: 9 }, "delete");
       expect((await store.listDeliveries("telegram-community")).items[0]?.state).toBe("withdrawn");
+    }));
+  test("interface choices survive bot rotation, fence reordered writes and stay private", () =>
+    fixture(async (store, admin) => {
+      let bot = await store.integration("telegram-community");
+      const sender = {
+        communityId: bot.communityId,
+        botId: "123",
+        epoch: "epoch",
+        telegramUserId: "321",
+      };
+      const first = await store.acceptUpdate(bot, { update_id: 10, message: {} });
+      const second = await store.acceptUpdate(bot, { update_id: 11, message: {} });
+      const third = await store.acceptUpdate(bot, { update_id: 12, message: {} });
+      for (const [id, minute] of [
+        [first, 1],
+        [second, 2],
+        [third, 3],
+      ] as const)
+        await admin.query(
+          "UPDATE community_telegram_inbox SET created_at=$2::timestamptz WHERE inbox_id=$1",
+          [id, `2026-10-05T00:0${minute}:00Z`],
+        );
+      await store.saveLearnerLanguage(sender, second, "ru", false);
+      await store.saveLearnerLanguage(sender, first, "en", true);
+      await store.saveLearnerLanguage(sender, second, "ka", false);
+      expect((await store.learnerLanguageContext(sender)).preference).toEqual({
+        locale: "en",
+        explicit: true,
+      });
+      await store.saveLearnerLanguage(sender, third, "ka", true);
+      await store.saveLearnerLanguage(sender, first, "en", true);
+      expect((await store.learnerLanguageContext(sender)).preference).toEqual({
+        locale: "ka",
+        explicit: true,
+      });
+      expect(
+        (await store.learnerLanguageContext({ ...sender, telegramUserId: "654" })).preference,
+      ).toBeNull();
+      bot = await store.saveIntegration(
+        { ...bot, revision: bot.revision + 1, botEpoch: "rotated" },
+        bot.revision,
+        "rotation",
+        "rotation-hash",
+        "telegram-owner",
+      );
+      expect(
+        (await store.learnerLanguageContext({ ...sender, epoch: "rotated" })).preference,
+      ).toEqual({ locale: "ka", explicit: true });
+      await expect(store.saveLearnerLanguage(sender, third, "ru", true)).rejects.toBeDefined();
+      await store.saveIntegration(
+        { ...bot, revision: bot.revision + 1, botEpoch: "different", botId: "456" },
+        bot.revision,
+        "replace",
+        "replace-hash",
+        "telegram-owner",
+      );
+      expect(
+        (await store.learnerLanguageContext({ ...sender, botId: "456", epoch: "different" }))
+          .preference,
+      ).toBeNull();
+    }));
+
+  test("account UI preference is read only through a current bot grant and helper is never written", () =>
+    fixture(async (store, admin) => {
+      await admin.query("INSERT INTO users(user_id) VALUES('locale-learner')");
+      // Locale authority is tested independently of the wallet activation fixture.
+      await admin.query("SET session_replication_role=replica");
+      await admin.query(
+        "INSERT INTO personas(persona_id,account_id,status) VALUES('locale-persona','locale-learner','active')",
+      );
+      await admin.query("SET session_replication_role=origin");
+      await admin.query(
+        "INSERT INTO account_language_preferences(account_id,ui_locale,study_helper_language) VALUES('locale-learner','ru','zh-Hans')",
+      );
+      await admin.query(
+        "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('321','locale-learner')",
+      );
+      const sender = {
+        communityId: "telegram-community",
+        botId: "123",
+        epoch: "epoch",
+        telegramUserId: "321",
+      };
+      expect((await store.learnerLanguageContext(sender)).accountLocale).toBeNull();
+      await admin.query(
+        "INSERT INTO telegram_bot_grants(community_id,bot_id,telegram_user_id,account_id,persona_id,revision) VALUES('telegram-community','123','321','locale-learner','locale-persona',1)",
+      );
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: null,
+        helperLanguage: null,
+      });
+      await admin.query(
+        "INSERT INTO persona_community_bindings(persona_id,account_id,community_id,binding_source) VALUES('locale-persona','locale-learner','telegram-community','persona_creation')",
+      );
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: "ru",
+        helperLanguage: "zh-Hans",
+      });
+      const message = await store.acceptUpdate(await store.integration(sender.communityId), {
+        update_id: 9,
+        message: {},
+      });
+      await store.saveLearnerLanguage(sender, message, "ka", true);
+      expect(
+        (
+          await admin.query(
+            "SELECT ui_locale,study_helper_language FROM account_language_preferences WHERE account_id='locale-learner'",
+          )
+        ).rows,
+      ).toEqual([{ ui_locale: "ru", study_helper_language: "zh-Hans" }]);
+      await admin.query("UPDATE telegram_bot_grants SET active=FALSE WHERE telegram_user_id='321'");
+      expect(await store.learnerLanguageContext(sender)).toMatchObject({
+        accountLocale: null,
+        helperLanguage: null,
+        preference: { locale: "ka", explicit: true },
+      });
     }));
 });

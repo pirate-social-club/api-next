@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.105.0",
+  "sourceBranch": "feat/video-unseen-outcomes",
+  "sourceBase": "7838030250cfe936ab23a9b24fe0c62ccfb96213",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "POST /video-outcomes/claim is browser-session-only with existing Origin and CSRF protection. One permanent claim winner returns display_permission true and a neutral terminal outcome with frozen song identity or null. All duplicates and later sessions lose. No expiry, reclaim, release or winning response replay. Lost acknowledgment or crash after claim may permanently lose the notice. Sealed nonretryable failures and policy blocks only; published, unsealed, retryable and acceptance_unknown attempts are excluded. No raw moderation signals or media.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.105.0.tgz",
+    "sha256": "12fc7e193c6c373478a563106780220bfbafa7953e98d2eaf348107384c184f2"
+  },
+  "validation": {
+    "status": "All local source gates and real PostgreSQL acceptance passed; independent review and hosted required checks pending",
+    "passed": [
+      "Repository check, Effect/TypeScript/dependency and HTTP-boundary gates",
+      "PostgreSQL 17 permanent outcome claims: 6 tests, 19 assertions, including twelve concurrent devices and lost actual COMMIT acknowledgment",
+      "PostgreSQL foundation: 14 tests, 215 assertions; video publication/reconciliation: 42 tests, 377 assertions",
+      "HTTP/contract and secret-boundary tests: 18 tests, 44 assertions; changed-file boundary audit: 26 files, zero violations",
+      "Normalized migration baseline freshness, immutable client artifact verification, additive OpenAPI gate, script quality gate",
+      "Full unit suite: 5310 passes, one existing skip; Node suite: 22 passes; six Worker partitions: 218 passes"
+    ],
+    "remaining": [
+      "Independent source review",
+      "Hosted required check, postgres17 and secret-boundary gates",
+      "Separate Solid outcome-toast adoption and phone acceptance"
+    ],
+    "operationalBoundary": "No live migration, deployment, secret change, provider operation or production action authorized."
+  }
+}

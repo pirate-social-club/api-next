@@ -17,6 +17,7 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesRouteAttachmentStore } from "@pirate/platform-cf/spaces-community-route-attachment-repository";
 import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
@@ -58,6 +59,8 @@ import {
   makeSpacesRegistryTransport,
   type SpacesRegistryTransportOptions,
 } from "./spaces-registry-transport.ts";
+import { makeSpacesRouteAttachmentHandlers } from "./spaces-route-attachment-handlers.ts";
+import { telegramLinkBrowser } from "./telegram-linking-browser.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -69,6 +72,8 @@ export interface Principal {
 
 /** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
+  /** Trusted session digest and private binding, only for Telegram linking routes. */
+  readonly telegramLinkBrowser?: { readonly sessionHash: string; readonly binding?: string };
   readonly body: unknown;
   /** Present only when the endpoint declares a headers schema. */
   readonly headers?: unknown;
@@ -169,6 +174,8 @@ export interface HttpWorkerOptions {
   readonly spacesRegistry?: SpacesRegistryTransportOptions;
   /** Absent in production until scoped verifier credentials are installed. */
   readonly spacesOwnerProof?: SpacesOwnerProofStore;
+  /** Absent unless the trusted public origin for Spaces community routes is configured. */
+  readonly spacesRouteAttachment?: SpacesRouteAttachmentStore;
   /** Absent until scoped host credentials and an independent verifier are composed. */
   readonly spacesOperatorAssignments?: SpacesOperatorAssignmentStore;
 }
@@ -267,7 +274,11 @@ type ParsedCookies = {
   readonly invalidNames: ReadonlySet<string>;
 };
 
-const SENSITIVE_COOKIE_NAMES = new Set([SESSION_COOKIE_NAME, CSRF_COOKIE_NAME]);
+const SENSITIVE_COOKIE_NAMES = new Set([
+  SESSION_COOKIE_NAME,
+  CSRF_COOKIE_NAME,
+  "__Host-pirate_telegram_link",
+]);
 const hasControlCharacter = (value: string): boolean =>
   [...value].some((character) => {
     const code = character.charCodeAt(0);
@@ -676,8 +687,14 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "ListMyModerationCommunities",
+  "GetPublicProfileActivity",
   "StartSpacesOwnership",
   "PollSpacesOwnership",
+  "StartSpacesRouteAttachment",
+  "GetCurrentSpacesRouteAttachment",
+  "ProveSpacesRouteAttachment",
+  "CommitSpacesRouteAttachment",
   "GetSpacesOperatorAssignments",
   "ConfirmSpacesOperatorAssignment",
   "GetHandleNationalityAuthoring",
@@ -779,6 +796,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     options.spacesOwnerProof === undefined
       ? undefined
       : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
+  const spacesRouteAttachmentHandlers =
+    options.spacesRouteAttachment === undefined
+      ? undefined
+      : makeSpacesRouteAttachmentHandlers(options.spacesRouteAttachment);
   const spacesOperatorAssignmentHandlers =
     options.spacesOperatorAssignments === undefined
       ? undefined
@@ -796,6 +817,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
         spacesOwnerProofHandlers?.[binding.name] !== undefined ||
+        spacesRouteAttachmentHandlers?.[binding.name] !== undefined ||
         spacesOperatorAssignmentHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
@@ -914,6 +936,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
           spacesOwnerProofHandlers?.[binding.name] ??
+          spacesRouteAttachmentHandlers?.[binding.name] ??
           spacesOperatorAssignmentHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
@@ -1021,8 +1044,25 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           if (compatibilityResponse !== undefined) return compatibilityResponse;
           const input = await decodeInput(binding.endpoint, context, principal);
           const edgeClientIp = context.req.header("CF-Connecting-IP");
+          const linkBrowser =
+            isBrowserSessionOnly(binding.endpoint) &&
+            binding.endpoint.path.startsWith("/telegram/link/") &&
+            sessionCookie
+              ? await telegramLinkBrowser(
+                  sessionCookie,
+                  cookies,
+                  parsedCookies.duplicateNames,
+                  parsedCookies.invalidNames,
+                  ![
+                    "GetMyTelegramLinks",
+                    "RevokeTelegramLinkGrant",
+                    "UnlinkTelegramAccount",
+                  ].includes(binding.name),
+                )
+              : undefined;
           const requestWithEdgeIp = {
             ...input,
+            ...(linkBrowser === undefined ? {} : { telegramLinkBrowser: linkBrowser }),
             signal: context.req.raw.signal,
             ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
           };
@@ -1073,6 +1113,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             binding.name === "GetPublicHomeFeed" ||
             binding.name === "GetPublicPostSitemap" ||
             binding.name === "GetTrendingSongs" ||
+            binding.name === "ListPopularCommunities" ||
+            binding.name === "ListCommunityHandleOfferings" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||

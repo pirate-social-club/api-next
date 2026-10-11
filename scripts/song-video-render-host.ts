@@ -60,6 +60,7 @@ export type HostRenderOutcome =
 
 export function planHostRenderRequest(facts: HostRenderFacts): SongVideoRenderRequest {
   return {
+    attemptId: facts.attemptId,
     outputObjectKey: facts.outputObjectKey,
     source: facts.source,
     song: facts.song,
@@ -187,6 +188,7 @@ export async function executeHostRenderAttempt(
   }
   if (submitted.status === "refused") return { status: "refused", reason: submitted.reason };
   const observed = await input.renderer.observe({
+    attemptId: input.facts.attemptId,
     outputObjectKey: input.facts.outputObjectKey,
   });
   if (observed.status !== "completed") return { status: "pending" };

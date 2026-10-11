@@ -6,6 +6,7 @@ import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repos
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeTelegramDeliveryStore } from "./telegram-delivery-store.ts";
 import { makeTelegramInboxStore } from "./telegram-inbox-store.ts";
+import { makeTelegramLanguageStore } from "./telegram-language-store.ts";
 import { makeTelegramPublicContentStore } from "./telegram-public-content-store.ts";
 import { makeTelegramSettingsStore } from "./telegram-settings-store.ts";
 import { makeTelegramSetupStore } from "./telegram-setup-store.ts";
@@ -16,6 +17,7 @@ export function makeControlPlaneTelegramStore(
 ): TelegramStore {
   const db = makeTelegramDatabase(runtime);
   return {
+    ...makeTelegramLanguageStore(db),
     ...makeTelegramSettingsStore(db),
     ...makeTelegramDeliveryStore(db),
     ...makeTelegramInboxStore(db),

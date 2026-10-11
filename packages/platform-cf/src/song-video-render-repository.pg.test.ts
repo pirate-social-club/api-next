@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { claimHostRenderAttempt } from "../../../scripts/song-video-render-host.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeCloudConvertRenderRepository } from "./song-video-cloudconvert-repository.ts";
 import {
   acceptMaster,
   persistRenderPlan,
@@ -19,6 +21,7 @@ import {
   songReferenceFinalizedFixture,
   community as videoCommunity,
 } from "./video-publication.pg-fixture.ts";
+import { makeVideoSourceGrantResolver } from "./video-source-grant-resolver.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -147,6 +150,160 @@ suite("song video render persistence", () => {
     await seedPublishedSongFixture(admin, song);
     await client.connect();
   }, 180_000);
+
+  test("CloudConvert intent and job identity are durable and cannot authorize a second create", async () => {
+    await bindPlan("plan-provider-intent");
+    const attempt = {
+      attemptId: "attempt-provider-intent",
+      planId: "plan-provider-intent",
+      generation: 1,
+      outputObjectKey: "master-object/attempt-provider-intent",
+      phase: "recorded" as const,
+      executionStartedAtMs: null,
+    };
+    await startRenderAttempt(client, attempt, {
+      ...dispatchFor(attempt.attemptId),
+      rendererIdentity: "cloudconvert-song-video-pcm-v1",
+    });
+    const connect = async () => {
+      const connection = new Client({ connectionString: scoped.toString() });
+      await connection.connect();
+      return connection;
+    };
+    const renderStore = makeSongVideoRenderStore({ connect, output: store, prober, soundtrack });
+    const repository = makeCloudConvertRenderRepository({ connect });
+    expect(await renderStore.beginExecution(attempt)).toBe(true);
+    const initial = await repository.read(attempt.attemptId);
+    expect(initial?.deadlineMs).toBeGreaterThan(Date.now());
+    expect(initial?.createStarted).toBe(false);
+    expect(await renderStore.beginExecution(attempt)).toBe(false);
+    await repository.bindPcm(attempt.attemptId, CANONICAL_INTERVAL);
+    const claims = await Promise.all([
+      repository.beginCreate(attempt.attemptId),
+      repository.beginCreate(attempt.attemptId),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    await repository.attachJob(attempt.attemptId, "provider-job-1");
+    await repository.attachJob(attempt.attemptId, "provider-job-1");
+    await expect(repository.attachJob(attempt.attemptId, "provider-job-2")).rejects.toThrow(
+      "CloudConvert job identity conflict",
+    );
+    await expect(
+      client.query(
+        "UPDATE media_song_video_render_attempts SET provider_wait_deadline=provider_wait_deadline+interval '1 second' WHERE attempt_id=$1",
+        [attempt.attemptId],
+      ),
+    ).rejects.toThrow("song-video provider identity and terminal evidence are immutable");
+    expect(await repository.read(attempt.attemptId)).toMatchObject({
+      jobId: "provider-job-1",
+      createStarted: true,
+      deadlineMs: initial?.deadlineMs,
+    });
+    const capability = "c".repeat(43);
+    const expiresAtMs = Date.now() + 60_000;
+    await repository.grant({
+      digest: createHash("sha256").update(capability).digest("hex"),
+      attemptId: attempt.attemptId,
+      key: "song-video-excerpts/attempt-provider-intent.wav",
+      version: "excerpt-version",
+      etag: "excerpt-etag",
+      sha256: "a".repeat(64),
+      byteLength: basePlan.clipDurationSamples * 4 + 44,
+      expiresAtMs,
+    });
+    const resolver = makeVideoSourceGrantResolver(
+      makeDirectPostgresControlPlaneLayer(scoped.toString()),
+    );
+    expect(await resolver.resolve(capability)).toMatchObject({
+      expiresAtMs,
+      object: {
+        key: "song-video-excerpts/attempt-provider-intent.wav",
+        contentType: "audio/wav",
+        version: "excerpt-version",
+      },
+    });
+    await repository.requireReconciliation(attempt.attemptId);
+    expect(await resolver.resolve(capability)).toBeNull();
+    expect(await repository.beginCreate(attempt.attemptId)).toBe(false);
+    await repository.cleaned(attempt.attemptId);
+  }, 60_000);
+
+  test("the database refuses a seal already past its stored provider deadline", async () => {
+    await bindPlan("plan-provider-expired");
+    const attempt = {
+      attemptId: "attempt-provider-expired",
+      planId: "plan-provider-expired",
+      generation: 1,
+    };
+    await startRenderAttempt(client, attempt, dispatchFor(attempt.attemptId));
+    await client.query(
+      "UPDATE media_song_video_render_attempts SET provider_wait_deadline=clock_timestamp()-interval '1 second' WHERE attempt_id=$1",
+      [attempt.attemptId],
+    );
+    const outcome = await seal({
+      masterRevisionId: "master-provider-expired",
+      attempt,
+      sourceImmutableRef,
+      claimedSourceSha256: storedSourceSha256,
+      decisionClipStartSamples: basePlan.clipStartSamples,
+      decisionClipDurationSamples: basePlan.clipDurationSamples,
+    });
+    expect(outcome).toEqual({
+      sealed: false,
+      failure: { kind: "provider_wait_expired", attemptId: attempt.attemptId },
+    });
+    const persisted = await client.query(
+      "SELECT count(*)::int AS n FROM media_song_video_masters WHERE attempt_id=$1",
+      [attempt.attemptId],
+    );
+    expect(persisted.rows[0]?.n).toBe(0);
+  }, 60_000);
+
+  test("a deadline crossed during verification rolls back the master insert", async () => {
+    await bindPlan("plan-provider-crossed");
+    const attempt = {
+      attemptId: "attempt-provider-crossed",
+      planId: "plan-provider-crossed",
+      generation: 1,
+    };
+    await startRenderAttempt(client, attempt, dispatchFor(attempt.attemptId));
+    await client.query(
+      "UPDATE media_song_video_render_attempts SET provider_wait_deadline=clock_timestamp()+interval '200 milliseconds' WHERE attempt_id=$1",
+      [attempt.attemptId],
+    );
+    outputFor(attempt.attemptId);
+    const outcome = await verifyAndSealMaster(
+      client,
+      {
+        store,
+        prober,
+        soundtrack: {
+          ...soundtrack,
+          decodedSoundtrackDigest: async () => {
+            await client.query("SELECT pg_sleep(0.3)");
+            return CANONICAL_INTERVAL;
+          },
+        },
+      },
+      {
+        masterRevisionId: "master-provider-crossed",
+        attempt,
+        sourceImmutableRef,
+        claimedSourceSha256: storedSourceSha256,
+        decisionClipStartSamples: basePlan.clipStartSamples,
+        decisionClipDurationSamples: basePlan.clipDurationSamples,
+      },
+    );
+    expect(outcome).toEqual({
+      sealed: false,
+      failure: { kind: "provider_wait_expired", attemptId: attempt.attemptId },
+    });
+    const persisted = await client.query(
+      "SELECT count(*)::int AS n FROM media_song_video_masters WHERE attempt_id=$1",
+      [attempt.attemptId],
+    );
+    expect(persisted.rows[0]?.n).toBe(0);
+  }, 60_000);
 
   test("persists attempt identity before any master exists", async () => {
     {

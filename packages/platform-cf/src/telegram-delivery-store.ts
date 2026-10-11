@@ -46,6 +46,7 @@ export function makeTelegramDeliveryStore(
   | "enqueueDelivery"
   | "claimDelivery"
   | "finishDelivery"
+  | "deliveriesAfter"
   | "holdDelivery"
   | "listDeliveries"
   | "resolveDelivery"
@@ -89,6 +90,28 @@ export function makeTelegramDeliveryStore(
           return null;
         }
         if (record.state !== "pending" && record.state !== "failed") return null;
+        // A message ordered after another is sent only once its predecessor has been
+        // delivered, or can never be sent. It waits while the predecessor is pending, being
+        // sent or awaiting a retry, and waiting spends no attempt.
+        if (record.desired?.after !== undefined) {
+          const prior = await query(
+            `SELECT state,
+              (state IN ('pending','sending') AND (state<>'sending' OR lease_expires_at>=clock_timestamp()))
+                OR (state='failed' AND next_attempt_at<>'infinity' AND attempt_count<10) AS waiting,
+              state IN ('failed','uncertain','sending') AS abandoned
+            FROM community_telegram_deliveries WHERE delivery_id=$1 FOR UPDATE`,
+            [record.desired.after],
+          );
+          if (prior[0]?.waiting === true) return null;
+          // A predecessor that failed for good, or whose outcome is unknown, will not be
+          // retried. Cancel it so it can never arrive after the message that follows it.
+          if (prior[0]?.abandoned === true)
+            await query(
+              `UPDATE community_telegram_deliveries SET state='cancelled',attempt=NULL,lease_expires_at=NULL,
+              next_attempt_at='infinity',updated_at=clock_timestamp() WHERE delivery_id=$1`,
+              [record.desired.after],
+            );
+        }
         const attempt = crypto.randomUUID();
         const claimed = await query(
           `UPDATE community_telegram_deliveries SET state='sending',attempt=$2,attempt_count=attempt_count+1,
@@ -100,6 +123,15 @@ export function makeTelegramDeliveryStore(
           ? { ...record, attempt, attemptCount: Number(claimed[0].attempt_count) }
           : null;
       });
+    },
+    async deliveriesAfter(record) {
+      const rows = await db.query(
+        `SELECT delivery_id FROM community_telegram_deliveries
+        WHERE community_id=$1 AND chat_id=$2 AND state='pending' AND desired->>'after'=$3
+        ORDER BY created_at LIMIT 4`,
+        [record.communityId, record.chatId, record.id],
+      );
+      return rows.map((row) => String(row.delivery_id));
     },
     async finishDelivery(record, outcome, operation) {
       if (outcome.kind === "confirmed") {

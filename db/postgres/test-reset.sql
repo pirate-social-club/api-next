@@ -222,6 +222,7 @@ TRUNCATE TABLE
   "hns_root_import_recovery_authorizations",
   "hns_root_import_recovery_findings",
   "hns_root_import_retention_reviews",
+  "hns_root_import_safe_ownership_proofs",
   "hns_root_import_separated_clocks_inventory",
   "hns_root_import_sessions",
   "hns_root_import_teardown_jobs",
@@ -259,7 +260,12 @@ TRUNCATE TABLE
   "media_song_lyrics_revisions",
   "media_song_stems",
   "media_song_video_accepted_masters",
+  "media_song_video_excerpt_grants",
   "media_song_video_masters",
+  "media_song_video_pcm_admission_policy",
+  "media_song_video_pcm_admissions",
+  "media_song_video_pcm_references",
+  "media_song_video_pcm_source_grants",
   "media_song_video_render_attempts",
   "media_song_video_render_plans",
   "media_submission_command_replays",
@@ -274,6 +280,7 @@ TRUNCATE TABLE
   "media_video_derived_artifacts",
   "media_video_enrichment_outbox",
   "media_video_original_sounds",
+  "media_video_outcome_claims",
   "media_video_publication_decisions",
   "media_video_publication_wakeups",
   "media_video_reservation_command_replays",
@@ -372,6 +379,10 @@ TRUNCATE TABLE
   "reward_gas_topups",
   "reward_ledger_credits",
   "reward_native_transfer_receipt_evidence",
+  "reward_operations_control",
+  "reward_operations_control_events",
+  "reward_operations_run_lease",
+  "reward_operations_run_lease_events",
   "reward_payout_effects",
   "reward_refund_effects",
   "reward_signer_nonces",
@@ -398,6 +409,8 @@ TRUNCATE TABLE
   "song_streak_day_activities",
   "song_streak_days",
   "song_streaks",
+  "spaces_community_route_attachments",
+  "spaces_community_route_renewals",
   "spaces_external_conflict_observations",
   "spaces_final_conflict_evidence",
   "spaces_final_issuance_evidence",
@@ -449,6 +462,15 @@ TRUNCATE TABLE
   "study_unit_exercise_eligibility",
   "subject_key_binding_events",
   "subject_keys",
+  "telegram_account_associations",
+  "telegram_bot_grants",
+  "telegram_interface_preferences",
+  "telegram_link_navigation",
+  "telegram_link_transactions",
+  "telegram_restricted_bot_affirmations",
+  "telegram_restricted_learners",
+  "telegram_restricted_study_personas",
+  "telegram_study_conversations",
   "text_content_held_revisions",
   "text_content_submissions",
   "text_moderation_cases",
@@ -458,7 +480,8 @@ TRUNCATE TABLE
   "used_action_grants",
   "users",
   "verification_completion_attempts",
-  "verification_start_reservations"
+  "verification_start_reservations",
+  "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
 
 SET LOCAL session_replication_role = replica;
@@ -486,6 +509,8 @@ INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 
 
 INSERT INTO hns_lifecycle_schema_cutover VALUES ('0169', '{pirate-hns-authority-provisioner-v2}', '{hns-lifecycle-job-envelope-v1,hns-root-observation-envelope-v1}', '2000-01-01 00:00:00+00');
 
+INSERT INTO media_song_video_pcm_admission_policy VALUES (true, false);
+
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
 INSERT INTO moderation_platform_floor_category_decisions VALUES ('moderation-platform-floor-v1', 'harassment', 'permit');
@@ -512,6 +537,12 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_run_lease VALUES (true, false, NULL, 0, NULL, NULL, NULL);
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');

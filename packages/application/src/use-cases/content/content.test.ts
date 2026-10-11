@@ -1,35 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import {
-  InternalError,
-  MODERATION_POLICY_CATEGORIES_V1,
-  type ModerationPolicyTableV1,
-} from "@pirate/contracts";
+import { InternalError } from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
   ContentRepositoryError,
   type ContentStore,
   TextModerationProviderError,
-  type TextPostStore,
 } from "../../ports.ts";
+import type { TextPublicationStoreService } from "../../text-publication-store.ts";
 import { castPostVote } from "./cast-post-vote.ts";
 import { clearPostVote } from "./clear-post-vote.ts";
 import { createPost } from "./create-post.ts";
 import { getPost } from "./get-post.ts";
-
-const policy = {
-  policy_revision: "text-policy-1",
-  policy_hash: "a".repeat(64),
-  platform_policy_revision: "platform-1",
-  platform_policy_hash: "b".repeat(64),
-  community_policy_revision: "community-1",
-  community_policy_hash: "c".repeat(64),
-  platform_policy: Object.fromEntries(
-    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
-  ) as ModerationPolicyTableV1,
-  community_policy: Object.fromEntries(
-    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
-  ) as ModerationPolicyTableV1,
-};
 
 const actor = { userId: "usr_author", kind: "user" as const };
 const personaId = "persona-content-author";
@@ -100,12 +81,11 @@ const textSubmission = {
 };
 
 const textPostStore = (
-  overrides: Partial<TextPostStore["Service"]> = {},
-): TextPostStore["Service"] => ({
-  readModerationPolicy: () => Effect.succeed(policy),
+  overrides: Partial<TextPublicationStoreService> = {},
+): TextPublicationStoreService => ({
   checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
-  commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
+  commitPublished: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
   getForAuthor: () => Effect.succeed(textSubmission),
   ...overrides,
 });
@@ -131,7 +111,7 @@ describe("M2 content use cases", () => {
   test("hashes the decoded request canonically and forwards processing state", async () => {
     const hashes: string[] = [];
     const store = textPostStore({
-      commitTerminal: (input) => {
+      commitPublished: (input) => {
         hashes.push(input.requestHash);
         return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
       },
@@ -216,7 +196,7 @@ describe("M2 content use cases", () => {
         {
           ...textRuntime(),
           textPostStore: textPostStore({
-            commitTerminal: () => {
+            commitPublished: () => {
               createCalls += 1;
               return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
             },
@@ -245,7 +225,7 @@ describe("M2 content use cases", () => {
         {
           ...textRuntime(),
           textPostStore: textPostStore({
-            commitTerminal: () => {
+            commitPublished: () => {
               createCalls += 1;
               return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
             },

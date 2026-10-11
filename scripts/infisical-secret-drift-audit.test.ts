@@ -29,6 +29,28 @@ const emptySnapshot = (environment: InfisicalSnapshot["environment"]): Infisical
 });
 
 describe("Infisical secret drift audit", () => {
+  test("keeps CloudConvert runtime and operator keys in separate staging custody", () => {
+    for (const [name, allowedPath] of [
+      ["CLOUDCONVERT_RENDER_API_KEY", "/services/api-next"],
+      ["CLOUDCONVERT_API_KEY", "/services/api-next/operator"],
+    ] as const) {
+      for (const environment of ["dev", "staging", "prod"] as const) {
+        for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+          const base = emptySnapshot(environment);
+          const snapshot = { ...base, secrets: { ...base.secrets, [path]: [name] } };
+          const violations = auditInfisicalSnapshots([snapshot]).violations.filter(
+            (v) => v.name === name,
+          );
+          expect(violations).toEqual(
+            environment === "staging" && path === allowedPath
+              ? []
+              : [{ environment, path, kind: "unexpected-secret", name }],
+          );
+        }
+      }
+    }
+  });
+
   test("admits the optional gas signer only in staging operator custody", () => {
     const name = "GAS_TOPUP_KEY";
     for (const environment of ["dev", "staging", "prod"] as const) {
@@ -437,16 +459,19 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("keeps wallet fixtures and Spaces verifier credentials only in staging operator custody", () => {
+  test("keeps optional wallet, Spaces member, prover and verifier credentials only in staging operator custody", () => {
     const names = [
       "PERSONA_WALLET_E2E_EMAIL",
       "PERSONA_WALLET_E2E_OTP",
+      "RUNPOD_API_KEY",
       "SPACES_TAPROOT_E2E_EMAIL",
       "SPACES_TAPROOT_E2E_OTP",
       "SPACES_VERIFIER_ACCESS_CLIENT_ID",
       "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
       "SPACES_VERIFIER_BEARER_TOKEN",
       "SPACES_VERIFIER_TUNNEL_TOKEN",
+      "SPACES_YAHOO_MEMBER_E2E_EMAIL",
+      "SPACES_YAHOO_MEMBER_E2E_OTP",
     ];
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);

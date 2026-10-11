@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.106.0",
+  "sourceBranch": "feat/telegram-linking-durable",
+  "sourceBase": "a247aa653c2d2dd36254b102bae7c73f88bd0092",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Seven browser-session-only Telegram linking endpoints. A private account summary supports revocation without a live linking cookie. Ten-minute browser/account/session-bound verification does not create consent. Explicit exact-community active persona confirmation creates a private numeric Telegram association and restricted per-bot grant. Captured navigation has no authority. Revocation and unlink fence pending actions; same-bot token rotation retains completed consent behind fresh ingress and /start. No native Study execution, claims or payout permission. The feature remains disabled.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.106.0.tgz",
+    "sha256": "0e069cc840e8abec99837c199c3653f270adf1fe0134d2f2a5887de3f57d2d8b"
+  },
+  "validation": {
+    "status": "All local gates passed; hosted review and real-client activation evidence remain open",
+    "passed": [
+      "bun run check",
+      "bun run test: 5385 unit, 22 Node and 223 native Worker tests passed; one existing PostgreSQL 18 shape skip",
+      "Fresh PostgreSQL 17.11 migration replay matches the generated baseline and reset",
+      "31 PostgreSQL authority, Telegram persistence and migration/baseline parity cases passed",
+      "Additive OpenAPI comparison against a247aa653c2d2dd36254b102bae7c73f88bd0092",
+      "Local trusted secret-boundary review: 44 changed paths, no violations"
+    ],
+    "remaining": [
+      "Independent source review and hosted required checks",
+      "Separate Solid intake and real Telegram/phone/browser/custody acceptance"
+    ],
+    "operationalBoundary": "No live migration, deployment, credentials, BotFather changes or learner linking authorized."
+  }
+}

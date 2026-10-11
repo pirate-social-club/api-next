@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.110.0",
+  "sourceBranch": "feat/sidebar-profile-reads",
+  "sourceBase": "10a6d1aa17282750642750717fa38c1e3ab06851",
+  "validatedSourceCommit": "b7be02fb2efe504fe931ae861969df83baf83cea",
+  "pullRequest": null,
+  "wireContract": "Add public member-ranked community discovery, authenticated moderation.view community list and viewer-authorized public persona text/song posts and comments. Existing role, rating, membership and public persona projections remain authoritative. No writes, new moderation permissions or video canonical routes. Version 0.109 is retained for historical HNS provenance and is not reused.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.110.0.tgz",
+    "sha256": "aafd09a5f9481004b3dfe2988325dd5a8829d9f6a54fc47d1d052306b1798324"
+  },
+  "validation": {
+    "status": "All required local API gates passed; hosted gates, independent review and staging acceptance pending",
+    "passed": [
+      "8 application and generated HTTP boundary tests",
+      "3 PostgreSQL 17 tests with actual baseline statement preparation, visibility/role fixtures and bounded microsecond pagination",
+      "Full bun run test completed with zero failed suites",
+      "Immutable client 0.110.0 package verification",
+      "Full bun run check, including main/Worker/script type checks, Effect diagnostics, dependency/import boundary checks, contract freshness and client verification"
+    ],
+    "remaining": [
+      "Hosted required check, postgres17 and secret-boundary checks",
+      "Independent source review, Solid binding and staging acceptance"
+    ],
+    "operationalBoundary": "Source only. No staging deployment, production, funds, credential or gateway mutation."
+  }
+}

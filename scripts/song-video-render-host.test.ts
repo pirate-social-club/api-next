@@ -484,6 +484,7 @@ describe("host R2 temporary credentials", () => {
 describe("host render attempt", () => {
   test("plans the render request from the frozen attempt facts", () => {
     expect(planHostRenderRequest(facts)).toEqual({
+      attemptId: facts.attemptId,
       outputObjectKey: masterRef,
       source: facts.source,
       song: facts.song,

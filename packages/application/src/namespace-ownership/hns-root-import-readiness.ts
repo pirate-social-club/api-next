@@ -10,7 +10,7 @@ export const HNS_ROOT_IMPORT_READINESS_RESULT_VERSION =
   "pirate-hns-root-import-readiness-result-v1" as const;
 
 export type HnsRootImportAuthorityViewV1 = Readonly<{
-  readonly authority_nameserver: "ns1.pirate" | "ns2.pirate";
+  readonly authority_nameserver: string;
   readonly authority_address_family: "GLUE4" | "GLUE6";
   readonly authority_address: string;
   readonly dnssec_validation: "secure";
@@ -155,11 +155,18 @@ function validAuthorityViews(
   value: unknown,
 ): value is readonly [HnsRootImportAuthorityViewV1, HnsRootImportAuthorityViewV1] {
   if (!Array.isArray(value) || value.length !== 2) return false;
-  const expectedNameservers = ["ns1.pirate", "ns2.pirate"];
-  return value.every((entry, index) => {
+  const nameservers = value.map((entry) =>
+    entry !== null && typeof entry === "object" ? Reflect.get(entry, "authority_nameserver") : null,
+  );
+  if (nameservers[0] === nameservers[1]) return false;
+  return value.every((entry) => {
     if (!exactObject(entry, authorityViewKeys)) return false;
     return (
-      entry.authority_nameserver === expectedNameservers[index] &&
+      typeof entry.authority_nameserver === "string" &&
+      entry.authority_nameserver.length <= 253 &&
+      /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u.test(
+        entry.authority_nameserver,
+      ) &&
       (entry.authority_address_family === "GLUE4" || entry.authority_address_family === "GLUE6") &&
       boundedId(entry.authority_address, 45) &&
       entry.dnssec_validation === "secure" &&

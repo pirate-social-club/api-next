@@ -1,0 +1,36 @@
+[Unit]
+Description=Pirate production read-only Handshake mainnet RPC boundary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/pirate-hns-production/mainnet-reader
+ExecStart=/usr/bin/env bun /opt/pirate-hns-production/mainnet-reader/production-mainnet/read-only-hsd-rpc-production.mjs
+LoadCredential=production-hsd-client-key:/etc/pirate/hns-production-mainnet-reader/client-key
+LoadCredential=production-hsd-upstream-key:/srv/pirate-hns-observer/config/hsd_api_key
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=32
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

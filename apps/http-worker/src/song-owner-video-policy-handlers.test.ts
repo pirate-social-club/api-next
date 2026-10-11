@@ -25,6 +25,7 @@ const publicPolicy = {
   policy_revision: 2,
   derivative_video: "owner_only" as const,
   can_post_with_song: false,
+  video_ready: true,
 };
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest =>

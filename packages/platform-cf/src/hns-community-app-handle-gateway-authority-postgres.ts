@@ -1,10 +1,11 @@
 import type { HnsForwarderGatewayAuthoritySourceV1 } from "@pirate/application/hns-host-serving";
 import { Effect } from "effect";
-import { makeSerializedCoalescingHnsGatewayAuthoritySourceV1 } from "./hns-community-app-gateway-authority-postgres.ts";
+import { makeCoalescingHnsGatewayAuthoritySourceV1 } from "./hns-community-app-gateway-authority-postgres.ts";
+import { makeGatewayPostgresPoolClientFactory } from "./hns-gateway-postgres-pool.ts";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "./hns-host-persistence-repository.ts";
 import {
-  makeReadOnlyPostgresControlPlaneLayer,
+  makeReadOnlyPostgresGatewayAuthorityLayer,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
 
@@ -17,22 +18,33 @@ export type HnsCommunityAppHandleGatewayPostgresAuthorityV1 = Readonly<{
   ready: (signal?: AbortSignal) => Promise<boolean>;
 }>;
 
+export interface HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1
+  extends PostgresControlPlaneOptions {
+  readonly resolutionDeadlineMs?: number;
+}
+
 /**
  * The combined VPS process receives two narrow readers over the same
  * server-enforced read-only credential. Neither source exposes a write seam.
  */
 export function makePostgresHnsCommunityAppHandleGatewayAuthorityV1(
   connectionString: string,
-  options?: PostgresControlPlaneOptions,
+  options: HnsCommunityAppHandleGatewayPostgresAuthorityOptionsV1 = {},
 ): HnsCommunityAppHandleGatewayPostgresAuthorityV1 {
-  const runtime = makeReadOnlyPostgresControlPlaneLayer(connectionString, options);
-  const communityAuthority = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
+  const { resolutionDeadlineMs = 1_500, ...postgresOptions } = options;
+  const runtime = makeReadOnlyPostgresGatewayAuthorityLayer(connectionString, {
+    ...postgresOptions,
+    clientFactory: postgresOptions.clientFactory ?? makeGatewayPostgresPoolClientFactory(),
+  });
+  const communityAuthority = makeCoalescingHnsGatewayAuthoritySourceV1(
     makeControlPlaneHnsCommunityAppHostAuthoritySource(runtime, {
       authority_schema: "api_next",
     }),
+    resolutionDeadlineMs,
   );
-  const handleAuthority = makeSerializedCoalescingHnsGatewayAuthoritySourceV1(
+  const handleAuthority = makeCoalescingHnsGatewayAuthoritySourceV1(
     makeControlPlaneHnsHandlePersonaHostAuthoritySource(runtime),
+    resolutionDeadlineMs,
   );
   return Object.freeze({
     community_authority_source: communityAuthority,

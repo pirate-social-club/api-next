@@ -91,6 +91,7 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
     "getOutbox" | "claimOutbox" | "completeOutbox" | "failOutbox" | "loadAuthority"
   >;
   const workflow: MediaProcessingWorkflowLauncher = {
+    getRecoveryFailure: async () => null,
     get: async () => {
       calls.push("get");
       return "present";

@@ -22,6 +22,7 @@ const encoder = new TextEncoder();
 const IN_CLASS = 1;
 const SOA_TYPE = 6;
 const RRSIG_TYPE = 46;
+const HTTPS_TYPE = 65;
 
 function failed(message: string): HnsDnsTsigAxfrError {
   return new HnsDnsTsigAxfrError(message);
@@ -106,6 +107,26 @@ function canonicalSoaRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uin
   ]);
 }
 
+/**
+ * Service-binding data: a two-octet priority, a target name and parameters.
+ * The target is rewritten in canonical uncompressed form like every other
+ * name; the parameters are kept exactly as transferred.
+ */
+function canonicalServiceBindingRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array {
+  const targetOffset = record.rdata_offset + 2;
+  if (targetOffset >= record.end_offset) throw failed("invalid AXFR service-binding data");
+  // The root target means "this owner". It has no labels to canonicalize, and
+  // the name reader refuses the root name everywhere else in a transfer.
+  if (bytes[targetOffset] === 0) return bytes.slice(record.rdata_offset, record.end_offset);
+  const target = readHnsDnsNameV1(bytes, targetOffset);
+  if (target.next_offset > record.end_offset) throw failed("invalid AXFR service-binding data");
+  return concat([
+    bytes.slice(record.rdata_offset, targetOffset),
+    encodeName(target.name),
+    bytes.slice(target.next_offset, record.end_offset),
+  ]);
+}
+
 function validateTxtRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): Uint8Array {
   let offset = record.rdata_offset;
   while (offset < record.end_offset) {
@@ -171,6 +192,8 @@ function canonicalRecordRdata(bytes: Uint8Array, record: HnsDnsParsedRecordV1): 
     case 52:
       if (length < 4) throw failed("invalid AXFR TLSA data");
       return bytes.slice(record.rdata_offset, record.end_offset);
+    case HTTPS_TYPE:
+      return canonicalServiceBindingRdata(bytes, record);
     case 257: {
       if (length < 3) throw failed("invalid AXFR CAA data");
       const tagLength = bytes[record.rdata_offset + 1] ?? 0;

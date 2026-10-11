@@ -15,6 +15,8 @@ IMAGE = "powerdns/pdns-auth-51@" + IMAGE_DIGEST
 CONTAINER = "pirate-hns-secondary-dns"
 CURRENT = Path("/srv/pirate-hns-secondary/current")
 DATA = Path("/srv/pirate-hns-secondary/shared/data")
+PRIVATE = Path("/etc/pirate-hns-secondary/private")
+KEY_DIGEST = Path("/etc/pirate-hns-secondary/api-key.sha256")
 FILES = ("compose.yaml", "config/pdns.conf", "config/secondary-trigger.sql",
          "verify-release.py", "pirate-hns-secondary-verify.service",
          "pirate-hns-secondary-verify.timer", "README.md")
@@ -81,8 +83,9 @@ def verify_container(state, mounted_config_digest, expected_config_digest):
     ], "runtime_entrypoint_mismatch")
     mounts = {item["Destination"]: (item["Source"], item["RW"], item["Type"])
               for item in state["Mounts"]}
-    require(len(state["Mounts"]) == 2 and mounts == {
+    require(len(state["Mounts"]) == 3 and mounts == {
         "/etc/powerdns/pdns.conf": (str(CURRENT / "config/pdns.conf"), False, "bind"),
+        "/etc/powerdns/private": (str(PRIVATE), False, "bind"),
         "/var/lib/powerdns": (str(DATA), True, "bind")
     }, "runtime_mount_mismatch")
     require(mounted_config_digest == expected_config_digest, "mounted_config_mismatch")
@@ -90,6 +93,28 @@ def verify_container(state, mounted_config_digest, expected_config_digest):
 
 def compact_sql(sql):
     return " ".join(sql.strip().rstrip(";").split())
+
+
+def verify_private_config(private, digest_file, mounted_digest,
+                          owner_uid=0, reader_gid=953):
+    require(private.is_dir() and not private.is_symlink() and
+            private.stat().st_mode & 0o777 == 0o750 and
+            private.stat().st_uid == owner_uid and
+            private.stat().st_gid == reader_gid, "private_config_directory_mismatch")
+    require(sorted(path.name for path in private.iterdir()) == ["api-key.conf"],
+            "private_config_files_mismatch")
+    key_file = private / "api-key.conf"
+    require(key_file.stat().st_mode & 0o777 == 0o640 and
+            key_file.stat().st_uid == owner_uid and
+            key_file.stat().st_gid == reader_gid,
+            "private_config_mode_mismatch")
+    raw = regular_bytes(key_file)
+    require(re.fullmatch(rb"api-key=\$scrypt\$[^\s]{32,512}\n?", raw) is not None,
+            "private_config_shape_mismatch")
+    expected = regular_bytes(digest_file).decode().strip()
+    require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None and
+            digest(raw) == expected and mounted_digest == expected,
+            "private_config_digest_mismatch")
 
 
 def verify_database(database, trigger_sql):
@@ -140,6 +165,9 @@ def verify_runtime(release, manifest):
     mounted = run(["/usr/bin/docker", "exec", CONTAINER, "sha256sum",
                    "/etc/powerdns/pdns.conf"]).decode().split()[0]
     verify_container(state[0], mounted, manifest["files"]["config/pdns.conf"])
+    mounted_private = run(["/usr/bin/docker", "exec", CONTAINER, "sha256sum",
+                           "/etc/powerdns/private/api-key.conf"]).decode().split()[0]
+    verify_private_config(PRIVATE, KEY_DIGEST, mounted_private)
     return verify_database(DATA / "pdns.sqlite3",
                            regular_bytes(release / "config/secondary-trigger.sql").decode())
 

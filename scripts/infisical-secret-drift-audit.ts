@@ -14,7 +14,8 @@ export type InfisicalPath =
   | "/agents"
   | "/agents/codex"
   | "/services/api-next"
-  | "/services/api-next/operator";
+  | "/services/api-next/operator"
+  | "/services/spaces-operator";
 export type InfisicalDriftKind =
   | "unexpected-folder"
   | "missing-folder"
@@ -34,6 +35,18 @@ const RUNTIME_SECRET_NAMES = [
 const OPERATOR_SECRET_NAMES = [
   "CONTROL_PLANE_POSTGRES_ADMIN_URL",
   "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+] as const;
+
+// Operator-only custody for the accepted HNS production database and host.
+// These are optional inventory entries, never public or Worker runtime inputs.
+const PRODUCTION_HNS_OPERATOR_SECRET_NAMES = [
+  "HNS_AUTHORITY_HSD_AUTHORIZATION",
+  "HNS_AUTHORITY_SECONDARY_PDNS_API_KEY",
+  "HNS_PRODUCTION_MAINNET_READER_CLIENT_KEY",
+  "HNS_PRODUCTION_POSTGRES_ADMIN_URL",
+  "HNS_PRODUCTION_POSTGRES_GATEWAY_URL",
+  "HNS_PRODUCTION_POSTGRES_PROVISIONER_URL",
+  "HNS_PRODUCTION_POSTGRES_RUNTIME_URL",
 ] as const;
 
 const PRODUCTION_RUNTIME_SECRET_NAMES = [
@@ -106,7 +119,10 @@ const STAGING_RUNTIME_SUPPORT_SECRET_NAMES = [
 ] as const;
 // The Stream token's operator copy is retained while the shared runtime copy
 // is used by the staging video path. Both copies remain staging-only.
-const STAGING_VIDEO_OPERATOR_SECRET_NAMES = ["VIDEO_STREAM_API_TOKEN"] as const;
+const STAGING_VIDEO_OPERATOR_SECRET_NAMES = [
+  "VIDEO_STREAM_API_TOKEN",
+  "CLOUDCONVERT_API_KEY",
+] as const;
 // Isolated staging HNS onboarding custody (api-hns-staging-enablement): scoped
 // staging Cloudflare credentials, the operator database identity used once for
 // grants, the gateway database and outbound Solid Access pair, the Solid API and
@@ -150,6 +166,12 @@ const STAGING_SPACES_TAPROOT_E2E_OPERATOR_SECRET_NAMES = [
   "SPACES_TAPROOT_E2E_EMAIL",
   "SPACES_TAPROOT_E2E_OTP",
 ] as const;
+// Optional member fixture and prover custody for supervised staging measurements.
+const STAGING_SPACES_MEMBER_OPERATOR_SECRET_NAMES = [
+  "SPACES_YAHOO_MEMBER_E2E_EMAIL",
+  "SPACES_YAHOO_MEMBER_E2E_OTP",
+  "RUNPOD_API_KEY",
+] as const;
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -192,11 +214,13 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     allowedNames: [
       ...RUNTIME_SECRET_NAMES,
       ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
+      "MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS",
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
+      "CLOUDCONVERT_RENDER_API_KEY",
       ...STAGING_RUNTIME_SUPPORT_SECRET_NAMES,
-      "TELEGRAM_CREDENTIAL_KEYS_JSON",
+      "TELEGRAM_SECRETS_JSON",
     ],
   },
   {
@@ -213,6 +237,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...STAGING_PERSONA_E2E_OPERATOR_SECRET_NAMES,
       ...STAGING_SPACES_VERIFIER_OPERATOR_SECRET_NAMES,
       ...STAGING_SPACES_TAPROOT_E2E_OPERATOR_SECRET_NAMES,
+      ...STAGING_SPACES_MEMBER_OPERATOR_SECRET_NAMES,
       ...STAGING_VIDEO_OPERATOR_SECRET_NAMES,
       ...STAGING_HNS_OPERATOR_SECRET_NAMES,
     ],
@@ -244,6 +269,30 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...OPERATOR_SECRET_NAMES,
       "HNS_OPERATOR_MONITOR_POSTGRES_URL",
       "HNS_OPERATOR_ALERT_WEBHOOK_URL",
+      ...PRODUCTION_HNS_OPERATOR_SECRET_NAMES,
+    ],
+  },
+  {
+    environment: "staging",
+    path: "/services/spaces-operator",
+    requiredNames: [],
+    allowedNames: [
+      "SPACES_REFRESH_OBSERVER_NODE_KEY",
+      "SPACES_REFRESH_OBSERVER_POSTGRES_URL",
+      "SPACES_YAHOO_ASSIGNMENT_PREPARE_TOKEN",
+      "SPACES_YAHOO_CAPABILITY_REPORT_TOKEN",
+      "SPACES_YAHOO_FUNDING_REPORT_TOKEN",
+      "SPACES_YAHOO_REGISTRY_TOKEN",
+    ],
+  },
+  {
+    environment: "prod",
+    path: "/services/spaces-operator",
+    requiredNames: [],
+    allowedNames: [
+      "SPACES_BACKUP_AGE_RECIPIENT",
+      "SPACES_BACKUP_B2_KEY_ID",
+      "SPACES_BACKUP_B2_APPLICATION_KEY",
     ],
   },
 ];
@@ -254,6 +303,12 @@ export const EXPECTED_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, r
     staging: ["/services", "/services/api-next", "/services/api-next/operator"],
     prod: ["/services", "/services/api-next", "/services/api-next/operator"],
   };
+
+const OPTIONAL_INFISICAL_FOLDERS: Readonly<Record<InfisicalEnvironment, readonly string[]>> = {
+  dev: [],
+  staging: ["/services/spaces-operator"],
+  prod: ["/services/spaces-operator"],
+};
 
 export type InfisicalExpectedDrift = Readonly<{
   environment: InfisicalEnvironment;
@@ -268,7 +323,10 @@ export const EXPECTED_INFISICAL_DRIFT: readonly InfisicalExpectedDrift[] = [];
 export type InfisicalSnapshot = Readonly<{
   environment: InfisicalEnvironment;
   folders: readonly string[];
-  secrets: Readonly<Record<InfisicalPath, readonly string[]>>;
+  secrets: Readonly<
+    Record<Exclude<InfisicalPath, "/services/spaces-operator">, readonly string[]> &
+      Partial<Record<"/services/spaces-operator", readonly string[]>>
+  >;
 }>;
 
 export type InfisicalDrift = Readonly<{
@@ -320,9 +378,13 @@ export function auditInfisicalSnapshots(
 
   for (const snapshot of snapshots) {
     const expectedFolders = new Set(EXPECTED_INFISICAL_FOLDERS[snapshot.environment]);
+    const allowedFolders = new Set([
+      ...expectedFolders,
+      ...OPTIONAL_INFISICAL_FOLDERS[snapshot.environment],
+    ]);
     const observedFolders = new Set(snapshot.folders.map(normalisePath));
     for (const path of [...observedFolders].sort()) {
-      if (!expectedFolders.has(path)) {
+      if (!allowedFolders.has(path)) {
         record({
           environment: snapshot.environment,
           path,

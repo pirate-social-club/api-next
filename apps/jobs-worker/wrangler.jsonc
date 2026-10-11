@@ -92,8 +92,8 @@
     ]
   },
   "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_CLEANUP_ENABLED": "false",
-    "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "COMMUNITY_MAINTENANCE_ENABLED": "true",
@@ -216,11 +216,8 @@
         ]
       },
       "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_CLEANUP_ENABLED": "true",
-    "TELEGRAM_ENABLED": "false",
-        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
-        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
-        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "COMMUNITY_MAINTENANCE_ENABLED": "true",
@@ -232,18 +229,19 @@
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-staging",
         "DATA_REGISTRATION_ENABLED": "false",
         "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "true",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
-        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "false",
+        "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "true",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "SPACES_RECONCILIATION_ENABLED": "true",
         "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
         "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
-        // Preserve the rewards activation already serving on staging.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // Keep rewards off outside an approved staging run.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
@@ -325,7 +323,7 @@
         {
           "binding": "CONTROL_PLANE",
           // Reuse the dedicated canonical-account production Hyperdrive.
-          "id": "884b68c5a7904982a86620ed90032b77",
+          "id": "0c215865d7994c92b940d905f54ece37",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
@@ -378,8 +376,8 @@
         ]
       },
       "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_CLEANUP_ENABLED": "false",
-    "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
         "COMMUNITY_MAINTENANCE_ENABLED": "false",

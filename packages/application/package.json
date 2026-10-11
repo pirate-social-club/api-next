@@ -11,6 +11,7 @@
     "./post-slug": "./src/post-slug.ts",
     "./use-cases/content/community-moderation-runtime": "./src/use-cases/content/community-moderation-runtime.ts",
     "./text-moderation-runtime": "./src/text-moderation-runtime.ts",
+    "./text-publication-store": "./src/text-publication-store.ts",
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
@@ -113,6 +114,12 @@
     "./use-cases/content/song-playback": "./src/use-cases/content/song-playback.ts",
     "./avatars/ports": "./src/avatars/ports.ts",
     "./use-cases/avatars": "./src/use-cases/avatars.ts",
-    "./use-cases/song-library": "./src/use-cases/song-library.ts"
+    "./use-cases/song-library": "./src/use-cases/song-library.ts",
+    "./use-cases/video-outcomes": "./src/use-cases/video-outcomes.ts",
+    "./telegram-oidc": "./src/telegram-oidc.ts",
+    "./telegram-study": "./src/telegram-study.ts",
+    "./telegram-linking": "./src/telegram-linking.ts",
+    "./use-cases/community-navigation": "./src/use-cases/community-navigation.ts",
+    "./use-cases/profile-activity": "./src/use-cases/profile-activity.ts"
   }
 }

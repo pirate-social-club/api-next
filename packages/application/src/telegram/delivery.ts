@@ -219,4 +219,7 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
   }
   const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio);
   await services.store.finishDelivery(delivery, outcome, decision);
+  // Send whatever was ordered after this message now, without another queue round trip.
+  for (const next of await services.store.deliveriesAfter(delivery))
+    await processTelegramDelivery(services, next);
 }

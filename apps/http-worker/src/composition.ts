@@ -48,7 +48,10 @@ import {
   makePrivySessionIdentityStore,
   makeSessionIdentityStore,
 } from "@pirate/application/use-cases/session-exchange";
-import type { VerificationIntentResolver } from "@pirate/application/verification";
+import type {
+  VerificationIntentResolver,
+  VerificationProviderRegistryService,
+} from "@pirate/application/verification";
 import {
   AuthError,
   BadRequest,
@@ -70,6 +73,7 @@ import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platfor
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
 import { makeControlPlaneCommunityModerationStore } from "@pirate/platform-cf/community-moderation-repository";
+import { makeControlPlaneCommunityNavigationStore } from "@pirate/platform-cf/community-navigation-repository";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -84,6 +88,7 @@ import {
   type HttpWorkerConfigValue,
   loadConfigFrom,
   parseRewardGasTopupConfig,
+  parseSponsoredSendConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
@@ -164,6 +169,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlaneProfileActivityStore } from "@pirate/platform-cf/profile-activity-repository";
 import { makeControlPlanePublicCommunityThreadsStore } from "@pirate/platform-cf/public-community-threads-repository";
 import { makeControlPlanePublicPostSlugStore } from "@pirate/platform-cf/public-post-slug-repository";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
@@ -175,6 +181,7 @@ import { makeControlPlaneRewardClaimIntentResolver } from "@pirate/platform-cf/r
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
+import { makeRewardOperationsRunningReader } from "@pirate/platform-cf/reward-operations-control";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
 import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
 import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
@@ -193,6 +200,7 @@ import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-libra
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
+import { makeControlPlaneSongVideoPcmReferenceStore } from "@pirate/platform-cf/song-video-pcm-reference-repository";
 import { makeControlPlaneSpacesSaleNamespaceStore } from "@pirate/platform-cf/spaces-sale-namespace-repository";
 import { makeControlPlaneSpacesTaprootIntentStore } from "@pirate/platform-cf/spaces-taproot-intent-repository";
 import { makeControlPlaneSpacesTaprootPreparationStore } from "@pirate/platform-cf/spaces-taproot-preparation-repository";
@@ -205,6 +213,10 @@ import { makeStudyProfileCoverageStore } from "@pirate/platform-cf/study-profile
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
+import {
+  makeTelegramLinkServices,
+  type TelegramLinkBindings,
+} from "@pirate/platform-cf/telegram-linking-runtime";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
   makeControlPlaneVerificationCompletionStore,
@@ -225,7 +237,12 @@ import {
   makeR2VideoMultipartGateway,
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
+import { makeControlPlaneVideoOutcomeStore } from "@pirate/platform-cf/video-outcome-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
+import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
+import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
+import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect, Redacted, Schema } from "effect";
 import {
   makeTelegramServices,
@@ -238,6 +255,7 @@ import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route
 import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import { makeLegacyModerationActionCompatibility } from "./community-moderation-compatibility.ts";
+import { makeCommunityNavigationHandlers } from "./community-navigation-handlers.ts";
 import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
@@ -258,6 +276,7 @@ import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
+import { makeProductionHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
@@ -267,8 +286,10 @@ import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.t
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makeProfileActivityHandler } from "./profile-activity-handler.ts";
 import { makePublicCommunityThreadsHandler } from "./public-community-threads-handler.ts";
 import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
+import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
 import {
   makeLazySongRewardOfferHandlers,
   makeSongRewardOfferHandlers,
@@ -289,18 +310,25 @@ import { makeSpacesTaprootHandlers } from "./spaces-taproot-handlers.ts";
 import { makeStudyGenerationHandlers } from "./study-generation-handlers.ts";
 import { makeStudyGenerationWorkflowComposition } from "./study-generation-production-composition.ts";
 import type { StudyGenerationWorkflowPayload } from "./study-generation-workflow.ts";
-import { makeStudyProfileCoverageRunner } from "./study-profile-coverage.ts";
+import {
+  makeStudyProfileCoverageRunner,
+  studyProfileCoverageDue,
+} from "./study-profile-coverage.ts";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
-import { makeTelegramHandlers } from "./telegram-handlers.ts";
+import { makeRecoveringTelegramHandlers } from "./telegram-setup-cache.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
+import { assertVerificationRegistryOverride } from "./verification-registry-override.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
+import { makeVideoOutcomeHandlers } from "./video-outcome-handlers.ts";
+import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
   extends VideoAccessBindings,
     SongPlaybackBindings,
     TelegramBindings,
+    TelegramLinkBindings,
     SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
@@ -428,6 +456,15 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
   readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ENABLED?: string;
+  readonly PERSONA_WALLET_BASE_RPC_URL?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT?: string;
+  readonly PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI?: string;
+  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI?: string;
   readonly MEDIA_UPLOADS_ENABLED?: string;
   /**
    * Song-backed video (Spec 013 §5A). Off unless exactly "true". Every new video
@@ -435,6 +472,8 @@ export interface HttpWorkerBindings
    * submissions and posts that already exist keep working.
    */
   readonly VIDEO_SONG_REFERENCE_ENABLED?: string;
+  /** Off until the staging PCM catalog is backfilled and its objects verify. */
+  readonly VIDEO_PCM_REFERENCE_GATE_ENABLED?: string;
   readonly AVATAR_AUTHORING_ENABLED?: string;
   readonly AVATAR_INGRESS?: AvatarBindings["ingress"];
   readonly AVATAR_SEALED?: AvatarBindings["sealed"];
@@ -453,6 +492,8 @@ export interface HttpWorkerBindings
 }
 
 export interface HttpWorkerCompositionDependencies {
+  /** Separate development test build only; never selected by a runtime binding. */
+  readonly verification_registry?: VerificationProviderRegistryService;
   readonly hns_ownership?: Readonly<{
     readonly transport?: HnsOwnerTransport;
   }>;
@@ -642,6 +683,16 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
     MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
+    PRIVY_SPONSORED_SEND_ENABLED: bindings.PRIVY_SPONSORED_SEND_ENABLED,
+    PERSONA_WALLET_BASE_RPC_URL: bindings.PERSONA_WALLET_BASE_RPC_URL,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
+    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: bindings.PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI:
+      bindings.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
   };
 }
 
@@ -656,6 +707,13 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
     // Malformed or partial gas top-up limits fail closed here; absent limits
     // leave top-ups disabled.
     parseRewardGasTopupConfig(config);
+    const sponsorship = parseSponsoredSendConfig(config);
+    if (sponsorship !== null) {
+      const rpcUrl = Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL);
+      if (!rpcUrl.startsWith("https://")) {
+        throw new Error("enabled Wallet sponsorship requires an HTTPS RPC binding");
+      }
+    }
     if (
       config.MEGAPOT_REWARDS_ENABLED &&
       Redacted.value(config.MEGAPOT_V2_RPC_URL).trim().length === 0
@@ -768,6 +826,7 @@ export async function createProductionHttpWorker(
   bindings: HttpWorkerBindings,
   dependencies: HttpWorkerCompositionDependencies = {},
 ) {
+  assertVerificationRegistryOverride(bindings.API_NEXT_ENV, dependencies.verification_registry);
   assertSupportedAuthPolicies(endpoints);
   const config = loadWorkerConfig(bindings);
   const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
@@ -864,7 +923,11 @@ export async function createProductionHttpWorker(
     controlPlane,
     config.API_NEXT_ENV,
   );
-  const telegramHandlers = makeTelegramHandlers(await makeTelegramServices(bindings, controlPlane));
+  const telegramHandlers = makeRecoveringTelegramHandlers({
+    // This Worker is placed beside the database, so it handles each update itself.
+    chat: () => makeTelegramServices(bindings, controlPlane, { defer: workerBackground.defer }),
+    linking: (telegram) => makeTelegramLinkServices(bindings, controlPlane, telegram),
+  });
   const danceReferenceHandlers = makeDanceReferenceHandlers(
     makeProductionDanceReferenceServices(
       makeDanceReferenceStore(controlPlane),
@@ -969,6 +1032,14 @@ export async function createProductionHttpWorker(
         ? {
             songInterval: {
               store: makeControlPlaneSongVideoIntervalStore(controlPlane),
+              ...(bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true"
+                ? {
+                    pcmReference: makeControlPlaneSongVideoPcmReferenceStore(
+                      controlPlane,
+                      immutableOriginals,
+                    ),
+                  }
+                : {}),
               // The post read as the viewer: the same access rule as the post
               // endpoint and video playback.
               contentStore: makeControlPlaneContentStore(controlPlane),
@@ -987,8 +1058,23 @@ export async function createProductionHttpWorker(
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   const moderationStore = makeControlPlaneCommunityModerationStore(controlPlane);
   const ageAccessStore = makeControlPlaneAgeAccessStore(controlPlane);
+  if (
+    bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true" &&
+    bindings.MEDIA_IMMUTABLE_ORIGINALS === undefined
+  ) {
+    throw new Error("HTTP worker PCM reference gate requires the immutable media bucket");
+  }
   const songOwnerVideoPolicyHandlers = makeSongOwnerVideoPolicyHandlers({
-    store: makeControlPlaneSongOwnerPolicyStore(controlPlane),
+    store: makeControlPlaneSongOwnerPolicyStore(
+      controlPlane,
+      bindings.VIDEO_PCM_REFERENCE_GATE_ENABLED === "true" &&
+        bindings.MEDIA_IMMUTABLE_ORIGINALS !== undefined
+        ? makeControlPlaneSongVideoPcmReferenceStore(
+            controlPlane,
+            bindings.MEDIA_IMMUTABLE_ORIGINALS,
+          )
+        : undefined,
+    ),
   });
   // The runtime is installed even when no provider credentials are enabled.
   // Unavailability is a durable manual-review result, never an allow fallback.
@@ -1077,45 +1163,49 @@ export async function createProductionHttpWorker(
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
-  const verificationRegistry = await Effect.runPromise(
-    makePlatformVerificationProviderRegistry({
-      ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
-        ? {
-            self_pass: {
-              callback_origin: selfPassOrigin,
-              app_name: config.SELF_PASS_APP_NAME,
-              mock_passport: config.SELF_PASS_MOCK_PASSPORT,
-            },
-          }
-        : {}),
-      ...(config.ZKPASSPORT_ENABLED
-        ? {
-            zkpassport: {
-              domain: config.ZKPASSPORT_DOMAIN,
-              name: config.ZKPASSPORT_NAME,
-              ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
-              verifier_url: config.ZKPASSPORT_VERIFIER_URL,
-              verifier_shared_secret: zkPassportBearerSecret,
-              verifier_response_signing_secret: zkPassportSigningSecret,
-              verifier_response_signing_key_id: config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
-              ...(previousSigningKeyComplete
-                ? {
-                    previous_verifier_response_signing_key: {
-                      key_id: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
-                      secret: zkPassportPreviousSigningSecret,
-                      valid_until: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
-                    },
-                  }
-                : {}),
-              dev_mode: config.ZKPASSPORT_DEV_MODE,
-            },
-          }
-        : {}),
-      ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
-      ...(veryWebOptions === undefined ? {} : { very_web: veryWebOptions }),
-      callback_credential_headers: callbackCredentialHeaderNames,
-    }),
-  );
+  const verificationRegistry =
+    dependencies.verification_registry ??
+    (await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({
+        ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
+          ? {
+              self_pass: {
+                callback_origin: selfPassOrigin,
+                app_name: config.SELF_PASS_APP_NAME,
+                mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+              },
+            }
+          : {}),
+        ...(config.ZKPASSPORT_ENABLED
+          ? {
+              zkpassport: {
+                domain: config.ZKPASSPORT_DOMAIN,
+                name: config.ZKPASSPORT_NAME,
+                ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
+                verifier_url: config.ZKPASSPORT_VERIFIER_URL,
+                verifier_shared_secret: zkPassportBearerSecret,
+                verifier_response_signing_secret: zkPassportSigningSecret,
+                verifier_response_signing_key_id:
+                  config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
+                ...(previousSigningKeyComplete
+                  ? {
+                      previous_verifier_response_signing_key: {
+                        key_id: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
+                        secret: zkPassportPreviousSigningSecret,
+                        valid_until:
+                          config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
+                      },
+                    }
+                  : {}),
+                dev_mode: config.ZKPASSPORT_DEV_MODE,
+              },
+            }
+          : {}),
+        ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
+        ...(veryWebOptions === undefined ? {} : { very_web: veryWebOptions }),
+        callback_credential_headers: callbackCredentialHeaderNames,
+      }),
+    ));
   const ageProvidersReady =
     selfPassOrigin !== undefined &&
     ["self.pass", "zkpassport"].every((provider) =>
@@ -1223,6 +1313,12 @@ export async function createProductionHttpWorker(
   const communityHnsBinding = namespaceBindings.find(
     (binding) => binding.requirement === "namespace_ownership" && binding.family === "hns",
   );
+  const hnsOwnerRecoveryHandlers = makeProductionHnsOwnerRecoveryHandlers({
+    enabled: config.HNS_OWNERSHIP_ENABLED && bindings.HNS_OWNER_VERIFIER !== undefined,
+    environment: config.API_NEXT_ENV,
+    database: controlPlane,
+    ...(bindings.HNS_OWNER_VERIFIER === undefined ? {} : { verifier: bindings.HNS_OWNER_VERIFIER }),
+  });
   const publicationQueue = makeHnsCommunityPublicationQueue(controlPlane);
   // The activation current-view gatherer. Disabled by default; disabled
   // configuration stays an unavailable capability, and enabled configuration
@@ -1306,7 +1402,7 @@ export async function createProductionHttpWorker(
         console.error("Study profile production failed", { communityId, postId, reason }),
     });
   })();
-  const continuePublicationChecks = async () => {
+  const continuePublicationChecks = async (scheduledTime: number) => {
     if (hnsCommunityServices !== undefined) {
       // Bounded work, leased in PostgreSQL; overlapping invocations are fenced.
       for (let count = 0; count < 8; count++) {
@@ -1318,7 +1414,7 @@ export async function createProductionHttpWorker(
           break;
       }
     }
-    await continueStudyProfileCoverage?.();
+    if (studyProfileCoverageDue(scheduledTime)) await continueStudyProfileCoverage?.();
   };
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
@@ -1504,7 +1600,7 @@ export async function createProductionHttpWorker(
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
   });
   const handleSalesHandlers = makeHandleSalesHandlers({
-    store: makeControlPlaneHandleSalesStore(controlPlane),
+    store: makeControlPlaneHandleSalesStore(controlPlane, spacesRuntime.currentSpacesAuthority),
     ...(spacesRuntime.spacesRegistry === undefined
       ? {}
       : { spacesSaleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(controlPlane) }),
@@ -1517,6 +1613,29 @@ export async function createProductionHttpWorker(
   const platformPirateHandleHandlers = makePlatformPirateHandleHandlers(
     makeControlPlanePlatformPirateHandleStore(controlPlane),
   );
+  const sponsoredLimits = parseSponsoredSendConfig(config);
+  const walletSponsoredSendHandlers = makeWalletSponsoredSendHandlers(
+    sponsoredLimits === null
+      ? null
+      : makeWalletSponsoredSendService({
+          store: makeControlPlaneSponsoredSendStore(controlPlane, sponsoredLimits),
+          appId: config.PRIVY_APP_ID,
+          appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+          chain: makeWalletSponsoredChain(
+            Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL),
+            84_532,
+          ),
+          eligibleAsset: {
+            chainId: 84_532,
+            tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+          },
+          requiredConfirmations: 3,
+          ids: () => crypto.randomUUID().replaceAll("-", ""),
+        }),
+  );
+  const requireRewardOperationsRunning = makeRewardOperationsGuard({
+    readRunning: () => Effect.runPromise(makeRewardOperationsRunningReader(controlPlane)()),
+  });
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? makeLazySongRewardOfferHandlers(async () => {
@@ -1568,6 +1687,7 @@ export async function createProductionHttpWorker(
                 })
               : null;
           return makeSongRewardOfferHandlers({
+            requireRewardOperationsRunning,
             rewardCatalogAuthority:
               config.API_NEXT_ENV === "production"
                 ? null
@@ -1710,6 +1830,7 @@ export async function createProductionHttpWorker(
       ...publicPostRouteHandlers,
       ...namespaceOwnershipHandlers,
       ...hnsRootImportHandlers,
+      ...hnsOwnerRecoveryHandlers,
       ...hnsCommunityRootImportHandlers,
       ...hnsTxtAttachmentHandlers,
       ...verificationHandlers,
@@ -1727,7 +1848,9 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
+      ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),
       ...mediaHandlers,
       ...videoAccessHandlers,
       ...songPlaybackHandlers,
@@ -1736,6 +1859,11 @@ export async function createProductionHttpWorker(
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
       ...makeSongLibraryHandlers(makeControlPlaneSongLibraryStore(controlPlane)),
+      GetPublicProfileActivity: makeProfileActivityHandler(
+        makeControlPlaneProfileActivityStore(controlPlane),
+        contentStore,
+      ),
+      ...makeCommunityNavigationHandlers(makeControlPlaneCommunityNavigationStore(controlPlane)),
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,
@@ -1778,17 +1906,6 @@ export async function createProductionHttpWorker(
                 endpoint.path === "/personas/:personaId/wallets/evm/confirm" ||
                 endpoint.path === "/personas/:personaId/retire");
             if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
-          }
-          const ageAttestationExempt =
-            endpoint.path === "/me/minimum-age-attestation" ||
-            endpoint.path === "/auth/session/logout";
-          if (!ageAttestationExempt) {
-            const attested = yield* ageAccessStore.hasMinimumAgeAttestation({
-              accountId: input.principal?.subject ?? "",
-            });
-            if (!attested) {
-              return yield* new AuthError({ message: "Minimum age attestation required" });
-            }
           }
         }),
       ),

@@ -17,6 +17,39 @@ REVOKE DELETE ON
   community_purchase_funding_plans
 FROM api_next_app;
 
+-- Migration 0237 adds tables after the runtime role's default privileges.
+-- Apply this bounded block to the observed serving role in the approved schema
+-- ceremony, even with linking disabled: inbox maintenance and account-deletion
+-- fencing already reach these tables. Verify effective privileges through each
+-- serving connection; do not assume the example role is the production login.
+-- Telegram linking deletion grants begin
+GRANT DELETE ON
+  telegram_account_associations,
+  telegram_link_transactions,
+  telegram_link_navigation
+TO api_next_app;
+-- Consent revisions must survive unlink/relink and cannot be truncated.
+REVOKE DELETE, TRUNCATE ON telegram_bot_grants FROM api_next_app;
+-- Chat progress is revised rather than deleted. Apply this after migration 0238.
+GRANT SELECT, INSERT, UPDATE ON telegram_study_conversations TO api_next_app;
+REVOKE DELETE, TRUNCATE ON telegram_study_conversations FROM api_next_app;
+-- Migration 0240 adds private bot interface choices; bot callbacks require these
+-- privileges even when linking and practice are disabled.
+GRANT SELECT, INSERT, UPDATE ON telegram_interface_preferences TO api_next_app;
+REVOKE DELETE, TRUNCATE ON telegram_interface_preferences FROM api_next_app;
+REVOKE TRUNCATE ON telegram_account_associations, telegram_link_transactions,
+  telegram_link_navigation FROM api_next_app;
+-- Migration 0246 adds the restricted practice identity. Reservations are
+-- written once and never revised or removed by the runtime role.
+GRANT SELECT, INSERT ON telegram_restricted_learners, telegram_restricted_study_personas
+  TO api_next_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners,
+  telegram_restricted_study_personas FROM api_next_app;
+-- The age question was removed. Its per-bot answers are kept as history and the
+-- runtime role neither reads nor writes them.
+REVOKE ALL ON telegram_restricted_bot_affirmations FROM api_next_app;
+-- Telegram linking deletion grants end
+
 -- Money evidence and derived receipts are append-only even if a deployment
 -- role is accidentally broader than the repository methods.
 REVOKE UPDATE, DELETE ON
@@ -118,6 +151,18 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_retirement_v1(TEXT, INTEGER)
 GRANT EXECUTE ON FUNCTION commit_hns_root_import_readiness_v1(
   TEXT, BIGINT, TEXT, BIGINT, BIGINT, BYTEA, TEXT
 ) TO api_next_app;
+-- Migration 0234 installs this for production's separate provisioner executor.
+-- A shared staging runtime login also needs this function: grant to the login
+-- observed on the provisioner during the approved release and read back
+-- has_function_privilege. See docs/hns-provisional-ownership-repair.md.
+DO $safe_ownership_executor_grant$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hns_root_import_executor_login_v1') THEN
+    GRANT EXECUTE ON FUNCTION enqueue_hns_safe_ownership_completion_v1(text,bigint,text,bigint,bytea,text)
+      TO hns_root_import_executor_login_v1;
+  END IF;
+END;
+$safe_ownership_executor_grant$;
 -- The serving startup check: a pre-cutover schema is compatible with both
 -- bundles; after the cutover only the recorded service and job-envelope
 -- versions may claim work.

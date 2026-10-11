@@ -1,14 +1,24 @@
 import { SPACES_REGISTRY_MAX_PAGE_CAPACITY } from "@pirate/application/use-cases/handles/spaces-registry";
 import { ControlPlaneDb, type makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
+import { makeSpacesRouteAttachmentStore } from "@pirate/platform-cf/spaces-community-route-attachment-repository";
+import {
+  makeSpacesCurrentAuthority,
+  type SpacesCurrentAuthority,
+} from "@pirate/platform-cf/spaces-current-authority";
 import { makeSpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import { makeSpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { makeControlPlaneSpacesRegistryStore } from "@pirate/platform-cf/spaces-registry-repository";
-import { makeSpacesRootAuthorityObserver } from "@pirate/platform-cf/spaces-root-authority-observer";
+import {
+  makeSpacesRootAuthorityObserver,
+  makeSpacesRootRouteObserver,
+} from "@pirate/platform-cf/spaces-root-authority-observer";
 import { Effect } from "effect";
 import type { HttpWorkerOptions } from "./transport.ts";
 
 export type SpacesRuntimeBindings = Readonly<{
   SPACES_RUNTIME_ENABLED?: string;
+  /** Trusted web origin for /c/@root. Absent disables Spaces route attachment. */
+  SPACES_ROUTE_PUBLIC_ORIGIN?: string;
   SPACES_TAPROOT_RECIPIENT_ENABLED?: string;
   SPACES_VERIFIER_ACCESS_CLIENT_ID?: string;
   SPACES_VERIFIER_ACCESS_CLIENT_SECRET?: string;
@@ -29,8 +39,9 @@ export function spacesTaprootRecipientEnabled(
 
 type SpacesOptions = Pick<
   HttpWorkerOptions,
-  "spacesRegistry" | "spacesOwnerProof" | "spacesOperatorAssignments"
->;
+  "spacesRegistry" | "spacesOwnerProof" | "spacesRouteAttachment" | "spacesOperatorAssignments"
+> &
+  Readonly<{ currentSpacesAuthority: SpacesCurrentAuthority }>;
 
 /** The owner ceremony and private operator channel are staging-only until pilot acceptance. */
 export function makeSpacesProductionComposition(
@@ -39,7 +50,7 @@ export function makeSpacesProductionComposition(
   environment: "development" | "staging" | "production",
 ): SpacesOptions {
   if (bindings.SPACES_RUNTIME_ENABLED === undefined || bindings.SPACES_RUNTIME_ENABLED === "false")
-    return {};
+    return { currentSpacesAuthority: null };
   if (bindings.SPACES_RUNTIME_ENABLED !== "true" || environment !== "staging")
     throw new Error("Spaces runtime configuration is invalid");
   const credentials = {
@@ -61,6 +72,25 @@ export function makeSpacesProductionComposition(
     poll: (input) =>
       withDb((db) => makeSpacesOwnerProofStore({ db, observer, environment }).poll(input)),
   };
+  const publicOrigin = bindings.SPACES_ROUTE_PUBLIC_ORIGIN;
+  const routeObserver = makeSpacesRootRouteObserver(credentials);
+  const routeStore = (db: ControlPlaneDb["Service"]) =>
+    makeSpacesRouteAttachmentStore({
+      db,
+      observer: routeObserver,
+      environment,
+      publicOrigin: publicOrigin ?? "",
+    });
+  // Constructing one store now rejects a malformed origin at composition time.
+  const routeAttachment: SpacesOptions["spacesRouteAttachment"] =
+    publicOrigin === undefined || publicOrigin === ""
+      ? undefined
+      : {
+          start: (input) => withDb((db) => routeStore(db).start(input)),
+          current: (input) => withDb((db) => routeStore(db).current(input)),
+          prove: (input) => withDb((db) => routeStore(db).prove(input)),
+          commit: (input) => withDb((db) => routeStore(db).commit(input)),
+        };
   const assignments: NonNullable<SpacesOptions["spacesOperatorAssignments"]> = {
     prepare: (token, body) =>
       withDb((db) =>
@@ -101,6 +131,9 @@ export function makeSpacesProductionComposition(
       ),
   };
   return {
+    currentSpacesAuthority: makeSpacesCurrentAuthority(
+      makeSpacesRootAuthorityObserver(credentials, fetch, 3_000),
+    ),
     spacesRegistry: {
       basePath: "/internal/spaces/registry/v1",
       store: makeControlPlaneSpacesRegistryStore(controlPlane),
@@ -108,6 +141,7 @@ export function makeSpacesProductionComposition(
       pageCapacity: SPACES_REGISTRY_MAX_PAGE_CAPACITY,
     },
     spacesOwnerProof: ownerProof,
+    ...(routeAttachment === undefined ? {} : { spacesRouteAttachment: routeAttachment }),
     spacesOperatorAssignments: assignments,
   };
 }

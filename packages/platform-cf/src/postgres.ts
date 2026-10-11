@@ -86,6 +86,12 @@ export interface PostgresControlPlaneOptions {
   readonly now?: () => number;
   readonly connectTimeoutMs?: number;
   readonly statementTimeoutMs?: number;
+  /**
+   * Bounds the driver's close when the session is released. Past it the socket
+   * is destroyed, so a caller with a deadline is never held by a peer that does
+   * not answer the termination. Unset keeps the driver's own unbounded close.
+   */
+  readonly closeTimeoutMs?: number;
 }
 
 const DEFAULT_LOGGER: ControlPlaneLogger = {
@@ -183,6 +189,7 @@ class PostgresSession {
     private readonly readOnly = false,
     private readonly connectTimeoutMs = CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     private readonly statementTimeoutMs = CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
+    private readonly closeTimeoutMs?: number,
   ) {}
 
   get isFenced(): boolean {
@@ -454,7 +461,7 @@ class PostgresSession {
         return;
       }
       try {
-        await this.client.end();
+        await this.endWithinBound();
       } catch {
         this.logger.error("control-plane connection termination failed", {
           phase: "client-end",
@@ -470,9 +477,41 @@ class PostgresSession {
       return;
     }
     try {
-      await this.client.end();
+      await this.endWithinBound();
     } catch {
       this.logger.error("control-plane connection close failed", { phase: "scope-release" });
+    }
+  }
+
+  /**
+   * Every transaction on this session has already finished when it is closed,
+   * so abandoning an unanswered termination loses no work. The socket is
+   * destroyed so nothing can be sent on it afterwards.
+   */
+  private async endWithinBound(): Promise<void> {
+    if (this.closeTimeoutMs === undefined) {
+      await this.client.end();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ended = this.client.end();
+    // The driver may answer after the bound; that late answer is not an error to report.
+    ended.catch(() => undefined);
+    const timedOut = await Promise.race([
+      ended.then(() => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), this.closeTimeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (!timedOut) return;
+    this.fenced = true;
+    this.logger.error("control-plane connection close timed out", { phase: "client-end" });
+    try {
+      this.client.connection?.stream?.destroy();
+    } catch {
+      this.logger.error("control-plane connection termination failed", {
+        phase: "stream-destroy",
+      });
     }
   }
 }
@@ -503,13 +542,20 @@ function makeClientConfig(
   connectionString: string,
   readOnly: boolean,
   options: PostgresControlPlaneOptions,
+  sessionSearchPath = false,
 ): ClientConfig {
   return {
     connectionString,
     connectionTimeoutMillis: options.connectTimeoutMs ?? CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: options.statementTimeoutMs ?? CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
-    ...(readOnly ? { options: "-c default_transaction_read_only=on" } : {}),
+    ...(readOnly
+      ? {
+          options: sessionSearchPath
+            ? `-c default_transaction_read_only=on -c search_path=${CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH}`
+            : "-c default_transaction_read_only=on",
+        }
+      : {}),
   };
 }
 
@@ -518,6 +564,7 @@ function makeControlPlaneLayer(
   options: PostgresControlPlaneOptions = {},
   transactionSearchPath?: string,
   readOnly = false,
+  sessionSearchPath = false,
 ) {
   const clientFactory = options.clientFactory ?? defaultClientFactory;
   const logger = options.logger ?? DEFAULT_LOGGER;
@@ -534,7 +581,7 @@ function makeControlPlaneLayer(
               Promise.resolve(
                 clientFactory(
                   connectionString,
-                  makeClientConfig(connectionString, readOnly, options),
+                  makeClientConfig(connectionString, readOnly, options, sessionSearchPath),
                 ),
               ).then(
                 (client) =>
@@ -546,6 +593,7 @@ function makeControlPlaneLayer(
                     readOnly,
                     options.connectTimeoutMs,
                     options.statementTimeoutMs,
+                    options.closeTimeoutMs,
                   ),
               ),
             catch: () =>
@@ -607,4 +655,14 @@ export function makeReadOnlyPostgresControlPlaneLayer(
     CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
     true,
   );
+}
+
+/** Direct gateway sockets retain their connection startup settings in the
+ * process pool. A server-enforced read-only role and session search path let
+ * each authority lookup use one SELECT instead of a per-request transaction. */
+export function makeReadOnlyPostgresGatewayAuthorityLayer(
+  connectionString: string,
+  options?: PostgresControlPlaneOptions,
+) {
+  return makeControlPlaneLayer(connectionString, options, undefined, true, true);
 }

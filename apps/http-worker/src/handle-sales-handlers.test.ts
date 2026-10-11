@@ -63,6 +63,18 @@ const workerWith = (store: HandleSalesStore, spacesSaleNamespaces?: SpacesSaleNa
 };
 
 describe("handle sales HTTP handlers", () => {
+  test("anonymous readiness-bearing offering pages are never cacheable", async () => {
+    const app = workerWith(
+      storeWith({ listOfferings: () => Effect.succeed({ items: [], next_cursor: null }) }),
+    );
+    const response = await app.request(
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-offerings?limit=100",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ items: [], next_cursor: null });
+  });
+
   test("routes staging Spaces activation and revision through the Spaces store", async () => {
     const communityId = "community_123e4567-e89b-42d3-a456-426614174055";
     const activation = {

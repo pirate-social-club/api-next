@@ -11,7 +11,10 @@ import {
   type MegapotReservedClaim,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
-import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 const storage = (reason: MegapotClaimStorageFailed["reason"]) =>
@@ -22,6 +25,13 @@ const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
       mapMegapotStorageFailure<E, MegapotClaimStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, MegapotClaimStorageFailed>(error, storage),
     ),
   );
 
@@ -132,7 +142,7 @@ function loadCandidateIn(
                 AND sweep.state='complete' AND sweep_evidence.tier_id NOT IN (0,2)
                 AND sweep_evidence.gross_winnings_atomic > 0
                 AND sweep_evidence.net_winnings_atomic > 0
-                AND ticket.status='custodied' AND attestation.status='active'
+                AND ticket.status='custodied'
               ${input.lock ? "FOR UPDATE OF drawing, ticket" : ""}`,
       values: [input.poolLegId, input.drawingId.toString()],
       readonly: !input.lock,
@@ -657,7 +667,7 @@ export function makeControlPlaneMegapotClaimRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));
-      }).pipe(mapped),
+      }).pipe(mappedReservation),
     prepare: (input: Parameters<MegapotClaimStore["prepare"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;

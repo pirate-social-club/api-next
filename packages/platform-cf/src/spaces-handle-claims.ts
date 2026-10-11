@@ -36,16 +36,20 @@ import {
   stringArray,
   text,
 } from "./handle-sales-internals.ts";
+import {
+  requireCurrentSpacesAuthority,
+  type SpacesCurrentAuthority,
+} from "./spaces-current-authority.ts";
 import { spacesTaprootOutputScriptFromAddress } from "./spaces-taproot-recipient.ts";
 
 /**
  * Native Spaces quote, reservation, and atomic claim (spec 012 §5.3.13.6-
  * §5.3.13.8 and §5.3.13.12). The HNS repository routes a `spaces_native_v1`
  * offering, quote, or reservation here inside its own transaction and keeps
- * its HNS SQL unchanged. Every step reads Pirate's own records: membership is
- * the Spec 016 row, the recipient is the persona's Taproot assignment, and no
- * provider, wallet, or operator is called. A refusal that precedes the first
- * write leaves no row behind.
+ * its HNS SQL unchanged. Membership uses the Spec 016 row and the recipient
+ * uses the persona's Taproot assignment. New commerce also checks the current
+ * root through the independent verifier before reading its admission clock
+ * and writing. A refusal rolls back the transaction without adding rows.
  */
 
 type QuoteInput = Parameters<HandleSalesStore["createQuote"]>[0];
@@ -428,6 +432,7 @@ export const createSpacesQuote = Effect.fn("createSpacesQuote")(function* (
   context: Readonly<{
     input: QuoteInput;
     offering: Row;
+    currentAuthority: SpacesCurrentAuthority;
     endpoint: "/handle-quotes";
     requestHash: string;
   }>,
@@ -551,6 +556,7 @@ export const createSpacesQuote = Effect.fn("createSpacesQuote")(function* (
     return yield* reject("handle_unavailable");
   }
 
+  yield* requireCurrentSpacesAuthority(transaction, context.currentAuthority, offering);
   const now = yield* databaseNow(transaction);
   const linkageGeneration = integer(offering, "public_linkage_generation");
   const identityDigest = handlePersonaPublicIdentityHash({
@@ -750,13 +756,20 @@ export const createSpacesReservation = Effect.fn("createSpacesReservation")(func
   context: Readonly<{
     input: ReservationInput;
     quote: Row;
-    now: string;
+    currentAuthority: SpacesCurrentAuthority;
     endpoint: "/handle-reservations";
     requestHash: string;
   }>,
 ) {
-  const { input, quote, now } = context;
+  const { input, quote } = context;
   requireSpacesRow(quote, "quote");
+  yield* requireCurrentSpacesAuthority(transaction, context.currentAuthority, quote);
+  const now = yield* databaseNow(transaction);
+  if (
+    text(quote, "status") !== "quoted" ||
+    Date.parse(instant(quote.expires_at)) <= Date.parse(now)
+  )
+    return yield* reject("quote_expired");
   const offeringId = text(quote, "offering_id");
   const offeringContext = yield* spacesOfferingContext(transaction, {
     offeringId,
@@ -945,13 +958,20 @@ export const submitSpacesClaim = Effect.fn("submitSpacesClaim")(function* (
   context: Readonly<{
     input: ClaimInput;
     reservation: Row;
-    now: string;
+    currentAuthority: SpacesCurrentAuthority;
     endpoint: "/handle-claims";
     requestHash: string;
   }>,
 ) {
-  const { input, reservation, now } = context;
+  const { input, reservation } = context;
   requireSpacesRow(reservation, "reservation");
+  yield* requireCurrentSpacesAuthority(transaction, context.currentAuthority, reservation);
+  const now = yield* databaseNow(transaction);
+  if (
+    text(reservation, "status") !== "reserved" ||
+    Date.parse(instant(reservation.expires_at)) <= Date.parse(now)
+  )
+    return yield* reject("reservation_expired");
   const offeringId = text(reservation, "offering_id");
   const currentOffering = yield* transaction.execute<Row>({
     label: "spaces-handle-claims.claim.offering-current.read",

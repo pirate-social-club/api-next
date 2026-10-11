@@ -217,7 +217,10 @@ async function runObservation(input: {
         throw new HnsRootReadinessObservationError("invalid_request");
       }
       if (claim.operation_kind === "teardown_root_v1") {
-        const provision = decodeHnsAuthorityProvisionResultV1(claim.provision_result_bytes);
+        const provision = decodeHnsAuthorityProvisionResultV1(
+          claim.provision_result_bytes,
+          input.observation_config.nameservers,
+        );
         if (provision.root_import_session_id !== claim.root_import_session_id) {
           throw new HnsRootReadinessObservationError("authority_mismatch");
         }

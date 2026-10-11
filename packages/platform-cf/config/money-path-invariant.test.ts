@@ -29,7 +29,8 @@ import { assertMegapotRewardRuntimePosture } from "./index.ts";
 // as names because their values are never visible. Runtime configuration
 // declarations from packages/platform-cf/config/index.ts are inventoried
 // separately. A chain-id or RPC name cannot appear in production without an
-// explicit posture entry; silence fails closed. MoneyPathConfig is consulted as
+// explicit posture entry, except the explicitly classified read-only HNS chain
+// reader. Silence fails closed. MoneyPathConfig is consulted as
 // a cross-check only, never as the completeness authority (it omits the DATA
 // path entirely and nothing reads it).
 //
@@ -215,6 +216,16 @@ const MONEY_PATH_POSTURES = [
     evidenceLimitation:
       "The absence assertion covers checked-in declarations only and cannot prove that a remotely provisioned Worker secret is absent; Cloudflare secrets created outside the repository are invisible to it. The guard reference records that endpoint consumption requires MEGAPOT_REWARDS_ENABLED and that production enablement is rejected by the executable Megapot check; it does not validate the endpoint or its network, and the value is never asserted.",
   },
+  {
+    kind: "secret_rpc_url",
+    name: "PERSONA_WALLET_BASE_RPC_URL",
+    posture: "guarded_optional_secret_rpc",
+    productionDeclaration: "forbidden",
+    guard:
+      "parseSponsoredSendConfig rejects production sponsorship and only constructs the Wallet chain reader when all private sponsorship limits and this HTTPS RPC secret are configured",
+    evidenceLimitation:
+      "This checks the production declaration is absent, not the live Cloudflare secret inventory or the endpoint's actual chain. Staging chain reads separately verify eth_chainId before balance and receipt use.",
+  },
 ] as const satisfies readonly MoneyPathEntry[];
 
 type WranglerProductionBlock = Readonly<{
@@ -247,6 +258,10 @@ type NamedDeclaration = Readonly<{
 
 const CHAIN_ID_SUFFIX = "_CHAIN_ID";
 const RPC_URL_SUFFIX = "_RPC_URL";
+// The HNS activation reader observes Handshake state and cannot submit a
+// payment or chain transaction. Its exact production binding is pinned by the
+// HTTP Worker binding-contract test.
+const NON_MONEY_RPC_NAMES = new Set(["HNS_AUTHORITY_HSD_RPC_URL"]);
 
 function isChainIdName(name: string): boolean {
   return name.endsWith(CHAIN_ID_SUFFIX);
@@ -257,7 +272,7 @@ function isRpcUrlName(name: string): boolean {
 }
 
 function isMoneyPathName(name: string): boolean {
-  return isChainIdName(name) || isRpcUrlName(name);
+  return isChainIdName(name) || (isRpcUrlName(name) && !NON_MONEY_RPC_NAMES.has(name));
 }
 
 /**
@@ -568,6 +583,14 @@ function productionVar(app: string, name: string): string {
 }
 
 describe("deployed production money-path invariant", () => {
+  test("classifies only the HNS read-only RPC as outside the money path", () => {
+    expect(isMoneyPathName("HNS_AUTHORITY_HSD_RPC_URL")).toBe(false);
+    expect(isMoneyPathName("HNS_UNREVIEWED_RPC_URL")).toBe(true);
+    expect(productionVar("http-worker", "HNS_AUTHORITY_HSD_RPC_URL")).toBe(
+      "http://hns-production-mainnet-reader.internal/",
+    );
+  });
+
   test("inventory coverage: every production chain-id and RPC declaration carries an explicit posture", () => {
     assertAllDeclarationsClassified(
       [

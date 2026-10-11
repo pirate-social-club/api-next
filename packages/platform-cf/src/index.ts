@@ -300,10 +300,12 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export * from "./reward-effect-attestation-repository.ts";
 export * from "./reward-funding-coordinator.ts";
 export * from "./reward-funding-repository.ts";
 export * from "./reward-gas-topup-coordinator.ts";
 export * from "./reward-gas-topup-repository.ts";
+export type * from "./reward-obligation-authority.ts";
 export * from "./reward-offer-terminal-repository.ts";
 export * from "./reward-payout-coordinator.ts";
 export * from "./reward-payout-repository.ts";

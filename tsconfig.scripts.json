@@ -1,14 +1,15 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "scripts/avatar-staging-authoring-config.test.ts",
+    "scripts/reward-operations-control.ts",
+    "scripts/reward-operations-control.test.ts",
     "scripts/hns-staging-gateway-fixture.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
     "apps",
     "scripts/api-client-provenance.ts",
     "scripts/bootstrap-megapot-base-sepolia.ts",
-    "scripts/backfill-study-spoken-v4.ts",
-    "scripts/backfill-study-spoken-profiles.ts",
     "scripts/check-contract-fresh.ts",
     "scripts/check-openapi-breaking.ts",
     "scripts/check-postgres-baseline-fresh.ts",
@@ -17,6 +18,10 @@
     "scripts/check-scripts-typecheck-coverage.ts",
     "scripts/dependency-audit.ts",
     "scripts/deploy-worker-with-provenance.ts",
+    "scripts/telegram-activation-preflight.ts",
+    "scripts/staging-telegram-config.ts",
+    "scripts/staging-telegram-config.test.ts",
+    "scripts/check-staging-serving-bindings.ts",
     "scripts/evaluate-study-translation-corpus.ts",
     "scripts/generate-contracts.ts",
     "scripts/generate-postgres-baseline.ts",
@@ -49,6 +54,11 @@
     "scripts/secret-boundary-check.ts",
     "scripts/seed-gates-v2-age18.ts",
     "scripts/verify-api-client-package.ts",
-    "scripts/verify-postgres-test-sentinels.ts"
+    "scripts/verify-postgres-test-sentinels.ts",
+    "scripts/song-video-frame-comparison.ts",
+    "scripts/song-video-frame-policy.ts",
+    "scripts/song-video-frame-comparison.test.ts",
+    "scripts/video-accepted-analysis-cleanup.ts",
+    "scripts/video-stream-reconciliation-inspect.ts"
   ]
 }

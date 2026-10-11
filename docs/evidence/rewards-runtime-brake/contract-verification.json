@@ -1,0 +1,309 @@
+{
+  "schemaVersion": 1,
+  "compilerRelease": "https://github.com/ethereum/solidity/releases/tag/v0.8.28",
+  "compilerBinarySha256": "9a0fb7e0db2c0641dbae1c5cc645dc686820c83af516226abb1c0a2f76636f25",
+  "contracts": [
+    {
+      "label": "sepolia_jackpot",
+      "chainId": "84532",
+      "address": "0x465dA3c859f193A3807386387bEE941B2A4c3279",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/Jackpot.sol:Jackpot",
+      "standardInputSha256": "f8a5c5b21237eac1b9124ae1eee40da5191ec0be1940f7db32de4f4f79b8917a",
+      "sourceSha256": "5441f436cb55de81cb00149cff661378bafe205ac67983256b0139575ecc405d",
+      "runtimeBytes": 23614,
+      "immutableReferences": {},
+      "immutableValues": {},
+      "matchesSourcifyOnchainBytecode": true,
+      "rpc": "https://base-sepolia-rpc.publicnode.com",
+      "blockNumber": "47475033",
+      "blockHash": "0xa87964b214067f9821f43918729776fd3f6b589ec16946fc37937be3f5c7223b",
+      "blockTimestamp": "1790718354",
+      "runtimeCodeHash": "0x8d3104deb8a3fb663c67f8d4a2da43a15aaf5ad8b0e1d303ceed09f582dd4bc9",
+      "matchesPinnedBlockRpcBytecode": true,
+      "currentDrawingId": "10011",
+      "currentDrawingCalculator": "0xE9542aC6FaDC47be2Bc42Fc075c1f481529D28cB",
+      "currentCalculatorMatches": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/84532/0x465dA3c859f193A3807386387bEE941B2A4c3279?fields=all",
+      "historicalDrawing": {
+        "drawingId": "1",
+        "drawingTime": "1767722400",
+        "ageSeconds": "22995954",
+        "calculator": "0xE9542aC6FaDC47be2Bc42Fc075c1f481529D28cB",
+        "tierPayoutsAtomic": [
+          "0",
+          "11112",
+          "0",
+          "17647",
+          "11112",
+          "24999",
+          "17521",
+          "94438",
+          "197595",
+          "1891173",
+          "12570224",
+          "1246788462"
+        ]
+      }
+    },
+    {
+      "label": "mainnet_jackpot",
+      "chainId": "8453",
+      "address": "0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/Jackpot.sol:Jackpot",
+      "standardInputSha256": "4d2a58af5a38e1a4b1ec4efab8c09be871131fc99dd7710834c4a707d038f531",
+      "sourceSha256": "a5b3df2a9de2fcd622525a2b131291608c819f908aa6fa142ac871deb59f95b9",
+      "runtimeBytes": 23595,
+      "immutableReferences": {},
+      "immutableValues": {},
+      "matchesSourcifyOnchainBytecode": true,
+      "rpc": "https://base-rpc.publicnode.com",
+      "blockNumber": "51964504",
+      "blockHash": "0xcb36eeeb1e27ae63c09e3f29dbb089fdf60b90fc22df08e8424b2e397fd9032a",
+      "blockTimestamp": "1790718355",
+      "runtimeCodeHash": "0x597f3a8e9360fbfc2e623243507ee9e8a66609003078ffc33d9013cb0607002d",
+      "matchesPinnedBlockRpcBytecode": true,
+      "currentDrawingId": "190",
+      "currentDrawingCalculator": "0x97a22361b6208aC8cd9afaea09D20feC47046CBD",
+      "currentCalculatorMatches": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/8453/0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2?fields=all",
+      "historicalDrawing": {
+        "drawingId": "1",
+        "drawingTime": "1774458000",
+        "ageSeconds": "16260355",
+        "calculator": "0x97a22361b6208aC8cd9afaea09D20feC47046CBD",
+        "tierPayoutsAtomic": [
+          "0",
+          "1111112",
+          "0",
+          "2291840",
+          "1111112",
+          "4358166",
+          "3374210",
+          "13558153",
+          "28268294",
+          "299840117",
+          "3395758906",
+          "248941949371"
+        ]
+      }
+    },
+    {
+      "label": "sepolia_calculator",
+      "chainId": "84532",
+      "address": "0xE9542aC6FaDC47be2Bc42Fc075c1f481529D28cB",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/GuaranteedMinimumPayoutCalculator.sol:GuaranteedMinimumPayoutCalculator",
+      "standardInputSha256": "4d9593e4a4984d3b04a20625078647c21d363c93b5918afad336b2eb6ad4d7fa",
+      "sourceSha256": "2271fb33fc895445d7bfafd2df5078bba7b2d0225c6a5dddd4e1a5270c02c188",
+      "runtimeBytes": 5066,
+      "immutableReferences": {
+        "348": [
+          {
+            "length": 32,
+            "start": 638
+          },
+          {
+            "length": 32,
+            "start": 2071
+          },
+          {
+            "length": 32,
+            "start": 2357
+          },
+          {
+            "length": 32,
+            "start": 3415
+          }
+        ]
+      },
+      "immutableValues": {
+        "348": "0x000000000000000000000000465da3c859f193a3807386387bee941b2a4c3279"
+      },
+      "matchesSourcifyOnchainBytecode": true,
+      "rpc": "https://base-sepolia-rpc.publicnode.com",
+      "blockNumber": "47475033",
+      "blockHash": "0xa87964b214067f9821f43918729776fd3f6b589ec16946fc37937be3f5c7223b",
+      "blockTimestamp": "1790718354",
+      "runtimeCodeHash": "0xe32225d15d8bb5a10a4d907e5aaf73d10d9990f249c0b25de59d8d3724093c7c",
+      "matchesPinnedBlockRpcBytecode": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/84532/0xE9542aC6FaDC47be2Bc42Fc075c1f481529D28cB?fields=all"
+    },
+    {
+      "label": "mainnet_calculator",
+      "chainId": "8453",
+      "address": "0x97a22361b6208aC8cd9afaea09D20feC47046CBD",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/GuaranteedMinimumPayoutCalculator.sol:GuaranteedMinimumPayoutCalculator",
+      "standardInputSha256": "4d9593e4a4984d3b04a20625078647c21d363c93b5918afad336b2eb6ad4d7fa",
+      "sourceSha256": "2271fb33fc895445d7bfafd2df5078bba7b2d0225c6a5dddd4e1a5270c02c188",
+      "runtimeBytes": 5066,
+      "immutableReferences": {
+        "348": [
+          {
+            "length": 32,
+            "start": 638
+          },
+          {
+            "length": 32,
+            "start": 2071
+          },
+          {
+            "length": 32,
+            "start": 2357
+          },
+          {
+            "length": 32,
+            "start": 3415
+          }
+        ]
+      },
+      "immutableValues": {
+        "348": "0x0000000000000000000000003bae643002069dbcbcd62b1a4eb4c4a397d042a2"
+      },
+      "matchesSourcifyOnchainBytecode": true,
+      "rpc": "https://base-rpc.publicnode.com",
+      "blockNumber": "51964504",
+      "blockHash": "0xcb36eeeb1e27ae63c09e3f29dbb089fdf60b90fc22df08e8424b2e397fd9032a",
+      "blockTimestamp": "1790718355",
+      "runtimeCodeHash": "0xceb1425f59fd698c57ca13865fadf98093df55de9b8f652945e546fb4a5fadce",
+      "matchesPinnedBlockRpcBytecode": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/8453/0x97a22361b6208aC8cd9afaea09D20feC47046CBD?fields=all"
+    },
+    {
+      "label": "sepolia_nft",
+      "chainId": "84532",
+      "address": "0x45084829ac63f9dC6a3D4981A46FA896f9180ECd",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/JackpotTicketNFT.sol:JackpotTicketNFT",
+      "standardInputSha256": "d54e690e4fbc9b21b90e31b6442aa9244746efcdf0fb6e729d98b4bbd5e7c0f6",
+      "sourceSha256": "2b60eac8a4df69f7d41fc63d6913ec4851d1b817619cf5a902cc014cba36b1ef",
+      "runtimeBytes": 6217,
+      "immutableReferences": {
+        "326": [
+          {
+            "length": 32,
+            "start": 1423
+          },
+          {
+            "length": 32,
+            "start": 3235
+          },
+          {
+            "length": 32,
+            "start": 3543
+          },
+          {
+            "length": 32,
+            "start": 5830
+          }
+        ]
+      },
+      "immutableValues": {
+        "326": "0x000000000000000000000000465da3c859f193a3807386387bee941b2a4c3279"
+      },
+      "matchesSourcifyOnchainBytecode": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/84532/0x45084829ac63f9dC6a3D4981A46FA896f9180ECd?fields=all",
+      "rpc": "https://base-sepolia-rpc.publicnode.com",
+      "blockNumber": "47475033",
+      "blockHash": "0xa87964b214067f9821f43918729776fd3f6b589ec16946fc37937be3f5c7223b",
+      "blockTimestamp": "1790718354",
+      "runtimeCodeHash": "0x01d40360e044308705eab6583bceda55707a959233cfe44d37a11cdcebada37a",
+      "matchesPinnedBlockRpcBytecode": true
+    },
+    {
+      "label": "mainnet_nft",
+      "chainId": "8453",
+      "address": "0x48FfE35AbB9f4780a4f1775C2Ce1c46185b366e4",
+      "compilerVersion": "0.8.28+commit.7893614a",
+      "compilerSettings": {
+        "viaIR": true,
+        "optimizer": {
+          "runs": 200,
+          "enabled": true
+        },
+        "evmVersion": "cancun"
+      },
+      "fullyQualifiedName": "contracts/JackpotTicketNFT.sol:JackpotTicketNFT",
+      "standardInputSha256": "1042f998cd20e882c3c9c51e5842d4b277145e054d649ce355c7e3033da4cdd2",
+      "sourceSha256": "deeb095f0d59aaf9c83496cbc7fbb9f1035e2a367a23e8306c5d40822d5e11a4",
+      "runtimeBytes": 6252,
+      "immutableReferences": {
+        "328": [
+          {
+            "length": 32,
+            "start": 1423
+          },
+          {
+            "length": 32,
+            "start": 3256
+          },
+          {
+            "length": 32,
+            "start": 3564
+          },
+          {
+            "length": 32,
+            "start": 5865
+          }
+        ]
+      },
+      "immutableValues": {
+        "328": "0x0000000000000000000000003bae643002069dbcbcd62b1a4eb4c4a397d042a2"
+      },
+      "matchesSourcifyOnchainBytecode": true,
+      "metadataUrl": "https://sourcify.dev/server/v2/contract/8453/0x48FfE35AbB9f4780a4f1775C2Ce1c46185b366e4?fields=all",
+      "rpc": "https://base-rpc.publicnode.com",
+      "blockNumber": "51964504",
+      "blockHash": "0xcb36eeeb1e27ae63c09e3f29dbb089fdf60b90fc22df08e8424b2e397fd9032a",
+      "blockTimestamp": "1790718355",
+      "runtimeCodeHash": "0xf08234474c8484705b2e855d9602b6e229359839fc7bad67c9157a9d5dd53ca8",
+      "matchesPinnedBlockRpcBytecode": true
+    }
+  ],
+  "conclusion": "The verified Jackpot claim path, ticket NFT ownership/burn path and stored tier-payout getter have no time-based claim deadline. This conclusion applies to these exact contract identities and calculator references.",
+  "historicalClaimSimulation": "No unclaimed winning ticket was successfully simulated; sampled positive-payout tickets mostly had no current NFT owner, and rate-limit failures occurred.",
+  "transactionsSent": 0,
+  "productionActivationApproved": false
+}

@@ -27,6 +27,70 @@ observation. Database leases and finalization fences make a service restart
 safe; PowerDNS reconciliation is idempotent. HSD and PowerDNS calls have
 five-second request deadlines.
 
+## Managed record profiles
+
+A root's zone is managed to one of two record profiles. `wildcard-v1` is the
+original set: apex, `app` and wildcard A and TLSA records with the ownership
+challenge. `wildcard-address-family-v2` adds two record sets at the wildcard
+owner, an AAAA holding the IPv4-mapped form of the gateway address and an
+HTTPS record in service mode whose target is the owner itself. A Handshake
+client in use rejects the wildcard no-data answers the first profile gives
+for AAAA and HTTPS, so member names, which have no record of their own,
+fail there; with the second profile every type that client asks for gets a
+positive wildcard answer. The mapped address means the gateway needs no IPv6
+address.
+
+Zones created by this provisioner get the second profile. A root keeps the
+profile its provision result recorded: reconciliation and inspection select
+it from the managed digest in that result, and a zone inspected without one
+is read from its own content and then held to that whole profile, so a zone
+that mixes the two is refused.
+
+Configuration that no longer reproduces the recorded digest under either
+profile is handled differently at the two points a root is inspected. At first
+readiness the reconciliation writes nothing and the job ends as an authority
+mismatch. A renewal does not reconcile. Its inspection checks the earlier
+profile's record sets against the changed configuration, so while the zone
+still holds the earlier values it fails as the provider being unavailable and
+is retried, and once the zone agrees with the changed configuration it ends as
+an authority mismatch. The renewal behaviour is older than the profiles and is
+unchanged by them.
+
+An activated root is not upgraded in place. Its retained zone is frozen
+between authority successors, and renewal requires the transferred zone to
+equal it, so adding the two record sets to a serving root by hand would end
+that root's next renewal. A root does move to the second profile when it is
+imported again over its existing zone: the new session's provision result
+records the second profile and its reconciliation rewrites the managed record
+sets, as it already rewrote the ownership challenge. Moving a serving root
+without a new import needs an authority successor and is planned separately.
+
+Deployment is one-way once a root exists under the second profile. An
+earlier provisioner computes the first profile's digest for that root, which
+no longer equals its provision result, and readiness or renewal then ends as
+an authority mismatch. Every other reader of the canonical zone must also
+contain the encoder change that accepts the HTTPS record type before it meets
+such a root: the observer driver and the operator continuity scripts derive
+the same canonical zone and refuse an unknown type. Install those before the
+first root is provisioned under the second profile, and do not roll the
+provisioner back past this change afterwards.
+
+The encoder requirement is about the record, not the profile. A root on the
+first profile that is given an HTTPS record by hand meets it too: a
+provisioner without the encoder change refuses that zone's transfer, and the
+root's readiness or renewal is then retried as the provider being unavailable.
+Such a root keeps its recorded profile and its recorded digest, and the added
+record sets are unmanaged as far as the provisioner is concerned. Its retained
+zone no longer equals the zone it serves, so it also needs an authority
+successor before its next renewal.
+
+The evidence for client behaviour is one Android client on a network without
+IPv6, plus the local resolver checks. Platforms that treat an IPv4-mapped
+address as IPv4 connect normally; others are expected to fail that attempt
+and use the A record, which has not been observed. The HTTPS record advertises
+`h2` and `http/1.1`, matching the gateway's listener configuration in
+`staging-host/caddy-tls.json`; nothing ties the two together automatically.
+
 ## Single-owner readiness cutover
 
 The cutover is one reviewed deployment sequence, not a bare migration run. The

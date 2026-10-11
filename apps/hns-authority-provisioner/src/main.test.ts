@@ -2,8 +2,24 @@ import { describe, expect, test } from "bun:test";
 import {
   HNS_ROOT_EXECUTOR_RECOVERY_SWEEP_MS,
   HNS_ROOT_OBSERVATION_RETRY_DELAY_MS,
+  hnsZoneMutationFailureDetails,
   nextHnsExecutorWaitMs,
 } from "./main.ts";
+
+test("zone mutation diagnostics retain fixed causes and SQLSTATE without challenge data", () => {
+  expect(hnsZoneMutationFailureDetails(new Error("HNS zone mutation no longer admitted"))).toEqual({
+    error_name: "Error",
+    reason: "HNS zone mutation no longer admitted",
+  });
+  const provider = Object.assign(new Error("pirate-verification=private-challenge"), {
+    code: "42501",
+  });
+  expect(hnsZoneMutationFailureDetails(provider)).toEqual({
+    error_name: "Error",
+    reason: "unclassified",
+    sqlstate: "42501",
+  });
+});
 
 test("the bounded observation budget spans a one-hour owner session", () => {
   expect(HNS_ROOT_OBSERVATION_RETRY_DELAY_MS * 20).toBe(60 * 60 * 1_000);

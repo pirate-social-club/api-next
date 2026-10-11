@@ -12,6 +12,7 @@ export class TelegramFailure extends Data.TaggedError("TelegramFailure")<{
     | "unauthorized"
     | "not_found"
     | "conflict"
+    | "identity_conflict"
     | "invalid"
     | "unavailable"
     | "rate_limited";
@@ -151,6 +152,15 @@ export interface CredentialVault {
 }
 
 export interface TelegramStore {
+  learnerLanguageContext(
+    sender: TelegramLanguageSender,
+  ): Promise<import("./copy.ts").TelegramLanguageContext>;
+  saveLearnerLanguage(
+    sender: TelegramLanguageSender,
+    inboxId: string,
+    locale: import("./copy.ts").TelegramLocale,
+    explicit: boolean,
+  ): Promise<void>;
   startPrivateChat(communityId: string, epoch: string, userId: string): Promise<void>;
   privateChatStarted(communityId: string, epoch: string, userId: string): Promise<boolean>;
   owner(communityId: string, accountId: string): Promise<void>;
@@ -209,6 +219,8 @@ export interface TelegramStore {
     operation: "send" | "edit" | "delete",
   ): Promise<void>;
   holdDelivery(record: DeliveryRecord, code: string): Promise<void>;
+  /** Pending deliveries that were waiting for this one, so they can be sent straight after. */
+  deliveriesAfter(record: DeliveryRecord): Promise<readonly string[]>;
   listDeliveries(
     communityId: string,
     before?: string,
@@ -248,13 +260,26 @@ export interface TelegramStore {
   cleanup(): Promise<void>;
 }
 
+export interface TelegramLanguageSender {
+  readonly communityId: string;
+  readonly botId: string;
+  readonly epoch: string;
+  readonly telegramUserId: string;
+}
+
 export interface TelegramServices {
+  study?: import("../telegram-study.ts").TelegramStudyServices;
   store: TelegramStore;
   api: TelegramApi;
   providers: AssistantProviders;
   vault: CredentialVault;
   publicOrigin: string;
   webhookOrigin: string;
+  /**
+   * Interface languages offered to learners. Omitted means every catalog. A deployment
+   * lists only language-qualified catalogs; anything else falls back to English.
+   */
+  interfaceLocales?: readonly import("./copy.ts").TelegramLocale[];
   now: () => number;
   wake: (work: { kind: "inbox" | "delivery"; id: string }) => Promise<void>;
 }

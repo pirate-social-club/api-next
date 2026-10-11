@@ -1,3 +1,4 @@
+import { readAlignmentRecoveryTerminalMessage } from "../../application/src/media/alignment-recovery-diagnostics.ts";
 import type {
   MediaProcessingEventType,
   MediaProcessingWorkflowLauncher,
@@ -30,6 +31,7 @@ export interface CloudflareMediaWorkflowBinding {
           | "waitingForPause"
           | "rollingBack"
           | "unknown";
+        readonly error?: Readonly<{ readonly name: string; readonly message: string }>;
       }>
     >;
     readonly sendEvent: (event: {
@@ -87,6 +89,12 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
         if (isMissingInstanceError(error)) return "missing";
         throw error;
       }
+    },
+    getRecoveryFailure: async (instanceId) => {
+      const status = await (await binding.get(instanceId)).status();
+      return status.status === "errored"
+        ? readAlignmentRecoveryTerminalMessage(status.error?.message)
+        : null;
     },
     create: async (instanceId, payload) => {
       const created = await binding.createBatch([{ id: instanceId, params: payload }]);

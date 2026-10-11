@@ -361,6 +361,10 @@ async function seedOpenMegapotPool(
   }>,
   suffix: string,
 ): Promise<Readonly<{ readonly legId: string; readonly offerId: string }>> {
+  // Admit fixture funding explicitly, then exercise qualification under pause.
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_funding_admission') FROM reward_operations_control WHERE singleton",
+  );
   const offerId = `offer-${suffix}`;
   const legId = `leg-${suffix}`;
   const policyVersionId = `reward-policy-${suffix}`;
@@ -487,6 +491,9 @@ async function seedOpenMegapotPool(
          FROM megapot_drawing_observations WHERE observation_id=$2`,
     [legId, observationId],
   );
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
+  );
   return { legId, offerId };
 }
 
@@ -504,6 +511,10 @@ async function seedOpenAssetBonus(
     readonly maxClaims?: number;
   }> = {},
 ): Promise<Readonly<{ readonly legId: string; readonly offerId: string; readonly token: string }>> {
+  // Admit fixture funding explicitly, then exercise qualification under pause.
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_funding_admission') FROM reward_operations_control WHERE singleton",
+  );
   const offerId = `offer-${suffix}`;
   const legId = `leg-${suffix}`;
   const policyVersionId = `reward-policy-${suffix}`;
@@ -586,6 +597,9 @@ async function seedOpenAssetBonus(
     `UPDATE song_reward_offer_legs SET status='active',activated_at=clock_timestamp(),
        updated_at=clock_timestamp() WHERE leg_id=$1`,
     [legId],
+  );
+  await admin.query(
+    "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
   );
   return { legId, offerId, token };
 }
@@ -1782,6 +1796,9 @@ suite("Postgres 17 activity qualification repository", () => {
         await admin.query("SET session_replication_role = origin");
       }
       const { legId, offerId, token } = await seedOpenAssetBonus(admin, identity, "asset-claim");
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_second_leg_admission') FROM reward_operations_control WHERE singleton",
+      );
       const unfundedLegId = "leg-asset-claim-unfunded";
       await admin.query(
         `INSERT INTO song_reward_offer_legs (
@@ -1796,6 +1813,9 @@ suite("Postgres 17 activity qualification repository", () => {
         `UPDATE song_reward_offer_legs SET status='funding',updated_at=clock_timestamp()
           WHERE leg_id=$1`,
         [unfundedLegId],
+      );
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
       );
       const source = sourceFor(identity);
       const service = makeActivityQualificationService(
@@ -1971,6 +1991,9 @@ suite("Postgres 17 activity qualification repository", () => {
         ),
       ).toBe(true);
 
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'fixture_later_leg_admission') FROM reward_operations_control WHERE singleton",
+      );
       const laterLegId = "leg-asset-claim-later";
       await admin.query(
         `INSERT INTO song_reward_offer_legs (
@@ -1985,6 +2008,9 @@ suite("Postgres 17 activity qualification repository", () => {
         `UPDATE song_reward_offer_legs SET status='active',activated_at=clock_timestamp(),
            updated_at=clock_timestamp() WHERE leg_id=$1`,
         [laterLegId],
+      );
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'fixture_qualification_under_pause') FROM reward_operations_control WHERE singleton",
       );
       const afterLaterLeg = await Effect.runPromise(
         projections.listPublicSongAssetBonuses({

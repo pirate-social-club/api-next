@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-const PRODUCTION_HYPERDRIVE_ID = "884b68c5a7904982a86620ed90032b77";
+const PRODUCTION_HYPERDRIVE_ID = "0c215865d7994c92b940d905f54ece37";
 const ACCOUNT_ID = "08a4c22cf52e2ecae883e36f80a33f4a";
 
 type JsonRecord = Record<string, unknown>;

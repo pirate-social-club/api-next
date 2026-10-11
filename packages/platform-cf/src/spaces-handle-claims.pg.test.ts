@@ -60,7 +60,7 @@ const suite = connectionString ? describe : describe.skip;
 const sentinel =
   process.env.CONTROL_PLANE_POSTGRES_SPACES_HANDLE_CLAIMS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-spaces-handle-claims-suite-complete";
-const testCount = 22;
+const testCount = 25;
 let completed = 0;
 
 const communityId = "community_00000000-0000-4000-8000-00000000b001";
@@ -93,7 +93,9 @@ async function withSchema(use: (admin: Client, connection: string) => Promise<vo
 }
 
 const salesStore = (connection: string): HandleSalesStore =>
-  makeControlPlaneHandleSalesStore(makeDirectPostgresControlPlaneLayer(connection));
+  makeControlPlaneHandleSalesStore(makeDirectPostgresControlPlaneLayer(connection), (binding) =>
+    Effect.succeed(binding.network === "regtest"),
+  );
 
 const spacesStore = (connection: string): SpacesSaleNamespaceStore =>
   makeControlPlaneSpacesSaleNamespaceStore(makeDirectPostgresControlPlaneLayer(connection));
@@ -464,6 +466,136 @@ const setMembership = (admin: Client, accountId: string, status: "left" | "banne
   );
 
 suite("Spaces quote, reservation, and atomic claim", () => {
+  test("refuses fresh cached readiness when current publication is pending, preserving replays", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: null });
+      const buyer = await seedBuyer(admin, "current-authority-member");
+      let current = true;
+      const sales = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        (binding) => Effect.succeed(current && binding.network === "regtest"),
+      );
+      const priorQuote = await quoted(sales, buyer, "quoteauthority", "authority-quote");
+      const pending = await reserved(sales, buyer, "claimauthority", "authority-pending");
+      const replay = await reserved(sales, buyer, "replayauthority", "authority-replay");
+      const claim = await Effect.runPromise(
+        sales.submitFreeClaim(claimInput(buyer, replay.reservation, "authority-replay")),
+      );
+      const baseline = await snapshot(admin);
+      const databaseReady = async () =>
+        (
+          await admin.query(
+            "SELECT EXISTS (SELECT 1 FROM effective_community_handle_sale_namespace_v1($1,clock_timestamp())) AS ready",
+            [activationId],
+          )
+        ).rows[0]?.ready;
+      expect(await databaseReady()).toBe(true);
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toHaveLength(1);
+      current = false;
+      // The persisted observation is still ready. Only the current authority
+      // capability supplies the independent refusal in this hermetic case.
+      expect(await databaseReady()).toBe(true);
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toEqual([]);
+      expect(
+        await failureOf(sales.createQuote(quoteInput(buyer, "afterauthority", "authority-new"))),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.createReservation(reservationInput(buyer, priorQuote, "authority-new")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.submitFreeClaim(claimInput(buyer, pending.reservation, "authority-new")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(await snapshot(admin)).toEqual(baseline);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.createQuote(quoteInput(buyer, "quoteauthority", "authority-quote")),
+          )
+        ).kind,
+      ).toBe("quoted");
+      const repeated = await Effect.runPromise(
+        sales.submitFreeClaim(claimInput(buyer, replay.reservation, "authority-replay")),
+      );
+      expect(repeated.replayed).toBe(true);
+      expect(repeated.claim.claim_id).toBe(claim.claim.claim_id);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.getClaim({ accountId: buyer.accountId, claimId: claim.claim.claim_id }),
+          )
+        )?.claim_id,
+      ).toBe(claim.claim.claim_id);
+      expect(await snapshot(admin)).toEqual(baseline);
+      current = true;
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toHaveLength(1);
+    });
+    completed++;
+  }, 60_000);
+
+  test("refuses quote and reservation expiry reached during the authority wait", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: null });
+      const buyer = await seedBuyer(admin, "expiry-authority-member");
+      const original = salesStore(connection);
+      const quote = await quoted(original, buyer, "expiryquote", "expiry-quote");
+      const pending = await reserved(original, buyer, "expiryclaim", "expiry-claim");
+      let checks = 0;
+      const delayed = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+        () =>
+          Effect.gen(function* () {
+            checks += 1;
+            yield* Effect.sleep("1250 millis");
+            return true;
+          }),
+      );
+      for (const [table, column, id, action, reason] of [
+        [
+          "handle_quotes",
+          "quote_id",
+          quote.quote_id,
+          () => delayed.createReservation(reservationInput(buyer, quote, "expired-after-wait")),
+          "quote_expired",
+        ],
+        [
+          "handle_reservations",
+          "reservation_id",
+          pending.reservation.reservation_id,
+          () =>
+            delayed.submitFreeClaim(claimInput(buyer, pending.reservation, "expired-after-wait")),
+          "reservation_expired",
+        ],
+      ] as const) {
+        // Fixture corruption shortens only the deadline; it never changes the
+        // request's pinned hash. The production write must be refused.
+        await admin.query("SET session_replication_role = replica");
+        try {
+          await admin.query(
+            `UPDATE ${table} SET expires_at=clock_timestamp()+interval '1 second' WHERE ${column}=$1`,
+            [id],
+          );
+        } finally {
+          await admin.query("SET session_replication_role = origin");
+        }
+        const before = await snapshot(admin);
+        const expectedChecks = checks + 1;
+        const refusal = await failureOf<unknown, unknown>(action());
+        expect(refusal).toEqual(rejected(reason));
+        expect(checks).toBe(expectedChecks);
+        expect(await snapshot(admin)).toEqual(before);
+        expect(
+          (await admin.query(`SELECT status FROM ${table} WHERE ${column}=$1`, [id])).rows[0]
+            ?.status,
+        ).toBe(table === "handle_quotes" ? "quoted" : "reserved");
+      }
+    });
+    completed++;
+  }, 20_000);
+
   test("projects the enabled Spaces offering and owner setup without changing HNS reads", async () => {
     await withSchema(async (admin, connection) => {
       await seedSpacesSale(admin, connection);
@@ -1867,6 +1999,207 @@ suite("Spaces final issuance reconciliation", () => {
         }),
       );
       expect(publicGrant?.host).toEqual({ kind: "not_applicable" });
+    });
+    completed++;
+  }, 60_000);
+
+  test("keeps issued grants public and pending claims visible while anchor readiness pauses issuance", async () => {
+    await withSchema(async (admin, connection) => {
+      await seedSpacesSale(admin, connection, { cap: 3 });
+      const sales = salesStore(connection);
+      const reconciler = reconciliationStore(connection);
+      const issuedBuyer = await seedBuyer(admin, "visibility-issued-member");
+      for (const label of ["issuedfirst", "issuedsecond"]) {
+        const { reservation } = await reserved(sales, issuedBuyer, label, label);
+        await Effect.runPromise(sales.submitFreeClaim(claimInput(issuedBuyer, reservation, label)));
+      }
+      const issuedTargets = await Effect.runPromise(reconciler.leaseDue(8));
+      expect(issuedTargets).toHaveLength(2);
+      for (const target of issuedTargets) {
+        expect(await Effect.runPromise(reconciler.finalize(target, finalEvidence()))).toBe(
+          "issued",
+        );
+      }
+      const pending = await registryClaim(
+        admin,
+        connection,
+        "pendingvisible",
+        "visibility-pending",
+      );
+      const reservationBuyer = await seedBuyer(admin, "visibility-reservation-member");
+      const existing = await reserved(
+        sales,
+        reservationBuyer,
+        "reservedvisible",
+        "visibility-reserved",
+      );
+      const quoteBuyer = await seedBuyer(admin, "visibility-quote-member");
+      const priorQuote = await quoted(sales, quoteBuyer, "quotedvisible", "visibility-quoted");
+      const newBuyer = await seedBuyer(admin, "visibility-new-member");
+      await confirmLink(sales, newBuyer, "visibility-new");
+      const registry = registryStore(connection);
+      const { authenticated } = await registryCredential(connection);
+      const profileBefore = await Effect.runPromise(
+        sales.getPublicPersona({ personaId: issuedBuyer.personaId }),
+      );
+      const firstPage = await Effect.runPromise(
+        sales.listPersonaGrants({ personaId: issuedBuyer.personaId, limit: 1 }),
+      );
+      expect(firstPage.items).toHaveLength(1);
+      expect(firstPage.next_cursor).not.toBeNull();
+      if (firstPage.next_cursor === null) throw new Error("missing issued grant cursor");
+      const observe = async (anchorCoversRootOutpoint: boolean) =>
+        Effect.runPromise(
+          spacesStore(connection).recordRootObservation({
+            canonicalRoot: spacesRoot,
+            observerReference: "independent-node-1",
+            observedAt: new Date().toISOString(),
+            root: {
+              kind: "resolved",
+              outpoint: spacesOutpoint,
+              key: spacesKeyA,
+              anchoredAt: new Date(Date.now() - 60_000).toISOString(),
+              anchorCoversRootOutpoint,
+              publication: "verified",
+              delegationAddress: delegation,
+            },
+            commitmentHistory: {
+              kind: "verified",
+              commitmentCount: 3,
+              latestCommitmentRootHex: "e".repeat(64),
+            },
+            freshness: { observation_max_age_ms: 3_600_000, anchor_max_age_ms: 86_400_000 },
+          }),
+        );
+      expect(await observe(false)).toMatchObject({
+        drift: { kind: "anchor_lag" },
+        suspended: null,
+      });
+      expect(
+        (
+          await Effect.runPromise(
+            spacesStore(connection).getSaleNamespaceReadiness({
+              accountId: seller,
+              communityId,
+              activationId,
+            }),
+          )
+        )?.readiness,
+      ).toEqual({ kind: "not_ready_v1", reason: "anchor_pending" });
+      expect(
+        await Effect.runPromise(sales.getPublicPersona({ personaId: issuedBuyer.personaId })),
+      ).toEqual(profileBefore);
+      for (const label of ["issuedfirst", "issuedsecond"]) {
+        expect(
+          await Effect.runPromise(
+            sales.getPublicGrant({
+              family: "spaces",
+              namespaceRoot: spacesRoot,
+              handleLabel: label,
+            }),
+          ),
+        ).toMatchObject({
+          owner_persona: { persona_id: issuedBuyer.personaId },
+          host: { kind: "not_applicable" },
+        });
+      }
+      const secondPage = await Effect.runPromise(
+        sales.listPersonaGrants({
+          personaId: issuedBuyer.personaId,
+          limit: 1,
+          cursor: firstPage.next_cursor,
+        }),
+      );
+      expect(
+        [...firstPage.items, ...secondPage.items].map((grant) => grant.handle.handle_label),
+      ).toEqual(["issuedfirst", "issuedsecond"]);
+      expect(secondPage.next_cursor).toBeNull();
+      expect(
+        await Effect.runPromise(
+          sales.getClaim({ accountId: "registry-visibility-pending", claimId: pending.claim_id }),
+        ),
+      ).toEqual(pending);
+      expect(
+        await Effect.runPromise(
+          sales.getPublicGrant({
+            family: "spaces",
+            namespaceRoot: spacesRoot,
+            handleLabel: "pendingvisible",
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        await failureOf(sales.createQuote(quoteInput(newBuyer, "newvisible", "visibility-new"))),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.createReservation(reservationInput(quoteBuyer, priorQuote, "visibility-quoted")),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await failureOf(
+          sales.submitFreeClaim(
+            claimInput(reservationBuyer, existing.reservation, "visibility-reserved"),
+          ),
+        ),
+      ).toEqual(rejected("sale_namespace_inactive", true));
+      expect(
+        await Effect.runPromise(
+          registry.pending({
+            credential: authenticated,
+            space: { kind: "root", canonical_root: spacesRoot },
+            capacity: 10,
+          }),
+        ),
+      ).toEqual({ kind: "handles", handles: [] });
+      expect(await count(admin, "spaces_registry_deliveries")).toBe(0);
+      expect(await count(admin, "handle_claims")).toBe(3);
+      expect(await count(admin, "handle_reservations", "status='reserved'")).toBe(1);
+      const pausedVerification = await Effect.runPromise(reconciler.leaseDue(8));
+      expect(pausedVerification.map((target) => target.claim_id)).toEqual([pending.claim_id]);
+      const pendingTarget = pausedVerification[0];
+      if (pendingTarget === undefined) throw new Error("missing pending verification lease");
+      expect(await Effect.runPromise(reconciler.retryLater(pendingTarget))).toBe("scheduled");
+      expect(await count(admin, "handle_grants", "status='active'")).toBe(2);
+      expect(await observe(true)).toMatchObject({ drift: { kind: "current" }, suspended: null });
+      expect(
+        (
+          await Effect.runPromise(
+            spacesStore(connection).getSaleNamespaceReadiness({
+              accountId: seller,
+              communityId,
+              activationId,
+            }),
+          )
+        )?.readiness,
+      ).toEqual({ kind: "ready_v1" });
+      expect(
+        await Effect.runPromise(sales.getPublicPersona({ personaId: issuedBuyer.personaId })),
+      ).toEqual(profileBefore);
+      expect(
+        await Effect.runPromise(
+          sales.getClaim({ accountId: "registry-visibility-pending", claimId: pending.claim_id }),
+        ),
+      ).toEqual(pending);
+      const delivery = await Effect.runPromise(
+        registry.pending({
+          credential: authenticated,
+          space: { kind: "root", canonical_root: spacesRoot },
+          capacity: 10,
+        }),
+      );
+      expect(delivery.kind).toBe("handles");
+      if (delivery.kind !== "handles") throw new Error("missing recovered registry delivery");
+      expect(delivery.handles).toHaveLength(1);
+      expect(await count(admin, "handle_grants", "status='active'")).toBe(2);
+      expect(await Effect.runPromise(reconciler.leaseDue(8))).toEqual([]);
+      expect(
+        (
+          await Effect.runPromise(
+            sales.createQuote(quoteInput(newBuyer, "newvisible", "visibility-recovered")),
+          )
+        ).kind,
+      ).toBe("quoted");
     });
     completed++;
   }, 60_000);

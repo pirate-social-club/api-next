@@ -1,13 +1,10 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type {
-  CreatePostBody,
-  M2Actor,
-  TextPostStore,
-  TextPostSubmissionDocument,
-} from "@pirate/application";
+import type { CreatePostBody, M2Actor, TextPostSubmissionDocument } from "@pirate/application";
 import { evaluateTextModerationV2 } from "@pirate/application/text-moderation-runtime";
+import { createCommentReply } from "@pirate/application/use-cases/content/comments-replies";
 import { canonicalBodyHash } from "@pirate/application/use-cases/content/common";
+import { getPublicPostCanonicalRouteById } from "@pirate/application/use-cases/content/public-post-routes";
 import {
   createTextPost,
   getTextContentSubmission,
@@ -25,9 +22,12 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
+import { makeControlPlaneContentStore } from "./content-repository";
+import { makeControlPlaneFeedStore } from "./feed-repository";
 import { makeControlPlanePersonaStore } from "./persona-repository";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -39,7 +39,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
-const testCount = 11;
+const testCount = 12;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
@@ -67,7 +67,7 @@ afterEach(() => {
 afterAll(async () => {
   if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });
-type RuntimeStore = TextPostStore["Service"];
+type RuntimeStore = ReturnType<typeof makeControlPlaneTextSubmissionStore>;
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
 const otherActor: M2Actor = { userId: "usr_text_order5_other", kind: "user" };
@@ -470,6 +470,145 @@ async function insertParentComment(
 }
 
 suite("Postgres 17 terminal text submission repository", () => {
+  test("publishes declared-rating posts, comments and replies without provider or policy evidence", async () => {
+    await withSchema(async (admin, connection) => {
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      let adultPostId: string | undefined;
+      const services = {
+        textPostStore: makeControlPlaneTextSubmissionStore(runtime),
+        personaStore: makeControlPlanePersonaStore(runtime),
+        textModerationProvider: {
+          evaluate: () => {
+            throw new Error("publication called the moderation provider");
+          },
+        },
+      };
+      for (const rating of ["general", "adult_18"] as const) {
+        const postBody = {
+          ...body,
+          idempotency_key: `direct-${rating}`,
+          author_declared_rating: rating,
+        };
+        const first = await Effect.runPromise(
+          createTextPost({ communityId: "text-community", actor, body: postBody }, services),
+        );
+        expect(first.status).toBe("published");
+        const postId =
+          first.published_resource?.kind === "post" ? first.published_resource.post_id : undefined;
+        if (postId === undefined) throw new Error("missing published post");
+        if (rating === "adult_18") adultPostId = postId;
+        const replay = await Effect.runPromise(
+          createTextPost({ communityId: "text-community", actor, body: postBody }, services),
+        );
+        expect(snapshotBytes(replay)).toEqual(snapshotBytes(first));
+        const commentBody = {
+          idempotency_key: `comment-${rating}`,
+          persona_id: actorPersonaId,
+          body: "comment",
+          author_declared_rating: rating,
+        };
+        const comment = await Effect.runPromise(
+          createCommentReply(
+            { surface: "comment", targetId: postId, actor, body: commentBody },
+            services,
+          ),
+        );
+        expect(comment.status).toBe("published");
+        const commentId =
+          comment.published_resource?.kind === "comment"
+            ? comment.published_resource.comment_id
+            : undefined;
+        if (commentId === undefined) throw new Error("missing published comment");
+        const reply = await Effect.runPromise(
+          createCommentReply(
+            {
+              surface: "reply",
+              targetId: commentId,
+              actor,
+              body: { ...commentBody, idempotency_key: `reply-${rating}`, body: "reply" },
+            },
+            services,
+          ),
+        );
+        expect(reply.status).toBe("published");
+      }
+      const rows = await admin.query(
+        `SELECT publication_mode,status,author_declared_rating,resulting_content_rating,policy_revision_id,platform_policy_revision_id,community_policy_revision_id,evidence_ref FROM text_content_submissions ORDER BY author_declared_rating,surface`,
+      );
+      expect(rows.rows).toHaveLength(6);
+      for (const row of rows.rows)
+        expect(row).toEqual({
+          publication_mode: "author_declared",
+          status: "published",
+          author_declared_rating: row.author_declared_rating,
+          resulting_content_rating: row.author_declared_rating,
+          policy_revision_id: null,
+          platform_policy_revision_id: null,
+          community_policy_revision_id: null,
+          evidence_ref: null,
+        });
+      const resources = await admin.query(
+        `SELECT content_rating,can_account_view_content_rating_v1(NULL,content_rating) AS anonymous_allowed FROM posts UNION ALL SELECT content_rating,can_account_view_content_rating_v1(NULL,content_rating) AS anonymous_allowed FROM comments`,
+      );
+      expect(resources.rows.filter((row) => row.content_rating === "adult_18")).toEqual(
+        Array.from({ length: 3 }, () => ({
+          content_rating: "adult_18",
+          anonymous_allowed: false,
+        })),
+      );
+      expect(resources.rows.filter((row) => row.content_rating === "general")).toHaveLength(3);
+      expect(
+        (
+          await admin.query(
+            `SELECT (SELECT count(*)::int FROM text_moderation_evidence) AS evidence, (SELECT count(*)::int FROM text_moderation_cases) AS cases, (SELECT count(*)::int FROM text_content_held_revisions) AS held, (SELECT count(*)::int FROM home_feed_projection) AS feed`,
+          )
+        ).rows,
+      ).toEqual([{ evidence: 0, cases: 0, held: 0, feed: 2 }]);
+      const contentStore = makeControlPlaneContentStore(runtime);
+      const feedStore = makeControlPlaneFeedStore(runtime);
+      const publicPostRouteStore = makeControlPlanePublicPostSlugStore(runtime);
+      if (adultPostId === undefined) throw new Error("missing adult post");
+      for (const viewerUserId of [undefined, otherActor.userId]) {
+        const viewer = viewerUserId === undefined ? {} : { viewerUserId };
+        const document = await Effect.runPromise(
+          Effect.scoped(
+            getPublicPostCanonicalRouteById(
+              { postId: adultPostId, ...viewer },
+              { contentStore, publicPostRouteStore },
+            ),
+          ),
+        );
+        expect(document).toEqual({
+          kind: "age_locked",
+          locked: {
+            kind: "age_locked",
+            content_rating: "adult_18",
+            next_action: { kind: "verify_minimum_age", minimum_age: 18 },
+          },
+        });
+        const feed = await Effect.runPromise(
+          Effect.scoped(feedStore.listHome({ query: {}, ...viewer })),
+        );
+        expect(feed.items.some((item) => "kind" in item && item.kind === "age_locked")).toBe(true);
+        expect(JSON.stringify(feed)).not.toContain(adultPostId);
+      }
+      const insertColumns = (
+        await admin.query<{ column_name: string }>(
+          `SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='text_content_submissions' AND is_generated='NEVER' ORDER BY ordinal_position`,
+        )
+      ).rows
+        .map((row) => quoteIdentifier(row.column_name))
+        .join(",");
+      await expect(
+        admin.query(
+          `INSERT INTO text_content_submissions (${insertColumns}) SELECT ${insertColumns} FROM jsonb_populate_record(NULL::text_content_submissions,(SELECT to_jsonb(s)||jsonb_build_object('submission_id','invalid-direct-null-rating','operation_id','invalid-direct-operation','idempotency_key','invalid-direct-key','author_declared_rating',NULL,'resulting_content_rating',NULL,'matched_categories',NULL,'category_decisions',NULL,'effective_policy_decision',NULL) FROM text_content_submissions s LIMIT 1))`,
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "text_submission_publication_mode_shape",
+      });
+    });
+  }, 30_000);
   test("commits a current V2 evaluation with complete restricted evidence", async () => {
     await withSchema(async (admin, connection) => {
       const requestHash = await Effect.runPromise(
@@ -933,7 +1072,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         ),
       );
       expect(Array.from(snapshotBytes(second))).toEqual(Array.from(firstBytes));
-      expect(moderationCalls).toBe(1);
+      expect(moderationCalls).toBe(0);
       const conflictResult = await Effect.runPromiseExit(
         createTextPost(
           {
@@ -1040,19 +1179,24 @@ suite("Postgres 17 terminal text submission repository", () => {
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const textPostStore = makeControlPlaneTextSubmissionStore(runtime);
       const personaStore = makeControlPlanePersonaStore(runtime);
-      const first = await Effect.runPromise(
-        createTextPost(
-          { communityId: "text-community", actor, body: postBody },
-          {
-            textPostStore,
-            personaStore,
-            textModerationProvider: {
-              evaluate: () =>
-                Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
-            },
-          },
-        ),
+      const awaitHash = await Effect.runPromise(
+        canonicalBodyHash({ community_id: "text-community", body: postBody }),
       );
+      const firstOutcome = await runStore(connection, (store) =>
+        commitWithModeration(store, {
+          communityId: "text-community",
+          actor,
+          personaId: actorPersonaId,
+          body: postBody,
+          moderationInput: input,
+          idempotencyKey: postBody.idempotency_key,
+          requestHash: awaitHash,
+          operationId: "operation_historical_held",
+          moderation: "unavailable",
+        }),
+      );
+      if (firstOutcome.kind !== "created") throw new Error("expected a held fixture");
+      const first = firstOutcome.snapshot;
       expect(first.status).toBe("manual_review");
       const stored = await admin.query<{
         readonly submission_id: string;

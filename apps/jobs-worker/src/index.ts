@@ -48,9 +48,12 @@ import {
   type DataRegistrationJobsBindings,
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
+import {
+  type HnsActiveLeaseRenewalBindings,
+  makeHnsActiveLeaseRenewalJob,
+} from "./hns-active-lease-renewal";
 import { makeHnsRootHealthRenewalJob } from "./hns-root-health-renewal";
 import {
-  type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
@@ -59,6 +62,11 @@ import { makeKaraokeFinalizationRecoveryJob } from "./karaoke-finalization-recov
 import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
+import {
+  MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+} from "./megapot-rewards-cycle";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
@@ -77,6 +85,7 @@ import {
   type SpacesReconciliationComposition,
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
+import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -130,7 +139,7 @@ export interface JobsWorkerEnv
   extends AlertSinkBindings,
     DataRegistrationJobsBindings,
     DanceReferenceJobsBindings,
-    HnsRouteRevalidationBindings,
+    HnsActiveLeaseRenewalBindings,
     MediaJobsBindings,
     TelegramBindings,
     SpacesReconciliationBindings {
@@ -154,6 +163,7 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEGAPOT_CUSTODY_PRIVATE_KEY?: string;
+  readonly MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS?: string;
   readonly MEGAPOT_GAS_TOPUP_PRIVATE_KEY?: string;
   readonly MEGAPOT_COMMITMENT_PUBLIC_ORIGIN?: string;
   readonly MEGAPOT_OBSERVATION_TTL_SECONDS?: string;
@@ -184,6 +194,7 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
       MEGAPOT_ATTESTATION_ID: env.MEGAPOT_ATTESTATION_ID,
       MEGAPOT_REQUIRED_CONFIRMATIONS: env.MEGAPOT_REQUIRED_CONFIRMATIONS,
       MEGAPOT_CUSTODY_PRIVATE_KEY: env.MEGAPOT_CUSTODY_PRIVATE_KEY,
+      MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS: env.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS,
       MEGAPOT_GAS_TOPUP_PRIVATE_KEY: env.MEGAPOT_GAS_TOPUP_PRIVATE_KEY,
       MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: env.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN,
       MEGAPOT_OBSERVATION_TTL_SECONDS: env.MEGAPOT_OBSERVATION_TTL_SECONDS,
@@ -262,10 +273,23 @@ function makeMegapotOptions(
   }
   return {
     environment: config.API_NEXT_ENV,
+    // Funding observation and the liveness projection run on a bounded session
+    // so that an interrupted transaction has a short, counted tail; see the
+    // cycle's deadlines.
+    ...(env.CONTROL_PLANE === undefined
+      ? {}
+      : {
+          boundedControlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+            statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+            connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+            closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+          }),
+        }),
     workerVersion: env.CF_VERSION_METADATA,
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
     custodyPrivateKey,
+    retainedCustodyPrivateKeys: Redacted.value(config.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS),
     gasTopupPrivateKey: gasTopupPrivateKey.length === 0 ? null : gasTopupPrivateKey,
     commitmentBucket: env.MEGAPOT_COMMITMENTS,
     commitmentPublicOrigin,
@@ -498,6 +522,7 @@ const runScheduledJob = Effect.fn("runScheduledJob")(function* <Failure, Require
   const runContext = {
     owner,
     attemptId: `${owner}:${job.name}`,
+    startedAtMs: Date.now(),
     lease: () => state.currentLease,
     adapterSafety: {
       markAbortedOrFenced: () => {
@@ -755,6 +780,7 @@ export function makeJobsWorkerDeclarations(
         spacesReconciliation.rootObservation.observer,
         spacesReconciliation.rootObservation.saleNamespaces,
       ),
+      makeSpacesRouteRenewalJob(sink, spacesReconciliation.renewRoutes),
     );
   }
   return declarations;
@@ -840,6 +866,8 @@ export default {
         : undefined,
       spacesReconciliation,
     );
+    const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
+    if (renewal !== null) declarations.push(renewal);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);

@@ -1181,6 +1181,7 @@ export function makeControlPlaneHnsCommunityRootImportRepository(
           text: `SELECT ${sessionReadColumns},${lifecycleReadColumns},
                         CASE WHEN route.route_binding_id IS NULL THEN NULL ELSE jsonb_build_object(
                           'status',route.route_lifecycle_status,
+                          'binding_generation',route.binding_generation,
                           'canonical_route',jsonb_build_object('family',route.family,
                             'root_label',route.root_label,'root_label_display',route.root_label_display,
                             'path_segment',route.public_path_segment_v2,'href',route.public_href_v2,

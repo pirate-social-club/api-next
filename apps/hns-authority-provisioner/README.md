@@ -70,6 +70,116 @@ before claiming production acceptance. Retained operator roots remain outside
 this queue until adoption; their manual checkpoints and certificate renewal
 remain required.
 
+## Adopting a changed zone for an activated root
+
+An activated root's retained zone is frozen between authority successors, and
+a renewal promotes a successor only when the zone the authorities serve still
+equals it byte for byte. A root provisioned under the `wildcard-v1` record
+profile therefore cannot simply be given the wildcard AAAA and HTTPS record
+sets that new zones get: once its served zone changes, its next renewal ends
+with `evidence_mismatch`. The `--adopt-zone` command is the supported way to
+make that change. It changes the zone at the primary authority, takes the same
+observation a renewal takes, and promotes a successor that adopts the observed
+zone through the promotion body renewal and the continuity command share.
+
+Adoption admits three differences between the retained zone and the observed
+one, and refuses every other. `wildcard_family_added` is one wildcard AAAA
+holding the IPv4-mapped form of the wildcard A address and one wildcard HTTPS
+record `1 . alpn=h2,http/1.1`, together with the two records those force to
+change: the SOA in its serial alone and the wildcard owner's NSEC in exactly
+those two types. `wildcard_family_removed` is the exact reverse.
+`serial_only` is a later serial with nothing else changed, which is what a
+zone looks like when a change was undone before it was adopted. Zones that
+use NSEC3 are refused. The operator names the difference intended, and a
+different one found is a refusal, not a substitution.
+
+The steps are run in order from the staged bundle, under the service's
+environment, and each prints one JSON line. Keep those lines: together with
+the observation file they are the record of what was changed and from what.
+
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone status --root <label>
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone write-records --root <label> --change add-wildcard-family
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone observe --root <label> --out <absolute path>
+    bun pirate-hns-authority-provisioner.mjs --adopt-zone adopt --observation <absolute path> \
+      --expect-result-sha256 <digest observe printed> --expect-delta wildcard_family_added --mode dry-run
+
+`status` reads the root's generation, retained zone digest, open renewal jobs
+and remaining validity in a read-only transaction. `write-records` writes the
+two record sets, built by the function that builds them for a new zone, after
+confirming the provisioned DNSSEC keys and managed record sets. The serial
+policy must be `DEFAULT` or `INCREASE`. The wildcard family must be absent,
+complete, or an exact subset of the expected two record sets; foreign values
+are refused. A patch must advance the serial. A retry that finds the requested
+family already present must also find a serial newer than the retained one
+when that family differs from the retained family. It then rectifies,
+notifies, and reads back. Retrying can finish an interrupted patch or notify;
+it cannot turn a frozen serial into success.
+
+`observe` writes a new file, never overwrites one, and reports the zone
+difference and changed keyset, gateway or chain references. `adopt` runs as
+`dry-run`, then `rehearse`, then `commit`. Rehearsal executes promotion and
+forces deferred constraints with `SET CONSTRAINTS ALL IMMEDIATE`, then rolls
+back. It exercises the promotion privileges and deferred pointer foreign keys.
+It cannot prove a later commit's concurrency outcome or acknowledgement.
+
+The reviewed file is bound to the supplied digest. Its timestamp comes from
+the database clock, and adoption uses that clock for the fifteen-minute age
+limit in every mode. Under the root's database fence, adoption runs the full
+observer again: both authority zones, DNSSEC keys, chain and gateway must still
+match the reviewed stable bindings. The provider serial must match the SOA in
+the canonical zone bytes. Age and validity are checked again after observation.
+Same-serial content drift is therefore refused too. Observe again after a
+refusal. Database locks do not lock DNS: the operator must hold exclusive
+custody of all authority writers, including key changes, from the first write
+through commit. This is a required execution condition, not an atomic
+transaction spanning DNS and PostgreSQL.
+
+Adoption and renewal serialize through the session and DNS pointer rows.
+`write-records` derives its decision from the retained zone, intended change,
+and validated provider family read under those locks. Starting a departure
+from the retained family is refused with a queued, leased or delayed renewal
+job, or less than four days of validity. `--minimum-validity-seconds` may lower
+the margin to an hour for an operator who knows no renewal can be scheduled.
+Completing an interrupted change or restoring the retained family remains
+possible with an open job or near expiry. Foreign partial values are refused.
+
+Between DNS change and adoption, a renewal can fail with `evidence_mismatch`.
+Adoption therefore admits an open renewal job and counts it in the receipt.
+After adoption, a later claim ends the old job as `generation_superseded`.
+A preparation already waiting on an old serializable snapshot instead fails
+with a serialization error; the job ends only at a later claim.
+
+Once `write-records` has changed the zone, finish. The root must end in a
+committed adoption of what its authorities serve, or its next renewal fails.
+To withdraw before committing, run `write-records` with
+`--change remove-wildcard-family`, observe again, and adopt `serial_only`. To
+withdraw after committing, do the same and adopt `wildcard_family_removed`.
+Each generation's revision keeps its own zone bytes, so the earlier zone stays
+readable after either. A root provisioned under the newer profile holds the
+two record sets as managed ones and is refused by `write-records`, as is a
+zone whose serial does not advance on API changes. After a commit, read
+`status` again, and confirm that the root's next renewal completes: it now
+requires the adopted zone.
+
+The command checks schema admission and, past cutover, compares the running
+entry file's digest with `HNS_AUTHORITY_DEPLOYMENT_MANIFEST`. That measures the
+entry file against the supplied manifest only. It does not establish that the
+manifest is approved or independently bind source, runtime, external imports,
+or custody. The operator must use the reviewed self-contained release bundle
+and its exact manifest. The command does not run the cutover probe.
+
+The service database role needs renewal privileges plus reads of session,
+provision job, renewal job, health and inventory rows and UPDATE privileges
+for no-key locks on session and DNS pointer tables. A missing lock privilege
+refuses before any provider write. Read back privileges before first use;
+a dry run exercises reads and a rehearsal exercises promotion and constraints.
+
+Failures print typed refusal reasons, an exact allowlist of fixed internal
+messages, or `unclassified` with a bounded error class and code. Arbitrary
+messages are not trusted by prefix. A refusal before a write is distinguished
+from an uncertain provider operation; a lost commit acknowledgement requires
+reading the current generation before any retry.
+
 ## Single-owner readiness cutover execution
 
 The reviewed cutover endpoint is

@@ -1,88 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
 import type { DataRegistrationRuntimeEnv } from "../apps/data-registration-worker/src/composition.ts";
-import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
 import { HTTP_AVATAR_REQUIRED, HTTP_BINDING_KINDS } from "./http-binding-contract.ts";
-import { MEDIA_BINDING_KINDS } from "./media-binding-contract.ts";
-import { TELEGRAM_BINDING_KINDS } from "./telegram-binding-contract.ts";
+import { JOBS_BINDING_KINDS } from "./jobs-binding-contract.ts";
+import { MEDIA_BINDING_KINDS, mediaUsesCloudConvert } from "./media-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
 
-// `satisfies` requires every source binding to be classified. The runtime audit
-// checks that these classifications agree with both Wrangler configs.
+// Source binding classifications must agree with Wrangler configs.
 const ALERT_BINDING_KINDS = {
   API_NEXT_ENV: "var",
 } as const satisfies BindingManifest<AlertSinkBindings>;
-
-const JOBS_BINDING_KINDS = {
-  AVATAR_CLEANUP_ENABLED: "var",
-  AVATAR_INGRESS: "platform",
-  AVATAR_SEALED: "platform",
-  ...TELEGRAM_BINDING_KINDS,
-  CF_VERSION_METADATA: "platform",
-  CRON_LOCK: "platform",
-  CONTROL_PLANE: "platform",
-  KARAOKE_ATTEMPT: "platform",
-  LEARNER_AUDIO: "platform",
-  MEGAPOT_COMMITMENTS: "platform",
-  SPACES_RECONCILIATION_ENABLED: "var",
-  SPACES_RECONCILIATION_OVERDUE_SECONDS: "var",
-  SPACES_RECONCILIATION_MEASUREMENT_REFERENCE: "var",
-  SPACES_VERIFIER_ACCESS_CLIENT_ID: "secret",
-  SPACES_VERIFIER_ACCESS_CLIENT_SECRET: "secret",
-  SPACES_VERIFIER_BEARER_TOKEN: "secret",
-  HNS_OWNER_VERIFIER: "platform",
-  API_NEXT_ENV: "var",
-  KARAOKE_FINALIZATION_RECOVERY_ENABLED: "var",
-  COMMUNITY_MAINTENANCE_ENABLED: "var",
-  COMMUNITY_PURCHASE_FUNDING_RPC_URL: "secret",
-  MEGAPOT_REWARDS_ENABLED: "var",
-  MEGAPOT_CHAIN_ID: "var",
-  MEGAPOT_V2_RPC_URL: "secret",
-  MEGAPOT_ATTESTATION_ID: "var",
-  MEGAPOT_REQUIRED_CONFIRMATIONS: "var",
-  MEGAPOT_CUSTODY_PRIVATE_KEY: "secret",
-  MEGAPOT_GAS_TOPUP_PRIVATE_KEY: "secret",
-  MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: "secret",
-  MEGAPOT_OBSERVATION_TTL_SECONDS: "var",
-  MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: "var",
-  MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "var",
-  MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: "var",
-  MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "var",
-  MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: "var",
-  MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "var",
-  MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "var",
-  MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "var",
-  HNS_OWNERSHIP_ENABLED: "var",
-  HNS_ROOT_HEALTH_RENEWAL_ENABLED: "var",
-  HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "var",
-  HNS_OWNERSHIP_CONFIGURATION_VERSION: "var",
-  HNS_REVALIDATION_FORCE_ROUTE_BINDING_ID: "var",
-  HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
-  MEDIA_INGRESS: "platform",
-  MEDIA_PROCESSING_ENABLED: "var",
-  SONG_SOURCE_RECORDING_ENABLED: "var",
-  VIDEO_ANALYSIS_ENABLED: "var",
-  VIDEO_DELIVERY_ENABLED: "var",
-  MEDIA_PROCESSING_QUEUE: "platform",
-  MEDIA_PROCESSING_WORKFLOW: "platform",
-  VIDEO_ANALYSIS_WORKFLOW: "platform",
-  VIDEO_WORKFLOW_ACCOUNT_ID: "var",
-  VIDEO_WORKFLOW_NAME: "var",
-  VIDEO_WORKFLOW_SCRIPT_NAME: "var",
-  VIDEO_WORKFLOW_READ_TOKEN: "secret",
-  DATA_REGISTRATION_ENABLED: "var",
-  DATA_REGISTRATION_RPC_URL: "var",
-  DATA_REGISTRATION_SIGNER_ADDRESS: "var",
-  DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI: "var",
-  DATA_REGISTRATION_QUEUE: "platform",
-  DATA_REGISTRATION_WORKFLOW: "platform",
-  DANCE_REFERENCE_PROCESSING_ENABLED: "var",
-  DANCE_REFERENCE_PROCESSING_QUEUE: "platform",
-} as const satisfies BindingManifest<JobsWorkerEnv>;
 
 const DATA_REGISTRATION_BINDING_KINDS = {
   CONTROL_PLANE: "platform",
@@ -127,6 +58,8 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly images?: { readonly binding: string };
+  readonly vpc_services?: readonly { readonly binding: string; readonly service_id: string }[];
   readonly r2_buckets?: readonly { readonly binding: string; readonly bucket_name: string }[];
   readonly workflows?: readonly {
     binding: string;
@@ -374,8 +307,7 @@ const LEGACY_JUNK_NAMES = [
   "SELF_CALLBACK_CAPTURE_ACCESS_TOKEN",
 ] as const;
 
-// The pre-D7 names. These must never reappear in a binding manifest or in a
-// Wrangler config; the D7 rename replaced them with their VERY_WEB_ forms.
+// Retired pre-D7 names must not replace their VERY_WEB_ forms.
 const LEGACY_VERY_WEB_NAMES = [
   "VERY_APP_ID",
   "VERY_API_URL",
@@ -404,6 +336,13 @@ const requiredNamesFor = (
         : ["MEDIA_PROCESSING_ENABLED"];
     if (environment.vars.SONG_SOURCE_RECORDING_ENABLED === "true") {
       required.push("SONG_SOURCE_RECORDING_ENABLED", ...SONG_SOURCE_RECORDING_REQUIRED);
+    }
+    if (mediaUsesCloudConvert(environment.vars)) {
+      required.push(
+        "CLOUDCONVERT_RENDER_API_KEY",
+        "VIDEO_SOURCE_GATEWAY_ORIGIN",
+        "MEDIA_IMMUTABLE_ORIGINALS",
+      );
     }
     return required;
   }
@@ -509,6 +448,8 @@ const auditRequiredBindings = (): readonly string[] => {
           (bucket) => bucket.binding,
         ),
       ]);
+      const images = rawEnvironment(configs[worker], environmentName).images;
+      if (images !== undefined) names.add(images.binding);
       const varNames = new Set(Object.keys(environment.vars));
       const secretNames = new Set(environment.secrets);
       for (const name of requiredNamesFor(worker, environment)) {
@@ -517,8 +458,7 @@ const auditRequiredBindings = (): readonly string[] => {
           continue;
         }
         if (manifest[name] === "var" && !varNames.has(name)) {
-          // The classification audit reports the wrong store. Keep this
-          // check focused on absence/value rather than duplicating it.
+          // Store classification is checked separately.
           continue;
         }
         if (manifest[name] === "secret" && !secretNames.has(name)) {
@@ -577,6 +517,24 @@ describe("source-to-Wrangler binding contract", () => {
     resolved: known.filter((violation) => !actual.includes(violation)),
   });
 
+  test("staging preserves its accepted video pipeline and keeps the render key on Media", () => {
+    const staging = declaredEnvironment(configs.media, "staging");
+    expect(staging.vars.OPENAI_MODERATION_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("true");
+    expect(staging.vars.VIDEO_SAFETY_GATE).toBe("sampled_frame_openai_v1");
+    expect(staging.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
+    for (const environment of ["development", "production"] as const) {
+      const disabled = declaredEnvironment(configs.media, environment);
+      expect(disabled.secrets).not.toContain("CLOUDCONVERT_RENDER_API_KEY");
+      expect(disabled.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBeUndefined();
+    }
+    expect(declaredEnvironment(configs.http, "staging").secrets).not.toContain(
+      "CLOUDCONVERT_RENDER_API_KEY",
+    );
+  });
+
   test("declared config has no junk and matches var/secret classification", () => {
     const { unexpected, resolved } = ratchet(
       auditDeclaredBindings(),
@@ -628,11 +586,10 @@ describe("source-to-Wrangler binding contract", () => {
   test("video Workflow bindings agree on class, name and processor script in every environment", () => {
     for (const environment of ENVIRONMENTS) {
       const suffix = environment === "development" ? "" : `-${environment}`;
+      const enabled = environment === "staging" ? "true" : "false";
       for (const worker of ["media", "jobs"] as const) {
         const block = rawEnvironment(configs[worker], environment);
-        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(
-          environment === "staging" && worker === "jobs" ? "true" : "false",
-        );
+        expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(enabled);
         const bindings = block.workflows?.filter(
           (item) => item.binding === "VIDEO_ANALYSIS_WORKFLOW",
         );
@@ -651,7 +608,7 @@ describe("source-to-Wrangler binding contract", () => {
   test("declares staging video Workflow read access in both Workers", () => {
     for (const worker of ["jobs", "media"] as const) {
       const staging = declaredEnvironment(configs[worker], "staging");
-      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe(worker === "jobs" ? "true" : "false");
+      expect(staging.vars.VIDEO_ANALYSIS_ENABLED).toBe("true");
       expect(staging.vars.VIDEO_WORKFLOW_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
       expect(staging.vars.VIDEO_WORKFLOW_NAME).toBe("pirate-video-analysis-staging");
       expect(staging.vars.VIDEO_WORKFLOW_SCRIPT_NAME).toBe("pirate-media-processor-worker-staging");
@@ -660,12 +617,12 @@ describe("source-to-Wrangler binding contract", () => {
     }
   });
 
-  test("pins live staging jobs bindings with Spaces reconciliation on", () => {
+  test("pins intended staging jobs bindings with Spaces reconciliation on", () => {
     const staging = declaredEnvironment(configs.jobs, "staging");
     expect(staging.vars.AVATAR_CLEANUP_ENABLED).toBe("true");
     expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
     expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
     expect(staging.secrets).toContain("MEGAPOT_GAS_TOPUP_PRIVATE_KEY");
     expect(staging.vars.SPACES_RECONCILIATION_ENABLED).toBe("true");
     expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
@@ -689,9 +646,52 @@ describe("source-to-Wrangler binding contract", () => {
     );
   });
 
-  test("preserves active staging rewards while enabling Spaces", () => {
+  test("staging activation reads mainnet through its private reader", () => {
     const staging = declaredEnvironment(configs.http, "staging");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    const production = declaredEnvironment(configs.http, "production");
+    expect(rawEnvironment(configs.http, "staging").vpc_services).toEqual([
+      {
+        binding: "HNS_AUTHORITY_HSD",
+        service_id: "01a0e6f3-20d8-7923-856e-cefb56e983cf",
+      },
+    ]);
+    expect(staging.vars).toMatchObject({
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "http://hns-staging-mainnet-reader.internal/",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH:
+        "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "10800",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "3600",
+    });
+    expect(staging.secrets).toContain("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(staging.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(rawEnvironment(configs.http, "production").vpc_services).toEqual([
+      {
+        binding: "HNS_AUTHORITY_HSD",
+        service_id: "01a0e9d2-8fdd-7fe0-81ed-00fd6a3195ca",
+      },
+    ]);
+    expect(production.vars).toMatchObject({
+      HNS_ACTIVATION_CURRENT_VIEW_ENABLED: "true",
+      HNS_AUTHORITY_HSD_RPC_URL: "http://hns-production-mainnet-reader.internal/",
+      HNS_AUTHORITY_CHAIN_NETWORK: "main",
+      HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH:
+        "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+      HNS_AUTHORITY_TREE_INTERVAL_BLOCKS: "36",
+      HNS_AUTHORITY_SAFE_CONFIRMATIONS: "12",
+      HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS: "10800",
+      HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS: "3600",
+    });
+    expect(production.secrets).toContain("HNS_AUTHORITY_HSD_AUTHORIZATION");
+    expect(production.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
+  });
+
+  test("keeps staging rewards disabled while Spaces stays enabled", () => {
+    const staging = declaredEnvironment(configs.http, "staging");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_TARGET_WEI).toBe("50000000000000");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_MAX_WEI).toBe("50000000000000");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT).toBe("3");

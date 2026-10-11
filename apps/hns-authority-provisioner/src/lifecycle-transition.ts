@@ -39,9 +39,7 @@ export async function commitLifecycleEventInTransaction(
             pending_reason, next_check_at, observation_count,
             consecutive_operational_failures, last_useful_error, last_useful_error_at,
             terminal_decided_at
-       FROM hns_root_import_lifecycle
-      WHERE root_import_session_id=$1
-        FOR UPDATE`,
+       FROM lock_hns_root_import_lifecycle_v1($1)`,
     [rootImportSessionId],
   );
   const row = loaded.rows[0];

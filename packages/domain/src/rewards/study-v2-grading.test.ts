@@ -274,6 +274,121 @@ describe("Study v4 grader revision", () => {
     ).toMatchObject({ correct: false, matchKind: "none" });
   });
 
+  const boundaryEquivalences = [
+    ["spark plug ran the other way", "Sparkplug ran the other way"],
+    ["every body ran the other way", "Everybody ran the other way"],
+    ["some thing moved", "Something moved"],
+    ["any one came", "Anyone came"],
+    ["fire truck moved", "Firetruck moved"],
+    ["to night we sing", "Tonight we sing"],
+    ["out side we sing", "Outside we sing"],
+    ["spark-plug moved", "Sparkplug moved"],
+    ["s park plug moved", "Sparkplug moved"],
+    ["spark plug spark plug moved", "Sparkplug sparkplug moved"],
+    ["news paper arrived", "Newspaper arrived"],
+    ["glasses case fell", "Glassescase fell"],
+    ["bus stop moved", "Busstop moved"],
+    ["spark plugs moved", "Sparkplugs moved"],
+    ["news papers arrived", "Newspapers arrived"],
+  ] as const;
+
+  for (const [reference, transcript] of boundaryEquivalences) {
+    for (const [expected, heard] of [
+      [reference, transcript],
+      [transcript, reference],
+    ]) {
+      test(`aligns spelling-equivalent word boundaries: ${JSON.stringify(expected)} → ${JSON.stringify(heard)}`, () => {
+        expect(gradeEnglishTranscriptV4(expected as string, heard as string)).toMatchObject({
+          correct: true,
+          matchKind: "exact",
+          missing: [],
+          extra: [],
+          substituted: [],
+        });
+      });
+    }
+  }
+
+  test("retains original reference positions when a compound is joined", () => {
+    expect(
+      gradeEnglishTranscriptV4("spark plug ran the other way", "Sparkplug ran the other way")
+        .matched,
+    ).toEqual([
+      { token: "spark", position: 0 },
+      { token: "plug", position: 1 },
+      { token: "ran", position: 2 },
+      { token: "other", position: 3 },
+      { token: "way", position: 4 },
+    ]);
+  });
+
+  test("keeps stripped internal endings distinct from genuine word-boundary matches", () => {
+    expect(gradeEnglishTranscriptV4("news paper arrived", "Newpaper arrived").matchKind).not.toBe(
+      "exact",
+    );
+    expect(gradeEnglishTranscriptV4("glasses case fell", "Glasscase fell").matchKind).not.toBe(
+      "exact",
+    );
+  });
+
+  test("joins do not hide actual additions, omissions, or reordered words", () => {
+    const reference = "spark plug ran the other way";
+    for (const heard of [
+      "Sparkplug just ran the other way",
+      "Sparkplug the other way",
+      "plug spark ran the other way",
+      "spark ran the other way",
+    ]) {
+      expect(gradeEnglishTranscriptV4(reference, heard)).toMatchObject({
+        correct: false,
+        matchKind: "none",
+      });
+    }
+  });
+
+  test("a compound can still use phonetic tolerance elsewhere without hiding a whole word", () => {
+    expect(
+      gradeEnglishTranscriptV4("spark plug hold me close", "Sparkplug hold me closed"),
+    ).toMatchObject({ correct: true, matchKind: "phonetic" });
+    expect(
+      gradeEnglishTranscriptV4("spark plug hold me close", "Sparkplug just hold me closed"),
+    ).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
+  test("never joins across negations or numbers in either direction", () => {
+    for (const [reference, heard] of [
+      ["not able", "notable"],
+      ["no body", "nobody"],
+      ["one 2", "one2"],
+      ["12 34", "1234"],
+    ]) {
+      expect(gradeEnglishTranscriptV4(reference as string, heard as string).correct).toBe(false);
+      expect(gradeEnglishTranscriptV4(heard as string, reference as string).correct).toBe(false);
+    }
+  });
+
+  test("keeps v1-v3 and language-agnostic boundary behavior unchanged", () => {
+    const reference = "spark plug ran the other way";
+    const heard = "Sparkplug ran the other way";
+    expect(
+      gradeTranscriptV2(reference, heard, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V1).correct,
+    ).toBe(false);
+    expect(gradeEnglishTranscriptV2(reference, heard)).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+    });
+    expect(gradeEnglishTranscriptV3(reference, heard)).toMatchObject({
+      correct: true,
+      matchKind: "phonetic",
+      missing: [{ token: "spark", position: 0 }],
+    });
+    for (const language of [null, "es"]) {
+      expect(
+        gradeTranscriptV2(reference, heard, language, STUDY_TRANSCRIPT_GRADER_POLICY_V4).correct,
+      ).toBe(false);
+    }
+  });
+
   test("keeps real negation changes rejected in both directions", () => {
     expect(gradeEnglishTranscriptV4("I can love you", "I cannot love you")).toMatchObject({
       correct: false,

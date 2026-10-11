@@ -12,6 +12,12 @@ import {
   type RewardPayoutStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
+
+import type { RewardObligationAuthority } from "./reward-obligation-authority.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -19,31 +25,17 @@ const storage = (reason: RewardPayoutStorageFailed["reason"]) =>
   new RewardPayoutStorageFailed({ reason });
 const rejected = (reason: RewardPayoutRejected["reason"]) => new RewardPayoutRejected({ reason });
 
-function mapError(error: ControlPlaneError): RewardPayoutStorageFailed {
-  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
-  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
-    return storage("outcome-unknown");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505") {
-    return storage("conflict");
-  }
-  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState !== null) {
-    return storage("constraint");
-  }
-  return storage("unavailable");
-}
-
 const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
-      typeof error === "object" && error !== null && "_tag" in error
-        ? error._tag === "ControlPlaneAcquireFailed" ||
-          error._tag === "ControlPlaneOperationTimedOut" ||
-          error._tag === "ControlPlaneStatementFailed" ||
-          error._tag === "ControlPlaneTransactionOutcomeUnknown"
-          ? mapError(error as ControlPlaneError)
-          : (error as E)
-        : (error as E),
+      mapMegapotStorageFailure<E, RewardPayoutStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, RewardPayoutStorageFailed>(error, storage),
     ),
   );
 
@@ -97,6 +89,30 @@ function instantMillis(row: Row, field: string): number {
   return Date.parse(instant(row, field));
 }
 
+const ASSET_BONUS_LINEAGE = `
+      SELECT pin.attestation_id AS pinned_attestation_id
+        FROM song_reward_bundle_claim_legs claim_leg
+        JOIN megapot_deployment_attestations pin
+          ON pin.environment=asset.environment
+         AND pin.chain_id=credit.chain_id
+         AND pin.custody_address IN (
+              SELECT funding.recipient_address
+                FROM song_reward_leg_funding_effects funding
+               WHERE funding.leg_id=claim_leg.leg_id AND funding.state='confirmed'
+            )
+         AND pin.verified_at <= (
+              SELECT min(funding.created_at)
+                FROM song_reward_leg_funding_effects funding
+               WHERE funding.leg_id=claim_leg.leg_id AND funding.state='confirmed'
+            )
+         AND (pin.retired_at IS NULL OR pin.retired_at >= (
+              SELECT max(funding.created_at)
+                FROM song_reward_leg_funding_effects funding
+               WHERE funding.leg_id=claim_leg.leg_id AND funding.state='confirmed'
+            ))
+       WHERE claim_leg.credit_id=credit.credit_id AND claim_leg.state='credited'
+         AND credit.source_kind='asset_bonus'`;
+
 const CANDIDATE_SELECT = `
   SELECT credit.credit_id, credit.account_id, credit.payout_persona_id,
          (credit.amount_atomic-credit.paid_atomic) AS amount_atomic,
@@ -114,25 +130,66 @@ const CANDIDATE_SELECT = `
     FROM reward_ledger_credits credit
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=credit.chain_id AND asset.token_address=credit.token_address
+    LEFT JOIN LATERAL (
+      SELECT leg.attestation_id AS pinned_attestation_id
+        FROM megapot_allocations allocation
+        JOIN megapot_allocation_batches batch
+          ON batch.allocation_batch_id=allocation.allocation_batch_id
+        JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+       WHERE allocation.credit_id=credit.credit_id
+         AND allocation.allocation_kind IN ('participant','external_fallback')
+         AND credit.source_kind IN ('megapot_allocation','external_fallback')
+       UNION
+      ${ASSET_BONUS_LINEAGE}
+    ) lineage ON true
     JOIN megapot_deployment_attestations attestation
-      ON attestation.chain_id=credit.chain_id
+      ON lineage.pinned_attestation_id IS NOT NULL
+     AND attestation.attestation_id=lineage.pinned_attestation_id
      AND attestation.environment=asset.environment
-     AND attestation.status='active'
+     AND attestation.chain_id=credit.chain_id
+     AND (credit.source_kind='asset_bonus' OR attestation.usdc_address=credit.token_address)
     LEFT JOIN LATERAL (
       SELECT assignment_id, address
         FROM persona_wallet_assignments
        WHERE account_id=credit.account_id
          AND persona_id=credit.payout_persona_id
          AND chain_account_kind='evm' AND status='active'
-       ORDER BY assigned_at, assignment_id LIMIT 1
+        ORDER BY assigned_at, assignment_id LIMIT 1
     ) wallet ON true
     LEFT JOIN LATERAL (
       SELECT observation_id, balance_atomic, expires_at, solvent
         FROM custody_solvency_observations
        WHERE attestation_id=attestation.attestation_id
          AND token_address=credit.token_address
-       ORDER BY block_number DESC, observation_id DESC LIMIT 1
+        ORDER BY block_number DESC, observation_id DESC LIMIT 1
     ) observation ON true`;
+
+const LINEAGE_SELECT = `
+  SELECT credit.state, lineage.pinned_attestation_id,
+         EXISTS (
+           SELECT 1 FROM megapot_deployment_attestations attestation
+            WHERE attestation.attestation_id=lineage.pinned_attestation_id
+              AND attestation.environment=asset.environment
+              AND attestation.chain_id=credit.chain_id
+              AND (credit.source_kind='asset_bonus'
+                   OR attestation.usdc_address=credit.token_address)
+         ) AS attestation_matches
+    FROM reward_ledger_credits credit
+    LEFT JOIN reward_asset_whitelist asset
+      ON asset.chain_id=credit.chain_id AND asset.token_address=credit.token_address
+    LEFT JOIN LATERAL (
+      SELECT leg.attestation_id AS pinned_attestation_id
+        FROM megapot_allocations allocation
+        JOIN megapot_allocation_batches batch
+          ON batch.allocation_batch_id=allocation.allocation_batch_id
+        JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+       WHERE allocation.credit_id=credit.credit_id
+         AND allocation.allocation_kind IN ('participant','external_fallback')
+         AND credit.source_kind IN ('megapot_allocation','external_fallback')
+       UNION
+      ${ASSET_BONUS_LINEAGE}
+    ) lineage ON true
+   WHERE credit.credit_id=$1`;
 
 function candidateFromRow(row: Row): RewardPayoutCandidate {
   const environment = text(row, "environment");
@@ -182,13 +239,22 @@ function loadCandidateIn(
       readonly: !input.lock,
     });
     if (result.rows.length === 0) {
-      const exists = yield* transaction.execute<Row>({
-        label: "reward-payout.credit-exists.read",
-        text: "SELECT state FROM reward_ledger_credits WHERE credit_id=$1",
+      const lineage = yield* transaction.execute<Row>({
+        label: "reward-payout.credit-lineage.read",
+        text: LINEAGE_SELECT,
         values: [input.creditId],
         readonly: true,
       });
-      return yield* rejected(exists.rows.length === 0 ? "not-found" : "credit-not-payable");
+      if (lineage.rows.length === 0) return yield* rejected("not-found");
+      if (lineage.rows.length !== 1) return yield* storage("invalid-row");
+      const lineageRow = lineage.rows[0] as Row;
+      if (nullableText(lineageRow, "pinned_attestation_id") === null) {
+        return yield* rejected("attestation-lineage-missing");
+      }
+      if (!bool(lineageRow, "attestation_matches")) {
+        return yield* rejected("attestation-lineage-missing");
+      }
+      return yield* rejected("credit-not-payable");
     }
     if (result.rows.length !== 1) return yield* storage("invalid-row");
     const row = result.rows[0] as Row;
@@ -440,8 +506,33 @@ function reserveNonceIn(
   });
 }
 
+export type RewardPayoutRoutingStore = RewardPayoutStore &
+  Readonly<{
+    loadAuthority: (
+      creditId: string,
+    ) => Effect.Effect<RewardObligationAuthority, RewardPayoutFailure>;
+  }>;
+
 export function makeControlPlaneRewardPayoutRepository() {
   return {
+    loadAuthority: (creditId: string) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "reward-payout.authority.read",
+          text: `${CANDIDATE_SELECT} WHERE credit.credit_id=$1`,
+          values: [creditId],
+          readonly: true,
+        });
+        if (result.rows.length !== 1) return yield* rejected("attestation-lineage-missing");
+        return yield* Effect.try({
+          try: () => ({
+            attestationId: text(result.rows[0] as Row, "attestation_id"),
+            tokenAddress: text(result.rows[0] as Row, "token_address"),
+          }),
+          catch: () => storage("invalid-row"),
+        });
+      }).pipe(mapped),
     loadCandidate: (creditId: string) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -467,7 +558,7 @@ export function makeControlPlaneRewardPayoutRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));
-      }).pipe(mapped),
+      }).pipe(mappedReservation),
     prepare: (input: Parameters<RewardPayoutStore["prepare"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -777,11 +868,12 @@ export function makeControlPlaneRewardPayoutRepository() {
 
 export const makeControlPlaneRewardPayoutStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-): RewardPayoutStore => {
+): RewardPayoutRoutingStore => {
   const repository = makeControlPlaneRewardPayoutRepository();
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {
+    loadAuthority: (creditId) => provide(repository.loadAuthority(creditId)),
     loadCandidate: (creditId) => provide(repository.loadCandidate(creditId)),
     findProgress: (effectId) => provide(repository.findProgress(effectId)),
     reserveNonce: (input) => provide(repository.reserveNonce(input)),

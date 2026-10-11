@@ -57,11 +57,12 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
     await admin.query("CREATE SCHEMA api_next");
     await applyPostgresTestBaselineConnection({ connectionString: connection });
     await seedVideoActors(admin);
-    // Authenticated writes require the account's minimum-age attestation.
-    await admin.query(
-      "INSERT INTO account_minimum_age_attestations(account_id,version,minimum_age,affirmed) VALUES($1,'minimum-age-attestation-v1',16,true)",
+    // These authenticated writes must work without an account-age assertion.
+    const ages = await admin.query(
+      "SELECT count(*)::int AS n FROM account_minimum_age_attestations WHERE account_id=$1",
       [actor],
     );
+    expect(ages.rows[0]?.n).toBe(0);
     return await use(admin, connection);
   } finally {
     await admin.end();

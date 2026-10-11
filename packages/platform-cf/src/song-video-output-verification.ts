@@ -41,7 +41,10 @@ export type SongVideoOutputStore = {
 
 /** Measured facts a probe reports about the bytes it was given. */
 export type SongVideoOutputProbe = {
-  readonly probe: (bytes: Uint8Array) => Promise<SongVideoProbeFacts | null>;
+  readonly probe: (
+    bytes: Uint8Array,
+    expectedSamples: number,
+  ) => Promise<SongVideoProbeFacts | null>;
 };
 
 export type SongVideoProbeFacts = {
@@ -160,7 +163,7 @@ export async function verifyRenderedOutput(input: {
   if (masterSha256 === input.sourceSha256) {
     return { verified: false, failure: { kind: "output_is_the_source", sha256: masterSha256 } };
   }
-  const probe = await input.prober.probe(bytes);
+  const probe = await input.prober.probe(bytes, input.planClipDurationSamples);
   if (probe === null) {
     return { verified: false, failure: { kind: "output_unprobeable", objectKey: input.objectKey } };
   }

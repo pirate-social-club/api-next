@@ -99,8 +99,8 @@
   ],
   "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-development" }] },
   "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
-    "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "SONG_PLAYBACK_ENABLED": "false",
     "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
@@ -122,6 +122,7 @@
     "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
     "MEDIA_UPLOADS_ENABLED": "false",
     "VIDEO_SONG_REFERENCE_ENABLED": "false",
+    "VIDEO_PCM_REFERENCE_GATE_ENABLED": "false",
     "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
     "MEDIA_INGRESS_R2_BUCKET_NAME": "",
     "REGISTRATION_IP_LIMIT": "5",
@@ -180,7 +181,7 @@
       // request makes several sequential query round trips, and from Europe
       // each one crossed the Atlantic (2026-09-25: playback-access 5.1 s -> 1.3 s,
       // Home time to playback 8.3 s -> 4.5 s on the Pixel). TCP probe, not HTTP.
-      "placement": { "mode": "targeted", "host": "us-east-3.pg.psdb.cloud:5432" },
+      "placement": { "mode": "targeted", "host": "aws-us-east-1-4.pg.psdb.cloud:5432" },
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
         "enabled": true,
@@ -247,6 +248,12 @@
           "service": "pirate-hns-owner-verifier-staging"
         }
       ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e6f3-20d8-7923-856e-cefb56e983cf"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
@@ -269,25 +276,24 @@
         },
         { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" },
         // Avatar storage and Images, live on staging since the avatar lane;
-        // authoring stays off until AVATAR_AUTHORING_ENABLED is flipped.
+        // Staging authoring is enabled after provider-backed acceptance.
         { "binding": "AVATAR_INGRESS", "bucket_name": "pirate-avatar-ingress-staging" },
         { "binding": "AVATAR_SEALED", "bucket_name": "pirate-avatar-sealed-staging" }
       ],
       "images": { "binding": "AVATAR_IMAGES" },
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
-    "AVATAR_AUTHORING_ENABLED": "false",
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
+    "AVATAR_AUTHORING_ENABLED": "true",
         "AVATAR_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-staging",
-        "TELEGRAM_ENABLED": "false",
-        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
-        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
-        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
         "API_NEXT_ENV": "staging",
         // Spaces native claims run on staging only. The runtime fails closed
         // unless both flags are exactly "true" here; production and development
         // declare neither.
         "SPACES_RUNTIME_ENABLED": "true",
+        // Trusted web origin for Spaces community addresses (/c/@root).
+        "SPACES_ROUTE_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
         "SPACES_TAPROOT_RECIPIENT_ENABLED": "true",
         "SONG_PLAYBACK_ENABLED": "true",
         "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
@@ -303,8 +309,8 @@
         "STUDY_PROFILE_COVERAGE_ENABLED": "true",
         "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
-        // Preserve the rewards activation already serving on staging.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // Keep rewards off outside an approved staging run.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
@@ -314,6 +320,7 @@
         "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "5000000000000000",
         "MEDIA_UPLOADS_ENABLED": "true",
         "VIDEO_SONG_REFERENCE_ENABLED": "true",
+        "VIDEO_PCM_REFERENCE_GATE_ENABLED": "true",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
         "REGISTRATION_IP_LIMIT": "50",
@@ -337,14 +344,22 @@
         "VERY_WEB_API_URL": "https://api.very.org/api/v1",
         "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
         "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
-        // Staging ownership is pinned to the staging owner verifier's regtest
-        // configuration; hns-txt-import-v1 needs the verifier to advertise it too.
+        // Staging ownership uses its own mainnet observer configuration and
+        // the verifier's read-only mainnet binding.
         "HNS_OWNERSHIP_ENABLED": "true",
-        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-regtest",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-mainnet-v1",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "HNS_OWNERSHIP_CAPABILITIES": "hns-txt-import-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-staging-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
-        "HNS_HANDLE_HOST_API_ENABLED": "false",
+        "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api-staging.pirate.sc",
         "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
         "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
@@ -395,6 +410,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
@@ -486,7 +502,7 @@
           "binding": "CONTROL_PLANE",
           // Dedicated canonical-account production Hyperdrive. Its source
           // credential selects only the api_next schema.
-          "id": "884b68c5a7904982a86620ed90032b77",
+          "id": "0c215865d7994c92b940d905f54ece37",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
@@ -494,6 +510,12 @@
         {
           "binding": "HNS_OWNER_VERIFIER",
           "service": "pirate-hns-owner-verifier-production"
+        }
+      ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e9d2-8fdd-7fe0-81ed-00fd6a3195ca"
         }
       ],
       "workflows": [
@@ -520,8 +542,8 @@
       ],
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-production" }] },
       "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
-        "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
     "SONG_PLAYBACK_ENABLED": "false",
     "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
@@ -543,6 +565,7 @@
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "MEDIA_UPLOADS_ENABLED": "false",
         "VIDEO_SONG_REFERENCE_ENABLED": "false",
+        "VIDEO_PCM_REFERENCE_GATE_ENABLED": "false",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-production",
         "REGISTRATION_IP_LIMIT": "5",
@@ -562,6 +585,14 @@
         "HNS_OWNERSHIP_ENABLED": "true",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-production",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-production-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
         "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",
@@ -594,6 +625,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",

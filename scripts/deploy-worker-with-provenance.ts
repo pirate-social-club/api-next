@@ -1,5 +1,17 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  HNS_STAGING_MANIFEST_COMMAND,
+  readHnsStagingGatewayPin,
+  verifyHnsStagingGatewayManifest,
+} from "./hns-staging-gateway-preflight.ts";
+import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+import {
+  type PrepareStagingBindingGuard,
+  prepareStagingBindingGuard,
+} from "./staging-serving-bindings-preflight.ts";
+import { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
+import type { BindingDriftReceipt } from "./worker-binding-drift.ts";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -9,6 +21,9 @@ export type WorkerDeploymentInput = Readonly<{
   environment: string;
   sourceRef: string;
   acceptedMainRef: string;
+  bindingReviewPath?: string;
+  repositoryRoot?: string;
+  toolingSourceRef?: string;
 }>;
 
 export type WorkerDeploymentReceipt = Readonly<{
@@ -17,10 +32,15 @@ export type WorkerDeploymentReceipt = Readonly<{
   worker_version_id: string;
   environment: string;
   config_path: string;
+  staging_binding_preflight?: BindingDriftReceipt;
 }>;
 
 type CommandResult = Readonly<{ exitCode: number; stdout: string; stderr: string }>;
-export type CommandRunner = (command: readonly string[], cwd: string) => Promise<CommandResult>;
+export type CommandRunner = (
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<CommandResult>;
 
 export type WorkerVersion = Readonly<{
   id: string;
@@ -46,6 +66,9 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   let configPath: string | null = null;
   let environment: string | null = null;
   let sourceRef = "HEAD";
+  let bindingReviewPath: string | undefined;
+  let repositoryRoot: string | undefined;
+  let toolingSourceRef: string | undefined;
   const acceptedMainRef = "origin/main";
 
   for (let index = 0; index < args.length; index += 1) {
@@ -63,6 +86,21 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
         sourceRef = optionValue(args, index);
         index += 1;
         break;
+      case "--tooling-source-ref":
+        toolingSourceRef = optionValue(args, index);
+        if (!FULL_GIT_SHA.test(toolingSourceRef))
+          throw Error("--tooling-source-ref must be a full Git SHA");
+        index += 1;
+        break;
+      case "--repository-root":
+        repositoryRoot = optionValue(args, index);
+        if (!isAbsolute(repositoryRoot)) throw Error("--repository-root must be absolute");
+        index += 1;
+        break;
+      case "--binding-review":
+        bindingReviewPath = optionValue(args, index);
+        index += 1;
+        break;
       default:
         throw new Error(`unknown deployment argument: ${argument ?? ""}`);
     }
@@ -71,7 +109,17 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   if (configPath === null) throw new Error("--config is required");
   if (environment === null) throw new Error("--env is required");
   if (!ENVIRONMENT_NAME.test(environment)) throw new Error("--env is invalid");
-  return { configPath, environment, sourceRef, acceptedMainRef };
+  if (bindingReviewPath !== undefined && environment !== "staging")
+    throw new Error("--binding-review applies only to staging");
+  return {
+    configPath,
+    environment,
+    sourceRef,
+    acceptedMainRef,
+    ...(bindingReviewPath === undefined ? {} : { bindingReviewPath }),
+    ...(repositoryRoot === undefined ? {} : { repositoryRoot }),
+    ...(toolingSourceRef === undefined ? {} : { toolingSourceRef }),
+  };
 }
 
 export function parseWorkerVersions(source: string): readonly WorkerVersion[] {
@@ -122,13 +170,58 @@ export function findDeployedVersion(
   return candidates[0] as WorkerVersion;
 }
 
-async function runCommand(command: readonly string[], cwd: string): Promise<CommandResult> {
-  const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+/**
+ * The managed `CLOUDFLARE_API_TOKEN` is a read-scoped staging diagnostics
+ * credential (docs/api-next/secrets-contract.md), not deployment authority.
+ * Wrangler prefers it over the operator's approved login, so a deploy started
+ * inside the secret runner reads successfully and then fails its upload with
+ * 403. Deployment Wrangler children therefore never inherit it; the shared
+ * read-only runner retains its original diagnostics environment.
+ */
+export function commandEnvironment(
+  command: readonly string[],
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const child = { ...environment };
+  if (command[0] === "bunx" && command[1] === "wrangler") delete child.CLOUDFLARE_API_TOKEN;
+  return child;
+}
+
+export async function runCommand(
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<CommandResult> {
+  if (signal?.aborted) throw Error("deployment command interrupted");
+  const child = Bun.spawn([...command], {
+    cwd,
+    env: environment,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const abort = () => child.kill();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   const [stdout, stderr] = await Promise.all([
     child.stdout === null ? Promise.resolve("") : new Response(child.stdout).text(),
     child.stderr === null ? Promise.resolve("") : new Response(child.stderr).text(),
   ]);
-  return { exitCode: await child.exited, stdout, stderr };
+  const exitCode = await child.exited;
+  signal?.removeEventListener("abort", abort);
+  if (signal?.aborted) throw Error("deployment command interrupted");
+  return { exitCode, stdout, stderr };
+}
+
+/** Use one deployment credential for provider preflight, upload and readback. */
+export function runDeploymentCommand(
+  command: readonly string[],
+  cwd: string,
+  signal?: AbortSignal,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<CommandResult> {
+  return runCommand(command, cwd, signal, commandEnvironment(command, environment));
 }
 
 async function requiredOutput(
@@ -154,7 +247,7 @@ function repositoryPath(repositoryRoot: string, inputPath: string): string {
 export async function verifyDeploymentSource(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
-  runner: CommandRunner = runCommand,
+  runner: CommandRunner = runDeploymentCommand,
 ): Promise<Readonly<{ sourceSha: string; configPath: string }>> {
   const configPath = repositoryPath(repositoryRoot, input.configPath);
   const sourceSha = await requiredOutput(
@@ -221,29 +314,91 @@ function versionsCommand(input: WorkerDeploymentInput, configPath: string): read
 export async function deployWorkerWithProvenance(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
-  runner: CommandRunner = runCommand,
+  runner: CommandRunner = runDeploymentCommand,
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
+  readStagingGatewayPin: (root: string) => Promise<unknown> = readHnsStagingGatewayPin,
+  rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
+  stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
+  telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
+  const guardedHnsStagingHttp =
+    configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
+  const solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  if (guardedHnsStagingHttp) {
+    const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
+    if (manifestRead.exitCode !== 0)
+      throw new Error("staging HNS gateway read failed before HTTP deploy");
+    verifyHnsStagingGatewayManifest(
+      manifestRead.stdout,
+      await readStagingGatewayPin(repositoryRoot),
+    );
+    const solidCheck = await runner(
+      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      solidRoot,
+    );
+    if (solidCheck.exitCode !== 0)
+      throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+  }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
   const before = parseWorkerVersions(
     await requiredOutput(runner, listCommand, repositoryRoot, "pre-deploy version listing"),
   );
-
-  const deployed = await runner(
-    [
-      "bunx",
-      "wrangler",
-      "deploy",
-      "--env",
-      input.environment,
-      "--config",
-      configPath,
-      "--message",
-      message,
-    ],
+  const bindingGuard = await stagingBindingGuard(
     repositoryRoot,
+    {
+      source_sha: sourceSha,
+      config_path: configPath,
+      environment: input.environment,
+    },
+    runner,
+    input.bindingReviewPath,
+    writeDiagnostic,
+  );
+
+  const deployed = await telegramDeploymentGuard(
+    repositoryRoot,
+    configPath,
+    input.environment,
+    () =>
+      rewardDeploymentGuard(repositoryRoot, configPath, input.environment, async (signal) => {
+        if (bindingGuard !== null) {
+          await bindingGuard.recheck();
+          const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+          if (current.sourceSha !== sourceSha)
+            throw Error("deployment source changed before upload");
+        }
+        if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
+        return runner(
+          [
+            "bunx",
+            "wrangler",
+            "deploy",
+            "--env",
+            input.environment,
+            "--config",
+            configPath,
+            "--message",
+            message,
+            ...(bindingGuard?.telegramConfig === undefined
+              ? []
+              : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
+          ],
+          repositoryRoot,
+          signal,
+        );
+      }),
+    bindingGuard?.telegramConfig,
+    async () => {
+      // Run schema admission from the exact deployment source, including older accepted releases.
+      const result = await runner(
+        ["bun", "scripts/telegram-activation-preflight.ts"],
+        repositoryRoot,
+        AbortSignal.timeout(30_000),
+      );
+      if (result.exitCode !== 0) throw Error("Telegram serving-role admission refused");
+    },
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);
@@ -255,18 +410,51 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "post-deploy version listing"),
   );
   const version = findDeployedVersion(before, after, message);
+  if (guardedHnsStagingHttp) {
+    const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
+    if (serving.exitCode !== 0) {
+      throw new Error(
+        `staging HNS serving check failed after HTTP deploy (exit ${serving.exitCode})`,
+      );
+    }
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+  }
   return {
     schema_version: 1,
     source_sha: sourceSha,
     worker_version_id: version.id,
     environment: input.environment,
     config_path: configPath,
+    ...(bindingGuard === null ? {} : { staging_binding_preflight: bindingGuard.receipt }),
   };
 }
 
+/** Separate accepted tooling from an exact older accepted deployment checkout. */
+export async function resolveDeploymentRepository(
+  input: WorkerDeploymentInput,
+  runner: CommandRunner = runDeploymentCommand,
+  toolingRoot = fileURLToPath(new URL("../", import.meta.url)),
+): Promise<string> {
+  const target = input.repositoryRoot === undefined ? toolingRoot : resolve(input.repositoryRoot);
+  if (target === resolve(toolingRoot)) return target;
+  if (input.environment !== "staging")
+    throw Error("external deployment checkout applies only to staging");
+  await verifyDeploymentSource(
+    toolingRoot,
+    { ...input, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
+    runner,
+  );
+  const command = ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"];
+  const toolGit = await requiredOutput(runner, command, toolingRoot, "tooling repository identity");
+  const targetGit = await requiredOutput(runner, command, target, "deployment repository identity");
+  if (toolGit !== targetGit) throw Error("deployment checkout must share the tooling repository");
+  return target;
+}
+
 export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
-  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-  const receipt = await deployWorkerWithProvenance(repositoryRoot, parseWorkerDeploymentArgs(args));
+  const input = parseWorkerDeploymentArgs(args);
+  const repositoryRoot = await resolveDeploymentRepository(input);
+  const receipt = await deployWorkerWithProvenance(repositoryRoot, input);
   console.log(JSON.stringify(receipt));
 }
 

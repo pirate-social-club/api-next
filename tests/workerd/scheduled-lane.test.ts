@@ -335,6 +335,47 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     }
   });
 
+  it("Telegram's real database setup failure does not abort later scheduled work", async () => {
+    const waits: Promise<unknown>[] = [];
+    const workerEnv = scheduledWorkerEnv({
+      CONTROL_PLANE: { connectionString: "postgres://fixture:fixture@127.0.0.1:1/fixture" },
+      TELEGRAM_CONFIG_JSON: JSON.stringify({
+        version: 1,
+        enabled: true,
+        linking_enabled: false,
+        practice_enabled: false,
+        public_origin: "https://pirate.test",
+        webhook_origin: "https://api.test",
+        credential_active_version: "fixture",
+      }),
+      TELEGRAM_SECRETS_JSON: JSON.stringify({ version: 1, credential_keys: {} }),
+      TELEGRAM_QUEUE: {
+        send: async () => {
+          throw Error("Unsafe Telegram must not run");
+        },
+      },
+    });
+    await jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits));
+    // waitUntil is after Telegram setup and all remaining maintenance/snapshot scheduling.
+    expect(waits).toHaveLength(1);
+    await expect(Promise.all(waits)).resolves.toBeDefined();
+    let retries = 0;
+    await jobsWorker.queue(
+      {
+        queue: "pirate-community-telegram-fixture",
+        messages: [],
+        retryAll: () => {
+          retries++;
+        },
+        ackAll: () => {
+          throw Error("Unavailable Telegram must never acknowledge work");
+        },
+      } as unknown as MessageBatch<unknown>,
+      workerEnv,
+    );
+    expect(retries).toBe(1);
+  });
+
   it("does not query song outbox alerts when both media runtimes are disabled", async () => {
     const waits: Promise<unknown>[] = [];
     const workerEnv = scheduledWorkerEnv({

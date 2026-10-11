@@ -71,7 +71,12 @@ export const makeElevenLabsKaraokeSocketConnect =
 
 export const connectElevenLabsKaraokeSocket = makeElevenLabsKaraokeSocketConnect(fetch);
 
-type Segment = Readonly<{ streamStartMs: number; streamEndMs: number; songStartMs: number }>;
+type Segment = Readonly<{
+  streamStartMs: number;
+  streamEndMs: number;
+  songStartMs: number;
+  songEndMs: number;
+}>;
 
 const finite = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -195,6 +200,7 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
       streamStartMs,
       streamEndMs: this.streamCursorMs,
       songStartMs: frame.songStartMs,
+      songEndMs: frame.songEndMs,
     });
     const cutoff = this.streamCursorMs - SEGMENT_RETENTION_MS;
     this.segments = this.segments.filter((segment) => segment.streamEndMs >= cutoff);
@@ -343,11 +349,14 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
         direct === null && logprob === null
           ? null
           : Math.max(0, Math.min(1, direct ?? Math.exp(logprob ?? 0)));
+      const startMs = this.songTime(start, "start");
+      const endMs = this.songTime(end, "end");
+      if (endMs < startMs) return [];
       return [
         {
           text: token,
-          startMs: this.songTime(start),
-          endMs: this.songTime(end),
+          startMs,
+          endMs,
           confidence,
           final: true,
           source: "stt" as const,
@@ -356,14 +365,20 @@ export class ElevenLabsKaraokeSttAdapter implements KaraokeStreamingSttAdapter {
     });
   }
 
-  private songTime(seconds: number): number {
+  private songTime(seconds: number, endpoint: "start" | "end"): number {
     const streamMs = seconds * 1_000;
     const segment =
-      [...this.segments].reverse().find((candidate) => streamMs >= candidate.streamStartMs) ??
-      this.segments[0];
-    return segment === undefined
-      ? Math.round(streamMs)
-      : Math.round(segment.songStartMs + streamMs - segment.streamStartMs);
+      [...this.segments]
+        .reverse()
+        .find((candidate) =>
+          endpoint === "end"
+            ? streamMs > candidate.streamStartMs
+            : streamMs >= candidate.streamStartMs,
+        ) ?? this.segments[0];
+    if (segment === undefined) return Math.round(streamMs);
+    const durationMs = segment.streamEndMs - segment.streamStartMs;
+    const fraction = durationMs > 0 ? (streamMs - segment.streamStartMs) / durationMs : 0;
+    return Math.round(segment.songStartMs + fraction * (segment.songEndMs - segment.songStartMs));
   }
 }
 

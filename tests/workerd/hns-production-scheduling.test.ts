@@ -37,6 +37,38 @@ function productionEnv(getByName: (name: string) => unknown): JobsWorkerEnv {
 const dueAt = Date.UTC(2026, 8, 5, 17, 30);
 
 describe("production HNS renewal scheduling", () => {
+  it("the scheduled handler admits explicitly configured active ownership renewal without recovery", async () => {
+    const acquisitions: string[] = [];
+    const env: JobsWorkerEnv = {
+      ...productionEnv((name) => ({
+        tryAcquireWithFence: async () => {
+          acquisitions.push(name);
+          return null;
+        },
+      })),
+      HNS_ROOT_HEALTH_RENEWAL_ENABLED: "false",
+      HNS_ACTIVE_LEASE_RENEWAL_ENABLED: "true",
+      HNS_ROUTE_RENEWAL_LEAD_SECONDS: "900",
+      HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "hns-observer-regtest",
+      HNS_OWNERSHIP_CONFIGURATION_VERSION: "hns-observer-config-v1",
+      HNS_OWNER_VERIFIER: {
+        fetch: async () => {
+          throw new Error("Declined lease must not call verifier");
+        },
+      },
+    };
+    const waits: Promise<unknown>[] = [];
+    await jobsWorker.scheduled(
+      { scheduledTime: dueAt, cron: "*/5 * * * *" } as ScheduledEvent,
+      env,
+      {
+        waitUntil: (promise: Promise<unknown>) => waits.push(promise),
+      } as unknown as ExecutionContext,
+    );
+    await Promise.all(waits);
+    expect(acquisitions).toEqual(["scheduled-cron-main:hns-route-revalidation"]);
+  });
+
   it("admits exactly renewal from the complete checked-in production declaration list", async () => {
     const env = productionEnv(() => ({}));
     const ownership = makeHnsRouteRevalidationComposition(env);

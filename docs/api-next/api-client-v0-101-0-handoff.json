@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.101.0",
+  "sourceBranch": "fix/rewards-http-database-admission",
+  "sourceBase": "d681b5b8",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Deliberate rewards admission pause returns HTTP 503 with code rewards_paused. Database insert triggers enforce pause independently of HTTP query caching. Previously issued funding instructions and admitted sends retain their existing settlement rules.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.101.0.tgz",
+    "sha256": "96f3fd9f880f649250596cf5da8cfbdea9616548485b157091303d4677e7fa0a"
+  },
+  "validation": {
+    "status": "Full local and hosted gates pending",
+    "passed": [
+      "PostgreSQL 17 admission, nonce-admitted retry and drawing closure suites: 27 tests"
+    ],
+    "remaining": [
+      "Full local and hosted release checks"
+    ],
+    "operationalBoundary": "No live migration, privilege change, deployment, pause transition or transfer is part of this source release."
+  }
+}

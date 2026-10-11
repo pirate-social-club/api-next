@@ -3,6 +3,32 @@ import { preflightEncodeHnsResourceV1 } from "./hns-resource-codec.ts";
 
 export const HNS_ROOT_IMPORT_PUBLISH_PLAN_VERSION = "pirate-hns-root-import-publish-plan-v1";
 export const HNS_ROOT_IMPORT_NAMESERVERS = ["ns1.pirate.", "ns2.pirate."] as const;
+export type HnsRootImportNameserversV1 = readonly [string, string];
+export type HnsRootImportGlueRecordV1 = Readonly<{
+  type: "GLUE4" | "GLUE6";
+  ns: string;
+  address: string;
+}>;
+
+export function validHnsRootImportNameserversV1(
+  nameservers: readonly string[],
+): nameservers is HnsRootImportNameserversV1 {
+  return (
+    nameservers.length === 2 &&
+    nameservers[0] !== nameservers[1] &&
+    nameservers.every(
+      (name) =>
+        name.length > 1 &&
+        name.length <= 254 &&
+        name.endsWith(".") &&
+        name === name.toLowerCase() &&
+        name
+          .slice(0, -1)
+          .split(".")
+          .every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(label)),
+    )
+  );
+}
 
 export type HnsJsonValue =
   | null
@@ -46,6 +72,8 @@ export type HnsRootImportPlanErrorReason =
   | "invalid_current_record"
   | "invalid_challenge"
   | "invalid_ds_records"
+  | "invalid_nameservers"
+  | "invalid_glue_records"
   | "resource_preflight_failed";
 
 export class HnsRootImportPlanError extends Error {
@@ -177,12 +205,31 @@ function dsResourceRecord(record: HnsRootDelegationDsV1): HnsRootResourceRecordV
 function currentAuthorityMatches(
   records: readonly HnsRootResourceRecordV1[],
   dsRecords: readonly HnsRootDelegationDsV1[],
+  expectedNameservers: HnsRootImportNameserversV1,
+  expectedGlue: readonly HnsRootImportGlueRecordV1[],
 ): boolean {
   const nameservers = records
     .filter((record) => record.type === "NS")
     .map((record) => record.ns)
     .sort();
-  if (canonicalJson(nameservers) !== canonicalJson([...HNS_ROOT_IMPORT_NAMESERVERS].sort())) {
+  if (canonicalJson(nameservers) !== canonicalJson([...expectedNameservers].sort())) {
+    return false;
+  }
+  const currentGlue = records
+    .filter(
+      (record) =>
+        (record.type === "GLUE4" || record.type === "GLUE6") &&
+        expectedNameservers.includes(record.ns as string),
+    )
+    .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  if (
+    canonicalJson(currentGlue) !==
+    canonicalJson(
+      [...expectedGlue].sort((left, right) =>
+        canonicalJson(left).localeCompare(canonicalJson(right)),
+      ),
+    )
+  ) {
     return false;
   }
   const currentDs = records
@@ -203,7 +250,8 @@ function currentAuthorityMatches(
 /**
  * Builds the one complete Handshake resource replacement shown to the owner.
  * Unrelated records remain byte-for-byte JSON-equivalent and in their original
- * order. Only prior NS, DS, and Pirate challenge TXT records are replaced.
+ * order. Prior NS, DS, glue for replaced nameservers, and Pirate challenge
+ * TXT records are replaced.
  * The replacement resource is preflight-encoded with the HSD wire codec
  * (real 512-byte consensus limit, exact round trip) before the plan is
  * returned, and the plan carries the encoded-resource hash distinct from
@@ -214,19 +262,51 @@ export async function buildHnsRootImportPublishPlanV1(
     readonly current_records: readonly HnsRootResourceRecordV1[];
     readonly challenge_txt_value: string;
     readonly ds_records: readonly HnsRootDelegationDsV1[];
+    readonly nameservers?: HnsRootImportNameserversV1;
+    readonly glue_records?: readonly HnsRootImportGlueRecordV1[];
   }>,
 ): Promise<HnsRootImportPublishPlanV1> {
   const challenge = validateChallenge(input.challenge_txt_value);
   const dsRecords = validateDsRecords(input.ds_records);
+  const nameservers = input.nameservers ?? HNS_ROOT_IMPORT_NAMESERVERS;
+  if (!validHnsRootImportNameserversV1(nameservers)) {
+    throw new HnsRootImportPlanError("invalid_nameservers");
+  }
+  const glueRecords = input.glue_records ?? [];
+  if (
+    glueRecords.length > 2 ||
+    new Set(glueRecords.map((record) => record.ns)).size !== glueRecords.length ||
+    glueRecords.some(
+      (record) =>
+        !nameservers.includes(record.ns) ||
+        (record.type !== "GLUE4" && record.type !== "GLUE6") ||
+        typeof record.address !== "string" ||
+        record.address.length === 0,
+    )
+  ) {
+    throw new HnsRootImportPlanError("invalid_glue_records");
+  }
   const currentRecords = validateHnsRootResourceRecordsV1(input.current_records);
-  const retainAuthority = currentAuthorityMatches(currentRecords, dsRecords);
+  const retainAuthority = currentAuthorityMatches(
+    currentRecords,
+    dsRecords,
+    nameservers,
+    glueRecords,
+  );
+  const currentNameservers = new Set(
+    currentRecords.filter((record) => record.type === "NS").map((record) => record.ns),
+  );
   const preservedRecords: HnsRootResourceRecordV1[] = [];
   const removedConflicts: HnsRootResourceRecordV1[] = [];
   const unknownTypes = new Set<string>();
   for (const record of currentRecords) {
     if (
       isPirateVerificationTxt(record) ||
-      (!retainAuthority && (record.type === "NS" || record.type === "DS"))
+      (!retainAuthority &&
+        (record.type === "NS" ||
+          record.type === "DS" ||
+          ((record.type === "GLUE4" || record.type === "GLUE6") &&
+            (currentNameservers.has(record.ns) || nameservers.includes(record.ns as string)))))
     ) {
       removedConflicts.push(cloneRecord(record));
       continue;
@@ -237,7 +317,8 @@ export async function buildHnsRootImportPublishPlanV1(
   const addedRecords: HnsRootResourceRecordV1[] = retainAuthority
     ? [{ type: "TXT", txt: [challenge] }]
     : [
-        ...HNS_ROOT_IMPORT_NAMESERVERS.map((ns) => ({ type: "NS", ns })),
+        ...nameservers.map((ns) => ({ type: "NS", ns })),
+        ...glueRecords.map(cloneRecord),
         { type: "TXT", txt: [challenge] },
         ...dsRecords.map(dsResourceRecord),
       ];

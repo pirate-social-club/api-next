@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyMegapotStorageFailure,
   mapMegapotStorageFailure,
+  mapRewardReservationFailure,
 } from "./control-plane-error-classification.ts";
 
 describe("classifyMegapotStorageFailure", () => {
@@ -71,4 +72,20 @@ describe("classifyMegapotStorageFailure", () => {
 
     expect(result).toEqual({ _tag: "MegapotStorageFailed", reason: "conflict" });
   });
+});
+
+test("reservation pause is a hold while unrelated constraints remain storage failures", () => {
+  const makeFailure = (reason: string) => ({ _tag: "StorageFailed", reason });
+  expect(
+    mapRewardReservationFailure(
+      { _tag: "ControlPlaneStatementFailed", sqlState: "PR001" } as never,
+      makeFailure,
+    ),
+  ).toMatchObject({ _tag: "RewardOperationsPaused", reason: "paused" });
+  expect(
+    mapRewardReservationFailure(
+      { _tag: "ControlPlaneStatementFailed", sqlState: "23503" } as never,
+      makeFailure,
+    ),
+  ).toEqual({ _tag: "StorageFailed", reason: "constraint" });
 });

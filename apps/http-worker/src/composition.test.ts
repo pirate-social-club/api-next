@@ -53,7 +53,7 @@ const inertHnsTransport: HnsOwnerTransport = {
 };
 
 describe("HTTP production composition", () => {
-  test("a missing profile provider does not block HTTP composition", async () => {
+  test("a malformed profile provider credential does not block HTTP composition", async () => {
     const configured = await bindings();
     await expect(
       createProductionHttpWorker({
@@ -63,6 +63,17 @@ describe("HTTP production composition", () => {
         STUDY_GENERATION_OPENROUTER_MODEL: "google/gemini-test",
       }),
     ).resolves.toBeDefined();
+  });
+
+  test("Telegram setup failure leaves unrelated HTTP routes available", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      TELEGRAM_CONFIG_JSON: "malformed-fixture",
+      TELEGRAM_SECRETS_JSON: "malformed-secret-fixture",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
   });
 
   test("requires both Durable Object registration limiter bindings", () => {
@@ -438,6 +449,15 @@ describe("HTTP production composition", () => {
       },
     });
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect(calls).toBe(0);
+    for (const operation of ["start", "poll"]) {
+      const response = await worker.request(
+        `https://worker.test/communities/community-1/canonical-route/ownership-recovery/${operation}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      );
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
     expect(calls).toBe(0);
   });
 

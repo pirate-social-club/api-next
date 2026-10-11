@@ -20,11 +20,8 @@ export const spokenV4ContentRevision = (audioRevision: number, lyricsRevision: n
   return revision;
 };
 
-/** Shared by publication and the explicit backfill; source rows remain immutable. */
+/** Build an immutable spoken exercise from accepted lyrics. */
 export const acceptedSpokenV4Insert = (source: AcceptedSpokenSource) => {
-  if (sha256(source.canonicalText) !== source.sourceHash) {
-    throw new TypeError("spoken source hash mismatch");
-  }
   const reviewKey = `study-say-it-back:${source.postId}:${source.studyUnitId}`;
   return {
     text: `INSERT INTO study_exercise_versions (

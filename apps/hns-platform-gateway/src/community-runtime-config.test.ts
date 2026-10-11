@@ -10,6 +10,7 @@ import {
   HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT,
   HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
   HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA,
+  HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
   type HnsCommunityAppGatewayDeploymentMode,
   loadHnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
@@ -41,7 +42,7 @@ async function manifest(
     profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
     solid_origin: "https://hns-solid-staging.pirate.sc",
     solid_ingress_composition_reference:
-      mode === "staging-private-tls"
+      mode === "staging-private-tls" || mode === "staging-public-tls"
         ? `solid-hns-ingress-sha256:${"a".repeat(64)}`
         : "solid-hns-ingress-staging-01",
     solid_access_application_audience: "solid-hns-staging-aud",
@@ -68,6 +69,24 @@ async function manifest(
     api_next_source_commit: sourceCommit,
     bundle_sha256: await sha256(bundleBytes),
   };
+  if (mode === "staging-public-tls") {
+    return JSON.stringify({
+      schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
+      mode,
+      staging_gateway_listener: "127.0.0.1:4269",
+      staging_health_listener: "127.0.0.1:4271",
+      tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+      public_tls_listener: "81.15.150.167:443",
+      public_tls_termination: true,
+      gateway_certificate_spki_sha256: "c".repeat(64),
+      routing_contract: "app-or-handle-host-v1",
+      handle_profile_version: "pirate-hns-community-handle-persona-public-gateway-v2",
+      handle_profile_utf8_bytes: 447,
+      handle_profile_sha256: "b4440ab21ae73a73d3ab3549bcaaa66c1e27891e22cdd308d4377b0b6eb549dc",
+      ...common,
+      ...overrides,
+    });
+  }
   if (mode === "staging-private-tls") {
     return JSON.stringify({
       schema: "pirate-hns-community-app-gateway-staging-private-tls-v1",
@@ -191,6 +210,50 @@ async function loadCombined(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 describe("community gateway deployment configuration", () => {
+  test("staging public combined profile pins the dedicated host and both routes", async () => {
+    const template = JSON.parse(
+      await Bun.file(
+        new URL(
+          "../ops/community/deployment-manifest.staging-public-tls.template.json",
+          import.meta.url,
+        ),
+      ).text(),
+    ) as Record<string, unknown>;
+    const fixture = JSON.parse(await manifest("staging-public-tls")) as Record<string, unknown>;
+    expect(Object.keys(template).sort()).toEqual(Object.keys(fixture).sort());
+    for (const [key, value] of Object.entries(template)) {
+      if (typeof value === "string" && value.startsWith("__UNRESOLVED_")) continue;
+      expect(value).toEqual(fixture[key]);
+    }
+    const configuration = await load({ mode: "staging-public-tls" });
+    expect(configuration.manifest).toMatchObject({
+      schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
+      mode: "staging-public-tls",
+      public_tls_listener: "81.15.150.167:443",
+      routing_contract: "app-or-handle-host-v1",
+      public_tls_termination: true,
+    });
+    expect(configuration.gateway_deployment_reference).toStartWith(
+      "hns-community-app-handle-gateway-sha256:",
+    );
+    for (const change of [
+      { public_tls_listener: "94.103.168.161:443" },
+      { public_tls_termination: false },
+      { routing_contract: "app-only" },
+      { solid_ingress_composition_reference: "unreviewed" },
+    ]) {
+      await expect(
+        load({ mode: "staging-public-tls", manifest_overrides: change }),
+      ).rejects.toThrow();
+    }
+    await expect(
+      load({ mode: "production", manifest_mode: "staging-public-tls" }),
+    ).rejects.toThrow();
+    await expect(
+      load({ mode: "staging-public-tls", manifest_mode: "production" }),
+    ).rejects.toThrow();
+  });
+
   test("private staging template matches the runtime manifest without binding fixture values", async () => {
     const template = JSON.parse(
       await Bun.file(

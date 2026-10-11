@@ -18,6 +18,7 @@ import {
   type MediaAcceptedLyrics,
   type MediaExplicitnessClassifierInput,
 } from "../media-provider-contracts.ts";
+import type { AlignmentRecoveryLookupDiagnostic } from "./alignment-recovery-diagnostics.ts";
 import {
   decodeMediaProcessingWorkflowPayload,
   type MediaProcessingAlignmentFailureEvidence,
@@ -36,6 +37,7 @@ import {
 } from "./processing-contracts.ts";
 
 export type MediaProcessingWorkflowResult =
+  | AlignmentRecoveryLookupDiagnostic
   | Readonly<{ readonly outcome: "waiting_for_terms" }>
   | Readonly<{
       readonly outcome: "waiting_for_provider";
@@ -1156,10 +1158,10 @@ function align(
     }
     const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
     if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+      return { outcome: "alignment_recovery_lookup_stale", reason: recovery.reason } as const;
     }
     if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+      return { outcome: "alignment_recovery_lookup_failed", reason: recovery.reason } as const;
     }
     const recoveryAttemptId =
       recovery.kind === "recovery"
@@ -1190,9 +1192,6 @@ function align(
       return { outcome: "alignment_recorded" } as const;
     }
     if (started.kind === "exhausted") {
-      if (recovery.kind === "recovery") {
-        return yield* Effect.fail(new DeferredAttempt("provider_progress"));
-      }
       const exhaustedResult = {
         kind: "alignment",
         status: "unavailable",

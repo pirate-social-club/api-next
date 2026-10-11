@@ -15,6 +15,8 @@ const canonicalApplicationImports = new Set([
   "@pirate/application/rewards/song-reward-offers",
   "@pirate/application/verification",
   "@pirate/application/telegram",
+  "@pirate/application/telegram-linking",
+  "@pirate/application/telegram-oidc",
   "@pirate/application/video/playback-access",
 ]);
 

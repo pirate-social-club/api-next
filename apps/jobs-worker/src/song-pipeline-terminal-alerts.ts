@@ -13,6 +13,7 @@ import {
   type CloudflareMediaWorkflowBinding,
   makeCloudflareMediaProcessingWorkflowLauncher,
 } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
+import { collectSongAlignmentRecoveryAlerts } from "./song-alignment-recovery-alerts.ts";
 import type { SongPipelineEnablement } from "./song-pipeline-outbox-alerts.ts";
 import {
   DATA_WORKFLOW_MAX_REVISION,
@@ -324,6 +325,7 @@ export function collectSongPipelineTerminalAlerts(
       }
 
       if (enabled.media) {
+        emitted += yield* collectSongAlignmentRecoveryAlerts(bindings.media);
         const providerFailures = yield* safeRows(
           db
             .execute<ProviderFailureRow>({

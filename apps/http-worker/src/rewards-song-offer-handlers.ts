@@ -27,12 +27,14 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  RewardsPaused,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
 
 export type SongRewardOfferHandlerServices = Readonly<{
+  requireRewardOperationsRunning: () => Promise<void>;
   rewardCatalogAuthority: Readonly<{
     environment: "test" | "staging";
     attestationId: string;
@@ -191,6 +193,8 @@ function optionalAccountId(principal: Principal | null): string | null {
 
 function wireFailure(error: unknown): Error {
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  if (tagged._tag === "RewardOperationsPaused")
+    return new RewardsPaused({ message: "Rewards are paused" });
   if (tagged._tag === "SongRewardOfferRejected") {
     if (tagged.reason === "qualification-policy-changed")
       return new Conflict({ message: "Qualification policy changed; refresh reward terms" });
@@ -345,12 +349,20 @@ const assetLeg = (value: AssetBonusLeg) => ({
   leg_terms_hash: value.legTermsHash,
 });
 
+// An ended, unbound instruction has no mined revert. Preserve ambiguity if a hash exists.
+const fundingStatus = (value: RewardFundingIntent) =>
+  value.state === "reclaimable_failed"
+    ? value.transactionHash === null
+      ? ("expired_unfunded" as const)
+      : ("reconciliation_required" as const)
+    : value.state;
+
 const funding = (value: RewardFundingIntent) => ({
   object: "megapot_pool_funding" as const,
   action: "fund_with_usdc" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
@@ -367,7 +379,7 @@ const assetFunding = (value: RewardFundingIntent) => ({
   action: "fund_with_asset" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals,
@@ -556,6 +568,7 @@ export function makeSongRewardOfferHandlers(
     },
     OpenSongRewardOffer: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly communityId: string; readonly postId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -581,6 +594,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddMegapotPoolLeg: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -636,6 +650,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddAssetBonusLeg: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -727,6 +742,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: funding(intent) };
     },
     ObserveAssetBonusFunding: async (request) => {
@@ -767,6 +783,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: assetFunding(intent) };
     },
     GetSongMegapotPool: async (request) => {

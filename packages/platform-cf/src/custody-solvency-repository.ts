@@ -137,18 +137,18 @@ export function makeControlPlaneCustodySolvencyRepository() {
           text: `SELECT token_address FROM (
                   SELECT attestation.usdc_address AS token_address
                     FROM megapot_deployment_attestations attestation
-                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                   WHERE attestation.attestation_id=$1
                   UNION
                   SELECT leg.token_address
                     FROM megapot_deployment_attestations attestation
                     JOIN song_reward_offer_legs leg ON leg.chain_id=attestation.chain_id
-                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                   WHERE attestation.attestation_id=$1
                      AND leg.kind='asset_bonus' AND leg.funded_atomic > 0
                   UNION
                   SELECT credit.token_address
                     FROM megapot_deployment_attestations attestation
                     JOIN reward_ledger_credits credit ON credit.chain_id=attestation.chain_id
-                   WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                   WHERE attestation.attestation_id=$1
                      AND credit.state <> 'sent'
                 ) assets ORDER BY token_address`,
           values: [attestationId],
@@ -171,7 +171,7 @@ export function makeControlPlaneCustodySolvencyRepository() {
                    JOIN reward_asset_whitelist asset
                      ON asset.chain_id=attestation.chain_id
                     AND asset.token_address=COALESCE($2,attestation.usdc_address)
-                  WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                  WHERE attestation.attestation_id=$1
                     AND (asset.token_address=attestation.usdc_address OR EXISTS (
                       SELECT 1 FROM song_reward_offer_legs leg
                        WHERE leg.chain_id=asset.chain_id
@@ -237,7 +237,7 @@ export function makeControlPlaneCustodySolvencyRepository() {
                        JOIN reward_asset_whitelist asset
                          ON asset.chain_id=attestation.chain_id
                         AND asset.token_address=$2
-                      WHERE attestation.attestation_id=$1 AND attestation.status='active'
+                      WHERE attestation.attestation_id=$1
                       FOR SHARE OF attestation, asset`,
               values: [input.candidate.attestationId, input.candidate.tokenAddress],
               readonly: false,

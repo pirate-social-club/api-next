@@ -33,13 +33,19 @@ function selectedSchema(connectionString: string): string | undefined {
 
 export async function applyPostgresTestBaselineConnection(options: {
   readonly connectionString: string;
+  readonly rewardsRunning?: boolean;
 }): Promise<void> {
   const schema = selectedSchema(options.connectionString);
-  if (schema !== undefined && reusableSchemaNames.has(schema)) return;
+  const reused = schema !== undefined && reusableSchemaNames.has(schema);
   const client = new Client({ connectionString: options.connectionString });
   await client.connect();
   try {
-    await applyPostgresTestBaseline(client);
+    if (!reused) await applyPostgresTestBaseline(client);
+    if (options.rewardsRunning) {
+      await client.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'isolated_test_fixture') FROM reward_operations_control WHERE singleton",
+      );
+    }
   } finally {
     await client.end();
   }

@@ -12,6 +12,7 @@ import {
 } from "./combined-main.ts";
 import {
   HNS_COMMUNITY_APP_HANDLE_GATEWAY_DEPLOYMENT_SCHEMA,
+  HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
   type HnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
 import { HNS_GATEWAY_EXTERNAL_SCHEME_HEADER, HNS_GATEWAY_TLS_SNI_HEADER } from "./request.ts";
@@ -120,7 +121,38 @@ function request(host: string) {
 }
 
 describe("combined community app and handle gateway executable", () => {
-  test("accepts only production and shadow with an absolute manifest", () => {
+  test("uses the manifest authority deadline in production and staging", () => {
+    const observed: Array<number | undefined> = [];
+    const authorityFactory = (
+      _databaseUrl: string,
+      options?: { readonly resolutionDeadlineMs?: number },
+    ) => {
+      observed.push(options?.resolutionDeadlineMs);
+      return {
+        community_authority_source: { resolve: () => Effect.succeed(null) },
+        handle_authority_source: { resolve: () => Effect.succeed(null) },
+        ready: async () => true,
+      };
+    };
+    const base = configuration();
+    assembleHnsCommunityAppHandleGatewayRuntime({
+      configuration: base,
+      authority_factory: authorityFactory,
+    });
+    assembleHnsCommunityAppHandleGatewayRuntime({
+      configuration: {
+        ...base,
+        manifest: {
+          ...base.manifest,
+          schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
+        },
+      } as HnsCommunityAppGatewayRuntimeConfigurationV1,
+      authority_factory: authorityFactory,
+    });
+    expect(observed).toEqual([4_000, 4_000]);
+  });
+
+  test("accepts production, shadow and staging public with an absolute manifest", () => {
     expect(
       parseHnsCommunityAppHandleGatewayArguments([
         "--mode",
@@ -132,6 +164,17 @@ describe("combined community app and handle gateway executable", () => {
       mode: "production",
       manifest_path:
         "/srv/pirate-hns-community-app-handle-gateway/current/deployment-manifest.json",
+    });
+    expect(
+      parseHnsCommunityAppHandleGatewayArguments([
+        "--mode",
+        "staging-public-tls",
+        "--manifest",
+        "/srv/pirate-hns-staging/gateway/current/deployment-manifest.json",
+      ]),
+    ).toEqual({
+      mode: "staging-public-tls",
+      manifest_path: "/srv/pirate-hns-staging/gateway/current/deployment-manifest.json",
     });
     for (const arguments_ of [
       [],
@@ -196,5 +239,26 @@ describe("combined community app and handle gateway executable", () => {
     expect(() => assembleHnsCommunityAppHandleGatewayRuntime({ configuration: input })).toThrow(
       "configuration is incomplete or invalid",
     );
+  });
+
+  test("accepts the combined staging public manifest at assembly", () => {
+    const staging = configuration();
+    const input = {
+      ...staging,
+      manifest: {
+        ...staging.manifest,
+        schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
+      },
+    } as HnsCommunityAppGatewayRuntimeConfigurationV1;
+    expect(() =>
+      assembleHnsCommunityAppHandleGatewayRuntime({
+        configuration: input,
+        authority_factory: () => ({
+          community_authority_source: { resolve: () => Effect.succeed(null) },
+          handle_authority_source: { resolve: () => Effect.succeed(null) },
+          ready: async () => true,
+        }),
+      }),
+    ).not.toThrow();
   });
 });

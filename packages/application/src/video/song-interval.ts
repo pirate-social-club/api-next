@@ -58,6 +58,28 @@ export type SongCanonicalTiming =
   | Readonly<{ state: "ready"; durationSamples: number }>
   | Readonly<{ state: "failed" }>;
 
+/** The admitted, immutable PCM fact for this exact song audio revision. */
+export type SongVideoPcmReference = Readonly<{
+  songPostId: string;
+  audioRevision: number;
+  canonicalAudioSha256: string;
+  durationSamples: number;
+  objectKey: string;
+  objectVersion: string;
+  objectEtag: string;
+  pcmSha256: string;
+  byteLength: number;
+  decoderRecipe: string;
+}>;
+
+export interface SongVideoPcmReferenceStore {
+  /** Null unless the durable fact and the exact R2 object both still agree. */
+  readonly getReady: (
+    song: Pick<PublishedCanonicalSong, "songPostId" | "audioRevision" | "canonicalAudioSha256">,
+    durationSamples: number,
+  ) => Promise<SongVideoPcmReference | null>;
+}
+
 export interface SongVideoIntervalStore {
   /** Null when the post is not a published song. */
   readonly getPublishedSong: (songPostId: string) => Promise<PublishedCanonicalSong | null>;
@@ -81,6 +103,8 @@ export interface SongVideoIntervalStore {
 
 export type SongVideoIntervalServices = Readonly<{
   store: SongVideoIntervalStore;
+  /** Omitted until the staging catalog is backfilled and this gate is enabled. */
+  pcmReference?: SongVideoPcmReferenceStore;
   /**
    * The same post read the post endpoint and video playback use, as the viewer.
    * It decides visibility, membership, age gating and holds; nothing here
@@ -251,6 +275,17 @@ export async function preflightSongVideoInterval(
       reason: "canonical_timing_unavailable",
     };
   }
+  if (
+    services.pcmReference !== undefined &&
+    (await services.pcmReference.getReady(song, timing.durationSamples)) === null
+  ) {
+    return {
+      state: "measuring",
+      song_post_id: song.songPostId,
+      audio_revision: song.audioRevision,
+      retry_after_ms: services.measuringRetryAfterMs ?? DEFAULT_MEASURING_RETRY_AFTER_MS,
+    };
+  }
   const verdict =
     body.interval === undefined
       ? null
@@ -326,6 +361,15 @@ export async function freezeSongReservationPlan(
     throw new BadRequest({
       message: "The selected interval cannot be rendered from this song",
       details: { reason_code: verdict.reason },
+    });
+  }
+  if (
+    services.pcmReference !== undefined &&
+    (await services.pcmReference.getReady(song, timing.durationSamples)) === null
+  ) {
+    throw new RetryableConflict({
+      message: "This song is still being prepared for video",
+      details: { reason_code: "pcm_reference_pending" },
     });
   }
   const selectedFrom =

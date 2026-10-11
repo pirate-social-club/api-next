@@ -1,4 +1,4 @@
-import { canonicalTextModerationInput } from "@pirate/domain";
+import { canonicalTextModerationInput, normalizeTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import type { MediaProcessingProviders } from "../../application/src/media/processing-contracts";
 
@@ -151,3 +151,11 @@ export const songInterpreterProviders: MediaProcessingProviders = {
     },
   },
 };
+
+/** Hash fixture evidence from the same normalized title and accepted lyrics as the interpreter. */
+export function songModerationFixtureHash(title: string, body: string | null = null): string {
+  const normalized = normalizeTextModerationInput({ surface: "text_post", title, body });
+  if (normalized.kind !== "accepted") return "invalid";
+  const canonical = canonicalTextModerationInput(normalized.input);
+  return canonical.kind === "accepted" ? canonical.sha256 : "invalid";
+}

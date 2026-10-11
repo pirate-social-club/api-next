@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.99.0",
+  "sourceBranch": "feat/persona-privy-gas-sponsorship",
+  "sourceBase": "9f5b9252",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Authenticated winners may reserve one server-gated Privy sponsored USDC transfer for a claimed and paid credit, sign only the exact prepared wallet request, submit that signature, and recover status by send or credit ID. Sponsorship is disabled by default and production activation is blocked by configuration.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.99.0.tgz",
+    "sha256": "085996cf94d93bf66d2ea7323e686ac8009a8b962a311145d0b5ca01f8d4ccd0"
+  },
+  "validation": {
+    "status": "Local review and full gates pending",
+    "passed": ["TypeScript worker and repository checks", "PostgreSQL 17 sponsored send suite"],
+    "remaining": ["Full local and hosted checks", "Privy client HTTP bypass refusal", "Zero-ETH live sponsored send and replay", "Solid wallet integration"],
+    "operationalBoundary": "No registry publication, Worker deploy, production sponsorship activation, or live sponsored transaction has occurred."
+  }
+}

@@ -13,20 +13,17 @@ import { canonicalTextModerationInput, normalizeTextModerationInput } from "@pir
 import { Data, Effect, Schema } from "effect";
 import {
   type M2Actor,
-  type TextPostCommitOutcome,
   type TextPostReplayOutcome,
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
   type TextPostSubmissionDocument,
   type TextSubmissionTarget,
 } from "../../ports.ts";
-import { evaluateTextModerationV2 } from "../../text-moderation-runtime.ts";
 import { PersonaUnavailable, requireActiveOwnedPersona } from "../personas.ts";
 import { canonicalBodyHash, validateHumanDirectActor, validateIdentifier } from "./common.ts";
 import type { TextPostServices } from "./text-post.ts";
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
-const MAX_POLICY_RETRIES = 3;
 const CommentReplyBody = Schema.Struct({
   idempotency_key: Schema.String,
   persona_id: PersonaIdV1,
@@ -40,10 +37,6 @@ export type CreateCommentReplyInput = Readonly<{
   readonly actor: M2Actor;
   readonly body: unknown;
 }>;
-
-export class CommentsRepliesPolicyStale extends Data.TaggedError("CommentsRepliesPolicyStale")<{
-  readonly attempts: number;
-}> {}
 
 export class CommentsRepliesRuntimeUnavailable extends Data.TaggedError(
   "CommentsRepliesRuntimeUnavailable",
@@ -121,11 +114,9 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
   | MembershipRequired
   | NotFound
   | ReplyDepthExceeded
-  | CommentsRepliesPolicyStale
   | CommentsRepliesRuntimeUnavailable
 > {
   const store = services.textPostStore;
-  const moderationProvider = services.textModerationProvider;
   const personaStore = services.personaStore;
   if (store?.resolveCommentTarget === undefined || personaStore === undefined)
     return yield* new CommentsRepliesRuntimeUnavailable();
@@ -178,42 +169,33 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
     }),
   );
 
-  for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt += 1) {
-    const replay: TextPostReplayOutcome = yield* store
-      .replay({
-        communityId: target.communityId,
-        actor: input.actor,
-        personaId: body.persona_id,
-        idempotencyKey: body.idempotency_key,
-        requestHash,
-        surface: input.surface,
-      })
-      .pipe(Effect.mapError(mapStoreFailure));
-    if (replay.kind === "replay") return replay.snapshot;
-    if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
-
-    yield* store
-      .checkAuthority({ communityId: target.communityId, actor: input.actor })
-      .pipe(Effect.mapError(mapStoreFailure));
-
-    const { evaluation, restrictedEvidence } = yield* evaluateTextModerationV2({
+  const replay: TextPostReplayOutcome = yield* store
+    .replay({
       communityId: target.communityId,
-      moderationInput: normalized.input,
-      inputSha256: canonical.sha256,
-      store,
-      provider: moderationProvider,
-      authorDeclaredRating: body.author_declared_rating ?? "general",
-    }).pipe(Effect.mapError(mapStoreFailure));
-    const commitTarget: TextSubmissionTarget =
-      input.surface === "comment"
-        ? { surface: "comment", communityId: target.communityId, postId: target.postId }
-        : {
-            surface: "reply",
-            communityId: target.communityId,
-            postId: target.postId,
-            parentCommentId: target.parentCommentId as string,
-          };
-    const commitInput = {
+      actor: input.actor,
+      personaId: body.persona_id,
+      idempotencyKey: body.idempotency_key,
+      requestHash,
+      surface: input.surface,
+    })
+    .pipe(Effect.mapError(mapStoreFailure));
+  if (replay.kind === "replay") return replay.snapshot;
+  if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
+
+  yield* store
+    .checkAuthority({ communityId: target.communityId, actor: input.actor })
+    .pipe(Effect.mapError(mapStoreFailure));
+  const commitTarget: TextSubmissionTarget =
+    input.surface === "comment"
+      ? { surface: "comment", communityId: target.communityId, postId: target.postId }
+      : {
+          surface: "reply",
+          communityId: target.communityId,
+          postId: target.postId,
+          parentCommentId: target.parentCommentId as string,
+        };
+  const committed = yield* store
+    .commitPublished({
       communityId: target.communityId,
       actor: input.actor,
       personaId: body.persona_id,
@@ -223,17 +205,9 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
       requestHash,
       operationId: `operation_${crypto.randomUUID()}`,
       target: commitTarget,
-    } as const;
-    const commitEffect = store.commitTerminal({
-      ...commitInput,
-      evaluation,
-      ...(restrictedEvidence === undefined ? {} : { restrictedEvidence }),
-    });
-    const committed: TextPostCommitOutcome = yield* commitEffect.pipe(
-      Effect.mapError(mapStoreFailure),
-    );
-    if (committed.kind === "created" || committed.kind === "replay") return committed.snapshot;
-    if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
-  }
-  return yield* new CommentsRepliesPolicyStale({ attempts: MAX_POLICY_RETRIES });
+      authorDeclaredRating: body.author_declared_rating ?? "general",
+    })
+    .pipe(Effect.mapError(mapStoreFailure));
+  if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
+  return committed.snapshot;
 });

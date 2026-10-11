@@ -23,9 +23,9 @@ import { createHttpWorker } from "./transport.ts";
 
 /**
  * TXT-only attachment end to end: the real HTTP handlers, the real PostgreSQL
- * repository and the real owner verifier handler, with the verifier's chain
- * observation as the only fixture. The verifier runs as production does, with
- * plain hns-txt-v1 and no import capability.
+ * repository and the real owner verifier handler. The chain observation and
+ * authenticated actor are fixtures; the test seeds the community and its route
+ * authority directly. The verifier uses plain hns-txt-v1 without import capability.
  */
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;

@@ -4,8 +4,11 @@ export const MEDIA_BINDING_KINDS = {
   CONTROL_PLANE: "platform",
   MEDIA_PROCESSING_ENABLED: "var",
   SONG_SOURCE_RECORDING_ENABLED: "var",
+  SONG_VIDEO_PCM_ADMISSION_ENABLED: "var",
   VIDEO_ANALYSIS_ENABLED: "var",
   VIDEO_DELIVERY_ENABLED: "var",
+  VIDEO_CLOUDCONVERT_RENDER_ENABLED: "var",
+  CLOUDCONVERT_RENDER_API_KEY: "secret",
   VIDEO_STREAM_API_TOKEN: "secret",
   MEDIA_PROCESSING_WORKFLOW: "platform",
   VIDEO_ANALYSIS_WORKFLOW: "platform",
@@ -32,3 +35,10 @@ export const MEDIA_BINDING_KINDS = {
   DATA_REGISTRATION_ENABLED: "var",
   DATA_REGISTRATION_CHAIN_ID: "var",
 } as const satisfies { [K in keyof MediaProcessorRuntimeEnv]-?: "platform" | "secret" | "var" };
+
+export function mediaUsesCloudConvert(vars: Readonly<Record<string, unknown>>): boolean {
+  return (
+    vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED === "true" ||
+    vars.SONG_VIDEO_PCM_ADMISSION_ENABLED === "true"
+  );
+}

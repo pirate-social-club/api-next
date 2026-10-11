@@ -82,15 +82,44 @@ suite("Postgres 17 reward-claim Very intent", () => {
       expect(await resolve("winner", first, "self.pass")).toBeNull();
       expect(await resolve("winner", "reward-claim_unknown")).toBeNull();
 
+      // A scan can fail inside Very without a completion callback. Its proof
+      // session then expires while the hour-long claim intent remains open.
+      // A new click must get a new intent so verification start can proceed.
+      await admin.query(
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id,
+          provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version, method, issuer, scope_kind,
+          issuer_rp_scope,
+          request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent,
+          started_at, expires_at, upstream_session_ref
+        ) VALUES (
+          'claim-proof', 'winner', $1, repeat('a', 64), $2,
+          'managed', 'very-web', '1', 'palm_web', 'https://verify.very.org',
+          'issuer_rp_scope', 'pirate-social',
+          'curated', 'gates-v2', 'test', 'pending',
+          '[{"claim_id":"credential.subject_unique"},{"claim_id":"human.personhood"}]'::jsonb,
+          '["credential.subject_unique","human.personhood"]'::jsonb,
+          'establish', clock_timestamp() - interval '10 minutes',
+          clock_timestamp() - interval '5 minutes',
+          'claim-proof'
+        )`,
+        [first, VERY_WEB_PROVIDER_ID],
+      );
+      const afterExpiredProof = await issue("winner");
+      expect(afterExpiredProof).not.toBe(first);
+      expect(await issue("winner")).toBe(afterExpiredProof);
+
       // An expired intent no longer resolves, and the next request issues a
       // fresh one rather than reusing it.
       await admin.query(
         "UPDATE action_intents SET expires_at=clock_timestamp() - interval '1 minute' WHERE action_intent_id=$1",
-        [first],
+        [afterExpiredProof],
       );
-      expect(await resolve("winner", first)).toBeNull();
+      expect(await resolve("winner", afterExpiredProof)).toBeNull();
       const second = await issue("winner");
-      expect(second).not.toBe(first);
+      expect(second).not.toBe(afterExpiredProof);
       expect(await resolve("winner", second)).not.toBeNull();
       expect(await issue("other")).not.toBe(second);
     } finally {

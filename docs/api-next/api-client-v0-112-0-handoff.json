@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.112.0",
+  "sourceBranch": "feat/account-minimum-age-removal",
+  "sourceBase": "c4eccd58",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "RegisterIdentity accepts verified Privy proof without a minimum-age declaration. The previously published minimum_age_attestation field is optional, validated and ignored; it creates no age evidence. No response, browser session, wallet or adult-content admission contract changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.112.0.tgz",
+    "sha256": "a734db3f9cbc2aa980f310c360037f983e8c1c35402747fa88d4dd6746ec9001"
+  },
+  "validation": {
+    "status": "Candidate generated package; full local, hosted and independent gates pending.",
+    "operationalBoundary": "No production, credential, monetary activation or historical-row mutation."
+  }
+}

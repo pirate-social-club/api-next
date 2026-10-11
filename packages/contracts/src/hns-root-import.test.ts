@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
 import {
+  HnsCommunityRootImportCurrentResponseV1,
   HnsCommunityRootImportSessionResponseV1,
   HnsRootImportSessionResponseV1,
   PollHnsRootImport,
@@ -10,6 +11,29 @@ import {
 const signature = btoa("\u0001".repeat(64));
 
 describe("HNS root-import contract", () => {
+  test("exposes a positive route generation while accepting older owner-read responses", () => {
+    const decode = Schema.decodeUnknownOption(HnsCommunityRootImportCurrentResponseV1);
+    const attachment = {
+      status: "suspended",
+      canonical_route: {
+        family: "hns",
+        root_label: "harbor",
+        root_label_display: "harbor",
+        path_segment: "harbor",
+        href: "/c/harbor",
+        app_host: null,
+      },
+    };
+    const response = { community_id: "community-1", session: null, attachment };
+    expect(Option.isSome(decode(response))).toBe(true);
+    expect(
+      Option.isSome(decode({ ...response, attachment: { ...attachment, binding_generation: 2 } })),
+    ).toBe(true);
+    for (const binding_generation of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      expect(
+        Option.isNone(decode({ ...response, attachment: { ...attachment, binding_generation } })),
+      ).toBe(true);
+  });
   test("keeps legacy poll valid and accepts only a compact provisioning signature", () => {
     const body = PollHnsRootImport.request.body;
     expect(

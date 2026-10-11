@@ -143,10 +143,7 @@ describe("PostgreSQL test discovery", () => {
     expect([...partition.isolated, ...partition.general].sort()).toEqual([...files].sort());
     expect(partition.general).not.toContain(partition.isolated[0]);
     const ci = partitionPostgresRecoveryFiles(partition.general);
-    expect(ci.recovery).toEqual([
-      "scripts/staging-persona-phased-reset.pg.test.ts",
-      "scripts/staging-persona-recovery.pg.test.ts",
-    ]);
+    expect(ci.recovery).toEqual(["scripts/staging-persona-phased-reset.pg.test.ts"]);
     expect(ci.hnsRegtest).toEqual([
       "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
       "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",

@@ -19,7 +19,10 @@ import {
 } from "@pirate/application/route-revalidation";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { makeControlPlaneHnsActiveLeaseRenewalStore } from "./hns-active-lease-renewal-repository";
+import {
+  HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL,
+  makeControlPlaneHnsActiveLeaseRenewalStore,
+} from "./hns-active-lease-renewal-repository";
 import { makeControlPlaneHnsOwnerRecoveryPollStore } from "./hns-owner-recovery-poll-repository";
 import {
   makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
@@ -3390,20 +3393,36 @@ suite("Postgres namespace ownership persistence foundation", () => {
       const suffix = "active_renewal_repository";
       await insertHnsTestConfiguration(client);
       await seedActiveRevalidationRoute(client, suffix, "hns.owner.v1");
+      const candidates = (
+        overrides: { reference?: string; environment?: string; lead?: number } = {},
+      ) =>
+        client.query(HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL, [
+          overrides.reference ?? "namespace-config",
+          "v1",
+          overrides.environment ?? "test",
+          overrides.lead ?? 604_800,
+          1,
+        ]);
+      expect((await candidates()).rows.map((row) => row.route_binding_id)).toEqual([
+        `route_binding_${suffix}`,
+      ]);
+      expect((await candidates({ reference: "other-config" })).rows).toEqual([]);
+      expect((await candidates({ environment: "production" })).rows).toEqual([]);
+      expect((await candidates({ lead: 0 })).rows).toEqual([]);
       let providerCalls = 0;
+      let reason: "unavailable" | "renewal_evidence_ineligible" = "unavailable";
       const services = {
         store: makeControlPlaneHnsActiveLeaseRenewalStore(
           makeDirectPostgresControlPlaneLayer(scoped),
         ),
         provider: {
-          renew: () => {
-            providerCalls += 1;
-            return Effect.fail(
-              new HnsActiveLeaseRenewalProviderFailed({
-                reason: "renewal_evidence_ineligible",
-              }),
-            );
-          },
+          renew: () =>
+            Effect.gen(function* () {
+              providerCalls += 1;
+              // The runtime selector must exclude this live attempt before LIMIT.
+              expect((yield* Effect.promise(() => candidates())).rows).toEqual([]);
+              return yield* new HnsActiveLeaseRenewalProviderFailed({ reason });
+            }),
         },
         policy: {
           expected_block_interval_seconds: 600,
@@ -3422,6 +3441,11 @@ suite("Postgres namespace ownership persistence foundation", () => {
         route_binding_id: `route_binding_${suffix}`,
         idempotency_key: "active-renewal-key",
       } as const;
+      await expect(
+        Effect.runPromise(Effect.scoped(runHnsActiveLeaseRenewal(input, services))),
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      expect((await candidates()).rows).toHaveLength(1);
+      reason = "renewal_evidence_ineligible";
       expect(
         await Effect.runPromise(Effect.scoped(runHnsActiveLeaseRenewal(input, services))),
       ).toMatchObject({
@@ -3432,7 +3456,8 @@ suite("Postgres namespace ownership persistence foundation", () => {
       expect(
         await Effect.runPromise(Effect.scoped(runHnsActiveLeaseRenewal(input, services))),
       ).toMatchObject({ replayed: true });
-      expect(providerCalls).toBe(1);
+      expect(providerCalls).toBe(2);
+      expect((await candidates()).rows).toEqual([]);
       expect(
         (
           await client.query(

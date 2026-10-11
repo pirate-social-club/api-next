@@ -48,14 +48,17 @@ postgresTest("staging gateway grants are exact, read-only and independently chec
         `CREATE FUNCTION api_next.${name}(text,timestamptz) RETURNS integer LANGUAGE sql AS 'SELECT 1'`,
       );
     }
+    await fixture.query(
+      "CREATE FUNCTION api_next.current_hns_sale_namespace_dependency_v1(text,text,bigint,text,bigint,timestamptz) RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+    );
     const plan = stagingHnsGatewayGrantPlan(role, database);
     const receipt = await applyStagingHnsGatewayGrantPlan(fixture, plan, plan.sha256);
     expect(receipt).toEqual({
       outcome: "staging_gateway_grants_verified",
       role,
       plan_sha256: plan.sha256,
-      table_count: 10,
-      function_count: 3,
+      table_count: STAGING_HNS_GATEWAY_READ_TABLES.length,
+      function_count: 4,
     });
     const checks = await fixture.query<{
       readonly allowed_read: boolean;

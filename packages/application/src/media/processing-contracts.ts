@@ -21,6 +21,11 @@ import type {
   TextModerationPolicySnapshotV2,
   TextModerationProviderServiceV1,
 } from "../text-moderation-runtime.ts";
+import type {
+  AlignmentRecoveryFailedReason,
+  AlignmentRecoveryLookupDiagnostic,
+  AlignmentRecoveryStaleReason,
+} from "./alignment-recovery-diagnostics.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
 
@@ -347,8 +352,8 @@ export type AlignmentRecoveryRead =
       readonly result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
       readonly recoveryAttemptId?: string;
     }>
-  | Readonly<{ readonly kind: "stale" }>
-  | Readonly<{ readonly kind: "failed" }>
+  | Readonly<{ readonly kind: "stale"; readonly reason: AlignmentRecoveryStaleReason }>
+  | Readonly<{ readonly kind: "failed"; readonly reason: AlignmentRecoveryFailedReason }>
   | Readonly<{
       readonly kind: "recovery";
       readonly recoveryActionId: string;
@@ -533,6 +538,9 @@ export interface MediaProcessingWorkflowLauncher {
   readonly get: (
     instanceId: string,
   ) => Promise<"present" | "finished" | "indeterminate" | "missing">;
+  readonly getRecoveryFailure: (
+    instanceId: string,
+  ) => Promise<AlignmentRecoveryLookupDiagnostic | null>;
   readonly create: (
     instanceId: string,
     payload: MediaProcessingWorkflowPayload,
@@ -564,6 +572,7 @@ export type MediaProcessingObservation = Readonly<{
   readonly outboxId?: string;
   readonly workflowRevision?: number;
   readonly stage?: MediaProcessingAttemptStage;
+  readonly recoveryFailure?: AlignmentRecoveryLookupDiagnostic;
 }>;
 
 export type MediaProcessingObserver = (observation: MediaProcessingObservation) => void;

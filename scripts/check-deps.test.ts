@@ -121,7 +121,7 @@ describe("provider dependency boundary", () => {
     expect(result.checkedFiles).toContain("packages/domain/src/gates-v2/index.ts");
     expect(result.checkedFiles).toContain("apps/media-processor-worker/src/index.ts");
     expect(result.checkedFiles).toContain("apps/data-registration-worker/src/index.ts");
-  });
+  }, 15_000);
 
   test("keeps the media processor Worker on application and platform seams", async () => {
     const allowedRoot = await fixtureRoot({

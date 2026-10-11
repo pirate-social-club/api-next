@@ -22,7 +22,7 @@ pgTest(
     await admin.connect();
     try {
       await admin.query(`CREATE SCHEMA "${schema}"`);
-      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      await applyPostgresTestBaselineConnection({ rewardsRunning: true, connectionString: scoped });
       const reader = new Client({ connectionString: scoped });
       await reader.connect();
       try {

@@ -36,11 +36,14 @@ type State = {
   database_time: Date;
 };
 
-// The caller already holds renewal job, session and predecessor DNS locks.
+// The caller already holds the session and predecessor DNS locks, and for a
+// renewal the job's. The prefix names the operation the successor belongs to
+// in its operation identifiers; it changes nothing else.
 export async function promoteImportedHnsInventorySuccessor(
   client: Client,
   resultBytes: Uint8Array,
   resultSha256: string,
+  operationPrefix: "hns-inventory-renewal" | "hns-zone-adoption" = "hns-inventory-renewal",
 ) {
   const decoded = await decodeHnsRootImportReadinessResultV1(resultBytes);
   const result = decoded.result;
@@ -145,8 +148,8 @@ export async function promoteImportedHnsInventorySuccessor(
     zone_bytes: decoded.managed_zone_bytes,
   });
   const operation = (kind: string) => ({
-    operation_id: `hns-inventory-renewal:${kind}:${resultSha256}`,
-    idempotency_key: `hns-inventory-renewal:${kind}:${resultSha256}`,
+    operation_id: `${operationPrefix}:${kind}:${resultSha256}`,
+    idempotency_key: `${operationPrefix}:${kind}:${resultSha256}`,
     request_hash: resultSha256,
   });
   return promoteHnsAuthoritySuccessorInTransaction({

@@ -104,7 +104,7 @@ function loadCandidateIn(
       text: `${CANDIDATE_SELECT}
               WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
                 AND drawing.status IN ('tickets_confirmed','drawing_pending')
-                AND ticket.status='custodied' AND attestation.status='active'
+                AND ticket.status='custodied'
               ${input.lock ? "FOR UPDATE OF drawing, ticket" : ""}`,
       values: [input.poolLegId, input.drawingId.toString()],
       readonly: !input.lock,

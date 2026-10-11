@@ -13,18 +13,14 @@ import { Data, Effect, Schema } from "effect";
 import {
   type CreatePostBody,
   type M2Actor,
-  type TextPostCommitOutcome,
   type TextPostModerationInput,
   type TextPostReplayOutcome,
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
-  type TextPostStore,
   type TextPostSubmissionDocument,
 } from "../../ports.ts";
-import {
-  evaluateTextModerationV2,
-  type TextModerationProviderServiceV1,
-} from "../../text-moderation-runtime.ts";
+import type { TextModerationProviderServiceV1 } from "../../text-moderation-runtime.ts";
+import type { TextPublicationStoreService } from "../../text-publication-store.ts";
 import {
   type PersonaStoreService,
   PersonaUnavailable,
@@ -40,11 +36,6 @@ import {
 export { TextModerationProviderError } from "../../ports.ts";
 
 const exactParseOptions = { onExcessProperty: "error" } as const;
-const MAX_POLICY_RETRIES = 3;
-
-export class TextPostPolicyStale extends Data.TaggedError("TextPostPolicyStale")<{
-  readonly attempts: number;
-}> {}
 
 export class TextPostRuntimeUnavailable extends Data.TaggedError("TextPostRuntimeUnavailable") {}
 
@@ -55,7 +46,7 @@ export type TextPostCreateInput = Readonly<{
 }>;
 
 export type TextPostServices = Readonly<{
-  readonly textPostStore?: TextPostStore["Service"];
+  readonly textPostStore?: TextPublicationStoreService;
   readonly textModerationProvider?: TextModerationProviderServiceV1;
   readonly personaStore?: Pick<PersonaStoreService, "findOwned">;
 }>;
@@ -140,11 +131,9 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   | NotFound
   | ReplyDepthExceeded
   | InternalError
-  | TextPostPolicyStale
   | TextPostRuntimeUnavailable
 > {
   const store = services.textPostStore;
-  const moderationProvider = services.textModerationProvider;
   const personaStore = services.personaStore;
   if (store === undefined || personaStore === undefined)
     return yield* new TextPostRuntimeUnavailable();
@@ -170,35 +159,24 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   if (idempotencyKey.trim().length === 0)
     return yield* new BadRequest({ message: "An idempotency key is required" });
 
-  for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt += 1) {
-    const replay: TextPostReplayOutcome = yield* store
-      .replay({
-        communityId: input.communityId,
-        actor: input.actor,
-        personaId: body.persona_id,
-        idempotencyKey,
-        requestHash,
-        surface: "text_post",
-      })
-      .pipe(Effect.mapError(mapStoreFailure));
-    if (replay.kind === "replay") return replay.snapshot;
-    if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
-
-    yield* store
-      .checkAuthority({ communityId: input.communityId, actor: input.actor })
-      .pipe(Effect.mapError(mapStoreFailure));
-
-    // The provider is deliberately outside the repository transaction. A
-    // stale policy result is discarded by commitTerminal and evaluated again.
-    const { evaluation, restrictedEvidence } = yield* evaluateTextModerationV2({
+  const replay: TextPostReplayOutcome = yield* store
+    .replay({
       communityId: input.communityId,
-      moderationInput: text.input,
-      inputSha256: text.inputSha256,
-      store,
-      provider: moderationProvider,
-      authorDeclaredRating: body.author_declared_rating ?? "general",
-    }).pipe(Effect.mapError(mapStoreFailure));
-    const commitInput = {
+      actor: input.actor,
+      personaId: body.persona_id,
+      idempotencyKey,
+      requestHash,
+      surface: "text_post",
+    })
+    .pipe(Effect.mapError(mapStoreFailure));
+  if (replay.kind === "replay") return replay.snapshot;
+  if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
+
+  yield* store
+    .checkAuthority({ communityId: input.communityId, actor: input.actor })
+    .pipe(Effect.mapError(mapStoreFailure));
+  const committed = yield* store
+    .commitPublished({
       communityId: input.communityId,
       actor: input.actor,
       personaId: body.persona_id,
@@ -208,19 +186,11 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
       requestHash,
       operationId: `operation_${crypto.randomUUID()}`,
       target: { surface: "text_post", communityId: input.communityId },
-    } as const;
-    const commitEffect = store.commitTerminal({
-      ...commitInput,
-      evaluation,
-      ...(restrictedEvidence === undefined ? {} : { restrictedEvidence }),
-    });
-    const committed: TextPostCommitOutcome = yield* commitEffect.pipe(
-      Effect.mapError(mapStoreFailure),
-    );
-    if (committed.kind === "created" || committed.kind === "replay") return committed.snapshot;
-    if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
-  }
-  return yield* new TextPostPolicyStale({ attempts: MAX_POLICY_RETRIES });
+      authorDeclaredRating: body.author_declared_rating ?? "general",
+    })
+    .pipe(Effect.mapError(mapStoreFailure));
+  if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
+  return committed.snapshot;
 });
 
 export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(function* (

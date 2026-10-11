@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { CommunityModerationStoreError } from "@pirate/application/use-cases/content/community-moderation-runtime";
-import { MODERATION_POLICY_CATEGORIES_V1, type ModerationPolicyTableV1 } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   castPostVoteInputFrom,
@@ -21,21 +20,6 @@ type TextStore = NonNullable<ProductHandlerServices["textPostStore"]>;
 type Moderation = NonNullable<ProductHandlerServices["textModerationProvider"]>;
 type PersonaStore = NonNullable<ProductHandlerServices["personaStore"]>;
 type CommunityModerationStore = NonNullable<ProductHandlerServices["moderationStore"]>;
-const policy = {
-  policy_revision: "text-policy-1",
-  policy_hash: "a".repeat(64),
-  platform_policy_revision: "platform-1",
-  platform_policy_hash: "b".repeat(64),
-  community_policy_revision: "community-1",
-  community_policy_hash: "c".repeat(64),
-  platform_policy: Object.fromEntries(
-    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
-  ) as ModerationPolicyTableV1,
-  community_policy: Object.fromEntries(
-    MODERATION_POLICY_CATEGORIES_V1.map((category) => [category, "permit"]),
-  ) as ModerationPolicyTableV1,
-};
-
 const personaId = "persona-a";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
@@ -141,10 +125,9 @@ function stores(
       ...overrides.content,
     } as unknown as ContentStore,
     textPostStore: {
-      readModerationPolicy: () => Effect.succeed(policy),
       checkAuthority: () => Effect.succeed(undefined),
       replay: () => Effect.succeed({ kind: "none" as const }),
-      commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
+      commitPublished: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
       getForAuthor: () => Effect.succeed(textSubmission),
       ...overrides.textPost,
     } as TextStore,
@@ -582,8 +565,8 @@ describe("HTTP product handlers", () => {
           },
         },
         textPost: {
-          commitTerminal: (input) => {
-            observed.push({ commitTerminal: input });
+          commitPublished: (input) => {
+            observed.push({ commitPublished: input });
             return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
           },
         },
@@ -628,14 +611,14 @@ describe("HTTP product handlers", () => {
     );
 
     expect(observed[0]).toMatchObject({
-      commitTerminal: {
+      commitPublished: {
         communityId: "community-a",
         actor: { userId: "user-a", kind: "user" },
         body: postBody,
         idempotencyKey: "post-key",
         requestHash: expect.any(String),
         operationId: expect.any(String),
-        evaluation: { decision: "allow", surface: "text_post" },
+        authorDeclaredRating: "general",
       },
     });
     expect(observed.slice(1)).toEqual([

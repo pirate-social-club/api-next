@@ -1,4 +1,4 @@
-import type { ControlPlaneError } from "@pirate/application";
+import { type ControlPlaneError, RewardOperationsPaused } from "@pirate/application";
 
 type MegapotStorageFailureReason = "conflict" | "constraint" | "outcome-unknown" | "unavailable";
 
@@ -30,4 +30,22 @@ export function mapMegapotStorageFailure<E, F>(
 ): E | F {
   const reason = classifyMegapotStorageFailure(error);
   return reason === undefined ? (error as E) : makeFailure(reason);
+}
+
+/** Only reward reservation repositories translate the brake SQLSTATE into a hold. */
+export function mapRewardReservationFailure<E, F>(
+  error: E | ControlPlaneError,
+  makeFailure: (reason: MegapotStorageFailureReason) => F,
+): E | F | RewardOperationsPaused {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "ControlPlaneStatementFailed" &&
+    "sqlState" in error &&
+    error.sqlState === "PR001"
+  ) {
+    return new RewardOperationsPaused({ reason: "paused" });
+  }
+  return mapMegapotStorageFailure(error, makeFailure);
 }

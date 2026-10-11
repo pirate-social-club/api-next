@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { HnsChainObservationResultV1 } from "@pirate/application/namespace-ownership";
+import type {
+  HnsChainObservationResultV1,
+  HnsRootResourceRecordV1,
+} from "@pirate/application/namespace-ownership";
 import {
   decodeHnsRootImportReadinessResultV1,
   HNS_ROOT_READINESS_OBSERVATION_REQUEST_VERSION,
@@ -12,6 +15,7 @@ import {
   initialHnsRootImportLifecycleStateV1,
 } from "@pirate/domain";
 import { HnsRootReadinessObservationError, observeHnsRootReadinessV1 } from "./observe-root.ts";
+import { PowerDnsManagedProfileMismatchError } from "./powerdns.ts";
 import {
   HNS_AUTHORITY_PROVISION_REQUEST_VERSION,
   type HnsAuthorityZoneResult,
@@ -52,7 +56,10 @@ function observedCurrent(records: readonly unknown[]): HnsChainObservationResult
   };
 }
 
-async function fixture() {
+async function fixture(
+  nameservers: readonly [string, string] = ["ns1.pirate.", "ns2.pirate."],
+  glueRecords: readonly { type: "GLUE4"; ns: string; address: string }[] = [],
+) {
   const managedZoneBytes = encoder.encode(
     canonicalJson({ root_label: "newroot", serial: 7, managed: true }),
   );
@@ -82,6 +89,8 @@ async function fixture() {
       expires_at: "2099-01-01T00:00:00.000Z",
     },
     {
+      nameservers,
+      glue_records: glueRecords,
       observe_current_resource: async () => observedCurrent([{ type: "TXT", txt: ["preserved"] }]),
       ensure_zone: async () => zone,
     },
@@ -91,7 +100,7 @@ async function fixture() {
   };
   const observedZoneSha256 = await sha256(managedZoneBytes);
   const authorityView = (ordinal: 1 | 2) => ({
-    authority_nameserver: `ns${ordinal}.pirate`,
+    authority_nameserver: nameservers[ordinal === 1 ? 0 : 1].slice(0, -1),
     authority_address_family: "GLUE4" as const,
     authority_address: `192.0.2.${String(52 + ordinal)}`,
     dnssec_validation: "secure" as const,
@@ -131,8 +140,45 @@ async function fixture() {
 }
 
 describe("HNS root readiness observation", () => {
+  test("accepts an exact in-bailiwick NS, glue, DS and TXT authority", async () => {
+    const nameservers = ["ns1.newroot.", "ns2.newroot."] as const;
+    const glueRecords = [
+      { type: "GLUE4", ns: nameservers[0], address: "192.0.2.53" },
+      { type: "GLUE4", ns: nameservers[1], address: "192.0.2.54" },
+    ] as const;
+    const state = await fixture(nameservers, glueRecords);
+    const observed = await observeHnsRootReadinessV1({
+      observation_attempt: { job_id: "glue-job", executor_id: "executor", lease_fence: 1 },
+      operation_kind: "observe_root_v1",
+      request: state.request,
+      publish_plan_bytes: state.provision.publish_plan_bytes,
+      provision_result_bytes: state.provision.result_bytes,
+      ports: {
+        observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
+        reconcile_zone: async () => {},
+        inspect_zone: async () => ({ ...state.zone, created: false }),
+        observe_live: async () => state.live,
+      },
+      config: {
+        environment: "staging",
+        valid_for_seconds: 86_400,
+        nameservers,
+        glue_records: glueRecords,
+        now: () => now,
+      },
+    });
+    const decoded = await decodeHnsRootImportReadinessResultV1(observed.result_bytes);
+    expect(decoded.result.delegation_matches).toBe(true);
+    expect(
+      (state.plan.replacement_records as readonly HnsRootResourceRecordV1[]).filter(
+        (record) => record.type === "GLUE4",
+      ),
+    ).toEqual([...glueRecords]);
+  });
+
   test("retains exact chain, signed-zone, shared TLSA, and bounded inventory evidence", async () => {
-    const state = await fixture();
+    const nameservers = ["ns1.staging-hns.", "ns2.staging-hns."] as const;
+    const state = await fixture(nameservers);
     let reconciledZone = false;
     const observed = await observeHnsRootReadinessV1({
       observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
@@ -148,6 +194,7 @@ describe("HNS root readiness observation", () => {
             root_label: "newroot",
             challenge_txt_value: "pirate-verification=challenge",
             expected_ds_records: state.zone.ds_records,
+            expected_managed_rrset_sha256: state.zone.managed_rrset_sha256,
             mutation_lease: {
               job_id: "observation-job",
               executor_id: "executor",
@@ -156,12 +203,21 @@ describe("HNS root readiness observation", () => {
           });
           reconciledZone = true;
         },
-        inspect_zone: async () => ({ ...state.zone, created: false }),
+        inspect_zone: async (input) => {
+          // Inspection is held to the profile the provision result recorded.
+          expect(input).toEqual({
+            root_label: "newroot",
+            challenge_txt_value: "pirate-verification=challenge",
+            expected_managed_rrset_sha256: state.zone.managed_rrset_sha256,
+          });
+          return { ...state.zone, created: false };
+        },
         observe_live: async () => state.live,
       },
       config: {
         environment: "test",
         valid_for_seconds: 86_400,
+        nameservers,
         now: () => Date.parse("2026-09-01T06:00:00.000Z"),
       },
     });
@@ -177,6 +233,7 @@ describe("HNS root readiness observation", () => {
       retained_zone_digest_matches: true,
       gateway_healthy: true,
       valid_until: "2026-09-02T06:00:00.000Z",
+      authority_views: nameservers.map((name) => ({ authority_nameserver: name.slice(0, -1) })),
     });
     expect(decoded.managed_zone_bytes).toEqual(state.zone.managed_zone_bytes);
     expect(decoded.authority_inventory.dns_write_capabilities).toEqual([
@@ -265,9 +322,11 @@ describe("HNS root readiness observation", () => {
     const decoded = await decodeHnsRootImportReadinessResultV1(renewed.result_bytes);
     expect(decoded.result.root_label).toBe(state.request.root_label);
 
-    // Grant and generation continuity: renewal reports the same authority
-    // identity it was issued against, so a renewal cannot quietly migrate an
-    // operation onto different infrastructure.
+    // Grant and generation continuity: renewal reports the same delegation
+    // and inventory identity it was issued against. That a renewal cannot
+    // quietly move an operation onto a different gateway deployment is held
+    // by the renewal preparation in the database, which accepts only the
+    // current revision's reference; the observation no longer compares it.
     const baseline = await decodeHnsRootImportReadinessResultV1(
       (await renew(state.plan.replacement_records)).result_bytes,
     );
@@ -277,6 +336,58 @@ describe("HNS root readiness observation", () => {
     // Losing the delegation itself is a different matter and must not renew.
     await expect(renew(withoutType(state.plan.replacement_records, "NS"))).rejects.toThrow();
     await expect(renew(withoutType(state.plan.replacement_records, "DS"))).rejects.toThrow();
+  });
+
+  test("renewal follows a rotated gateway reference; first readiness still requires the provisioned one", async () => {
+    const state = await fixture();
+    // A reviewed authority successor has moved this root to another gateway
+    // deployment, and the provisioner is configured with that one. The
+    // provision result still records the reference the root was created with.
+    const rotated = {
+      ...state.zone,
+      created: false,
+      gateway_deployment_reference: "gateway-deployment-v2",
+    };
+    const observe = (
+      operation_kind: "observe_root_v1" | "renew_health_v1",
+      zone: typeof state.zone,
+    ) =>
+      observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "rotated-gateway", executor_id: "executor", lease_fence: 1 },
+        operation_kind,
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
+          reconcile_zone: async () => {},
+          inspect_zone: async () => zone,
+          observe_live: async () => state.live,
+        },
+        config: {
+          environment: "test",
+          valid_for_seconds: 604_800,
+          now: () => Date.parse("2026-09-05T06:00:00.000Z"),
+        },
+      });
+
+    // Renewal proceeds and reports the configured reference, which the
+    // renewal preparation in the database then holds to the current revision.
+    const renewed = await decodeHnsRootImportReadinessResultV1(
+      (await observe("renew_health_v1", rotated)).result_bytes,
+    );
+    expect(renewed.result.gateway_deployment_reference).toBe("gateway-deployment-v2");
+
+    // A root that is not activated yet has no revision to hold it to.
+    await expect(observe("observe_root_v1", rotated)).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_mismatch"),
+    );
+
+    // The allowance is the reference alone. A different certificate key is
+    // still a mismatch in renewal.
+    await expect(
+      observe("renew_health_v1", { ...rotated, gateway_certificate_spki_sha256: "f".repeat(64) }),
+    ).rejects.toEqual(new HnsRootReadinessObservationError("authority_mismatch"));
   });
 
   test("reports owner-update pending without inspecting authority", async () => {
@@ -306,6 +417,39 @@ describe("HNS root readiness observation", () => {
     ).rejects.toEqual(new HnsRootReadinessObservationError("owner_update_pending"));
     expect(reconciledZone).toBe(false);
     expect(inspectedZone).toBe(false);
+  });
+
+  test("configuration that no longer reproduces the provision result is a mismatch; any other reconcile failure is an outage", async () => {
+    const state = await fixture();
+    let inspected = 0;
+    const observe = (failure: Error) =>
+      observeHnsRootReadinessV1({
+        observation_attempt: { job_id: "observation-job", executor_id: "executor", lease_fence: 1 },
+        operation_kind: "observe_root_v1",
+        request: state.request,
+        publish_plan_bytes: state.provision.publish_plan_bytes,
+        provision_result_bytes: state.provision.result_bytes,
+        ports: {
+          observe_current_resource: async () =>
+            observedCurrent([...state.plan.replacement_records].reverse()),
+          reconcile_zone: async () => {
+            throw failure;
+          },
+          inspect_zone: async () => {
+            inspected++;
+            return state.zone;
+          },
+          observe_live: async () => state.live,
+        },
+        config: { environment: "test", valid_for_seconds: 86_400 },
+      });
+    await expect(observe(new PowerDnsManagedProfileMismatchError())).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_mismatch"),
+    );
+    await expect(observe(new Error("provider unreachable"))).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_unavailable"),
+    );
+    expect(inspected).toBe(0);
   });
 
   test("refuses forged health facts and mismatched authority-zone evidence", async () => {

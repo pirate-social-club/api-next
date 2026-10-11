@@ -11,7 +11,10 @@ import {
   type MegapotReservedApproval,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
-import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import {
+  mapMegapotStorageFailure,
+  mapRewardReservationFailure,
+} from "./control-plane-error-classification.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -24,6 +27,13 @@ const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
     Effect.mapError((error) =>
       mapMegapotStorageFailure<E, MegapotApprovalStorageFailed>(error, storage),
+    ),
+  );
+
+const mappedReservation = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
+  effect.pipe(
+    Effect.mapError((error) =>
+      mapRewardReservationFailure<E, MegapotApprovalStorageFailed>(error, storage),
     ),
   );
 
@@ -119,7 +129,7 @@ function loadCandidateIn(
     const result = yield* transaction.execute<Row>({
       label: "megapot-approval.candidate.read",
       text: `${CANDIDATE_SELECT}
-              WHERE attestation.attestation_id=$1 AND attestation.status='active'
+              WHERE attestation.attestation_id=$1
               ${lock ? "FOR SHARE OF attestation" : ""}`,
       values: [attestationId],
       readonly: !lock,
@@ -365,7 +375,7 @@ export function makeControlPlaneMegapotApprovalRepository() {
         }),
       ),
     reserveNonce: (input: Parameters<MegapotApprovalStore["reserveNonce"]>[0]) =>
-      mapped(
+      mappedReservation(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input));

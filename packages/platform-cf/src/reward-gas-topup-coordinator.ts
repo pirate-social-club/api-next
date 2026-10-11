@@ -11,6 +11,7 @@ import { type Hex, keccak256, parseTransaction, toBytes } from "viem";
 import type { MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 export class RewardGasTopupCoordinatorFailed extends Data.TaggedError(
   "RewardGasTopupCoordinatorFailed",
@@ -139,6 +140,7 @@ export function makeRewardGasTopupCoordinator(input: {
   readonly store: RewardGasTopupSendStore;
   readonly rpc: RewardGasTopupRpc;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;
@@ -260,10 +262,30 @@ export function makeRewardGasTopupCoordinator(input: {
     effect: RewardGasTopupPreparedEffect,
   ) {
     if (effect.state !== "prepared") return yield* reconcilePrepared(effect);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(input.rpc, effect.signedTransactionHash)) {
+      yield* input.store.recordSubmission({
+        effectId: effect.effectId,
+        transactionHash: effect.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...effect,
+        state: "broadcast_pending",
+        transactionHash: effect.signedTransactionHash,
+      });
+    }
     yield* attest(effect);
     if (!signedTransferMatches(effect)) {
       return yield* failed("receipt_evidence_invalid", "prepare");
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* attempt(() =>
       input.rpc.sendRawTransaction(effect.signedTransaction as Hex),
     );
@@ -322,6 +344,8 @@ export function makeRewardGasTopupCoordinator(input: {
     ) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       input.signer.sign({
         chainId: reservation.chainId,

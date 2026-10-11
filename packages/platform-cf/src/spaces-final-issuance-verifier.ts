@@ -11,6 +11,12 @@ const OBSERVE_URL = "https://spaces-verifier.pirate.sc/v1/observe-name";
 const HEX_64 = /^[0-9a-f]{64}$/u;
 const SCRIPT = /^5120[0-9a-f]{64}$/u;
 
+function retryDiagnostic(phase: string, status?: number): void {
+  // Keep names, scripts, credentials, certificate bodies and upstream errors
+  // out of Workers Logs. The phase and HTTP status are enough to route a retry.
+  console.warn("spaces.final_issuance.verifier_retry", { phase, status: status ?? null });
+}
+
 export type SpacesVerifierFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 export type SpacesVerifierCredentials = Readonly<{
@@ -102,7 +108,7 @@ export function makeSpacesFinalIssuanceVerifier(
           });
           const response = await fetchImpl(VERIFY_URL, {
             method: "POST",
-            redirect: "error",
+            redirect: "manual",
             headers: {
               "content-type": "application/json",
               "CF-Access-Client-Id": credentials.accessClientId,
@@ -115,12 +121,15 @@ export function makeSpacesFinalIssuanceVerifier(
               recipient_script_pubkey_hex: target.script_pubkey_hex,
             }),
             signal,
+          }).catch((error: unknown) => {
+            retryDiagnostic("verify_transport");
+            throw error;
           });
           if (response.status === 409) {
             await response.body?.cancel();
             const observed = await fetchImpl(OBSERVE_URL, {
               method: "POST",
-              redirect: "error",
+              redirect: "manual",
               headers: {
                 "content-type": "application/json",
                 "CF-Access-Client-Id": credentials.accessClientId,
@@ -129,20 +138,31 @@ export function makeSpacesFinalIssuanceVerifier(
               },
               body: JSON.stringify({ root: `@${target.namespace_root}`, name }),
               signal,
+            }).catch((error: unknown) => {
+              retryDiagnostic("observe_transport");
+              throw error;
             });
             if (observed.status === 409) {
               await observed.body?.cancel();
+              retryDiagnostic("both_pending", 409);
               return { kind: "pending" };
             }
             if (observed.status !== 200) {
+              retryDiagnostic("observe_response", observed.status);
               await observed.body?.cancel();
               throw new Error("Spaces verifier unavailable");
             }
-            const evidence = parseEvidence(
-              await observed.json(),
-              target,
-              "spaces-verifier-name-observation-v1",
-            );
+            let evidence: VerifierEvidence;
+            try {
+              evidence = parseEvidence(
+                await observed.json(),
+                target,
+                "spaces-verifier-name-observation-v1",
+              );
+            } catch (error) {
+              retryDiagnostic("observe_evidence", 200);
+              throw error;
+            }
             if (evidence.recipient_script_pubkey_hex === target.script_pubkey_hex) {
               return { kind: "final", evidence: finalEvidence(evidence) };
             }
@@ -153,11 +173,19 @@ export function makeSpacesFinalIssuanceVerifier(
             };
           }
           if (response.status !== 200) {
+            retryDiagnostic("verify_response", response.status);
             await response.body?.cancel();
             throw new Error("Spaces verifier unavailable");
           }
-          const evidence = parseEvidence(await response.json(), target, "spaces-verifier-v1");
+          let evidence: VerifierEvidence;
+          try {
+            evidence = parseEvidence(await response.json(), target, "spaces-verifier-v1");
+          } catch (error) {
+            retryDiagnostic("verify_evidence", 200);
+            throw error;
+          }
           if (evidence.recipient_script_pubkey_hex !== target.script_pubkey_hex) {
+            retryDiagnostic("recipient_mismatch", 200);
             throw new Error("Spaces verifier recipient mismatch");
           }
           return {
