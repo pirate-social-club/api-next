@@ -110,6 +110,7 @@ async function seedKaraokeSong(admin: Client): Promise<void> {
   );
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
+    alignment_source_ref: "media://immutable/karaoke-operation-stem-vocal_audio/audio/1",
     alignment_source_sha256: "9".repeat(64),
     mode: "word",
     segments: WORDS.map((text, index) => ({
@@ -193,6 +194,7 @@ async function seedKaraokeMarkerSong(admin: Client): Promise<void> {
   );
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
+    alignment_source_ref: "media://immutable/kmark-operation-stem-vocal_audio/audio/1",
     alignment_source_sha256: "9".repeat(64),
     mode: "word",
     segments: MARKER_WORDS.map((text, index) => ({

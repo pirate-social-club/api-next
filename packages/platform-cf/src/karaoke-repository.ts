@@ -169,6 +169,7 @@ const sessionSource = (db: ControlPlaneTransaction, communityId: string, postId:
       text: `SELECT publication.audio_revision, publication.lyrics_revision,
                     publication.canonical_audio_sha256, publication.lyrics_text,
                     instrumental.canonical_sha256 AS instrumental_sha256,
+                    vocal.immutable_ref AS vocal_ref,
                     vocal.canonical_sha256 AS vocal_sha256,
                     artifact.artifact_sha256, artifact.artifact,
                     registry.current_policy_version_id
@@ -208,8 +209,13 @@ const sessionSource = (db: ControlPlaneTransaction, communityId: string, postId:
     if (source.rows.length === 0) return yield* rejected("not-found");
     if (source.rows.length !== 1) return yield* failed("invalid-row");
     const row = source.rows[0] as Row;
+    const vocalRef = typeof row.vocal_ref === "string" ? row.vocal_ref : null;
     const vocalHash = typeof row.vocal_sha256 === "string" ? row.vocal_sha256 : null;
-    if (vocalHash === null || !isVocalAlignedArtifact(row.artifact, vocalHash)) {
+    if (
+      vocalRef === null ||
+      vocalHash === null ||
+      !isVocalAlignedArtifact(row.artifact, vocalRef, vocalHash)
+    ) {
       return yield* rejected("not-found");
     }
     const catalog = yield* db.execute<Row>({

@@ -45,11 +45,17 @@ type PayloadLine = Readonly<{
   words: readonly TimedWord[];
 }>;
 
-export const isVocalAlignedArtifact = (artifact: unknown, vocalSha256: string): boolean =>
-  typeof artifact === "object" &&
-  artifact !== null &&
-  "alignment_source_sha256" in artifact &&
-  artifact.alignment_source_sha256 === vocalSha256;
+export const isVocalAlignedArtifact = (
+  artifact: unknown,
+  vocalRef: string,
+  vocalSha256: string,
+): boolean =>
+  Schema.is(
+    Schema.Struct({
+      alignment_source_ref: Schema.Literal(vocalRef),
+      alignment_source_sha256: Schema.Literal(vocalSha256),
+    }),
+  )(artifact);
 
 export const karaokeRevisionId = (input: {
   audioSha256: string;
@@ -217,6 +223,7 @@ const repository = (input: {
                     publication.lyrics_text,
                     instrumental.immutable_ref AS instrumental_ref,
                     instrumental.canonical_sha256 AS instrumental_sha256,
+                    vocal.immutable_ref AS vocal_ref,
                     vocal.canonical_sha256 AS vocal_sha256,
                     artifact.artifact_sha256, artifact.artifact
                FROM posts AS post
@@ -265,8 +272,14 @@ const repository = (input: {
     }
     const instrumentalRef = string(row, "instrumental_ref");
     const instrumentalHash = string(row, "instrumental_sha256");
+    const vocalRef = string(row, "vocal_ref");
     const vocalHash = string(row, "vocal_sha256");
-    if (instrumentalRef === null || instrumentalHash === null || vocalHash === null) {
+    if (
+      instrumentalRef === null ||
+      instrumentalHash === null ||
+      vocalRef === null ||
+      vocalHash === null
+    ) {
       return decode({ state: "unavailable", reason: "stems_missing" });
     }
     if (row.alignment_status === "pending" || row.alignment_status === null) {
@@ -287,7 +300,7 @@ const repository = (input: {
       artifactHash === null ||
       title === null ||
       row.artifact === null ||
-      !isVocalAlignedArtifact(row.artifact, vocalHash)
+      !isVocalAlignedArtifact(row.artifact, vocalRef, vocalHash)
     ) {
       return decode({ state: "unavailable", reason: "invalid_timed_lyrics" });
     }

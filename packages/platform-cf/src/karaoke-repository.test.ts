@@ -15,10 +15,12 @@ const sourceResult: Result = {
       lyrics_revision: 1,
       canonical_audio_sha256: "a".repeat(64),
       instrumental_sha256: "c".repeat(64),
+      vocal_ref: "vocal-ref",
       vocal_sha256: "d".repeat(64),
       artifact_sha256: "b".repeat(64),
       artifact: {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: "vocal-ref",
         alignment_source_sha256: "d".repeat(64),
         mode: "word",
         segments: [
