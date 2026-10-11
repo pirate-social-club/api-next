@@ -27,6 +27,10 @@ export function alignmentRecoveryAuthority(
       contentType: "audio/mpeg",
       sizeBytes: 4,
     },
+    vocalStem: {
+      immutableRef: "immutable-recovery-vocal",
+      canonicalSha256: "b".repeat(64),
+    },
     termsRevision: 1,
     lyrics: {
       lyricsRevision: 1,
