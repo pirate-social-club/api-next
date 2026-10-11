@@ -8,7 +8,10 @@ import {
 import { generateClient, generateOpenApi } from "./codegen.ts";
 import { endpoint } from "./endpoint.ts";
 import { GuestBadRequest, GuestConflict, GuestPendingConflict, toErrorBody } from "./errors.ts";
-import { CleanupGuestBrowserProofV1 } from "./guest-browser-authority.ts";
+import {
+  CleanupGuestBrowserProofV1,
+  ListGuestParticipationsV1,
+} from "./guest-browser-authority.ts";
 import {
   GuestAuthorityV1,
   GuestParticipationProjectionV1,
@@ -16,6 +19,7 @@ import {
 } from "./guest-participation.ts";
 import { guestParticipationRegistry } from "./guest-registry.ts";
 import {
+  GuestStudyPreparedContentV1,
   GuestStudySessionV1,
   GuestStudyStartOperationV1,
   StartGuestStudySessionV1,
@@ -101,7 +105,7 @@ const session = () => ({
   created_at: instant,
   completed_at: null,
   expires_at: "2026-10-12T10:00:00.000Z",
-  reward_mode: "practice",
+  reward_mode: "practice_only",
   reward_terms: null,
   participation: { state: "practice_only" },
 });
@@ -235,11 +239,14 @@ describe("disabled guest interface checkpoint", () => {
       target_language: null,
       learner_band: null,
       timezone: "UTC",
-      reward_mode: "practice",
+      reward_mode: "practice_only",
       reward_preview_terms_hash: null,
       disclosure: { version: "disclosure-v1", accepted: true },
     };
     expect(() => decode(StartGuestStudySessionV1.request.body, body)).not.toThrow();
+    expect(() =>
+      decode(StartGuestStudySessionV1.request.body, { ...body, reward_mode: "practice" }),
+    ).toThrow();
     for (const field of ["persona_id", "account_id", "drawing_id", "source_kind"])
       expect(() =>
         decode(StartGuestStudySessionV1.request.body, { ...body, [field]: "invented" }),
@@ -247,6 +254,90 @@ describe("disabled guest interface checkpoint", () => {
     expect(() =>
       decode(StartGuestStudySessionV1.request.body, { ...body, reward_mode: "megapot_guest_v1" }),
     ).toThrow();
+  });
+  test("participation limits decode canonical HTTP query strings", () => {
+    for (const limit of ["1", "25", "100"])
+      expect(decode(ListGuestParticipationsV1.request.query, { limit }).limit).toBe(limit);
+    for (const limit of ["0", "101", "01", "-1", "1.0", "invalid", 25])
+      expect(() => decode(ListGuestParticipationsV1.request.query, { limit })).toThrow();
+  });
+  test("public prepared readiness has finite response bounds", () => {
+    const value = {
+      object: "guest_study_prepared_content_v1",
+      reward_preview: null,
+      disclosure: { version: "disclosure-v1", text: "Private learning" },
+      availability: {
+        state: "ready",
+        available_exercise_types: ["say_it_back"],
+        learning_language: "en",
+        target_languages: ["es"],
+        learner_bands: ["A1"],
+      },
+    };
+    expect(() => decode(GuestStudyPreparedContentV1, value)).not.toThrow();
+    expect(() =>
+      decode(GuestStudyPreparedContentV1, {
+        ...value,
+        availability: {
+          ...value.availability,
+          target_languages: Array.from({ length: 129 }, () => "es"),
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(GuestStudyPreparedContentV1, {
+        ...value,
+        availability: {
+          ...value.availability,
+          available_exercise_types: ["say_it_back", "translation_choice", "say_it_back"],
+        },
+      }),
+    ).toThrow();
+  });
+  test("rewarded sessions retain accepted source, policy, original drawing and offer leg", () => {
+    const value = session();
+    const terms = {
+      community_id: value.community_id,
+      post_id: value.post_id,
+      audio_revision: value.audio_revision,
+      lyrics_revision: value.lyrics_revision,
+      offer_id: "offer-1",
+      pool_leg_id: "leg-1",
+      original_drawing_id: "7",
+      qualification_policy_version_id: value.qualification_policy_revision,
+      policy_hash: "a".repeat(64),
+      terms_hash: "b".repeat(64),
+      entry_cutoff_at: instant,
+      disclosure_version: "disclosure-v1",
+    };
+    const rewarded = {
+      ...value,
+      reward_mode: "megapot_guest_v1",
+      reward_terms: terms,
+      participation: {
+        state: "admitted",
+        share_id: "share-1",
+        original_drawing_id: "7",
+        pool_leg_id: "leg-1",
+      },
+    };
+    expect(() => decode(GuestStudySessionV1, rewarded)).not.toThrow();
+    expect(() =>
+      decode(GuestStudySessionV1, {
+        ...rewarded,
+        qualification_policy_revision: "different-policy",
+      }),
+    ).toThrow();
+    for (const field of ["original_drawing_id", "pool_leg_id"])
+      expect(() =>
+        decode(GuestStudySessionV1, {
+          ...rewarded,
+          participation: {
+            ...rewarded.participation,
+            [field]: field === "original_drawing_id" ? "8" : "leg-2",
+          },
+        }),
+      ).toThrow();
   });
   test("cleanup bounds and deduplicates explicit candidates without treating IDs as proof", () => {
     const body = {
@@ -277,6 +368,43 @@ describe("disabled guest interface checkpoint", () => {
   test("one owner liability has no fabricated persona; successful guest binding pins its selection", () => {
     const value = credit();
     expect(() => decode(OwnerRewardCreditV1, value)).not.toThrow();
+    expect(() =>
+      decode(OwnerRewardCreditV1, {
+        ...value,
+        claim: { status: "subject_conflict", payout_status: null },
+      }),
+    ).not.toThrow();
+    expect(() => decode(OwnerRewardCreditV1, { ...value, claim: null })).toThrow();
+    expect(() =>
+      decode(OwnerRewardCreditV1, { ...value, amount_atomic: "1".repeat(79) }),
+    ).toThrow();
+    const accountCredit = {
+      ...value,
+      recipient: {
+        kind: "account_owner",
+        original_persona_id: "persona-1",
+        selection: null,
+        binding: { persona_id: "persona-1", selection_revision: null, bound_at: instant },
+      },
+    };
+    expect(() => decode(OwnerRewardCreditV1, accountCredit)).not.toThrow();
+    expect(() => decode(OwnerRewardCreditV1, { ...accountCredit, claim: null })).toThrow();
+    expect(() =>
+      decode(OwnerRewardCreditV1, {
+        ...accountCredit,
+        available_atomic: "0",
+        reserved_atomic: "123",
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(OwnerRewardCreditV1, { ...accountCredit, available_atomic: "0", paid_atomic: "123" }),
+    ).toThrow();
+    expect(() =>
+      decode(OwnerRewardCreditV1, {
+        ...accountCredit,
+        send: { send_id: "send-1", status: "pending" },
+      }),
+    ).toThrow();
     expect(() => decode(OwnerRewardCreditV1, { ...value, reserved_atomic: "1" })).toThrow();
     expect(() =>
       decode(OwnerRewardCreditV1, { ...value, payout_persona_id: "fabricated" }),

@@ -152,7 +152,7 @@ export const ListGuestParticipationsV1 = guestInterfaceEndpoint({
     ...selected,
     query: Schema.Struct({
       cursor: Schema.optional(GuestIdentifierV1),
-      limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+      limit: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[1-9]|[1-9][0-9]|100)$/u))),
     }),
   },
   response: Schema.Struct({

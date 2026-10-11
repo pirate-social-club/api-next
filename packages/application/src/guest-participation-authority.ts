@@ -225,6 +225,9 @@ export interface GuestAuthorityStore {
       newOwnerId: string;
     }>,
   ) => Result<DurableParticipationOutcome<GuestAuthorityTransition>>;
+  /** Natural-key replay is (origin, credentialId). Preserve transaction-unknown errors;
+   * discover/replay reconciles this exact key without extending an already confirmed lease.
+   */
   readonly confirm: (
     input: Readonly<{
       context: Extract<
@@ -235,6 +238,7 @@ export interface GuestAuthorityStore {
       credentialId: string;
     }>,
   ) => Result<GuestAuthorityTransition>;
+  /** Renewal uncertainty is read through discover before any new deliberate renewal. */
   readonly renew: (
     input: Readonly<{
       context: Extract<
@@ -254,6 +258,9 @@ export interface GuestAuthorityStore {
       issuance: Issuance;
     }>,
   ) => Result<DurableParticipationOutcome<GuestAuthorityTransition>>;
+  /** Natural key is (origin, predecessorCredentialId, successorCredentialId). Unknown COMMIT
+   * reconciles by exact successor proof through discover/replay, without extending its lease.
+   */
   readonly acknowledgeRotation: (
     input: Readonly<{
       context: Extract<
@@ -307,12 +314,18 @@ export interface GuestAttachmentStore {
       Readonly<{ intent: GuestAttachmentIntentV1; cookieEffects: readonly GuestCookieEffect[] }>
     >
   >;
+  /** Preparation owns its natural-key reconciliation under the intent lock. Same CURRENT
+   * canonical account/session returns the existing revision. A changed protected session
+   * advances revision, including returning to a previously prepared session. The store
+   * derives the durable operation from intent + target revision + account/session and
+   * reconciles unresolved preparation before advancing. No browser key supplies authority.
+   */
   readonly prepareTarget: (
     input: Readonly<{
       context: AttachmentContext & { readonly operation: "prepare_target" };
       intentId: string;
     }>,
-  ) => Result<GuestAttachmentPreparedV1>;
+  ) => Result<DurableParticipationOutcome<GuestAttachmentPreparedV1>>;
   /** Owns topology locks, target/session recheck, conflict outcome, binding and revocation COMMIT. */
   readonly confirm: (
     input: Readonly<{
@@ -320,6 +333,7 @@ export interface GuestAttachmentStore {
       intentId: string;
       expectedAccountId: string;
       targetRevision: number;
+      /** Server derives the stable confirmation key from intent and stored target revision. */
       operation: ParticipationOperationIdentity;
     }>,
   ) => Result<DurableParticipationOutcome<GuestAttachmentConfirmResult>>;

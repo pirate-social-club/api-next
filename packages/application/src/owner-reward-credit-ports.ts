@@ -16,6 +16,9 @@ declare const finalizationScope: unique symbol;
 /** Opaque live capability issued by the finalization owner. It exposes no SQL/DB/acquisition.
  * Platform keeps the actual transaction private and rejects foreign, expired or mismatched
  * capability identity before admission. It cannot begin, commit or nest a transaction here.
+ * The erased brand is not a runtime witness: the issuing platform keeps a private exact-token
+ * registry bound to its live transaction. Admission loads qualification/offer/policy evidence
+ * from the accepted operation and verifies all supplied locators against that immutable source.
  */
 export interface ParticipationFinalizationScope {
   readonly [finalizationScope]: true;
@@ -107,10 +110,12 @@ export interface OwnerRewardCreditClaimStore {
   ) => Result<DurableParticipationOutcome<OwnerRewardCreditClaimResult>>;
   readonly operatorAccept: (
     input: Readonly<{
-      operator: Readonly<{ subject: string; scope: "rewards:claims" }>;
+      /** Existing privileged SQL role, separate from ordinary account authority. */
+      operator: Readonly<{ role: "api_next_operator" }>;
       creditId: string;
       recordedSelectionRevision: number | null;
-      exceptionAuditId: string;
+      /** All nonempty audit fields are persisted atomically; only subject_conflict accepts. */
+      audit: Readonly<{ actorRole: string; reason: string; evidenceReference: string }>;
     }>,
   ) => Result<DurableParticipationOutcome<OwnerRewardCreditClaimResult>>;
 }

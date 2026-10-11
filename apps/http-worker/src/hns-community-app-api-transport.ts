@@ -22,8 +22,8 @@ import { Effect } from "effect";
 import type { HnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 
 export const HNS_COMMUNITY_APP_API_MAX_BODY_BYTES = 1_048_576 as const;
-const allowedMethods = new Set(["GET", "HEAD", "POST", "PATCH"]);
-const unsafeMethods = new Set(["POST", "PATCH"]);
+const allowedMethods = new Set(["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"]);
+const unsafeMethods = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
 type RequestHeaders = Readonly<{
   get: (name: string) => string | null;

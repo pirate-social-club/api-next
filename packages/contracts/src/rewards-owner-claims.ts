@@ -1,13 +1,15 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { ProviderUnavailable } from "./errors.ts";
 import { guestBrowserErrorsV1, guestInterfaceEndpoint } from "./guest-browser-authority.ts";
 import {
+  GuestAtomicAmountV1,
   GuestDrawingIdV1,
   GuestIdentifierV1,
   GuestInstantV1,
   GuestPositiveIntegerV1,
 } from "./guest-participation.ts";
-import { ClaimRewardCredit, RewardCreditV1 } from "./rewards-song-offers.ts";
+import { ClaimRewardCredit, RewardCreditClaimV1, RewardCreditV1 } from "./rewards-song-offers.ts";
 
 const Selection = Schema.Struct({
   revision: GuestPositiveIntegerV1,
@@ -54,11 +56,21 @@ export const OwnerRewardCreditV1 = RewardCreditV1.mapFields(
     community_id: GuestIdentifierV1,
     pool_leg_id: GuestIdentifierV1,
     original_drawing_id: GuestDrawingIdV1,
+    amount_atomic: GuestAtomicAmountV1.check(Schema.isPattern(/^[1-9][0-9]*$/u)),
+    available_atomic: GuestAtomicAmountV1,
+    reserved_atomic: GuestAtomicAmountV1,
+    paid_atomic: GuestAtomicAmountV1,
+    claim: RewardCreditClaimV1,
     recipient: OwnerCreditRecipientV1,
   }),
 ).check(
   Schema.makeFilter((credit) => {
     const recipient = credit.recipient;
+    if (
+      credit.claim.status !== "accepted" &&
+      (credit.reserved_atomic !== "0" || credit.paid_atomic !== "0" || credit.send !== null)
+    )
+      return "Every participant credit requires accepted claim authority before payment";
     if (
       recipient.kind === "account_owner" &&
       recipient.original_persona_id !== recipient.binding.persona_id
@@ -67,7 +79,7 @@ export const OwnerRewardCreditV1 = RewardCreditV1.mapFields(
     if (recipient.kind === "guest_owner") {
       if (recipient.binding === null) {
         if (
-          credit.claim?.status === "accepted" ||
+          credit.claim.status === "accepted" ||
           credit.reserved_atomic !== "0" ||
           credit.paid_atomic !== "0" ||
           credit.send !== null
@@ -76,14 +88,11 @@ export const OwnerRewardCreditV1 = RewardCreditV1.mapFields(
       } else if (
         recipient.selection.revision !== recipient.binding.selection_revision ||
         recipient.selection.persona_id !== recipient.binding.persona_id ||
-        credit.claim?.status !== "accepted"
+        credit.claim.status !== "accepted"
       )
         return "Guest binding pins the accepted selection and claim";
     }
-    if (
-      credit.claim !== null &&
-      (credit.claim.status === "accepted") !== (credit.claim.payout_status !== null)
-    )
+    if ((credit.claim.status === "accepted") !== (credit.claim.payout_status !== null))
       return "Only an accepted claim has payout status";
     if (
       BigInt(credit.available_atomic) +
@@ -127,5 +136,5 @@ export const ClaimOwnerRewardCreditV1 = guestInterfaceEndpoint({
     outcome: ClaimRewardCredit.response.fields.outcome,
     credit: OwnerRewardCreditV1,
   }),
-  errors: guestBrowserErrorsV1,
+  errors: [...guestBrowserErrorsV1, ProviderUnavailable],
 });

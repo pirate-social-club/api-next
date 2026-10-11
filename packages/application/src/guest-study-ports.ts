@@ -44,9 +44,10 @@ export type OwnerStudyAnswer =
       answer: GuestStudyAnswerResultV1;
       participation: GuestParticipationResultV1;
     }>;
-type Input<K extends keyof StudyV2Store> = Omit<Parameters<StudyV2Store[K]>[0], "accountId"> &
+type ReadInput<K extends keyof StudyV2Store> = Omit<Parameters<StudyV2Store[K]>[0], "accountId"> &
+  Readonly<{ access: LearningAccess }>;
+type MutationInput<K extends keyof StudyV2Store> = ReadInput<K> &
   Readonly<{
-    access: LearningAccess;
     source: ParticipationSource;
     operation: ParticipationOperationIdentity;
   }>;
@@ -83,31 +84,32 @@ export interface PreparedGuestStudyContentStore {
 }
 /** Successor protocol. Existing account-v2 store and response schemas remain intact. */
 export interface OwnerAwareStudyV2Store {
-  readonly getAvailability: (input: Input<"getAvailability">) => Result<StudyAvailabilityV2>;
+  readonly getAvailability: (input: ReadInput<"getAvailability">) => Result<StudyAvailabilityV2>;
   readonly startSession: (
-    input: Omit<Input<"startSession">, "personaId" | "access"> &
+    input: Omit<MutationInput<"startSession">, "personaId" | "access"> &
       Readonly<{
         access: GuestLearningAccess;
         source: Extract<ParticipationSource, { kind: "guest" }>;
-        rewardMode: "practice" | "megapot_guest_v1";
+        rewardMode: "practice_only" | "megapot_guest_v1";
         rewardTerms: GuestRewardTermsV1 | null;
         disclosure: Readonly<{ version: string; accepted: boolean }>;
         resourceReservationId: string;
       }>,
   ) => Result<DurableParticipationOutcome<OwnerStudySession>>;
-  readonly getSession: (input: Input<"getSession">) => Result<OwnerStudySession | null>;
+  /** Resolve immutable source from the resource, then authorize access. No caller source/key. */
+  readonly getSession: (input: ReadInput<"getSession">) => Result<OwnerStudySession | null>;
   readonly submitAnswer: (
-    input: Input<"submitAnswer">,
+    input: MutationInput<"submitAnswer">,
   ) => Result<DurableParticipationOutcome<OwnerStudyAnswer>>;
   readonly loadSpokenAnswerContext: (
-    input: Input<"loadSpokenAnswerContext">,
-  ) => Result<StudySpokenAnswerContext>;
+    input: ReadInput<"loadSpokenAnswerContext">,
+  ) => Result<Readonly<{ source: ParticipationSource; context: StudySpokenAnswerContext }>>;
   readonly reserveSpokenAnswer: (
-    input: Input<"reserveSpokenAnswer"> &
+    input: MutationInput<"reserveSpokenAnswer"> &
       Readonly<{ resourceReservationId: string; deletionFenceRevision: number }>,
   ) => Result<OwnerSpokenReservation>;
   readonly failSpokenAnswer: (
-    input: Input<"failSpokenAnswer"> &
+    input: MutationInput<"failSpokenAnswer"> &
       Readonly<{
         providerDisposition: "not_invoked" | "failed" | "unknown";
         resourceReservationId: string;

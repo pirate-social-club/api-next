@@ -866,7 +866,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
     if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
-      return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });
+      return new Response(null, {
+        status: 503,
+        headers: {
+          "cache-control": context.get("privateEndpointCacheControl")
+            ? "private, no-store"
+            : "no-store",
+        },
+      });
     }
     if (spacesRegistry?.matches(pathname)) {
       return spacesRegistry.serve(context.req.raw);

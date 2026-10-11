@@ -19,6 +19,8 @@ const CredentialCookieName = Schema.String.check(
 const IntentCookieName = Schema.String.check(
   Schema.isPattern(/^__Host-pirate_guest_attach_[A-Za-z0-9_-]{21}[AQgw]$/u),
 );
+const isCredentialCookieName: (value: unknown) => boolean = Schema.is(CredentialCookieName);
+const isIntentCookieName: (value: unknown) => boolean = Schema.is(IntentCookieName);
 const Secret = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u));
 const GUEST_CSRF_COOKIE_NAME = "__Host-pirate_guest_csrf";
 const invalidCookie = () =>
@@ -53,19 +55,17 @@ export function parseGuestBrowserCookies(headers: Headers, cleanup: boolean) {
         csrf = secret;
         continue;
       }
-      if (name.startsWith("__Host-pirate_guest_attach_")) {
-        Schema.decodeUnknownSync(IntentCookieName)(name);
+      if (isIntentCookieName(name)) {
         const intentId = Schema.decodeUnknownSync(GuestAttachmentIntentIdV1)(
           `gai_${name.slice("__Host-pirate_guest_attach_".length)}`,
         );
         intents.push({ intentId, secret });
-      } else {
-        Schema.decodeUnknownSync(CredentialCookieName)(name);
+      } else if (isCredentialCookieName(name)) {
         const credentialId = Schema.decodeUnknownSync(GuestCredentialIdV1)(
           name.slice("__Host-pirate_guest_".length),
         );
         credentials.push({ credentialId, secret });
-      }
+      } else throw invalidCookie();
     } catch {
       throw invalidCookie();
     }

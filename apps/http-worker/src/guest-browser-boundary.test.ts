@@ -17,6 +17,24 @@ describe("guest browser boundary stays disabled", () => {
   test("ordinary policy validation still boots with the closed new vocabulary", () => {
     expect(() => assertSupportedAuthPolicies(endpoints)).not.toThrow();
   });
+  test("protected-origin disabled ingress retains guest privacy", async () => {
+    const origin = "https://hns-community-api-staging.pirate.sc";
+    const worker = createHttpWorker({
+      config: {
+        corsOrigin: "https://web-next-staging.pirate.sc",
+        hnsCommunityAppApiProtectedOrigin: origin,
+      },
+    });
+    for (const path of [
+      "/guest/authority",
+      "/api/guest/learning-retention",
+      "/api/guest/learner-audio",
+    ]) {
+      const response = await worker.fetch(new Request(`${origin}${path}`));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+  });
   test("all21 declared operations refuse without reading bodies or invoking supplied handlers/auth", async () => {
     let calls = 0;
     const worker = createHttpWorker({
@@ -60,6 +78,15 @@ describe("guest browser boundary stays disabled", () => {
     expect((await worker.fetch(new Request("https://fixture.invalid/health"))).status).toBe(200);
   });
   test("hard byte/count caps, malformed and duplicate unselected proofs fail before a store exists", () => {
+    const attachPrefixedCredential = `attach_${"a".repeat(14)}A`;
+    expect(
+      parseGuestBrowserCookies(
+        new Headers({
+          cookie: `__Host-pirate_guest_${attachPrefixedCredential}=${secret}`,
+        }),
+        false,
+      ).credentials[0]?.credentialId,
+    ).toBe(attachPrefixedCredential);
     expect(
       parseGuestBrowserCookies(new Headers({ cookie: cookies(4) }), false).credentials,
     ).toHaveLength(4);

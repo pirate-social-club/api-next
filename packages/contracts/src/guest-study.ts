@@ -25,6 +25,7 @@ export const GuestRewardTermsV1 = Schema.Struct({
   post_id: GuestIdentifierV1,
   audio_revision: GuestPositiveIntegerV1,
   lyrics_revision: GuestPositiveIntegerV1,
+  offer_id: GuestIdentifierV1,
   pool_leg_id: GuestIdentifierV1,
   original_drawing_id: GuestDrawingIdV1,
   qualification_policy_version_id: GuestIdentifierV1,
@@ -47,25 +48,33 @@ export const GuestStudySessionV1 = StudySessionV2.mapFields(
     actor: Schema.Struct({ kind: Schema.Literal("guest") }),
     owner_id: GuestIdentifierV1,
     expires_at: GuestInstantV1,
-    reward_mode: Schema.Literals(["practice", "megapot_guest_v1"]),
+    reward_mode: Schema.Literals(["practice_only", "megapot_guest_v1"]),
     reward_terms: Schema.NullOr(GuestRewardTermsV1),
     participation: GuestParticipationResultV1,
   }),
   { unsafePreserveChecks: true },
 ).check(
   Schema.makeFilter((value) => {
-    if ((value.reward_mode === "practice") !== (value.reward_terms === null))
+    if ((value.reward_mode === "practice_only") !== (value.reward_terms === null))
       return "Practice has no economic terms; rewarded learning fixes its original terms";
-    if (value.reward_mode === "practice" && value.participation.state !== "practice_only")
+    if (value.reward_mode === "practice_only" && value.participation.state !== "practice_only")
       return "Practice cannot report monetary admission";
     if (
       value.reward_terms !== null &&
       (value.community_id !== value.reward_terms.community_id ||
         value.post_id !== value.reward_terms.post_id ||
         value.audio_revision !== value.reward_terms.audio_revision ||
-        value.lyrics_revision !== value.reward_terms.lyrics_revision)
+        value.lyrics_revision !== value.reward_terms.lyrics_revision ||
+        value.qualification_policy_revision !== value.reward_terms.qualification_policy_version_id)
     )
       return "Reward terms must bind the accepted source";
+    if (
+      value.reward_terms !== null &&
+      value.participation.state === "admitted" &&
+      (value.participation.original_drawing_id !== value.reward_terms.original_drawing_id ||
+        value.participation.pool_leg_id !== value.reward_terms.pool_leg_id)
+    )
+      return "Admission retains the accepted original drawing and offer leg";
     if (Date.parse(value.expires_at) - Date.parse(value.created_at) !== 86_400_000)
       return "Study expiry is independent of the one-hour authorization lease";
     return undefined;
@@ -97,9 +106,31 @@ export const GuestStudyStartOperationV1 = Schema.Union([
   }),
 ]);
 export type GuestStudyStartOperationV1 = Schema.Schema.Type<typeof GuestStudyStartOperationV1>;
+const [Unavailable, Processing, Ready] = StudyAvailabilityV2.members;
+const BoundedLanguage = LanguageTagV1.check(Schema.isMaxLength(64));
+/** Public readiness is bounded independently of the retained account-v2 reader. The
+ * exercise/band limits follow their closed vocabularies; 128 is this response's language
+ * cardinality limit, not a claim that the existing repository query is already capped.
+ * Implementations refuse an over-limit projection explicitly; never silently truncate it.
+ */
+const GuestStudyAvailabilityV1 = Schema.Union([
+  Unavailable,
+  Processing.mapFields((fields) => ({
+    ...fields,
+    available_exercise_types: fields.available_exercise_types.check(Schema.isMaxLength(2)),
+    pending_exercise_types: fields.pending_exercise_types.check(Schema.isMaxLength(2)),
+  })),
+  Ready.mapFields((fields) => ({
+    ...fields,
+    available_exercise_types: fields.available_exercise_types.check(Schema.isMaxLength(2)),
+    learning_language: BoundedLanguage,
+    target_languages: Schema.Array(BoundedLanguage).check(Schema.isMaxLength(128)),
+    learner_bands: fields.learner_bands.check(Schema.isMaxLength(6)),
+  })),
+]);
 export const GuestStudyPreparedContentV1 = Schema.Struct({
   object: Schema.Literal("guest_study_prepared_content_v1"),
-  availability: StudyAvailabilityV2,
+  availability: GuestStudyAvailabilityV1,
   disclosure: Schema.Struct({
     version: GuestIdentifierV1,
     text: Schema.NonEmptyString.check(Schema.isMaxLength(4_096)),
@@ -136,12 +167,12 @@ export const StartGuestStudySessionV1 = guestInterfaceEndpoint({
       target_language: Schema.NullOr(LanguageTagV1),
       learner_band: Schema.NullOr(StudyLearnerBandV2),
       timezone: GuestIdentifierV1,
-      reward_mode: Schema.Literals(["practice", "megapot_guest_v1"]),
+      reward_mode: Schema.Literals(["practice_only", "megapot_guest_v1"]),
       reward_preview_terms_hash: Schema.NullOr(GuestSha256V1),
       disclosure: GuestLearningDisclosureV1,
     }).check(
       Schema.makeFilter((value) =>
-        (value.reward_mode === "practice") === (value.reward_preview_terms_hash === null)
+        (value.reward_mode === "practice_only") === (value.reward_preview_terms_hash === null)
           ? undefined
           : "Reward preview hash must match mode",
       ),

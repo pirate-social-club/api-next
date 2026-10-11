@@ -166,7 +166,7 @@ function harness() {
 
   const signed = async (
     path: string,
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     bodyText = "",
     requestOrigin = origin,
   ) => {
@@ -201,6 +201,23 @@ function harness() {
 }
 
 describe("interactive HNS community API transport", () => {
+  test("verified PUT and DELETE guest recovery aliases stay private and disabled, with Origin enforced", async () => {
+    const { worker, signed } = harness();
+    for (const [path, method] of [
+      ["/api/guest/learning-retention", "PUT"],
+      ["/api/guest/learner-audio", "DELETE"],
+    ] as const) {
+      const request = await signed(path, method);
+      const response = await worker.request(request.url, request.init);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.has("set-cookie")).toBe(false);
+      const wrongOrigin = await signed(path, method, "", "https://app.attacker");
+      const denied = await worker.request(wrongOrigin.url, wrongOrigin.init);
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get("cache-control")).toBe("private, no-store");
+    }
+  });
   test("refuses the protected API hostname while HNS is disabled without affecting the ordinary host", async () => {
     const protectedOrigin = "https://hns-community-api-staging.pirate.sc";
     const worker = createHttpWorker({
