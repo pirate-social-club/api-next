@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
@@ -96,6 +97,13 @@ async function seedStudyV2Lyrics(admin: Client): Promise<readonly string[]> {
        'participation-author-persona','ready',1,$2)`,
     ["2".repeat(64), lyrics],
   );
+  await insertSongStemPairFixture(admin, {
+    submissionId: "participation-submission",
+    communityId: "participation-community",
+    actorUserId: "participation-author",
+    operationId: "participation-operation",
+    personaId: "participation-author-persona",
+  });
   for (const [index, line] of lines.entries()) {
     const ordinal = index + 1;
     await admin.query(
