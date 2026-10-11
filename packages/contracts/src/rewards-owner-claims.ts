@@ -68,7 +68,12 @@ export const OwnerRewardCreditV1 = RewardCreditV1.mapFields(
     const recipient = credit.recipient;
     if (
       credit.claim.status !== "accepted" &&
-      (credit.reserved_atomic !== "0" || credit.paid_atomic !== "0" || credit.send !== null)
+      (credit.reserved_atomic !== "0" ||
+        credit.paid_atomic !== "0" ||
+        credit.send !== null ||
+        credit.state === "payout_reserved" ||
+        credit.state === "payout_pending" ||
+        credit.state === "sent")
     )
       return "Every participant credit requires accepted claim authority before payment";
     if (

@@ -115,10 +115,17 @@ export interface OwnerAwareStudyV2Store {
         resourceReservationId: string;
       }>,
   ) => Result<DurableParticipationOutcome<void>>;
-  /** Persist before retryable reward finalization. Replay cannot regrade or rebill. */
+  /** Persist before retryable reward finalization. Replay cannot regrade or rebill.
+   * Once accepted, validate durable command lease/source/fence from the checkpoint;
+   * captured browser access is not a second live-lease check after provider work. Expiry
+   * or attachment revocation cannot prevent persistence of an already accepted result.
+   */
   readonly persistSuccessfulSpokenResult: (
     input: Readonly<{ access: LearningAccess; checkpoint: OwnerSpokenSuccessfulCheckpoint }>,
   ) => Result<DurableParticipationOutcome<Readonly<{ checkpointId: string }>>>;
+  /** Finalize the accepted checkpoint's command/source/fence, without demanding renewed
+   * guest authority or regrading. Captured access does not rewrite source after attachment.
+   */
   readonly completeSpokenAnswer: (
     input: Readonly<{
       access: LearningAccess;

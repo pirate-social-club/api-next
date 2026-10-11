@@ -388,6 +388,9 @@ describe("disabled guest interface checkpoint", () => {
       },
     };
     expect(() => decode(OwnerRewardCreditV1, accountCredit)).not.toThrow();
+    for (const credit of [value, accountCredit])
+      for (const state of ["payout_reserved", "payout_pending", "sent"])
+        expect(() => decode(OwnerRewardCreditV1, { ...credit, state })).toThrow();
     expect(() => decode(OwnerRewardCreditV1, { ...accountCredit, claim: null })).toThrow();
     expect(() =>
       decode(OwnerRewardCreditV1, {
