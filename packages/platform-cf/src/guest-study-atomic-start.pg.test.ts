@@ -30,6 +30,7 @@ const wrapper =
 async function actor(
   f: Fixture,
   options: Parameters<typeof makeDirectPostgresControlPlaneLayer>[1] = {},
+  configuredDisclosure: typeof disclosure | null = disclosure,
 ) {
   // Restricted LOGIN gets no helper or wrapper capability before this explicit
   // disposable-fixture entrypoint grant; native ACL proof occurred before revokes.
@@ -51,7 +52,7 @@ async function actor(
   await f.admin.query(`GRANT EXECUTE ON FUNCTION ${wrapper} TO ${q(f.role)}`);
   return makeControlPlaneOwnerStudyStarter(
     makeDirectPostgresControlPlaneLayer(f.guestUrl, options),
-    disclosure,
+    configuredDisclosure,
     policy,
   );
 }
@@ -162,7 +163,7 @@ suite("atomic shared-selector guest Study start", () => {
         const before = await retained(f);
         expect(
           await run(
-            backend.startPreparedSession({
+            (await actor(f, {}, null)).startPreparedSession({
               ...a,
               sessionId: "unused-fresh-replay-draw",
               policy: null,
@@ -306,6 +307,22 @@ suite("atomic shared-selector guest Study start", () => {
           kind: "start",
           outcome: { state: "known_aborted", operation: original.operation },
         });
+        expect(await retained(f)).toEqual(before);
+        // No approved current disclosure: actual NEW wrapper may reserve inside
+        // its owning TX, but projection/capture refusal rolls EVERY new row back.
+        const noCurrentDisclosure = await actor(f, {}, null);
+        expect(
+          await rejected(
+            noCurrentDisclosure.startPreparedSession(input(proof, "missing-current-disclosure")),
+          ),
+        ).toMatchObject({
+          _tag: "GuestParticipationStoreRejected",
+          reason: "resource-policy-unavailable",
+        });
+        expect(await retained(f)).toEqual(before);
+        expect(
+          await run(noCurrentDisclosure.startPreparedSession({ ...original, policy: null })),
+        ).toEqual(replay);
         expect(await retained(f)).toEqual(before);
         const noConsent = input(proof, "no-consent");
         expect(

@@ -331,12 +331,13 @@ const outcome = (
 
 export const makeControlPlaneOwnerStudyStarter = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-  disclosure: Disclosure,
+  disclosure: Disclosure | null,
   rawPolicy: unknown,
   newOperationId: () => string = () => `guest_start_${crypto.randomUUID()}`,
 ): Methods & OwnerGuestAtomicStarter => {
   // Explicit reviewed server composition inputs, no invented production defaults.
-  const configuredDisclosure = decode(GuestStudyPreparedContentV1.fields.disclosure, disclosure);
+  const configuredDisclosure =
+    disclosure === null ? null : decode(GuestStudyPreparedContentV1.fields.disclosure, disclosure);
   const policy = readGuestResourceAdmissionPolicy(rawPolicy);
   const provide = <A>(effect: Effect.Effect<A, GuestParticipationStoreFailure, ControlPlaneDb>) =>
     effect.pipe(
@@ -405,6 +406,9 @@ export const makeControlPlaneOwnerStudyStarter = (
         try: () => outcome(prepared, input),
         catch: () => invalid("guest-study.start.replay"),
       });
+    // Current missing config cannot invalidate an original accepted outcome.
+    // NEW only: fail before public projection/capture; atomic resource rolls back.
+    if (configuredDisclosure === null) return yield* reject("resource-policy-unavailable");
     const items = yield* Effect.try({
       try: () => {
         if (

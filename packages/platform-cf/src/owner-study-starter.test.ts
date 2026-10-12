@@ -213,7 +213,7 @@ function fixture(
     commitFails?: boolean;
     rollbackFails?: boolean;
     extraEnvelope?: boolean;
-    configuration?: typeof disclosure;
+    configuration?: typeof disclosure | null;
     rawPolicy?: unknown;
   } = {},
 ) {
@@ -263,7 +263,7 @@ function fixture(
   return {
     store: makeControlPlaneOwnerStudyStarter(
       runtime,
-      options.configuration ?? disclosure,
+      options.configuration === undefined ? disclosure : options.configuration,
       Object.hasOwn(options, "rawPolicy") ? options.rawPolicy : policy,
       () => "fresh-start-operation",
     ),
@@ -497,4 +497,25 @@ test("sent COMMIT and rollback acknowledgment loss never publish a completed res
 test("new commit rejects an unrelated durable outcome locator for the valid original source and session", async () => {
   const f = fixture({ commit: { ...resolved, operationId: "foreign-start-operation" } });
   rolledBack(f, await failure(f.store.startSession(input)));
+});
+
+test("missing current disclosure and policy preserve original receipt; missing disclosure rejects NEW before capture", async () => {
+  const old = fixture({ prepare: resolved, configuration: null, rawPolicy: null });
+  expect(await Effect.runPromise(old.store.startSession(input))).toMatchObject({
+    state: "completed",
+    result: { session: { session_id: originalSessionId } },
+  });
+  expect(old.queries.at(-1)?.text).toBe("COMMIT");
+  expect(old.queries.some((q) => q.text.startsWith("SELECT commit_guest_study_start_v1"))).toBe(
+    false,
+  );
+  const fresh = fixture({ configuration: null });
+  expect(await failure(fresh.store.startSession(input))).toMatchObject({
+    _tag: "GuestParticipationStoreRejected",
+    reason: "resource-policy-unavailable",
+  });
+  expect(fresh.queries.at(-1)?.text).toBe("ROLLBACK");
+  expect(fresh.queries.some((q) => q.text.startsWith("SELECT commit_guest_study_start_v1"))).toBe(
+    false,
+  );
 });
