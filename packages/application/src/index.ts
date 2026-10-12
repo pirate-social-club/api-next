@@ -76,3 +76,6 @@ export * from "./use-cases/hns-edge-status.ts";
 export * from "./use-cases/identity-registration.ts";
 export * from "./use-cases/identity-registration-handler.ts";
 export * from "./use-cases/personas.ts";
+
+export * from "./owner-spoken-success-protocol.ts";
+export * from "./learner-audio-io-outcome.ts";

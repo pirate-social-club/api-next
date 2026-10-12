@@ -213,7 +213,8 @@
     "./guest-authority-store": "./src/guest-authority-store.ts",
     "./guest-attachment-preparation-store": "./src/guest-attachment-preparation-store.ts",
     "./guest-resource-store": "./src/guest-resource-store.ts",
-    "./owner-study-starter": "./src/owner-study-starter.ts"
+    "./owner-study-starter": "./src/owner-study-starter.ts",
+    "./owner-spoken-checkpoint-store": "./src/owner-spoken-checkpoint-store.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
