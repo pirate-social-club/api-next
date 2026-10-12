@@ -157,7 +157,7 @@ async function migrations() {
     if (expectedChecksum !== undefined) expect(checksum).toBe(expectedChecksum);
     packet.push({ version, sql, checksum });
   }
-  return { historical: packet.slice(0, 247), foundation: packet.slice(247) };
+  return { historical: packet.slice(0, 247), foundation: packet };
 }
 async function fixture(use: (f: Fixture) => Promise<void>) {
   if (!url) throw new Error("owned PG URL absent");
