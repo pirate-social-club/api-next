@@ -34,7 +34,9 @@ test("guest OPTIONS middleware short-circuits and malformed/disabled paths stay 
       method: "POST",
     }),
   );
-  expect(malformed.status).toBe(400);
+  // Disabled definitions refuse before parameter decoding.
+  expect(malformed.status).toBe(404);
+  expect(malformed.headers.has("set-cookie")).toBe(false);
   expect(malformed.headers.get("cache-control")).toBe("private, no-store");
 });
 
