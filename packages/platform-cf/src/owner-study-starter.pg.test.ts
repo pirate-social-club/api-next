@@ -42,6 +42,8 @@ suite("private owner-aware guest Study starter genuine PostgreSQL", () => {
       expect(after).toEqual(f.accountOriginal);
       expect(f.accountOriginal.items).toHaveLength(4);
       for (const [ordinal, item] of f.accountOriginal.items.entries()) {
+        const referenceText = f.lines[ordinal];
+        if (referenceText === undefined) throw new Error("Original prepared line missing");
         expect(item).toEqual({
           object: "study_session_item_v2",
           session_item_id: `ordinary-before-guest_item_${ordinal + 1}`,
@@ -57,14 +59,14 @@ suite("private owner-aware guest Study starter genuine PostgreSQL", () => {
             lyric_line_id: `line-${ordinal + 1}`,
             study_unit_id: `unit-${ordinal + 1}`,
             line_version: 1,
-            line_source_hash: hash(f.lines[ordinal] ?? ""),
+            line_source_hash: hash(referenceText),
           },
           languages: { learning_language: "en", target_language: null },
           learner_band: null,
           language_profile_revision: null,
           presentation: {
             kind: "say_it_back",
-            reference_text: f.lines[ordinal],
+            reference_text: referenceText,
             capture: "microphone_audio",
           },
           answer_visibility: "always_visible",
