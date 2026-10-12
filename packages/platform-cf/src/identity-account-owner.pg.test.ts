@@ -320,7 +320,9 @@ suite("genuine PostgreSQL account-creation owner admission", () => {
         ["created"],
         OwnerId,
       );
-      expect(same).toBe(original[0]?.owner);
+      const originalOwner = original[0];
+      if (originalOwner === undefined) throw new Error("Original account owner missing");
+      expect(same).toBe(originalOwner.owner);
       const replayInput = input("replay-candidate", "replay", createdInput.providerSubject);
       expect(
         await Effect.runPromise(run(repository.registerCredential(replayInput))),
