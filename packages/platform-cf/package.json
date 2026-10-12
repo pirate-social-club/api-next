@@ -159,6 +159,7 @@
     "./registration-rate-limiter": "./src/registration-rate-limiter.ts",
     "./registration-rate-limiter-do": "./src/registration-rate-limiter-do.ts",
     "./postgres": "./src/postgres.ts",
+    "./guest-proof-crypto": "./src/guest-proof-crypto.ts",
     "./session-crypto": "./src/session-crypto.ts",
     "./session-proof": "./src/session-proof.ts",
     "./session-tokens": "./src/session-tokens.ts",
