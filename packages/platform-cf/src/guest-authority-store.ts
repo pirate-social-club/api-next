@@ -164,6 +164,7 @@ export function makeControlPlaneGuestAuthorityTransitions(
     kind: "bootstrap_issue" | "credential_rotate",
     allowedIds: readonly string[],
     issuedId: string,
+    expectedOwnerId: string | null,
   ) => {
     if (reply.state === "issuance_requires_restart") return;
     // Exact immutable operation tuple; sourceOwnerId is deliberately not reconstructed
@@ -179,6 +180,15 @@ export function makeControlPlaneGuestAuthorityTransitions(
     if (
       reply.authority.selected === null ||
       (fresh && reply.authority.selected.credential_id !== issuedId)
+    )
+      throw new Error();
+    const selected = reply.authority.selected;
+    if (
+      kind === "bootstrap_issue"
+        ? (selected.credential_state !== "pending_bootstrap" &&
+            selected.credential_state !== "confirmed") ||
+          (fresh && selected.credential_state !== "pending_bootstrap")
+        : selected.credential_state !== "pending_successor" || selected.owner_id !== expectedOwnerId
     )
       throw new Error();
     if (reply.cookie_effects.some((e) => e.action !== "issue" || e.credentialId !== issuedId))
@@ -227,6 +237,7 @@ export function makeControlPlaneGuestAuthorityTransitions(
             "bootstrap_issue",
             ids,
             input.issuance.credentialId,
+            null,
           ),
       ).pipe(Effect.flatMap(issueOutcome));
     },
@@ -300,6 +311,7 @@ export function makeControlPlaneGuestAuthorityTransitions(
             "credential_rotate",
             ids,
             input.issuance.credentialId,
+            input.expectedOwnerId,
           ),
       ).pipe(Effect.flatMap(issueOutcome));
     },

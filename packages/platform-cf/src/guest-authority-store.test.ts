@@ -132,8 +132,35 @@ test("COMMIT uncertainty publishes no outcome or cookie effects", async () => {
   expect(JSON.stringify(error)).not.toContain(digest);
 });
 
+test("fresh issuance publishes only after acknowledged COMMIT and never returns its digest", async () => {
+  const f = fixture();
+  const outcome = await Effect.runPromise(
+    f.store.issuePending(issueInput).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(f.queries.at(-1)?.text).toBe("COMMIT");
+        }),
+      ),
+    ),
+  );
+  expect(outcome).toMatchObject({
+    state: "completed",
+    operation: completed.operation,
+    outcomeId: completed.operation_id,
+    result: { cookieEffects: completed.cookie_effects },
+  });
+  expect(JSON.stringify(outcome)).not.toContain(digest);
+});
+
 test("unknown-row malformed/excess/duplicate/unproved/wrong issued-cookie metadata rolls back before COMMIT", async () => {
   const bad: unknown[] = [
+    ...["confirmed", "revoked", "pending_successor"].map((credential_state) => {
+      const wrong = { ...metadata, credential_state };
+      return {
+        ...completed,
+        authority: { ...authority, selected: wrong, proved_credentials: [wrong] },
+      };
+    }),
     null,
     { ...completed, secret_digest: digest },
     { ...completed, operation: undefined },
