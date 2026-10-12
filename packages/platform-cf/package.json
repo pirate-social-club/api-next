@@ -227,7 +227,8 @@
     "./owner-account-source-control": "./src/owner-account-source-control.ts",
     "./owner-guest-spoken-dispatch-context": "./src/owner-guest-spoken-dispatch-context.ts",
     "./owner-study-invoking-transcriber": "./src/owner-study-invoking-transcriber.ts",
-    "./owner-guest-study-public-visibility": "./src/owner-guest-study-public-visibility.ts"
+    "./owner-guest-study-public-visibility": "./src/owner-guest-study-public-visibility.ts",
+    "./guest-study-resource-expiry": "./src/guest-study-resource-expiry.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
