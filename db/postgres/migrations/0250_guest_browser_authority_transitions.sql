@@ -158,6 +158,25 @@ END $$;
 -- issuePending: its request hash is canonical request identity, NEVER the new
 -- random digest/owner/credential/operation ID. Fresh random draws may differ on
 -- retries, but cannot change the immutable natural issuance key.
+CREATE FUNCTION guest_authority_issue_operation_v1(expected_operation_id TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT operation FROM guest_participation_operations
+    WHERE operation_id=expected_operation_id FOR SHARE;
+  IF operation.state<>'completed'
+     OR operation.operation_kind NOT IN ('bootstrap_issue','credential_rotate') THEN
+    RAISE EXCEPTION 'invalid guest issuance operation envelope' USING ERRCODE='22023';
+  END IF;
+  -- Original immutable receipt identity, even if its source later became aliased_empty.
+  -- No current root lookup, synthetic pending/abort, raw digest or secret.
+  RETURN jsonb_build_object(
+    'sourceOwnerId',operation.source_owner_id,
+    'kind',operation.operation_kind,
+    'idempotencyKey',operation.idempotency_key,
+    'requestHash',operation.request_hash);
+END $$;
+
 CREATE FUNCTION issue_guest_pending_v1(
   expected_origin TEXT,proved_ids TEXT[],selected_id TEXT,
   issuance_key TEXT,issuance_request_hash TEXT,new_operation_id TEXT,
@@ -201,6 +220,7 @@ BEGIN
     PERFORM reject_guest_copresent_established_conflict_v1(expected_origin,proved_ids,
       resolve_guest_empty_owner_root_v1(prior_credential.owner_id));
     RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_authority_issue_operation_v1(prior.operation_id),
       'authority',guest_authority_metadata_v1(expected_origin,proved_ids,prior.credential_id),'cookie_effects','[]'::JSONB);
   END IF;
   IF selected_id IS NOT NULL THEN
@@ -223,6 +243,7 @@ BEGIN
         VALUES(expected_origin,'bootstrap',expected_origin,issuance_key,issuance_request_hash,
           selected_root,selected_id,selected_credential.owner_id,new_operation_id,at_time);
       RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),
         'authority',authority,'cookie_effects','[]'::JSONB);
     END IF;
     IF selected_credential.state='revoked' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
@@ -251,7 +272,8 @@ BEGIN
       source_owner_id,credential_id,credential_source_owner_id,operation_id,created_at)
     VALUES(expected_origin,'bootstrap',expected_origin,issuance_key,issuance_request_hash,
       new_owner_id,new_credential_id,new_owner_id,new_operation_id,at_time);
-  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,'authority',authority,
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
 END $$;
 
@@ -383,6 +405,7 @@ BEGIN
        OR successor.pending_expires_at<=clock_timestamp() THEN
       RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
     RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_authority_issue_operation_v1(prior.operation_id),
       'authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor.credential_id),'cookie_effects','[]'::JSONB);
   END IF;
   IF cardinality(proved_ids)>=4 THEN RAISE EXCEPTION 'credential-cleanup-required' USING ERRCODE='GP004'; END IF;
@@ -403,7 +426,8 @@ BEGIN
       source_owner_id,credential_id,credential_source_owner_id,operation_id,created_at)
     VALUES(expected_origin,'rotation',predecessor.owner_id,issuance_key,issuance_request_hash,
       expected_owner_id,new_credential_id,predecessor.owner_id,new_operation_id,at_time);
-  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,'authority',authority,
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
 END $$;
 
@@ -445,6 +469,7 @@ BEGIN
   IF trusted_schema IS NULL OR trusted_schema='pg_catalog' OR trusted_schema ~ '^pg_temp' THEN
     RAISE EXCEPTION 'trusted migration schema required'; END IF;
   FOREACH signature IN ARRAY ARRAY[
+    'guest_authority_issue_operation_v1(text)',
     'require_guest_practice_only_schema_phase_v1()',
     'lock_guest_authority_sources_v1(text,text[])',
     'guest_authority_metadata_v1(text,text[],text)',

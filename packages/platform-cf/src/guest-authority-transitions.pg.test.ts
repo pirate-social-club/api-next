@@ -56,6 +56,7 @@ type Metadata = {
 type Result = {
   state?: string;
   operation_id?: string;
+  operation?: { sourceOwnerId: string; kind: string; idempotencyKey: string; requestHash: string };
   authority?: { state: string; selected: Metadata | null; proved_credentials: Metadata[] };
   cookie_effects?: { kind: string; action: string; credentialId: string }[];
 };
@@ -358,6 +359,9 @@ suite("guest controlled browser authority transitions", () => {
         f.runtime.query("SELECT resolve_guest_empty_owner_root_v1($1)", [owner(1)]),
       ).rejects.toMatchObject({ code: "42501" });
       await expect(
+        f.runtime.query("SELECT guest_authority_issue_operation_v1($1)", ["not-public"]),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
         f.runtime.query("SELECT lock_guest_authority_sources_v1($1,'{}')", [origin]),
       ).rejects.toMatchObject({ code: "42501" });
       await expect(
@@ -430,6 +434,12 @@ suite("guest controlled browser authority transitions", () => {
       const replacement = proof();
       const created = await issue(f, 1, first, "receipt");
       expect(created.state).toBe("completed");
+      expect(created.operation).toEqual({
+        sourceOwnerId: owner(1),
+        kind: "bootstrap_issue",
+        idempotencyKey: "receipt",
+        requestHash,
+      });
       expect(created.cookie_effects).toEqual([
         { kind: "credential", action: "issue", credentialId: first.id },
       ]);
@@ -521,6 +531,14 @@ suite("guest controlled browser authority transitions", () => {
       const sameRoot = await issue(f, 3, proof(), "older", [older, younger], younger.id);
       expect(sameRoot.operation_id).toBe("bootstrap-older");
       expect(sameRoot.cookie_effects).toEqual([]);
+      const aliasedReceipt = await issue(f, 3, proof(), "younger", [older, younger], younger.id);
+      expect(aliasedReceipt.operation).toEqual({
+        sourceOwnerId: owner(2),
+        kind: "bootstrap_issue",
+        idempotencyKey: "younger",
+        requestHash,
+      });
+      expect(aliasedReceipt.authority?.selected?.owner_id).toBe(owner(1));
       await expect(confirm(f, younger, owner(2), [younger, older])).rejects.toMatchObject({
         code: "GP002",
       });

@@ -209,7 +209,8 @@
     "./community-navigation-repository": "./src/community-navigation-repository.ts",
     "./profile-activity-repository": "./src/profile-activity-repository.ts",
     "./guest-proof-verifier": "./src/guest-proof-verifier.ts",
-    "./guest-prepared-study-content-store": "./src/guest-prepared-study-content-store.ts"
+    "./guest-prepared-study-content-store": "./src/guest-prepared-study-content-store.ts",
+    "./guest-authority-store": "./src/guest-authority-store.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
