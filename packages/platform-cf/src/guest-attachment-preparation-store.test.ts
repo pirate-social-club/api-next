@@ -118,7 +118,7 @@ function fixture(
     commitFails?: boolean;
     rollbackFails?: boolean;
     sqlState?: string;
-    rows?: readonly unknown[];
+    rows?: readonly Record<string, unknown>[];
   } = {},
 ) {
   const queries: PostgresQueryConfig[] = [];

@@ -87,7 +87,10 @@ type Fixture = Readonly<{
 }>;
 function proof(intent = false): Proof {
   return {
-    id: `${intent ? "gai_" : ""}${randomBytes(16).toString("base64url")}`,
+    id: `${intent ? "gai_" : ""}${btoa(String.fromCharCode(...randomBytes(16)))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replaceAll("=", "")}`,
     digest: createHash("sha256").update(randomBytes(32)).digest("hex"),
   };
 }
@@ -137,7 +140,9 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `guest_preparation_${suffix}`;
   const role = `guest_prepare_login_${suffix}`;
-  const password = randomBytes(32).toString("hex");
+  const password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
   const admin = new Client({
     connectionString: url,
     connectionTimeoutMillis: 3000,
