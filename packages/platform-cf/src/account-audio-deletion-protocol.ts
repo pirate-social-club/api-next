@@ -83,10 +83,12 @@ export const makeAccountLearnerAudioDeleteProtocol = (
           LearnerAudioDeletionResult,
         ),
       ).pipe(
-        Effect.catchTag("ControlPlaneStatementFailed", (error) =>
-          error.sqlState === "GA001"
-            ? Effect.fail(new LearnerAudioDeletionFailed({ reason: "in-flight" }))
-            : Effect.fail(error),
+        Effect.catchTag(
+          "ControlPlaneStatementFailed",
+          (error): Effect.Effect<never, ControlPlaneError | LearnerAudioDeletionFailed> =>
+            error.sqlState === "GA001"
+              ? Effect.fail(new LearnerAudioDeletionFailed({ reason: "in-flight" }))
+              : Effect.fail(error),
         ),
       );
     }),

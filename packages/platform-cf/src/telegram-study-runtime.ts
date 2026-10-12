@@ -56,7 +56,8 @@ export function makeTelegramStudyServices(
   if (bindings.TELEGRAM_STUDY_PRACTICE_ENABLED !== "true") return undefined;
   const communityId = bindings.TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID;
   const apiKey = bindings.ELEVENLABS_API_KEY;
-  if (bindings.API_NEXT_ENV !== "staging" || !communityId || !bindings.LEARNER_AUDIO)
+  const bucket = bindings.LEARNER_AUDIO;
+  if (bindings.API_NEXT_ENV !== "staging" || !communityId || !bucket)
     throw Error(
       "Telegram practice requires staging, an explicit community and learner audio storage",
     );
@@ -76,7 +77,7 @@ export function makeTelegramStudyServices(
   const service = (lease: TelegramStudyLease, grant: TelegramStudyGrant) => {
     const controlled = makeControlledAccountSpokenComposition(
       runtime,
-      bindings.LEARNER_AUDIO,
+      bucket,
       transcriber,
       false,
       (task) => {

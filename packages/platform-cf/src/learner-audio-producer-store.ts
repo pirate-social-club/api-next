@@ -9,6 +9,7 @@ import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import {
   LearnerAudioCaptureRejected,
   type CapturedLearnerAudioUploadStore,
+  type CapturedUploadDisposition,
 } from "./learner-audio-captured-io.ts";
 const Capture = Schema.Struct({
   uploadAttemptId: Schema.NonEmptyString,
@@ -79,21 +80,23 @@ export const makeCapturedLearnerAudioUploadStore = (
           [JSON.stringify(capture)],
           Status,
         ).pipe(
-          Effect.flatMap((status) => {
-            if (
-              Object.keys(status.capture).some(
-                (key) => Reflect.get(status.capture, key) !== Reflect.get(capture, key),
+          Effect.flatMap(
+            (status): Effect.Effect<CapturedUploadDisposition, LearnerAudioCaptureRejected> => {
+              if (
+                Object.keys(status.capture).some(
+                  (key) => Reflect.get(status.capture, key) !== Reflect.get(capture, key),
+                )
               )
-            )
-              return Effect.fail(invalid());
-            if (status.claimed) return Effect.succeed({ state: "write" } as const);
-            if (status.ioState !== "closed") return Effect.succeed({ state: "unknown" } as const);
-            return Effect.succeed(
-              status.mayPublish
-                ? ({ state: "stored", objectRef: status.capture.objectRef } as const)
-                : ({ state: "failed" } as const),
-            );
-          }),
+                return Effect.fail(invalid());
+              if (status.claimed) return Effect.succeed({ state: "write" } as const);
+              if (status.ioState !== "closed") return Effect.succeed({ state: "unknown" } as const);
+              return Effect.succeed(
+                status.mayPublish
+                  ? ({ state: "stored", objectRef: status.capture.objectRef } as const)
+                  : ({ state: "failed" } as const),
+              );
+            },
+          ),
         ),
       ),
     mayContinue: (capture) =>
