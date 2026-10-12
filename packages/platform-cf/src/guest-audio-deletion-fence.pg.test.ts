@@ -456,7 +456,7 @@ suite("private source-owned audio foundation", () => {
         for (const [root, child] of [
           [31, 32],
           [33, 34],
-        ]) {
+        ] as const) {
           await seedGuest(f, root);
           await seedGuest(f, child);
           await transaction(f.admin, async () => {
