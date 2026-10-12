@@ -81,7 +81,11 @@ function fixture(
       queries.push(query);
       if (query.text === "COMMIT" && options.commitFails)
         throw new Error("fixture COMMIT acknowledgement lost");
-      if (query.text.startsWith("SELECT issue_guest_pending_v1")) {
+      if (
+        /^SELECT (issue_guest_pending_v1|discover_guest_authority_v1|cleanup_guest_authority_v1)/u.test(
+          query.text,
+        )
+      ) {
         if (options.sqlState)
           throw Object.assign(new Error("opaque driver message"), { code: options.sqlState });
         return { rows: [{ result: reply }], rowCount: 1 };
@@ -287,4 +291,112 @@ test("lost proof restart rejection emits no cookie or synthetic durable outcome"
   });
   expect(outcomes).toBe(0);
   expect(f.queries.map((q) => q.text)).toContain("COMMIT");
+});
+
+test("discovery returns only proved metadata and validates exact pointer repair without selecting it", async () => {
+  const credential = {
+    ownerId: source,
+    credentialId: issuedId,
+    origin,
+    state: "confirmed",
+    leaseUntil: "2026-10-12T19:00:00.000Z",
+    pendingExpiresAt: null,
+    predecessorCredentialId: carriedId,
+  } satisfies Parameters<
+    GuestAuthorityStore["discover"]
+  >[0]["context"]["provedCredentials"][number];
+  const current = {
+    ...metadata,
+    credential_state: "confirmed",
+    session_until: credential.leaseUntil,
+  };
+  const reply = {
+    ...authority,
+    state: "recovery_required",
+    selected: null,
+    proved_credentials: [current],
+    pointer_repair: {
+      previous_credential_id: carriedId,
+      credential_id: issuedId,
+      owner_id: source,
+    },
+  };
+  const input: Parameters<GuestAuthorityStore["discover"]>[0] = {
+    context: {
+      origin,
+      authority: "bootstrap",
+      operation: "discover",
+      provedCredentials: [credential],
+      provedIntents: [],
+      selected: null,
+    },
+    expectedOwnerId: source,
+    previousCredentialId: carriedId,
+  };
+  const result = await Effect.runPromise(fixture(reply).store.discover(input));
+  expect(result.selected).toBeNull();
+  expect(result.pointer_repair).toEqual(reply.pointer_repair);
+  for (const invalid of [
+    { ...reply, pointer_repair: { ...reply.pointer_repair, credential_id: carriedId } },
+    { ...reply, pointer_repair: { ...reply.pointer_repair, previous_credential_id: issuedId } },
+    { ...reply, selected: current },
+  ]) {
+    const f = fixture(invalid);
+    expect(await failure(f.store.discover(input))).toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      label: "guest-authority.discover.decode",
+    });
+    expect(f.queries.map((q) => q.text)).toContain("ROLLBACK");
+    expect(f.queries.map((q) => q.text)).not.toContain("COMMIT");
+  }
+});
+
+test("cleanup never selects singleton metadata and rejects an expiry effect outside its proved candidates", async () => {
+  const credential = {
+    ownerId: source,
+    credentialId: issuedId,
+    origin,
+    state: "confirmed",
+    leaseUntil: "2026-10-12T19:00:00.000Z",
+    pendingExpiresAt: null,
+    predecessorCredentialId: null,
+  } satisfies Parameters<GuestAuthorityStore["cleanup"]>[0]["context"]["provedCredentials"][number];
+  const input: Parameters<GuestAuthorityStore["cleanup"]>[0] = {
+    context: {
+      origin,
+      authority: "recovery",
+      operation: "cleanup",
+      originAndCsrfChecked: true,
+      provedCredentials: [credential],
+      provedIntents: [],
+      selected: null,
+    },
+    selectedCredentialId: null,
+    candidateCredentialIds: [issuedId],
+    candidateIntentIds: [],
+  };
+  const reply = {
+    authority: {
+      ...authority,
+      state: "authority_conflict",
+      selected: null,
+      proved_credentials: [{ ...metadata, credential_state: "revoked" }],
+    },
+    cookieEffects: [{ kind: "credential", action: "expire", credentialId: issuedId }],
+  };
+  expect(await Effect.runPromise(fixture(reply).store.cleanup(input))).toEqual(reply);
+  const invalid = fixture({
+    ...reply,
+    cookieEffects: [{ kind: "credential", action: "expire", credentialId: carriedId }],
+  });
+  expect(await failure(invalid.store.cleanup(input))).toMatchObject({
+    _tag: "ControlPlaneStatementFailed",
+    label: "guest-authority.cleanup.decode",
+  });
+  expect(invalid.queries.map((q) => q.text)).toContain("ROLLBACK");
+  const wrongSelection = fixture(reply);
+  expect(
+    await failure(wrongSelection.store.cleanup({ ...input, selectedCredentialId: issuedId })),
+  ).toMatchObject({ _tag: "GuestParticipationStoreRejected", reason: "owner-mismatch" });
+  expect(wrongSelection.queries).toEqual([]);
 });

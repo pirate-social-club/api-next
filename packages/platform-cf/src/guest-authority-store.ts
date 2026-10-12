@@ -13,16 +13,15 @@ import {
 } from "@pirate/application/guest-participation-authority";
 import {
   GuestAuthorityV1,
+  GuestCleanupAuthorityV1,
+  GuestAttachmentIntentIdV1,
   GuestCredentialIdV1,
   GuestIdentifierV1,
   GuestSha256V1,
 } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
 
-type Methods = Pick<
-  GuestAuthorityStore,
-  "issuePending" | "confirm" | "renew" | "issueRotation" | "acknowledgeRotation"
->;
+type Methods = GuestAuthorityStore;
 type Input<K extends keyof Methods> = Parameters<Methods[K]>[0];
 const Owner = Schema.String.check(
   Schema.isPattern(/^owner_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
@@ -41,6 +40,23 @@ const Cookie = Schema.Struct({
 const Transition = Schema.Struct({
   authority: GuestAuthorityV1,
   cookie_effects: Schema.Array(Cookie).check(Schema.isMaxLength(1)),
+});
+const Cleanup = Schema.Struct({
+  authority: GuestCleanupAuthorityV1,
+  cookieEffects: Schema.Array(
+    Schema.Union([
+      Schema.Struct({
+        kind: Schema.Literal("credential"),
+        action: Schema.Literal("expire"),
+        credentialId: GuestCredentialIdV1,
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("intent"),
+        action: Schema.Literal("expire"),
+        intentId: GuestAttachmentIntentIdV1,
+      }),
+    ]),
+  ).check(Schema.isMaxLength(32)),
 });
 const CompletedIssue = Schema.Struct({
   state: Schema.Literal("completed"),
@@ -140,16 +156,20 @@ export function makeControlPlaneGuestAuthorityTransitions(
       ),
     );
 
-  const validateAuthority = (reply: TransitionReply, allowedIds: readonly string[]) => {
-    const records = reply.authority.proved_credentials;
+  const validateMetadata = (
+    authority: GuestAuthorityV1 | Schema.Schema.Type<typeof GuestCleanupAuthorityV1>,
+    allowedIds: readonly string[],
+    allowRepair = false,
+  ) => {
+    const records = authority.proved_credentials;
     const ids = records.map((c) => c.credential_id);
     for (const record of records) Schema.decodeUnknownSync(Owner)(record.owner_id);
-    const selected = reply.authority.selected;
+    const selected = authority.selected;
     const selectedRecord = records.find((c) => c.credential_id === selected?.credential_id);
     if (
       new Set(ids).size !== ids.length ||
       ids.some((id) => !allowedIds.includes(id)) ||
-      reply.authority.pointer_repair !== null ||
+      (!allowRepair && authority.pointer_repair !== null) ||
       (selected !== null &&
         (selectedRecord === undefined ||
           selected.owner_id !== selectedRecord.owner_id ||
@@ -158,6 +178,8 @@ export function makeControlPlaneGuestAuthorityTransitions(
     )
       throw new Error();
   };
+  const validateAuthority = (reply: TransitionReply, ids: readonly string[]) =>
+    validateMetadata(reply.authority, ids);
   const validateIssue = (
     reply: IssueReply,
     input: ParticipationOperationIdentity,
@@ -211,6 +233,85 @@ export function makeControlPlaneGuestAuthorityTransitions(
   }) => input.provedCredentials.map((c) => c.credentialId);
 
   return {
+    discover: (input: Input<"discover">) => {
+      const ids = credentialIds(input.context);
+      return call(
+        "guest-authority.discover",
+        "SELECT discover_guest_authority_v1($1,$2::text[],$3,$4,$5) AS result",
+        [
+          input.context.origin,
+          ids,
+          input.context.selected?.credentialId ?? null,
+          input.expectedOwnerId,
+          input.previousCredentialId,
+        ],
+        GuestAuthorityV1,
+        (reply) => {
+          validateMetadata(reply, ids, true);
+          if (
+            (reply.selected?.credential_id ?? null) !==
+            (input.context.selected?.credentialId ?? null)
+          )
+            throw new Error();
+          const repair = reply.pointer_repair;
+          if (repair !== null) {
+            const target = reply.proved_credentials.find(
+              (c) => c.credential_id === repair.credential_id,
+            );
+            if (
+              repair.previous_credential_id !== input.previousCredentialId ||
+              target === undefined ||
+              target.credential_state !== "confirmed" ||
+              target.owner_id !== repair.owner_id
+            )
+              throw new Error();
+          }
+        },
+      );
+    },
+    cleanup: (input: Input<"cleanup">) => {
+      const selected = input.context.selected?.credentialId ?? null;
+      if (input.selectedCredentialId !== selected) return Effect.fail(rejected("owner-mismatch"));
+      const ids = credentialIds(input.context);
+      return call(
+        "guest-authority.cleanup",
+        "SELECT cleanup_guest_authority_v1($1,$2::text[],$3::text[],$4,$5::text[],$6::text[]) AS result",
+        [
+          input.context.origin,
+          ids,
+          input.context.provedIntents.map((i) => i.intentId),
+          selected,
+          input.candidateCredentialIds,
+          input.candidateIntentIds,
+        ],
+        Cleanup,
+        (reply) => {
+          validateMetadata(reply.authority, ids);
+          if ((reply.authority.selected?.credential_id ?? null) !== selected) throw new Error();
+          const expected = new Set([
+            ...input.candidateCredentialIds.map((id) => `credential:${id}`),
+            ...input.candidateIntentIds.map((id) => `intent:${id}`),
+          ]);
+          const actual = reply.cookieEffects.map((effect) =>
+            effect.kind === "credential"
+              ? `credential:${effect.credentialId}`
+              : `intent:${effect.intentId}`,
+          );
+          if (
+            new Set(actual).size !== actual.length ||
+            actual.length !== expected.size ||
+            actual.some((key) => !expected.has(key)) ||
+            input.candidateCredentialIds.some(
+              (id) =>
+                !reply.authority.proved_credentials.some(
+                  (c) => c.credential_id === id && c.credential_state === "revoked",
+                ),
+            )
+          )
+            throw new Error();
+        },
+      );
+    },
     issuePending: (input: Input<"issuePending">) => {
       if (input.issuance.operation.kind !== "bootstrap_issue")
         return Effect.fail(badProjection("guest-authority.issue.context", false));
