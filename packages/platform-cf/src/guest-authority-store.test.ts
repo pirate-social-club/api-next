@@ -384,7 +384,7 @@ test("cleanup never selects singleton metadata and rejects an expiry effect outs
     },
     cookieEffects: [{ kind: "credential", action: "expire", credentialId: issuedId }],
   };
-  expect(await Effect.runPromise(fixture(reply).store.cleanup(input))).toEqual(reply);
+  expect<unknown>(await Effect.runPromise(fixture(reply).store.cleanup(input))).toEqual(reply);
   const invalid = fixture({
     ...reply,
     cookieEffects: [{ kind: "credential", action: "expire", credentialId: carriedId }],
