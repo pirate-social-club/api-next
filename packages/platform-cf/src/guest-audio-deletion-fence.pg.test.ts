@@ -139,7 +139,7 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
     // proposal override or unpublished environment filename selects its source.
     const candidate = await migration("0253_learner_audio_deletion_fence.sql");
     const candidateHash = createHash("sha256").update(candidate).digest("hex");
-    expect(candidateHash).toBe("f5fce28bf202b82d6dc1298d937a732645b0774d8f4ca6532ff849f0952d57af");
+    expect(candidateHash).toBe("42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc");
     await transaction(admin, async () => {
       await admin.query(candidate);
     });
@@ -555,6 +555,18 @@ suite("private source-owned audio foundation", () => {
           ).rows[0]?.state,
         ).toBe("established");
         const canceled = await prepare(f, 20, "cancel");
+        // Native GENERATED ALWAYS identity and application key remain immutable.
+        await expect(
+          f.admin.query(
+            "UPDATE learner_audio_delete_commands SET operation_kind='learning_retention' WHERE command_id='command-cancel'",
+          ),
+        ).rejects.toMatchObject({ code: "428C9" });
+        await expect(
+          f.admin.query(
+            "UPDATE learner_audio_delete_commands SET idempotency_key='replacement' WHERE command_id='command-cancel'",
+          ),
+        ).rejects.toMatchObject({ code: "P0001" });
+
         expect(
           (await f.runtime.query("SELECT fixture_audio_claim_v1('unclaimed') AS claimed")).rows[0]
             ?.claimed,

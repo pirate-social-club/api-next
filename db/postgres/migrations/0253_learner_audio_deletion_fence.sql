@@ -474,12 +474,17 @@ BEGIN
 END $$;
 CREATE FUNCTION guard_learner_audio_control_state_private_v1() RETURNS TRIGGER
  LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE mutable TEXT[];
+DECLARE mutable TEXT[]; identity_new JSONB; identity_old JSONB;
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'durable audio control rows cannot be deleted'; END IF;
+ identity_new:=to_jsonb(NEW);identity_old:=to_jsonb(OLD);
  IF TG_TABLE_NAME='learner_audio_delete_commands' THEN
+   -- Stored GENERATED ALWAYS values are unavailable in a BEFORE row frame.
+   -- PostgreSQL owns this constant and refuses explicit operation-kind writes.
+   -- Compare every application-owned identity field, excluding only that value.
+   identity_new:=identity_new-'operation_kind';identity_old:=identity_old-'operation_kind';
    mutable:=ARRAY['state','provider_disposition','completed_at','final_result'];
-   IF OLD.state='completed' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+   IF OLD.state='completed' AND identity_new IS DISTINCT FROM identity_old THEN
      RAISE EXCEPTION 'completed deletion fact is immutable'; END IF;
    IF NEW.state NOT IN('pending','completed') THEN RAISE EXCEPTION 'invalid deletion state'; END IF;
  ELSIF TG_TABLE_NAME='learner_audio_upload_attempts' THEN
@@ -504,7 +509,7 @@ BEGIN
        WHERE command_id=OLD.active_delete_command_id AND state='completed')) THEN
      RAISE EXCEPTION 'live deletion fence cannot be replaced or released'; END IF;
  ELSE RAISE EXCEPTION 'unexpected audio control table'; END IF;
- IF (to_jsonb(NEW)-mutable) IS DISTINCT FROM (to_jsonb(OLD)-mutable) THEN
+ IF (identity_new-mutable) IS DISTINCT FROM (identity_old-mutable) THEN
    RAISE EXCEPTION 'audio command/source identity is immutable'; END IF;
  RETURN NEW;
 END $$;
