@@ -289,4 +289,207 @@ suite("guest learning authority foundation", () => {
       ).rejects.toThrow("source identity is immutable");
     });
   });
+  test("proof snapshot preserves original credential owner through empty alias convergence", async () => {
+    await fixture(async (admin) => {
+      await issue(admin, owner(4), credential(1));
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO guest_empty_owner_aliases
+      (source_owner_id,canonical_owner_id,origin,created_at) VALUES($1,$2,$3,clock_timestamp())`,
+        [owner(4), owner(3), origin],
+      );
+      await admin.query("UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=$1", [
+        owner(4),
+      ]);
+      await admin.query("COMMIT");
+      const result = await admin.query(
+        `WITH result AS (
+      SELECT read_guest_browser_proof_snapshot_v1($1,$2::jsonb,'[]',FALSE) AS snapshot)
+      SELECT snapshot->'provedCredentials'->0->>'credentialSourceOwnerId' AS original,
+        snapshot->'provedCredentials'->0->>'effectiveOwnerId' AS effective,
+        snapshot->'provedCredentials'->0->>'ownerId' AS projected,
+        snapshot->'provedCredentials'->0->>'state' AS state FROM result`,
+        [origin, JSON.stringify([{ credentialId: credential(1), digest: hash }])],
+      );
+      expect(result.rows).toEqual([
+        {
+          original: owner(4),
+          effective: owner(3),
+          projected: owner(3),
+          state: "pending_bootstrap",
+        },
+      ]);
+      expect(
+        (
+          await admin.query("SELECT owner_id FROM guest_credentials WHERE credential_id=$1", [
+            credential(1),
+          ])
+        ).rows,
+      ).toEqual([{ owner_id: owner(4) }]);
+    });
+  });
+
+  test("unknown digest and wrong origin return no authority; no digests enter projection", async () => {
+    await fixture(async (admin) => {
+      await issue(admin, owner(3), credential(0));
+      for (const [productOrigin, digest] of [
+        [origin, "b".repeat(64)],
+        ["https://other.example", hash],
+      ]) {
+        const result = await admin.query(
+          `SELECT
+        read_guest_browser_proof_snapshot_v1($1,$2::jsonb,'[]',FALSE)->'provedCredentials' AS credentials`,
+          [productOrigin, JSON.stringify([{ credentialId: credential(0), digest }])],
+        );
+        expect(result.rows).toEqual([{ credentials: [] }]);
+      }
+      const good = await admin.query(
+        "SELECT read_guest_browser_proof_snapshot_v1($1,$2::jsonb,'[]',FALSE) AS snapshot",
+        [origin, JSON.stringify([{ credentialId: credential(0), digest: hash }])],
+      );
+      const encoded = JSON.stringify(good.rows);
+      expect(encoded).not.toContain(hash);
+      expect(encoded).not.toContain("secret_digest");
+      expect(encoded).not.toContain("nonce_digest");
+    });
+  });
+
+  test("new readers remove inherited EXECUTE; raw tables remain denied after reader-only grant", async () => {
+    await fixture(async (admin, runtime) => {
+      await expect(
+        runtime.query("SELECT read_guest_browser_proof_snapshot_v1($1,'[]','[]',FALSE)", [origin]),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        runtime.query("SELECT read_guest_learning_lease_observation_v1($1,$2,$3)", [
+          origin,
+          credential(0),
+          owner(3),
+        ]),
+      ).rejects.toMatchObject({ code: "42501" });
+      const roleResult = await runtime.query("SELECT current_user AS role");
+      expect(roleResult.rows).toHaveLength(1);
+      for (const signature of [
+        "read_guest_browser_proof_snapshot_v1(text,jsonb,jsonb,boolean)",
+        "read_guest_learning_lease_observation_v1(text,text,text)",
+      ]) {
+        // SQL formatter quotes the fixture-generated role; no application SQL grants.
+        const grant = await admin.query(
+          "SELECT format('GRANT EXECUTE ON FUNCTION %s TO %I',$1::text,$2::name) AS command",
+          [signature, roleResult.rows[0].role],
+        );
+        await admin.query(grant.rows[0].command);
+      }
+      await expect(
+        runtime.query(
+          "SELECT read_guest_browser_proof_snapshot_v1($1,'[]','[]',FALSE) AS snapshot",
+          [origin],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ snapshot: { provedCredentials: [], provedIntents: [] } }],
+      });
+      for (const table of [
+        "guest_credentials",
+        "guest_empty_owner_aliases",
+        "guest_attachment_intents",
+      ])
+        await expect(runtime.query(`SELECT * FROM ${table}`)).rejects.toMatchObject({
+          code: "42501",
+        });
+    });
+  });
+
+  test("intent nonce proof retains original credential lineage and resolved source owner", async () => {
+    await fixture(async (admin) => {
+      const id = credential(1);
+      const intentId = `gai_${credential(2)}`;
+      const nonceDigest = "b".repeat(64);
+      await issue(admin, owner(4), id);
+      await admin.query(
+        `WITH instant AS (SELECT clock_timestamp() AS at)
+      UPDATE guest_credentials SET state='confirmed',confirmed_at=at,session_until=at+INTERVAL '1 hour'
+      FROM instant WHERE credential_id=$1`,
+        [id],
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO guest_empty_owner_aliases(source_owner_id,canonical_owner_id,origin,created_at)
+      VALUES($1,$2,$3,clock_timestamp())`,
+        [owner(4), owner(3), origin],
+      );
+      await admin.query("UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=$1", [
+        owner(4),
+      ]);
+      await admin.query("COMMIT");
+      await admin.query(
+        `WITH instant AS (SELECT clock_timestamp() AS at)
+      INSERT INTO guest_attachment_intents(intent_id,owner_id,credential_source_owner_id,credential_id,
+        origin,nonce_digest,state,created_at,expires_at)
+      SELECT $1,$2,$3,$4,$5,$6,'awaiting_account',at,at+INTERVAL '15 minutes' FROM instant`,
+        [intentId, owner(3), owner(4), id, origin, nonceDigest],
+      );
+      const result = await admin.query(
+        `WITH result AS (
+      SELECT read_guest_browser_proof_snapshot_v1($1,$2::jsonb,$3::jsonb,FALSE) AS snapshot)
+      SELECT snapshot->'provedIntents'->0->>'credentialSourceOwnerId' AS original,
+        snapshot->'provedIntents'->0->>'effectiveOwnerId' AS effective,
+        snapshot->'provedIntents'->0->>'ownerId' AS intent_owner,
+        snapshot->'provedIntents'->0->>'credentialId' AS credential_id,
+        snapshot->'provedIntents'->0->'active' AS active FROM result`,
+        [
+          origin,
+          JSON.stringify([{ credentialId: id, digest: hash }]),
+          JSON.stringify([{ intentId, digest: nonceDigest }]),
+        ],
+      );
+      expect(result.rows).toEqual([
+        {
+          original: owner(4),
+          effective: owner(3),
+          intent_owner: owner(3),
+          credential_id: id,
+          active: true,
+        },
+      ]);
+      const wrong = await admin.query(
+        `SELECT read_guest_browser_proof_snapshot_v1($1,'[]',$2::jsonb,FALSE)
+      ->'provedIntents' AS intents`,
+        [origin, JSON.stringify([{ intentId, digest: hash }])],
+      );
+      expect(wrong.rows).toEqual([{ intents: [] }]);
+    });
+  });
+
+  test("database lease observation is fresh and revocation cannot reuse a stale snapshot", async () => {
+    await fixture(async (admin) => {
+      await issue(admin, owner(3), credential(0));
+      await admin.query(
+        `WITH instant AS (SELECT clock_timestamp() AS at)
+      UPDATE guest_credentials SET state='confirmed',confirmed_at=at,session_until=at+INTERVAL '1 hour'
+      FROM instant WHERE credential_id=$1`,
+        [credential(0)],
+      );
+      const live = await admin.query(
+        `SELECT
+      read_guest_learning_lease_observation_v1($1,$2,$3)->'active' AS active`,
+        [origin, credential(0), owner(3)],
+      );
+      expect(live.rows).toEqual([{ active: true }]);
+      await admin.query(
+        `UPDATE guest_credentials SET state='revoked',revoked_at=clock_timestamp(),
+      revocation_reason='rotation_acknowledged' WHERE credential_id=$1`,
+        [credential(0)],
+      );
+      const after = await admin.query(
+        "SELECT read_guest_learning_lease_observation_v1($1,$2,$3) AS observed",
+        [origin, credential(0), owner(3)],
+      );
+      expect(after.rows).toEqual([{ observed: null }]);
+      const metadata = await admin.query(
+        `SELECT
+      read_guest_browser_proof_snapshot_v1($1,$2::jsonb,'[]',TRUE)->'provedCredentials'->0->>'state' AS state`,
+        [origin, JSON.stringify([{ credentialId: credential(0), digest: hash }])],
+      );
+      expect(metadata.rows).toEqual([{ state: "revoked" }]);
+    });
+  });
 });

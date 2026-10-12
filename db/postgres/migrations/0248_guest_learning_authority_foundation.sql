@@ -564,3 +564,144 @@ BEGIN
   END LOOP;
 END;
 $bind_guest_lineage$;
+
+-- Private digest-matched browser evidence and fresh database-clock lease readers.
+CREATE FUNCTION read_guest_browser_proof_snapshot_v1(
+  expected_origin TEXT,
+  credential_proofs JSONB,
+  intent_proofs JSONB,
+  cleanup_operation BOOLEAN
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER VOLATILE AS $$
+DECLARE
+  maximum_proofs INTEGER;
+  observed_at TIMESTAMPTZ;
+  result JSONB;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR cleanup_operation IS NULL
+     OR credential_proofs IS NULL OR jsonb_typeof(credential_proofs)<>'array'
+     OR intent_proofs IS NULL OR jsonb_typeof(intent_proofs)<>'array' THEN
+    RAISE EXCEPTION 'invalid guest proof input' USING ERRCODE='22023';
+  END IF;
+  maximum_proofs := CASE WHEN cleanup_operation THEN 16 ELSE 4 END;
+  IF jsonb_array_length(credential_proofs)>maximum_proofs
+     OR jsonb_array_length(intent_proofs)>maximum_proofs THEN
+    RAISE EXCEPTION 'invalid guest proof count' USING ERRCODE='22023';
+  END IF;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements(credential_proofs) p
+    WHERE jsonb_typeof(p)<>'object'
+      OR jsonb_typeof(p->'credentialId') IS DISTINCT FROM 'string'
+      OR jsonb_typeof(p->'digest') IS DISTINCT FROM 'string'
+      OR p->>'credentialId' !~ '^[A-Za-z0-9_-]{21}[AQgw]$'
+      OR p->>'digest' !~ '^[0-9a-f]{64}$'
+      OR p - 'credentialId' - 'digest' <> '{}'::JSONB)
+    OR jsonb_array_length(credential_proofs)<>
+       (SELECT count(DISTINCT p->>'credentialId') FROM jsonb_array_elements(credential_proofs) p)
+    OR EXISTS(SELECT 1 FROM jsonb_array_elements(intent_proofs) p
+      WHERE jsonb_typeof(p)<>'object'
+        OR jsonb_typeof(p->'intentId') IS DISTINCT FROM 'string'
+        OR jsonb_typeof(p->'digest') IS DISTINCT FROM 'string'
+        OR p->>'intentId' !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$'
+        OR p->>'digest' !~ '^[0-9a-f]{64}$'
+        OR p - 'intentId' - 'digest' <> '{}'::JSONB)
+    OR jsonb_array_length(intent_proofs)<>
+       (SELECT count(DISTINCT p->>'intentId') FROM jsonb_array_elements(intent_proofs) p) THEN
+    RAISE EXCEPTION 'invalid guest proof shape' USING ERRCODE='22023';
+  END IF;
+
+  -- Same namespace as current0248 exclusive alias writer, before owner/media locks.
+  -- This reader changes no product row. VOLATILE + explicit clock avoids cached authority.
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  observed_at := clock_timestamp();
+  WITH credentials AS MATERIALIZED (
+    SELECT c.*,resolve_guest_empty_owner_root_v1(c.owner_id) AS effective_owner
+    FROM guest_credentials c JOIN jsonb_array_elements(credential_proofs) p
+      ON c.credential_id=p->>'credentialId' AND c.secret_digest=p->>'digest'
+    WHERE c.origin=expected_origin
+  ), intents AS MATERIALIZED (
+    SELECT i.*,resolve_guest_empty_owner_root_v1(i.credential_source_owner_id) AS effective_owner
+    FROM guest_attachment_intents i JOIN jsonb_array_elements(intent_proofs) p
+      ON i.intent_id=p->>'intentId' AND i.nonce_digest=p->>'digest'
+    WHERE i.origin=expected_origin
+  ) SELECT jsonb_build_object(
+    'origin',expected_origin,
+    'databaseObservedAt',to_char(observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'provedCredentials',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'credentialId',c.credential_id,
+      'credentialSourceOwnerId',c.owner_id,
+      'effectiveOwnerId',c.effective_owner,
+      'ownerId',c.effective_owner,
+      'origin',c.origin,'state',c.state,
+      'leaseUntil',to_char(c.session_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'pendingExpiresAt',to_char(c.pending_expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'predecessorCredentialId',c.predecessor_id,
+      'pendingActive',c.state IN ('pending_bootstrap','pending_successor') AND c.pending_expires_at>observed_at,
+      'learningLeaseActive',c.state='confirmed' AND COALESCE(c.session_until>observed_at,FALSE)
+    ) ORDER BY c.credential_id COLLATE "C") FROM credentials c),'[]'::JSONB),
+    'provedIntents',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'intentId',i.intent_id,'credentialId',i.credential_id,
+      'credentialSourceOwnerId',i.credential_source_owner_id,
+      'effectiveOwnerId',i.effective_owner,'ownerId',i.owner_id,
+      'origin',i.origin,'state',i.state,
+      'expiresAt',to_char(i.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'active',i.state IN ('awaiting_account','awaiting_confirmation') AND i.expires_at>observed_at
+    ) ORDER BY i.intent_id COLLATE "C") FROM intents i),'[]'::JSONB)
+  ) INTO result;
+  RETURN result;
+END $$;
+REVOKE ALL ON FUNCTION read_guest_browser_proof_snapshot_v1(TEXT,JSONB,JSONB,BOOLEAN) FROM PUBLIC;
+
+-- Locator-only follow-up is NOT independent proof. It accepts only metadata from
+-- the previously digest-verified snapshot and repeats state/root/clock checks.
+-- No granting or renewing lease, no raw digest lookup, and no browser body authority.
+CREATE FUNCTION read_guest_learning_lease_observation_v1(
+  expected_origin TEXT, expected_credential_id TEXT,
+  expected_effective_owner TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER VOLATILE AS $$
+DECLARE observed_at TIMESTAMPTZ; result JSONB;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR expected_credential_id IS NULL
+     OR expected_credential_id !~ '^[A-Za-z0-9_-]{21}[AQgw]$'
+     OR expected_effective_owner IS NULL
+     OR expected_effective_owner !~ '^owner_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+    RAISE EXCEPTION 'invalid guest lease input' USING ERRCODE='22023';
+  END IF;
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  observed_at := clock_timestamp();
+  SELECT jsonb_build_object(
+    'credential',jsonb_build_object(
+      'credentialId',c.credential_id,'credentialSourceOwnerId',c.owner_id,
+      'effectiveOwnerId',expected_effective_owner,'origin',c.origin),
+    'state','confirmed',
+    'leaseUntil',to_char(c.session_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'databaseObservedAt',to_char(observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'active',c.session_until>observed_at
+  ) INTO result FROM guest_credentials c
+  WHERE c.credential_id=expected_credential_id AND c.origin=expected_origin
+    AND c.state='confirmed'
+    AND resolve_guest_empty_owner_root_v1(c.owner_id)=expected_effective_owner;
+  RETURN result;
+END $$;
+REVOKE ALL ON FUNCTION read_guest_learning_lease_observation_v1(TEXT,TEXT,TEXT) FROM PUBLIC;
+
+DO $private_guest_proof_projection$
+DECLARE trusted_schema TEXT:=current_schema(); signature TEXT; grantee_name TEXT;
+BEGIN
+  IF trusted_schema IS NULL OR trusted_schema ~ '^pg_temp' OR trusted_schema='pg_catalog' THEN
+    RAISE EXCEPTION 'trusted migration schema required';
+  END IF;
+  FOREACH signature IN ARRAY ARRAY[
+    'read_guest_browser_proof_snapshot_v1(text,jsonb,jsonb,boolean)',
+    'read_guest_learning_lease_observation_v1(text,text,text)'
+  ] LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
+    FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)
+      FROM pg_proc f CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+      WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner
+    LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name); END LOOP;
+  END LOOP;
+END;
+$private_guest_proof_projection$;
+-- Root binds EXECUTE only to the independently verified actual approved reader role.
+-- Keep all eight tables and private alias helper denied to ordinary runtime directly.

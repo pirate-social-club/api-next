@@ -125,6 +125,7 @@
     "./guest-study-ports": "./src/guest-study-ports.ts",
     "./guest-learning-resource-admission": "./src/guest-learning-resource-admission.ts",
     "./owner-learner-audio-deletion": "./src/owner-learner-audio-deletion.ts",
-    "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts"
+    "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts",
+    "./guest-proof-verifier": "./src/guest-proof-verifier.ts"
   }
 }
