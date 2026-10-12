@@ -469,3 +469,128 @@ SELECT require_guest_practice_only_schema_phase_v1();
 -- Convergence in actual253 already calls the empty predicate for every root,
 -- whose full reverse component now includes both new retained identities.
 -- No runtime grants, serving composition, provider I/O or feature activation.
+
+-- Approved serving/worker LEAF candidates around ungranted internal primitives.
+-- Root may grant only these exact wrappers to the independently accepted
+-- trusted server LOGIN after genuine composed-role/phase/browser tests. No raw
+-- table privileges, generic capture, audio lock or arbitrary checkpoint grant.
+CREATE FUNCTION require_owner_guest_source_private_v1(p_source JSONB) RETURNS TEXT
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $$
+BEGIN
+ IF p_source IS NULL OR jsonb_typeof(p_source) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_source))<>2
+  OR NOT(p_source ?& ARRAY['kind','ownerId']) OR p_source->>'kind' IS DISTINCT FROM 'guest'
+  OR jsonb_typeof(p_source->'ownerId') IS DISTINCT FROM 'string'
+  OR char_length(p_source->>'ownerId') NOT BETWEEN 1 AND 128
+  OR NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=p_source->>'ownerId' AND kind='guest') THEN
+  RAISE EXCEPTION 'captured guest source required' USING ERRCODE='GP002'; END IF;
+ RETURN p_source->>'ownerId';
+END $$;
+
+CREATE FUNCTION persist_owner_guest_spoken_success_v1(p_source JSONB,p_operation JSONB,
+ p_command TEXT,p_original_lease TEXT,p_result JSONB,p_provider JSONB)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN persist_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease,p_result,p_provider);
+END $$;
+
+CREATE FUNCTION read_owner_guest_spoken_success_v1(p_source JSONB,p_operation JSONB,p_command TEXT,p_original_lease TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN load_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease);
+END $$;
+
+CREATE FUNCTION read_owner_guest_spoken_capture_v1(p_source JSONB,p_operation JSONB,p_command TEXT,p_original_lease TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN read_guest_spoken_capture_private_v1(source_id,p_operation,p_command,p_original_lease);
+END $$;
+
+-- Frozen persistSuccessfulSpokenResult ACKS an EXISTING exact checkpoint after
+-- an actually observed archive result. It cannot create late success, claim an
+-- unknown upload failed, settle another call or use a renewed browser lease.
+CREATE FUNCTION acknowledge_owner_guest_spoken_success_v1(p_source JSONB,p_operation JSONB,
+ p_command TEXT,p_original_lease TEXT,p_result JSONB,p_provider JSONB,p_reservation TEXT,p_fence BIGINT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE source_id TEXT; saved JSONB; cap guest_study_spoken_captures%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
+ fence learner_audio_owner_fences%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE; published BOOLEAN;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ saved:=load_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease);
+ IF saved IS NULL THEN RAISE EXCEPTION 'prearchive successful checkpoint required' USING ERRCODE='GP010'; END IF;
+ IF p_result IS NULL OR jsonb_typeof(p_result) IS DISTINCT FROM 'object'
+  OR NOT(p_result ? 'archive') OR jsonb_typeof(p_result->'archive') IS DISTINCT FROM 'object'
+  OR (p_result-'archive') IS DISTINCT FROM saved->'result'
+  OR p_provider IS DISTINCT FROM saved->'providerResult'
+  OR saved->>'resourceReservationId' IS DISTINCT FROM p_reservation
+  OR (saved->>'deletionFenceRevision')::BIGINT IS DISTINCT FROM p_fence THEN
+  RAISE EXCEPTION 'accepted success acknowledgement changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=saved->>'captureId';
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=cap.resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(source_id,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[source_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=cap.upload_attempt_id FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=source_id FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cap.artifact_id FOR UPDATE;
+ IF ROW(upload.owner_id,upload.artifact_id,upload.command_ref,upload.reservation_ref,upload.captured_revision,upload.object_ref)
+  IS DISTINCT FROM ROW(source_id,cap.artifact_id,cap.command_id,p_reservation,p_fence,artifact.expected_object_ref) THEN
+  RAISE EXCEPTION 'actual archive source changed' USING ERRCODE='GP005'; END IF;
+ IF upload.io_state<>'closed' THEN
+  RETURN jsonb_build_object('state','reserved','outcome_id',saved->>'checkpointId','result',NULL); END IF;
+ published:=upload.storage_disposition='stored' AND NOT upload.cleanup_required
+  AND fence.revision=p_fence AND fence.active_delete_command_id IS NULL AND artifact.recording_state<>'deleted'
+  AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref);
+ -- A truthful earlier stored observation stays acknowledged after later delete;
+ -- immutable upload history proves that I/O fact. Publication eligibility is
+ -- rederived separately by the finalizer, which cannot resurrect that object.
+ IF p_result->'archive' IS DISTINCT FROM CASE
+   WHEN p_result#>>'{archive,state}'='stored' AND upload.storage_disposition='stored'
+    THEN jsonb_build_object('state','stored','objectRef',upload.object_ref)
+   WHEN p_result#>>'{archive,state}'='failed' AND (upload.storage_disposition IN('failed','absent') OR NOT published)
+    THEN jsonb_build_object('state','failed','objectRef',NULL)
+   ELSE NULL::JSONB END THEN
+  RAISE EXCEPTION 'truthful retained archive observation required' USING ERRCODE='GP005'; END IF;
+ RETURN jsonb_build_object('state','completed','outcome_id',saved->>'checkpointId',
+  'result',jsonb_build_object('checkpointId',saved->>'checkpointId'));
+END $$;
+
+-- Optional narrow root-owned checkpoint composition: bind ONLY the five
+-- controlled leaf functions after their bodies exist in the same transaction.
+-- No serving grant; generic core capture/persist/load/audio helpers stay private.
+DO $bind_owner_guest_checkpoint_leaves$
+DECLARE signature TEXT; grantee_name TEXT; trusted_schema TEXT; expected_owner OID;
+BEGIN
+ SELECT n.nspname,c.relowner INTO STRICT trusted_schema,expected_owner
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid='participation_owners'::regclass;
+ IF trusted_schema='pg_catalog' OR trusted_schema ~ '^pg_temp' THEN
+  RAISE EXCEPTION 'trusted checkpoint leaf schema required'; END IF;
+ FOREACH signature IN ARRAY ARRAY[
+  'require_owner_guest_source_private_v1(jsonb)',
+  'persist_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb)',
+  'read_owner_guest_spoken_success_v1(jsonb,jsonb,text,text)',
+  'read_owner_guest_spoken_capture_v1(jsonb,jsonb,text,text)',
+  'acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)'
+ ] LOOP
+  IF NOT EXISTS(SELECT 1 FROM pg_proc f JOIN pg_namespace n ON n.oid=f.pronamespace
+    WHERE f.oid=signature::regprocedure AND f.proowner=expected_owner AND n.nspname=trusted_schema) THEN
+   RAISE EXCEPTION 'approved checkpoint leaf owner required'; END IF;
+  EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
+  FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_proc f
+   CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+   WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner LOOP
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name);
+  END LOOP;
+ END LOOP;
+END $bind_owner_guest_checkpoint_leaves$;
