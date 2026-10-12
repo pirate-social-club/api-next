@@ -1,13 +1,14 @@
 import { VIDEO_PLAYBACK_ACCESS_POLICY } from "@pirate/application/video/playback-access";
 import { InternalError } from "@pirate/contracts";
 import { Effect } from "effect";
+import { makeKaraokePlaybackAuthority } from "../../../packages/platform-cf/src/karaoke-playback-authority.ts";
 import { makeSongPlaybackAuthority } from "../../../packages/platform-cf/src/song-playback-authority.ts";
 import { makeSongPlaybackSigner } from "../../../packages/platform-cf/src/song-playback-signer.ts";
 import {
   makeVideoPlaybackRateLimiter,
   type VideoRateNamespace,
 } from "../../../packages/platform-cf/src/video-playback-rate-limiter.ts";
-import { makeSongPlaybackHandler } from "./song-playback-handler.ts";
+import { makeKaraokePlaybackHandler, makeSongPlaybackHandler } from "./song-playback-handler.ts";
 export interface SongPlaybackBindings {
   readonly SONG_PLAYBACK_ENABLED?: string;
   readonly SONG_PLAYBACK_R2_ACCOUNT_ID?: string;
@@ -24,6 +25,9 @@ export async function makeSongPlaybackHandlers(
   if (bindings.SONG_PLAYBACK_ENABLED !== "true")
     return {
       CreateSongPlaybackAccess: () => {
+        throw new InternalError({ message: "Song playback unavailable" });
+      },
+      CreateKaraokePlaybackAccess: () => {
         throw new InternalError({ message: "Song playback unavailable" });
       },
     };
@@ -48,17 +52,23 @@ export async function makeSongPlaybackHandlers(
     hmacKey,
     namespace: { getByName: (name) => namespace.getByName(`song:${name}`) },
   });
+  const services = {
+    authorize: makeSongPlaybackAuthority(runtime),
+    nowMs: Effect.sync(Date.now),
+    limit: (input: { source: string; postId: string }) =>
+      budget({ ...input, policy: VIDEO_PLAYBACK_ACCESS_POLICY }),
+    sign: makeSongPlaybackSigner({
+      accountId: required(bindings.SONG_PLAYBACK_R2_ACCOUNT_ID),
+      bucket: required(bindings.SONG_PLAYBACK_R2_BUCKET),
+      accessKeyId: required(bindings.SONG_PLAYBACK_R2_ACCESS_KEY_ID),
+      secretAccessKey: required(bindings.SONG_PLAYBACK_R2_SECRET_ACCESS_KEY),
+    }),
+  };
   return {
-    CreateSongPlaybackAccess: makeSongPlaybackHandler({
-      authorize: makeSongPlaybackAuthority(runtime),
-      nowMs: Effect.sync(Date.now),
-      limit: (input) => budget({ ...input, policy: VIDEO_PLAYBACK_ACCESS_POLICY }),
-      sign: makeSongPlaybackSigner({
-        accountId: required(bindings.SONG_PLAYBACK_R2_ACCOUNT_ID),
-        bucket: required(bindings.SONG_PLAYBACK_R2_BUCKET),
-        accessKeyId: required(bindings.SONG_PLAYBACK_R2_ACCESS_KEY_ID),
-        secretAccessKey: required(bindings.SONG_PLAYBACK_R2_SECRET_ACCESS_KEY),
-      }),
+    CreateSongPlaybackAccess: makeSongPlaybackHandler(services),
+    CreateKaraokePlaybackAccess: makeKaraokePlaybackHandler({
+      ...services,
+      authorize: makeKaraokePlaybackAuthority(runtime),
     }),
   };
 }

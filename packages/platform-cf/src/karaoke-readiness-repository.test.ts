@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+import {
+  buildKaraokePayloadLines,
+  isVocalAlignedArtifact,
+} from "./karaoke-readiness-repository.ts";
 
 const catalogLines = [
   { id: "line-1", index: 0, text: "Hold on" },
@@ -177,5 +180,19 @@ describe("Karaoke readiness payload", () => {
         },
       }),
     ).toBeNull();
+  });
+});
+
+describe("Karaoke alignment provenance", () => {
+  test("requires both the accepted vocal object and its digest", () => {
+    const digest = "a".repeat(64);
+    const artifact = { alignment_source_ref: "vocal-ref", alignment_source_sha256: digest };
+    expect(isVocalAlignedArtifact(artifact, "vocal-ref", digest)).toBe(true);
+    expect(isVocalAlignedArtifact(artifact, "full-mix-ref", digest)).toBe(false);
+    expect(isVocalAlignedArtifact(artifact, "vocal-ref", "b".repeat(64))).toBe(false);
+    expect(isVocalAlignedArtifact({ alignment_source_sha256: digest }, "vocal-ref", digest)).toBe(
+      false,
+    );
+    expect(isVocalAlignedArtifact(null, "vocal-ref", digest)).toBe(false);
   });
 });

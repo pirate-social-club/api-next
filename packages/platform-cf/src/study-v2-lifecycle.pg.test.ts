@@ -112,21 +112,20 @@ suite("Study v2 spoken lifecycle", () => {
         );
         const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
           Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
-        const session = await run(
-          study.startSession({
-            accountId: "study-account",
-            communityId: "study-community",
-            createdAt: practiceOnly ? new Date().toISOString() : "2026-09-12T12:00:00.000Z",
-            targetLanguage: null,
-            idempotencyKey: "study-session-command",
-            learnerBand: null,
-            personaId: "study-persona",
-            postId: "study-post",
-            requestHash: "5".repeat(64),
-            sessionId: "study-session-lifecycle",
-            timezone: "UTC",
-          }),
-        );
+        const startInput = {
+          accountId: "study-account",
+          communityId: "study-community",
+          createdAt: practiceOnly ? new Date().toISOString() : "2026-09-12T12:00:00.000Z",
+          targetLanguage: null,
+          idempotencyKey: "study-session-command",
+          learnerBand: null,
+          personaId: "study-persona",
+          postId: "study-post",
+          requestHash: "5".repeat(64),
+          sessionId: "study-session-lifecycle",
+          timezone: "UTC",
+        } as const;
+        const session = await run(study.startSession(startInput));
         expect(session.items).toHaveLength(4);
         expect(session.lesson.current?.session_item_id).toBe(
           session.items[0]?.session_item_id ?? "",
@@ -424,6 +423,45 @@ suite("Study v2 spoken lifecycle", () => {
             }),
           ),
         ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+        if (!practiceOnly) {
+          await admin.query("SET session_replication_role = replica");
+          try {
+            await admin.query(
+              "DELETE FROM media_song_stems WHERE submission_id='study-submission' AND slot='instrumental_audio'",
+            );
+          } finally {
+            await admin.query("SET session_replication_role = origin");
+          }
+          expect(
+            await run(
+              study.getAvailability({
+                accountId: "study-account",
+                communityId: "study-community",
+                postId: "study-post",
+              }),
+            ),
+          ).toEqual({ state: "unavailable", reason: "stems_missing" });
+          await expect(
+            run(
+              study.startSession({
+                ...startInput,
+                idempotencyKey: "study-session-without-stem",
+                requestHash: "6".repeat(64),
+                sessionId: "study-session-without-stem",
+              }),
+            ),
+          ).rejects.toMatchObject({ reason: "not-found" });
+          expect((await run(study.startSession(startInput))).session_id).toBe(session.session_id);
+          expect(
+            await run(
+              study.getSession({
+                accountId: "study-account",
+                communityId: "study-community",
+                sessionId: session.session_id,
+              }),
+            ),
+          ).toMatchObject({ session_id: session.session_id, status: "completed" });
+        }
         if (practiceOnly) {
           const read = () =>
             run(

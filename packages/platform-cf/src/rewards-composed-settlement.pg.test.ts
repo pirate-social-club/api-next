@@ -162,7 +162,7 @@ suite("Composed current-policy Megapot settlement", () => {
       expect(policyRows.rows[0]?.qualification_policies).toMatchObject([
         {
           activity: "karaoke",
-          policy: { qualification_policy_version_id: "karaoke_qualification_v2@1" },
+          policy: { qualification_policy_version_id: "karaoke_qualification_v2@2" },
         },
         {
           activity: "study",
@@ -317,11 +317,11 @@ suite("Composed current-policy Megapot settlement", () => {
         ]),
       ).toEqual([
         ["winner-both", "study", "study_session_first_pass_v2@1"],
-        ["winner-expired", "karaoke", "karaoke_qualification_v2@1"],
-        ["winner-failed", "karaoke", "karaoke_qualification_v2@1"],
-        ["winner-karaoke", "karaoke", "karaoke_qualification_v2@1"],
+        ["winner-expired", "karaoke", "karaoke_qualification_v2@2"],
+        ["winner-failed", "karaoke", "karaoke_qualification_v2@2"],
+        ["winner-karaoke", "karaoke", "karaoke_qualification_v2@2"],
         ["winner-study", "study", "study_session_first_pass_v2@1"],
-        ["winner-unverified", "karaoke", "karaoke_qualification_v2@1"],
+        ["winner-unverified", "karaoke", "karaoke_qualification_v2@2"],
       ]);
       expect(
         (

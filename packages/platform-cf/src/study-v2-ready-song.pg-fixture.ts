@@ -100,6 +100,11 @@ export async function insertStudySongFixture(admin: Pick<Client, "query">) {
          'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
       ["2".repeat(64), lyrics],
     );
+    for (const slot of ["instrumental_audio", "vocal_audio"])
+      await admin.query(
+        `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
+        [slot, "b".repeat(64)],
+      );
     for (const [index, line] of lines.entries()) {
       const ordinal = index + 1;
       await admin.query(
@@ -183,7 +188,7 @@ export async function insertStudySongFixture(admin: Pick<Client, "query">) {
   return { lines };
 }
 
-/** Language profile and stems that admit the fixture song to Telegram read-aloud practice. */
+/** Language profile that admits the fixture song to Telegram read-aloud practice. */
 export async function insertTelegramPracticeReadinessFixture(admin: Pick<Client, "query">) {
   await admin.query("SET session_replication_role=replica");
   try {
@@ -195,11 +200,6 @@ export async function insertTelegramPracticeReadinessFixture(admin: Pick<Client,
       await admin.query(
         `INSERT INTO study_language_profile_units(community_id,post_id,lyrics_revision,language_profile_revision,study_unit_id,detected_languages,dominant_language,mixed,vocable_only,proper_name_only,confidence) VALUES('study-community','study-post',1,1,$1,'["en"]'::jsonb,'en',FALSE,FALSE,FALSE,0.99)`,
         [`unit-${ordinal}`],
-      );
-    for (const slot of ["instrumental_audio", "vocal_audio"])
-      await admin.query(
-        `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
-        [slot, "b".repeat(64)],
       );
   } finally {
     await admin.query("SET session_replication_role=origin");

@@ -38040,7 +38040,7 @@ CREATE TABLE wallet_sponsored_sends (
 
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
-INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
 INSERT INTO handle_account_directory_bindings VALUES ('account_directory_v1', '1', 'c81ff980a56025b99dcd24d27979a302ca28f162ca7238dda354686082496d3d', 'active', '2000-01-01 00:00:00+00');
 
@@ -38086,6 +38086,7 @@ INSERT INTO platform_pirate_label_policy_revisions VALUES (1, 'pirate_ascii_ldh_
 INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1', 'study', 'study_session_first_pass_v2', '{"required_correct_bps": 7000}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@2', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["instrumental"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');

@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  type ControlPlaneTransaction,
   type KaraokeAttemptStore,
   KaraokeCommandRejected,
   type KaraokeFailure,
@@ -14,10 +14,13 @@ import {
   KaraokeAttempt as KaraokeAttemptSchema,
   KaraokeSongLeaderboard as KaraokeSongLeaderboardSchema,
 } from "@pirate/contracts";
-import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
-import { buildKaraokePayloadLines } from "./karaoke-readiness-repository.ts";
+import {
+  buildKaraokePayloadLines,
+  isVocalAlignedArtifact,
+  karaokeRevisionId,
+} from "./karaoke-readiness-repository.ts";
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -77,28 +80,34 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(
 ): S["Type"] => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
 const bps = (value: number): number => Math.max(0, Math.min(10_000, Math.round(value * 10_000)));
 
-const authorityFromRow = (row: Row): KaraokeSessionAuthority => ({
-  accountId: text(row, "account_id"),
-  artifactId: text(row, "artifact_id"),
-  attemptId: text(row, "attempt_id"),
-  audioRevision: integer(row, "audio_revision"),
-  communityId: text(row, "community_id"),
-  createdAt: iso(row.created_at),
-  expiresAt: iso(row.expires_at),
-  karaokeRevisionId: text(row, "karaoke_revision_id"),
-  lines: json(row.line_snapshot) as readonly KaraokeRuntimeLine[],
-  lyricsRevision: integer(row, "lyrics_revision"),
-  personaId: text(row, "persona_id"),
-  playbackKind: "full_mix",
-  postId: text(row, "post_id"),
-  qualificationPolicyVersionId: text(row, "qualification_policy_version_id"),
-  requestHash: text(row, "request_hash"),
-  scoringModel: "scribe_v2_realtime",
-  scoringProvider: "elevenlabs",
-  scoringVersion: 5,
-  sessionId: text(row, "session_id"),
-  timezone: text(row, "timezone"),
-});
+const authorityFromRow = (row: Row): KaraokeSessionAuthority => {
+  const playbackKind = text(row, "playback_kind");
+  if (playbackKind !== "full_mix" && playbackKind !== "instrumental") {
+    throw new Error("invalid karaoke playback kind");
+  }
+  return {
+    accountId: text(row, "account_id"),
+    artifactId: text(row, "artifact_id"),
+    attemptId: text(row, "attempt_id"),
+    audioRevision: integer(row, "audio_revision"),
+    communityId: text(row, "community_id"),
+    createdAt: iso(row.created_at),
+    expiresAt: iso(row.expires_at),
+    karaokeRevisionId: text(row, "karaoke_revision_id"),
+    lines: json(row.line_snapshot) as readonly KaraokeRuntimeLine[],
+    lyricsRevision: integer(row, "lyrics_revision"),
+    personaId: text(row, "persona_id"),
+    playbackKind,
+    postId: text(row, "post_id"),
+    qualificationPolicyVersionId: text(row, "qualification_policy_version_id"),
+    requestHash: text(row, "request_hash"),
+    scoringModel: "scribe_v2_realtime",
+    scoringProvider: "elevenlabs",
+    scoringVersion: 5,
+    sessionId: text(row, "session_id"),
+    timezone: text(row, "timezone"),
+  };
+};
 
 const attemptFromRow = (row: Row): KaraokeAttempt =>
   decode(KaraokeAttemptSchema, {
@@ -153,18 +162,28 @@ const ATTEMPT_SELECT = `
     JOIN karaoke_recordings AS recording
       ON recording.session_id=session.session_id AND recording.attempt_id=attempt.attempt_id`;
 
-const sessionSource = (communityId: string, postId: string) =>
+const sessionSource = (db: ControlPlaneTransaction, communityId: string, postId: string) =>
   Effect.gen(function* () {
-    const db = yield* ControlPlaneDb;
     const source = yield* db.execute<Row>({
       label: "karaoke.session.source",
       text: `SELECT publication.audio_revision, publication.lyrics_revision,
                     publication.canonical_audio_sha256, publication.lyrics_text,
+                    instrumental.canonical_sha256 AS instrumental_sha256,
+                    vocal.immutable_ref AS vocal_ref,
+                    vocal.canonical_sha256 AS vocal_sha256,
                     artifact.artifact_sha256, artifact.artifact,
                     registry.current_policy_version_id
                FROM posts AS post
                JOIN media_publication_projections AS publication
                  ON publication.community_id=post.community_id AND publication.post_id=post.post_id
+               JOIN media_song_stems AS instrumental
+                 ON instrumental.submission_id=publication.submission_id
+                AND instrumental.community_id=publication.community_id
+                AND instrumental.slot='instrumental_audio'
+               JOIN media_song_stems AS vocal
+                 ON vocal.submission_id=publication.submission_id
+                AND vocal.community_id=publication.community_id
+                AND vocal.slot='vocal_audio'
                JOIN media_alignment_projections AS alignment
                  ON alignment.community_id=publication.community_id
                 AND alignment.post_id=publication.post_id
@@ -175,6 +194,11 @@ const sessionSource = (communityId: string, postId: string) =>
                JOIN media_timed_lyrics_artifacts AS artifact
                  ON artifact.artifact_ref=alignment.current_artifact_ref
                 AND artifact.artifact_revision=alignment.current_artifact_revision
+                AND artifact.submission_id=publication.submission_id
+                AND artifact.audio_revision=publication.audio_revision
+                AND artifact.analysis_revision=publication.analysis_revision
+                AND artifact.lyrics_revision=publication.lyrics_revision
+                AND artifact.canonical_audio_sha256=publication.canonical_audio_sha256
                JOIN activity_registry AS registry ON registry.activity_key='karaoke'
               WHERE post.community_id=$1 AND post.post_id=$2 AND post.post_type='song'
                 AND post.status='published' AND post.visibility='public'
@@ -185,6 +209,15 @@ const sessionSource = (communityId: string, postId: string) =>
     if (source.rows.length === 0) return yield* rejected("not-found");
     if (source.rows.length !== 1) return yield* failed("invalid-row");
     const row = source.rows[0] as Row;
+    const vocalRef = typeof row.vocal_ref === "string" ? row.vocal_ref : null;
+    const vocalHash = typeof row.vocal_sha256 === "string" ? row.vocal_sha256 : null;
+    if (
+      vocalRef === null ||
+      vocalHash === null ||
+      !isVocalAlignedArtifact(row.artifact, vocalRef, vocalHash)
+    ) {
+      return yield* rejected("not-found");
+    }
     const catalog = yield* db.execute<Row>({
       label: "karaoke.session.catalog",
       text: `SELECT membership.ordinal, membership.lyric_line_id, version.canonical_text
@@ -210,20 +243,15 @@ const sessionSource = (communityId: string, postId: string) =>
       rawLyrics: typeof row.lyrics_text === "string" ? row.lyrics_text : null,
     });
     if (lines === null || lines.length === 0) return yield* failed("invalid-row");
-    const revisionHash = createHash("sha256")
-      .update(
-        canonicalJson({
-          algorithm: "karaoke_revision_v1",
-          audio_sha256: text(row, "canonical_audio_sha256"),
-          lyrics_revision: integer(row, "lyrics_revision"),
-          timed_artifact_sha256: text(row, "artifact_sha256"),
-          playback_kind: "full_mix",
-        }),
-      )
-      .digest("hex");
     return {
       audioRevision: integer(row, "audio_revision"),
-      karaokeRevisionId: `karaoke-revision-${revisionHash}`,
+      karaokeRevisionId: karaokeRevisionId({
+        audioSha256: text(row, "canonical_audio_sha256"),
+        instrumentalSha256: text(row, "instrumental_sha256"),
+        vocalSha256: vocalHash,
+        lyricsRevision: integer(row, "lyrics_revision"),
+        artifactSha256: text(row, "artifact_sha256"),
+      }),
       lines,
       lyricsRevision: integer(row, "lyrics_revision"),
       policyVersion: text(row, "current_policy_version_id"),
@@ -235,7 +263,6 @@ export const makeControlPlaneKaraokeRepository = () => ({
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const source = yield* sessionSource(input.communityId, input.postId);
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* lockLearnerAudioAccount(transaction, input.accountId);
@@ -279,6 +306,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
               }
               return authorityFromRow(row);
             }
+            const source = yield* sessionSource(transaction, input.communityId, input.postId);
             const clock = yield* transaction.execute<Row>({
               label: "karaoke.session.clock",
               text: `SELECT timezone FROM account_streak_clocks
@@ -309,7 +337,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
                        created_at, expires_at, playback_kind, scoring_version, scoring_provider,
                        scoring_model, line_snapshot, client_context
                      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-                       $14::timestamptz,$15::timestamptz,'full_mix',5,'elevenlabs',
+                       $14::timestamptz,$15::timestamptz,'instrumental',5,'elevenlabs',
                        'scribe_v2_realtime',$16::jsonb,$17::jsonb)`,
               values: [
                 input.sessionId,

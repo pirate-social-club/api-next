@@ -151,7 +151,7 @@ export const KaraokeAttemptCreateHeaders = Schema.Struct({
 
 export type KaraokeAttemptCreateRequest = Schema.Schema.Type<typeof KaraokeAttemptCreate>;
 
-export const KaraokePlaybackKind = Schema.Literal("full_mix");
+export const KaraokePlaybackKind = Schema.Literals(["full_mix", "instrumental"]);
 
 export const KaraokePlaybackAudio = Schema.Struct({
   kind: KaraokePlaybackKind,
@@ -181,6 +181,7 @@ export const KaraokeReadiness = Schema.Union([
       "not_a_song",
       "lyrics_not_accepted",
       "alignment_unavailable",
+      "stems_missing",
       "line_catalog_missing",
       "invalid_timed_lyrics",
     ]),

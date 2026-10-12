@@ -12,6 +12,7 @@ import {
   POST_ID,
   SUBMISSION_ID,
 } from "./activity-participation-composed.pg-fixture.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 
 export async function seedActivitySong(admin: Client): Promise<void> {
   const lyrics = LYRIC_LINES.join("\n");
@@ -93,6 +94,13 @@ export async function seedActivitySong(admin: Client): Promise<void> {
       lyrics,
     ],
   );
+  await insertSongStemPairFixture(admin, {
+    submissionId: SUBMISSION_ID,
+    communityId: COMMUNITY_ID,
+    actorUserId: AUTHOR_ID,
+    operationId: OPERATION_ID,
+    personaId: AUTHOR_PERSONA_ID,
+  });
   for (const [index, line] of LYRIC_LINES.entries()) {
     const ordinal = index + 1;
     const lineId = `composed-line-${ordinal}`;
@@ -185,6 +193,8 @@ export async function seedActivitySong(admin: Client): Promise<void> {
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
     mode: "word",
+    alignment_source_ref: `media://immutable/${OPERATION_ID}-stem-vocal_audio/audio/1`,
+    alignment_source_sha256: "9".repeat(64),
     segments,
   };
   await admin.query(

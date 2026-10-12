@@ -10,6 +10,7 @@ import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
@@ -125,6 +126,13 @@ async function seedRetryFixture(admin: Client): Promise<void> {
              'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
       ["2".repeat(64), lyrics],
     );
+    await insertSongStemPairFixture(admin, {
+      submissionId: "study-submission",
+      communityId: "study-community",
+      actorUserId: "study-account",
+      operationId: "study-operation",
+      personaId: "study-persona",
+    });
     for (const [index, line] of lines.entries()) {
       const ordinal = index + 1;
       await admin.query(

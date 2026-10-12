@@ -1,8 +1,14 @@
 import {
+  getKaraokePlaybackAccess,
   getSongPlaybackAccess,
+  type KaraokePlaybackServices,
   type SongPlaybackServices,
 } from "@pirate/application/use-cases/content/song-playback";
-import { AuthError, CreateSongPlaybackAccess } from "@pirate/contracts";
+import {
+  AuthError,
+  CreateKaraokePlaybackAccess,
+  CreateSongPlaybackAccess,
+} from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { type DecodedRequest, withEndpointResult } from "./transport.ts";
 export function makeSongPlaybackHandler(services: SongPlaybackServices) {
@@ -17,6 +23,32 @@ export function makeSongPlaybackHandler(services: SongPlaybackServices) {
       getSongPlaybackAccess(
         {
           postId,
+          ...(principal === null ? {} : { viewerUserId: principal.subject }),
+          trustedSource: request.edgeClientIp ?? "",
+        },
+        services,
+      ),
+    );
+    return withEndpointResult(body, 200, { "cache-control": "private, no-store" });
+  };
+}
+
+export function makeKaraokePlaybackHandler(services: KaraokePlaybackServices) {
+  return async (request: DecodedRequest) => {
+    const principal = request.principal;
+    if (principal !== null && principal.kind !== "user" && principal.kind !== "admin")
+      throw new AuthError({ message: "Authorization failed" });
+    const { postId } = Schema.decodeUnknownSync(CreateKaraokePlaybackAccess.request.path)(
+      request.params,
+    );
+    const target = Schema.decodeUnknownSync(CreateKaraokePlaybackAccess.request.body)(request.body);
+    const body = await Effect.runPromise(
+      getKaraokePlaybackAccess(
+        {
+          postId,
+          communityId: target.community_id,
+          karaokeRevisionId: target.karaoke_revision_id,
+          playbackRef: target.playback_ref,
           ...(principal === null ? {} : { viewerUserId: principal.subject }),
           trustedSource: request.edgeClientIp ?? "",
         },

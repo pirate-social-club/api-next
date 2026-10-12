@@ -84,7 +84,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 82;
+const testCount = 83;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -104,6 +104,38 @@ function personaFor(connection: string, accountId = actor): string {
   const personaId = personaIdsByConnection.get(connection)?.get(accountId);
   if (personaId === undefined) throw new Error(`missing test persona for ${accountId}`);
   return personaId;
+}
+async function seedAcceptedStemPairFixture(
+  admin: Client,
+  connection: string,
+  fixture: { submission: string; operation: string } = { submission, operation },
+): Promise<void> {
+  await admin.query("SET session_replication_role = replica");
+  try {
+    for (const slot of ["instrumental_audio", "vocal_audio"] as const) {
+      await admin.query(
+        `INSERT INTO media_song_stems (
+           submission_id,slot,community_id,actor_user_id,operation_id,
+           reservation_id,immutable_ref,destination_ref,etag,object_version,
+           size_bytes,content_type,canonical_sha256,author_persona_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'etag','version',16,'audio/mpeg',$9,$10)`,
+        [
+          fixture.submission,
+          slot,
+          community,
+          actor,
+          `${fixture.operation}-stem-${slot}`,
+          `${fixture.submission}-reservation-${slot}`,
+          `media://immutable/${fixture.operation}-stem-${slot}/audio/1`,
+          `r2://immutable/${fixture.operation}-stem-${slot}/audio/1`,
+          slot === "instrumental_audio" ? "8".repeat(64) : "9".repeat(64),
+          personaFor(connection),
+        ],
+      );
+    }
+  } finally {
+    await admin.query("SET session_replication_role = origin");
+  }
 }
 const termsFor = (recipientId: string): SongTerms => ({
   licensePreset: "non-commercial",
@@ -1075,6 +1107,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             false,
             "accepted fixture lyrics",
           );
+          if (stage === "alignment" || stage === "alignment_commit") {
+            await seedAcceptedStemPairFixture(admin, connection);
+          }
           const current = await store.loadAuthority(submission, operation);
           if (current === null) throw new Error("missing publication fixture");
           if (stage !== "publication_commit")
@@ -4656,6 +4691,37 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40000);
 
+  test("Karaoke playback grants the accepted instrumental while song playback grants the master", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      const postId = `media-post-${operation}`;
+      const stemRef = `media://immutable/${operation}-stem-instrumental_audio/audio/1`;
+      await seedAcceptedStemPairFixture(admin, connection);
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-stems-playback",
+          ),
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+        }),
+      );
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const read = (kind: "full_mix" | "instrumental") =>
+        Effect.runPromise(
+          Effect.scoped(authorizeSongPlayback({ postId, kind }).pipe(Effect.provide(runtime))),
+        );
+      expect(await read("full_mix")).toEqual({ immutableRef: "media_pg_immutable" });
+      expect(await read("instrumental")).toEqual({ immutableRef: stemRef });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const longDialogue = Array.from({ length: 33 }, (_, index) => `dialogue${index + 1}`).join(
@@ -4696,6 +4762,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         false,
         explicitLyrics,
       );
+      await seedAcceptedStemPairFixture(admin, connection);
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>
         store.publish({
@@ -4779,6 +4846,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ];
       const timedLyricsArtifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
+        alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: timedTokens.map((text, index) => ({
           text,
@@ -4816,7 +4885,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           "Hold on!",
         ]);
         expect(readiness.karaoke_lines[0]?.id).not.toBe(readiness.karaoke_lines[3]?.id);
-        expect(readiness.playback_kind).toBe("full_mix");
+        expect(readiness.playback_kind).toBe("instrumental");
       }
       await admin.query("BEGIN");
       await expect(
@@ -5181,6 +5250,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         lyricsRevision: 1,
       };
       await createThroughDecision(connection, allowDecision, lyricsAnalysis, false, lyrics);
+      await seedAcceptedStemPairFixture(admin, connection);
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>
         store.publish({
@@ -5271,6 +5341,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
       const artifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
+        alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: [
           { text: "[Verse", start_ms: 0, end_ms: 40 },
@@ -7052,6 +7124,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           false,
           fixture,
         );
+        await seedAcceptedStemPairFixture(admin, connection, fixture);
         const postId = `media-post-${fixture.operation}`;
         const alignmentOutboxId = `media_pg_recovery_alignment_outbox_${input.suffix}`;
         await run(connection, (store) =>
@@ -7866,6 +7939,7 @@ async function createRequestedAlignmentRecovery(admin: Client, connection: strin
     false,
     lyrics,
   );
+  await seedAcceptedStemPairFixture(admin, connection);
   const postId = `media-post-${operation}`;
   await run(connection, (store) =>
     store.publish({

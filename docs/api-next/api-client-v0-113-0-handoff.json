@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.113.0",
+  "sourceBranch": "fix/song-stems-karaoke-runtime",
+  "sourceBase": "3c894763c4331bd62d16f9b096c717f84d71660b",
+  "semanticSourceCommit": "c26224b169f51902997ff024ff72aa65da9c1097",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Study and Karaoke availability include stems_missing. Karaoke readiness and new sessions use accepted instrumental playback with a vocal-aligned artifact; existing full_mix sessions retain their saved playback kind. CreateKaraokePlaybackAccess issues a separately authorized short-lived instrumental grant. Study authentication and reward policy are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.113.0.tgz",
+    "sha256": "dd77d5266dd85014b6c4eb92926ecb49b3254580ab482623e2e97a7b60edefc2"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.113.0",
+    "sourceIdentifier": "api-next-contracts@71bd9442abf0c508e13068cf18e4ad9ffaf07b7e4c1d01ae43c5b75a1e94a529",
+    "openapiSha256": "71bd9442abf0c508e13068cf18e4ad9ffaf07b7e4c1d01ae43c5b75a1e94a529",
+    "clientSha256": "4b2cb74c96092484f844378e51df26afb6e9d3eae123794dc9de137021967073"
+  },
+  "validation": {
+    "status": "Candidate generated package; focused, full local, hosted and independent gates pending. Semantic source is identified separately from the eventual generated-source commit.",
+    "operationalBoundary": "No deployments, provider calls, credential changes or reward-policy activation.",
+    "focusedUnits": "96 passed across five files; 432 assertions; 0.399 seconds.",
+    "contractFreshness": "Passed",
+    "packageVerification": "Passed",
+    "breakingContract": {
+      "status": "Passed against3c894763c4331bd62d16f9b096c717f84d71660b with coordinator-reviewed exact per-operation waivers.",
+      "waiverSha256": "a9225d15df61ac547495aac3bb22980263488f26ee8ac5357bfe725c9423a516",
+      "reviewScope": "Only the two named readiness operations and their exact expected diagnostics; no broader source, runtime or release acceptance."
+    },
+    "focusedPostgres": {
+      "status": "Passed across the first scoped run and corrected media rerun.",
+      "tests": 98,
+      "mediaRerun": "84 passed,1485 assertions,133.15 seconds",
+      "otherSuites": "14 passed across Karaoke persona boundary, Study translation, Study lifecycle including Telegram practice, and spoken retry suites.",
+      "initialFailures": "Initial run93 passed/5 failed in181.99 seconds. Alignment fixtures without stems skipped their intended provider barrier; two fake artifacts omitted vocal refs. Fixtures corrected; runtime gates retained.",
+      "transport": "Host loopback Docker port reset connections; fallback used task-owned Unix socket and network-disabled PostgreSQL17.11 container,2CPU/2GiB. Container and socket scratch removed."
+    },
+    "scriptQuality": "bin/script-check --changed passed with0 findings."
+  },
+  "consumerRequirements": {
+    "task": "solid-karaoke-instrumental-playback",
+    "minimumClientVersion": "0.113.0",
+    "readiness": "Handle stems_missing for Study and Karaoke and select the instrumental grant endpoint for instrumental playback; preserve full_mix behavior for historical sessions.",
+    "existingClientCompatibility": "0.112.0 literal-union consumers are not assumed compatible; coordinate API and Solid release."
+  },
+  "rewardPolicyDependency": {
+    "task": "rewards-karaoke-instrumental-qualification-policy",
+    "currentPolicy": "karaoke_qualification_v2@1 permits full_mix only",
+    "requirement": "Review and prospectively activate an immutable instrumental-eligible successor separately; retain existing session policy pins."
+  }
+}
