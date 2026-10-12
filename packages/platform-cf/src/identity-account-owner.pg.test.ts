@@ -45,9 +45,10 @@ async function result<A>(
 ): Promise<A> {
   const response = await client.query(text, values);
   if (response.rows.length !== 1) throw new Error("expected one owned-fixture row");
-  return Schema.decodeUnknownSync(Schema.Struct({ result: schema }), { onExcessProperty: "error" })(
-    response.rows[0],
-  ).result;
+  const envelope = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }), {
+    onExcessProperty: "error",
+  })(response.rows[0]);
+  return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(envelope.result);
 }
 async function code(action: Promise<unknown>) {
   try {
@@ -150,8 +151,10 @@ async function migrations() {
   for (const version of names) {
     const sql = await readFile(new URL(version, directory), "utf8");
     const checksum = sha256(sql);
-    if (Number(version.slice(0, 4)) <= 247 || manifest.migrations[version] !== undefined)
-      expect(checksum).toBe(manifest.migrations[version]);
+    const expectedChecksum = manifest.migrations[version];
+    if (Number(version.slice(0, 4)) <= 247 && expectedChecksum === undefined)
+      throw new Error("Immutable migration checksum missing");
+    if (expectedChecksum !== undefined) expect(checksum).toBe(expectedChecksum);
     packet.push({ version, sql, checksum });
   }
   return { historical: packet.slice(0, 247), foundation: packet.slice(247) };
