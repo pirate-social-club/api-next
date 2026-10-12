@@ -97,35 +97,100 @@ suite("runtime reward admission trigger", () => {
         pauser.query("SELECT set_reward_operations_paused_v1(1,FALSE,'stale')"),
       ).rejects.toMatchObject({ code: "PR002" });
       await pauser.query("SELECT set_reward_operations_paused_v1(0,FALSE,'rehearsal_start')");
-      const pid = (await pauser.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-      await writer.query("BEGIN");
-      await insert(writer, address("1"));
-      const pause = pauser.query("SELECT set_reward_operations_paused_v1(1,TRUE,'incident')");
-      // Observe the real lock wait rather than assume that a timed sleep proves ordering.
-      const deadline = Date.now() + 2_000;
-      let waiting = false;
-      while (Date.now() < deadline) {
-        waiting =
-          (
+      const creatorPid = (await writer.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const pauserPid = (await pauser.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const laterPid = (await later.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const trace: string[] = [];
+      const blockedBy = async (pid: number, blocker: number) => {
+        const deadline = Date.now() + 2_000;
+        let evidence:
+          | {
+              pid: number;
+              wait_event_type: string | null;
+              wait_event: string | null;
+              blockers: number[];
+              backend_xid: string | null;
+            }
+          | undefined;
+        while (Date.now() < deadline) {
+          evidence = (
             await admin.query(
-              "SELECT wait_event_type='Lock' AS waiting FROM pg_stat_activity WHERE pid=$1",
+              "SELECT pid,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers,backend_xid::text FROM pg_stat_activity WHERE pid=$1",
               [pid],
             )
-          ).rows[0]?.waiting === true;
-        if (waiting) break;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(waiting).toBe(true);
-      expect((await admin.query("SELECT paused FROM reward_operations_control")).rows).toEqual([
-        { paused: false },
-      ]);
-      const queuedReservation = insert(later, address("2")).then(
-        () => null,
-        (error) => error,
-      );
+          ).rows[0];
+          if (evidence?.blockers.includes(blocker)) break;
+          await Bun.sleep(10);
+        }
+        console.info("reward pause blocker", { evidence, trace: [...trace] });
+        expect(evidence?.blockers).toContain(blocker);
+        expect(evidence?.wait_event_type).toBe("Lock");
+      };
+      await writer.query("BEGIN");
+      await insert(writer, address("1"));
+      await pauser.query("BEGIN");
+      let pauseSettled = false;
+      trace.push("pause statement sent");
+      const pauseStatement = pauser
+        .query("SELECT set_reward_operations_paused_v1(1,TRUE,'incident')")
+        .then(
+          () => {
+            pauseSettled = true;
+            trace.push("pause statement completed; transaction open");
+            return null;
+          },
+          (error: unknown) => {
+            pauseSettled = true;
+            trace.push("pause statement failed");
+            return error;
+          },
+        );
+      await blockedBy(pauserPid, creatorPid);
+      expect(pauseSettled).toBe(false);
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: false, revision: "1" }]);
       await writer.query("COMMIT");
-      await pause;
+      trace.push("creator commit acknowledged");
+      expect(await pauseStatement).toBeNull();
+      expect(
+        (await pauser.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: true, revision: "2" }]);
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: false, revision: "1" }]);
+      let laterSettled = false;
+      trace.push("later reservation sent");
+      const queuedReservation = insert(later, address("2")).then(
+        () => {
+          laterSettled = true;
+          trace.push("later reservation completed");
+          return null;
+        },
+        (error) => {
+          laterSettled = true;
+          trace.push("later reservation refused");
+          return error;
+        },
+      );
+      await blockedBy(laterPid, pauserPid);
+      expect(laterSettled).toBe(false);
+      trace.push("pause commit sent");
+      await pauser.query("COMMIT");
+      trace.push("pause commit acknowledged");
       expect(await queuedReservation).toMatchObject({ code: "PR001" });
+      console.info("reward pause completion", { trace });
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: true, revision: "2" }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT signer_address FROM reward_signer_nonces ORDER BY signer_address",
+          )
+        ).rows,
+      ).toEqual([{ signer_address: address("1") }]);
+      await expect(insert(writer, address("3"))).rejects.toMatchObject({ code: "PR001" });
       await expect(
         writer.query(`UPDATE reward_signer_nonces SET next_nonce=2,
         fence_version=fence_version+1,updated_at=clock_timestamp()`),
@@ -169,6 +234,7 @@ suite("runtime reward admission trigger", () => {
       await expect(insert(writer, address("3"))).rejects.toMatchObject({ code: "PR001" });
     } finally {
       await writer.query("ROLLBACK").catch(() => undefined);
+      await pauser.query("ROLLBACK").catch(() => undefined);
       await Promise.all([writer.end(), pauser.end(), later.end()]);
       await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.query(
