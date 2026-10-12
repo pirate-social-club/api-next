@@ -5,14 +5,22 @@ import {
   type ControlPlaneError,
   ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
+  canonicalBodyHash,
   type DurableParticipationOutcome,
   type GuestParticipationStoreFailure,
   GuestParticipationStoreRejected,
+  type GuestResourceAdmissionPolicy,
   type OwnerAwareStudyV2Store,
   type OwnerStudySession,
 } from "@pirate/application";
+import type {
+  OwnerGuestAtomicStarter,
+  OwnerGuestAtomicStartInput,
+  OwnerGuestAtomicStartOutcome,
+} from "@pirate/application/owner-guest-atomic-start";
 import {
   GuestIdentifierV1,
+  GuestSha256V1,
   GuestStudyPreparedContentV1,
   GuestStudySessionV1,
   GuestStudyStartOperationV1,
@@ -26,6 +34,10 @@ import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
 type Methods = Pick<OwnerAwareStudyV2Store, "startSession" | "getSession" | "findStartOperation">;
 type Input<K extends keyof Methods> = Parameters<Methods[K]>[0];
+type StartIntent = Omit<Input<"startSession">, "resourceReservationId">;
+// One application-owned private seam; these aliases preserve local naming only.
+export type GuestAtomicStudyStartInput = OwnerGuestAtomicStartInput;
+export type GuestAtomicStudyStartOutcome = OwnerGuestAtomicStartOutcome;
 type Disclosure = GuestStudyPreparedContentV1["disclosure"];
 const reject = (reason: GuestParticipationStoreRejected["reason"]) =>
   new GuestParticipationStoreRejected({ reason });
@@ -122,6 +134,57 @@ const Resolved = Schema.Struct({
       : "Immutable start outcome shape",
   ),
 );
+const SelectedPlan = Schema.Struct({
+  targetLanguage: Candidate.fields.targetLanguage,
+  learnerBand: Candidate.fields.learnerBand,
+  paidAttemptUnits: Candidate.fields.paidAttemptUnits,
+  catalogue: Candidate.fields.catalogue,
+  rows: Candidate.fields.rows,
+});
+const StartOperation = Schema.Struct({
+  sourceOwnerId: GuestIdentifierV1,
+  kind: Schema.Literal("study_start"),
+  idempotencyKey: GuestIdentifierV1,
+  requestHash: GuestSha256V1,
+});
+const AtomicReservedResource = Schema.Struct({
+  state: Schema.Literal("completed"),
+  outcome_id: GuestIdentifierV1,
+  result: Schema.Struct({
+    state: Schema.Literal("reserved"),
+    reservationId: GuestIdentifierV1,
+    sourceOwnerId: GuestIdentifierV1,
+    operation: StartOperation,
+    remainingUnits: Candidate.fields.paidAttemptUnits,
+    policyVersion: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+    costPolicyVersion: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+  }),
+});
+const AtomicRefusedResource = Schema.Struct({
+  state: Schema.Literal("completed"),
+  outcome_id: GuestIdentifierV1,
+  result: Schema.Struct({
+    state: Schema.Literals(["rate_limited", "budget_refused"]),
+    retryAfterSeconds: Schema.NullOr(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3600 })),
+    ),
+  }),
+});
+const AtomicPreparation = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("start_outcome"), outcome: Resolved }),
+  Schema.Struct({
+    kind: Schema.Literal("reservation"),
+    reservation: AtomicReservedResource,
+    plan: Schema.NullOr(SelectedPlan),
+    operationId: Schema.NullOr(GuestIdentifierV1),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("resource_refused"),
+    reservation: AtomicRefusedResource,
+    plan: Schema.NullOr(SelectedPlan),
+    operationId: Schema.NullOr(GuestIdentifierV1),
+  }),
+]);
 const Prepared = Schema.Union([Candidate, Resolved]);
 const sqlRejection = (error: ControlPlaneStatementFailed) => {
   const reasons = {
@@ -187,7 +250,7 @@ const limits = Effect.fn("OwnerStudyStarter.limits")(function* (
 });
 const assertGuestResult = (
   result: OwnerStudySession,
-  input: Input<"startSession">,
+  input: StartIntent,
   expectedSessionId?: string,
 ) => {
   if (
@@ -246,7 +309,7 @@ const assertLookupResult = (
 };
 const outcome = (
   reply: Schema.Schema.Type<typeof Resolved>,
-  input: Input<"startSession">,
+  input: StartIntent,
 ): DurableParticipationOutcome<OwnerStudySession> => {
   if (reply.state === "known_aborted")
     return { state: "known_aborted", operation: input.operation };
@@ -271,7 +334,7 @@ export const makeControlPlaneOwnerStudyStarter = (
   disclosure: Disclosure,
   rawPolicy: unknown,
   newOperationId: () => string = () => `guest_start_${crypto.randomUUID()}`,
-): Methods => {
+): Methods & OwnerGuestAtomicStarter => {
   // Explicit reviewed server composition inputs, no invented production defaults.
   const configuredDisclosure = decode(GuestStudyPreparedContentV1.fields.disclosure, disclosure);
   const policy = readGuestResourceAdmissionPolicy(rawPolicy);
@@ -280,129 +343,234 @@ export const makeControlPlaneOwnerStudyStarter = (
       Effect.catchTag("ControlPlaneStatementFailed", (error) => Effect.fail(sqlRejection(error))),
       Effect.provide(runtime),
     );
+  const validateIntent = Effect.fn("GuestStudyStarter.validateIntent")(function* (
+    input: StartIntent,
+  ) {
+    // Practice-only still has paid spoken work. Missing policy cannot yield
+    // a NEW candidate; SQL may only recover an already accepted exact receipt.
+    if (input.rewardMode !== "practice_only" || input.rewardTerms !== null)
+      return yield* reject("resource-policy-unavailable");
+    if (
+      input.source.kind !== "guest" ||
+      input.access.kind !== "guest" ||
+      input.operation.kind !== "study_start" ||
+      input.operation.sourceOwnerId !== input.source.ownerId ||
+      input.access.ownerId !== input.source.ownerId ||
+      input.operation.idempotencyKey !== input.idempotencyKey ||
+      input.operation.requestHash !== input.requestHash
+    )
+      return yield* reject("owner-mismatch");
+  });
+  // ONE accepted projection/capture implementation for frozen and atomic callers.
+  const startInTransaction = Effect.fn("GuestStudyStarter.startInTransaction")(function* (
+    transaction: ControlPlaneTransaction,
+    input: Input<"startSession">,
+    activePolicy: GuestResourceAdmissionPolicy | null,
+    expectedPlan: Schema.Schema.Type<typeof SelectedPlan> | null = null,
+    capturedOperationId?: string,
+  ) {
+    const values = [
+      JSON.stringify(input.access),
+      JSON.stringify(input.operation),
+      input.communityId,
+      input.postId,
+      input.resourceReservationId,
+      input.targetLanguage,
+      input.learnerBand,
+      JSON.stringify(activePolicy),
+    ];
+    const prepared = yield* one(
+      transaction,
+      "guest-study.start.prepare",
+      "SELECT prepare_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb) AS result",
+      values,
+      Prepared,
+    );
+    if (prepared.state === "candidate" && expectedPlan !== null) {
+      const hashes = yield* Effect.all([
+        canonicalBodyHash(expectedPlan),
+        canonicalBodyHash({
+          targetLanguage: prepared.targetLanguage,
+          learnerBand: prepared.learnerBand,
+          paidAttemptUnits: prepared.paidAttemptUnits,
+          catalogue: prepared.catalogue,
+          rows: prepared.rows,
+        }),
+      ]).pipe(Effect.mapError(() => invalid("guest-study.start.atomic-plan")));
+      if (hashes[0] !== hashes[1])
+        return yield* Effect.fail(invalid("guest-study.start.atomic-plan"));
+    }
+    if (prepared.state !== "candidate")
+      return yield* Effect.try({
+        try: () => outcome(prepared, input),
+        catch: () => invalid("guest-study.start.replay"),
+      });
+    const items = yield* Effect.try({
+      try: () => {
+        if (
+          prepared.sourceOwnerId !== input.source.ownerId ||
+          prepared.reservationId !== input.resourceReservationId
+        )
+          throw new Error();
+        const firstRow = prepared.rows[0];
+        if (
+          firstRow === undefined ||
+          prepared.rows.some(
+            (row) =>
+              row.community_id !== input.communityId ||
+              row.post_id !== input.postId ||
+              row.audio_revision !== firstRow.audio_revision ||
+              row.lyrics_revision !== firstRow.lyrics_revision ||
+              (row.exercise_type === "translation_choice" &&
+                (row.target_language !== prepared.targetLanguage ||
+                  row.learner_band !== prepared.learnerBand)),
+          )
+        )
+          throw new Error();
+        const readiness = projectPreparedGuestStudyContent(
+          {
+            communityId: input.communityId,
+            postId: input.postId,
+            targetLanguage: input.targetLanguage,
+            learnerBand: input.learnerBand,
+          },
+          configuredDisclosure,
+          prepared.catalogue,
+        );
+        if (readiness.availability.state !== "ready") throw new Error();
+        // Reservation's immutable original session candidate wins on retry.
+        // input.sessionId and input.createdAt are deliberately not used here.
+        return prepared.rows.map((row, ordinal) =>
+          projectStudySessionItemV2(row, prepared.sessionId, ordinal),
+        );
+      },
+      catch: () => invalid("guest-study.start.shared-projection"),
+    });
+    // The trusted current disclosure is required for NEW capture only. An
+    // immutable same-key accepted start above keeps its original consent.
+    if (
+      input.disclosure.accepted !== true ||
+      input.disclosure.version !== configuredDisclosure.version
+    )
+      return yield* reject("resource-policy-unavailable");
+    const operationId = capturedOperationId ?? newOperationId();
+    const committed = yield* one(
+      transaction,
+      "guest-study.start.commit",
+      "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result",
+      [
+        ...values,
+        JSON.stringify(prepared),
+        JSON.stringify(items),
+        operationId,
+        input.timezone,
+        configuredDisclosure.version,
+        input.disclosure.version,
+        input.disclosure.accepted,
+      ],
+      Resolved,
+    );
+    return yield* Effect.try({
+      try: () => {
+        if (committed.state === "completed" && committed.result !== null) {
+          if (committed.operationId !== operationId) throw new Error();
+          assertGuestResult(committed.result, input, prepared.sessionId);
+        }
+        return outcome(committed, input);
+      },
+      catch: () => invalid("guest-study.start.outcome"),
+    });
+  });
   return {
     startSession: (input) =>
       provide(
         Effect.gen(function* () {
-          // Practice-only still has paid spoken work. Missing policy cannot yield
-          // a NEW candidate; SQL may only recover an already accepted exact receipt.
-          if (input.rewardMode !== "practice_only" || input.rewardTerms !== null)
-            return yield* reject("resource-policy-unavailable");
-          if (
-            input.source.kind !== "guest" ||
-            input.access.kind !== "guest" ||
-            input.operation.kind !== "study_start" ||
-            input.operation.sourceOwnerId !== input.source.ownerId ||
-            input.access.ownerId !== input.source.ownerId ||
-            input.operation.idempotencyKey !== input.idempotencyKey ||
-            input.operation.requestHash !== input.requestHash
-          )
-            return yield* reject("owner-mismatch");
+          yield* validateIntent(input);
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               yield* limits(transaction);
-              const values = [
-                JSON.stringify(input.access),
-                JSON.stringify(input.operation),
-                input.communityId,
-                input.postId,
-                input.resourceReservationId,
-                input.targetLanguage,
-                input.learnerBand,
-                JSON.stringify(policy),
-              ];
-              const prepared = yield* one(
-                transaction,
-                "guest-study.start.prepare",
-                "SELECT prepare_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb) AS result",
-                values,
-                Prepared,
-              );
-              if (prepared.state !== "candidate")
-                return yield* Effect.try({
-                  try: () => outcome(prepared, input),
-                  catch: () => invalid("guest-study.start.replay"),
-                });
-              const items = yield* Effect.try({
-                try: () => {
-                  if (
-                    prepared.sourceOwnerId !== input.source.ownerId ||
-                    prepared.reservationId !== input.resourceReservationId
-                  )
-                    throw new Error();
-                  const firstRow = prepared.rows[0];
-                  if (
-                    firstRow === undefined ||
-                    prepared.rows.some(
-                      (row) =>
-                        row.community_id !== input.communityId ||
-                        row.post_id !== input.postId ||
-                        row.audio_revision !== firstRow.audio_revision ||
-                        row.lyrics_revision !== firstRow.lyrics_revision ||
-                        (row.exercise_type === "translation_choice" &&
-                          (row.target_language !== prepared.targetLanguage ||
-                            row.learner_band !== prepared.learnerBand)),
-                    )
-                  )
-                    throw new Error();
-                  const readiness = projectPreparedGuestStudyContent(
-                    {
-                      communityId: input.communityId,
-                      postId: input.postId,
-                      targetLanguage: input.targetLanguage,
-                      learnerBand: input.learnerBand,
-                    },
-                    configuredDisclosure,
-                    prepared.catalogue,
-                  );
-                  if (readiness.availability.state !== "ready") throw new Error();
-                  // Reservation's immutable original session candidate wins on retry.
-                  // input.sessionId and input.createdAt are deliberately not used here.
-                  return prepared.rows.map((row, ordinal) =>
-                    projectStudySessionItemV2(row, prepared.sessionId, ordinal),
-                  );
-                },
-                catch: () => invalid("guest-study.start.shared-projection"),
-              });
-              // The trusted current disclosure is required for NEW capture only. An
-              // immutable same-key accepted start above keeps its original consent.
-              if (
-                input.disclosure.accepted !== true ||
-                input.disclosure.version !== configuredDisclosure.version
-              )
-                return yield* reject("resource-policy-unavailable");
-              const operationId = newOperationId();
-              const committed = yield* one(
-                transaction,
-                "guest-study.start.commit",
-                "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result",
-                [
-                  ...values,
-                  JSON.stringify(prepared),
-                  JSON.stringify(items),
-                  operationId,
-                  input.timezone,
-                  configuredDisclosure.version,
-                  input.disclosure.version,
-                  input.disclosure.accepted,
-                ],
-                Resolved,
-              );
-              return yield* Effect.try({
-                try: () => {
-                  if (committed.state === "completed" && committed.result !== null) {
-                    if (committed.operationId !== operationId) throw new Error();
-                    assertGuestResult(committed.result, input, prepared.sessionId);
-                  }
-                  return outcome(committed, input);
-                },
-                catch: () => invalid("guest-study.start.outcome"),
-              });
+              return yield* startInTransaction(transaction, input, policy);
             }),
           );
-          // Transaction uncertainty is preserved by the existing adapter. No absent
-          // operation is synthesized as abort and no automatic provider/retry occurs.
+        }),
+      ),
+    startPreparedSession: (input) =>
+      provide(
+        Effect.gen(function* () {
+          yield* validateIntent(input);
+          if (input.trustedEdge.kind !== "trusted_edge")
+            return yield* Effect.fail(reject("resource-policy-unavailable"));
+          const db = yield* ControlPlaneDb;
+          return yield* db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              yield* limits(transaction);
+              const prepared = yield* one(
+                transaction,
+                "guest-study.start.atomic-reserve",
+                "SELECT reserve_guest_prepared_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) AS result",
+                [
+                  JSON.stringify(input.access),
+                  JSON.stringify(input.operation),
+                  input.communityId,
+                  input.postId,
+                  input.sessionId,
+                  input.targetLanguage,
+                  input.learnerBand,
+                  input.trustedEdge.fingerprint,
+                  JSON.stringify(input.policy),
+                  input.freshRefusalOperationId,
+                ],
+                AtomicPreparation,
+              );
+              if (prepared.kind === "start_outcome")
+                return yield* Effect.try({
+                  try: (): GuestAtomicStudyStartOutcome => ({
+                    kind: "start",
+                    outcome: outcome(prepared.outcome, input),
+                  }),
+                  catch: () => invalid("guest-study.start.atomic-replay"),
+                });
+              if (prepared.kind === "resource_refused") {
+                // Returning normally commits the real refusal witness. Only AFTER the
+                // owning adapter acknowledges COMMIT may the application map this tag.
+                return {
+                  kind: "resource_refused" as const,
+                  outcome: {
+                    state: "completed" as const,
+                    operation: input.operation,
+                    outcomeId: prepared.reservation.outcome_id,
+                    result: prepared.reservation.result,
+                  },
+                };
+              }
+              yield* Effect.try({
+                try: () => {
+                  const r = prepared.reservation;
+                  if (
+                    r.outcome_id !== r.result.reservationId ||
+                    r.result.sourceOwnerId !== input.source.ownerId ||
+                    r.result.operation.sourceOwnerId !== input.operation.sourceOwnerId ||
+                    r.result.operation.kind !== input.operation.kind ||
+                    r.result.operation.idempotencyKey !== input.operation.idempotencyKey ||
+                    r.result.operation.requestHash !== input.operation.requestHash ||
+                    (prepared.plan !== null &&
+                      r.result.remainingUnits !== prepared.plan.paidAttemptUnits)
+                  )
+                    throw new Error();
+                },
+                catch: () => invalid("guest-study.start.atomic-resource"),
+              });
+              const result = yield* startInTransaction(
+                transaction,
+                { ...input, resourceReservationId: prepared.reservation.outcome_id },
+                input.policy,
+                prepared.plan,
+                input.freshRefusalOperationId,
+              );
+              return { kind: "start" as const, outcome: result };
+            }),
+          );
         }),
       ),
     getSession: (input) =>

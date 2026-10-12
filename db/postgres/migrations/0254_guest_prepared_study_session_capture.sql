@@ -139,13 +139,195 @@ END $$;
 -- CTE below in prepared-source.sql. It returns only public projection fields,
 -- never private_grader, provider payload, source owner, secret or nonce.
 -- guest_study_prepared_rows_v1(text,text) must precede this definition.
+-- Single private source selector extracted byte-for-byte from accepted0254.
+-- Caller holds trusted source component/proof/resource lock order. This is not
+-- a public count endpoint or a capability to dispatch/pay.
+CREATE FUNCTION select_guest_study_start_plan_v1(
+ p_source_id TEXT,p_community TEXT,p_post TEXT,p_target TEXT,p_band TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE snapshot JSONB; selected_rows JSONB; selected_target TEXT; selected_band TEXT;
+ source_count INTEGER; helper_count INTEGER; paid_units INTEGER;
+BEGIN
+ IF p_band IS NOT NULL AND p_band NOT IN('A1','A2','B1','B2','C1','C2')
+  OR p_target IS NOT NULL AND (char_length(p_target)>64 OR p_target='en') THEN
+  RAISE EXCEPTION 'prepared selection unavailable' USING ERRCODE='GP006'; END IF;
+ snapshot:=guest_study_prepared_rows_v1(p_community,p_post);
+ IF snapshot->>'accessible' IS DISTINCT FROM 'true'
+  OR jsonb_array_length(snapshot->'source_rows')<>1
+  OR NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(snapshot->'source_rows')
+    AS source(lyrics_ready BOOLEAN,language_ready BOOLEAN,stems_ready BOOLEAN)
+    WHERE lyrics_ready AND language_ready AND stems_ready) THEN
+  RAISE EXCEPTION 'prepared source unavailable' USING ERRCODE='GP006'; END IF;
+ IF (SELECT count(DISTINCT prepared->>'target_language') FROM jsonb_array_elements(snapshot->'rows') prepared)>128
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(snapshot->'rows') prepared
+    WHERE char_length(prepared->>'target_language')>64 OR prepared->>'learning_language'<>'en'
+      OR NOT ((prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
+        OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language' IS NOT NULL
+          AND prepared->>'target_language'<>'en' AND prepared->>'learner_band' IN('A1','A2','B1','B2','C1','C2')))) THEN
+  RAISE EXCEPTION 'prepared catalogue exceeds policy' USING ERRCODE='GP006'; END IF;
+ SELECT count(*)::INTEGER INTO source_count FROM jsonb_array_elements(snapshot->'rows') prepared
+  WHERE prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL;
+ -- Do not pool independent helper languages/bands. Prefer source-only for the
+ -- fully-null request when at least4 source cards already make a valid lesson.
+ IF NOT(p_target IS NULL AND p_band IS NULL AND source_count>=4) THEN
+  SELECT prepared->>'target_language',prepared->>'learner_band',count(*)::INTEGER
+   INTO selected_target,selected_band,helper_count
+   FROM jsonb_array_elements(snapshot->'rows') prepared
+   WHERE prepared->>'exercise_type'='translation_choice'
+    AND (p_target IS NULL OR prepared->>'target_language'=p_target)
+    AND (p_band IS NULL OR prepared->>'learner_band'=p_band)
+   GROUP BY prepared->>'target_language',prepared->>'learner_band'
+   HAVING count(*)+source_count>=4
+   ORDER BY (prepared->>'target_language') COLLATE "C",(prepared->>'learner_band') COLLATE "C" LIMIT 1;
+ END IF;
+ IF source_count+COALESCE(helper_count,0)<4 THEN
+  RAISE EXCEPTION 'insufficient compatible prepared cards' USING ERRCODE='GP006'; END IF;
+ SELECT jsonb_agg(candidate.prepared ORDER BY candidate.repetitions,candidate.last_reviewed_at NULLS FIRST,
+   candidate.ordinal,(candidate.prepared->>'exercise_review_key') COLLATE "C") INTO selected_rows FROM (
+  SELECT prepared,COALESCE(review.repetitions,0) AS repetitions,review.last_reviewed_at,
+   (prepared->>'ordinal')::INTEGER AS ordinal
+  FROM jsonb_array_elements(snapshot->'rows') prepared LEFT JOIN study_review_items review
+    ON review.participation_owner_id=p_source_id
+   AND review.post_id=p_post AND review.study_unit_id=prepared->>'study_unit_id'
+   AND review.exercise_kind=prepared->>'exercise_type' AND review.learning_language=prepared->>'learning_language'
+   AND review.target_language IS NOT DISTINCT FROM prepared->>'target_language'
+   AND review.learner_band IS NOT DISTINCT FROM prepared->>'learner_band' AND review.lifecycle_status='active'
+  WHERE (prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
+   OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language'=selected_target
+     AND prepared->>'learner_band'=selected_band)
+  ORDER BY COALESCE(review.repetitions,0),review.last_reviewed_at NULLS FIRST,(prepared->>'ordinal')::INTEGER,
+    (prepared->>'exercise_review_key') COLLATE "C" LIMIT 10
+ ) candidate;
+ SELECT 2*LEAST(20,3*count(*)::INTEGER) INTO paid_units FROM jsonb_array_elements(selected_rows) prepared
+  WHERE prepared->>'exercise_type'='say_it_back';
+ RETURN jsonb_build_object(
+  'targetLanguage',selected_target,'learnerBand',selected_band,'paidAttemptUnits',paid_units,
+  'rows',selected_rows,'catalogue',(SELECT jsonb_agg(grouped ORDER BY exercise_type,target_language NULLS FIRST,learner_band NULLS FIRST) FROM (
+    SELECT prepared->>'exercise_type' AS exercise_type,prepared->>'learning_language' AS learning_language,
+     prepared->>'target_language' AS target_language,prepared->>'learner_band' AS learner_band,count(*)::INTEGER AS count
+    FROM jsonb_array_elements(snapshot->'rows') prepared
+    GROUP BY prepared->>'exercise_type',prepared->>'learning_language',prepared->>'target_language',prepared->>'learner_band'
+  ) grouped));
+END $$;
+
+-- Private atomic-start substep. The owning platform transaction must continue
+-- through existing prepare -> pure shared projection -> existing commit. Returning
+-- from this SQL function is NOT a COMMIT acknowledgment. Server-only edge/policy,
+-- operation/session IDs and verified access are never client privilege witnesses.
+CREATE FUNCTION reserve_guest_prepared_study_start_v1(
+ p_access JSONB,p_operation JSONB,p_community TEXT,p_post TEXT,p_session_id TEXT,
+ p_target TEXT,p_band TEXT,p_fingerprint TEXT,p_policy JSONB,p_operation_id TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE source_id TEXT:=p_operation->>'sourceOwnerId';
+ existing guest_resource_session_reservations%ROWTYPE;
+ stored_operation guest_participation_operations%ROWTYPE;
+ component_ids TEXT[]; fingerprint TEXT; plan JSONB; budget JSONB;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(source_id,p_operation,'study_start');
+ PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'resource global anchor unavailable' USING ERRCODE='GP006'; END IF;
+ -- Immutable original edge precedes GLOBAL/EDGE/full component acquisition.
+ -- No fresh edge/catalogue/policy/session draw replaces original receipt identity.
+ SELECT * INTO existing FROM guest_resource_session_reservations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey';
+ -- A retained original abort/held key without resource has no edge to lock.
+ -- Its read-only recovery must not insert a fresh edge or reserve a new plan.
+ IF existing.reservation_id IS NULL THEN
+  SELECT * INTO stored_operation FROM guest_participation_operations
+   WHERE source_owner_id=source_id AND operation_kind='study_start'
+    AND idempotency_key=p_operation->>'idempotencyKey';
+  IF FOUND THEN
+   -- GLOBAL was acquired before the actual credential/full-C proof helper.
+   -- This original-source read permits the accepted empty-alias lookup only;
+   -- NEW allocation below still uses canonical-only resource locking.
+   PERFORM require_guest_study_learning_access_v1(p_access,source_id);
+   SELECT * INTO STRICT stored_operation FROM guest_participation_operations
+    WHERE source_owner_id=source_id AND operation_kind='study_start'
+     AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+   IF ROW(stored_operation.request_hash,stored_operation.resource_scope)
+     IS DISTINCT FROM ROW(p_operation->>'requestHash',guest_study_start_resource_scope_v1(p_community,p_post)) THEN
+    RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+   RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
+    'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
+  END IF;
+ END IF;
+ fingerprint:=CASE WHEN existing.reservation_id IS NOT NULL THEN existing.edge_fingerprint ELSE p_fingerprint END;
+ component_ids:=lock_guest_resource_budget_v1(source_id,fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,source_id);
+ SELECT * INTO existing FROM guest_resource_session_reservations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND AND existing.request_hash IS DISTINCT FROM p_operation->>'requestHash' THEN
+  RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO stored_operation FROM guest_participation_operations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(stored_operation.request_hash,stored_operation.resource_scope)
+    IS DISTINCT FROM ROW(p_operation->>'requestHash',guest_study_start_resource_scope_v1(p_community,p_post)) THEN
+   RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+  IF existing.reservation_id IS NOT NULL AND existing.state='refused' THEN
+   IF stored_operation.state<>'known_aborted' THEN
+    RAISE EXCEPTION 'refused resource contradicts original start' USING ERRCODE='GP006'; END IF;
+   RETURN jsonb_build_object('kind','resource_refused','operationId',stored_operation.operation_id,'plan',NULL,
+    'reservation',jsonb_build_object('state','completed','outcome_id',existing.reservation_id,'result',existing.original_result));
+  END IF;
+  -- Positive main-row evidence, never absence or transport ambiguity. Original
+  -- accepted/held/definitely aborted outcome wins before fresh source admission.
+  RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
+   'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
+ END IF;
+ IF existing.reservation_id IS NOT NULL THEN
+  -- A historical standalone resource receipt is retained, not overwritten or
+  -- silently converted into a fabricated new main-abort row. Its original refusal
+  -- is positive evidence; no absence of main is called an abort here.
+  budget:=reserve_guest_resource_session_v1(source_id,p_operation,existing.session_id,
+   existing.initial_units,existing.worst_case_cost_micros::TEXT,existing.edge_fingerprint,p_policy);
+  RETURN jsonb_build_object('kind',CASE WHEN existing.state='refused' THEN 'resource_refused' ELSE 'reservation' END,
+   'reservation',budget,'plan',NULL,'operationId',NULL);
+ END IF;
+ -- NEW only: current public resource, complete audio fence, exact current policy,
+ -- one actual selector and no IO. Any later projection/disclosure/source refusal
+ -- rolls the NEW resource back with the SAME outer transaction.
+ IF NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+  RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+ PERFORM lock_learner_audio_sources_private_v1(component_ids);
+ IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component_ids)
+   AND active_delete_command_id IS NOT NULL) THEN
+  RAISE EXCEPTION 'learner audio deletion in progress' USING ERRCODE='GP009'; END IF;
+ PERFORM validate_guest_resource_policy_v1(p_policy);
+ IF p_operation_id IS NULL OR char_length(p_operation_id) NOT BETWEEN 1 AND 128 THEN
+  RAISE EXCEPTION 'server start operation identity unavailable' USING ERRCODE='22023'; END IF;
+ plan:=select_guest_study_start_plan_v1(source_id,p_community,p_post,p_target,p_band);
+ budget:=reserve_guest_resource_session_v1(source_id,p_operation,p_session_id,
+  (plan->>'paidAttemptUnits')::INTEGER,
+  ((plan->>'paidAttemptUnits')::NUMERIC*(p_policy->>'maximumProviderCallCostMicros')::NUMERIC)::TEXT,
+  p_fingerprint,p_policy);
+ IF budget#>>'{result,state}'='reserved' THEN
+  RETURN jsonb_build_object('kind','reservation','reservation',budget,'plan',plan,'operationId',NULL);
+ END IF;
+ IF budget#>>'{result,state}' IS NULL OR budget#>>'{result,state}' NOT IN('rate_limited','budget_refused') THEN
+  RAISE EXCEPTION 'unexpected resource refusal' USING ERRCODE='GP006'; END IF;
+ -- Definite refusal and its durable main-status witness are atomic. Refusal
+ -- response is emitted only after actual outer COMMIT acknowledgment. Unknown
+ -- COMMIT remains pending; exact status can later recover this ORIGINAL abort.
+ SELECT * INTO STRICT existing FROM guest_resource_session_reservations
+  WHERE reservation_id=budget->>'outcome_id' AND source_owner_id=source_id AND state='refused';
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+  idempotency_key,request_hash,state,created_at,resolved_at)
+ VALUES(p_operation_id,source_id,'study_start',guest_study_start_resource_scope_v1(p_community,p_post),
+  p_operation->>'idempotencyKey',p_operation->>'requestHash','known_aborted',existing.created_at,clock_timestamp());
+ RETURN jsonb_build_object('kind','resource_refused','reservation',budget,'plan',plan,'operationId',p_operation_id);
+END $$;
+
 CREATE FUNCTION prepare_guest_study_start_v1(
  p_access JSONB,p_operation JSONB,p_community TEXT,p_post TEXT,p_reservation TEXT,
  p_target TEXT,p_band TEXT,p_policy JSONB
 ) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE reservation guest_resource_session_reservations%ROWTYPE;
- operation guest_participation_operations%ROWTYPE; snapshot JSONB; selected_rows JSONB;
- selected_target TEXT; selected_band TEXT; source_count INTEGER; helper_count INTEGER;
+ operation guest_participation_operations%ROWTYPE; plan JSONB;
  component_ids TEXT[]; paid_units INTEGER; stored_policy JSONB;
 BEGIN
  PERFORM require_guest_study_composition_v1();
@@ -193,70 +375,13 @@ BEGIN
   OR reservation.unit_hold_micros IS DISTINCT FROM (p_policy->>'maximumProviderCallCostMicros')::NUMERIC
   OR reservation.state<>'active' OR reservation.reservation_expires_at<=clock_timestamp() THEN
   RAISE EXCEPTION 'accepted paid policy unavailable' USING ERRCODE='GP006'; END IF;
- IF p_band IS NOT NULL AND p_band NOT IN('A1','A2','B1','B2','C1','C2')
-  OR p_target IS NOT NULL AND (char_length(p_target)>64 OR p_target='en') THEN
-  RAISE EXCEPTION 'prepared selection unavailable' USING ERRCODE='GP006'; END IF;
- snapshot:=guest_study_prepared_rows_v1(p_community,p_post);
- IF snapshot->>'accessible' IS DISTINCT FROM 'true'
-  OR jsonb_array_length(snapshot->'source_rows')<>1
-  OR NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(snapshot->'source_rows')
-    AS source(lyrics_ready BOOLEAN,language_ready BOOLEAN,stems_ready BOOLEAN)
-    WHERE lyrics_ready AND language_ready AND stems_ready) THEN
-  RAISE EXCEPTION 'prepared source unavailable' USING ERRCODE='GP006'; END IF;
- IF (SELECT count(DISTINCT prepared->>'target_language') FROM jsonb_array_elements(snapshot->'rows') prepared)>128
-  OR EXISTS(SELECT 1 FROM jsonb_array_elements(snapshot->'rows') prepared
-    WHERE char_length(prepared->>'target_language')>64 OR prepared->>'learning_language'<>'en'
-      OR NOT ((prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
-        OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language' IS NOT NULL
-          AND prepared->>'target_language'<>'en' AND prepared->>'learner_band' IN('A1','A2','B1','B2','C1','C2')))) THEN
-  RAISE EXCEPTION 'prepared catalogue exceeds policy' USING ERRCODE='GP006'; END IF;
- SELECT count(*)::INTEGER INTO source_count FROM jsonb_array_elements(snapshot->'rows') prepared
-  WHERE prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL;
- -- Do not pool independent helper languages/bands. Prefer source-only for the
- -- fully-null request when at least4 source cards already make a valid lesson.
- IF NOT(p_target IS NULL AND p_band IS NULL AND source_count>=4) THEN
-  SELECT prepared->>'target_language',prepared->>'learner_band',count(*)::INTEGER
-   INTO selected_target,selected_band,helper_count
-   FROM jsonb_array_elements(snapshot->'rows') prepared
-   WHERE prepared->>'exercise_type'='translation_choice'
-    AND (p_target IS NULL OR prepared->>'target_language'=p_target)
-    AND (p_band IS NULL OR prepared->>'learner_band'=p_band)
-   GROUP BY prepared->>'target_language',prepared->>'learner_band'
-   HAVING count(*)+source_count>=4
-   ORDER BY (prepared->>'target_language') COLLATE "C",(prepared->>'learner_band') COLLATE "C" LIMIT 1;
- END IF;
- IF source_count+COALESCE(helper_count,0)<4 THEN
-  RAISE EXCEPTION 'insufficient compatible prepared cards' USING ERRCODE='GP006'; END IF;
- SELECT jsonb_agg(candidate.prepared ORDER BY candidate.repetitions,candidate.last_reviewed_at NULLS FIRST,
-   candidate.ordinal,(candidate.prepared->>'exercise_review_key') COLLATE "C") INTO selected_rows FROM (
-  SELECT prepared,COALESCE(review.repetitions,0) AS repetitions,review.last_reviewed_at,
-   (prepared->>'ordinal')::INTEGER AS ordinal
-  FROM jsonb_array_elements(snapshot->'rows') prepared LEFT JOIN study_review_items review
-    ON review.participation_owner_id=reservation.source_owner_id
-   AND review.post_id=p_post AND review.study_unit_id=prepared->>'study_unit_id'
-   AND review.exercise_kind=prepared->>'exercise_type' AND review.learning_language=prepared->>'learning_language'
-   AND review.target_language IS NOT DISTINCT FROM prepared->>'target_language'
-   AND review.learner_band IS NOT DISTINCT FROM prepared->>'learner_band' AND review.lifecycle_status='active'
-  WHERE (prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
-   OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language'=selected_target
-     AND prepared->>'learner_band'=selected_band)
-  ORDER BY COALESCE(review.repetitions,0),review.last_reviewed_at NULLS FIRST,(prepared->>'ordinal')::INTEGER,
-    (prepared->>'exercise_review_key') COLLATE "C" LIMIT 10
- ) candidate;
- SELECT 2*LEAST(20,3*count(*)::INTEGER) INTO paid_units FROM jsonb_array_elements(selected_rows) prepared
-  WHERE prepared->>'exercise_type'='say_it_back';
+ plan:=select_guest_study_start_plan_v1(reservation.source_owner_id,p_community,p_post,p_target,p_band);
+ paid_units:=(plan->>'paidAttemptUnits')::INTEGER;
  IF reservation.remaining_units<paid_units OR reservation.initial_units<paid_units
   OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE reservation_id=p_reservation) THEN
   RAISE EXCEPTION 'prepared paid attempt plan was not reserved' USING ERRCODE='GP006'; END IF;
  RETURN jsonb_build_object('state','candidate','reservationId',reservation.reservation_id,
-  'sourceOwnerId',reservation.source_owner_id,'sessionId',reservation.session_id,
-  'targetLanguage',selected_target,'learnerBand',selected_band,'paidAttemptUnits',paid_units,
-  'rows',selected_rows,'catalogue',(SELECT jsonb_agg(grouped ORDER BY exercise_type,target_language NULLS FIRST,learner_band NULLS FIRST) FROM (
-    SELECT prepared->>'exercise_type' AS exercise_type,prepared->>'learning_language' AS learning_language,
-     prepared->>'target_language' AS target_language,prepared->>'learner_band' AS learner_band,count(*)::INTEGER AS count
-    FROM jsonb_array_elements(snapshot->'rows') prepared
-    GROUP BY prepared->>'exercise_type',prepared->>'learning_language',prepared->>'target_language',prepared->>'learner_band'
-  ) grouped));
+  'sourceOwnerId',reservation.source_owner_id,'sessionId',reservation.session_id)||plan;
 END $$;
 
 -- Actual current rows/public source are re-read in the SAME outer transaction.
@@ -549,6 +674,8 @@ BEGIN
  FOREACH signature IN ARRAY ARRAY[
   'require_guest_study_composition_v1()',
   'require_guest_spoken_resource_plan_v1(text,text,text,boolean)',
+  'select_guest_study_start_plan_v1(text,text,text,text,text)',
+  'reserve_guest_prepared_study_start_v1(jsonb,jsonb,text,text,text,text,text,text,jsonb,text)',
   'require_guest_study_learning_access_v1(jsonb,text)',
   'guest_study_prepared_rows_v1(text,text)',
   'prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)',
@@ -619,6 +746,7 @@ BEGIN
  END LOOP;
  FOREACH signature IN ARRAY ARRAY[
   'require_guest_spoken_resource_plan_v1(text,text,text,boolean)',
+  'select_guest_study_start_plan_v1(text,text,text,text,text)',
   'validate_guest_alias_state_v1()', 'validate_study_command_audio_source_v1()',
   'lock_learner_audio_sources_private_v1(text[])','require_guest_learning_runtime_role_v1(regrole)'
  ] LOOP

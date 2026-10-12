@@ -128,6 +128,7 @@
     "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts",
     "./guest-proof-verifier": "./src/guest-proof-verifier.ts",
     "./learner-audio-capture": "./src/learner-audio-capture.ts",
-    "./learner-audio-io-outcome": "./src/learner-audio-io-outcome.ts"
+    "./learner-audio-io-outcome": "./src/learner-audio-io-outcome.ts",
+    "./owner-guest-atomic-start": "./src/owner-guest-atomic-start.ts"
   }
 }

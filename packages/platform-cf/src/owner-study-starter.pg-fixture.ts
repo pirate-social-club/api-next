@@ -9,17 +9,17 @@ import type {
   OwnerAwareStudyV2Store,
   ParticipationOperationIdentity,
 } from "@pirate/application";
-import { Effect, Schema } from "effect";
 import { GuestStudySessionV1 } from "@pirate/contracts";
+import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import type { PostgresMigration } from "./postgres-migrations.ts";
 import { makeControlPlaneOwnerStudyStarter } from "./owner-study-starter.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientFactory,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
+import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
 import { makeControlPlaneStudyV2Store } from "./study-v2-repository.ts";
 
@@ -240,6 +240,34 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
         )
       ).rows,
     ).toEqual(originalGuard);
+    // Native migrated ACL/frame proof BEFORE broad fixture revokes or grants.
+    // Fixture cleanup cannot manufacture this migration installation evidence.
+    const nativeAtomicSignatures = [
+      "reserve_guest_prepared_study_start_v1(jsonb,jsonb,text,text,text,text,text,text,jsonb,text)",
+      "select_guest_study_start_plan_v1(text,text,text,text,text)",
+    ];
+    expect(
+      (
+        await admin.query(
+          `SELECT signature,f.prosecdef AS security_definer,
+      f.proowner=(SELECT relowner FROM pg_class WHERE oid='participation_owners'::regclass) AS owned,
+      f.proconfig @> ARRAY[format('search_path=pg_catalog, %I, pg_temp',$2::text)] AS pinned,
+      EXISTS(SELECT 1 FROM aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+        WHERE a.grantee<>f.proowner AND a.privilege_type='EXECUTE') AS nonowner_execute
+      FROM unnest($1::text[]) AS signatures(signature) JOIN pg_proc f ON f.oid=to_regprocedure(signature)
+      ORDER BY signature COLLATE "C"`,
+          [nativeAtomicSignatures, schema],
+        )
+      ).rows,
+    ).toEqual(
+      nativeAtomicSignatures.map((signature) => ({
+        signature,
+        security_definer: true,
+        owned: true,
+        pinned: true,
+        nonowner_execute: false,
+      })),
+    );
     await admin.query(
       `CREATE ROLE ${q(role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${password}'`,
     );
