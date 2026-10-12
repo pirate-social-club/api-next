@@ -90,8 +90,25 @@ BEGIN
       AND i.participation_owner_kind=''account''))',relation_name,relation_name,relation_name);
  END LOOP;
 END $install_guest_row_security$;
--- No table privileges are granted or revoked: existing account role behavior
--- retains its reviewed raw relation grants, with guest rows outside its view.
+-- RLS covers row CRUD, never TRUNCATE. Preserve every ordinary row privilege
+-- while removing destructive bulk bypass from PUBLIC and all direct nonowners.
+DO $deny_raw_guest_learning_truncate$
+DECLARE relation_name TEXT; grantee_name TEXT;
+BEGIN
+ FOREACH relation_name IN ARRAY ARRAY[
+  'study_sessions_v2','study_review_items','study_session_items_v2',
+  'study_spoken_answer_commands','learner_audio_artifacts',
+  'study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'
+ ] LOOP
+  EXECUTE format('REVOKE TRUNCATE ON TABLE %I FROM PUBLIC',relation_name);
+  FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_class c
+   CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+   WHERE c.oid=to_regclass(relation_name) AND a.grantee<>0 AND a.grantee<>c.relowner
+    AND a.privilege_type='TRUNCATE' LOOP
+   EXECUTE format('REVOKE TRUNCATE ON TABLE %I FROM %I',relation_name,grantee_name);
+  END LOOP;
+ END LOOP;
+END $deny_raw_guest_learning_truncate$;
 
 CREATE FUNCTION map_controlled_guest_learning_source_v1() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -208,7 +225,8 @@ BEGIN
      OR EXISTS(SELECT 1 FROM pg_roles candidate
        WHERE pg_has_role(p_runtime::OID,candidate.oid,'SET')
          AND (candidate.oid=table_owner
-           OR has_schema_privilege(candidate.oid,namespace_id,'CREATE'))) THEN
+           OR has_schema_privilege(candidate.oid,namespace_id,'CREATE')
+           OR has_table_privilege(candidate.oid,to_regclass(relation_name),'TRUNCATE'))) THEN
     RAISE EXCEPTION 'runtime can bypass controlled guest rows' USING ERRCODE='42501'; END IF;
  END LOOP;
 END $$;
