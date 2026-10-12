@@ -357,14 +357,16 @@ export async function journeyFixture(use: (f: JourneyFixture) => Promise<void>) 
     const retained: Promise<unknown>[] = [],
       requests: Promise<Response>[] = [],
       objects = new Map<string, Uint8Array>();
-    let activeHoldRelease: (() => void) | null = null;
+    const ioHolds: {
+      activeRelease: (() => void) | null;
+      pending: Readonly<{ started: () => void; wait: Promise<void>; release: () => void }> | null;
+    } = { activeRelease: null, pending: null };
     let providerCalls = 0,
       putCalls = 0,
       deleteCalls = 0,
       providerText = "I can love you",
       rejectDelete = false;
-    let held: Readonly<{ started: () => void; wait: Promise<void>; release: () => void }> | null =
-      null;
+
     try {
       const statement = (
         await f.admin.query(
@@ -428,12 +430,12 @@ export async function journeyFixture(use: (f: JourneyFixture) => Promise<void>) 
         put: async (key: string, bytes: Uint8Array) => {
           await outsideSql();
           putCalls++;
-          const pending = held;
-          held = null;
+          const pending = ioHolds.pending;
+          ioHolds.pending = null;
           if (pending !== null) {
             pending.started();
             await pending.wait;
-            if (activeHoldRelease === pending.release) activeHoldRelease = null;
+            if (ioHolds.activeRelease === pending.release) ioHolds.activeRelease = null;
           }
           objects.set(key, new Uint8Array(bytes));
           return { size: bytes.byteLength };
@@ -544,10 +546,11 @@ export async function journeyFixture(use: (f: JourneyFixture) => Promise<void>) 
                 decoded++;
                 const value = await decodeInput(definition, context, null);
                 const { principal: _, browserParticipation: __, ...locations } = value;
+                const edgeClientIp = context.req.header("cf-connecting-ip");
                 return {
                   ...locations,
                   signal: context.req.raw.signal,
-                  edgeClientIp: context.req.header("cf-connecting-ip"),
+                  ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
                 };
               };
               const result = isCore(name)
@@ -649,14 +652,14 @@ export async function journeyFixture(use: (f: JourneyFixture) => Promise<void>) 
             wait = new Promise<void>((r) => {
               release = r;
             });
-          held = { started: signal, wait, release };
-          activeHoldRelease = release;
+          ioHolds.pending = { started: signal, wait, release };
+          ioHolds.activeRelease = release;
           return { started, release };
         },
       });
     } finally {
-      held?.release();
-      activeHoldRelease?.();
+      ioHolds.pending?.release();
+      ioHolds.activeRelease?.();
       await Promise.allSettled(requests);
       await Promise.allSettled(retained);
       if (reader) await reader.end().catch(() => undefined);

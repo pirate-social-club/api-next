@@ -168,7 +168,8 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
         steps = 0,
         jsonAnswers = 0,
         spokenAnswers = 0;
-      let originalReply: unknown, originalRequest: Parameters<HttpHarness["request"]>[2];
+      let originalReply: Schema.Schema.Type<typeof GuestStudyAnswerResultV1> | undefined,
+        originalRequest: Parameters<HttpHarness["request"]>[2];
       while (session.status === "active" && steps < 12) {
         const item = current(session),
           key = `whole-answer-${steps}`;
@@ -206,7 +207,8 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
       expect(f.providerCalls()).toBe(spokenAnswers);
       expect(f.putCalls()).toBe(spokenAnswers);
       expect(f.objects.size).toBe(spokenAnswers);
-      if (originalRequest === undefined) throw new Error("Original completed answer required");
+      if (originalRequest === undefined || originalReply === undefined)
+        throw new Error("Original completed answer required");
       const beforeReplay = await f.snapshot(),
         replay = await h.request(b, "SubmitGuestStudyAnswerV1", originalRequest);
       expect(replay.status).toBe(200);
