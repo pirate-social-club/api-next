@@ -4,10 +4,10 @@ import {
   ControlPlaneStatementFailed,
 } from "@pirate/application";
 import {
+  type DurableParticipationOutcome,
   type GuestAttachmentStore,
   type GuestParticipationStoreFailure,
   GuestParticipationStoreRejected,
-  type DurableParticipationOutcome,
 } from "@pirate/application/guest-participation-authority";
 import {
   GuestAttachmentIntentIdV1,
@@ -136,6 +136,8 @@ export function makeControlPlaneGuestAttachmentPreparation(
     createIntent: (input: Input<"createIntent">) => {
       if (
         input.operation.kind !== "attachment_intent" ||
+        input.operation.sourceOwnerId !== input.expectedOwnerId ||
+        input.expectedOwnerId !== input.context.access.ownerId ||
         input.context.selected.credentialId !== input.context.access.credentialId ||
         input.context.selected.ownerId !== input.context.access.ownerId ||
         input.context.selected.origin !== input.context.origin
@@ -162,6 +164,7 @@ export function makeControlPlaneGuestAttachmentPreparation(
           if (reply.state === "issuance_requires_restart") return;
           if (
             reply.operation.kind !== "attachment_intent" ||
+            reply.operation.sourceOwnerId !== input.expectedOwnerId ||
             reply.operation.idempotencyKey !== input.operation.idempotencyKey ||
             reply.operation.requestHash !== input.operation.requestHash
           )

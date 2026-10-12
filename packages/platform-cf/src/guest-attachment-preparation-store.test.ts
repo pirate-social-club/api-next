@@ -233,6 +233,7 @@ test("strict unknown-row creation decoder rejects malformed/excess/wrong-cookie 
     { ...created, intent: { ...intent, intent_id: otherIntentId } },
     { ...created, cookie_effects: [{ kind: "intent", action: "issue", intentId: otherIntentId }] },
     { ...created, cookie_effects: [created.cookie_effects[0], created.cookie_effects[0]] },
+    { ...created, operation: { ...operation, sourceOwnerId: originalSource } },
     { ...created, cookie_effects: [] }, // replay must carry original nonce proof
   ];
   for (const reply of replies) {
@@ -254,10 +255,10 @@ test("strict unknown-row creation decoder rejects malformed/excess/wrong-cookie 
   }
 });
 
-test("proved replay retains immutable historical source and emits no nonce refresh; missing proof requires restart after COMMIT", async () => {
+test("proved replay retains its canonical creation source and emits no nonce refresh; missing proof requires restart after COMMIT", async () => {
   const replay = {
     ...created,
-    operation: { ...operation, sourceOwnerId: originalSource },
+    operation,
     cookie_effects: [],
   };
   const f = fixture(replay);
