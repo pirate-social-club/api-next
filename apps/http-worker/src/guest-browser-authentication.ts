@@ -111,6 +111,41 @@ export interface GuestBrowserAuthenticationServices {
   readonly assertAccountCsrf: (headers: Headers, trustedOrigin: string) => void;
 }
 
+export function isMixedGuestOperation(policy: BrowserParticipationPolicy): boolean {
+  return (
+    (policy.authority === "learning" && policy.operation !== "start") ||
+    (policy.authority === "recovery" &&
+      (policy.operation === "participations" ||
+        policy.operation === "retention" ||
+        policy.operation === "delete_audio"))
+  );
+}
+
+/** Header-only boundary. Call before account verification, body reads or proof hashing. */
+export function assertGuestBrowserRequestBoundary(
+  input: Pick<Input, "requestHeaders" | "trustedProductOrigin" | "policy">,
+) {
+  const { requestHeaders: headers, trustedProductOrigin: origin, policy } = input;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "https:" || parsed.origin !== origin) throw new Error();
+  } catch {
+    throw refused("guest_origin_or_csrf_invalid");
+  }
+  if (headers.has("authorization")) throw refused("guest_proof_required");
+  const cleanup = policy.authority === "recovery" && policy.operation === "cleanup";
+  const cookies = parseGuestBrowserCookies(headers, cleanup);
+  if (
+    (headers.has("origin") && headers.get("origin") !== origin) ||
+    (isUnsafeGuestOperation(policy) &&
+      (headers.get("origin") !== origin ||
+        cookies.csrf === null ||
+        headers.get("x-guest-csrf-token") !== cookies.csrf))
+  )
+    throw refused("guest_origin_or_csrf_invalid");
+  return cookies;
+}
+
 /** Credentials remain transport-owned and never become an ordinary account Principal. */
 export function makeGuestBrowserAuthenticationAdapter(
   services: GuestBrowserAuthenticationServices,
@@ -130,24 +165,19 @@ export function makeGuestBrowserAuthenticationAdapter(
   return {
     async authenticate(input): Promise<BrowserParticipationContext> {
       const { requestHeaders: headers, trustedProductOrigin: origin, policy, account } = input;
-      try {
-        const parsed = new URL(origin);
-        if (parsed.protocol !== "https:" || parsed.origin !== origin) throw new Error();
-      } catch {
-        throw refused("guest_origin_or_csrf_invalid");
-      }
-      if (headers.has("authorization")) throw refused("guest_proof_required");
-      const cleanup = policy.authority === "recovery" && policy.operation === "cleanup";
-      const cookies = parseGuestBrowserCookies(headers, cleanup);
+      const cookies = assertGuestBrowserRequestBoundary(input);
       const unsafe = isUnsafeGuestOperation(policy);
+      const mixed = isMixedGuestOperation(policy);
+      // Preserve both-CSRF semantics, but check account CSRF before guest proof hashes.
       if (
-        (headers.has("origin") && headers.get("origin") !== origin) ||
-        (unsafe &&
-          (headers.get("origin") !== origin ||
-            cookies.csrf === null ||
-            headers.get("x-guest-csrf-token") !== cookies.csrf))
+        (mixed &&
+          input.selectedCredentialId === null &&
+          account?.kind === "ordinary_account" &&
+          unsafe) ||
+        (policy.authority === "attachment" && account !== null)
       )
-        throw refused("guest_origin_or_csrf_invalid");
+        assertAccountCsrf(headers, origin);
+      const cleanup = policy.authority === "recovery" && policy.operation === "cleanup";
 
       const proofs = await Effect.runPromise(
         services.verifier.verify({
@@ -179,14 +209,7 @@ export function makeGuestBrowserAuthenticationAdapter(
         provedIntents: proofs.provedIntents,
       };
       const checked = { ...base, originAndCsrfChecked: true as const };
-      const mixed =
-        (policy.authority === "learning" && policy.operation !== "start") ||
-        (policy.authority === "recovery" &&
-          (policy.operation === "participations" ||
-            policy.operation === "retention" ||
-            policy.operation === "delete_audio"));
       if (mixed && input.selectedCredentialId === null && account?.kind === "ordinary_account") {
-        if (unsafe) assertAccountCsrf(headers, origin);
         if (policy.authority === "learning") {
           const access = {
             kind: "account" as const,
@@ -286,7 +309,6 @@ export function makeGuestBrowserAuthenticationAdapter(
         case "attachment": {
           const proof = confirmedProof(selected);
           if (account === null) throw refused("account_proof_required");
-          assertAccountCsrf(headers, origin);
           const intents = base.provedIntents.filter(
             (i) =>
               i.ownerId === proof.ownerId &&
