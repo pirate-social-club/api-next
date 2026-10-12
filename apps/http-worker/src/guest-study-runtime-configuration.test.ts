@@ -8,8 +8,8 @@ const configuration = {
   policy: {
     version: "fixture-resource-v1",
     costPolicyVersion: "fixture-cost-v1",
-    maximumOwnerActiveSessions: 2,
-    maximumOwnerReservedPaidCallsPerRollingDay: 60,
+    maximumOwnerActiveSessions: 2 as const,
+    maximumOwnerReservedPaidCallsPerRollingDay: 60 as const,
     maximumGlobalActiveSessions: 100,
     maximumGlobalPaidCallsPerRollingDay: 1000,
     maximumGlobalCostMicrosPerRollingDay: "1000000",
