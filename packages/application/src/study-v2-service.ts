@@ -8,8 +8,6 @@ import type {
   StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
 import {
-  assessStudySpokenRerecord,
-  gradeTranscriptV2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V3,
@@ -20,6 +18,7 @@ import {
 } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { Clock, IdGen } from "./ports.ts";
+import { gradeStudySpokenTranscript } from "./study-shared-lesson-engine.ts";
 import { canonicalBodyHash } from "./use-cases/content/common.ts";
 
 export class StudyV2StoreFailed extends Data.TaggedError("StudyV2StoreFailed")<{
@@ -359,18 +358,12 @@ export const makeStudyV2Service = (
       });
       const acceptedAt = instant(yield* clock.now);
       const graderPolicy = yield* transcriptGraderPolicy(context.item.grader_policy_revision);
-      const grade = gradeTranscriptV2(
-        context.referenceText,
-        transcript.transcript,
-        context.dominantLanguage,
-        graderPolicy,
-      );
-      const rerecordAssessment = assessStudySpokenRerecord({
-        grade,
-        expectedLanguage:
-          context.languageProvenance.kind === "unit_profile"
-            ? context.languageProvenance.dominant_language
-            : null,
+      const { grade, rerecordAssessment } = gradeStudySpokenTranscript({
+        referenceText: context.referenceText,
+        transcript: transcript.transcript,
+        dominantLanguage: context.dominantLanguage,
+        policy: graderPolicy,
+        languageProvenance: context.languageProvenance,
         detectedLanguage: transcript.detectedLanguage,
         detectedLanguageConfidence: transcript.detectedLanguageConfidence,
       });

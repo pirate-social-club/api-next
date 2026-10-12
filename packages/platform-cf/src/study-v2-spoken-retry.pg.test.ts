@@ -294,7 +294,12 @@ suite("Study v2 ungraded spoken receipt", () => {
         },
         session: { lesson: { presentation_count: 0 } },
       });
-      expect(receipt.session.lesson.current?.session_item_id).toBe(sessionItemId);
+      expect(receipt.session.lesson.current).toEqual(session.lesson.current);
+      expect(receipt.session.progress).toMatchObject({
+        answered_exercise_count: 0,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
       expect(await attemptRows(admin, sessionItemId)).toHaveLength(0);
       const presentationsBefore = await admin.query(
         "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
@@ -363,6 +368,21 @@ suite("Study v2 ungraded spoken receipt", () => {
         session: { lesson: { presentation_count: 1 } },
       });
       expect(await attemptRows(admin, sessionItemId)).toHaveLength(1);
+      expect(graded.session.lesson.current?.session_item_id).not.toBe(sessionItemId);
+      expect(graded.session.lesson.current?.presented_at).toBe("2026-09-12T12:02:00.000Z");
+      expect(graded.session.progress).toMatchObject({
+        answered_exercise_count: 1,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
+            [sessionItemId],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
       const commands = await admin.query(
         `SELECT result_kind, count(*)::int AS n FROM study_spoken_answer_commands
           WHERE session_item_id=$1 GROUP BY result_kind ORDER BY result_kind`,

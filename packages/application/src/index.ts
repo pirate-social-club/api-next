@@ -56,6 +56,7 @@ export * from "./song-owner-video-policy.ts";
 export * from "./study-item-source.ts";
 export * from "./study-item-source-v2.ts";
 export * from "./study-language-profile.ts";
+export * from "./study-shared-lesson-engine.ts";
 export * from "./study-translation-corpus.ts";
 export * from "./study-translation-generator.ts";
 export * from "./study-v2-lifecycle.ts";

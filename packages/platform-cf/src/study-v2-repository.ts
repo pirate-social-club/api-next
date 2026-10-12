@@ -2,9 +2,15 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  deriveStudyPresentationTransition,
+  evaluateStudyChoice,
+  evaluateStudySpokenAttempt,
+  projectStudyProgressFacts,
+  projectStudySpokenFeedback,
   StudyV2CommandRejected,
   type StudyV2Store,
   StudyV2StoreFailed,
+  studyPresentationCap,
 } from "@pirate/application";
 import {
   StudyAnswerResultV2,
@@ -13,11 +19,6 @@ import {
   StudySessionV2,
   StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
-import {
-  gradeExactChoiceV2,
-  scheduleStudyReviewV1,
-  studyTranscriptReviewGrade,
-} from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
@@ -188,13 +189,11 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
         timezone: text(row, "timezone"),
         status: text(row, "status"),
         items,
-        progress: {
-          qualifying_exercise_count: count,
-          answered_exercise_count: answered,
-          first_pass_correct: correct,
-          required_correct: Math.max(1, Math.ceil((7 * count) / 10)),
-          score_bps: answered === count ? Math.floor((10_000 * correct) / count) : null,
-        },
+        progress: projectStudyProgressFacts({
+          totalCards: count,
+          answeredSpentCards: answered,
+          firstPassCorrectCards: correct,
+        }),
         lesson: {
           current:
             row.current_session_item_id === null
@@ -208,7 +207,7 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
           resolved_card_count: integer(lesson, "resolved_count"),
           total_card_count: count,
           presentation_count: integer(row, "presentation_count"),
-          presentation_cap: Math.min(20, 3 * count),
+          presentation_cap: studyPresentationCap(count),
           completion_reason: nullableText(row, "completion_reason"),
         },
         created_at: iso(row.created_at),
@@ -1163,29 +1162,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               readonly: false,
             });
             if (artifact.rows.length !== 1) return yield* rejected("command-in-flight");
-            const feedback = {
-              kind: "transcript_diff" as const,
-              match_kind: input.grade.matchKind,
-              heard_transcript: input.grade.heardTranscript,
-              matched: input.grade.matched,
-              missing: input.grade.missing,
-              extra: input.grade.extra,
-              substituted: input.grade.substituted.map(({ expected, heard }) => ({
-                expected,
-                heard,
-              })),
-              policy_revision: input.grade.policyRevision,
-            };
-            const tokenDiff = {
-              match_kind: input.grade.matchKind,
-              matched: input.grade.matched.map(({ position }) => position),
-              missing: input.grade.missing.map(({ position }) => position),
-              extra: input.grade.extra,
-              substituted: input.grade.substituted.map(({ expected, heard }) => ({
-                expected_position: expected.position,
-                heard,
-              })),
-            };
+            const { feedback, tokenDiff } = projectStudySpokenFeedback(input.grade);
             const priorReceipt =
               input.rerecordEnabled &&
               !input.grade.correct &&
@@ -1200,10 +1177,21 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                     readonly: false,
                   })
                 : null;
-            const rerecord =
-              priorReceipt !== null &&
-              priorReceipt.rows.length === 0 &&
-              input.rerecordAssessment.candidateReason !== null;
+            const spokenAttempt = evaluateStudySpokenAttempt({
+              grade: input.grade,
+              attemptNumber: input.attemptNumber,
+              rerecordEnabled: input.rerecordEnabled,
+              rerecordAssessment: input.rerecordAssessment,
+              priorRerecordRecorded: priorReceipt === null || priorReceipt.rows.length !== 0,
+              review: {
+                difficulty: number(selectedRow, "difficulty"),
+                lapses: integer(selectedRow, "lapses"),
+                repetitions: integer(selectedRow, "repetitions"),
+                reviewedAt: Date.parse(input.acceptedAt),
+                stability: number(selectedRow, "stability"),
+              },
+            });
+            const rerecord = spokenAttempt.kind === "ungraded_rerecord";
             const assessment = input.rerecordAssessment;
             const spoken = {
               language_provenance: input.languageProvenance,
@@ -1233,7 +1221,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                 },
               },
             };
-            if (rerecord) {
+            if (spokenAttempt.kind === "ungraded_rerecord") {
               const session = yield* readSession(transaction, input);
               if (session === null) return yield* rejected("not-found");
               const result = decode(StudyAnswerResultV2, {
@@ -1333,20 +1321,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const reviewGrade = studyTranscriptReviewGrade(
-              input.grade.matchKind,
-              input.attemptNumber,
-            );
-            const review = scheduleStudyReviewV1(
-              {
-                difficulty: number(selectedRow, "difficulty"),
-                lapses: integer(selectedRow, "lapses"),
-                repetitions: integer(selectedRow, "repetitions"),
-                reviewedAt: Date.parse(input.acceptedAt),
-                stability: number(selectedRow, "stability"),
-              },
-              reviewGrade,
-            );
+            const review = spokenAttempt.review;
             yield* transaction.execute({
               label: "study-v2.spoken.review",
               text: `UPDATE study_review_items
@@ -1375,7 +1350,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const resolved = input.grade.correct || input.attemptNumber >= 3;
+            const resolved = spokenAttempt.resolved;
             yield* transaction.execute({
               label: "study-v2.spoken.lesson-item",
               text: `UPDATE study_lesson_item_state_v2
@@ -1401,11 +1376,14 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               readonly: false,
             });
             const remainingRow = remaining.rows[0] as Row;
-            const nextPresentationCount = queueOrdinal + 1;
-            const presentationCap = Math.min(20, 3 * integer(remainingRow, "total"));
-            const complete =
-              integer(remainingRow, "count") === 0 || nextPresentationCount >= presentationCap;
-            if (complete) {
+            const transition = deriveStudyPresentationTransition({
+              kind: "advance",
+              priorPresentationCount: queueOrdinal,
+              totalCards: integer(remainingRow, "total"),
+              remainingUnresolvedCards: integer(remainingRow, "count"),
+            });
+            const nextPresentationCount = transition.nextPresentationCount;
+            if (transition.kind === "complete") {
               const completed = yield* transaction.execute<Row>({
                 label: "study-v2.spoken.session-complete",
                 text: `UPDATE study_sessions_v2 SET status='completed',
@@ -1420,7 +1398,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                   input.sessionId,
                   input.acceptedAt,
                   nextPresentationCount,
-                  integer(remainingRow, "count") === 0 ? "all_resolved" : "presentation_budget",
+                  transition.completionReason,
                 ],
                 readonly: false,
               });
@@ -1630,21 +1608,22 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (input.attemptNumber !== integer(row, "item_presentation_count") + 1) {
               return yield* rejected("attempt-conflict");
             }
-            const correct = gradeExactChoiceV2(
-              input.answer.choice_key,
-              String(grader.correct_choice_key),
-            );
-            const spent = correct || input.attemptNumber >= integer(row, "maximum_attempts");
-            const feedback = !spent
-              ? { kind: "none" as const }
-              : {
-                  kind: "choice_reveal" as const,
-                  correct_choice_key: String(grader.correct_choice_key),
-                  correct_text: String(grader.correct_text),
-                  ...(typeof grader.explanation === "string"
-                    ? { explanation: grader.explanation }
-                    : {}),
-                };
+            const choice = evaluateStudyChoice({
+              submittedChoiceKey: input.answer.choice_key,
+              correctChoiceKey: String(grader.correct_choice_key),
+              correctText: String(grader.correct_text),
+              explanation: typeof grader.explanation === "string" ? grader.explanation : undefined,
+              attemptNumber: input.attemptNumber,
+              maximumAttempts: integer(row, "maximum_attempts"),
+              review: {
+                difficulty: number(row, "difficulty"),
+                lapses: integer(row, "lapses"),
+                repetitions: integer(row, "repetitions"),
+                reviewedAt: Date.parse(input.acceptedAt),
+                stability: number(row, "stability"),
+              },
+            });
+            const { correct, spent, feedback } = choice;
             yield* transaction.execute({
               label: "study-v2.answer.insert",
               text: `INSERT INTO study_attempts_v2 (
@@ -1705,16 +1684,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const review = scheduleStudyReviewV1(
-              {
-                difficulty: number(row, "difficulty"),
-                lapses: integer(row, "lapses"),
-                repetitions: integer(row, "repetitions"),
-                reviewedAt: Date.parse(input.acceptedAt),
-                stability: number(row, "stability"),
-              },
-              correct ? (input.attemptNumber === 1 ? "good" : "hard") : "again",
-            );
+            const review = choice.review;
             yield* transaction.execute({
               label: "study-v2.answer.review",
               text: `UPDATE study_review_items
@@ -1768,11 +1738,14 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               readonly: false,
             });
             const remainingRow = remaining.rows[0] as Row;
-            const nextPresentationCount = queueOrdinal + 1;
-            const presentationCap = Math.min(20, 3 * integer(remainingRow, "total"));
-            const complete =
-              integer(remainingRow, "count") === 0 || nextPresentationCount >= presentationCap;
-            if (complete) {
+            const transition = deriveStudyPresentationTransition({
+              kind: spent ? "advance" : "choice_retryable",
+              priorPresentationCount: queueOrdinal,
+              totalCards: integer(remainingRow, "total"),
+              remainingUnresolvedCards: integer(remainingRow, "count"),
+            });
+            const nextPresentationCount = transition.nextPresentationCount;
+            if (transition.kind === "complete") {
               const completed = yield* transaction.execute<Row>({
                 label: "study-v2.answer.session-complete",
                 text: `UPDATE study_sessions_v2 SET status='completed',
@@ -1787,7 +1760,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                   input.sessionId,
                   input.acceptedAt,
                   nextPresentationCount,
-                  integer(remainingRow, "count") === 0 ? "all_resolved" : "presentation_budget",
+                  transition.completionReason,
                 ],
                 readonly: false,
               });
@@ -1862,7 +1835,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                   }).pipe(Effect.mapError(() => failed("constraint")));
                 }
               }
-            } else if (spent) {
+            } else if (transition.kind === "advance") {
               // A spent answer resolves this presentation: advance to the
               // server-selected next card. A retryable answer keeps the
               // current item so the offered immediate retry targets the card
