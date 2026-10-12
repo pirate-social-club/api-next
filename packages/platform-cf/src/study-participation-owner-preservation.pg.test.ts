@@ -216,9 +216,13 @@ suite("populated Study participation-owner preservation", () => {
     const suffix = crypto.randomUUID().replaceAll("-", "");
     const schema = `guest_populated_${suffix}`;
     const role = `guest_populated_runtime_${suffix}`;
+    const fixturePassword = crypto.randomUUID().replaceAll("-", "");
     const scoped = connectionForSchema(connectionString, schema);
     const admin = new Client({ connectionString });
-    const runtime = new Client({ connectionString: scoped });
+    const runtimeUrl = new URL(scoped);
+    runtimeUrl.username = role;
+    runtimeUrl.password = fixturePassword;
+    const runtime = new Client({ connectionString: runtimeUrl.toString() });
     await admin.connect();
     let roleCreated = false;
     let runtimeConnected = false;
@@ -317,7 +321,9 @@ suite("populated Study participation-owner preservation", () => {
       expect(originalGuards.triggers).toHaveLength(2);
       // Deliberately inherited installation grants must not leak the new core
       // or six private account-composition functions to a runtime role.
-      await admin.query(`CREATE ROLE ${quote(role)}`);
+      // An actual unprivileged login cannot escape with SET ROLE to the admin.
+      // SET ROLE on an admin login alone would not prove this boundary.
+      await admin.query(`CREATE ROLE ${quote(role)} LOGIN PASSWORD '${fixturePassword}'`);
       roleCreated = true;
       await admin.query(`GRANT USAGE ON SCHEMA ${quote(schema)} TO ${quote(role)};
         GRANT ALL ON ALL TABLES IN SCHEMA ${quote(schema)} TO ${quote(role)};
@@ -549,7 +555,14 @@ suite("populated Study participation-owner preservation", () => {
       ).rejects.toThrow("accepted Karaoke archive state and reference are retained");
       await runtime.connect();
       runtimeConnected = true;
-      await runtime.query(`SET ROLE ${quote(role)}`);
+      expect((await runtime.query("SELECT current_user,session_user")).rows).toEqual([
+        { current_user: role, session_user: role },
+      ]);
+      const migrationOwner = (await admin.query("SELECT current_user AS role")).rows[0]?.role;
+      if (typeof migrationOwner !== "string") throw new Error("migration owner missing");
+      await expect(runtime.query(`SET ROLE ${quote(migrationOwner)}`)).rejects.toMatchObject({
+        code: "42501",
+      });
       expect(
         (
           await runtime.query(
