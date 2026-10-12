@@ -1,0 +1,101 @@
+{
+  "source": "packages/platform-cf/src/guest-prepared-content.pg.test.ts",
+  "source_sha256": "05e32059e47994f0a3e4b52ec76dc29ac6b29b67b64133a6591986249030ba9f",
+  "read_columns": {
+    "posts": [
+      "community_id",
+      "post_id",
+      "post_type",
+      "status",
+      "visibility",
+      "content_rating"
+    ],
+    "communities": [
+      "community_id",
+      "status"
+    ],
+    "media_publication_projections": [
+      "submission_id",
+      "community_id",
+      "post_id",
+      "audio_revision",
+      "lyrics_revision",
+      "lyrics_status",
+      "language_status"
+    ],
+    "media_post_submissions": [
+      "submission_id",
+      "community_id",
+      "post_id",
+      "audio_revision",
+      "current_lyrics_revision",
+      "status"
+    ],
+    "media_song_lyrics_revisions": [
+      "submission_id",
+      "lyrics_revision",
+      "lyrics_sha256"
+    ],
+    "media_song_stems": [
+      "submission_id",
+      "community_id",
+      "slot"
+    ],
+    "study_exercise_versions": [
+      "exercise_review_key",
+      "exercise_type",
+      "learning_language",
+      "target_language",
+      "learner_band",
+      "community_id",
+      "post_id",
+      "audio_revision",
+      "lyrics_revision",
+      "lyric_line_id",
+      "line_version",
+      "line_source_hash",
+      "study_unit_id",
+      "language_profile_revision",
+      "retired_at",
+      "content_revision"
+    ],
+    "localization_lyrics_revision_lines": [
+      "community_id",
+      "post_id",
+      "lyrics_revision",
+      "lyric_line_id",
+      "line_version"
+    ],
+    "localization_lyric_line_versions": [
+      "community_id",
+      "post_id",
+      "lyric_line_id",
+      "line_version",
+      "source_hash"
+    ],
+    "localization_lyric_line_study_units": [
+      "community_id",
+      "post_id",
+      "lyric_line_id",
+      "line_version",
+      "study_unit_id"
+    ],
+    "study_language_profiles": [
+      "community_id",
+      "post_id",
+      "lyrics_revision",
+      "source_hash",
+      "language_profile_revision"
+    ],
+    "study_language_profile_units": [
+      "community_id",
+      "post_id",
+      "lyrics_revision",
+      "study_unit_id",
+      "language_profile_revision"
+    ]
+  },
+  "predicate_execute": "can_guest_access_activity_song_v1(text,text)",
+  "no_private_grader": true,
+  "separate_read_only_login": true
+}
