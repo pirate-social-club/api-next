@@ -126,6 +126,8 @@
     "./guest-learning-resource-admission": "./src/guest-learning-resource-admission.ts",
     "./owner-learner-audio-deletion": "./src/owner-learner-audio-deletion.ts",
     "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts",
-    "./guest-proof-verifier": "./src/guest-proof-verifier.ts"
+    "./guest-proof-verifier": "./src/guest-proof-verifier.ts",
+    "./learner-audio-capture": "./src/learner-audio-capture.ts",
+    "./learner-audio-io-outcome": "./src/learner-audio-io-outcome.ts"
   }
 }
