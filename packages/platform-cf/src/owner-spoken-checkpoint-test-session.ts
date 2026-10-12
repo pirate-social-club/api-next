@@ -26,8 +26,12 @@ const mutations = (f: Fixture) =>
     rerecordEnabled: true,
     providerRetention: "not_stored", // Typed deterministic fixture stub has no remote storage.
   });
-export async function dispatch(f: Fixture, serial: number) {
-  const guest = await seedGuest(f, serial);
+export async function dispatch(
+  f: Fixture,
+  serial: number,
+  existingGuest?: Awaited<ReturnType<typeof seedGuest>>,
+) {
+  const guest = existingGuest ?? (await seedGuest(f, serial));
   const initial = await reserve(f, guest.access, `checkpoint-start-${serial}`, 24);
   const start = completed(await run(f.store.startSession(initial.input)));
   const source = start.result.source;
