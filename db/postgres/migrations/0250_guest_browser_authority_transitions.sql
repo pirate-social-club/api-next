@@ -62,9 +62,13 @@ BEGIN
           'study_spoken_answer_commands','learner_audio_artifacts'))
     OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE fk.contype='f' AND fk.confrelid='participation_owners'::regclass
+      WHERE fk.contype='f' AND fk.confrelid=ANY(ARRAY[
+          'participation_owners'::regclass,'guest_credentials'::regclass,
+          'guest_empty_owner_aliases'::regclass,'participation_owner_clocks'::regclass,
+          'guest_learning_preferences'::regclass,'guest_participation_operations'::regclass,
+          'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass])
         AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
-          'guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
+          'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
           'guest_learning_preferences','guest_participation_operations',
           'guest_secret_issuance_operations','guest_attachment_intents',
           'study_sessions_v2','study_review_items','study_session_items_v2',

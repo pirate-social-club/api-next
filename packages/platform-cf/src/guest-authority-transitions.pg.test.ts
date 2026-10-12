@@ -400,6 +400,13 @@ suite("guest controlled browser authority transitions", () => {
         code: "GP003",
       });
       await f.admin.query("DROP TABLE megapot_owner_allocations");
+      await f.admin.query(
+        "CREATE TABLE unreviewed_credential_history(credential_id TEXT REFERENCES guest_credentials(credential_id))",
+      );
+      await expect(confirm(f, second, owner(2), [first, second])).rejects.toMatchObject({
+        code: "GP003",
+      });
+      await f.admin.query("DROP TABLE unreviewed_credential_history");
       expect(
         (await confirm(f, second, owner(2), [first, second])).authority?.selected?.owner_id,
       ).toBe(owner(1));
