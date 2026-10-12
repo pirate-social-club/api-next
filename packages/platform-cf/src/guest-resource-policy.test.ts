@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { GuestParticipationStoreRejected } from "@pirate/application";
+import {
+  GuestParticipationStoreRejected,
+  type GuestResourceAdmissionPolicy,
+} from "@pirate/application";
 import { readGuestResourceAdmissionPolicy } from "./guest-resource-policy.ts";
 
 const fixture = {
@@ -14,7 +17,7 @@ const fixture = {
   maximumTrustedEdgeSessionsPerWindow: 3,
   trustedEdgeWindowSeconds: 3600,
   maximumProviderCallCostMicros: "100000",
-};
+} satisfies GuestResourceAdmissionPolicy;
 
 test("missing policy returns no paid composition, while explicit cost strings retain full precision", () => {
   expect(readGuestResourceAdmissionPolicy(undefined)).toBeNull();
