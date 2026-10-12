@@ -281,7 +281,8 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
       expect(deleted.state).toBe("completed");
       expect(deleted.deleted_count).toBe(spokenAnswers);
       expect(deleted.remaining_count).toBe(0);
-      expect(deleted.provider_disposition).toBe("unavailable");
+      // Local deletion has no provider-side deletion receipt.
+      expect(deleted.provider_disposition).toBe("unknown");
       expect(f.objects.size).toBe(0);
       noRawProof(b, deleted);
       const after = await f.snapshot();
@@ -364,7 +365,7 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
       expect(f.putCalls()).toBe(1);
       expect(await f.snapshot()).toEqual(before);
       await f.admin.query(
-        "UPDATE posts SET visibility='private' WHERE community_id=$1 AND post_id=$2",
+        "UPDATE posts SET visibility='members_only' WHERE community_id=$1 AND post_id=$2",
         [source.communityId, source.postId],
       );
       const hidden = await recovery.request(b, "SubmitGuestStudyAnswerV1", request);
