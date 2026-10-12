@@ -129,13 +129,15 @@ function fixture(
         }),
     },
     verifiedOrdinaryAccount: options.classified === false ? null : account,
-    ordinaryParticipation: options.participation
-      ? () =>
-          Effect.sync(() => {
-            trace.push("actual-participation-reader");
-            return { state: "not_yet_qualified" as const };
-          })
-      : undefined,
+    ...(options.participation
+      ? {
+          ordinaryParticipation: () =>
+            Effect.sync(() => {
+              trace.push("actual-participation-reader");
+              return { state: "not_yet_qualified" as const };
+            }),
+        }
+      : {}),
   });
   return { store, trace };
 }
