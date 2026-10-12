@@ -355,7 +355,7 @@ BEGIN
 END $$;
 
 CREATE FUNCTION issue_guest_rotation_v1(
-  expected_origin TEXT,proved_ids TEXT[],predecessor_id TEXT,expected_owner_id TEXT,
+  expected_origin TEXT,proved_ids TEXT[],expected_predecessor_credential_id TEXT,expected_owner_id TEXT,
   issuance_key TEXT,issuance_request_hash TEXT,new_operation_id TEXT,new_credential_id TEXT,new_digest TEXT
 ) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE predecessor guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
@@ -363,8 +363,8 @@ DECLARE predecessor guest_credentials%ROWTYPE; prior guest_secret_issuance_opera
   at_time TIMESTAMPTZ; authority JSONB;
 BEGIN
   PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
-  IF predecessor_id IS NULL OR NOT predecessor_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
-  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=predecessor_id AND origin=expected_origin;
+  IF expected_predecessor_credential_id IS NULL OR NOT expected_predecessor_credential_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=expected_predecessor_credential_id AND origin=expected_origin;
   IF resolve_guest_empty_owner_root_v1(predecessor.owner_id)<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
   -- No learning-lease requirement. Old acknowledged proof can NEVER rotate.
   IF predecessor.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
@@ -379,7 +379,7 @@ BEGIN
     IF prior.request_hash<>issuance_request_hash THEN RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
     IF NOT prior.credential_id=ANY(proved_ids) THEN RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
     SELECT * INTO STRICT successor FROM guest_credentials WHERE credential_id=prior.credential_id;
-    IF successor.state<>'pending_successor' OR successor.predecessor_id<>predecessor_id
+    IF successor.state<>'pending_successor' OR successor.predecessor_id<>expected_predecessor_credential_id
        OR successor.pending_expires_at<=clock_timestamp() THEN
       RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
     RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
@@ -393,7 +393,7 @@ BEGIN
     WHERE owner_id=predecessor.owner_id AND origin=expected_origin AND state='pending_successor';
   INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at,predecessor_id)
     VALUES(new_credential_id,predecessor.owner_id,expected_origin,new_digest,'pending_successor',at_time,
-      at_time+INTERVAL '15 minutes',predecessor_id);
+      at_time+INTERVAL '15 minutes',expected_predecessor_credential_id);
   authority := guest_authority_metadata_v1(expected_origin,proved_ids||ARRAY[new_credential_id],new_credential_id);
   INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
       idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
@@ -408,7 +408,7 @@ BEGIN
 END $$;
 
 CREATE FUNCTION acknowledge_guest_rotation_v1(
-  expected_origin TEXT,proved_ids TEXT[],predecessor_id TEXT,successor_id TEXT,expected_owner_id TEXT
+  expected_origin TEXT,proved_ids TEXT[],expected_predecessor_credential_id TEXT,successor_id TEXT,expected_owner_id TEXT
 ) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE predecessor guest_credentials%ROWTYPE; successor guest_credentials%ROWTYPE; at_time TIMESTAMPTZ;
 BEGIN
@@ -417,8 +417,8 @@ BEGIN
   -- cookie. Verify the stored confirmed predecessor/link under component locks.
   IF successor_id IS NULL OR NOT successor_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
   SELECT * INTO STRICT successor FROM guest_credentials WHERE credential_id=successor_id AND origin=expected_origin;
-  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=predecessor_id AND origin=expected_origin;
-  IF successor.predecessor_id IS DISTINCT FROM predecessor_id OR successor.owner_id<>predecessor.owner_id
+  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=expected_predecessor_credential_id AND origin=expected_origin;
+  IF successor.predecessor_id IS DISTINCT FROM expected_predecessor_credential_id OR successor.owner_id<>predecessor.owner_id
      OR resolve_guest_empty_owner_root_v1(successor.owner_id)<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
   IF successor.state='confirmed' AND predecessor.state='revoked'
      AND predecessor.revocation_reason='rotation_acknowledged' THEN
@@ -432,11 +432,11 @@ BEGIN
   at_time := clock_timestamp();
   -- BEFORE successor confirmation clears the original-owner partial uniqueness.
   UPDATE guest_credentials SET state='revoked',revoked_at=at_time,revocation_reason='rotation_acknowledged'
-    WHERE credential_id=predecessor_id;
+    WHERE credential_id=expected_predecessor_credential_id;
   UPDATE guest_credentials SET state='confirmed',confirmed_at=at_time,session_until=at_time+INTERVAL '1 hour'
     WHERE credential_id=successor_id;
   RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor_id),
-    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',predecessor_id)));
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',expected_predecessor_credential_id)));
 END $$;
 
 DO $bind_guest_authority_transitions$
