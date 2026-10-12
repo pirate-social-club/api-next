@@ -40,7 +40,10 @@ const requestHash = "a".repeat(64);
 type Proof = Readonly<{ id: string; digest: string }>;
 function proof(): Proof {
   return {
-    id: randomBytes(16).toString("base64url"),
+    id: btoa(String.fromCharCode(...randomBytes(16)))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replaceAll("=", ""),
     digest: createHash("sha256").update(randomBytes(32)).digest("hex"),
   };
 }
@@ -80,7 +83,9 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `guest_transition_${suffix}`;
   const role = `guest_login_${suffix}`;
-  const password = randomBytes(32).toString("hex");
+  const password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
   const admin = new Client({
     connectionString: url,
     connectionTimeoutMillis: 3000,
