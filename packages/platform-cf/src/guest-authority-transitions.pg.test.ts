@@ -395,6 +395,11 @@ suite("guest controlled browser authority transitions", () => {
         (await f.admin.query("SELECT count(*)::int AS n FROM guest_empty_owner_aliases")).rows,
       ).toEqual([{ n: 0 }]);
       await f.admin.query("DROP TABLE unreviewed_financial_history");
+      await f.admin.query("CREATE TABLE megapot_owner_allocations(fixture_id TEXT)");
+      await expect(confirm(f, second, owner(2), [first, second])).rejects.toMatchObject({
+        code: "GP003",
+      });
+      await f.admin.query("DROP TABLE megapot_owner_allocations");
       expect(
         (await confirm(f, second, owner(2), [first, second])).authority?.selected?.owner_id,
       ).toBe(owner(1));

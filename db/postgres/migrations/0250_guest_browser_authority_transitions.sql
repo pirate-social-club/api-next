@@ -41,14 +41,19 @@ END $protect_guest_schema_phase$;
 
 CREATE FUNCTION require_guest_practice_only_schema_phase_v1()
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE trusted_namespace OID; trusted_owner OID;
 BEGIN
-  IF (SELECT count(*) FROM guest_learning_schema_phase
+  SELECT relnamespace,relowner INTO STRICT trusted_namespace,trusted_owner
+    FROM pg_class WHERE oid='participation_owners'::regclass;
+  IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='guest_learning_schema_phase'::regclass
+      AND relnamespace=trusted_namespace AND relowner=trusted_owner)
+    OR (SELECT count(*) FROM guest_learning_schema_phase
       WHERE singleton AND phase='practice_only_owner_history_v1')<>1
     OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
+      WHERE c.relnamespace=trusted_namespace AND c.relkind IN ('r','p','f','v','m')
         AND a.attnum>0 AND NOT a.attisdropped
-        AND a.attname IN ('owner_id','source_owner_id','participation_owner_id','guest_owner_id')
+        AND a.attname ~ '(^|_)owner($|_)'
         AND c.relname NOT IN (
           'participation_owners','guest_credentials','guest_empty_owner_aliases',
           'participation_owner_clocks','guest_learning_preferences',
@@ -58,12 +63,16 @@ BEGIN
     OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE fk.contype='f' AND fk.confrelid='participation_owners'::regclass
-        AND n.nspname=current_schema() AND c.relname NOT IN (
+        AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
           'guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
           'guest_learning_preferences','guest_participation_operations',
           'guest_secret_issuance_operations','guest_attachment_intents',
           'study_sessions_v2','study_review_items','study_session_items_v2',
           'study_spoken_answer_commands','learner_audio_artifacts'))
+    OR EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=trusted_namespace
+      AND relname IN ('guest_owner_associations','participation_eligibility_decisions',
+        'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
+        'reward_credit_persona_bindings','reward_credit_recipient_selections'))
   THEN RAISE EXCEPTION 'owner history closure unavailable' USING ERRCODE='GP003'; END IF;
 END $$;
 
