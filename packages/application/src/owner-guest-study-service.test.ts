@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import type { GuestResourceAdmissionPolicy } from "./guest-learning-resource-admission.ts";
 import type { ParticipationOperationIdentity } from "./guest-participation-authority.ts";
-import type { OwnerAwareStudyV2Store, OwnerStudyAnswer } from "./guest-study-ports.ts";
+import type { OwnerAwareStudyV2Store } from "./guest-study-ports.ts";
 import { LearnerAudioStorageOutcomeUnknown } from "./learner-audio-io-outcome.ts";
 import {
   makeOwnerGuestStudyService,
@@ -386,7 +386,7 @@ test("valid text above retained grade cardinality refuses truncation and keeps c
     invocation: {
       state: "completed",
       result: {
-        transcript: Array.from({ length: 257 }, (_, n) => `word${n}`).join(" "),
+        transcript: `${transcript.transcript} ${Array.from({ length: 257 }, (_, n) => `word${String.fromCharCode(97 + (n % 26))}${String.fromCharCode(97 + Math.floor(n / 26))}`).join(" ")}`,
         detectedLanguage: "en",
         detectedLanguageConfidence: 0.99,
       },
