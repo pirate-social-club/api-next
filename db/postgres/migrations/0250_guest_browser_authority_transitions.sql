@@ -493,3 +493,301 @@ $bind_guest_authority_transitions$;
 -- No serving-role grants or activation. Trusted runtime grants only the five
 -- transitions after role and complete module acceptance. The caller owns COMMIT;
 -- statement return alone cannot authorize an issue cookie or prove known abort.
+
+-- CALLER takes shared/exclusive topology and C-sorted complete components first.
+-- Usable for ONE source, unlike convergence's <=1-root early return.
+CREATE FUNCTION guest_authority_component_is_empty_v1(original_source_id TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE root_id TEXT; member_ids TEXT[];
+BEGIN
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  root_id := resolve_guest_empty_owner_root_v1(original_source_id);
+  WITH RECURSIVE component(owner_id) AS (
+    SELECT root_id UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+      JOIN component c ON a.canonical_owner_id=c.owner_id
+  ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO member_ids FROM component;
+  RETURN EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=root_id AND kind='guest' AND state='empty')
+    AND NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(member_ids) AND state='established')
+    AND NOT EXISTS(SELECT 1 FROM study_sessions_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_review_items WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_session_items_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_spoken_answer_commands WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM learner_audio_artifacts WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM guest_participation_operations WHERE source_owner_id=ANY(member_ids)
+      AND operation_kind IN ('study_start','study_answer','learning_retention','learner_audio_deletion')
+      AND state<>'known_aborted')
+    AND NOT EXISTS(SELECT 1 FROM guest_attachment_intents WHERE owner_id=ANY(member_ids)
+      AND state IN ('awaiting_account','awaiting_confirmation') AND expires_at>clock_timestamp());
+END $$;
+-- Positive phase witness, exact canonical-owner inventory, all8 core FKs and
+-- seven financial families remain those of actual0250; do not copy weaker scans.
+-- Accounting replaces this helper/phase closure atomically before its writers.
+-- Positive held allocations are never made empty by proof loss/signup/cleanup.
+
+CREATE FUNCTION lock_guest_cleanup_components_v1(
+  expected_origin TEXT,proved_credential_ids TEXT[],proved_intent_ids TEXT[]
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE roots TEXT[]; member_ids TEXT[];
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%' OR octet_length(expected_origin)>2048
+    OR proved_credential_ids IS NULL OR proved_intent_ids IS NULL
+    OR cardinality(proved_credential_ids)>16 OR cardinality(proved_intent_ids)>16
+    OR EXISTS(SELECT 1 FROM unnest(proved_credential_ids) id WHERE id IS NULL OR id !~ '^[A-Za-z0-9_-]{21}[AQgw]$')
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$')
+    OR cardinality(proved_credential_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_credential_ids) id)
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+  THEN RAISE EXCEPTION 'invalid trusted cleanup context' USING ERRCODE='22023'; END IF;
+  -- No shared->exclusive upgrade. Own EXCLUSIVE topology before any rows;
+  -- cleanup changes revocation/ceremony state but creates no owner or alias.
+  PERFORM pg_advisory_xact_lock(83000003,1);
+  IF cardinality(proved_credential_ids)<>(SELECT count(*) FROM guest_credentials
+      WHERE origin=expected_origin AND credential_id=ANY(proved_credential_ids))
+    OR cardinality(proved_intent_ids)<>(SELECT count(*) FROM guest_attachment_intents
+      WHERE origin=expected_origin AND intent_id=ANY(proved_intent_ids)) THEN
+    RAISE EXCEPTION 'trusted proof context changed' USING ERRCODE='GP001'; END IF;
+  SELECT array_agg(DISTINCT root_id) INTO roots FROM (
+    SELECT resolve_guest_empty_owner_root_v1(c.owner_id) root_id FROM guest_credentials c
+      WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_credential_ids)
+    UNION SELECT resolve_guest_empty_owner_root_v1(i.owner_id) FROM guest_attachment_intents i
+      WHERE i.origin=expected_origin AND i.intent_id=ANY(proved_intent_ids)
+  ) r;
+  WITH RECURSIVE component(owner_id) AS (
+    SELECT unnest(COALESCE(roots,'{}'::TEXT[])) UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+      JOIN component c ON a.canonical_owner_id=c.owner_id
+  ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO member_ids FROM component;
+  PERFORM 1 FROM participation_owners WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY owner_id COLLATE "C" FOR UPDATE;
+  PERFORM 1 FROM guest_credentials WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY credential_id COLLATE "C" FOR UPDATE;
+  PERFORM 1 FROM guest_attachment_intents WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY intent_id COLLATE "C" FOR UPDATE;
+END $$;
+
+CREATE FUNCTION discover_guest_authority_v1(
+  expected_origin TEXT,proved_ids TEXT[],context_selected_id TEXT,
+  expected_owner_id TEXT,previous_credential_id TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE selected guest_credentials%ROWTYPE; previous guest_credentials%ROWTYPE;
+  candidate guest_credentials%ROWTYPE; candidates INTEGER; selected_root TEXT;
+  metadata JSONB; result JSONB; repair JSONB := NULL; roots_count INTEGER;
+BEGIN
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF context_selected_id IS NOT NULL THEN
+    IF NOT context_selected_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+    SELECT * INTO STRICT selected FROM guest_credentials WHERE origin=expected_origin AND credential_id=context_selected_id;
+    selected_root := resolve_guest_empty_owner_root_v1(selected.owner_id);
+    -- Explicit mismatch does not silently select another proved owner.
+    IF expected_owner_id IS NOT NULL AND expected_owner_id<>selected_root THEN
+      IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=expected_owner_id AND kind='guest') THEN
+        RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+      -- A genuine EMPTY alias can repair a pointer that still names its source.
+      IF resolve_guest_empty_owner_root_v1(expected_owner_id)<>selected_root
+        OR NOT guest_authority_component_is_empty_v1(selected.owner_id) THEN
+        RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+    END IF;
+  END IF;
+  result := guest_authority_metadata_v1(expected_origin,proved_ids,context_selected_id);
+  -- The store honors context.selected, including an adapter-approved singleton.
+  -- It NEVER constructs selection from an ambiguous same-/multi-owner list.
+  IF context_selected_id IS NULL THEN
+    SELECT count(DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id)) INTO roots_count
+      FROM guest_credentials c WHERE origin=expected_origin AND credential_id=ANY(proved_ids)
+        AND (state='confirmed' OR (state IN ('pending_bootstrap','pending_successor') AND pending_expires_at>clock_timestamp()));
+    result := jsonb_set(result,'{state}',to_jsonb(CASE
+      WHEN expected_owner_id IS NOT NULL OR previous_credential_id IS NOT NULL THEN 'recovery_required'
+      WHEN roots_count>0 THEN 'authority_conflict' ELSE 'absent' END::TEXT));
+  ELSIF selected.state='revoked' OR
+    (selected.state IN ('pending_bootstrap','pending_successor') AND selected.pending_expires_at<=clock_timestamp()) THEN
+    result := jsonb_set(result,'{state}','"recovery_required"');
+  END IF;
+  IF previous_credential_id IS NOT NULL AND expected_owner_id IS NOT NULL THEN
+    SELECT * INTO previous FROM guest_credentials WHERE origin=expected_origin AND credential_id=previous_credential_id;
+    IF FOUND AND (previous.owner_id=expected_owner_id OR
+      resolve_guest_empty_owner_root_v1(previous.owner_id)=expected_owner_id) THEN
+      SELECT count(*) INTO candidates FROM guest_credentials c
+        WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids) AND c.state='confirmed'
+          AND c.credential_id<>previous_credential_id
+          AND (c.predecessor_id=previous_credential_id OR
+            (c.owner_id<>previous.owner_id AND resolve_guest_empty_owner_root_v1(c.owner_id)=resolve_guest_empty_owner_root_v1(previous.owner_id)))
+          AND (context_selected_id IS NULL OR context_selected_id=c.credential_id
+            OR context_selected_id=previous_credential_id);
+      IF candidates=1 THEN
+        SELECT * INTO STRICT candidate FROM guest_credentials c
+          WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids) AND c.state='confirmed'
+            AND c.credential_id<>previous_credential_id
+            AND (c.predecessor_id=previous_credential_id OR
+              (c.owner_id<>previous.owner_id AND resolve_guest_empty_owner_root_v1(c.owner_id)=resolve_guest_empty_owner_root_v1(previous.owner_id)))
+            AND (context_selected_id IS NULL OR context_selected_id=c.credential_id
+            OR context_selected_id=previous_credential_id);
+        IF (candidate.predecessor_id=previous_credential_id AND previous.state='revoked'
+              AND previous.revocation_reason='rotation_acknowledged' AND candidate.owner_id=previous.owner_id)
+          OR (candidate.owner_id<>previous.owner_id
+              AND guest_authority_component_is_empty_v1(candidate.owner_id)) THEN
+          repair := jsonb_build_object('previous_credential_id',previous_credential_id,
+            'credential_id',candidate.credential_id,'owner_id',resolve_guest_empty_owner_root_v1(candidate.owner_id));
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+  -- Repair is authenticated metadata, not selection mutation or a cookie effect.
+  RETURN jsonb_set(result,'{pointer_repair}',COALESCE(repair,'null'::JSONB));
+END $$;
+
+CREATE FUNCTION cleanup_guest_authority_v1(
+  expected_origin TEXT,proved_credential_ids TEXT[],proved_intent_ids TEXT[],
+  context_selected_id TEXT,candidate_credential_ids TEXT[],candidate_intent_ids TEXT[]
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
+  effects JSONB := '[]'; authority JSONB; at_time TIMESTAMPTZ;
+BEGIN
+  PERFORM lock_guest_cleanup_components_v1(expected_origin,proved_credential_ids,proved_intent_ids);
+  IF candidate_credential_ids IS NULL OR candidate_intent_ids IS NULL
+    OR cardinality(candidate_credential_ids)>16 OR cardinality(candidate_intent_ids)>16
+    OR cardinality(candidate_credential_ids)<>(SELECT count(DISTINCT id) FROM unnest(candidate_credential_ids) id)
+    OR cardinality(candidate_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(candidate_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(candidate_credential_ids) id WHERE id IS NULL OR NOT id=ANY(proved_credential_ids))
+    OR EXISTS(SELECT 1 FROM unnest(candidate_intent_ids) id WHERE id IS NULL OR NOT id=ANY(proved_intent_ids))
+    OR (context_selected_id IS NOT NULL AND NOT context_selected_id=ANY(proved_credential_ids))
+  THEN RAISE EXCEPTION 'cleanup requires each exact proof' USING ERRCODE='GP001'; END IF;
+  IF context_selected_id=ANY(candidate_credential_ids) THEN
+    RAISE EXCEPTION 'selected authority is retained' USING ERRCODE='GP003'; END IF;
+  IF EXISTS(SELECT 1 FROM guest_credentials WHERE credential_id=context_selected_id
+      AND state='pending_successor' AND predecessor_id=ANY(candidate_credential_ids)) THEN
+    RAISE EXCEPTION 'selected pending authority retains its predecessor' USING ERRCODE='GP003'; END IF;
+  -- Preflight ALL candidates before any mutation; one live/retained candidate
+  -- refuses the entire request. Unknown COMMIT still needs exact-state replay.
+  FOR credential IN SELECT * FROM guest_credentials WHERE origin=expected_origin
+      AND credential_id=ANY(candidate_credential_ids) ORDER BY credential_id COLLATE "C" LOOP
+    IF credential.state<>'revoked' AND NOT guest_authority_component_is_empty_v1(credential.owner_id) THEN
+      RAISE EXCEPTION 'credential history is retained' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  FOR intent IN SELECT * FROM guest_attachment_intents WHERE origin=expected_origin
+      AND intent_id=ANY(candidate_intent_ids) ORDER BY intent_id COLLATE "C" LOOP
+    IF intent.state IN ('awaiting_account','awaiting_confirmation') AND intent.expires_at>clock_timestamp() THEN
+      RAISE EXCEPTION 'live ceremony is retained' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  at_time := clock_timestamp();
+  FOR credential IN SELECT * FROM guest_credentials WHERE origin=expected_origin
+      AND credential_id=ANY(candidate_credential_ids) ORDER BY credential_id COLLATE "C" LOOP
+    IF credential.state<>'revoked' THEN
+      UPDATE guest_credentials SET state='revoked',revoked_at=at_time,revocation_reason='empty_cleanup'
+        WHERE credential_id=credential.credential_id;
+    END IF;
+    -- Already revoked proof cookie expiry does not erase its retained owner.
+    effects := effects||jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',credential.credential_id));
+  END LOOP;
+  FOR intent IN SELECT * FROM guest_attachment_intents WHERE origin=expected_origin
+      AND intent_id=ANY(candidate_intent_ids) ORDER BY intent_id COLLATE "C" LOOP
+    IF intent.state IN ('awaiting_account','awaiting_confirmation') THEN
+      UPDATE guest_attachment_intents SET state='expired' WHERE intent_id=intent.intent_id;
+    END IF;
+    effects := effects||jsonb_build_array(jsonb_build_object('kind','intent','action','expire','intentId',intent.intent_id));
+  END LOOP;
+  -- Cleanup can project <=16; it NEVER auto-selects even a singleton without
+  -- approved context.selected. Existing normal metadata helper already honors
+  -- that argument but its declared frozen mapper must use GuestCleanupAuthorityV1.
+  authority := guest_authority_metadata_v1(expected_origin,proved_credential_ids,context_selected_id);
+  IF context_selected_id IS NULL AND cardinality(proved_credential_ids)>0 THEN
+    authority := jsonb_set(authority,'{state}','"authority_conflict"');
+  ELSIF EXISTS(SELECT 1 FROM guest_credentials WHERE credential_id=context_selected_id
+      AND state IN ('pending_bootstrap','pending_successor') AND pending_expires_at<=clock_timestamp()) THEN
+    authority := jsonb_set(authority,'{state}','"recovery_required"');
+  END IF;
+  RETURN jsonb_build_object('authority',authority,'cookieEffects',effects);
+END $$;
+
+-- Actual reusable extraction: convergence and empty cleanup share one closure.
+CREATE OR REPLACE FUNCTION converge_proved_empty_guest_sources_v1(expected_origin TEXT,proved_ids TEXT[])
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE roots TEXT[]; canonical TEXT; source_id TEXT;
+BEGIN
+  SELECT array_agg(DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id)) INTO roots
+    FROM guest_credentials c WHERE c.credential_id=ANY(proved_ids) AND c.origin=expected_origin
+      AND (c.state='confirmed' OR
+        (c.state IN ('pending_bootstrap','pending_successor') AND c.pending_expires_at>clock_timestamp()));
+  IF COALESCE(cardinality(roots),0)<=1 THEN RETURN; END IF;
+  FOR source_id IN SELECT unnest(roots) LOOP
+    IF NOT guest_authority_component_is_empty_v1(source_id) THEN
+      RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  SELECT owner_id INTO STRICT canonical FROM participation_owners WHERE owner_id=ANY(roots)
+    ORDER BY created_at,owner_id COLLATE "C" LIMIT 1;
+  FOR source_id IN SELECT owner_id FROM participation_owners WHERE owner_id=ANY(roots) AND owner_id<>canonical
+      ORDER BY owner_id COLLATE "C" LOOP
+    INSERT INTO guest_empty_owner_aliases(source_owner_id,canonical_owner_id,origin,created_at)
+      VALUES(source_id,canonical,expected_origin,clock_timestamp());
+    UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=source_id;
+  END LOOP;
+END $$;
+
+-- Full actual0248 credential guard, only pending-only empty_cleanup condition
+-- narrowed and complete-component empty guard added. All other checks retained.
+CREATE OR REPLACE FUNCTION guard_guest_credential_v1() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'credential evidence is retained'; END IF;
+  IF ROW(NEW.credential_id,NEW.owner_id,NEW.origin,NEW.secret_digest,NEW.created_at,
+         NEW.pending_expires_at,NEW.predecessor_id)
+     IS DISTINCT FROM ROW(OLD.credential_id,OLD.owner_id,OLD.origin,OLD.secret_digest,OLD.created_at,
+         OLD.pending_expires_at,OLD.predecessor_id) THEN
+    RAISE EXCEPTION 'credential identity is immutable';
+  END IF;
+  IF OLD.state='revoked' THEN
+    IF (to_jsonb(NEW)-'owner_kind') IS DISTINCT FROM (to_jsonb(OLD)-'owner_kind') THEN
+      RAISE EXCEPTION 'credential revocation is final'; END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.state=OLD.state THEN
+    IF ROW(NEW.confirmed_at,NEW.revoked_at,NEW.revocation_reason)
+       IS DISTINCT FROM ROW(OLD.confirmed_at,OLD.revoked_at,OLD.revocation_reason)
+       OR (OLD.state<>'confirmed' AND NEW.session_until IS DISTINCT FROM OLD.session_until) THEN
+      RAISE EXCEPTION 'invalid credential transition';
+    END IF;
+    IF NEW.session_until IS DISTINCT FROM OLD.session_until AND
+       (NEW.session_until<=OLD.session_until OR NEW.session_until>clock_timestamp()+INTERVAL '1 hour') THEN
+      RAISE EXCEPTION 'invalid deliberate learning renewal';
+    END IF;
+  ELSIF NEW.state='confirmed' AND OLD.state IN ('pending_bootstrap','pending_successor') THEN
+    IF clock_timestamp()>=OLD.pending_expires_at OR NEW.confirmed_at IS NULL
+       OR NEW.confirmed_at<OLD.created_at OR NEW.confirmed_at>clock_timestamp()
+       OR NEW.session_until IS DISTINCT FROM NEW.confirmed_at+INTERVAL '1 hour' THEN
+      RAISE EXCEPTION 'invalid pending confirmation';
+    END IF;
+  ELSIF NEW.state='revoked' THEN
+    IF (NEW.revocation_reason IN ('successor_superseded','pending_expired')
+        AND OLD.state NOT IN ('pending_bootstrap','pending_successor'))
+       OR (NEW.revocation_reason='successor_superseded' AND OLD.state<>'pending_successor')
+       OR (NEW.revocation_reason='rotation_acknowledged' AND OLD.state<>'confirmed') THEN
+      RAISE EXCEPTION 'revocation reason must match the credential protocol';
+    END IF;
+    IF NEW.revocation_reason='empty_cleanup' AND NOT guest_authority_component_is_empty_v1(OLD.owner_id) THEN
+      RAISE EXCEPTION 'credential history is retained' USING ERRCODE='GP003'; END IF;
+    IF ROW(NEW.confirmed_at,NEW.session_until) IS DISTINCT FROM ROW(OLD.confirmed_at,OLD.session_until)
+       OR NEW.revoked_at<OLD.created_at OR NEW.revoked_at>clock_timestamp() THEN
+      RAISE EXCEPTION 'invalid credential revocation';
+    END IF;
+  ELSE RAISE EXCEPTION 'invalid credential transition'; END IF;
+  RETURN NEW;
+END $$;
+
+DO $bind_guest_discovery_cleanup$
+DECLARE signature TEXT; grantee_name TEXT; trusted_schema TEXT:=current_schema();
+BEGIN
+  IF trusted_schema IS NULL OR trusted_schema='pg_catalog' OR trusted_schema ~ '^pg_temp' THEN
+    RAISE EXCEPTION 'trusted migration schema required'; END IF;
+  FOREACH signature IN ARRAY ARRAY[
+    'guest_authority_component_is_empty_v1(text)',
+    'converge_proved_empty_guest_sources_v1(text,text[])',
+    'guard_guest_credential_v1()',
+    'lock_guest_cleanup_components_v1(text,text[],text[])',
+    'discover_guest_authority_v1(text,text[],text,text,text)',
+    'cleanup_guest_authority_v1(text,text[],text[],text,text[],text[])'
+  ] LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
+    FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)
+      FROM pg_proc f CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+      WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner
+    LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name); END LOOP;
+  END LOOP;
+END $bind_guest_discovery_cleanup$;
+-- No serving-role grant, HTTP wire/port variant or activation in this proposal.
