@@ -279,3 +279,31 @@ test("bad operation/source, unit, policy or disposition input cannot execute a s
   );
   expect(f.calls).toEqual([]);
 });
+
+// Outside successor: test the real mapper boundary, not just its schema constant.
+test("40 paid units preserve exact full hold; 41 never reaches SQL", async () => {
+  const reply = sessionReply();
+  reply.result.remainingUnits = 40;
+  const cost = (40n * BigInt(policy.maximumProviderCallCostMicros)).toString();
+  const f = fixture(reply);
+  const result = await Effect.runPromise(
+    f.store.reserveSession({ ...start, worstCasePaidAttemptUnits: 40, worstCaseCostMicros: cost }),
+  );
+  expect(result.state).toBe("completed");
+  const sqlCalls = f.calls.filter((statement) => statement.label === "guest-resource.session");
+  expect(sqlCalls).toHaveLength(1);
+  expect(sqlCalls[0]?.text).toContain("reserve_guest_resource_session_v1");
+  expect(sqlCalls[0]?.values[3]).toBe(40);
+  expect(sqlCalls[0]?.values[4]).toBe(cost);
+  const unsafe = fixture(reply);
+  await Effect.runPromise(
+    Effect.flip(
+      unsafe.store.reserveSession({
+        ...start,
+        worstCasePaidAttemptUnits: 41,
+        worstCaseCostMicros: cost,
+      }),
+    ),
+  );
+  expect(unsafe.calls).toHaveLength(0);
+});

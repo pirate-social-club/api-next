@@ -100,7 +100,7 @@ const candidate = {
   sessionId: originalSessionId,
   targetLanguage: null,
   learnerBand: null,
-  paidAttemptUnits: 12,
+  paidAttemptUnits: 24,
   catalogue: [
     {
       exercise_type: "say_it_back",

@@ -381,7 +381,7 @@ export async function confirmGuest(
 export async function seedGuest(f: Fixture, serial: number) {
   return await confirmGuest(f, await pendingGuest(f, serial));
 }
-export async function reserve(f: Fixture, access: GuestLearningAccess, key: string, units = 20) {
+export async function reserve(f: Fixture, access: GuestLearningAccess, key: string, units = 24) {
   const operation: ParticipationOperationIdentity = {
     sourceOwnerId: access.ownerId,
     kind: "study_start",
