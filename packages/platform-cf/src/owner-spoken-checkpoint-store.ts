@@ -1,22 +1,22 @@
 // Platform private adapter proposal; no endpoint or runtime grant.
 import {
   ControlPlaneDb,
-  ControlPlaneStatementFailed,
-  GuestParticipationStoreRejected,
   type ControlPlaneError,
+  ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
+  GuestParticipationStoreRejected,
+  gradeStudySpokenTranscript,
   type OwnerSpokenPreArchiveCheckpointStore,
   type OwnerSpokenPreArchiveSuccess,
-  gradeStudySpokenTranscript,
+  projectStudySpokenFeedback,
 } from "@pirate/application";
 import {
   GuestIdentifierV1,
   GuestSha256V1,
+  StudyFeedbackV2,
   StudySessionItemV2,
   StudySpokenLanguageProvenanceV2,
-  StudyFeedbackV2,
 } from "@pirate/contracts";
-import { projectStudySpokenFeedback } from "@pirate/application";
 import { Effect, type Layer, Schema } from "effect";
 
 const Id = GuestIdentifierV1;
@@ -222,6 +222,28 @@ const toSuccess = (saved: typeof Loaded.Type): OwnerSpokenPreArchiveSuccess => (
   resourceReservationId: saved.resourceReservationId,
   deletionFenceRevision: saved.deletionFenceRevision,
 });
+
+/** INTERNAL strict recovery decoder. No grading/provider invocation or public projection. */
+export const decodeOwnerSpokenSavedCheckpoint = (
+  value: unknown,
+): Readonly<{
+  checkpointId: string;
+  success: OwnerSpokenPreArchiveSuccess;
+}> | null => {
+  const saved = decode(Schema.NullOr(Loaded), value);
+  if (saved === null) return null;
+  check(
+    saved.source.ownerId === saved.operation.sourceOwnerId &&
+      saved.commandId === saved.result.commandId &&
+      saved.operation.requestHash === saved.result.requestHash &&
+      Number.isFinite(Date.parse(saved.result.acceptedAt)) &&
+      saved.providerResult.transcript === saved.result.grade.heardTranscript &&
+      saved.providerResult.detectedLanguage === saved.result.providerDetectedLanguage &&
+      saved.providerResult.detectedLanguageConfidence ===
+        saved.result.providerDetectedLanguageConfidence,
+  );
+  return { checkpointId: saved.checkpointId, success: toSuccess(saved) };
+};
 
 export function makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
