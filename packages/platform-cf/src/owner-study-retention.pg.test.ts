@@ -26,7 +26,7 @@ pgTest(
       await f.admin.query(
         `INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,
       resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
-      VALUES('fixture-retention-ephemeral',$1,'learning_retention',jsonb_build_array('guest_learning_retention_v1',$1)::text,
+      VALUES('fixture-retention-ephemeral',$1,'learning_retention',jsonb_build_array('guest_learning_retention_v1',$1::text)::text,
         'fixture-retention-ephemeral',$2,'completed','{"object":"guest_learning_retention_v1","mode":"ephemeral"}',clock_timestamp(),clock_timestamp())`,
         [proof.ownerId, hash("fixture-preexisting-ephemeral-preference")],
       );
