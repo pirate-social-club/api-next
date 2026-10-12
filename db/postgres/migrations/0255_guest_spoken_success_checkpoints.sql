@@ -554,12 +554,12 @@ BEGIN
  -- A truthful earlier stored observation stays acknowledged after later delete;
  -- immutable upload history proves that I/O fact. Publication eligibility is
  -- rederived separately by the finalizer, which cannot resurrect that object.
- IF p_result->'archive' IS DISTINCT FROM CASE
+ IF p_result->'archive' IS DISTINCT FROM (CASE
    WHEN p_result#>>'{archive,state}'='stored' AND upload.storage_disposition='stored'
     THEN jsonb_build_object('state','stored','objectRef',upload.object_ref)
    WHEN p_result#>>'{archive,state}'='failed' AND (upload.storage_disposition IN('failed','absent') OR NOT published)
     THEN jsonb_build_object('state','failed','objectRef',NULL)
-   ELSE NULL::JSONB END THEN
+   ELSE NULL::JSONB END) THEN
   RAISE EXCEPTION 'truthful retained archive observation required' USING ERRCODE='GP005'; END IF;
  RETURN jsonb_build_object('state','completed','outcome_id',saved->>'checkpointId',
   'result',jsonb_build_object('checkpointId',saved->>'checkpointId'));

@@ -248,7 +248,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       "utf8",
     );
     const checksum255 = hash(sql255);
-    expect(checksum255).toBe("bbc4ad73b6079d1ca5c0bac637fd833c4cc87218171eafc9a5be002849d9487b");
+    expect(checksum255).toBe("fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b");
     const full255 = [
       ...packet.through254,
       { version: version255, sql: sql255, checksum: checksum255 },
@@ -301,6 +301,45 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       ).rows,
     ).toEqual(originalGuard);
     await admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
+    // Inspect actual native migration ACLs BEFORE fixture-wide revocation;
+    // the admission setup must not mask inherited/PUBLIC privilege defects.
+    expect(
+      (
+        await admin.query(
+          `SELECT c.relname,a.grantee,a.privilege_type
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+      WHERE c.oid=ANY($1::regclass[]) AND a.grantee<>c.relowner`,
+          [["guest_study_spoken_captures", "guest_study_spoken_checkpoints"]],
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await admin.query(
+          `SELECT p.proname,a.grantee,a.privilege_type
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+      WHERE p.oid=ANY($1::regprocedure[]) AND a.grantee<>p.proowner`,
+          [
+            [
+              "guest_study_answer_resource_scope_v1(text,text,text,integer,text)",
+              "capture_guest_spoken_dispatch_private_v1(text,jsonb,text,text,text,text,text,bigint,boolean)",
+              "persist_guest_spoken_success_private_v1(text,jsonb,text,text,jsonb,jsonb)",
+              "load_guest_spoken_success_private_v1(text,jsonb,text,text)",
+              "read_guest_spoken_capture_private_v1(text,jsonb,text,text)",
+              "require_guest_resource_success_checkpoint_v1(text,text,text,text,numeric)",
+              "guest_spoken_component_has_history_private_v1(text[])",
+              "require_guest_practice_only_schema_phase_v1()",
+              "guest_authority_component_is_empty_v1(text)",
+              "require_owner_guest_source_private_v1(jsonb)",
+              "persist_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb)",
+              "read_owner_guest_spoken_success_v1(jsonb,jsonb,text,text)",
+              "read_owner_guest_spoken_capture_v1(jsonb,jsonb,text,text)",
+              "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
+            ],
+          ],
+        )
+      ).rows,
+    ).toEqual([]);
     await admin.query(
       `CREATE ROLE ${q(role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${password}'`,
     );
