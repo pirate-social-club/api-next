@@ -129,6 +129,7 @@
     "./guest-proof-verifier": "./src/guest-proof-verifier.ts",
     "./learner-audio-capture": "./src/learner-audio-capture.ts",
     "./learner-audio-io-outcome": "./src/learner-audio-io-outcome.ts",
-    "./owner-guest-atomic-start": "./src/owner-guest-atomic-start.ts"
+    "./owner-guest-atomic-start": "./src/owner-guest-atomic-start.ts",
+    "./owner-spoken-captured-continuation": "./src/owner-spoken-captured-continuation.ts"
   }
 }

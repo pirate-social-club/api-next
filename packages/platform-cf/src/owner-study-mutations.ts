@@ -3,21 +3,22 @@
 // dispatch with the retained adapter/shared continuation, without source rewrite.
 import {
   ControlPlaneDb,
+  type ControlPlaneError,
   ControlPlaneStatementFailed,
-  GuestParticipationStoreRejected,
+  type ControlPlaneTransaction,
   continueStudyLessonMutation,
+  type DurableParticipationOutcome,
   evaluateStudyChoice,
   evaluateStudySpokenAttempt,
-  projectStudySpokenFeedback,
-  projectStudySpokenResultMetadata,
-  type ControlPlaneError,
-  type ControlPlaneTransaction,
-  type DurableParticipationOutcome,
   type GuestParticipationStoreFailure,
+  GuestParticipationStoreRejected,
   type OwnerAwareStudyV2Store,
   type OwnerStudyAnswer,
   type ParticipationOperationIdentity,
+  projectStudySpokenFeedback,
+  projectStudySpokenResultMetadata,
 } from "@pirate/application";
+import type { OwnerSpokenCapturedContinuationStore } from "@pirate/application/owner-spoken-captured-continuation";
 import {
   GuestIdentifierV1,
   GuestSha256V1,
@@ -359,6 +360,28 @@ const serializedSchedule = <A extends Readonly<{ review: Readonly<{ dueAt: numbe
         },
 });
 
+const makeOwnerStudyMutationRunner = (
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+) => {
+  const run = Effect.fn("OwnerStudyMutations.run")(function* <A>(
+    work: (tx: ControlPlaneTransaction) => Effect.Effect<A, GuestParticipationStoreFailure>,
+  ) {
+    return yield* Effect.gen(function* () {
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* limits(tx);
+          return yield* work(tx);
+        }),
+      );
+    }).pipe(
+      Effect.catchTag("ControlPlaneStatementFailed", (error) => Effect.fail(sqlRejection(error))),
+      Effect.provide(runtime),
+    );
+  });
+  return run;
+};
+
 export const makeControlPlaneOwnerStudyMutations = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   config: Readonly<{
@@ -376,22 +399,8 @@ export const makeControlPlaneOwnerStudyMutations = (
   decode(Id, config.disclosureVersion);
   decode(Schema.Boolean, config.rerecordEnabled);
   decode(Schema.Literals(["stored", "not_stored"]), config.providerRetention);
-  const run = Effect.fn("OwnerStudyMutations.run")(function* <A>(
-    work: (tx: ControlPlaneTransaction) => Effect.Effect<A, GuestParticipationStoreFailure>,
-  ) {
-    return yield* Effect.gen(function* () {
-      const db = yield* ControlPlaneDb;
-      return yield* db.withTransaction((tx) =>
-        Effect.gen(function* () {
-          yield* limits(tx);
-          return yield* work(tx);
-        }),
-      );
-    }).pipe(
-      Effect.catchTag("ControlPlaneStatementFailed", (error) => Effect.fail(sqlRejection(error))),
-      Effect.provide(runtime),
-    );
-  });
+  const run = makeOwnerStudyMutationRunner(runtime);
+  const captured = makeControlPlaneOwnerSpokenCapturedContinuationStore(runtime);
   return {
     submitAnswer: (input) =>
       run((tx) =>
@@ -669,6 +678,30 @@ export const makeControlPlaneOwnerStudyMutations = (
         }),
       ),
     persistSuccessfulSpokenResult: (input) =>
+      captured.acknowledgeCapturedSpokenResult({
+        checkpoint: input.checkpoint,
+      }),
+    completeSpokenAnswer: (input) =>
+      captured.completeCapturedSpokenAnswer({
+        source: input.source,
+        operation: input.operation,
+        checkpointId: input.checkpointId,
+      }),
+  };
+};
+
+/** Accepted captured continuation has no current policy, disclosure, provider or
+ * browser-access dependency. Actual source/operation/capture/lease/CP/fence
+ * validation and bounded native transactions remain in the unchanged bodies.
+ */
+export const makeControlPlaneOwnerSpokenCapturedContinuationStore = (
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): OwnerSpokenCapturedContinuationStore => {
+  const run = makeOwnerStudyMutationRunner(runtime);
+  return {
+    acknowledgeCapturedSpokenResult: (
+      input: Parameters<OwnerSpokenCapturedContinuationStore["acknowledgeCapturedSpokenResult"]>[0],
+    ) =>
       run((tx) =>
         Effect.gen(function* () {
           const checkpoint = input.checkpoint;
@@ -724,7 +757,9 @@ export const makeControlPlaneOwnerStudyMutations = (
           };
         }),
       ),
-    completeSpokenAnswer: (input) =>
+    completeCapturedSpokenAnswer: (
+      input: Parameters<OwnerSpokenCapturedContinuationStore["completeCapturedSpokenAnswer"]>[0],
+    ) =>
       run((tx) =>
         Effect.gen(function* () {
           yield* Effect.try({
