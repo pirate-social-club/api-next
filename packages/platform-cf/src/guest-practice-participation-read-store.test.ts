@@ -41,7 +41,7 @@ const financialProjection = {
 };
 function fixture(
   options: {
-    rows?: readonly unknown[];
+    rows?: readonly Record<string, unknown>[];
     commitFails?: boolean;
     sqlState?: string;
     badBounds?: boolean;

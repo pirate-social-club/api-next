@@ -386,7 +386,7 @@ export const makeControlPlaneOwnerStudyMutations = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   config: Readonly<{
     rawPolicy: unknown;
-    disclosureVersion: string;
+    disclosureVersion: string | null;
     rerecordEnabled: boolean;
     providerRetention: "stored" | "not_stored";
   }>,
@@ -396,7 +396,7 @@ export const makeControlPlaneOwnerStudyMutations = (
   },
 ): Methods => {
   const policy = readGuestResourceAdmissionPolicy(config.rawPolicy);
-  decode(Id, config.disclosureVersion);
+  decode(Schema.NullOr(Id), config.disclosureVersion);
   decode(Schema.Boolean, config.rerecordEnabled);
   decode(Schema.Literals(["stored", "not_stored"]), config.providerRetention);
   const run = makeOwnerStudyMutationRunner(runtime);

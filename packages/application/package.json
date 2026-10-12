@@ -132,6 +132,7 @@
     "./owner-guest-atomic-start": "./src/owner-guest-atomic-start.ts",
     "./owner-spoken-captured-continuation": "./src/owner-spoken-captured-continuation.ts",
     "./owner-guest-spoken-checkpoint-recovery": "./src/owner-guest-spoken-checkpoint-recovery.ts",
-    "./owner-guest-spoken-closed-recovery": "./src/owner-guest-spoken-closed-recovery.ts"
+    "./owner-guest-spoken-closed-recovery": "./src/owner-guest-spoken-closed-recovery.ts",
+    "./owner-guest-study-service": "./src/owner-guest-study-service.ts"
   }
 }

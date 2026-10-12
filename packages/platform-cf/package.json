@@ -222,7 +222,12 @@
     "./guest-recovery-deletion-store": "./src/guest-recovery-deletion-store.ts",
     "./owner-audio-deletion-io": "./src/owner-audio-deletion-io.ts",
     "./owner-guest-spoken-checkpoint-recovery-store": "./src/owner-guest-spoken-checkpoint-recovery-store.ts",
-    "./guest-practice-participation-read-store": "./src/guest-practice-participation-read-store.ts"
+    "./guest-practice-participation-read-store": "./src/guest-practice-participation-read-store.ts",
+    "./owner-study-store-composition": "./src/owner-study-store-composition.ts",
+    "./owner-account-source-control": "./src/owner-account-source-control.ts",
+    "./owner-guest-spoken-dispatch-context": "./src/owner-guest-spoken-dispatch-context.ts",
+    "./owner-study-invoking-transcriber": "./src/owner-study-invoking-transcriber.ts",
+    "./owner-guest-study-public-visibility": "./src/owner-guest-study-public-visibility.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
