@@ -279,7 +279,7 @@ async function seedIntent(
   const nonce = proof();
   const intent = { id: `gai_${nonce.id}`, digest: nonce.digest };
   await f.admin.query(
-    `WITH instant AS (SELECT clock_timestamp() at)
+    `WITH instant AS (SELECT clock_timestamp() AS at)
     INSERT INTO guest_attachment_intents(intent_id,owner_id,credential_source_owner_id,credential_id,
       origin,nonce_digest,state,created_at,expires_at)
     SELECT $1,$2,$2,$3,$4,$5,'awaiting_account',at,at+INTERVAL '15 minutes' FROM instant`,
@@ -296,7 +296,7 @@ async function seedIntent(
     await f.admin.query("ALTER TABLE guest_attachment_intents DISABLE TRIGGER guest_intent_guard");
     try {
       await f.admin.query(
-        `WITH historical AS (SELECT clock_timestamp()-INTERVAL '20 minutes' at)
+        `WITH historical AS (SELECT clock_timestamp()-INTERVAL '20 minutes' AS at)
         UPDATE guest_attachment_intents SET created_at=at,expires_at=at+INTERVAL '15 minutes'
         FROM historical WHERE intent_id=$1`,
         [intent.id],
