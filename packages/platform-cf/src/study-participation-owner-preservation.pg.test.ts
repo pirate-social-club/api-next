@@ -42,8 +42,11 @@ async function migrationPacket() {
     return { version, sql, checksum: hash(sql) };
   };
   const historical = await Promise.all(historicalNames.map(readMigration));
-  for (const migration of historical)
-    expect(migration.checksum).toBe(manifest.migrations[migration.version]);
+  for (const migration of historical) {
+    const declared = manifest.migrations[migration.version];
+    if (typeof declared !== "string") throw new Error("historical checksum missing");
+    expect(migration.checksum).toBe(declared);
+  }
   const foundation = await readMigration("0248_guest_learning_authority_foundation.sql");
   const preservation = await readMigration("0249_study_participation_owner_preservation.sql");
   for (const migration of [foundation, preservation]) {
