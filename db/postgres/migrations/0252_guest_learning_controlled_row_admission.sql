@@ -46,6 +46,25 @@ RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 ALTER TABLE study_sessions_v2 ADD COLUMN guest_resource_reservation_id TEXT;
+-- Private captured paid-call authority. Account rows remain NULL. Historical
+-- Guest NULL plans are retained without inventing a policy or funded authority;
+-- the controlled INSERT guard below requires a plan for every NEW session.
+ALTER TABLE study_sessions_v2 ADD COLUMN guest_spoken_call_plan JSONB;
+ALTER TABLE study_sessions_v2 ADD CONSTRAINT study_guest_spoken_call_plan_shape_v1 CHECK(
+ (participation_owner_kind='account' AND guest_spoken_call_plan IS NULL)
+ OR (participation_owner_kind='guest' AND (guest_spoken_call_plan IS NULL OR CASE
+  WHEN jsonb_typeof(guest_spoken_call_plan)='object'
+   AND guest_spoken_call_plan ?& ARRAY['policy_revision','graded_presentation_cap','ungraded_rerecord_per_presentation','maximum_paid_calls']
+   AND guest_spoken_call_plan-ARRAY['policy_revision','graded_presentation_cap','ungraded_rerecord_per_presentation','maximum_paid_calls']='{}'::JSONB
+   AND guest_spoken_call_plan->>'policy_revision'='study_spoken_rerecord_v1'
+   AND guest_spoken_call_plan->'ungraded_rerecord_per_presentation'='1'::JSONB
+   AND jsonb_typeof(guest_spoken_call_plan->'graded_presentation_cap')='number'
+   AND (guest_spoken_call_plan->>'graded_presentation_cap') ~ '^(0|[1-9][0-9]?)$'
+   AND jsonb_typeof(guest_spoken_call_plan->'maximum_paid_calls')='number'
+   AND (guest_spoken_call_plan->>'maximum_paid_calls') ~ '^(0|[1-9][0-9]?)$'
+  THEN (guest_spoken_call_plan->>'graded_presentation_cap')::INTEGER BETWEEN 0 AND 20
+   AND (guest_spoken_call_plan->>'maximum_paid_calls')::INTEGER=2*(guest_spoken_call_plan->>'graded_presentation_cap')::INTEGER
+  ELSE FALSE END)));
 ALTER TABLE study_sessions_v2 ADD CONSTRAINT study_guest_resource_source_shape_v1 CHECK(
  (participation_owner_kind='account' AND guest_resource_reservation_id IS NULL)
  OR (participation_owner_kind='guest' AND guest_resource_reservation_id IS NOT NULL));
@@ -153,7 +172,8 @@ BEGIN
  IF NEW.participation_owner_kind IS DISTINCT FROM 'guest' OR NEW.account_id IS NOT NULL
    OR NEW.persona_id IS NOT NULL OR NEW.guest_reward_mode IS DISTINCT FROM 'practice_only'
    OR NEW.guest_reward_terms IS NOT NULL OR NEW.guest_disclosure_accepted IS NOT TRUE
-   OR NEW.telegram_practice_only IS NOT FALSE THEN
+   OR NEW.telegram_practice_only IS NOT FALSE
+   OR (TG_OP='INSERT' AND NEW.guest_spoken_call_plan IS NULL) THEN
    RAISE EXCEPTION 'closed guest practice source required' USING ERRCODE='GP003'; END IF;
  IF TG_OP='UPDATE' THEN
   IF ROW(NEW.community_id,NEW.post_id,NEW.audio_revision,NEW.lyrics_revision,NEW.learning_language,
@@ -161,13 +181,13 @@ BEGIN
       NEW.selection_policy_revision,NEW.qualification_policy_revision,NEW.timezone,
       NEW.language_profile_revision,NEW.created_at,NEW.expires_at,
       NEW.guest_reward_mode,NEW.guest_reward_terms,NEW.guest_start_operation_id,
-      NEW.guest_disclosure_version,NEW.guest_disclosure_accepted,NEW.guest_resource_reservation_id)
+      NEW.guest_disclosure_version,NEW.guest_disclosure_accepted,NEW.guest_resource_reservation_id,NEW.guest_spoken_call_plan)
     IS DISTINCT FROM ROW(OLD.community_id,OLD.post_id,OLD.audio_revision,OLD.lyrics_revision,OLD.learning_language,
       OLD.target_language,OLD.learner_band,OLD.study_profile_revision,OLD.source_set_revision,
       OLD.selection_policy_revision,OLD.qualification_policy_revision,OLD.timezone,
       OLD.language_profile_revision,OLD.created_at,OLD.expires_at,
       OLD.guest_reward_mode,OLD.guest_reward_terms,OLD.guest_start_operation_id,
-      OLD.guest_disclosure_version,OLD.guest_disclosure_accepted,OLD.guest_resource_reservation_id) THEN
+      OLD.guest_disclosure_version,OLD.guest_disclosure_accepted,OLD.guest_resource_reservation_id,OLD.guest_spoken_call_plan) THEN
     RAISE EXCEPTION 'captured guest session admission is immutable' USING ERRCODE='GP003'; END IF;
   -- Do not recheck current public visibility, proof lease/revocation or resource
   -- liveness while recording an already accepted provider/grade checkpoint.
@@ -181,6 +201,7 @@ BEGIN
    OR operation.state NOT IN('reserved','completed')
    OR ROW(reservation.source_owner_id,reservation.operation_kind,reservation.session_id,reservation.idempotency_key,reservation.request_hash)
      IS DISTINCT FROM ROW(NEW.participation_owner_id,'study_start'::TEXT,NEW.session_id,NEW.idempotency_key,NEW.request_hash)
+   OR reservation.initial_units<(NEW.guest_spoken_call_plan->>'maximum_paid_calls')::INTEGER
    OR reservation.state<>'active' OR reservation.reservation_expires_at<=clock_timestamp()
    OR NEW.created_at IS DISTINCT FROM reservation.created_at
    OR NEW.expires_at IS DISTINCT FROM reservation.reservation_expires_at

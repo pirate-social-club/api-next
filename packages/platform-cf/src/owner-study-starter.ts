@@ -107,7 +107,7 @@ const Candidate = Schema.Struct({
   sessionId: GuestIdentifierV1,
   targetLanguage: Languages.target_language,
   learnerBand: Item.learner_band,
-  paidAttemptUnits: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 })),
+  paidAttemptUnits: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 40 })),
   catalogue: Schema.Array(Schema.Unknown),
   rows: Schema.Array(PreparedRow).check(Schema.isMinLength(4), Schema.isMaxLength(10)),
 });

@@ -34,7 +34,7 @@ const ReleaseId = Schema.String.check(
   Schema.isPattern(/^grr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
 );
 const Version = Schema.NonEmptyString.check(Schema.isMaxLength(128));
-const Units = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 20 }));
+const Units = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 40 }));
 const PositiveCost = Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,77}$/u));
 const Cost = Schema.String.check(Schema.isPattern(/^(?:0|[1-9][0-9]{0,77})$/u));
 const SessionResult = Schema.Union([

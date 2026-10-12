@@ -26,7 +26,7 @@ CREATE TABLE guest_resource_session_reservations(
  edge_fingerprint TEXT NOT NULL REFERENCES guest_resource_edge_locks(fingerprint),
  policy_version TEXT NOT NULL REFERENCES guest_resource_policy_snapshots(policy_version),
  cost_policy_version TEXT NOT NULL REFERENCES guest_resource_cost_policy_snapshots(cost_policy_version),
- initial_units INTEGER NOT NULL CHECK(initial_units BETWEEN 0 AND 20),
+ initial_units INTEGER NOT NULL CHECK(initial_units BETWEEN 0 AND 40),
  remaining_units INTEGER NOT NULL CHECK(remaining_units BETWEEN 0 AND initial_units),
  unit_hold_micros NUMERIC NOT NULL CHECK(unit_hold_micros>0 AND scale(unit_hold_micros)=0),
  worst_case_cost_micros NUMERIC NOT NULL CHECK(worst_case_cost_micros>=0 AND scale(worst_case_cost_micros)=0),
@@ -246,7 +246,7 @@ BEGIN
   RETURN jsonb_build_object('state','completed','outcome_id',existing.reservation_id,'result',existing.original_result);
  END IF;
  PERFORM validate_guest_resource_policy_v1(p_policy);
- IF p_session_id IS NULL OR char_length(p_session_id) NOT BETWEEN 1 AND 128 OR p_worst_units IS NULL OR p_worst_units NOT BETWEEN 0 AND 20
+ IF p_session_id IS NULL OR char_length(p_session_id) NOT BETWEEN 1 AND 128 OR p_worst_units IS NULL OR p_worst_units NOT BETWEEN 0 AND 40
   OR p_worst_cost IS NULL OR p_worst_cost !~ '^(0|[1-9][0-9]{0,77})$'
   THEN RAISE EXCEPTION 'invalid worst case' USING ERRCODE='22023'; END IF;
  unit_cost:=(p_policy->>'maximumProviderCallCostMicros')::NUMERIC;

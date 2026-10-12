@@ -243,7 +243,7 @@ BEGIN
   ORDER BY COALESCE(review.repetitions,0),review.last_reviewed_at NULLS FIRST,(prepared->>'ordinal')::INTEGER,
     (prepared->>'exercise_review_key') COLLATE "C" LIMIT 10
  ) candidate;
- SELECT LEAST(20,3*count(*)::INTEGER) INTO paid_units FROM jsonb_array_elements(selected_rows) prepared
+ SELECT 2*LEAST(20,3*count(*)::INTEGER) INTO paid_units FROM jsonb_array_elements(selected_rows) prepared
   WHERE prepared->>'exercise_type'='say_it_back';
  IF reservation.remaining_units<paid_units OR reservation.initial_units<paid_units
   OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE reservation_id=p_reservation) THEN
@@ -305,14 +305,17 @@ BEGIN
    language_profile_revision,study_profile_revision,source_set_revision,selection_policy_revision,
    qualification_policy_revision,timezone,idempotency_key,request_hash,created_at,expires_at,
    current_session_item_id,current_presented_at,guest_reward_mode,guest_reward_terms,
-   guest_start_operation_id,guest_disclosure_version,guest_disclosure_accepted,telegram_practice_only,guest_resource_reservation_id)
+   guest_start_operation_id,guest_disclosure_version,guest_disclosure_accepted,telegram_practice_only,guest_resource_reservation_id,guest_spoken_call_plan)
   VALUES(session_id,NULL,NULL,source_id,'guest',p_community,p_post,
    (checked->'rows'->0->>'audio_revision')::BIGINT,(checked->'rows'->0->>'lyrics_revision')::BIGINT,
    'en',checked->>'targetLanguage',checked->>'learnerBand',
    (checked->'rows'->0->>'language_profile_revision')::BIGINT,1,1,'study_selection_v1',
    'study_session_first_pass_v2@1',timezone_name,p_operation->>'idempotencyKey',p_operation->>'requestHash',
    captured_created,captured_expires,p_items->0->>'session_item_id',at_time,
-   'practice_only',NULL,p_operation_id,p_disclosure_version,TRUE,FALSE,p_reservation);
+   'practice_only',NULL,p_operation_id,p_disclosure_version,TRUE,FALSE,p_reservation,
+   jsonb_build_object('policy_revision','study_spoken_rerecord_v1',
+    'graded_presentation_cap',(checked->>'paidAttemptUnits')::INTEGER/2,
+    'ungraded_rerecord_per_presentation',1,'maximum_paid_calls',(checked->>'paidAttemptUnits')::INTEGER));
  FOR item IN SELECT value FROM jsonb_array_elements(p_items) LOOP
   exercise:=checked->'rows'->ordinal;
   -- SQL validates the shared projection's COMPLETE whitelist. Unknown fields,
@@ -485,6 +488,59 @@ END $$;
 
 -- Run only after every function body exists, in the migration's one transaction.
 -- Private default and inherited grants are both stripped. No serving-role grant.
+-- PRIVATE readonly immutable-plan correlation. Accepted owned callers acquire
+-- topology/global/full-component/source/command locks in their prescribed order.
+-- This helper acquires no later global lock and grants no dispatch authority.
+-- In particular post-I/O capture persistence MUST survive expired session/proof,
+-- zero remaining units, and changes to current configured policy. No settlement.
+CREATE FUNCTION require_guest_spoken_resource_plan_v1(
+ p_source_id TEXT,p_session_id TEXT,p_reservation_id TEXT,p_rerecord_enabled BOOLEAN
+) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE sess study_sessions_v2%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE;
+ stored_policy JSONB; stored_unit_cost NUMERIC; item_count INTEGER;
+ spoken_count INTEGER; presentation_cap INTEGER; expected_plan JSONB;
+BEGIN
+ IF p_source_id IS NULL OR p_session_id IS NULL OR p_reservation_id IS NULL
+  OR p_rerecord_enabled IS NULL THEN
+  RAISE EXCEPTION 'captured spoken plan identity required' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session_id
+  AND participation_owner_id=p_source_id AND participation_owner_kind='guest'
+  AND account_id IS NULL AND persona_id IS NULL;
+ IF NOT FOUND OR sess.guest_spoken_call_plan IS NULL
+  OR sess.guest_resource_reservation_id IS DISTINCT FROM p_reservation_id THEN
+  RAISE EXCEPTION 'captured spoken call plan unavailable' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO rsv FROM guest_resource_session_reservations WHERE reservation_id=p_reservation_id
+  AND source_owner_id=p_source_id AND session_id=p_session_id;
+ IF NOT FOUND OR ROW(rsv.operation_kind,rsv.idempotency_key,rsv.request_hash,rsv.created_at,rsv.reservation_expires_at)
+   IS DISTINCT FROM ROW('study_start'::TEXT,sess.idempotency_key,sess.request_hash,sess.created_at,sess.expires_at) THEN
+  RAISE EXCEPTION 'original spoken reservation mismatch' USING ERRCODE='GP006'; END IF;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE item_snapshot->>'exercise_type'='say_it_back')::INTEGER
+  INTO item_count,spoken_count FROM study_session_items_v2
+  WHERE session_id=p_session_id AND participation_owner_id=p_source_id AND participation_owner_kind='guest';
+ IF item_count NOT BETWEEN 4 AND 10 THEN
+  RAISE EXCEPTION 'captured spoken lesson shape unavailable' USING ERRCODE='GP006'; END IF;
+ presentation_cap:=LEAST(20,3*spoken_count);
+ expected_plan:=jsonb_build_object('policy_revision','study_spoken_rerecord_v1',
+  'graded_presentation_cap',presentation_cap,'ungraded_rerecord_per_presentation',1,
+  'maximum_paid_calls',2*presentation_cap);
+ -- Conservative full v1 headroom is held even when trusted current mode has
+ -- rerecord disabled. The per-command captured mode decides whether to use it;
+ -- an untrusted request boolean is never a budget or SQL privilege witness.
+ IF sess.guest_spoken_call_plan IS DISTINCT FROM expected_plan
+  OR rsv.initial_units<2*presentation_cap THEN
+  RAISE EXCEPTION 'original spoken plan not fully reserved' USING ERRCODE='GP006'; END IF;
+ SELECT policy INTO stored_policy FROM guest_resource_policy_snapshots WHERE policy_version=rsv.policy_version;
+ IF NOT FOUND THEN RAISE EXCEPTION 'original spoken resource policy absent' USING ERRCODE='GP006'; END IF;
+ SELECT maximum_provider_cost_micros INTO stored_unit_cost FROM guest_resource_cost_policy_snapshots
+  WHERE cost_policy_version=rsv.cost_policy_version;
+ IF NOT FOUND OR stored_policy->>'costPolicyVersion' IS DISTINCT FROM rsv.cost_policy_version
+  OR (stored_policy->>'maximumProviderCallCostMicros')::NUMERIC IS DISTINCT FROM rsv.unit_hold_micros
+  OR stored_unit_cost IS DISTINCT FROM rsv.unit_hold_micros
+  OR rsv.worst_case_cost_micros IS DISTINCT FROM rsv.initial_units*rsv.unit_hold_micros THEN
+  RAISE EXCEPTION 'original spoken cost lineage mismatch' USING ERRCODE='GP006'; END IF;
+END $$;
+
 DO $bind_guest_study_starter$
 DECLARE signature TEXT; grantee_name TEXT; trusted_schema TEXT:=current_schema();
 BEGIN
@@ -492,6 +548,7 @@ BEGIN
   RAISE EXCEPTION 'trusted guest Study schema required'; END IF;
  FOREACH signature IN ARRAY ARRAY[
   'require_guest_study_composition_v1()',
+  'require_guest_spoken_resource_plan_v1(text,text,text,boolean)',
   'require_guest_study_learning_access_v1(jsonb,text)',
   'guest_study_prepared_rows_v1(text,text)',
   'prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)',
@@ -561,6 +618,7 @@ BEGIN
    RAISE EXCEPTION 'private capture source fence unavailable' USING ERRCODE='GP006'; END IF;
  END LOOP;
  FOREACH signature IN ARRAY ARRAY[
+  'require_guest_spoken_resource_plan_v1(text,text,text,boolean)',
   'validate_guest_alias_state_v1()', 'validate_study_command_audio_source_v1()',
   'lock_learner_audio_sources_private_v1(text[])','require_guest_learning_runtime_role_v1(regrole)'
  ] LOOP
@@ -576,6 +634,8 @@ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
    AND conname='study_guest_resource_exact_source_session_fk_v1' AND contype='f' AND convalidated
    AND confrelid='guest_resource_session_reservations'::regclass)
+   OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
+    AND conname='study_guest_spoken_call_plan_shape_v1' AND contype='c' AND convalidated)
    OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
     AND conname='study_guest_disclosure_true_v1' AND contype='c' AND convalidated)
    OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='study_sessions_v2'::regclass
