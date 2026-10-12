@@ -2,6 +2,7 @@
 // These are semantic/privacy boundaries, not copies of individual helper branches.
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import type { StudySessionItemV2 } from "@pirate/contracts";
 import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
 const sourceHash = createHash("sha256").update("I can love you").digest("hex");
@@ -80,27 +81,29 @@ test("accepted ordinary source row has the exact retained public item snapshot a
     "guest-lesson",
     0,
   );
-  expect({
+  const samePublicItem: StudySessionItemV2 = {
     ...guest,
     session_item_id: item.session_item_id,
     language_profile_revision: null,
-  }).toEqual(item);
+  };
+  expect(samePublicItem).toEqual(item);
   expect(JSON.stringify(guest)).not.toContain("not-public");
   expect(JSON.stringify(guest)).not.toContain("private_grader");
   expect(JSON.stringify(guest)).not.toContain("private-provider-model");
   expect(JSON.stringify(guest)).not.toContain("request_hash");
 });
 test("prepared translation keeps helper/band/profile and secret answer stays outside the shared public snapshot", () => {
-  const presentation = {
-    kind: "translation_choice",
-    source_text: "I can love you",
-    question: "Choose the prepared meaning",
-    capture: "choice_selection",
-    choices: ["a", "b", "c", "d"].map((choice_key) => ({
-      choice_key,
-      text: `Fixture ${choice_key}`,
-    })),
-  };
+  const presentation: Extract<StudySessionItemV2["presentation"], { kind: "translation_choice" }> =
+    {
+      kind: "translation_choice",
+      source_text: "I can love you",
+      question: "Choose the prepared meaning",
+      capture: "choice_selection",
+      choices: ["a", "b", "c", "d"].map((choice_key) => ({
+        choice_key,
+        text: `Fixture ${choice_key}`,
+      })),
+    };
   const item = projectStudySessionItemV2(
     {
       ...sourceRow,

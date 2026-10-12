@@ -155,7 +155,8 @@ const one = <S extends Schema.ConstraintDecoder<unknown>>(
       Effect.try({
         try: () => {
           if (result.rows.length !== 1) throw new Error();
-          return decode(Schema.Struct({ result: schema }), result.rows[0]).result;
+          const envelope = decode(Schema.Struct({ result: Schema.Unknown }), result.rows[0]);
+          return decode(schema, envelope.result);
         },
         catch: () => invalid(`${label}.decode`),
       }),
