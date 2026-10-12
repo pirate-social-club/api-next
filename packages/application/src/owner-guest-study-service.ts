@@ -157,8 +157,8 @@ const sameOperation = (a: ParticipationOperationIdentity, b: ParticipationOperat
   a.kind === b.kind &&
   a.idempotencyKey === b.idempotencyKey &&
   a.requestHash === b.requestHash;
-const assertOutcome = <A>(
-  outcome: DurableParticipationOutcome<A>,
+const assertOutcome = <A extends DurableParticipationOutcome<unknown>>(
+  outcome: A,
   operation: ParticipationOperationIdentity,
 ) =>
   sameOperation(outcome.operation, operation)
