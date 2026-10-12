@@ -253,11 +253,43 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       ...packet.through254,
       { version: version255, sql: sql255, checksum: checksum255 },
     ];
-    await runPostgresMigrations({
-      connectionString: scoped.toString(),
-      migrations: full255,
-      expectedLedger: packet.through254,
-    });
+    try {
+      await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: full255,
+        expectedLedger: packet.through254,
+      });
+    } catch (migrationFailure) {
+      // Disposable native diagnostic only. The explicit transaction rolls back
+      // every DDL statement; compiled SQL contains no fixture row values.
+      await admin.query("BEGIN");
+      try {
+        await admin.query(sql255);
+      } catch (nativeFailure) {
+        const diagnostic = Schema.decodeUnknownSync(
+          Schema.Struct({
+            code: Schema.String,
+            position: Schema.optional(Schema.String),
+            internalPosition: Schema.optional(Schema.String),
+            internalQuery: Schema.optional(Schema.String),
+            where: Schema.optional(Schema.String),
+          }),
+        )(nativeFailure);
+        process.stdout.write(
+          `${JSON.stringify({
+            fixture: "private-checkpoint-native-compile",
+            code: diagnostic.code,
+            position: diagnostic.position,
+            internalPosition: diagnostic.internalPosition,
+            where: diagnostic.where,
+            compiledExpression: diagnostic.internalQuery?.slice(0, 200),
+          })}\n`,
+        );
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      throw migrationFailure;
+    }
     expect(
       (await admin.query("SELECT version,checksum FROM schema_migrations ORDER BY version")).rows,
     ).toEqual(full255.map(({ version, checksum }) => ({ version, checksum })));
