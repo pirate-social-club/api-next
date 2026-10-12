@@ -5,21 +5,21 @@ import { expect } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { Schema } from "effect";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import type { PostgresMigration } from "./postgres-migrations.ts";
+import { makeControlPlaneOwnerStudyMutations } from "./owner-study-mutations.ts";
+import {
+  disclosure,
+  type Fixture,
+  fixture,
+  hash,
+  pgUrl,
+  policy,
+  q,
+} from "./owner-study-starter.pg-fixture.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
-import { makeControlPlaneOwnerStudyMutations } from "./owner-study-mutations.ts";
-import {
-  fixture,
-  hash,
-  q,
-  disclosure,
-  policy,
-  pgUrl,
-  type Fixture,
-} from "./owner-study-starter.pg-fixture.ts";
+import type { PostgresMigration } from "./postgres-migrations.ts";
 
 const Hash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const ExactSuffix = Schema.Struct({ "0254": Hash, "0255": Hash, "0256": Hash });
@@ -111,6 +111,60 @@ export async function mutationFixture(use: (f: MutationFixture) => Promise<void>
       ).rows,
     ).toEqual(original);
     await f.admin.query("SELECT require_guest_learning_runtime_role_v1($1::regrole)", [f.role]);
+    // Prove actual native255/256 stripping BEFORE granting any mutation leaf.
+    // Fixture admission must not create a false native-private ACL receipt.
+    expect(
+      (
+        await f.admin.query(
+          `SELECT c.relname,a.grantee,a.privilege_type
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+      WHERE c.oid=ANY($1::regclass[]) AND a.grantee<>c.relowner`,
+          [["guest_study_spoken_captures", "guest_study_spoken_checkpoints"]],
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await f.admin.query(
+          `SELECT p.proname,a.grantee,a.privilege_type
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+      WHERE p.oid=ANY($1::regprocedure[]) AND a.grantee<>p.proowner`,
+          [
+            [
+              "guest_study_answer_resource_scope_v1(text,text,text,integer,text)",
+              "capture_guest_spoken_dispatch_private_v1(text,jsonb,text,text,text,text,text,bigint,boolean)",
+              "persist_guest_spoken_success_private_v1(text,jsonb,text,text,jsonb,jsonb)",
+              "load_guest_spoken_success_private_v1(text,jsonb,text,text)",
+              "read_guest_spoken_capture_private_v1(text,jsonb,text,text)",
+              "require_guest_resource_success_checkpoint_v1(text,text,text,text,numeric)",
+              "guest_spoken_component_has_history_private_v1(text[])",
+              "require_guest_practice_only_schema_phase_v1()",
+              "guest_authority_component_is_empty_v1(text)",
+              "require_guest_review_schedule_private_v1(jsonb,timestamptz)",
+              "require_guest_answer_operation_private_v1(text,jsonb,text,text,text,text,integer,text)",
+              "project_owner_study_session_private_v1(text,text,text)",
+              "prepare_guest_json_answer_v1(jsonb,jsonb,text,text,text,integer,jsonb)",
+              "apply_guest_json_item_mutation_v1(jsonb,jsonb,jsonb,jsonb,text,text)",
+              "apply_guest_lesson_transition_private_v1(text,text,integer,text,integer,text,timestamptz)",
+              "transition_guest_json_answer_v1(jsonb,text,jsonb,jsonb,jsonb)",
+              "finish_guest_json_answer_v1(jsonb,text,jsonb,jsonb)",
+              "read_guest_spoken_context_v1(jsonb,text,text,text,text)",
+              "reserve_guest_spoken_answer_v1(jsonb,jsonb,text,jsonb,text,bigint,jsonb,text,boolean,text,text,text)",
+              "fail_guest_spoken_answer_v1(text,jsonb,text,text,text,text,text)",
+              "prepare_guest_spoken_finalization_v1(text,jsonb,text)",
+              "apply_guest_spoken_item_mutation_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb)",
+              "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)",
+              "finish_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb)",
+              "require_owner_guest_source_private_v1(jsonb)",
+              "persist_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb)",
+              "read_owner_guest_spoken_success_v1(jsonb,jsonb,text,text)",
+              "read_owner_guest_spoken_capture_v1(jsonb,jsonb,text,text)",
+              "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
+            ],
+          ],
+        )
+      ).rows,
+    ).toEqual([]);
     for (const signature of [
       "prepare_guest_json_answer_v1(jsonb,jsonb,text,text,text,integer,jsonb)",
       "apply_guest_json_item_mutation_v1(jsonb,jsonb,jsonb,jsonb,text,text)",
