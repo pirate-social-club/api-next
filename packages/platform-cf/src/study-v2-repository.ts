@@ -21,6 +21,7 @@ import {
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
+import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -288,40 +289,6 @@ const exerciseRows = (
       input.accountId,
     ],
     readonly: false,
-  });
-
-const itemFromExercise = (row: Row, sessionId: string, ordinal: number): StudySessionItemV2 =>
-  decode(StudySessionItemV2, {
-    object: "study_session_item_v2",
-    session_item_id: `${sessionId}_item_${ordinal + 1}`,
-    ordinal,
-    exercise_review_key: text(row, "exercise_review_key"),
-    exercise_version_id: text(row, "exercise_version_id"),
-    exercise_type: text(row, "exercise_type"),
-    exercise_variant: text(row, "exercise_variant"),
-    line: {
-      post_id: text(row, "post_id"),
-      audio_revision: integer(row, "audio_revision"),
-      lyrics_revision: integer(row, "lyrics_revision"),
-      lyric_line_id: text(row, "lyric_line_id"),
-      study_unit_id: text(row, "study_unit_id"),
-      line_version: integer(row, "line_version"),
-      line_source_hash: text(row, "line_source_hash"),
-    },
-    languages: {
-      learning_language: text(row, "learning_language"),
-      target_language: nullableText(row, "target_language"),
-    },
-    learner_band: nullableText(row, "learner_band"),
-    language_profile_revision:
-      row.language_profile_revision === null ? null : integer(row, "language_profile_revision"),
-    presentation: json(row.presentation),
-    answer_visibility: text(row, "answer_visibility"),
-    feedback_release: text(row, "feedback_release"),
-    grader_policy_revision: text(row, "grader_policy_revision"),
-    feedback_policy_revision: text(row, "feedback_policy_revision"),
-    quality_policy_revision: text(row, "quality_policy_revision"),
-    maximum_attempts: 3,
   });
 
 const studyAudioObjectRef = (attemptId: string, audioDigest: string): string =>
@@ -633,7 +600,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             });
             if (exercises.rows.length < 4) return yield* rejected("insufficient-exercises");
             const items = exercises.rows.map((row, ordinal) =>
-              itemFromExercise(row, input.sessionId, ordinal),
+              projectStudySessionItemV2(row, input.sessionId, ordinal),
             );
             const first = exercises.rows[0] as Row;
             yield* transaction.execute({
