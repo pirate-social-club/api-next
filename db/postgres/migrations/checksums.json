@@ -248,6 +248,7 @@
     "0245_reward_unsigned_purchase_recovery.sql": "5e8307196b983c2920b0ec6cfdea4e85d24c1d1b092e0c4651d86a59d1e90293",
     "0246_telegram_restricted_learners.sql": "bdf58c8c9dce49a66779a800671f77daca9b19b96696079e525f2ae7f028747d",
     "0247_karaoke_instrumental_qualification_policy.sql": "ea353c0d863a2532c47e793c7cb46b5104ba474ae92924d0b406ad73fb216258",
-    "0248_guest_learning_authority_foundation.sql": "2c99571cedbe0640733b3509c657e81d4a89f505ba6d3fed61ea7e0c4befaed1"
+    "0248_guest_learning_authority_foundation.sql": "2c99571cedbe0640733b3509c657e81d4a89f505ba6d3fed61ea7e0c4befaed1",
+    "0249_study_participation_owner_preservation.sql": "8c3578dcbbbdf929fb412e4493e6e16ab5d2af0fe13d518bd3f582892cd0c732"
   }
 }

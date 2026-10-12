@@ -146,6 +146,7 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts",
   "packages/platform-cf/src/guest-learning-authority-foundation.pg.test.ts",
   "packages/platform-cf/src/reward-run-lease.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-privileges.pg.test.ts",
