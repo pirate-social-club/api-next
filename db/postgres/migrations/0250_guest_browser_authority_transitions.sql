@@ -791,3 +791,236 @@ BEGIN
   END LOOP;
 END $bind_guest_discovery_cleanup$;
 -- No serving-role grant, HTTP wire/port variant or activation in this proposal.
+
+CREATE FUNCTION guest_attachment_operation_identity_v1(expected_operation_id TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT operation FROM guest_participation_operations
+    WHERE operation_id=expected_operation_id FOR SHARE;
+  IF operation.state<>'completed'
+    OR operation.operation_kind NOT IN ('attachment_intent','attachment_prepare') THEN
+    RAISE EXCEPTION 'invalid ceremony operation envelope' USING ERRCODE='22023';
+  END IF;
+  RETURN jsonb_build_object('sourceOwnerId',operation.source_owner_id,
+    'kind',operation.operation_kind,'idempotencyKey',operation.idempotency_key,
+    'requestHash',operation.request_hash);
+END $$;
+
+CREATE FUNCTION create_guest_attachment_intent_v1(
+  expected_origin TEXT, proved_ids TEXT[], selected_id TEXT, expected_owner_id TEXT,
+  proved_intent_ids TEXT[], issuance_key TEXT, issuance_request_hash TEXT,
+  new_operation_id TEXT, new_intent_id TEXT, new_nonce_digest TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE credential guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
+  intent guest_attachment_intents%ROWTYPE; at_time TIMESTAMPTZ; intent_result JSONB;
+BEGIN
+  -- Recovery proof has no learning-lease age requirement. No money/binding phase.
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials
+    WHERE credential_id=selected_id AND origin=expected_origin;
+  IF credential.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  IF resolve_guest_empty_owner_root_v1(credential.owner_id)<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF proved_intent_ids IS NULL OR cardinality(proved_intent_ids)>4
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id
+      WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted ceremony context' USING ERRCODE='22023'; END IF;
+  -- The owner/component lock serializes natural issuance and every live intent.
+  PERFORM 1 FROM guest_attachment_intents i WHERE i.owner_id=expected_owner_id
+    ORDER BY i.intent_id COLLATE "C" FOR UPDATE;
+  SELECT * INTO prior FROM guest_secret_issuance_operations
+    WHERE origin=expected_origin AND issuance_kind='attachment_intent'
+      AND resource_scope=credential.owner_id AND idempotency_key=issuance_key;
+  IF FOUND THEN
+    IF prior.request_hash<>issuance_request_hash THEN
+      RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+    IF NOT prior.intent_id=ANY(proved_intent_ids) THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    SELECT * INTO STRICT intent FROM guest_attachment_intents WHERE intent_id=prior.intent_id;
+    IF intent.origin<>expected_origin OR intent.credential_source_owner_id<>credential.owner_id
+      OR intent.credential_id<>selected_id OR intent.owner_id<>expected_owner_id THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    IF intent.state NOT IN ('awaiting_account','awaiting_confirmation')
+      OR intent.expires_at<=clock_timestamp() THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    -- Creation receipt is immutable; preparation never resets its target.
+    SELECT result_snapshot->'intent' INTO intent_result FROM guest_participation_operations
+      WHERE operation_id=prior.operation_id AND state='completed';
+    IF intent_result IS NULL OR intent_result->>'intent_id' IS DISTINCT FROM intent.intent_id
+      OR intent_result->>'state' IS DISTINCT FROM 'awaiting_account'
+      OR intent_result->>'expires_at' IS DISTINCT FROM
+        to_char(intent.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') THEN
+      RAISE EXCEPTION 'invalid ceremony issuance receipt' USING ERRCODE='22023'; END IF;
+    RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_attachment_operation_identity_v1(prior.operation_id),
+      'intent',intent_result,'cookie_effects','[]'::JSONB);
+  END IF;
+  IF cardinality(proved_intent_ids)>=4 THEN
+    RAISE EXCEPTION 'ceremony-cleanup-required' USING ERRCODE='GP007'; END IF;
+  at_time:=clock_timestamp();
+  -- A fresh deliberate issuance key replaces ONLY unconsumed ceremonies.
+  -- Existing target/version and operation evidence remain immutable in old rows.
+  UPDATE guest_attachment_intents SET state=CASE WHEN expires_at<=at_time THEN 'expired' ELSE 'superseded' END
+    WHERE owner_id=expected_owner_id AND state IN ('awaiting_account','awaiting_confirmation');
+  INSERT INTO guest_attachment_intents(intent_id,owner_id,credential_source_owner_id,credential_id,
+    origin,nonce_digest,state,created_at,expires_at)
+    VALUES(new_intent_id,expected_owner_id,credential.owner_id,selected_id,expected_origin,
+      new_nonce_digest,'awaiting_account',at_time,at_time+INTERVAL '15 minutes');
+  intent_result:=jsonb_build_object('intent_id',new_intent_id,'state','awaiting_account',
+    'expires_at',to_char((at_time+INTERVAL '15 minutes') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+  INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,
+    resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+    VALUES(new_operation_id,expected_owner_id,'attachment_intent',credential.owner_id,
+      issuance_key,issuance_request_hash,'completed',jsonb_build_object('intent',intent_result),at_time,at_time);
+  INSERT INTO guest_secret_issuance_operations(origin,issuance_kind,resource_scope,
+    idempotency_key,request_hash,source_owner_id,intent_id,operation_id,created_at)
+    VALUES(expected_origin,'attachment_intent',credential.owner_id,issuance_key,
+      issuance_request_hash,expected_owner_id,new_intent_id,new_operation_id,at_time);
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+    'operation',guest_attachment_operation_identity_v1(new_operation_id),'intent',intent_result,
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','intent','action','issue','intentId',new_intent_id)));
+END $$;
+
+CREATE FUNCTION prepare_guest_attachment_target_v1(
+  expected_origin TEXT, proved_ids TEXT[], selected_id TEXT, expected_owner_id TEXT,
+  proved_intent_ids TEXT[], expected_intent_id TEXT,
+  current_account_id TEXT, protected_session_digest TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
+  operation guest_participation_operations%ROWTYPE; account_owner_id TEXT;
+  revision BIGINT; at_time TIMESTAMPTZ; canonical_request TEXT; request_digest TEXT;
+  prepared_id TEXT; prepared JSONB; displayed_name TEXT;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR proved_ids IS NULL OR cardinality(proved_ids)>4
+     OR cardinality(proved_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_ids) id)
+     OR EXISTS(SELECT 1 FROM unnest(proved_ids) id
+       WHERE id IS NULL OR id !~ '^[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted proof context' USING ERRCODE='22023'; END IF;
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  -- account_aliases has no users FK. Stabilize absent rows and status changes
+  -- before locking the current account or any owner/credential/intent row.
+  LOCK TABLE account_aliases IN SHARE MODE;
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  IF protected_session_digest IS NULL OR protected_session_digest !~ '^[0-9a-f]{64}$'
+    OR current_account_id IS NULL OR octet_length(current_account_id)>512 THEN
+    RAISE EXCEPTION 'invalid trusted account session binding' USING ERRCODE='22023'; END IF;
+  -- Current account ID comes from ordinary/setup cookie verification, never body.
+  -- Do not provision an owner or upgrade to exclusive topology behind these locks.
+  PERFORM 1 FROM users u WHERE u.user_id=current_account_id AND u.status='active'
+    AND NOT EXISTS(SELECT 1 FROM account_aliases a WHERE a.source_user_id=u.user_id
+      AND ((a.kind='alias' AND a.status='active') OR (a.kind='merge' AND a.status IN ('finalizing','completed'))))
+    FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target-changed' USING ERRCODE='GP008'; END IF;
+  SELECT owner_id INTO account_owner_id FROM participation_owners
+    WHERE kind='account' AND account_id=current_account_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target-changed' USING ERRCODE='GP008'; END IF;
+  -- Combined sorted owner set BEFORE any credential or intent lock.
+  PERFORM 1 FROM participation_owners o WHERE o.owner_id=account_owner_id OR o.owner_id IN (
+    WITH RECURSIVE component(owner_id) AS (
+      SELECT DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id) FROM guest_credentials c
+        WHERE c.credential_id=ANY(proved_ids) AND c.origin=expected_origin
+      UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+        JOIN component x ON a.canonical_owner_id=x.owner_id
+    ) SELECT owner_id FROM component
+  ) ORDER BY o.owner_id COLLATE "C" FOR UPDATE;
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials
+    WHERE credential_id=selected_id AND origin=expected_origin;
+  IF credential.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  IF resolve_guest_empty_owner_root_v1(credential.owner_id)<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF proved_intent_ids IS NULL OR cardinality(proved_intent_ids)>4
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id
+      WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted ceremony context' USING ERRCODE='22023'; END IF;
+  IF expected_intent_id IS NULL OR NOT expected_intent_id=ANY(proved_intent_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT intent FROM guest_attachment_intents
+    WHERE intent_id=expected_intent_id AND origin=expected_origin FOR UPDATE;
+  IF intent.credential_id<>selected_id OR intent.credential_source_owner_id<>credential.owner_id
+    OR intent.owner_id<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  at_time:=clock_timestamp();
+  IF intent.state NOT IN ('awaiting_account','awaiting_confirmation') OR intent.expires_at<=at_time THEN
+    RAISE EXCEPTION 'intent-expired' USING ERRCODE='GP006'; END IF;
+  IF intent.target_revision>0 AND intent.target_account_id=current_account_id
+    AND intent.target_session_digest=protected_session_digest THEN
+    SELECT * INTO STRICT operation FROM guest_participation_operations
+      WHERE operation_id=intent.prepared_operation_id FOR SHARE;
+    prepared:=operation.result_snapshot->'prepared';
+    IF operation.state<>'completed' OR operation.operation_kind<>'attachment_prepare'
+      OR operation.source_owner_id<>intent.owner_id OR operation.resource_scope<>intent.intent_id
+      OR prepared IS NULL OR prepared->>'intent_id' IS DISTINCT FROM intent.intent_id
+      OR (prepared->>'target_revision')::BIGINT IS DISTINCT FROM intent.target_revision
+      OR prepared#>>'{account_confirmation,account_id}' IS DISTINCT FROM current_account_id THEN
+      RAISE EXCEPTION 'invalid preparation replay' USING ERRCODE='22023'; END IF;
+    RETURN jsonb_build_object('state','completed','operation_id',operation.operation_id,
+      'operation',guest_attachment_operation_identity_v1(operation.operation_id),'prepared',prepared);
+  END IF;
+  IF intent.target_revision>=9007199254740991 THEN
+    RAISE EXCEPTION 'ceremony revision exhausted' USING ERRCODE='22023'; END IF;
+  revision:=intent.target_revision+1;
+  -- Stable server key includes the complete natural preparation tuple. No body key.
+  canonical_request:=jsonb_build_array('guest-attachment-prepare-v1',expected_origin,
+    intent.owner_id,intent.intent_id,revision,current_account_id,protected_session_digest)::TEXT;
+  request_digest:=encode(sha256(convert_to(canonical_request,'UTF8')),'hex');
+  prepared_id:='guest_prepare_'||request_digest;
+  -- Frozen account confirmation permits NULL display_name. Current account
+  -- profile is persona-backed; preparation does not require/provision a persona.
+  -- A later named accepted read projection may add the current display name.
+  displayed_name:=NULL;
+  prepared:=jsonb_build_object('intent_id',intent.intent_id,'target_revision',revision,
+    'account_confirmation',jsonb_build_object('account_id',current_account_id,'display_name',displayed_name),
+    'state','awaiting_confirmation');
+  SELECT * INTO operation FROM guest_participation_operations WHERE operation_id=prepared_id;
+  IF FOUND THEN
+    -- Hash collisions can refuse work; they cannot substitute another tuple/history.
+    IF operation.state<>'completed' OR operation.source_owner_id<>intent.owner_id
+      OR operation.operation_kind<>'attachment_prepare' OR operation.resource_scope<>intent.intent_id
+      OR operation.idempotency_key<>request_digest OR operation.request_hash<>request_digest
+      OR operation.result_snapshot->'prepared' IS DISTINCT FROM prepared THEN
+      RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+  ELSE
+    INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,
+      resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+      VALUES(prepared_id,intent.owner_id,'attachment_prepare',intent.intent_id,request_digest,
+        request_digest,'completed',jsonb_build_object('prepared',prepared),at_time,at_time);
+  END IF;
+  UPDATE guest_attachment_intents SET state='awaiting_confirmation',target_revision=revision,
+    target_account_id=current_account_id,target_session_digest=protected_session_digest,
+    prepared_operation_id=prepared_id WHERE intent_id=intent.intent_id;
+  RETURN jsonb_build_object('state','completed','operation_id',prepared_id,
+    'operation',guest_attachment_operation_identity_v1(prepared_id),'prepared',prepared);
+END $$;
+
+DO $private_guest_attachment_preparation$
+DECLARE trusted_schema TEXT:=current_schema(); signature TEXT; grantee_name TEXT;
+BEGIN
+  IF trusted_schema IS NULL OR trusted_schema='pg_catalog' OR trusted_schema ~ '^pg_temp' THEN
+    RAISE EXCEPTION 'trusted migration schema required'; END IF;
+  FOREACH signature IN ARRAY ARRAY[
+    'guest_attachment_operation_identity_v1(text)',
+    'create_guest_attachment_intent_v1(text,text[],text,text,text[],text,text,text,text,text)',
+    'prepare_guest_attachment_target_v1(text,text[],text,text,text[],text,text,text)'
+  ] LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
+    FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)
+      FROM pg_proc f CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+      WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner
+    LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name); END LOOP;
+  END LOOP;
+END;
+$private_guest_attachment_preparation$;
+-- No serving grant inferred. Helper stays owner-only. Only two transition EXECUTE
+-- grants may be bound after actual role/module review. There is no confirm/bind writer.
