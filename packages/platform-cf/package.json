@@ -228,7 +228,16 @@
     "./owner-guest-spoken-dispatch-context": "./src/owner-guest-spoken-dispatch-context.ts",
     "./owner-study-invoking-transcriber": "./src/owner-study-invoking-transcriber.ts",
     "./owner-guest-study-public-visibility": "./src/owner-guest-study-public-visibility.ts",
-    "./guest-study-resource-expiry": "./src/guest-study-resource-expiry.ts"
+    "./guest-study-resource-expiry": "./src/guest-study-resource-expiry.ts",
+    "./learner-audio-producer-store": "./src/learner-audio-producer-store.ts",
+    "./controlled-account-study-store": "./src/controlled-account-study-store.ts",
+    "./controlled-account-spoken-recovery": "./src/controlled-account-spoken-recovery.ts",
+    "./account-spoken-producer-protocol": "./src/account-spoken-producer-protocol.ts",
+    "./controlled-account-spoken-composition": "./src/controlled-account-spoken-composition.ts",
+    "./captured-karaoke-multipart": "./src/captured-karaoke-multipart.ts",
+    "./captured-karaoke-sqlite-journal": "./src/captured-karaoke-sqlite-journal.ts",
+    "./captured-karaoke-bindings": "./src/captured-karaoke-bindings.ts",
+    "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

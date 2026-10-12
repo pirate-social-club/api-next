@@ -133,6 +133,8 @@
     "./owner-spoken-captured-continuation": "./src/owner-spoken-captured-continuation.ts",
     "./owner-guest-spoken-checkpoint-recovery": "./src/owner-guest-spoken-checkpoint-recovery.ts",
     "./owner-guest-spoken-closed-recovery": "./src/owner-guest-spoken-closed-recovery.ts",
-    "./owner-guest-study-service": "./src/owner-guest-study-service.ts"
+    "./owner-guest-study-service": "./src/owner-guest-study-service.ts",
+    "./account-study-capture-protocol": "./src/account-study-capture-protocol.ts",
+    "./controlled-account-spoken": "./src/controlled-account-spoken.ts"
   }
 }

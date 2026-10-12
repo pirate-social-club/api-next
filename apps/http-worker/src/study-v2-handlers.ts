@@ -60,10 +60,13 @@ const wireFailure = (failure: StudyV2Failure) => {
   }
 };
 
+import type { makeControlledAccountSpokenService } from "@pirate/application/controlled-account-spoken";
+
 export const makeStudyV2Handlers = (services: {
   readonly clock: Clock["Service"];
   readonly ids: IdGen["Service"];
   readonly store: StudyV2Store;
+  readonly controlledSpoken?:ReturnType<typeof makeControlledAccountSpokenService>;
   readonly spoken?: Readonly<{
     readonly archive: StudyAudioArchive;
     readonly transcriber: StudyBatchTranscriber;
@@ -142,7 +145,7 @@ export const makeStudyV2Handlers = (services: {
           return Promise.reject(new BadRequest({ message: "Study audio duration is required" }));
         }
         return run(
-          study.submitSpokenAnswer({
+          (services.controlledSpoken??study).submitSpokenAnswer({
             accountId: accountId(request.principal),
             attemptNumber,
             audio: request.body,

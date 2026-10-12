@@ -212,7 +212,7 @@ import { makeControlPlaneStudyLanguageProfileStore } from "@pirate/platform-cf/s
 import { makeStudyProfileCoverageStore } from "@pirate/platform-cf/study-profile-coverage-repository";
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
-import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
+import { makeControlledAccountStudyV2Store } from "@pirate/platform-cf/controlled-account-study-store";
 import {
   makeTelegramLinkServices,
   type TelegramLinkBindings,
@@ -314,6 +314,7 @@ import {
   makeStudyProfileCoverageRunner,
   studyProfileCoverageDue,
 } from "./study-profile-coverage.ts";
+import { makeControlledAccountSpokenComposition } from "@pirate/platform-cf/controlled-account-spoken-composition";
 import { makeProductionStudySpokenServices } from "./study-spoken-production-composition.ts";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 import { makeRecoveringTelegramHandlers } from "./telegram-setup-cache.ts";
@@ -1478,18 +1479,19 @@ export async function createProductionHttpWorker(
     },
   });
   const studySpokenServices = makeProductionStudySpokenServices(bindings, dependencies);
+  const capturedStudy = studySpokenServices === undefined ? undefined :
+    makeControlledAccountSpokenComposition(controlPlane, studySpokenServices.bucket,
+      studySpokenServices.transcriber, bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
+      task => { workerBackground.defer(() => task); });
+  // Nonspoken ordinary Study also keeps the controlled source preflight even
+  // when no archive binding exists. No plain producer or archive fallback.
+  const controlledStudyStore = capturedStudy?.store ??
+    makeControlledAccountStudyV2Store(controlPlane).ordinary;
   const studyV2Handlers = makeStudyV2Handlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
-    store: makeControlPlaneStudyV2Store(controlPlane),
-    ...(studySpokenServices === undefined
-      ? {}
-      : {
-          spoken: {
-            ...studySpokenServices,
-            rerecordEnabled: bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
-          },
-        }),
+    store: controlledStudyStore,
+    ...(capturedStudy === undefined ? {} : { controlledSpoken: capturedStudy.spoken }),
   });
   const studyGenerationHandlers = (() => {
     const apiKey = bindings.OPENROUTER_API_KEY;

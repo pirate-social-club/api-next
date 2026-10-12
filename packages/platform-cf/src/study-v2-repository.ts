@@ -25,6 +25,9 @@ import { recordQualificationProjections } from "./activity-qualification-reposit
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
 import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
+import type { LearnerAudioUploadCapture } from "@pirate/application/learner-audio-capture";
+import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
+
 type Row = Readonly<Record<string, unknown>>;
 
 // Serializes Study session starts per account so two identical concurrent
@@ -397,7 +400,14 @@ export interface StudyV2Admission {
     },
   ) => Effect.Effect<void, StudyV2CommandRejected | ControlPlaneError>;
 }
-export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) => ({
+const capturedAudioPreflight=Effect.fn("studyV2.capturedAudioPreflight")(function*(tx:ControlPlaneTransaction,accountId:string){
+ yield*tx.execute({label:"study-v2.audio.source-lock",text:"SELECT lock_original_account_audio_source_private_v1($1)",values:[accountId],readonly:false});
+});
+const captureReservedAudio=Effect.fn("studyV2.captureReservedAudio")(function*(tx:ControlPlaneTransaction,accountId:string,commandId:string,leaseToken:string){
+ const result=yield*tx.execute<unknown>({label:"study-v2.audio.capture",text:"SELECT capture_account_study_audio_private_v1($1,$2,$3,$4) AS result",values:[accountId,commandId,leaseToken,`audio_upload_${crypto.randomUUID()}`],readonly:false});
+ return yield*Effect.try({try:()=>{if(result.rows.length!==1)throw new Error();const envelope=Schema.decodeUnknownSync(Schema.Struct({result:Schema.Unknown}),{onExcessProperty:"error"})(result.rows[0]);return Schema.decodeUnknownSync(LearnerAudioUploadCaptureSchema,{onExcessProperty:"error"})(envelope.result);},catch:()=>failed("invalid-row")});
+});
+export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission, controlledAudio=false) => ({
   getAvailability: (input: Parameters<StudyV2Store["getAvailability"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
@@ -509,6 +519,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if(controlledAudio)yield*capturedAudioPreflight(transaction,input.accountId);
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             // Identical concurrent starts serialize here: the loser then finds
             // the winner's committed row in the replay read below and returns
@@ -830,6 +841,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if(controlledAudio)yield*capturedAudioPreflight(transaction,input.accountId);
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             // A committed command replays by exact account, payload and
@@ -929,7 +941,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (replayRow !== undefined) {
               const reclaimed = yield* reclaimSpokenAnswer(transaction, replayRow, input);
               if (reclaimed === null) return yield* rejected("command-in-flight");
-              return reclaimed;
+              return controlledAudio?{...reclaimed,capture:yield*captureReservedAudio(transaction,input.accountId,reclaimed.commandId,reclaimed.leaseToken)}:reclaimed;
             }
             const inserted = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-insert",
@@ -990,6 +1002,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                 leaseToken: input.leaseToken,
                 attemptId: input.attemptId,
                 artifactId: input.artifactId,
+                ...(controlledAudio?{capture:yield*captureReservedAudio(transaction,input.accountId,input.commandId,input.leaseToken)}:{}),
               };
             }
             const existing = yield* transaction.execute<Row>({
@@ -1031,7 +1044,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             }
             const reclaimed = yield* reclaimSpokenAnswer(transaction, row, input);
             if (reclaimed === null) return yield* rejected("command-in-flight");
-            return reclaimed;
+            return controlledAudio?{...reclaimed,capture:yield*captureReservedAudio(transaction,input.accountId,reclaimed.commandId,reclaimed.leaseToken)}:reclaimed;
           }),
         );
       }),
@@ -1040,7 +1053,9 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const updated = yield* db.execute({
+        return yield*db.withTransaction(transaction=>Effect.gen(function*(){
+        if(controlledAudio)yield*capturedAudioPreflight(transaction,input.accountId);
+        const updated = yield* transaction.execute({
           label: "study-v2.spoken.fail",
           text: `UPDATE study_spoken_answer_commands
                     SET state='retryable_failed', provider_failure_kind=$3,
@@ -1057,7 +1072,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
           readonly: false,
         });
         if (updated.rowCount !== 1) return yield* rejected("command-in-flight");
-        yield* db.execute({
+        yield* transaction.execute({
           label: "study-v2.spoken.fail-artifact",
           text: `UPDATE learner_audio_artifacts artifact
                     SET recording_state='failed'
@@ -1068,15 +1083,24 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
           values: [input.commandId, input.accountId],
           readonly: false,
         });
+        }));
       }),
     ),
-  completeSpokenAnswer: (input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]) =>
+  completeSpokenAnswer: (input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0] & Readonly<{capture?:LearnerAudioUploadCapture}>) =>
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if (admission !== undefined) yield* admission.authorize(transaction, input);
+            if(controlledAudio)yield*capturedAudioPreflight(transaction,input.accountId);
+            if (admission !== undefined && input.capture===undefined) yield* admission.authorize(transaction, input);
+            const captured=input.capture;
+            if(controlledAudio && captured===undefined)return yield*rejected("command-in-flight");
+            if(captured!==undefined){
+              const {archive:_archive,capture:_capture,...success}=input;
+              yield*transaction.execute({label:"study-v2.audio.require-success",text:"SELECT require_account_spoken_success_private_v1($1,$2::jsonb)",values:[captured.uploadAttemptId,JSON.stringify(success)],readonly:false});
+              yield*transaction.execute({label:"study-v2.audio.require-archive",text:"SELECT require_account_spoken_archive_private_v1($1,$2,$3)",values:[captured.uploadAttemptId,input.archive.state,input.archive.objectRef],readonly:false});
+            }
             const command = yield* transaction.execute<Row>({
               label: "study-v2.spoken.complete-command",
               text: `SELECT request_hash, state, result_snapshot, lease_token,
@@ -1086,10 +1110,10 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                         AND EXISTS (SELECT 1 FROM study_sessions_v2 s
                           WHERE s.session_id=study_spoken_answer_commands.session_id
                             AND s.account_id=$2 AND s.session_id=$3 AND s.community_id=$4
-                            AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
-                            AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id))
+                            AND ($5::boolean OR (active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                            AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id))))
                         FOR UPDATE`,
-              values: [input.commandId, input.accountId, input.sessionId, input.communityId],
+              values: [input.commandId, input.accountId, input.sessionId, input.communityId,captured!==undefined],
               readonly: false,
             });
             if (command.rows.length !== 1) return yield* rejected("not-found");
@@ -1106,7 +1130,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (text(commandRow, "lease_token") !== input.leaseToken) {
               return yield* rejected("command-in-flight");
             }
-            if (commandRow.lease_live !== true) {
+            if (captured===undefined && commandRow.lease_live !== true) {
               return yield* rejected("command-in-flight");
             }
             const selected = yield* transaction.execute<Row>({
@@ -1124,10 +1148,10 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                        JOIN study_review_items review ON review.review_item_id=i.review_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
                         AND s.community_id=$4
-                        AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
-                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
+                        AND ($5::boolean OR (active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)))
                         AND s.status='active' FOR UPDATE OF i, s`,
-              values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
+              values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId,captured!==undefined],
               readonly: false,
             });
             if (selected.rows.length !== 1) return yield* rejected("not-found");
@@ -1145,7 +1169,8 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (input.attemptNumber !== integer(selectedRow, "item_presentation_count") + 1) {
               return yield* rejected("attempt-conflict");
             }
-            const artifact = yield* transaction.execute<Row>({
+            const tombstoned=captured===undefined?null:yield*transaction.execute<Row>({label:"study-v2.audio.tombstone",text:"SELECT learner_audio_artifact_id FROM learner_audio_artifacts WHERE learner_audio_artifact_id=$1 AND participation_owner_id=$2 AND recording_state='deleted'",values:[input.artifactId,captured.sourceOwnerId],readonly:false});
+            const artifact = tombstoned!==null && tombstoned.rows.length===1 ? tombstoned : yield* transaction.execute<Row>({
               label: "study-v2.spoken.artifact",
               text: `UPDATE learner_audio_artifacts
                         SET object_ref=$3, recording_state=$4
