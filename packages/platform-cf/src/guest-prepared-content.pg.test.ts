@@ -308,7 +308,11 @@ async function withFixture(
 
 const get = (store: PreparedGuestStudyContentStore, selection = input) =>
   Effect.runPromise(Effect.scoped(store.get(selection)));
-const unavailable = (reason: string) => ({ state: "unavailable", reason });
+type Unavailable = Extract<GuestStudyPreparedContentV1["availability"], { state: "unavailable" }>;
+const unavailable = (reason: Unavailable["reason"]): Unavailable => ({
+  state: "unavailable",
+  reason,
+});
 async function notFound(store: PreparedGuestStudyContentStore) {
   const error = await Effect.runPromise(Effect.scoped(Effect.flip(store.get(input))));
   expect(error._tag).toBe("GuestParticipationStoreRejected");
