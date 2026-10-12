@@ -184,6 +184,14 @@ export function makeSpacesOwnerProgressReader(
           });
         }
         if (ceremony === null) throw new Error("Invalid Spaces progress ceremony");
+        // Confirmation uses this global assignment lock. Wait for an
+        // unanswered confirmation to commit before projecting its outcome.
+        await query(
+          tx,
+          "spaces-owner.progress.assignment-lock",
+          "SELECT pg_advisory_xact_lock(hashtextextended('spaces-operator-assignment',20202))",
+          [],
+        );
         // A pending challenge alone never authorizes disclosure of an
         // operator address. Retained proof scopes recovery to its owner.
         const assignments =

@@ -15,7 +15,8 @@ No browser cache is needed to find them. An empty list says only that this
 account has no saved ceremony in this scope.
 
 `GET /communities/:communityId/spaces-ownership?root=harbor` reads one root. The
-server serializes this read with admission and verification, then projects the
+server serializes this read with admission, verification and operator
+confirmation, then projects the
 latest account-scoped ceremony. The response includes the exact saved challenge
 and generation. It never includes a signature or another account's ceremony.
 All progress responses are private and must not be cached.

@@ -413,6 +413,29 @@ suite("Spaces owner proof persistence", () => {
         current: true,
       });
       expect(recovered.ceremony).toMatchObject({ status: "verified", proof_status: "fresh" });
+      await admin.query("BEGIN");
+      await admin.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('spaces-operator-assignment',20202))",
+      );
+      const returning = store.current(input);
+      let waitingForConfirmation = false;
+      try {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          await admin.query("SELECT pg_stat_clear_snapshot()");
+          const waiting = await admin.query(`SELECT 1 FROM pg_stat_activity
+            WHERE wait_event='advisory' AND query LIKE '%spaces-operator-assignment%'`);
+          if (waiting.rows.length > 0) {
+            waitingForConfirmation = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waitingForConfirmation).toBe(true);
+      } finally {
+        await admin.query("ROLLBACK");
+        await returning;
+      }
+      expect((await returning).operator_assignment).toMatchObject({ status: "confirmed" });
       rootChanged = true;
       expect((await store.current(input)).ceremony).toMatchObject({
         status: "verified",
