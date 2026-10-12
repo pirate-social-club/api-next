@@ -21,6 +21,10 @@
 -- are not guessed to be semantic rejections. Commit/rollback unknown bypasses
 -- statement mapping and preserves frozen transaction uncertainty classification.
 
+-- Deferred closure runs after the transition's definer frame returns. It needs
+-- its own pinned definer authority, without exposing private table privileges.
+ALTER FUNCTION validate_guest_alias_state_v1() SECURITY DEFINER;
+
 -- Positive, private learning-only attestation; relation absence alone is not
 -- evidence of financial emptiness. Accounting must replace this predicate and
 -- attestation atomically with its accepted full liability/participation closure.

@@ -259,14 +259,17 @@ async function commitAckDropProxy(upstreamUrl: string) {
   const parsed = new URL(upstreamUrl);
   if (!["127.0.0.1", "localhost"].includes(parsed.hostname))
     throw new Error("COMMIT fault fixture requires owned loopback PostgreSQL");
+  // Preserve upstream address before rewriting the returned proxy URL.
+  const upstreamHost = parsed.hostname;
+  const upstreamPort = Number(parsed.port || "5432");
   const sockets = new Set<Socket>();
   let armed = false;
   let sawCommit = false;
   let sawIdle = false;
   const server = createServer((downstream) => {
     const upstream = createConnection({
-      host: parsed.hostname,
-      port: Number(parsed.port || "5432"),
+      host: upstreamHost,
+      port: upstreamPort,
     });
     sockets.add(downstream);
     sockets.add(upstream);
