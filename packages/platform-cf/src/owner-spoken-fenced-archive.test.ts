@@ -109,7 +109,13 @@ function fixture(
   );
   return { stage, events, queries, logs, retained };
 }
-async function refuse(f: ReturnType<typeof fixture>, tag: string) {
+async function refuse(
+  f: ReturnType<typeof fixture>,
+  tag:
+    | "GuestParticipationStoreRejected"
+    | "ControlPlaneStatementFailed"
+    | "ControlPlaneTransactionOutcomeUnknown",
+) {
   const result = await Effect.runPromise(Effect.scoped(Effect.result(f.stage.store(input))));
   expect(result._tag).toBe("Failure");
   if (result._tag === "Failure") {
