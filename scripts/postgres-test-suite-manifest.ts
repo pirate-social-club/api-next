@@ -146,6 +146,12 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "apps/http-worker/src/guest-authority-private-composition.pg.test.ts",
+  "packages/platform-cf/src/guest-recovery-deletion.pg.test.ts",
+  "packages/platform-cf/src/guest-spoken-recovery.pg.test.ts",
+  "packages/platform-cf/src/guest-study-atomic-start.pg.test.ts",
+  "packages/platform-cf/src/owner-spoken-archive.pg.test.ts",
+  "packages/platform-cf/src/owner-spoken-checkpoint.pg.test.ts",
   "packages/platform-cf/src/owner-study-json-mutations.pg.test.ts",
   "packages/platform-cf/src/owner-study-retention.pg.test.ts",
   "packages/platform-cf/src/owner-spoken-checkpoint-foundation.pg.test.ts",
