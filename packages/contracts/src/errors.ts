@@ -1,4 +1,18 @@
 import { Data, Schema } from "effect";
+import {
+  closedGuestError,
+  type GuestAuthError,
+  type GuestBadRequest,
+  type GuestConflict,
+  type GuestPendingConflict,
+} from "./guest-errors.ts";
+
+export {
+  GuestAuthError,
+  GuestBadRequest,
+  GuestConflict,
+  GuestPendingConflict,
+} from "./guest-errors.ts";
 
 /**
  * api-next-owned v2 wire-error catalog (api-next 000 §10; 001 phase 0 step 2).
@@ -465,6 +479,10 @@ export class NotImplemented extends Data.TaggedError("NotImplemented")<WireArgs>
 
 /** The closed catalog of fixed-code wire errors. */
 export type ApiError =
+  | GuestAuthError
+  | GuestBadRequest
+  | GuestConflict
+  | GuestPendingConflict
   | AuthError
   | BadRequest
   | PaymentRequired
@@ -534,6 +552,13 @@ export function toErrorBody(
   readonly headers?: Readonly<Record<string, string>>;
 } {
   const requestIdField = requestId === undefined ? {} : { request_id: requestId };
+  const guest = closedGuestError(error);
+  if (guest !== undefined)
+    return {
+      status: guest.status,
+      body: { error: guest.error, ...requestIdField },
+      ...(!("headers" in guest) || guest.headers === undefined ? {} : { headers: guest.headers }),
+    };
   if (hasWireShape(error)) {
     const ownerRecoveryDetails =
       error.code === "owner_recovery_in_progress" ? error.details : undefined;

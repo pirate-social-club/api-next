@@ -282,6 +282,10 @@ export function generateOpenApi(
         ...errorResponses(endpoint.errors),
       },
       "x-auth": endpoint.auth,
+      ...(endpoint.implementation === undefined
+        ? {}
+        : { "x-implementation": endpoint.implementation }),
+      ...(endpoint.cacheControl === undefined ? {} : { "x-cache-control": endpoint.cacheControl }),
       "x-errors": endpoint.errors?.map((error) => error.name) ?? [],
     };
   });
@@ -850,6 +854,7 @@ function schemaError(value: unknown, schema: JsonSchema, path: string, root: Jso
   if (type === "integer" && (typeof value !== "number" || !Number.isInteger(value))) return "expected integer";
   if (type === "array") {
     if (!Array.isArray(value)) return "expected array";
+
     if (record(schema.items)) for (let index = 0; index < value.length; index += 1) {
       const error = schemaError(value[index], schema.items, path + "[" + index + "]", root);
       if (error !== undefined) return error;
@@ -865,7 +870,10 @@ function schemaError(value: unknown, schema: JsonSchema, path: string, root: Jso
     }
     if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!(key in properties)) return "unexpected property " + key;
   }
+  if (typeof schema.minItems === "number" && Array.isArray(value) && value.length < schema.minItems) return "array too short";
+  if (typeof schema.maxItems === "number" && Array.isArray(value) && value.length > schema.maxItems) return "array too long";
   if (typeof schema.minLength === "number" && typeof value === "string" && value.length < schema.minLength) return "string too short";
+  if (typeof schema.maxLength === "number" && typeof value === "string" && value.length > schema.maxLength) return "string too long";
   if (typeof schema.pattern === "string" && typeof value === "string" && !new RegExp(schema.pattern).test(value)) return "string pattern mismatch";
   if (typeof schema.minimum === "number" && typeof value === "number" && value < schema.minimum) return "number below minimum";
   if (typeof schema.maximum === "number" && typeof value === "number" && value > schema.maximum) return "number above maximum";

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.117.0",
+  "sourceBranch": "feat/guest-participation-interfaces",
+  "sourceBase": "e8628c82d7d3827e69e13641538e2ba7c08bfd80",
+  "importedGuestCheckpoint": "0c744227a06e4dfec20edfe7aa8b03bea883cdb5",
+  "validatedSourceCommit": null,
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/593",
+  "wireContract": "Combines the21disabled private/no-store guest participation, prepared Study, attachment recovery and owner-credit declarations with all226current-main operations, including Spaces owner discovery, progress and verification resume. Existing operation wire shapes and account-v2 grading invariants remain unchanged. Original-drawing participation and positive held allocations must survive signup; owner credits retain ordinary claim authority.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.117.0.tgz",
+    "sha256": "057ee869bc2a485f9bfd5c0898fda5a9c0c6fd5dda1cbdb5b4dc5f5ae08b511f"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.117.0",
+    "sourceIdentifier": "api-next-contracts@3a0cb3b10c5f1a27ed326f97713a3ec293daf50f988e15c26d593208ea85c523",
+    "openapiSha256": "3a0cb3b10c5f1a27ed326f97713a3ec293daf50f988e15c26d593208ea85c523",
+    "clientSha256": "68b92996381ce0cf6f16f72f544d229067d606de0f5e315fde81e57de76f460c"
+  },
+  "validation": {
+    "status": "Exact combined candidate generated from the reconciled registry. Fresh source/artifact review and all required local/hosted gates precede canonical acceptance.",
+    "operationalBoundary": "All21guestoperationsdisabled. No guest store/authority issuance, SQL/migration application, deployment, offer creation, qualification/share/purchase, funding, credential change or runtime activation."
+  },
+  "compatibility": {
+    "integrationBaseline": "e8628c82d7d3827e69e13641538e2ba7c08bfd80",
+    "predecessorVersion": "0.116.0",
+    "preservedVersions": [
+      "0.115.0",
+      "0.116.0"
+    ],
+    "disposition": "Additive combined interface release; historical archives and handoffs retained byte-for-byte. Fresh exact-main breaking comparison is required; waiver list remains empty."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.117.0",
+    "guestImplementation": "Do not enable endpoints from this declarative candidate. Learning implementation follows canonical interfaces and explicit schema/client custody; accounting follows accepted learning serially. Guest UI waits for accepted learning/client and combined Solid.",
+    "beforeActivation": "Accept ordinary account/request-decoding/HNS closed-error compatibility and anonymous scored Karaoke adapters separately. Composed staging, original-drawing recovery and uncertain COMMIT behavior before/after purchase deadline remain required.",
+    "preparedReadiness": "Limits remain two exercise types, six bands, 128 target-language tags and 64 characters per tag; over-limit projections refuse explicitly."
+  }
+}

@@ -1741,6 +1741,8 @@ export async function createProductionHttpWorker(
     readonly credentials: { readonly authorization?: string; readonly sessionCookie?: string };
   }) => {
     const policy = supportedAuthPolicy(endpoint.auth.policy);
+    if (policy.kind === "browserParticipation")
+      throw new AuthError({ message: "Guest composition is disabled" });
     if (policy.kind === "sharedSecret") {
       const policyName = policy.name;
       if (!(await hnsEdgeAlertBearerMatches(credentials.authorization, hnsEdgeAlertToken))) {
@@ -1874,6 +1876,8 @@ export async function createProductionHttpWorker(
       Effect.runPromise(
         Effect.gen(function* () {
           const policy = supportedAuthPolicy(endpoint.auth.policy);
+          if (policy.kind === "browserParticipation")
+            return yield* new AuthError({ message: "Guest composition is disabled" });
           if (policy.kind === "sharedSecret") {
             const policyName = policy.name;
             if (
@@ -1905,7 +1909,8 @@ export async function createProductionHttpWorker(
               (endpoint.path === "/personas/:personaId/wallets/evm/prepare" ||
                 endpoint.path === "/personas/:personaId/wallets/evm/confirm" ||
                 endpoint.path === "/personas/:personaId/retire");
-            if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
+            if (!setupPath && endpoint.auth.setupSessionAccess !== "successfulGuestAttachment")
+              return yield* new AuthError({ message: "Authorization failed" });
           }
         }),
       ),

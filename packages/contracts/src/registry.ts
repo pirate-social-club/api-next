@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
+import { guestParticipationRegistry } from "./guest-registry.ts";
 import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 import { telegramLinkingRegistry } from "./telegram-linking.ts";
@@ -165,6 +166,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...guestParticipationRegistry,
   GetPublicProfileActivity,
   ListPopularCommunities,
   ListMyModerationCommunities,

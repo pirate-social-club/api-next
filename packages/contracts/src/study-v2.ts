@@ -134,7 +134,7 @@ export const StudyAnswerSubmissionV2 = Schema.Union([
 ]);
 export type StudyAnswerSubmissionV2 = Schema.Schema.Type<typeof StudyAnswerSubmissionV2>;
 
-const StudyProgressV2 = Schema.Struct({
+export const StudyProgressV2 = Schema.Struct({
   qualifying_exercise_count: PositiveInteger,
   answered_exercise_count: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),

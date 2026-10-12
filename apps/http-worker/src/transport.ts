@@ -1,3 +1,4 @@
+import type { BrowserParticipationContext } from "@pirate/application/guest-participation-authority";
 import {
   type IdentityRegistrationHandlerServices,
   makeIdentityRegistrationHandler,
@@ -31,6 +32,7 @@ import {
   boundaryFailureDiagnostic,
 } from "./failure-diagnostics.ts";
 import { routeTable } from "./generated/route-table.ts";
+import type { GuestBrowserAuthenticationAdapter } from "./guest-browser-cookie-policy.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
   type HnsCommunityAppApiComposition,
@@ -72,6 +74,8 @@ export interface Principal {
 
 /** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
+  /** Validated operation-specific metadata, never raw cookies or a user principal. */
+  readonly browserParticipation?: BrowserParticipationContext;
   /** Trusted session digest and private binding, only for Telegram linking routes. */
   readonly telegramLinkBrowser?: { readonly sessionHash: string; readonly binding?: string };
   readonly body: unknown;
@@ -147,6 +151,8 @@ export interface HttpWorkerConfig {
 }
 
 export interface HttpWorkerOptions {
+  /** Frozen adapter port only. Interface-only endpoints remain disabled even when supplied. */
+  readonly browserParticipation?: GuestBrowserAuthenticationAdapter;
   readonly config?: HttpWorkerConfig;
   readonly hnsEdgeStatus?: HnsEdgeStatusComposition;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
@@ -183,6 +189,7 @@ export interface HttpWorkerOptions {
 type HttpWorkerEnv = {
   Variables: {
     requestId: string;
+    privateEndpointCacheControl?: boolean;
     hnsCommunityAppApiVerified?: boolean;
     hnsDynamicCorsOrigin?: string;
   };
@@ -720,6 +727,22 @@ const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
 // regardless of their declared public auth kind.
 const SESSION_ISSUANCE_ENDPOINTS = new Set(["SessionExchange", "RegisterIdentity"]);
 
+const PRIVATE_CACHE_ROUTES = routeTable
+  .filter(({ endpoint }) => endpoint.cacheControl === "private, no-store")
+  .map(
+    ({ path }) =>
+      new RegExp(
+        "^(?:/api)?" +
+          path
+            .split("/")
+            .map((segment) =>
+              segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+            )
+            .join("/") +
+          "$",
+      ),
+  );
+
 const json = (
   context: HttpContext,
   body: unknown,
@@ -817,6 +840,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       : makeSessionExchangeHandler(options.sessionExchange);
   const installedProtectedHandlers = routeTable.filter(
     (binding) =>
+      binding.endpoint.implementation !== "disabled" &&
+      binding.endpoint.auth.policy.kind !== "browserParticipation" &&
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
         spacesOwnerProofHandlers?.[binding.name] !== undefined ||
@@ -835,13 +860,23 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   const app = new Hono<HttpWorkerEnv>();
   app.use("*", async (context, next) => {
     requestId(context);
+    const pathname = new URL(context.req.raw.url).pathname;
+    if (PRIVATE_CACHE_ROUTES.some((route) => route.test(pathname)))
+      context.set("privateEndpointCacheControl", true);
     await next();
   });
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
     if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
-      return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });
+      return new Response(null, {
+        status: 503,
+        headers: {
+          "cache-control": context.get("privateEndpointCacheControl")
+            ? "private, no-store"
+            : "no-store",
+        },
+      });
     }
     if (spacesRegistry?.matches(pathname)) {
       return spacesRegistry.serve(context.req.raw);
@@ -935,6 +970,12 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const install = (path: string, pathPrefix = ""): void => {
       app.on(binding.method, path, async (context) => {
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
+        if (
+          binding.endpoint.implementation === "disabled" ||
+          binding.endpoint.auth.policy.kind === "browserParticipation"
+        ) {
+          throw new NotFound({ message: "Endpoint not found" });
+        }
         const handler =
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
@@ -1110,6 +1151,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
               : sessionCookieHeaders(sessionResult.sessionToken, sessionResult.sessionTtlSeconds);
           const request = requestShape(binding.endpoint);
           const noStore =
+            binding.endpoint.cacheControl !== undefined ||
             !isPublic(binding.endpoint) ||
             binding.name === "GetPublicPersona" ||
             binding.name === "GetPublicCommunityThreads" ||
@@ -1123,7 +1165,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             request?.body !== undefined ||
             cookiesToSet !== undefined;
           const headers = new Headers(responseHeaders);
-          if (PRIVATE_NO_STORE_ENDPOINTS.has(binding.name)) {
+          if (
+            binding.endpoint.cacheControl === "private, no-store" ||
+            PRIVATE_NO_STORE_ENDPOINTS.has(binding.name)
+          ) {
             headers.set("cache-control", "private, no-store");
           }
           for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
@@ -1139,7 +1184,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     if (
       hnsCommunityAppApi.enabled &&
       !CANONICAL_ONLY_ENDPOINTS.has(binding.name) &&
-      (binding.method === "GET" || binding.method === "POST" || binding.method === "PATCH")
+      (binding.method === "GET" ||
+        binding.method === "POST" ||
+        binding.method === "PATCH" ||
+        (binding.endpoint.auth.policy.kind === "browserParticipation" &&
+          (binding.method === "PUT" || binding.method === "DELETE")))
     ) {
       install(`/api${binding.path}`, "/api");
     }
@@ -1148,6 +1197,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   app.onError((error, context) => {
     const serialized = toErrorBody(error, requestId(context));
     const response = json(context, serialized.body, serialized.status, true, serialized.headers);
+    if (context.get("privateEndpointCacheControl") === true)
+      response.headers.set("cache-control", "private, no-store");
     if (HANDLE_SALES_MANAGEMENT_PATH.test(new URL(context.req.raw.url).pathname)) {
       response.headers.set("cache-control", "private, no-store");
     }
