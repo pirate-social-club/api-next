@@ -91,8 +91,10 @@ function studyDriver(scoped: string, accountId: string, personaId: string) {
   const store = makeControlPlaneStudyV2Repository();
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
+  // Distinct driver instances represent separate server ID-generator scopes.
+  const driverId = crypto.randomUUID();
   let serial = 0;
-  const id = (kind: string) => `${accountId}-${kind}-${++serial}`;
+  const id = (kind: string) => `${accountId}-${driverId}-${kind}-${++serial}`;
   return {
     read: (sessionId: string) =>
       run(store.getSession({ accountId, sessionId, communityId: "study-community" })),
