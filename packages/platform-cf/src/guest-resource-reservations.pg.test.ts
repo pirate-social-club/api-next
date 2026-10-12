@@ -46,7 +46,6 @@ const fixturePolicy = (overrides: Record<string, unknown> = {}) => ({
   maximumProviderCallCostMicros: "1000",
   ...overrides,
 });
-type Policy = ReturnType<typeof fixturePolicy>;
 type Operation = {
   sourceOwnerId: string;
   kind: "study_start" | "study_answer";
@@ -94,7 +93,7 @@ async function reserve(
   n: number,
   key: string,
   units = 20,
-  policy = fixturePolicy(),
+  policy: Record<string, unknown> = fixturePolicy(),
   edge = `trusted-edge-${n}`,
   client = f.runtime,
   session = `session-${key}`,
@@ -647,7 +646,11 @@ suite("guest resource reservations against actual private source", () => {
           )
         ).rows,
       ).toEqual([{ history: true }]);
-      const proofId = () => randomBytes(16).toString("base64url");
+      const proofId = () =>
+        btoa(String.fromCharCode(...randomBytes(16)))
+          .replaceAll("+", "-")
+          .replaceAll("/", "_")
+          .replaceAll("=", "");
       const rootProof = proofId();
       const childProof = proofId();
       const peerProof = proofId();

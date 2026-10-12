@@ -57,7 +57,7 @@ const sessionReply = () => ({
   state: "completed",
   outcome_id: reservationId,
   result: {
-    state: "reserved",
+    state: "reserved" as const,
     reservationId,
     sourceOwnerId,
     operation,
