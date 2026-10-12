@@ -271,31 +271,102 @@ suite("HTTP database reward admission", () => {
       await creator.query(
         "INSERT INTO song_reward_offer_legs VALUES('admitted-leg','megapot_pool')",
       );
-      const pid = (await pauser.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
-      const paused = pause(pauser, true);
-      let waiting = false;
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        waiting =
-          (
+      const creatorPid = (await creator.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const pauserPid = (await pauser.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const laterPid = (await later.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const trace: string[] = [];
+      const blockedBy = async (pid: number, blocker: number) => {
+        const deadline = Date.now() + 2_000;
+        let evidence:
+          | {
+              pid: number;
+              wait_event_type: string | null;
+              wait_event: string | null;
+              blockers: number[];
+              backend_xid: string | null;
+            }
+          | undefined;
+        while (Date.now() < deadline) {
+          evidence = (
             await admin.query(
-              "SELECT wait_event_type='Lock' AS waiting FROM pg_stat_activity WHERE pid=$1",
+              "SELECT pid,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers,backend_xid::text FROM pg_stat_activity WHERE pid=$1",
               [pid],
             )
-          ).rows[0]?.waiting === true;
-        if (waiting) break;
-        await Bun.sleep(10);
-      }
-      expect(waiting).toBe(true);
-      const refused = later
+          ).rows[0];
+          if (evidence?.blockers.includes(blocker)) break;
+          await Bun.sleep(10);
+        }
+        console.info("reward pause blocker", { evidence, trace: [...trace] });
+        expect(evidence?.blockers).toContain(blocker);
+        expect(evidence?.wait_event_type).toBe("Lock");
+      };
+      await pauser.query("BEGIN");
+      let pauseSettled = false;
+      trace.push("pause statement sent");
+      const pauseStatement = pauser
+        .query("SELECT set_reward_operations_paused_v1(1,TRUE,'http_admission_test')")
+        .then(
+          () => {
+            pauseSettled = true;
+            trace.push("pause statement completed; transaction open");
+            return null;
+          },
+          (error: unknown) => {
+            pauseSettled = true;
+            trace.push("pause statement failed");
+            return error;
+          },
+        );
+      await blockedBy(pauserPid, creatorPid);
+      expect(pauseSettled).toBe(false);
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: false, revision: "1" }]);
+      await creator.query("COMMIT");
+      trace.push("creator commit acknowledged");
+      expect(await pauseStatement).toBeNull();
+      expect(
+        (await pauser.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: true, revision: "2" }]);
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: false, revision: "1" }]);
+      let laterSettled = false;
+      trace.push("later reservation sent");
+      const queuedReservation = later
         .query("INSERT INTO song_reward_leg_funding_effects VALUES('later','megapot_pool')")
         .then(
-          () => null,
-          (e) => e,
+          () => {
+            laterSettled = true;
+            trace.push("later reservation completed");
+            return null;
+          },
+          (error) => {
+            laterSettled = true;
+            trace.push("later reservation refused");
+            return error;
+          },
         );
-      await creator.query("COMMIT");
-      await paused;
-      expect(await refused).toMatchObject({ code: "PR001" });
+      await blockedBy(laterPid, pauserPid);
+      expect(laterSettled).toBe(false);
+      trace.push("pause commit sent");
+      await pauser.query("COMMIT");
+      trace.push("pause commit acknowledged");
+      expect(await queuedReservation).toMatchObject({ code: "PR001" });
+      console.info("reward pause completion", { trace });
+      expect(
+        (await admin.query("SELECT paused,revision::text FROM reward_operations_control")).rows,
+      ).toEqual([{ paused: true, revision: "2" }]);
+      expect((await admin.query("SELECT id FROM song_reward_offers ORDER BY id")).rows).toEqual([
+        { id: "admitted" },
+      ]);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM song_reward_leg_funding_effects"))
+          .rows,
+      ).toEqual([{ count: 0 }]);
+      await expect(
+        creator.query("INSERT INTO song_reward_offers VALUES('postcommit')"),
+      ).rejects.toMatchObject({ code: "PR001" });
       for (const kind of ["megapot_pool", "asset_bonus"]) {
         await expect(
           creator.query("INSERT INTO song_reward_offer_legs VALUES($1,$2)", [kind, kind]),
@@ -323,6 +394,7 @@ suite("HTTP database reward admission", () => {
       ).toEqual([{ count: 0 }]);
     } finally {
       await creator.query("ROLLBACK").catch(() => {});
+      await pauser.query("ROLLBACK").catch(() => {});
       await Promise.all([creator.end(), pauser.end(), later.end()]);
       await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await admin.end();

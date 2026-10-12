@@ -99,7 +99,11 @@ purchase reconciliation and custody integrity holds continue to govern it.
 Local PostgreSQL tests exercise the actual migration with inherited broad table
 and function grants, confirm their removal, and verify trigger INSERT/UPDATE
 coverage. A reservation holds the control share lock while an operator pause
-waits. A later queued reservation is refused after the first commits. Paused
+waits. After the admitted reservation commits, the fixture holds the actual
+paused UPDATE in an explicit operator transaction. It proves the later writer
+is blocked by that operator before committing the pause, then verifies PR001,
+no inserted row and independent committed revision readback. A pending pause
+request alone does not establish a cut-over or FIFO queue. Paused
 bookkeeping remains allowed. Missing control and forbidden runtime control
 writes fail closed. Existing production repository fixtures exercise pause
 holds for all six reservation paths, and an admitted gas top-up finishes while
