@@ -102,6 +102,7 @@ suite("owner-aware guest JSON mutation genuine PostgreSQL", () => {
         money = await financialFingerprint(f),
         before = await counts(f);
       const initial = l.started.result.session.lesson.current;
+      if (initial === null) throw new Error("Original current presentation missing");
       const first = answer(await submit(f, l.input("json-wrong-1", "b", 1)));
       expect(first.answer).toMatchObject({
         outcome: "incorrect",

@@ -254,14 +254,21 @@ const limits = Effect.fn("OwnerStudyMutations.limits")(function* (tx: ControlPla
     values: [],
     readonly: true,
   });
-  if (
-    actual.rows.length !== 1 ||
-    actual.rows[0]?.transaction !== "3s" ||
-    actual.rows[0]?.lock !== "250ms" ||
-    actual.rows[0]?.statement !== "2s" ||
-    actual.rows[0]?.idle !== "2s"
-  )
-    return yield* rejected("resource-policy-unavailable");
+  yield* Effect.try({
+    try: () => {
+      check(actual.rows.length === 1);
+      decode(
+        Schema.Struct({
+          transaction: Schema.Literal("3s"),
+          lock: Schema.Literal("250ms"),
+          statement: Schema.Literal("2s"),
+          idle: Schema.Literal("2s"),
+        }),
+        actual.rows[0],
+      );
+    },
+    catch: () => rejected("resource-policy-unavailable"),
+  });
 });
 const assertOperation = (
   source: Input<"submitAnswer">["source"],

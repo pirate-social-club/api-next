@@ -91,7 +91,9 @@ export async function mutationFixture(use: (f: MutationFixture) => Promise<void>
     expect(
       (await f.admin.query("SELECT version,checksum FROM schema_migrations ORDER BY version")).rows,
     ).toEqual(prefix.map(({ version, checksum }) => ({ version, checksum })));
-    const scoped = new URL(pgUrl);
+    const fixtureUrl = pgUrl;
+    if (fixtureUrl === undefined) throw new Error("Owned mutation PostgreSQL URL missing");
+    const scoped = new URL(fixtureUrl);
     scoped.searchParams.set("options", `-c search_path=${f.schema}`);
     await runPostgresMigrations({
       connectionString: scoped.toString(),
