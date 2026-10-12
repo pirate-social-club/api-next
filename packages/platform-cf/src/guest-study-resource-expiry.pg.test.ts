@@ -255,9 +255,10 @@ pgTest(
       const archive = makeOwnerSpokenFencedArchiveStage(
         makeDirectPostgresControlPlaneLayer(f.guestUrl),
         {
-          put: async () => {
+          // Upstream provider logging is distinct from the local learning archive.
+          put: async (_key, bytes) => {
             puts++;
-            throw new Error("Not-stored provider policy must not PUT");
+            return { size: bytes.byteLength };
           },
         },
         (task) => background.push(task),
@@ -304,7 +305,7 @@ pgTest(
         ),
       ).toEqual(answer);
       await Promise.all(background);
-      expect(puts).toBe(0);
+      expect(puts).toBe(1);
       expect(d.providerInvocations()).toBe(1);
     }),
   30000,
