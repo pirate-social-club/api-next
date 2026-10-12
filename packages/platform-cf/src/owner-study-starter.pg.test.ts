@@ -287,9 +287,15 @@ suite("private owner-aware guest Study starter genuine PostgreSQL", () => {
         r = await reserve(f, proof.access, "replay");
       const first = completed(await run(f.store.startSession(r.input))),
         before = await counts(f);
-      await f.admin.query(
-        "UPDATE study_exercise_versions SET retired_at=clock_timestamp() WHERE post_id='study-post'",
-      );
+      const catalogueFault =
+        "UPDATE study_exercise_versions SET retired_at=clock_timestamp() WHERE post_id='study-post'";
+      // The real guard refuses ordinary mutation. Only the disposable fixture
+      // injects this adversarial catalogue state, restoring triggers before use.
+      await expect(f.admin.query(catalogueFault)).rejects.toMatchObject({ code: "P0001" });
+      await editFixture(f.admin, catalogueFault);
+      expect((await f.admin.query("SHOW session_replication_role")).rows).toEqual([
+        { session_replication_role: "origin" },
+      ]);
       const newConfig = f.storeFor({}, null, {
         version: "later-disclosure-version",
         text: "Synthetic changed policy, no new capture allowed.",
@@ -370,9 +376,15 @@ suite("private owner-aware guest Study starter genuine PostgreSQL", () => {
 
   test("partial independent helper groups cannot pool into a lesson or persist a partial graph", async () => {
     await fixture(async (f) => {
-      await f.admin.query(
-        "UPDATE study_exercise_versions SET retired_at=clock_timestamp() WHERE exercise_version_id IN('exercise-3','exercise-4')",
-      );
+      const catalogueFault =
+        "UPDATE study_exercise_versions SET retired_at=clock_timestamp() WHERE exercise_version_id IN('exercise-3','exercise-4')";
+      // The real guard refuses ordinary mutation. Only the disposable fixture
+      // injects this adversarial catalogue state, restoring triggers before use.
+      await expect(f.admin.query(catalogueFault)).rejects.toMatchObject({ code: "P0001" });
+      await editFixture(f.admin, catalogueFault);
+      expect((await f.admin.query("SHOW session_replication_role")).rows).toEqual([
+        { session_replication_role: "origin" },
+      ]);
       await translation(f, 1, "ar", "B1");
       await translation(f, 2, "zh", "A1");
       const proof = await seedGuest(f, 1),
