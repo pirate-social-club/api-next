@@ -35,7 +35,7 @@ const batch = {
     },
   ],
   providerDisposition: "unknown" as const,
-};
+} as const;
 const prepare = { state: "completed" as const, operation, outcomeId: batch.batchId, result: batch };
 const projection = {
   operation: {
@@ -212,7 +212,7 @@ test("retention replay validates original mode and never includes learning lease
     operation: retentionOperation,
     outcomeId: "retention-original",
     result: { mode: "ephemeral", effective_at: "2026-10-12T00:00:00.000Z" },
-  };
+  } as const;
   const f = fixture(() => good);
   expect(
     await Effect.runPromise(
