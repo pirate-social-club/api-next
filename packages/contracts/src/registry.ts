@@ -133,7 +133,13 @@ import {
   ConfirmSpacesOperatorAssignment,
   GetSpacesOperatorAssignments,
 } from "./spaces-operator-assignment.ts";
-import { PollSpacesOwnership, StartSpacesOwnership } from "./spaces-owner-proof.ts";
+import {
+  GetSpacesOwnershipProgress,
+  ListSpacesOwnershipRoots,
+  PollSpacesOwnership,
+  ResumeSpacesOwnership,
+  StartSpacesOwnership,
+} from "./spaces-owner-proof.ts";
 import {
   ConfirmPersonaSpacesTaproot,
   GetPersonaSpacesTaprootStatus,
@@ -213,6 +219,9 @@ export const registry = {
   ...money,
   StartNamespaceOwnership,
   StartSpacesOwnership,
+  GetSpacesOwnershipProgress,
+  ListSpacesOwnershipRoots,
+  ResumeSpacesOwnership,
   PollSpacesOwnership,
   StartSpacesRouteAttachment,
   GetCurrentSpacesRouteAttachment,

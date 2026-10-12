@@ -2,11 +2,19 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { ControlPlaneDb } from "@pirate/application";
-import { SpacesOwnerProofRefused } from "@pirate/contracts";
-import { Effect } from "effect";
+import {
+  SpacesOwnerProofRefused,
+  SpacesOwnershipPollResponseV1,
+  SpacesOwnershipStartResponseV1,
+} from "@pirate/contracts";
+import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import {
+  makeSpacesOperatorAssignmentStore,
+  mintSpacesOperatorServiceCredential,
+} from "./spaces-operator-assignment-repository.ts";
 import {
   makeSpacesOwnerProofStore,
   type SpacesRootAuthorityObserver,
@@ -115,6 +123,12 @@ function makeStore(connection: string, observer: SpacesRootAuthorityObserver) {
       ),
     );
   return {
+    list: (input: Parameters<ReturnType<typeof makeSpacesOwnerProofStore>["list"]>[0]) =>
+      run((store) => store.list(input)),
+    current: (input: Parameters<ReturnType<typeof makeSpacesOwnerProofStore>["current"]>[0]) =>
+      run((store) => store.current(input)),
+    resume: (input: Parameters<ReturnType<typeof makeSpacesOwnerProofStore>["resume"]>[0]) =>
+      run((store) => store.resume(input)),
     start: (input: Parameters<ReturnType<typeof makeSpacesOwnerProofStore>["start"]>[0]) =>
       run((store) => store.start(input)),
     poll: (input: Parameters<ReturnType<typeof makeSpacesOwnerProofStore>["poll"]>[0]) =>
@@ -123,6 +137,327 @@ function makeStore(connection: string, observer: SpacesRootAuthorityObserver) {
 }
 
 suite("Spaces owner proof persistence", () => {
+  test("discovers only this account's roots with stable bounded pagination", async () => {
+    await withSchema(async (admin, connection) => {
+      const observer: SpacesRootAuthorityObserver = {
+        observe: async ({ canonicalRoot }) => ({
+          kind: "verified",
+          evidence: { ...evidence(), root: `@${canonicalRoot}` },
+          bytes: Buffer.from("{}"),
+        }),
+      };
+      const store = makeStore(connection, observer);
+      const input = { accountId, communityId };
+      expect(await store.list(input)).toEqual({ items: [], next_cursor: null });
+      for (let index = 0; index < 22; index++) {
+        const canonicalRoot = `space-${index.toString().padStart(2, "0")}`;
+        await store.start({ ...input, canonicalRoot, idempotencyKey: `discover-${index}` });
+      }
+      const first = await store.list(input);
+      expect(first.items).toHaveLength(20);
+      expect(first.next_cursor).toBe("space-19");
+      expect(
+        await makeStore(connection, observer).list({
+          ...input,
+          cursor: first.next_cursor as string,
+        }),
+      ).toEqual({
+        items: [{ canonical_root: "space-20" }, { canonical_root: "space-21" }],
+        next_cursor: null,
+      });
+      await expect(store.list({ ...input, communityId: "wrong-community" })).rejects.toMatchObject({
+        reason: "forbidden",
+      });
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM spaces_owner_proof_ceremonies"))
+          .rows[0].count,
+      ).toBe(22);
+    });
+  });
+  test("recovers a lost start response without another ceremony and isolates roots and callers", async () => {
+    await withSchema(async (admin, connection) => {
+      const observer: SpacesRootAuthorityObserver = {
+        observe: async () => ({ kind: "verified", evidence: evidence(), bytes: Buffer.from("{}") }),
+      };
+      const input = { accountId, communityId, canonicalRoot: root };
+      const first = await makeStore(connection, observer).start({
+        ...input,
+        idempotencyKey: "lost-start",
+      });
+      const recovered = await makeStore(connection, observer).current(input);
+      expect(recovered.ceremony).toMatchObject({
+        status: "awaiting_signature",
+        challenge: { ...(first as object), replayed: true },
+      });
+      expect(recovered.operator_assignment).toBeNull();
+      expect(
+        (await makeStore(connection, observer).current({ ...input, canonicalRoot: "csca" }))
+          .ceremony,
+      ).toBeNull();
+      await admin.query(
+        "INSERT INTO users (user_id,status) VALUES ('other-spaces-manager','active')",
+      );
+      await admin.query(
+        `INSERT INTO community_handle_sales_authority_grants
+        (grant_id,community_id,principal_account_id,authority,source_kind,source_policy_ref,status,granted_at,granted_by_account_id)
+        VALUES ('other-spaces-grant',$1,'other-spaces-manager','manage_handle_sales','community_policy','test','active',clock_timestamp(),$2)`,
+        [communityId, accountId],
+      );
+      const other = await makeStore(connection, observer).current({
+        ...input,
+        accountId: "other-spaces-manager",
+      });
+      expect(other.ceremony).toBeNull();
+      expect(other.operator_assignment).toBeNull();
+      expect(
+        await makeStore(connection, observer).list({
+          accountId: "other-spaces-manager",
+          communityId,
+        }),
+      ).toEqual({ items: [], next_cursor: null });
+      expect(await makeStore(connection, observer).list({ accountId, communityId })).toEqual({
+        items: [{ canonical_root: root }],
+        next_cursor: null,
+      });
+      await expect(
+        makeStore(connection, observer).current({ ...input, communityId: "other-community" }),
+      ).rejects.toBeInstanceOf(SpacesOwnerProofRefused);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM spaces_owner_proof_ceremonies"))
+          .rows[0].count,
+      ).toBe(1);
+    });
+  });
+
+  test("resumes a durable unanswered poll without keeping its signature in the browser", async () => {
+    await withSchema(async (admin, connection) => {
+      let pending = true;
+      const observer: SpacesRootAuthorityObserver = {
+        observe: async ({ digestHex }) =>
+          digestHex !== undefined && pending
+            ? { kind: "pending" }
+            : {
+                kind: "verified",
+                evidence: {
+                  ...evidence(),
+                  owner_signature_verified: digestHex === undefined ? null : true,
+                },
+                bytes: Buffer.from("{}"),
+              },
+      };
+      const input = { accountId, communityId, canonicalRoot: root };
+      const challenge = Schema.decodeUnknownSync(SpacesOwnershipStartResponseV1)(
+        await makeStore(connection, observer).start({ ...input, idempotencyKey: "pending-start" }),
+      );
+      if ("status" in challenge) throw new Error("Missing test challenge");
+      const pollInput = {
+        accountId,
+        communityId,
+        ceremonyId: challenge.ceremony_id,
+        idempotencyKey: "lost-poll",
+      };
+      const signatureHex = Buffer.from(
+        schnorr.sign(Buffer.from(challenge.challenge_digest_hex, "hex"), secretKey),
+      ).toString("hex");
+      expect(
+        await makeStore(connection, observer).poll({ ...pollInput, signatureHex }),
+      ).toMatchObject({ status: "verification_pending" });
+      const read = await makeStore(connection, observer).current(input);
+      expect(read.ceremony).toMatchObject({
+        status: "verification_pending",
+        pending_poll_key: "lost-poll",
+      });
+      expect(JSON.stringify(read)).not.toContain(signatureHex);
+      await expect(
+        makeStore(connection, observer).resume({ ...pollInput, idempotencyKey: "unknown-poll" }),
+      ).rejects.toMatchObject({ reason: "not_found" });
+      pending = false;
+      const accepted = await makeStore(connection, observer).resume(pollInput);
+      expect(accepted).toMatchObject({ status: "verified", replayed: false });
+      expect(await makeStore(connection, observer).resume(pollInput)).toEqual({
+        ...(accepted as object),
+        replayed: true,
+      });
+      expect((await makeStore(connection, observer).current(input)).ceremony).toMatchObject({
+        status: "verified",
+        proof_status: "fresh",
+      });
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM spaces_owner_proof_polls")).rows[0]
+          .count,
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM spaces_namespace_authority_evidence",
+          )
+        ).rows[0].count,
+      ).toBe(1);
+    });
+  });
+
+  test("reports expiry without rewriting a pending ceremony or deleting its retained records", async () => {
+    await withSchema(async (admin, connection) => {
+      const observer: SpacesRootAuthorityObserver = {
+        observe: async () => ({ kind: "verified", evidence: evidence(), bytes: Buffer.from("{}") }),
+      };
+      const input = { accountId, communityId, canonicalRoot: root };
+      await makeStore(connection, observer).start({ ...input, idempotencyKey: "expires-start" });
+      await admin.query(`UPDATE spaces_owner_proof_ceremonies SET
+        key_last_changed_at=key_last_changed_at-interval '11 minutes',
+        anchored_at=anchored_at-interval '11 minutes',
+        publication_verified_at=publication_verified_at-interval '11 minutes',
+        created_at=created_at-interval '11 minutes',expires_at=expires_at-interval '11 minutes'`);
+      expect((await makeStore(connection, observer).current(input)).ceremony).toMatchObject({
+        status: "ended",
+        result: { status: "expired" },
+      });
+      const rows = await admin.query(
+        "SELECT status,terminal_response FROM spaces_owner_proof_ceremonies",
+      );
+      expect(rows.rows).toEqual([{ status: "pending", terminal_response: null }]);
+    });
+  });
+
+  test("recovers confirmed assignments while independently rechecking current root evidence", async () => {
+    await withSchema(async (admin, connection) => {
+      let rootChanged = false;
+      let unavailable = false;
+      const observer: SpacesRootAuthorityObserver = {
+        observe: async ({ digestHex }) => {
+          if (unavailable) throw new Error("Verifier unavailable");
+          return {
+            kind: "verified",
+            evidence: {
+              ...evidence(rootChanged),
+              owner_signature_verified: digestHex === undefined ? null : true,
+            },
+            bytes: Buffer.from("{}"),
+          };
+        },
+      };
+      const input = { accountId, communityId, canonicalRoot: root };
+      const store = makeStore(connection, observer);
+      const challenge = Schema.decodeUnknownSync(SpacesOwnershipStartResponseV1)(
+        await store.start({ ...input, idempotencyKey: "assignment-start" }),
+      );
+      if ("status" in challenge) throw new Error("Missing test challenge");
+      const proof = Schema.decodeUnknownSync(SpacesOwnershipPollResponseV1)(
+        await store.poll({
+          accountId,
+          communityId,
+          ceremonyId: challenge.ceremony_id,
+          idempotencyKey: "assignment-poll",
+          signatureHex: Buffer.from(
+            schnorr.sign(Buffer.from(challenge.challenge_digest_hex, "hex"), secretKey),
+          ).toString("hex"),
+        }),
+      );
+      if (proof.status !== "verified") throw new Error("Missing test proof");
+      await admin.query(
+        "INSERT INTO spaces_operator_instances (operator_instance_id,network,status,created_at) VALUES ('recovery-instance','mainnet','active',clock_timestamp())",
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const withDb = <T>(action: (db: ControlPlaneDb["Service"]) => Promise<T>) =>
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.provide(layer)(
+              Effect.gen(function* () {
+                const db = yield* ControlPlaneDb;
+                return yield* Effect.promise(() => action(db));
+              }),
+            ),
+          ),
+        );
+      const credential = await withDb((db) =>
+        mintSpacesOperatorServiceCredential(db, {
+          operatorInstanceId: "recovery-instance",
+          environment: "staging",
+          canonicalRoot: root,
+          capability: "assignment_prepare",
+          authorizationReference: "recovery-test",
+        }),
+      );
+      const assignments = (db: ControlPlaneDb["Service"]) =>
+        makeSpacesOperatorAssignmentStore({ db, observer, environment: "staging" });
+      const prepared = await withDb((db) =>
+        assignments(db).prepare(credential.token, {
+          idempotency_key: "prepare-recovery",
+          operator_instance_id: "recovery-instance",
+          network: "mainnet",
+          canonical_root: root,
+          operator_wallet_reference: "recovery-wallet",
+          delegation_address: "bcs1p00rgyrzt0gmec52mu3w2un0xl6pzqyq9e8yc9t48fdk0cu3us8ys7rnkp7",
+        }),
+      );
+      expect((await store.current(input)).operator_assignment).toMatchObject({
+        status: "prepared",
+        current: false,
+      });
+      await withDb((db) =>
+        assignments(db).confirm({
+          accountId,
+          communityId,
+          idempotencyKey: "confirm-recovery",
+          assignmentId: prepared.operator_assignment_id,
+          expectedGeneration: prepared.generation,
+          authorityReference: proof.namespace_authority_reference,
+          expectedAuthorityGeneration: proof.namespace_authority_generation,
+        }),
+      );
+      const recovered = await makeStore(connection, observer).current(input);
+      expect(recovered.operator_assignment).toMatchObject({
+        ...prepared,
+        replayed: true,
+        status: "confirmed",
+        current: true,
+      });
+      expect(recovered.ceremony).toMatchObject({ status: "verified", proof_status: "fresh" });
+      rootChanged = true;
+      expect((await store.current(input)).ceremony).toMatchObject({
+        status: "verified",
+        proof_status: "root_changed",
+      });
+      unavailable = true;
+      expect((await store.current(input)).ceremony).toMatchObject({
+        status: "verified",
+        proof_status: "unavailable",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM spaces_operator_assignment_revisions",
+          )
+        ).rows[0].count,
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM community_handle_sale_namespace_activation_revisions",
+          )
+        ).rows[0].count,
+      ).toBe(0);
+      unavailable = false;
+      await admin.query("INSERT INTO users (user_id,status) VALUES ('successor-manager','active')");
+      await admin.query(
+        `INSERT INTO community_handle_sales_authority_grants
+        (grant_id,community_id,principal_account_id,authority,source_kind,source_policy_ref,status,granted_at,granted_by_account_id)
+        VALUES ('successor-grant',$1,'successor-manager','manage_handle_sales','community_policy','test','active',clock_timestamp(),$2)`,
+        [communityId, accountId],
+      );
+      await store.start({
+        ...input,
+        accountId: "successor-manager",
+        idempotencyKey: "successor-start",
+      });
+      const superseded = await store.current(input);
+      expect(superseded.ceremony).toMatchObject({
+        status: "superseded",
+        challenge: { ceremony_id: challenge.ceremony_id },
+      });
+      expect(superseded.operator_assignment).toBeNull();
+    });
+  });
   for (const size of [303_364, SPACES_ROOT_AUTHORITY_MAX_RESPONSE_BYTES]) {
     test(`retains exact ${size}-byte verified responses in both owner-proof columns`, async () => {
       await withSchema(async (admin, connection) => {

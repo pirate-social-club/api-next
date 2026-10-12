@@ -67,6 +67,12 @@ export function makeSpacesProductionComposition(
       }).pipe(Effect.provide(controlPlane)),
     );
   const ownerProof: NonNullable<SpacesOptions["spacesOwnerProof"]> = {
+    list: (input) =>
+      withDb((db) => makeSpacesOwnerProofStore({ db, observer, environment }).list(input)),
+    current: (input) =>
+      withDb((db) => makeSpacesOwnerProofStore({ db, observer, environment }).current(input)),
+    resume: (input) =>
+      withDb((db) => makeSpacesOwnerProofStore({ db, observer, environment }).resume(input)),
     start: (input) =>
       withDb((db) => makeSpacesOwnerProofStore({ db, observer, environment }).start(input)),
     poll: (input) =>

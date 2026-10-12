@@ -42,6 +42,50 @@ export function makeSpacesOwnerProofHandlers(
   store: SpacesOwnerProofStore,
 ): Readonly<Record<string, EndpointHandler>> {
   return {
+    ListSpacesOwnershipRoots: async (request) => {
+      const path = request.params as { communityId: string };
+      const query = request.query as { cursor?: string };
+      try {
+        return await store.list({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+          ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+        });
+      } catch (error) {
+        return wireError(error);
+      }
+    },
+    GetSpacesOwnershipProgress: async (request) => {
+      const path = request.params as { communityId: string };
+      const query = request.query as { root: string };
+      try {
+        return await store.current({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+          canonicalRoot: query.root,
+        });
+      } catch (error) {
+        return wireError(error);
+      }
+    },
+    ResumeSpacesOwnership: async (request) => {
+      const path = request.params as { communityId: string };
+      const body = request.body as { ceremony_id: string; idempotency_key: string };
+      try {
+        const result = await store.resume({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+          ceremonyId: body.ceremony_id,
+          idempotencyKey: body.idempotency_key,
+        });
+        return withEndpointResult(
+          result,
+          (result as { status?: string }).status === "verification_pending" ? 202 : 200,
+        );
+      } catch (error) {
+        return wireError(error);
+      }
+    },
     StartSpacesOwnership: async (request) => {
       const body = request.body as { idempotency_key: string; canonical_root: string };
       const path = request.params as { communityId: string };
