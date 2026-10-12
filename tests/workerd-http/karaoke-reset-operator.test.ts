@@ -530,6 +530,9 @@ describe("staging reset authenticated RPC", () => {
           throw new Error("unexpected_pg");
         },
         LEARNER_AUDIO: {
+          async delete(): Promise<never> {
+            throw new Error("unexpected_delete");
+          },
           async createMultipartUpload() {
             entered.resolve();
             await release.promise;

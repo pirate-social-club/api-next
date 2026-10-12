@@ -37,6 +37,9 @@ describe("persisted Karaoke reset marker denial", () => {
             throw new Error("unexpected_hyperdrive");
           },
           LEARNER_AUDIO: {
+            async delete(): Promise<never> {
+              throw new Error("unexpected_delete");
+            },
             async createMultipartUpload() {
               calls.create += 1;
               entered.resolve();

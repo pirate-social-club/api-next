@@ -213,7 +213,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `account_capture_${suffix}`,
     role = `account_capture_login_${suffix}`;
-  const password = randomBytes(32).toString("hex"); // synthetic fixture-only credential
+  const password = hash(randomBytes(32)); // synthetic fixture-only credential
   const admin = new Client({
     connectionString: pgUrl,
     connectionTimeoutMillis: 5000,
