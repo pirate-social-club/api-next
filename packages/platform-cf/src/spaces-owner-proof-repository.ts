@@ -1,8 +1,16 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { ControlPlaneDb, ControlPlaneTransaction } from "@pirate/application";
-import { SpacesOwnerProofRefused } from "@pirate/contracts";
+import type { ControlPlaneDb } from "@pirate/application";
+import {
+  SpacesOwnerProofRefused,
+  type SpacesOwnershipProgressV1,
+  type SpacesOwnershipRootsV1,
+} from "@pirate/contracts";
 import { isCanonicalSpacesRootV1 } from "@pirate/domain";
-import { Effect } from "effect";
+import {
+  listSpacesOwnershipRoots,
+  makeSpacesOwnerProgressReader,
+  readSpacesOwnerResumeSignature,
+} from "./spaces-owner-progress-repository.ts";
 import {
   spacesOwnerChallengeDigestV1,
   spacesOwnerChallengeMessageV1,
@@ -10,6 +18,22 @@ import {
   spacesOwnerSignatureValidV1,
   spacesOwnerStartRequestHashV1,
 } from "./spaces-owner-proof-codec.ts";
+import {
+  challengeResponse,
+  checkAuthority,
+  checkMainnet,
+  databaseNow,
+  iso,
+  lockRoot,
+  number,
+  one,
+  query,
+  type Row,
+  type Transaction,
+  terminalResponse,
+  text,
+  transact,
+} from "./spaces-owner-proof-persistence.ts";
 import type { SpacesRootAuthorityEvidenceV1 } from "./spaces-root-authority-evidence.ts";
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -18,41 +42,6 @@ const hexId = () => randomUUID().replaceAll("-", "");
 // UTF-8 body is exactly JSON.stringify(decoded), so this reproduces the full
 // accepted HTTP body byte for byte for durable replay comparison.
 const raw = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8");
-const iso = (value: unknown): string => new Date(value as string).toISOString();
-const text = (value: unknown): string => {
-  if (typeof value !== "string" || value.length === 0)
-    throw new Error("Invalid Spaces ceremony row");
-  return value;
-};
-const number = (value: unknown): number => {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("Invalid Spaces ceremony row");
-  return parsed;
-};
-
-type Row = Readonly<Record<string, unknown>>;
-type Transaction = ControlPlaneTransaction;
-
-const query = async (tx: Transaction, label: string, sql: string, values: readonly unknown[]) =>
-  Effect.runPromise(tx.execute<Row>({ label, text: sql, values, readonly: false }));
-
-const one = (rows: readonly Row[]): Row => {
-  if (rows.length !== 1 || rows[0] === undefined)
-    throw new Error("Invalid Spaces ceremony cardinality");
-  return rows[0];
-};
-
-const databaseNow = async (tx: Transaction): Promise<string> =>
-  iso(one((await query(tx, "spaces-owner.clock", "SELECT clock_timestamp() AS now", [])).rows).now);
-
-const transact = <T>(
-  db: ControlPlaneDb["Service"],
-  action: (tx: Transaction) => Promise<T>,
-): Promise<T> =>
-  Effect.runPromise(
-    db.withTransaction((tx) => Effect.tryPromise({ try: () => action(tx), catch: (e) => e })),
-  );
-
 export type SpacesRootAuthorityObservation =
   | Readonly<{ kind: "pending" }>
   | Readonly<{ kind: "verified"; bytes: Uint8Array; evidence: SpacesRootAuthorityEvidenceV1 }>;
@@ -69,6 +58,20 @@ export type SpacesRootAuthorityObserver = Readonly<{
 }>;
 
 export type SpacesOwnerProofStore = Readonly<{
+  list: (
+    input: Readonly<{ accountId: string; communityId: string; cursor?: string }>,
+  ) => Promise<SpacesOwnershipRootsV1>;
+  current: (
+    input: Readonly<{ accountId: string; communityId: string; canonicalRoot: string }>,
+  ) => Promise<SpacesOwnershipProgressV1>;
+  resume: (
+    input: Readonly<{
+      accountId: string;
+      communityId: string;
+      ceremonyId: string;
+      idempotencyKey: string;
+    }>,
+  ) => Promise<unknown>;
   start: (
     input: Readonly<{
       accountId: string;
@@ -87,70 +90,6 @@ export type SpacesOwnerProofStore = Readonly<{
     }>,
   ) => Promise<unknown>;
 }>;
-
-const lockRoot = async (tx: Transaction, environment: string, root: string): Promise<void> => {
-  await query(
-    tx,
-    "spaces-owner.root.lock",
-    "SELECT pg_advisory_xact_lock(hashtextextended($1,202612))",
-    [`${environment}:mainnet:${root}`],
-  );
-};
-
-const checkAuthority = async (
-  tx: Transaction,
-  accountId: string,
-  communityId: string,
-): Promise<void> => {
-  const result = await query(
-    tx,
-    "spaces-owner.sales-authority",
-    `
-    SELECT authority_grant.grant_id FROM community_handle_sales_authority_grants AS authority_grant
-    JOIN communities AS community ON community.community_id=authority_grant.community_id
-    WHERE authority_grant.community_id=$1 AND authority_grant.principal_account_id=$2
-      AND authority_grant.authority='manage_handle_sales' AND authority_grant.status='active'
-      AND community.status='active'
-    FOR SHARE OF authority_grant,community`,
-    [communityId, accountId],
-  );
-  if (result.rows.length !== 1) throw new SpacesOwnerProofRefused("forbidden");
-};
-
-const checkMainnet = async (tx: Transaction): Promise<void> => {
-  const result = await query(
-    tx,
-    "spaces-owner.network",
-    `
-    SELECT network FROM spaces_network_configuration
-    WHERE configuration_key='spaces_network_v1' FOR SHARE`,
-    [],
-  );
-  if (result.rows.length !== 1 || result.rows[0]?.network !== "mainnet") {
-    throw new SpacesOwnerProofRefused("unavailable");
-  }
-};
-
-const challengeResponse = (row: Row, replayed: boolean) => ({
-  contract: "pirate-spaces-ownership-start-v1" as const,
-  ceremony_id: text(row.ceremony_id),
-  generation: number(row.generation),
-  network: "mainnet" as const,
-  canonical_root: text(row.canonical_root),
-  root_outpoint: text(row.root_outpoint),
-  root_key_hex: text(row.root_key_hex),
-  challenge_message: text(row.challenge_message),
-  challenge_digest_hex: text(row.challenge_digest_hex),
-  expires_at: iso(row.expires_at),
-  replayed,
-});
-
-const terminalResponse = (row: Row, replayed: boolean) => {
-  if (typeof row.terminal_response !== "object" || row.terminal_response === null) {
-    throw new Error("Missing Spaces ceremony terminal response");
-  }
-  return { ...row.terminal_response, replayed };
-};
 
 const pendingStart = {
   contract: "pirate-spaces-ownership-start-v1",
@@ -208,7 +147,14 @@ export function makeSpacesOwnerProofStore(
   }>,
 ): SpacesOwnerProofStore {
   const { db, observer, environment } = options;
-  return {
+  const store: SpacesOwnerProofStore = {
+    list: (input) => listSpacesOwnershipRoots(db, environment, input),
+    current: makeSpacesOwnerProgressReader(options),
+    resume: async (input) =>
+      store.poll({
+        ...input,
+        signatureHex: await readSpacesOwnerResumeSignature(db, environment, input),
+      }),
     start: async (input) => {
       if (!isCanonicalSpacesRootV1(input.canonicalRoot))
         throw new SpacesOwnerProofRefused("invalid");
@@ -593,4 +539,5 @@ export function makeSpacesOwnerProofStore(
         return finishPoll(tx, row, pollId, response, observedAt);
       }),
   };
+  return store;
 }
