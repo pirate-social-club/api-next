@@ -390,4 +390,57 @@ suite("atomic shared-selector guest Study start", () => {
       }),
     30000,
   );
+  test(
+    "original completed POST replay refuses current nonpublic/adult/unpublished resource without changing original facts",
+    async () =>
+      fixture(async (f) => {
+        const backend = await actor(f),
+          proof = await seedGuest(f, 86),
+          i = input(proof, "public-replay-guard");
+        const original = await run(backend.startPreparedSession(i));
+        if (original.kind !== "start" || original.outcome.state !== "completed")
+          throw new Error("Expected actual public original capture");
+        const finance = await financialFingerprint(f),
+          before = await retained(f);
+        for (const mutation of [
+          "UPDATE posts SET visibility='members_only' WHERE community_id='study-community' AND post_id='study-post'",
+          "UPDATE posts SET content_rating='adult_18' WHERE community_id='study-community' AND post_id='study-post'",
+          "UPDATE posts SET status='draft' WHERE community_id='study-community' AND post_id='study-post'",
+        ]) {
+          await editFixture(f.admin, mutation);
+          // Actual controlled wrapper admission substep used by original POST, under
+          // real restricted LOGIN. No response/result/cookie is produced on GP010.
+          await expect(
+            f.guest.query(
+              "SELECT reserve_guest_prepared_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) AS result",
+              [
+                JSON.stringify(i.access),
+                JSON.stringify(i.operation),
+                i.communityId,
+                i.postId,
+                "unused-private-replay-draw",
+                i.targetLanguage,
+                i.learnerBand,
+                i.trustedEdge.fingerprint,
+                JSON.stringify(null),
+                "unused-private-replay-operation",
+              ],
+            ),
+          ).rejects.toMatchObject({ code: "GP010" });
+          expect(
+            await rejected(backend.startPreparedSession({ ...i, policy: null })),
+          ).toMatchObject({ _tag: "GuestParticipationStoreRejected", reason: "not-found" });
+          expect(await retained(f)).toEqual(before);
+          expect(await financialFingerprint(f)).toEqual(finance);
+          // Disposable fixture restoration only; no production moderation authority.
+          await editFixture(
+            f.admin,
+            "UPDATE posts SET visibility='public',content_rating='general',status='published' WHERE community_id='study-community' AND post_id='study-post'",
+          );
+          expect(await run(backend.startPreparedSession({ ...i, policy: null }))).toEqual(original);
+          expect(await retained(f)).toEqual(before);
+        }
+      }),
+    30000,
+  );
 });

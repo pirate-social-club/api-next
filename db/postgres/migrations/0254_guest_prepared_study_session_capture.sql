@@ -249,6 +249,10 @@ BEGIN
    IF ROW(stored_operation.request_hash,stored_operation.resource_scope)
      IS DISTINCT FROM ROW(p_operation->>'requestHash',guest_study_start_resource_scope_v1(p_community,p_post)) THEN
     RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+   -- Original rights/clock/receipt remain; completed lesson content still needs
+   -- the current public, published, general-audience resource authority.
+   IF stored_operation.state='completed' AND NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+    RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
    RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
     'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
   END IF;
@@ -276,6 +280,10 @@ BEGIN
   END IF;
   -- Positive main-row evidence, never absence or transport ambiguity. Original
   -- accepted/held/definitely aborted outcome wins before fresh source admission.
+  -- Original rights/clock/receipt remain; completed lesson content still needs
+  -- the current public, published, general-audience resource authority.
+  IF stored_operation.state='completed' AND NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+   RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
   RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
    'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
  END IF;
