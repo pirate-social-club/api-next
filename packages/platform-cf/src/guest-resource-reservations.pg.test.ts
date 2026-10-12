@@ -905,4 +905,104 @@ suite("guest resource reservations against actual private source", () => {
       }),
     20000,
   );
+  // Proposal fragment for insertion inside the existing resource suite.
+  // Reuses its fixture, seedOwner, reserve, release, usage, owner, hash and op helpers.
+  // Not executed; no changes to the sealed original validation packet.
+  test("schema phase refuses oddly named foreign references to all three resource identities", async () =>
+    fixture(async (f) => {
+      const targets = [
+        ["guest_resource_session_reservations", "reservation_id"],
+        ["guest_resource_provider_calls", "call_id"],
+        ["guest_resource_release_receipts", "receipt_id"],
+      ] as const;
+      await f.admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
+      for (const [relation, id] of targets) {
+        // Neither table nor column has an owner_id suffix. FK identity inventory
+        // must close this relation even with zero rows and no known financial name.
+        await f.admin.query(
+          `CREATE TABLE unreviewed_resource_link(locator TEXT REFERENCES ${relation}(${id}))`,
+        );
+        await expect(
+          f.admin.query("SELECT require_guest_practice_only_schema_phase_v1()"),
+        ).rejects.toMatchObject({ code: "GP003" });
+        expect(
+          (await f.admin.query("SELECT count(*)::int AS n FROM unreviewed_resource_link")).rows,
+        ).toEqual([{ n: 0 }]);
+        await f.admin.query("DROP TABLE unreviewed_resource_link");
+        // A previous failure must not poison later independent inventory checks.
+        await f.admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
+      }
+    }));
+
+  test("retained nonterminal session defeats an expired known-aborted uncaptured-plan release", async () =>
+    fixture(async (f) => {
+      await seedOwner(f, 1);
+      const template = await reserve(f, 1, "contradiction-template", 0);
+      const saved = (
+        await f.admin.query<{ id: string }>(
+          `WITH saved_id AS (SELECT 'gr_'||gen_random_uuid()::text AS id,clock_timestamp() AS at_time)
+         INSERT INTO guest_resource_session_reservations(
+           reservation_id,source_owner_id,operation_kind,idempotency_key,request_hash,session_id,
+           edge_fingerprint,policy_version,cost_policy_version,initial_units,remaining_units,
+           unit_hold_micros,worst_case_cost_micros,state,original_result,created_at,reservation_expires_at)
+         SELECT saved_id.id,source_owner_id,operation_kind,'contradictory-start',request_hash,
+           'contradictory-session',edge_fingerprint,policy_version,cost_policy_version,
+           1,1,unit_hold_micros,unit_hold_micros,'active',
+           jsonb_build_object('state','reserved','reservationId',saved_id.id,'sourceOwnerId',source_owner_id,
+             'operation',jsonb_build_object('sourceOwnerId',source_owner_id,'kind','study_start',
+               'idempotencyKey','contradictory-start','requestHash',request_hash),
+             'remainingUnits',1,'policyVersion',policy_version,'costPolicyVersion',cost_policy_version),
+           saved_id.at_time-INTERVAL '25 hours',saved_id.at_time-INTERVAL '1 hour'
+         FROM guest_resource_session_reservations CROSS JOIN saved_id
+         WHERE reservation_id=$1 RETURNING reservation_id AS id`,
+          [template.outcome_id],
+        )
+      ).rows[0]?.id;
+      if (!saved) throw new Error("historic contradictory plan missing");
+      // Privileged synthetic contradiction only. This proves fail-closed handling;
+      // it does not claim the currently closed actual249 guest writer can emit it.
+      await f.admin.query(
+        "INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,created_at,resolved_at) VALUES($1,$2,'study_start','contradictory-session','contradictory-start',$3,'known_aborted',clock_timestamp()-INTERVAL '25 hours',clock_timestamp())",
+        [`operation_${crypto.randomUUID()}`, owner(1), hash],
+      );
+      await f.admin.query(
+        "INSERT INTO study_sessions_v2(fixture_id,session_id,participation_owner_id,participation_owner_kind,status,expires_at) VALUES('retained-contradiction','contradictory-session',$1,'guest','active',clock_timestamp()+INTERVAL '1 hour')",
+        [owner(1)],
+      );
+      const before = await usage(f, 1);
+      await expect(
+        release(
+          f,
+          1,
+          "contradictory-release",
+          { state: "completed", outcome_id: saved },
+          "contradictory-session",
+          "expired",
+        ),
+      ).rejects.toMatchObject({ code: "GP006" });
+      expect(await usage(f, 1)).toEqual(before);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT state,remaining_units,released_at FROM guest_resource_session_reservations WHERE reservation_id=$1",
+            [saved],
+          )
+        ).rows,
+      ).toEqual([{ state: "active", remaining_units: 1, released_at: null }]);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT count(*)::int AS n FROM guest_resource_release_receipts WHERE source_owner_id=$1 AND idempotency_key='contradictory-release'",
+            [owner(1)],
+          )
+        ).rows,
+      ).toEqual([{ n: 0 }]);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT status FROM study_sessions_v2 WHERE session_id='contradictory-session'",
+          )
+        ).rows,
+      ).toEqual([{ status: "active" }]);
+    }));
 });
