@@ -549,12 +549,37 @@ BEGIN
     UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=source_id;
   END LOOP;
 END $$;
+-- Cleanup and revocation share the same complete retained resource closure.
+CREATE OR REPLACE FUNCTION guest_authority_component_is_empty_v1(original_source_id TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE root_id TEXT; member_ids TEXT[];
+BEGIN
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  root_id := resolve_guest_empty_owner_root_v1(original_source_id);
+  WITH RECURSIVE component(owner_id) AS (
+    SELECT root_id UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+      JOIN component c ON a.canonical_owner_id=c.owner_id
+  ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO member_ids FROM component;
+  RETURN EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=root_id AND kind='guest' AND state='empty')
+    AND NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(member_ids) AND state='established')
+    AND NOT EXISTS(SELECT 1 FROM study_sessions_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_review_items WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_session_items_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_spoken_answer_commands WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM learner_audio_artifacts WHERE participation_owner_id=ANY(member_ids))
+    AND NOT guest_resource_component_has_history_v1(member_ids)
+    AND NOT EXISTS(SELECT 1 FROM guest_participation_operations WHERE source_owner_id=ANY(member_ids)
+      AND operation_kind IN ('study_start','study_answer','learning_retention','learner_audio_deletion')
+      AND state<>'known_aborted')
+    AND NOT EXISTS(SELECT 1 FROM guest_attachment_intents WHERE owner_id=ANY(member_ids)
+      AND state IN ('awaiting_account','awaiting_confirmation') AND expires_at>clock_timestamp());
+END $$;
 DO $rebind_guest_resource_closure$
 DECLARE signature TEXT; grantee_name TEXT; trusted_schema TEXT:=current_schema();
 BEGIN
  IF trusted_schema IS NULL OR trusted_schema='pg_catalog' OR trusted_schema ~ '^pg_temp' THEN RAISE EXCEPTION 'trusted resource schema required'; END IF;
  FOREACH signature IN ARRAY ARRAY['require_guest_practice_only_schema_phase_v1()',
-  'converge_proved_empty_guest_sources_v1(text,text[])'] LOOP
+  'converge_proved_empty_guest_sources_v1(text,text[])','guest_authority_component_is_empty_v1(text)'] LOOP
   EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
   FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_proc f

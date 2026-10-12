@@ -1005,4 +1005,36 @@ suite("guest resource reservations against actual private source", () => {
         ).rows,
       ).toEqual([{ status: "active" }]);
     }));
+
+  test("refused reservation history prevents empty cleanup even when source remains empty", async () =>
+    fixture(async (f) => {
+      await seedOwner(f, 1);
+      await seedOwner(f, 2);
+      const constrained = fixturePolicy({ maximumGlobalActiveSessions: 1 });
+      await reserve(f, 1, "occupy-global", 0, constrained);
+      const refusal = await reserve(f, 2, "retained-refusal", 0, constrained);
+      expect(refusal.result?.state).toBe("rate_limited");
+      expect(
+        (
+          await f.admin.query("SELECT state FROM participation_owners WHERE owner_id=$1", [
+            owner(2),
+          ])
+        ).rows,
+      ).toEqual([{ state: "empty" }]);
+      expect(
+        (
+          await f.admin.query("SELECT guest_authority_component_is_empty_v1($1) AS empty", [
+            owner(2),
+          ])
+        ).rows,
+      ).toEqual([{ empty: false }]);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT count(*)::int AS n FROM guest_resource_session_reservations WHERE source_owner_id=$1",
+            [owner(2)],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
+    }));
 });
