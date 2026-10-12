@@ -218,7 +218,9 @@
     "./owner-study-mutations": "./src/owner-study-mutations.ts",
     "./owner-spoken-fenced-archive": "./src/owner-spoken-fenced-archive.ts",
     "./learner-audio-captured-io": "./src/learner-audio-captured-io.ts",
-    "./guest-resource-policy": "./src/guest-resource-policy.ts"
+    "./guest-resource-policy": "./src/guest-resource-policy.ts",
+    "./guest-recovery-deletion-store": "./src/guest-recovery-deletion-store.ts",
+    "./owner-audio-deletion-io": "./src/owner-audio-deletion-io.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
