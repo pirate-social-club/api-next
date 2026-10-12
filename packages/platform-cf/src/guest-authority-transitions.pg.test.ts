@@ -407,6 +407,9 @@ suite("guest controlled browser authority transitions", () => {
         code: "GP003",
       });
       await f.admin.query("DROP TABLE unreviewed_credential_history");
+      await f.admin.query(
+        "CREATE TABLE accepted_account_policy(owner_account_id TEXT,claim_owner TEXT,custody_owner_address TEXT)",
+      );
       expect(
         (await confirm(f, second, owner(2), [first, second])).authority?.selected?.owner_id,
       ).toBe(owner(1));

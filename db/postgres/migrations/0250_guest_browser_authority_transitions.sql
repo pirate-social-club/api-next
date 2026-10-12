@@ -53,7 +53,9 @@ BEGIN
       JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE c.relnamespace=trusted_namespace AND c.relkind IN ('r','p','f','v','m')
         AND a.attnum>0 AND NOT a.attisdropped
-        AND a.attname ~ '(^|_)owner($|_)'
+        -- Guest source IDs; ordinary account/policy/lease owner fields have
+        -- separate accepted authorities and do not reference guest identities.
+        AND a.attname ~ '(^|_)owner_id$'
         AND c.relname NOT IN (
           'participation_owners','guest_credentials','guest_empty_owner_aliases',
           'participation_owner_clocks','guest_learning_preferences',
