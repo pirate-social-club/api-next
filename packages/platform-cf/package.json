@@ -214,7 +214,8 @@
     "./guest-attachment-preparation-store": "./src/guest-attachment-preparation-store.ts",
     "./guest-resource-store": "./src/guest-resource-store.ts",
     "./owner-study-starter": "./src/owner-study-starter.ts",
-    "./owner-spoken-checkpoint-store": "./src/owner-spoken-checkpoint-store.ts"
+    "./owner-spoken-checkpoint-store": "./src/owner-spoken-checkpoint-store.ts",
+    "./owner-study-mutations": "./src/owner-study-mutations.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

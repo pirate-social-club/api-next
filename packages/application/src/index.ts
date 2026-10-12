@@ -1,3 +1,5 @@
+export * from "./study-shared-lesson-mutation.ts";
+export * from "./study-spoken-result-projection.ts";
 export * from "./community-moderation-runtime.ts";
 export * from "./guest-learning-resource-admission.ts";
 export * from "./guest-participation-authority.ts";
@@ -79,3 +81,6 @@ export * from "./use-cases/personas.ts";
 
 export * from "./owner-spoken-success-protocol.ts";
 export * from "./learner-audio-io-outcome.ts";
+
+export * from "./study-shared-lesson-mutation.ts";
+export * from "./study-spoken-result-projection.ts";
