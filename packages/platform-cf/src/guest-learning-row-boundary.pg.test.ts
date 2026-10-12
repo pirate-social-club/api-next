@@ -64,11 +64,11 @@ async function migrationPacket() {
     "c025474320a4bc244d974929415fed95ad26b22d0e2cf9657fbd2f328ddafcf9",
   );
   expect(resource.checksum).toBe(
-    "9a6db93710d9f2a562c4d3b0419ef1a892b063c8ef2912f4d52ae39cac448ac6",
+    "2de6e6508ec498a616b2db85ceafef1e2dbde7323a060cfae9956d0353d1aae4",
   );
   const rowBoundary = await readMigration("0252_guest_learning_controlled_row_admission.sql");
   expect(rowBoundary.checksum).toBe(
-    "a3e3649c9064bc4fed24c2d4d4caae3f2381e799d49c31ba0f1ea27c184da084",
+    "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
   );
   return { historical, foundation, preservation, authority, resource, rowBoundary };
 }
@@ -187,7 +187,7 @@ function studyDriver(scoped: string, accountId: string, personaId: string) {
 }
 
 const fixtureCreatorSql =
-  "-- Fixture ONLY. Not product authorization or a serving function. Private exact\n-- templates are seeded from an ordinary account graph produced by real store.\nCREATE TABLE guest_row_fixture_templates(relation_name TEXT PRIMARY KEY,row_data JSONB NOT NULL);\nREVOKE ALL ON guest_row_fixture_templates FROM PUBLIC;\nCREATE FUNCTION guest_row_fixture_create_v1(seed TEXT, patches JSONB DEFAULT '{}'::JSONB)\nRETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$\nDECLARE owner_id TEXT; sid TEXT; iid TEXT; rid TEXT; aid TEXT; cid TEXT; artifact TEXT;\n operation_id TEXT; op JSONB; policy JSONB; budget JSONB; reservation guest_resource_session_reservations%ROWTYPE;\n row_json JSONB; names TEXT[]; fixture_relation TEXT; now_at TIMESTAMPTZ;\nBEGIN\n IF seed IS NULL OR seed !~ '^[a-z0-9_-]{1,48}$' OR jsonb_typeof(patches)<>'object'\n   OR EXISTS(SELECT 1 FROM jsonb_object_keys(patches) k WHERE k NOT IN(\n    'study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands',\n    'learner_audio_artifacts','study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'))\n THEN RAISE EXCEPTION 'invalid fixture graph input'; END IF;\n -- Resource GLOBAL lock precedes all owner/proof locks. No IO in this function.\n PERFORM pg_advisory_xact_lock_shared(83000003,1);\n PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;\n IF NOT FOUND THEN RAISE EXCEPTION 'actual resource global anchor unavailable'; END IF;\n owner_id:='owner_'||gen_random_uuid()::TEXT;sid:='guest-row-session-'||seed;\n iid:='guest-row-item-'||seed;rid:='guest-row-review-'||seed;aid:='guest-row-attempt-'||seed;\n cid:='guest-row-command-'||seed;artifact:='guest-row-artifact-'||seed;operation_id:='guest-row-start-'||seed;\n INSERT INTO participation_owners(owner_id,kind,guest_origin,state) VALUES(owner_id,'guest','https://app.example','empty');\n op:=jsonb_build_object('sourceOwnerId',owner_id,'kind','study_start','idempotencyKey','guest-row-key-'||seed,'requestHash',repeat('a',64));\n policy:='{\"version\":\"row-fixture-v1\",\"costPolicyVersion\":\"row-cost-v1\",\"maximumOwnerActiveSessions\":2,\"maximumOwnerReservedPaidCallsPerRollingDay\":60,\"maximumGlobalActiveSessions\":1000,\"maximumGlobalPaidCallsPerRollingDay\":10000,\"maximumGlobalCostMicrosPerRollingDay\":\"1000000\",\"maximumOwnerCostMicrosPerRollingDay\":\"1000000\",\"maximumTrustedEdgeSessionsPerWindow\":1000,\"trustedEdgeWindowSeconds\":60,\"maximumProviderCallCostMicros\":\"10\"}'::JSONB;\n budget:=reserve_guest_resource_session_v1(owner_id,op,sid,0,'0','row-fixture-edge',policy);\n IF budget#>>'{result,state}'<>'reserved' THEN RAISE EXCEPTION 'fixture resource reservation failed'; END IF;\n SELECT * INTO STRICT reservation FROM guest_resource_session_reservations WHERE reservation_id=budget->>'outcome_id';\n now_at:=clock_timestamp();\n INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,created_at)\n VALUES(operation_id,owner_id,'study_start',guest_study_start_resource_scope_v1('study-community','study-post'),op->>'idempotencyKey',op->>'requestHash','reserved',reservation.created_at);\n names:=ARRAY['study_sessions_v2','study_review_items','study_session_items_v2','learner_audio_artifacts','study_spoken_answer_commands','study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'];\n FOREACH fixture_relation IN ARRAY names LOOP\n  SELECT row_data INTO STRICT row_json FROM guest_row_fixture_templates WHERE guest_row_fixture_templates.relation_name=fixture_relation;\n  CASE fixture_relation\n   WHEN 'study_sessions_v2' THEN row_json:=row_json||jsonb_build_object('session_id',sid,'account_id',NULL,'persona_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','guest_reward_mode','practice_only','guest_reward_terms',NULL,'guest_start_operation_id',operation_id,'guest_resource_reservation_id',reservation.reservation_id,'guest_disclosure_version','reviewed-fixture-disclosure-v1','guest_disclosure_accepted',TRUE,'telegram_practice_only',FALSE,'idempotency_key',op->>'idempotencyKey','request_hash',op->>'requestHash','created_at',reservation.created_at,'expires_at',reservation.reservation_expires_at,'status','completed','completed_at',now_at,'completion_reason','all_resolved','current_session_item_id',NULL,'current_presented_at',NULL);\n   WHEN 'study_review_items' THEN row_json:=row_json||jsonb_build_object('review_item_id',rid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest');\n   WHEN 'study_session_items_v2' THEN row_json:=row_json||jsonb_build_object('session_item_id',iid,'session_id',sid,'review_item_id',rid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','ordinal',0);\n   WHEN 'learner_audio_artifacts' THEN row_json:=row_json||jsonb_build_object('learner_audio_artifact_id',artifact,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','source_kind','study','attempt_ref',aid,'expected_object_ref','fixture/'||seed,'object_ref','fixture/'||seed);\n   WHEN 'study_spoken_answer_commands' THEN row_json:=row_json||jsonb_build_object('command_id',cid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','session_id',sid,'session_item_id',iid,'attempt_id',aid,'learner_audio_artifact_id',artifact,'idempotency_key','guest-answer-'||seed,'lease_token','guest-lease-'||seed);\n   WHEN 'study_attempts_v2' THEN row_json:=row_json||jsonb_build_object('attempt_id',aid,'session_item_id',iid,'learner_audio_artifact_id',artifact,'idempotency_key','guest-answer-'||seed,'submission_evidence',(row_json->'submission_evidence')||jsonb_build_object('learner_audio_artifact_id',artifact));\n   WHEN 'study_presentations_v2' THEN row_json:=row_json||jsonb_build_object('presentation_id','guest-presentation-'||seed,'session_id',sid,'session_item_id',iid,'queue_ordinal',0);\n   WHEN 'study_lesson_item_state_v2' THEN row_json:=row_json||jsonb_build_object('session_id',sid,'session_item_id',iid,'original_ordinal',0);\n  END CASE;\n  row_json:=row_json||COALESCE(patches->fixture_relation,'{}'::JSONB);\n  EXECUTE format('INSERT INTO %I SELECT (jsonb_populate_record(NULL::%I,$1)).*',fixture_relation,fixture_relation) USING row_json;\n END LOOP;\n RETURN jsonb_build_object('owner_id',owner_id,'session_id',sid,'session_item_id',iid,'review_item_id',rid,'attempt_id',aid,'command_id',cid,'artifact_id',artifact);\nEND $$;\nCREATE FUNCTION guest_row_fixture_counts_v1() RETURNS JSONB LANGUAGE sql SECURITY DEFINER AS $$\n SELECT jsonb_build_object(\n 'study_sessions_v2',(SELECT count(*) FROM study_sessions_v2 WHERE participation_owner_kind='guest'),\n 'study_review_items',(SELECT count(*) FROM study_review_items WHERE participation_owner_kind='guest'),\n 'study_session_items_v2',(SELECT count(*) FROM study_session_items_v2 WHERE participation_owner_kind='guest'),\n 'study_spoken_answer_commands',(SELECT count(*) FROM study_spoken_answer_commands WHERE participation_owner_kind='guest'),\n 'learner_audio_artifacts',(SELECT count(*) FROM learner_audio_artifacts WHERE participation_owner_kind='guest'),\n 'study_attempts_v2',(SELECT count(*) FROM study_attempts_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'),\n 'study_presentations_v2',(SELECT count(*) FROM study_presentations_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'),\n 'study_lesson_item_state_v2',(SELECT count(*) FROM study_lesson_item_state_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'))\n$$;\nDO $bind_fixture_only_row_helpers$\nDECLARE signature TEXT; trusted_schema TEXT:=current_schema(); grantee_name TEXT;\nBEGIN\n FOREACH signature IN ARRAY ARRAY['guest_row_fixture_create_v1(text,jsonb)','guest_row_fixture_counts_v1()'] LOOP\n  EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);\n  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);\n  FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_proc f\n   CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a\n   WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner LOOP\n   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name);\n  END LOOP;\n END LOOP;\n FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_class c\n  CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a\n  WHERE c.oid='guest_row_fixture_templates'::regclass AND a.grantee<>0 AND a.grantee<>c.relowner LOOP\n  EXECUTE format('REVOKE ALL ON TABLE guest_row_fixture_templates FROM %I',grantee_name);\n END LOOP;\nEND $bind_fixture_only_row_helpers$;\n";
+  "-- Fixture ONLY. Not product authorization or a serving function. Private exact\n-- templates are seeded from an ordinary account graph produced by real store.\nCREATE TABLE guest_row_fixture_templates(relation_name TEXT PRIMARY KEY,row_data JSONB NOT NULL);\nREVOKE ALL ON guest_row_fixture_templates FROM PUBLIC;\nCREATE FUNCTION guest_row_fixture_create_v1(seed TEXT, patches JSONB DEFAULT '{}'::JSONB)\nRETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$\nDECLARE owner_id TEXT; sid TEXT; iid TEXT; rid TEXT; aid TEXT; cid TEXT; artifact TEXT;\n operation_id TEXT; op JSONB; policy JSONB; budget JSONB; reservation guest_resource_session_reservations%ROWTYPE;\n row_json JSONB; names TEXT[]; fixture_relation TEXT; now_at TIMESTAMPTZ; presentation_cap INTEGER; call_plan JSONB;\nBEGIN\n IF seed IS NULL OR seed !~ '^[a-z0-9_-]{1,48}$' OR jsonb_typeof(patches)<>'object'\n   OR EXISTS(SELECT 1 FROM jsonb_object_keys(patches) k WHERE k NOT IN(\n    'study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands',\n    'learner_audio_artifacts','study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'))\n THEN RAISE EXCEPTION 'invalid fixture graph input'; END IF;\n -- Resource GLOBAL lock precedes all owner/proof locks. No IO in this function.\n PERFORM pg_advisory_xact_lock_shared(83000003,1);\n PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;\n IF NOT FOUND THEN RAISE EXCEPTION 'actual resource global anchor unavailable'; END IF;\n owner_id:='owner_'||gen_random_uuid()::TEXT;sid:='guest-row-session-'||seed;\n iid:='guest-row-item-'||seed;rid:='guest-row-review-'||seed;aid:='guest-row-attempt-'||seed;\n cid:='guest-row-command-'||seed;artifact:='guest-row-artifact-'||seed;operation_id:='guest-row-start-'||seed;\n INSERT INTO participation_owners(owner_id,kind,guest_origin,state) VALUES(owner_id,'guest','https://app.example','empty');\n op:=jsonb_build_object('sourceOwnerId',owner_id,'kind','study_start','idempotencyKey','guest-row-key-'||seed,'requestHash',repeat('a',64));\n policy:='{\"version\":\"row-fixture-v1\",\"costPolicyVersion\":\"row-cost-v1\",\"maximumOwnerActiveSessions\":2,\"maximumOwnerReservedPaidCallsPerRollingDay\":60,\"maximumGlobalActiveSessions\":1000,\"maximumGlobalPaidCallsPerRollingDay\":10000,\"maximumGlobalCostMicrosPerRollingDay\":\"1000000\",\"maximumOwnerCostMicrosPerRollingDay\":\"1000000\",\"maximumTrustedEdgeSessionsPerWindow\":1000,\"trustedEdgeWindowSeconds\":60,\"maximumProviderCallCostMicros\":\"10\"}'::JSONB;\n -- This fixture stores ONE actual spoken card per eight-family row graph.\n -- It is deliberately not a four-to-ten-card lesson/engine admission proof.\n SELECT LEAST(20,3*count(*)::INTEGER) INTO presentation_cap\n  FROM guest_row_fixture_templates t WHERE t.relation_name='study_session_items_v2'\n   AND ((t.row_data||COALESCE(patches->'study_session_items_v2','{}'::JSONB))\n    #>>'{item_snapshot,exercise_type}')='say_it_back';\n IF presentation_cap<>3 THEN RAISE EXCEPTION 'fixture requires its actual one spoken card'; END IF;\n call_plan:=jsonb_build_object('policy_revision','study_spoken_rerecord_v1',\n  'graded_presentation_cap',presentation_cap,'ungraded_rerecord_per_presentation',1,\n  'maximum_paid_calls',2*presentation_cap);\n budget:=reserve_guest_resource_session_v1(owner_id,op,sid,2*presentation_cap,\n  (2*presentation_cap*(policy->>'maximumProviderCallCostMicros')::NUMERIC)::TEXT,'row-fixture-edge',policy);\n IF budget#>>'{result,state}'<>'reserved' THEN RAISE EXCEPTION 'fixture resource reservation failed'; END IF;\n SELECT * INTO STRICT reservation FROM guest_resource_session_reservations WHERE reservation_id=budget->>'outcome_id';\n now_at:=clock_timestamp();\n INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,created_at)\n VALUES(operation_id,owner_id,'study_start',guest_study_start_resource_scope_v1('study-community','study-post'),op->>'idempotencyKey',op->>'requestHash','reserved',reservation.created_at);\n names:=ARRAY['study_sessions_v2','study_review_items','study_session_items_v2','learner_audio_artifacts','study_spoken_answer_commands','study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'];\n FOREACH fixture_relation IN ARRAY names LOOP\n  SELECT row_data INTO STRICT row_json FROM guest_row_fixture_templates WHERE guest_row_fixture_templates.relation_name=fixture_relation;\n  CASE fixture_relation\n   WHEN 'study_sessions_v2' THEN row_json:=row_json||jsonb_build_object('session_id',sid,'account_id',NULL,'persona_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','guest_reward_mode','practice_only','guest_reward_terms',NULL,'guest_start_operation_id',operation_id,'guest_resource_reservation_id',reservation.reservation_id,'guest_spoken_call_plan',call_plan,'guest_disclosure_version','reviewed-fixture-disclosure-v1','guest_disclosure_accepted',TRUE,'telegram_practice_only',FALSE,'idempotency_key',op->>'idempotencyKey','request_hash',op->>'requestHash','created_at',reservation.created_at,'expires_at',reservation.reservation_expires_at,'status','completed','completed_at',now_at,'completion_reason','all_resolved','current_session_item_id',NULL,'current_presented_at',NULL);\n   WHEN 'study_review_items' THEN row_json:=row_json||jsonb_build_object('review_item_id',rid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest');\n   WHEN 'study_session_items_v2' THEN row_json:=row_json||jsonb_build_object('session_item_id',iid,'session_id',sid,'review_item_id',rid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','ordinal',0);\n   WHEN 'learner_audio_artifacts' THEN row_json:=row_json||jsonb_build_object('learner_audio_artifact_id',artifact,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','source_kind','study','attempt_ref',aid,'expected_object_ref','fixture/'||seed,'object_ref','fixture/'||seed);\n   WHEN 'study_spoken_answer_commands' THEN row_json:=row_json||jsonb_build_object('command_id',cid,'account_id',NULL,'participation_owner_id',owner_id,'participation_owner_kind','guest','session_id',sid,'session_item_id',iid,'attempt_id',aid,'learner_audio_artifact_id',artifact,'idempotency_key','guest-answer-'||seed,'lease_token','guest-lease-'||seed);\n   WHEN 'study_attempts_v2' THEN row_json:=row_json||jsonb_build_object('attempt_id',aid,'session_item_id',iid,'learner_audio_artifact_id',artifact,'idempotency_key','guest-answer-'||seed,'submission_evidence',(row_json->'submission_evidence')||jsonb_build_object('learner_audio_artifact_id',artifact));\n   WHEN 'study_presentations_v2' THEN row_json:=row_json||jsonb_build_object('presentation_id','guest-presentation-'||seed,'session_id',sid,'session_item_id',iid,'queue_ordinal',0);\n   WHEN 'study_lesson_item_state_v2' THEN row_json:=row_json||jsonb_build_object('session_id',sid,'session_item_id',iid,'original_ordinal',0);\n  END CASE;\n  row_json:=row_json||COALESCE(patches->fixture_relation,'{}'::JSONB);\n  EXECUTE format('INSERT INTO %I SELECT (jsonb_populate_record(NULL::%I,$1)).*',fixture_relation,fixture_relation) USING row_json;\n END LOOP;\n RETURN jsonb_build_object('owner_id',owner_id,'session_id',sid,'session_item_id',iid,'review_item_id',rid,'attempt_id',aid,'command_id',cid,'artifact_id',artifact);\nEND $$;\nCREATE FUNCTION guest_row_fixture_counts_v1() RETURNS JSONB LANGUAGE sql SECURITY DEFINER AS $$\n SELECT jsonb_build_object(\n 'study_sessions_v2',(SELECT count(*) FROM study_sessions_v2 WHERE participation_owner_kind='guest'),\n 'study_review_items',(SELECT count(*) FROM study_review_items WHERE participation_owner_kind='guest'),\n 'study_session_items_v2',(SELECT count(*) FROM study_session_items_v2 WHERE participation_owner_kind='guest'),\n 'study_spoken_answer_commands',(SELECT count(*) FROM study_spoken_answer_commands WHERE participation_owner_kind='guest'),\n 'learner_audio_artifacts',(SELECT count(*) FROM learner_audio_artifacts WHERE participation_owner_kind='guest'),\n 'study_attempts_v2',(SELECT count(*) FROM study_attempts_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'),\n 'study_presentations_v2',(SELECT count(*) FROM study_presentations_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'),\n 'study_lesson_item_state_v2',(SELECT count(*) FROM study_lesson_item_state_v2 a JOIN study_session_items_v2 i USING(session_item_id) WHERE i.participation_owner_kind='guest'))\n$$;\nDO $bind_fixture_only_row_helpers$\nDECLARE signature TEXT; trusted_schema TEXT:=current_schema(); grantee_name TEXT;\nBEGIN\n FOREACH signature IN ARRAY ARRAY['guest_row_fixture_create_v1(text,jsonb)','guest_row_fixture_counts_v1()'] LOOP\n  EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);\n  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);\n  FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_proc f\n   CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a\n   WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner LOOP\n   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name);\n  END LOOP;\n END LOOP;\n FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_class c\n  CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a\n  WHERE c.oid='guest_row_fixture_templates'::regclass AND a.grantee<>0 AND a.grantee<>c.relowner LOOP\n  EXECUTE format('REVOKE ALL ON TABLE guest_row_fixture_templates FROM %I',grantee_name);\n END LOOP;\nEND $bind_fixture_only_row_helpers$;\n";
 
 const rowFamilies = [
   ["study_sessions_v2", "session_id"],
@@ -221,6 +221,7 @@ async function accountRows(admin: Client) {
             "guest_disclosure_version",
             "guest_disclosure_accepted",
             "guest_resource_reservation_id",
+            "guest_spoken_call_plan",
           ],
         ],
       )
@@ -469,6 +470,71 @@ suite("guest learning raw-row privilege boundary", () => {
       const graph = (await runtime.query("SELECT guest_row_fixture_create_v1('accepted') AS graph"))
         .rows[0]?.graph;
       expect(graph).toHaveProperty("owner_id");
+      // Private controlled fixture graph has one actual spoken item, hence
+      // three graded slots plus three paid rerecords. No zero-budget fiction.
+      const plan = {
+        policy_revision: "study_spoken_rerecord_v1",
+        graded_presentation_cap: 3,
+        ungraded_rerecord_per_presentation: 1,
+        maximum_paid_calls: 6,
+      };
+      expect(
+        (
+          await admin.query(
+            `SELECT s.guest_spoken_call_plan AS plan,r.initial_units,
+        r.worst_case_cost_micros::text AS cost,
+        (SELECT count(*)::int FROM study_session_items_v2 i WHERE i.session_id=s.session_id
+          AND i.item_snapshot->>'exercise_type'='say_it_back') AS spoken_cards
+        FROM study_sessions_v2 s JOIN guest_resource_session_reservations r
+          ON r.reservation_id=s.guest_resource_reservation_id WHERE s.session_id=$1`,
+            [graph.session_id],
+          )
+        ).rows,
+      ).toEqual([{ plan, initial_units: 6, cost: "60", spoken_cards: 1 }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT owner_active::int AS owner_active,owner_calls::text,owner_cost::text
+        FROM guest_resource_usage_v1(ARRAY[$1]::text[],clock_timestamp())`,
+            [graph.owner_id],
+          )
+        ).rows,
+      ).toEqual([{ owner_active: 1, owner_calls: "6", owner_cost: "60" }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM study_sessions_v2 WHERE participation_owner_kind='account' AND guest_spoken_call_plan IS NOT NULL",
+          )
+        ).rows,
+      ).toEqual([{ n: 0 }]);
+      await expect(
+        admin.query(
+          "UPDATE study_sessions_v2 SET guest_spoken_call_plan=NULL WHERE session_id=$1",
+          [graph.session_id],
+        ),
+      ).rejects.toMatchObject({ code: "GP003" });
+      await expect(
+        admin.query(
+          "UPDATE study_sessions_v2 SET guest_spoken_call_plan=$2::jsonb WHERE session_id=$1",
+          [graph.session_id, { ...plan, graded_presentation_cap: 6, maximum_paid_calls: 12 }],
+        ),
+      ).rejects.toMatchObject({ code: "GP003" });
+      expect(
+        (
+          await runtime.query(
+            "UPDATE study_sessions_v2 SET guest_spoken_call_plan=NULL WHERE session_id=$1 RETURNING session_id",
+            [graph.session_id],
+          )
+        ).rowCount,
+      ).toBe(0);
+      expect(
+        (
+          await admin.query(
+            "SELECT guest_spoken_call_plan AS plan FROM study_sessions_v2 WHERE session_id=$1",
+            [graph.session_id],
+          )
+        ).rows,
+      ).toEqual([{ plan }]);
       const controlled = (await runtime.query("SELECT guest_row_fixture_counts_v1() AS counts"))
         .rows[0]?.counts;
       expect(controlled).toEqual(Object.fromEntries(rowFamilies.map(([table]) => [table, 1])));
@@ -576,6 +642,20 @@ suite("guest learning raw-row privilege boundary", () => {
         ).toEqual(controlled);
       }
       for (const [seed, patch] of [
+        ["missing-paid-plan", { study_sessions_v2: { guest_spoken_call_plan: null } }],
+        [
+          "unfunded-paid-plan",
+          {
+            study_sessions_v2: {
+              guest_spoken_call_plan: {
+                policy_revision: "study_spoken_rerecord_v1",
+                graded_presentation_cap: 12,
+                ungraded_rerecord_per_presentation: 1,
+                maximum_paid_calls: 24,
+              },
+            },
+          },
+        ],
         ["false-consent", { study_sessions_v2: { guest_disclosure_accepted: false } }],
         ["missing-consent", { study_sessions_v2: { guest_disclosure_accepted: null } }],
         ["false-persona", { study_sessions_v2: { persona_id: "study-persona" } }],
