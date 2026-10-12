@@ -372,6 +372,7 @@ export const makeControlPlaneOwnerStudyStarter = (
                 input.disclosure.version !== configuredDisclosure.version
               )
                 return yield* reject("resource-policy-unavailable");
+              const operationId = newOperationId();
               const committed = yield* one(
                 transaction,
                 "guest-study.start.commit",
@@ -380,7 +381,7 @@ export const makeControlPlaneOwnerStudyStarter = (
                   ...values,
                   JSON.stringify(prepared),
                   JSON.stringify(items),
-                  newOperationId(),
+                  operationId,
                   input.timezone,
                   configuredDisclosure.version,
                   input.disclosure.version,
@@ -390,8 +391,10 @@ export const makeControlPlaneOwnerStudyStarter = (
               );
               return yield* Effect.try({
                 try: () => {
-                  if (committed.state === "completed" && committed.result !== null)
+                  if (committed.state === "completed" && committed.result !== null) {
+                    if (committed.operationId !== operationId) throw new Error();
                     assertGuestResult(committed.result, input, prepared.sessionId);
+                  }
                   return outcome(committed, input);
                 },
                 catch: () => invalid("guest-study.start.outcome"),

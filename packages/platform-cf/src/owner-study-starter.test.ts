@@ -241,7 +241,7 @@ function fixture(
       if (query.text.startsWith("SELECT prepare_guest_study_start_v1"))
         result = options.prepare ?? candidate;
       else if (query.text.startsWith("SELECT commit_guest_study_start_v1"))
-        result = options.commit ?? resolved;
+        result = options.commit ?? { ...resolved, operationId: "fresh-start-operation" };
       else if (query.text.startsWith("SELECT read_owner_study_session_snapshot_v1"))
         result = Object.hasOwn(options, "read") ? options.read : guestResult();
       else if (query.text.startsWith("SELECT find_guest_study_start_operation_v1"))
@@ -396,7 +396,13 @@ test("completed lookup rejects coherent foreign owner/community/post; original e
   }
 });
 test("NEW completed commit bound to original reservation rejects schema-valid wrong session and rolls back", async () => {
-  const f = fixture({ commit: { ...resolved, result: guestResult("foreign-session") } });
+  const f = fixture({
+    commit: {
+      ...resolved,
+      operationId: "fresh-start-operation",
+      result: guestResult("foreign-session"),
+    },
+  });
   rolledBack(f, await failure(f.store.startSession(input)));
   expect(f.queries.some((q) => q.text.startsWith("SELECT commit_guest_study_start_v1"))).toBe(true);
 });
@@ -461,7 +467,14 @@ test("completed original receipt survives changed current config/disclosure and 
 test("sent COMMIT and rollback acknowledgment loss never publish a completed result", async () => {
   for (const options of [
     { commitFails: true },
-    { commit: { ...resolved, result: guestResult("foreign-session") }, rollbackFails: true },
+    {
+      commit: {
+        ...resolved,
+        operationId: "fresh-start-operation",
+        result: guestResult("foreign-session"),
+      },
+      rollbackFails: true,
+    },
   ]) {
     const f = fixture(options);
     let published = 0;
@@ -479,4 +492,9 @@ test("sent COMMIT and rollback acknowledgment loss never publish a completed res
     expect(JSON.stringify(error)).not.toContain("opaque private");
     expect(JSON.stringify(f.logs)).not.toContain("opaque private");
   }
+});
+
+test("new commit rejects an unrelated durable outcome locator for the valid original source and session", async () => {
+  const f = fixture({ commit: { ...resolved, operationId: "foreign-start-operation" } });
+  rolledBack(f, await failure(f.store.startSession(input)));
 });
