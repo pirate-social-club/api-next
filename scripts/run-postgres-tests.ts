@@ -127,6 +127,9 @@ const measuredMinimumWeights: Readonly<Record<string, number>> = {
   "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts": 272,
   "packages/platform-cf/src/postgres.pg.test.ts": 102,
   "packages/platform-cf/src/text-submission-repository.pg.test.ts": 165,
+  // This wrapper runs 33 workerd video tests. Required CI job 114727649879
+  // measured 104.90 seconds, which its one Bun test did not represent.
+  "packages/platform-cf/src/video-workflow-composed.pg.test.ts": 1_100,
 };
 
 type PostgresTestPartition = {
