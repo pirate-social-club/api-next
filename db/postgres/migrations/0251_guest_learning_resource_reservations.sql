@@ -392,7 +392,10 @@ BEGIN
  IF NOT FOUND THEN
   -- No session alone is NOT an abort witness. An expired uncaptured plan may
   -- release only after a durable known-aborted main start with exact identity.
-  IF p_terminal_state<>'expired' OR reservation.reservation_expires_at>use_now OR NOT EXISTS(
+  IF p_terminal_state<>'expired' OR reservation.reservation_expires_at>use_now
+   OR EXISTS(SELECT 1 FROM study_sessions_v2 s
+     WHERE s.session_id=release_guest_resource_session_v1.p_session_id)
+   OR NOT EXISTS(
    SELECT 1 FROM guest_participation_operations o WHERE o.source_owner_id=p_source_id AND o.operation_kind='study_start'
     AND o.idempotency_key=reservation.idempotency_key AND o.request_hash=reservation.request_hash AND o.state='known_aborted')
    THEN RAISE EXCEPTION 'authoritative terminal state required' USING ERRCODE='GP006'; END IF;
@@ -487,7 +490,9 @@ BEGIN
           'participation_owners'::regclass,'guest_credentials'::regclass,
           'guest_empty_owner_aliases'::regclass,'participation_owner_clocks'::regclass,
           'guest_learning_preferences'::regclass,'guest_participation_operations'::regclass,
-          'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass])
+          'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass,
+          'guest_resource_session_reservations'::regclass,'guest_resource_provider_calls'::regclass,
+          'guest_resource_release_receipts'::regclass])
         AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
           'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
           'guest_learning_preferences','guest_participation_operations',
