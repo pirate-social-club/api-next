@@ -112,7 +112,7 @@ function studyDriver(scoped: string, accountId: string, personaId: string) {
           timezone: "UTC",
         }),
       ),
-    reserve: (sessionId: string, sessionItemId: string, seed: string) =>
+    reserve: (sessionId: string, sessionItemId: string, seed: string, idempotencyKey = seed) =>
       run(
         store.reserveSpokenAnswer({
           accountId,
@@ -122,7 +122,7 @@ function studyDriver(scoped: string, accountId: string, personaId: string) {
           attemptId: id("attempt"),
           artifactId: id("artifact"),
           commandId: id("command"),
-          idempotencyKey: seed,
+          idempotencyKey,
           leaseToken: id("lease"),
           providerRetention: "stored",
           ...audio(seed),
@@ -402,7 +402,12 @@ suite("guest learning raw-row privilege boundary", () => {
       );
       await account.fail(afterCommand);
       const retry = reserved(
-        await account.reserve(after.session_id, afterItem, "ordinary-after-retry"),
+        await account.reserve(
+          after.session_id,
+          afterItem,
+          "ordinary-after-retry",
+          "ordinary-after-audio",
+        ),
       );
       expect(retry.commandId).toBe(afterCommand.commandId);
       const result = await account.complete(
@@ -413,7 +418,14 @@ suite("guest learning raw-row privilege boundary", () => {
       );
       expect(result.outcome).toBe("correct");
       expect(
-        (await account.reserve(after.session_id, afterItem, "ordinary-after-retry")).state,
+        (
+          await account.reserve(
+            after.session_id,
+            afterItem,
+            "ordinary-after-retry",
+            "ordinary-after-audio",
+          )
+        ).state,
       ).toBe("completed");
       const accountAtGuestStart = await accountRows(admin);
       const moneyAtGuestStart = await financialCounts(admin);
