@@ -34,12 +34,12 @@ const GuestCapture = Schema.Struct({
   durationMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 60000 })),
 });
 const invalid = () => new LearnerAudioCaptureRejected({ reason: "capture-mismatch" });
-function one<A>(
+function one<S extends Schema.ConstraintDecoder<unknown>>(
   tx: ControlPlaneTransaction,
   label: string,
   text: string,
   values: readonly unknown[],
-  schema: Schema.Schema<A>,
+  schema: S,
 ) {
   return tx.execute<unknown>({ label, text, values, readonly: false }).pipe(
     Effect.flatMap((r) =>
@@ -162,12 +162,14 @@ export const makeOwnerSpokenFencedArchiveStage = (
       Effect.catchTag("LearnerAudioCaptureRejected", () =>
         Effect.fail(new GuestParticipationStoreRejected({ reason: "idempotency-conflict" })),
       ),
-      Effect.catchTag("ControlPlaneStatementFailed", (error) =>
-        error.sqlState === "GP005"
-          ? Effect.fail(new GuestParticipationStoreRejected({ reason: "idempotency-conflict" }))
-          : error.sqlState === "GP002"
-            ? Effect.fail(new GuestParticipationStoreRejected({ reason: "owner-mismatch" }))
-            : Effect.fail(error),
+      Effect.catchTag(
+        "ControlPlaneStatementFailed",
+        (error): Effect.Effect<never, ControlPlaneError | GuestParticipationStoreRejected> =>
+          error.sqlState === "GP005"
+            ? Effect.fail(new GuestParticipationStoreRejected({ reason: "idempotency-conflict" }))
+            : error.sqlState === "GP002"
+              ? Effect.fail(new GuestParticipationStoreRejected({ reason: "owner-mismatch" }))
+              : Effect.fail(error),
       ),
     ),
   };
