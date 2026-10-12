@@ -15,6 +15,13 @@ import {
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const pgTest = pgUrl ? test : test.skip;
+// Recovery has four fields; a learning lease is not recovery authority.
+const recoveryAccess = (access: Awaited<ReturnType<typeof seedGuest>>["access"]) => ({
+  kind: "guest" as const,
+  ownerId: access.ownerId,
+  credentialId: access.credentialId,
+  origin: access.origin,
+});
 const operation = (ownerId: string, key: string) => ({
   sourceOwnerId: ownerId,
   kind: "learner_audio_deletion" as const,
@@ -49,14 +56,20 @@ pgTest(
         kind: "learning_retention" as const,
       };
       const retained = await run(
-        f.retention.set({ access: g.access, operation: modeOp, mode: "ephemeral" }),
+        f.retention.set({ access: recoveryAccess(g.access), operation: modeOp, mode: "ephemeral" }),
       );
       expect(completed(retained).mode).toBe("ephemeral");
       expect(
-        await run(f.retention.set({ access: g.access, operation: modeOp, mode: "ephemeral" })),
+        await run(
+          f.retention.set({
+            access: recoveryAccess(g.access),
+            operation: modeOp,
+            mode: "ephemeral",
+          }),
+        ),
       ).toEqual(retained);
       const input = {
-        access: g.access,
+        access: recoveryAccess(g.access),
         operation: operation(g.ownerId, "aged-delete"),
         maximumArtifacts: 1000,
       };
@@ -65,22 +78,37 @@ pgTest(
       expect(batch.sourceOwnerIds).toEqual([g.ownerId]);
       const foreign = await seedGuest(f, 802);
       for (const access of [
-        { ...g.access, origin: "https://foreign.example" },
-        { ...g.access, credentialId: foreign.credentialId },
+        { ...recoveryAccess(g.access), origin: "https://foreign.example" },
+        { ...recoveryAccess(g.access), credentialId: foreign.credentialId },
       ])
         expect((await run(Effect.result(f.deletion.prepareBatch({ ...input, access }))))._tag).toBe(
           "Failure",
         );
-      await f.admin.query(
-        "UPDATE guest_credentials SET state='revoked',revoked_at=clock_timestamp(),revocation_reason='explicit_compromise' WHERE credential_id=$1",
+      const successor = "R".repeat(21) + "A";
+      await f.admin.query("SELECT issue_guest_rotation_v1($1,$2::text[],$3,$4,$5,$6,$7,$8,$9)", [
+        origin,
         [g.credentialId],
-      );
+        g.credentialId,
+        g.ownerId,
+        "recovery-native-rotation",
+        hash("recovery-native-rotation"),
+        "recovery-native-rotation-op",
+        successor,
+        hash("synthetic-successor-secret"),
+      ]);
+      await f.admin.query("SELECT acknowledge_guest_rotation_v1($1,$2::text[],$3,$4,$5)", [
+        origin,
+        [successor],
+        g.credentialId,
+        successor,
+        g.ownerId,
+      ]);
       expect(
         (
           await run(
             Effect.result(
               f.retention.set({
-                access: g.access,
+                access: recoveryAccess(g.access),
                 operation: {
                   ...modeOp,
                   idempotencyKey: "revoked-mode",
@@ -137,7 +165,7 @@ pgTest(
       expect(stored.state).toBe("stored");
       await Promise.all(tasks);
       const input = {
-        access: d.guest.access,
+        access: recoveryAccess(d.guest.access),
         operation: operation(d.guest.ownerId, "real-audio-delete"),
         maximumArtifacts: 1000,
       };
@@ -159,7 +187,7 @@ pgTest(
       expect(
         await run(
           f.deletion.findOperation({
-            access: d.guest.access,
+            access: recoveryAccess(d.guest.access),
             sourceOwnerId: d.guest.ownerId,
             idempotencyKey: input.operation.idempotencyKey,
           }),
@@ -212,7 +240,13 @@ pgTest(
         ...operation(d.guest.ownerId, "future-only-retention"),
         kind: "learning_retention" as const,
       };
-      await run(f.retention.set({ access: d.guest.access, operation: op, mode: "ephemeral" }));
+      await run(
+        f.retention.set({
+          access: recoveryAccess(d.guest.access),
+          operation: op,
+          mode: "ephemeral",
+        }),
+      );
       expect(
         (
           await f.admin.query(
