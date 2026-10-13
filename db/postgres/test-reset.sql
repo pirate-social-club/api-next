@@ -12,6 +12,8 @@ TRUNCATE TABLE
   "account_aliases",
   "account_language_preferences",
   "account_minimum_age_attestations",
+  "account_owner_reward_operations",
+  "account_owner_reward_sources",
   "account_streak_clocks",
   "account_streak_timezone_actions",
   "action_challenges",
@@ -166,6 +168,7 @@ TRUNCATE TABLE
   "guest_empty_owner_aliases",
   "guest_learning_preferences",
   "guest_learning_schema_phase",
+  "guest_owner_association_conflicts",
   "guest_owner_associations",
   "guest_participation_operations",
   "guest_resource_cost_policy_snapshots",
@@ -371,6 +374,9 @@ TRUNCATE TABLE
   "operator_managed_root_registry_versions",
   "operator_managed_route_activations",
   "operator_managed_route_operations",
+  "owner_captured_guest_choice_commands",
+  "owner_participation_admission_attempts",
+  "owner_participation_admission_operations",
   "participation_eligibility_decisions",
   "participation_owner_clocks",
   "participation_owners",
@@ -530,7 +536,7 @@ INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'st
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
-INSERT INTO guest_learning_schema_phase VALUES (true, 'disabled_owner_financial_history_v1');
+INSERT INTO guest_learning_schema_phase VALUES (true, 'owner_accounting_native_source_v1');
 
 INSERT INTO guest_resource_global_lock VALUES (true);
 
