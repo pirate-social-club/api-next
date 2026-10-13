@@ -1,7 +1,7 @@
 /** Genuine complete native source only. PG source/SDK/I/O protocol acceptance,
  * never live chain/R2/provider or staging acceptance. */
 import { describe, expect, test } from "bun:test";
-import { Clock, IdGen, makeSongRewardOfferService } from "@pirate/application";
+import { Clock, IdGen, makeSongRewardOfferService, prepareActivityPersona } from "@pirate/application";
 import { Effect, Schema } from "effect";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -20,7 +20,7 @@ import {
 } from "./owner-megapot-rewarded-journey.pg-fixture.ts";
 import { makeControlPlaneOwnerMegapotSettlementStore } from "./owner-megapot-settlement-store.ts";
 import { hash, pgUrl, run } from "./owner-study-starter.pg-fixture.ts";
-import { makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
+import { makeControlPlanePersonaStore, makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardRunAuthority } from "./reward-operations-control.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
@@ -98,15 +98,36 @@ async function setupPool(f: RewardedFixture, suffix: string) {
       bytes32("a"),
     ],
   );
-  const preparedWallet = await run(
-    makeControlPlanePersonaWalletStore(f.adminRuntime).reserveEvm({
+  // Actual source-owned additional-persona creation also creates its immutable
+  // pending wallet reservation. The historical raw song author has no such slot.
+  const personaServices = {
+    store: makeControlPlanePersonaStore(f.adminRuntime),
+    nextPersonaId: () => Effect.sync(() => `persona_${crypto.randomUUID().replaceAll("-", "")}`),
+    nowIso: () => Effect.sync(() => new Date().toISOString()),
+  };
+  const preparedPersona = await run(
+    prepareActivityPersona({
       accountId: "study-account",
-      personaId: "study-persona",
-      idempotencyKey: `wallet-${suffix}`,
-    }),
+      communityId: "study-community",
+      body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
+    }, personaServices),
   );
-  expect(preparedWallet.persona_id).toBe("study-persona");
-  const wallet = await confirmWallet(f.adminRuntime)("study-account", "study-persona");
+  const sponsorPersonaId = preparedPersona.persona_id;
+  expect(preparedPersona.persona_status).toBe("pending_wallet");
+  expect(sponsorPersonaId).not.toBe("study-persona");
+  const pendingWallet = await run(makeControlPlanePersonaWalletStore(f.adminRuntime).getEvmPreparation({
+    accountId: "study-account", personaId: sponsorPersonaId,
+  }));
+  expect(pendingWallet).toMatchObject({ persona_id: sponsorPersonaId, status: "pending" });
+  // Existing deterministic verifier is the explicitly simulated provider boundary.
+  // Native confirmation uses the original prepared HD slot and activates this persona.
+  const wallet = await confirmWallet(f.adminRuntime)("study-account", sponsorPersonaId);
+  const replay = await run(prepareActivityPersona({
+    accountId: "study-account", communityId: "study-community",
+    body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
+  }, personaServices));
+  expect(replay.persona_id).toBe(sponsorPersonaId);
+  expect(replay.persona_status).toBe("active");
   const clock = new Date(),
     cutoffAt = new Date(clock.getTime() + 45000),
     drawingTime = new Date(cutoffAt.getTime() + 300000);
@@ -167,7 +188,7 @@ async function setupPool(f: RewardedFixture, suffix: string) {
   const opened = await withClock(
     offerService.openOffer({
       accountId: "study-account",
-      personaId: "study-persona",
+      personaId: sponsorPersonaId,
       communityId: "study-community",
       postId: "study-post",
       idempotencyKey: `offer-${suffix}`,
@@ -178,7 +199,7 @@ async function setupPool(f: RewardedFixture, suffix: string) {
   const created = await withClock(
     offerService.addMegapotPoolLeg({
       accountId: "study-account",
-      personaId: "study-persona",
+      personaId: sponsorPersonaId,
       offerId: opened.offer.offerId,
       idempotencyKey: `leg-${suffix}`,
       senderAddress: wallet.address,
@@ -218,7 +239,7 @@ async function setupPool(f: RewardedFixture, suffix: string) {
     ordinary.recordFundingObservation({
       actionId: `funding-action-${suffix}`,
       accountId: "study-account",
-      personaId: "study-persona",
+      personaId: sponsorPersonaId,
       legId: created.leg.legId,
       legKind: "megapot_pool",
       fundingEffectId: created.funding.intent.fundingEffectId,
