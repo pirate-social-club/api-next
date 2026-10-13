@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
 import { Client } from "pg";
+import { runCapturedStudyDeletionExpiryRegression } from "./learner-audio-deletion-captured-expiry.pg-fixture.ts";
 import {
   beginHistoricalAudioDeletionFixture,
   beginOwnedHistoricalApiNextWriter,
@@ -8,7 +9,6 @@ import {
   finishHistoricalAudioDeletionFixture,
 } from "./learner-audio-deletion-history.pg-fixture.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
-import { runCapturedStudyDeletionExpiryRegression } from "./learner-audio-deletion-captured-expiry.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -41,7 +41,11 @@ suite("learner audio deletion repository", () => {
       // Historical stored metadata is present BEFORE the real253 namespace backfill.
       // Account identities and immutable owners are born normally in the exact252 prefix.
       const history = await beginHistoricalAudioDeletionFixture(scopedConnection);
-      const retainedObjectRefs = new Set<string>(["study/object", "karaoke/object", "other/object"]);
+      const retainedObjectRefs = new Set<string>([
+        "study/object",
+        "karaoke/object",
+        "other/object",
+      ]);
       await admin.query(
         `INSERT INTO learner_audio_artifacts (
              learner_audio_artifact_id, account_id, source_kind, attempt_ref,
@@ -59,8 +63,8 @@ suite("learner audio deletion repository", () => {
              ('other-artifact', 'account-2', 'study', 'other-attempt',
               'other/object', 'other/object', $3, 'audio/ogg', 100, 1000,
               'private_learning', 'not_stored', 'stored', clock_timestamp() + interval '24 months')`,
-          ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
-        );
+        ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+      );
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
@@ -92,10 +96,18 @@ suite("learner audio deletion repository", () => {
       originalWriter = beginOwnedHistoricalApiNextWriter(retainedObjectRefs);
       await finishHistoricalAudioDeletionFixture(scopedConnection, history);
       expect(
-        (await admin.query("SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'" )).rows,
+        (
+          await admin.query(
+            "SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'",
+          )
+        ).rows,
       ).toEqual([{ io_state: "unknown" }]);
       expect(
-        (await admin.query("SELECT count(*)::int AS n FROM learner_audio_account_producer_captures")).rows,
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM learner_audio_account_producer_captures",
+          )
+        ).rows,
       ).toEqual([{ n: 0 }]);
 
       let failStorage = true;
@@ -139,21 +151,28 @@ suite("learner audio deletion repository", () => {
              AND upload.attempt_ref='karaoke-attempt' AND upload.artifact_id='karaoke-artifact'`,
       );
       expect(retainedDeletion.rows).toHaveLength(1);
-      const originalDeletion = Schema.decodeUnknownSync(Schema.Struct({
-        command_id: Schema.NonEmptyString,
-        revision: Schema.NonEmptyString,
-        upload_attempt_id: Schema.NonEmptyString,
-      }), { onExcessProperty: "error" })(retainedDeletion.rows[0]);
+      const originalDeletion = Schema.decodeUnknownSync(
+        Schema.Struct({
+          command_id: Schema.NonEmptyString,
+          revision: Schema.NonEmptyString,
+          upload_attempt_id: Schema.NonEmptyString,
+        }),
+        { onExcessProperty: "error" },
+      )(retainedDeletion.rows[0]);
       failStorage = false;
       // Known bytes can make bounded progress while the SAME unknown writer
       // keeps its artifact, original command and active source fence held.
       const partial = await run("account-1", "2026-08-29T09:00:30.000Z");
       expect(partial).toMatchObject({ deleted_count: 1, remaining_count: 1 });
       expect(deletedKeys.at(-1)?.sort()).toEqual([
-        "karaoke/account-1/karaoke-attempt.pcm", "karaoke/object", "study/object",
+        "karaoke/account-1/karaoke-attempt.pcm",
+        "karaoke/object",
+        "study/object",
       ]);
-      expect((await admin.query(
-        `SELECT command.command_id,fence.revision::text AS revision,upload.upload_attempt_id,
+      expect(
+        (
+          await admin.query(
+            `SELECT command.command_id,fence.revision::text AS revision,upload.upload_attempt_id,
                 command.state,upload.io_state,upload.captured_revision::text AS captured_revision
            FROM learner_audio_owner_fences fence
            JOIN participation_owners owner USING(owner_id)
@@ -161,17 +180,33 @@ suite("learner audio deletion repository", () => {
            JOIN learner_audio_upload_attempts upload ON upload.owner_id=owner.owner_id
            WHERE owner.account_id='account-1' AND upload.source_kind='karaoke'
              AND upload.attempt_ref='karaoke-attempt' AND upload.artifact_id='karaoke-artifact'`,
-      )).rows).toEqual([{ ...originalDeletion, state: "pending", io_state: "unknown", captured_revision: "0" }]);
+          )
+        ).rows,
+      ).toEqual([
+        { ...originalDeletion, state: "pending", io_state: "unknown", captured_revision: "0" },
+      ]);
       // Native uncertain disposition cannot authorize original publication.
-      expect((await admin.query(
-        "SELECT settle_learner_audio_upload_private_v1($1,'stored',FALSE,NULL) AS publish",
-        [originalDeletion.upload_attempt_id],
-      )).rows).toEqual([{ publish: false }]);
       expect(
-        (await admin.query("SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'")).rows,
+        (
+          await admin.query(
+            "SELECT settle_learner_audio_upload_private_v1($1,'stored',FALSE,NULL) AS publish",
+            [originalDeletion.upload_attempt_id],
+          )
+        ).rows,
+      ).toEqual([{ publish: false }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'",
+          )
+        ).rows,
       ).toEqual([{ io_state: "unknown" }]);
       expect(
-        (await admin.query("SELECT recording_state,object_ref FROM learner_audio_artifacts WHERE learner_audio_artifact_id='karaoke-artifact'")).rows,
+        (
+          await admin.query(
+            "SELECT recording_state,object_ref FROM learner_audio_artifacts WHERE learner_audio_artifact_id='karaoke-artifact'",
+          )
+        ).rows,
       ).toEqual([{ recording_state: "stored", object_ref: "karaoke/object" }]);
       // Native-core model only: an owned finite pre253 api-next writer actually
       // finishes on its original key; ALL work is drained before the terminal fact.
@@ -256,7 +291,10 @@ suite("learner audio deletion repository", () => {
       cleanupFailures.push(error);
     }
     if (failed && cleanupFailures.length > 0)
-      throw new AggregateError([primaryFailure, ...cleanupFailures], "Historical audio fixture and cleanup failed");
+      throw new AggregateError(
+        [primaryFailure, ...cleanupFailures],
+        "Historical audio fixture and cleanup failed",
+      );
     if (failed) throw primaryFailure;
     if (cleanupFailures.length > 0)
       throw new AggregateError(cleanupFailures, "Historical audio fixture cleanup failed");
@@ -266,5 +304,4 @@ suite("learner audio deletion repository", () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     await runCapturedStudyDeletionExpiryRegression();
   }, 15_000);
-
 });
