@@ -21,9 +21,11 @@ export async function beginHistoricalAudioDeletionFixture(connectionString: stri
   )
     throw new Error("Actual maintained252/253 history boundary is required");
   const prefix = migrations.slice(0, index);
+  const lastPrefixMigration = prefix.at(-1);
+  if (lastPrefixMigration === undefined) throw new Error("Historical migration prefix is empty");
   const applied = await runPostgresMigrations({ connectionString, migrations: prefix });
   if (applied.dryRun) throw new Error("Historical fixture requires an actual owned database");
-  expect(applied.result.currentVersion).toBe(prefix.at(-1)?.version);
+  expect(applied.result.currentVersion).toBe(lastPrefixMigration.version);
   const birth = makeOwnedOrdinaryAccountBirthFixture(
     makeDirectPostgresControlPlaneLayer(connectionString),
   );
