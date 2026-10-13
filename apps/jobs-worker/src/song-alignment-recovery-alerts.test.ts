@@ -13,22 +13,53 @@ import {
 import type { CloudflareMediaWorkflowBinding } from "../../../packages/platform-cf/src/media-processing-cloudflare.ts";
 import { collectSongAlignmentRecoveryAlerts } from "./song-alignment-recovery-alerts.ts";
 
-const runtime = Layer.succeed(ControlPlaneDb, {
-  execute: (statement) =>
-    Effect.succeed({
-      rows: statement.label.endsWith("lookups")
-        ? [
-            {
-              operation_id: "recovery-operation",
-              workflow_revision: "3",
-              workflow_instance_id: "media-recovery-operation-r3",
-            },
-          ]
-        : [],
-      rowCount: statement.label.endsWith("lookups") ? 1 : 0,
-    }),
-  withTransaction: () => Effect.die("alert observation is read-only"),
-} as ControlPlaneDb["Service"]);
+const emptyCursor = JSON.stringify({ operation_id: "", workflow_instance_id: "" });
+function cursorRuntime(
+  candidates: readonly Readonly<Record<string, unknown>>[],
+  options: { stored?: string; fail?: "lookups" | "advance" } = {},
+) {
+  let stored = options.stored ?? emptyCursor;
+  let advances = 0;
+  const execute: ControlPlaneDb["Service"]["execute"] = ((statement) => {
+    if (statement.label.endsWith("-cursor"))
+      return Effect.succeed({ rows: [{ last_identifier: stored }], rowCount: 1 });
+    if (statement.label.endsWith("cursor.advance")) {
+      if (options.fail === "advance") return Effect.die("private storage failure");
+      return Effect.sync(() => {
+        stored = String(statement.values[0]);
+        advances += 1;
+        return { rows: [], rowCount: 1 };
+      });
+    }
+    if (statement.label.endsWith("lookups")) {
+      if (options.fail === "lookups") return Effect.die("private lookup failure");
+      const afterOperation = String(statement.values[0]);
+      const afterWorkflow = String(statement.values[1]);
+      const rows = candidates
+        .filter(
+          (candidate) =>
+            String(candidate.operation_id) > afterOperation ||
+            (candidate.operation_id === afterOperation &&
+              String(candidate.workflow_instance_id) > afterWorkflow),
+        )
+        .slice(0, 50);
+      return Effect.succeed({ rows, rowCount: rows.length });
+    }
+    return Effect.succeed({ rows: [], rowCount: 0 });
+  }) as ControlPlaneDb["Service"]["execute"];
+  return {
+    layer: Layer.succeed(ControlPlaneDb, { execute, withTransaction: (use) => use({ execute }) }),
+    stored: () => stored,
+    advances: () => advances,
+  };
+}
+const runtime = cursorRuntime([
+  {
+    operation_id: "recovery-operation",
+    workflow_revision: "3",
+    workflow_instance_id: "media-recovery-operation-r3",
+  },
+]).layer;
 
 const binding = (
   message: string,
@@ -117,7 +148,7 @@ describe("alignment recovery terminal alerts", () => {
     expect(logs).toEqual([]);
   });
 
-  test("inspects and deduplicates a retained failure beyond the first 50 healthy candidates", async () => {
+  test("bounds each tick to 50 inspections, resumes later candidates and wraps with deduplication", async () => {
     const candidates = Array.from({ length: 51 }, (_, index) => {
       const operationId = `pagination-operation-${String(index + 1).padStart(3, "0")}`;
       return {
@@ -126,15 +157,7 @@ describe("alignment recovery terminal alerts", () => {
         workflow_instance_id: `media-${operationId}-r1`,
       };
     });
-    const controlPlane = Layer.succeed(ControlPlaneDb, {
-      execute: (statement) => {
-        if (!statement.label.endsWith("lookups")) return Effect.succeed({ rows: [], rowCount: 0 });
-        const after = typeof statement.values[0] === "string" ? statement.values[0] : "";
-        const page = candidates.filter((candidate) => candidate.operation_id > after).slice(0, 50);
-        return Effect.succeed({ rows: page, rowCount: page.length });
-      },
-      withTransaction: () => Effect.die("alert observation is read-only"),
-    } as ControlPlaneDb["Service"]);
+    const controlPlane = cursorRuntime(candidates);
     const inspected: string[] = [];
     const diagnostic = alignmentRecoveryTerminalMessage({
       outcome: "alignment_recovery_lookup_stale",
@@ -158,22 +181,108 @@ describe("alignment recovery terminal alerts", () => {
       ...makeLocalAlertSink(),
       log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
     };
-    for (let tick = 0; tick < 2; tick += 1) {
-      expect(
+    const emitted: number[] = [];
+    const inspectedPerTick: number[] = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      const before = inspected.length;
+      emitted.push(
         await Effect.runPromise(
           alertTick(
             sink,
-            collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane)),
+            collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane.layer)),
           ),
         ),
-      ).toBe(1);
+      );
+      inspectedPerTick.push(inspected.length - before);
     }
-    expect(inspected).toHaveLength(102);
+    expect(emitted).toEqual([0, 1, 0, 1]);
+    expect(inspectedPerTick).toEqual([50, 1, 50, 1]);
     expect(new Set(inspected).size).toBe(51);
+    expect(JSON.parse(controlPlane.stored())).toEqual({
+      operation_id: "pagination-operation-051",
+      workflow_instance_id: "media-pagination-operation-051-r1",
+    });
     expect(logs.map((entry) => entry.event)).toEqual([
       "pipeline.alert",
       "pipeline.alert.suppression",
     ]);
     expect(logs[0]).toMatchObject({ operation_id: "pagination-operation-051", severity: "high" });
   });
+
+  test("advances past malformed candidates and failed Workflow observations", async () => {
+    const candidates = Array.from({ length: 51 }, (_, index) => ({
+      operation_id: `advance-${String(index).padStart(3, "0")}`,
+      workflow_revision: index < 49 ? "invalid" : "1",
+      workflow_instance_id: `media-advance-${String(index).padStart(3, "0")}-r1`,
+    }));
+    const controlPlane = cursorRuntime(candidates);
+    const inspected: string[] = [];
+    const workflow: CloudflareMediaWorkflowBinding = {
+      get: async (id) => {
+        inspected.push(id);
+        throw new Error("private Workflow response");
+      },
+      createBatch: async () => [],
+    };
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args) => errors.push(args);
+    try {
+      for (let tick = 0; tick < 2; tick += 1)
+        expect(
+          await Effect.runPromise(
+            alertTick(
+              makeLocalAlertSink(),
+              collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane.layer)),
+            ),
+          ),
+        ).toBe(0);
+    } finally {
+      console.error = original;
+    }
+    expect(inspected).toEqual(["media-advance-049-r1", "media-advance-050-r1"]);
+    expect(controlPlane.advances()).toBe(2);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]?.[0]).toBe("song_alignment_recovery_workflow_observation_unavailable");
+    expect(JSON.stringify(errors)).not.toContain("private");
+  });
+
+  for (const failure of ["stored", "candidate", "lookups", "advance"] as const)
+    test(`logs an error and performs no Workflow I/O when the scan fails at ${failure}`, async () => {
+      const candidate = {
+        operation_id: "scan-operation",
+        workflow_revision: "1",
+        workflow_instance_id: failure === "candidate" ? null : "media-scan-operation-r1",
+      };
+      const controlPlane = cursorRuntime([candidate], {
+        ...(failure === "stored" ? { stored: "private malformed cursor" } : {}),
+        ...(failure === "lookups" || failure === "advance" ? { fail: failure } : {}),
+      });
+      let inspected = 0;
+      const workflow: CloudflareMediaWorkflowBinding = {
+        get: async () => {
+          inspected += 1;
+          throw new Error("must not observe");
+        },
+        createBatch: async () => [],
+      };
+      const errors: unknown[][] = [];
+      const original = console.error;
+      console.error = (...args) => errors.push(args);
+      try {
+        expect(
+          await Effect.runPromise(
+            alertTick(
+              makeLocalAlertSink(),
+              collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane.layer)),
+            ),
+          ),
+        ).toBe(0);
+      } finally {
+        console.error = original;
+      }
+      expect(inspected).toBe(0);
+      expect(controlPlane.advances()).toBe(0);
+      expect(errors).toEqual([["song_alignment_recovery_alert_scan_unavailable"]]);
+    });
 });

@@ -38090,6 +38090,7 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@2', 
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+INSERT INTO recovery_inspection_cursors VALUES ('media-alignment-alerts', '2000-01-01 00:00:00+00', '{"operation_id":"","workflow_instance_id":""}', '2000-01-01 00:00:00+00');
 
 INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
 

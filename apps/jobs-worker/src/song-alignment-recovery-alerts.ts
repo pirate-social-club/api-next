@@ -17,6 +17,7 @@ const LookupCursor = Schema.Struct({
   operation_id: Schema.String,
   workflow_instance_id: Schema.String,
 });
+const StoredLookupCursor = Schema.Struct({ last_identifier: Schema.fromJsonString(LookupCursor) });
 const LOOKUP_PAGE_SIZE = 50;
 
 const EXHAUSTED_SQL = `SELECT submission.operation_id,
@@ -119,54 +120,79 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
       binding,
       isWorkflowInstanceMissingError,
     );
-    // Advance within the tick rather than repeatedly inspecting only the
-    // lexicographically first 50 operations. Progress includes healthy and
-    // malformed rows, not just operations that produced an alert.
-    let cursor: readonly [string, string] = ["", ""];
-    while (true) {
-      const page = yield* rows(
-        "song-pipeline.terminal.alignment-recovery-lookups",
-        LOOKUP_SQL,
-        cursor,
+    // Reserve one page under the cursor lock, advancing even for healthy or
+    // malformed candidates. Release the transaction before Workflow I/O.
+    const page = yield* db
+      .withTransaction((tx) =>
+        Effect.gen(function* () {
+          const saved = yield* tx.execute<Readonly<Record<string, unknown>>>({
+            label: "song-pipeline.terminal.alignment-recovery-cursor",
+            text: "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE",
+            values: [],
+            readonly: false,
+          });
+          const decoded = Schema.decodeUnknownOption(StoredLookupCursor)(saved.rows[0]);
+          if (Option.isNone(decoded))
+            return yield* Effect.die("alignment alert cursor unavailable");
+          const cursor = decoded.value.last_identifier;
+          const select = (after: readonly [string, string]) =>
+            tx.execute<Readonly<Record<string, unknown>>>({
+              label: "song-pipeline.terminal.alignment-recovery-lookups",
+              text: LOOKUP_SQL,
+              values: after,
+              readonly: true,
+            });
+          const forward = yield* select([cursor.operation_id, cursor.workflow_instance_id]);
+          // Wrap only when no rows remain, inspecting at most one nonempty page.
+          const selected =
+            forward.rows.length === 0 ? (yield* select(["", ""])).rows : forward.rows;
+          const last = selected[selected.length - 1];
+          if (last !== undefined) {
+            const next = Schema.decodeUnknownOption(LookupCursor)(last);
+            if (Option.isNone(next)) return yield* Effect.die("alignment alert cursor unavailable");
+            yield* tx.execute({
+              label: "song-pipeline.terminal.alignment-recovery-cursor.advance",
+              text: "UPDATE recovery_inspection_cursors SET last_identifier=$1,updated_at=clock_timestamp() WHERE cursor_key='media-alignment-alerts'",
+              values: [JSON.stringify(next.value)],
+              readonly: false,
+            });
+          }
+          return selected;
+        }),
+      )
+      .pipe(
+        Effect.catchCause(() =>
+          Effect.sync(() => {
+            console.error("song_alignment_recovery_alert_scan_unavailable");
+            return [];
+          }),
+        ),
       );
-      for (const row of page) {
-        const decoded = Schema.decodeUnknownOption(LookupCandidate)(row);
-        if (Option.isNone(decoded)) continue;
-        const failure = yield* Effect.tryPromise(() =>
-          launcher.getRecoveryFailure(decoded.value.workflow_instance_id),
-        ).pipe(
-          Effect.catchCause(() =>
-            Effect.sync(() => {
-              console.error("song_alignment_recovery_workflow_observation_unavailable", {
-                operationId: decoded.value.operation_id,
-                workflowRevision: decoded.value.workflow_revision,
-              });
-              return null;
-            }),
-          ),
-        );
-        if (failure === null) continue;
-        const reason =
-          failure.outcome === "alignment_recovery_lookup_stale"
-            ? `${failure.outcome}:${failure.reason}`
-            : `${failure.outcome}:${failure.reason.errorClass}:${failure.reason.code ?? "unknown"}:${failure.reason.query}`;
-        yield* collector.emit(
-          alert(
-            decoded.value.operation_id,
-            decoded.value.workflow_revision,
-            reason,
-            failure.outcome,
-          ),
-        );
-        emitted += 1;
-      }
-      if (page.length < LOOKUP_PAGE_SIZE) break;
-      const next = Schema.decodeUnknownOption(LookupCursor)(page[page.length - 1]);
-      if (Option.isNone(next)) {
-        console.error("song_alignment_recovery_alert_cursor_unavailable");
-        break;
-      }
-      cursor = [next.value.operation_id, next.value.workflow_instance_id];
+    for (const row of page) {
+      const decoded = Schema.decodeUnknownOption(LookupCandidate)(row);
+      if (Option.isNone(decoded)) continue;
+      const failure = yield* Effect.tryPromise(() =>
+        launcher.getRecoveryFailure(decoded.value.workflow_instance_id),
+      ).pipe(
+        Effect.catchCause(() =>
+          Effect.sync(() => {
+            console.error("song_alignment_recovery_workflow_observation_unavailable", {
+              operationId: decoded.value.operation_id,
+              workflowRevision: decoded.value.workflow_revision,
+            });
+            return null;
+          }),
+        ),
+      );
+      if (failure === null) continue;
+      const reason =
+        failure.outcome === "alignment_recovery_lookup_stale"
+          ? `${failure.outcome}:${failure.reason}`
+          : `${failure.outcome}:${failure.reason.errorClass}:${failure.reason.code ?? "unknown"}:${failure.reason.query}`;
+      yield* collector.emit(
+        alert(decoded.value.operation_id, decoded.value.workflow_revision, reason, failure.outcome),
+      );
+      emitted += 1;
     }
     return emitted;
   },

@@ -8083,6 +8083,18 @@ suite("bounded alignment recovery persistence", () => {
       expect(
         (await processing.listWorkflowCandidates()).map((candidate) => candidate.operationId),
       ).toContain(operation);
+      const sweepCursor = (
+        await admin.query(
+          "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+        )
+      ).rows;
+      expect(
+        (
+          await admin.query(
+            "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts'",
+          )
+        ).rows,
+      ).toEqual([{ last_identifier: '{"operation_id":"","workflow_instance_id":""}' }]);
       const diagnostic = alignmentRecoveryTerminalMessage({
         outcome: "alignment_recovery_lookup_failed",
         reason: {
@@ -8104,6 +8116,15 @@ suite("bounded alignment recovery persistence", () => {
             media: {
               get: async (instanceId) => {
                 expect(instanceId).toBe(`media-${operation}-r2`);
+                // The page reservation committed before any Workflow I/O:
+                // another connection can lock the row without waiting.
+                const cursor = await admin.query<{ last_identifier: string }>(
+                  "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE NOWAIT",
+                );
+                expect(JSON.parse(cursor.rows[0]?.last_identifier ?? "null")).toEqual({
+                  operation_id: operation,
+                  workflow_instance_id: instanceId,
+                });
                 return {
                   status: async () => ({
                     status: "errored" as const,
@@ -8127,6 +8148,13 @@ suite("bounded alignment recovery persistence", () => {
         failure_class: "alignment_recovery_lookup_failed",
         operation_id: operation,
       });
+      expect(
+        (
+          await admin.query(
+            "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+          )
+        ).rows,
+      ).toEqual(sweepCursor);
     });
     completedTestCount += 1;
   }, 60_000);
