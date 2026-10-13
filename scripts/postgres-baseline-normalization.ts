@@ -1,3 +1,5 @@
+const sourceInventorySeedLine = /^\s*INSERT INTO (?:(?:"public"|public)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1) VALUES\b/u;
+
 const ownerFinancialSourcePrivilegesSql = String.raw`
 -- Baseline replay only: exact private source attestation, no serving grants.
 DO $baseline_owner_source_privileges$
@@ -166,6 +168,13 @@ export function normalizePostgresBaselineDump(dump: string): string {
   for (const line of lines) {
     const topLevel = dollarDelimiter === undefined;
     const trimmed = line.trim();
+    if (topLevel && sourceInventorySeedLine.test(line)) {
+      // This is the committed native JSONB literal, not a schema expression.
+      // Only its leading table qualifier is portable; its contents stay exact.
+      if (!trimmed.endsWith(";")) throw new Error("Complete source metadata seed statement required");
+      normalized.push(line.replace(/^(\s*INSERT INTO )(?:(?:"public"|public)\.)/u, "$1"));
+      continue;
+    }
     if (
       topLevel &&
       /^CREATE TABLE (?:public\.|"public"\.)?owner_accounting_native_source_inventory_v1 \(/u.test(trimmed)
@@ -305,9 +314,13 @@ export function normalizePostgresBaselineDump(dump: string): string {
 }
 
 export function normalizePostgresBaselineSeedDump(dump: string): string {
-  return dump.replaceAll(
-    /'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}(?::?\d{2})?)?'/gu,
-    "'2000-01-01 00:00:00+00'",
+  return dump.replaceAll(/[^\r\n]+/gu, (line) =>
+    sourceInventorySeedLine.test(line)
+      ? line
+      : line.replaceAll(
+          /'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}(?::?\d{2})?)?'/gu,
+          "'2000-01-01 00:00:00+00'",
+        ),
   );
 }
 

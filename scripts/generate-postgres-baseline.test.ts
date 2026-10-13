@@ -269,6 +269,17 @@ SET search_path TO leaked_session_schema;
     expect(normalized).not.toContain("leaked_session_schema");
   });
 
+  test("preserves opaque source metadata while normalizing schema and ordinary seed dates", () => {
+    const metadata = `INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{"constraints":["((octet_length(upstream_session_ref) >= 1) AND (octet_length(upstream_session_ref) <= 16384))"],"default_expression":"public.example(''2026-08-31 17:07:43.49507+00'')"}');`;
+    const ordinary = "INSERT INTO public.example VALUES ('2026-08-31 17:07:43.49507+00');";
+    const seeds = normalizePostgresBaselineSeedDump(`${metadata}\n${ordinary}`);
+    expect(seeds).toContain(metadata);
+    expect(seeds).toContain("INSERT INTO public.example VALUES ('2000-01-01 00:00:00+00');");
+    const normalized = normalizePostgresBaselineDump(seeds);
+    expect(normalized).toContain(metadata.replace("INSERT INTO public.", "INSERT INTO "));
+    expect(normalized).toContain("INSERT INTO example VALUES ('2000-01-01 00:00:00+00');");
+  });
+
   test("makes migration-created seed timestamps deterministic", () => {
     expect(
       normalizePostgresBaselineSeedDump(
