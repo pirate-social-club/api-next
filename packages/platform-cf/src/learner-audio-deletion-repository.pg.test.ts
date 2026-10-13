@@ -44,6 +44,11 @@ const legacyUpload = (session: string, attempt: string, artifact: string) =>
     .update(JSON.stringify([session, attempt, artifact]).replaceAll(",", ", "))
     .digest("hex")}`;
 
+// Main's legacy Study writer PUT the answer to this exact digest-named key.
+const studyDigest = "d".repeat(64);
+const studyKey = (n: string) => `learner-audio/study/attempt-${n}/${studyDigest}`;
+const receipt = (label: string) => new Bun.CryptoHasher("sha256").update(label).digest("hex");
+
 const karaokeSession = (
   admin: Client,
   input: Readonly<{ session: string; attempt: string; account: string; completed: boolean }>,
@@ -243,65 +248,80 @@ suite("learner audio deletion repository", () => {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     const scopedConnection = connectionForSchema(connectionString, schema);
+    let hostileRole: string | undefined;
 
     try {
       await migrateLegacy(scopedConnection);
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
-          "INSERT INTO users (user_id) VALUES ('account-3'), ('account-4'), ('account-6')",
+          "INSERT INTO users (user_id) VALUES ('account-3'), ('account-4'), ('account-6'), ('account-7')",
         );
-        // A legacy Study answer reserved its audio but never resolved it.
-        await admin.query(
-          `INSERT INTO study_review_items (
-             review_item_id, account_id, exercise_review_key, current_exercise_version_id,
-             scheduler_policy_revision, scheduler_state, community_id, post_id,
-             study_unit_id, exercise_kind, learning_language, target_language, learner_band
-           ) VALUES ('review-3', 'account-3', 'review-key-3', 'exercise-3',
-             'study_review_schedule_v1', '{}'::jsonb, 'community-1', 'post-1',
-             'unit-1', 'say_it_back', 'en', NULL, NULL)`,
-        );
-        await admin.query(
-          `INSERT INTO study_sessions_v2 (
-             session_id, account_id, persona_id, community_id, post_id,
-             audio_revision, lyrics_revision, learning_language, target_language,
-             learner_band, study_profile_revision, source_set_revision,
-             selection_policy_revision, qualification_policy_revision, timezone,
-             idempotency_key, request_hash, status, completed_at, completion_reason
-           ) VALUES ('session-3', 'account-3', 'persona-3', 'community-1', 'post-1',
-             1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
-             'session-command-3', $1, 'completed', clock_timestamp(), 'all_resolved')`,
-          ["d".repeat(64)],
-        );
-        await admin.query(
-          `INSERT INTO study_session_items_v2 (
-             session_item_id, session_id, ordinal, exercise_review_key,
-             exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
-           ) VALUES ('item-3', 'session-3', 0, 'review-key-3',
-             'exercise-3', 'review-3', '{}'::jsonb, 3, 'account-3')`,
-        );
-        await admin.query(
-          `INSERT INTO learner_audio_artifacts (
-             learner_audio_artifact_id, account_id, source_kind, attempt_ref,
-             expected_object_ref, content_digest, content_type, byte_size, duration_ms,
-             platform_retention, provider_retention, recording_state, expires_at
-           ) VALUES ('pending-study', 'account-3', 'study', 'attempt-3', 'pending/object',
-             $1, 'audio/ogg', 100, 1000, 'private_learning', 'not_stored', 'pending',
-             clock_timestamp() + interval '24 months')`,
-          ["d".repeat(64)],
-        );
-        await admin.query(
-          `INSERT INTO study_spoken_answer_commands (
-             command_id, account_id, session_id, session_item_id, attempt_number,
-             idempotency_key, request_hash, audio_digest, audio_content_type,
-             audio_byte_size, audio_duration_ms, attempt_id,
-             learner_audio_artifact_id, lease_token, reserved_at, lease_expires_at, state
-           ) VALUES ('command-3', 'account-3', 'session-3', 'item-3', 1, 'idem-3',
-             $1, $2, 'audio/ogg', 100, 1000, 'attempt-3', 'pending-study', 'lease-3',
-             clock_timestamp() - interval '1 second',
-             clock_timestamp() + interval '1 hour', 'reserved')`,
-          ["e".repeat(64), "d".repeat(64)],
-        );
+        // Legacy Study answers reserved their audio but never resolved it. Account 7
+        // holds only this producer: no capture, Karaoke history or deletion.
+        for (const n of ["3", "7"]) {
+          const account = `account-${n}`;
+          await admin.query(
+            `INSERT INTO study_review_items (
+               review_item_id, account_id, exercise_review_key, current_exercise_version_id,
+               scheduler_policy_revision, scheduler_state, community_id, post_id,
+               study_unit_id, exercise_kind, learning_language, target_language, learner_band
+             ) VALUES ($1, $2, $3, 'exercise-' || $4,
+               'study_review_schedule_v1', '{}'::jsonb, 'community-1', 'post-1',
+               'unit-1', 'say_it_back', 'en', NULL, NULL)`,
+            [`review-${n}`, account, `review-key-${n}`, n],
+          );
+          await admin.query(
+            `INSERT INTO study_sessions_v2 (
+               session_id, account_id, persona_id, community_id, post_id,
+               audio_revision, lyrics_revision, learning_language, target_language,
+               learner_band, study_profile_revision, source_set_revision,
+               selection_policy_revision, qualification_policy_revision, timezone,
+               idempotency_key, request_hash, status, completed_at, completion_reason
+             ) VALUES ($1, $2, 'persona-' || $3, 'community-1', 'post-1',
+               1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+               'session-command-' || $3, $4, 'completed', clock_timestamp(), 'all_resolved')`,
+            [`session-${n}`, account, n, "d".repeat(64)],
+          );
+          await admin.query(
+            `INSERT INTO study_session_items_v2 (
+               session_item_id, session_id, ordinal, exercise_review_key,
+               exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
+             ) VALUES ($1, $2, 0, $3, 'exercise-' || $5, $4, '{}'::jsonb, 3, $6)`,
+            [`item-${n}`, `session-${n}`, `review-key-${n}`, `review-${n}`, n, account],
+          );
+          await admin.query(
+            `INSERT INTO learner_audio_artifacts (
+               learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+               expected_object_ref, content_digest, content_type, byte_size, duration_ms,
+               platform_retention, provider_retention, recording_state, expires_at
+             ) VALUES ($1, $2, 'study', $3, $4, $5, 'audio/ogg', 100, 1000,
+               'private_learning', 'not_stored', 'pending', clock_timestamp() + interval '24 months')`,
+            [`study-artifact-${n}`, account, `attempt-${n}`, studyKey(n), studyDigest],
+          );
+          await admin.query(
+            `INSERT INTO study_spoken_answer_commands (
+               command_id, account_id, session_id, session_item_id, attempt_number,
+               idempotency_key, request_hash, audio_digest, audio_content_type,
+               audio_byte_size, audio_duration_ms, attempt_id,
+               learner_audio_artifact_id, lease_token, reserved_at, lease_expires_at, state
+             ) VALUES ($1, $2, $3, $4, 1, 'idem-' || $8,
+               $5, $6, 'audio/ogg', 100, 1000, $7, $9, 'lease-' || $8,
+               clock_timestamp() - interval '1 second',
+               clock_timestamp() + interval '1 hour', 'reserved')`,
+            [
+              `command-${n}`,
+              account,
+              `session-${n}`,
+              `item-${n}`,
+              "e".repeat(64),
+              studyDigest,
+              `attempt-${n}`,
+              n,
+              `study-artifact-${n}`,
+            ],
+          );
+        }
         // Legacy Karaoke attempts whose hosts never reported a terminal result.
         for (const [account, session, attempt] of [
           ["account-4", "session-4", "attempt-4"],
@@ -317,7 +337,44 @@ suite("learner audio deletion repository", () => {
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
+      // Creation-time default privileges must not reach the private evidence.
+      const hostile = `hostile_${schema}`.slice(0, 63);
+      await admin.query(`CREATE ROLE ${quoteIdentifier(hostile)} NOLOGIN`);
+      await admin.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA ${quoteIdentifier(schema)} GRANT ALL ON TABLES TO ${quoteIdentifier(hostile)}`,
+      );
+      await admin.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA ${quoteIdentifier(schema)} GRANT EXECUTE ON FUNCTIONS TO ${quoteIdentifier(hostile)}`,
+      );
+      hostileRole = hostile;
       await upgrade(scopedConnection);
+      expect(
+        (
+          await admin.query(
+            `SELECT has_table_privilege($1, 'learner_audio_legacy_settlements', 'SELECT') AS can_select,
+                    has_table_privilege($1, 'learner_audio_legacy_settlements', 'INSERT') AS can_insert,
+                    has_table_privilege($1, 'learner_audio_legacy_settlements', 'UPDATE') AS can_update,
+                    has_table_privilege($1, 'learner_audio_legacy_settlements', 'DELETE') AS can_delete,
+                    has_table_privilege($1, 'learner_audio_legacy_settlements', 'TRUNCATE') AS can_truncate,
+                    has_function_privilege($1, 'settle_legacy_learner_audio_upload_private_v1(text,text,jsonb)', 'EXECUTE') AS can_settle,
+                    has_function_privilege($1, 'guard_learner_audio_legacy_settlement_private_v1()', 'EXECUTE') AS can_guard`,
+            [hostile],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          can_select: false,
+          can_insert: false,
+          can_update: false,
+          can_delete: false,
+          can_truncate: false,
+          can_settle: false,
+          can_guard: false,
+        },
+      ]);
+      await expect(admin.query("TRUNCATE learner_audio_legacy_settlements")).rejects.toThrow(
+        "legacy producer settlement evidence is immutable",
+      );
       // The unresolved legacy Study reservation is now an unknown producer of its
       // exact key. Before any deletion starts, a reclaim still cannot open a new
       // generation on that key while the legacy write is unresolved.
@@ -331,7 +388,7 @@ suite("learner audio deletion repository", () => {
       expect(study.rows).toEqual([
         {
           upload_attempt_id: expect.stringMatching(/^lau_legacy_[0-9a-f]{64}$/),
-          object_ref: "pending/object",
+          object_ref: studyKey("3"),
           io_state: "unknown",
         },
       ]);
@@ -357,21 +414,48 @@ suite("learner audio deletion repository", () => {
       );
       const run = (accountId: string) =>
         Effect.runPromise(store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }));
-      // The reviewed operator closure: the exact key observed after every serving
-      // version that predates producer capture was retired.
-      const evidence = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
+      // The reviewed operator closure records storage evidence observed after only
+      // capture-era serving versions remain, bound to sanitized receipt digests.
+      // These fixture values test the database's validation, not quiescence.
+      const observation = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
         objectRef: key,
         headStatus: head,
         openMultipartUploads: 0,
         servingCutoverAt: new Date(Date.now() - 10 * 60_000).toISOString(),
         observedAt: new Date(Date.now() - observedMinutesAgo * 60_000).toISOString(),
-        readbackRef: "fixture-serving-readback",
+        servingVersions: [
+          {
+            script: "pirate-jobs-worker-staging",
+            versionId: "fixture-capture-version",
+            sourceCommit: "a".repeat(40),
+            artifactSha256: receipt("artifact"),
+          },
+        ],
+      });
+      const evidence = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
+        ...observation(key, head, observedMinutesAgo),
+        abortedMultipartUploadIds: [],
+        receipts: {
+          servingReadback: receipt("readback"),
+          head: receipt("head"),
+          listing: receipt("listing"),
+          abort: receipt("abort"),
+        },
+      });
+      const studyEvidence = (key: string, contentSha256: string) => ({
+        ...observation(key, "present"),
+        contentSha256,
+        receipts: {
+          servingReadback: receipt("readback"),
+          head: receipt("head"),
+          listing: receipt("listing"),
+        },
       });
       const settle = (
         client: Client,
         upload: string,
         disposition: "stored" | "absent",
-        proof: ReturnType<typeof evidence>,
+        proof: Readonly<Record<string, unknown>>,
       ) =>
         client.query(
           "SELECT settle_legacy_learner_audio_upload_private_v1($1,$2,$3::jsonb) AS settled",
@@ -387,6 +471,33 @@ suite("learner audio deletion repository", () => {
         );
         await admin.query("SET session_replication_role = origin");
       };
+
+      // A Study-only owner settles straight after the upgrade, before any capture
+      // or deletion created state for it: the import established its fence.
+      const upload7 = (
+        await admin.query<{ upload_attempt_id: string }>(
+          "SELECT upload_attempt_id FROM learner_audio_upload_attempts WHERE command_ref='command-7'",
+        )
+      ).rows[0]?.upload_attempt_id;
+      if (upload7 === undefined) throw new Error("legacy Study producer was not imported");
+      expect(
+        (
+          await admin.query(
+            `SELECT f.revision, f.active_delete_command_id FROM learner_audio_owner_fences f
+               JOIN participation_owners o USING(owner_id) WHERE o.account_id='account-7'`,
+          )
+        ).rows,
+      ).toEqual([{ revision: "0", active_delete_command_id: null }]);
+      await expect(
+        settle(admin, upload7, "stored", studyEvidence(studyKey("7"), "c".repeat(64))),
+      ).rejects.toThrow("legacy Study object differs from its reserved content");
+      expect(
+        (await settle(admin, upload7, "stored", studyEvidence(studyKey("7"), studyDigest))).rows,
+      ).toEqual([{ settled: true }]);
+      await expect(run("account-7")).resolves.toMatchObject({
+        deleted_count: 1,
+        remaining_count: 0,
+      });
 
       await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
       await expect(run("account-4")).rejects.toMatchObject({ reason: "in-flight" });
@@ -413,7 +524,10 @@ suite("learner audio deletion repository", () => {
       await settle(admin, upload6, "absent", proof6);
       expect((await settle(admin, upload6, "absent", proof6)).rows).toEqual([{ settled: false }]);
       await expect(
-        settle(admin, upload6, "absent", { ...proof6, readbackRef: "other-readback" }),
+        settle(admin, upload6, "absent", {
+          ...proof6,
+          receipts: { ...proof6.receipts, head: receipt("another head") },
+        }),
       ).rejects.toThrow("legacy settlement already recorded differently");
       await expect(run("account-6")).resolves.toMatchObject({ remaining_count: 0 });
       expect(
@@ -456,17 +570,27 @@ suite("learner audio deletion repository", () => {
 
       // Evidence-bound settlement of the legacy Study write lets deletion finish.
       const studyUpload = study.rows[0]?.upload_attempt_id ?? "";
-      await settle(admin, studyUpload, "absent", evidence("pending/object", "absent"));
+      await expect(
+        settle(admin, studyUpload, "absent", {
+          ...studyEvidence(studyKey("3"), studyDigest),
+          headStatus: "absent",
+        }),
+      ).rejects.toThrow("an absent legacy Study object does not prove its write ended");
+      await settle(admin, studyUpload, "stored", studyEvidence(studyKey("3"), studyDigest));
       await expect(run("account-3")).resolves.toMatchObject({ remaining_count: 0 });
       expect(
         (
           await admin.query(
-            "SELECT recording_state FROM learner_audio_artifacts WHERE learner_audio_artifact_id='pending-study'",
+            "SELECT recording_state FROM learner_audio_artifacts WHERE learner_audio_artifact_id='study-artifact-3'",
           )
         ).rows,
       ).toEqual([{ recording_state: "deleted" }]);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      if (hostileRole !== undefined) {
+        await admin.query(`DROP OWNED BY ${quoteIdentifier(hostileRole)}`);
+        await admin.query(`DROP ROLE ${quoteIdentifier(hostileRole)}`);
+      }
       await admin.end();
     }
   });

@@ -18988,7 +18988,7 @@ BEGIN
  SELECT phase INTO phase_name FROM guest_learning_schema_phase WHERE singleton FOR SHARE;
  -- Keep this literal here even when accounting replaces the shared predicate:
  -- an old practice reader MUST NOT silently erase newly admitted liabilities.
- IF NOT FOUND OR phase_name IS DISTINCT FROM 'practice_only_owner_audio_producer_history_v5' THEN
+ IF NOT FOUND OR phase_name IS DISTINCT FROM 'practice_only_owner_legacy_audio_settlement_history_v6' THEN
   RAISE EXCEPTION 'practice participation reader unavailable' USING ERRCODE='GP003'; END IF;
  source_ids:=require_guest_audio_recovery_access_private_v1(p_access,p_access->>'ownerId');
  -- Recovery deliberately ignores learning-lease/credential age. The helper
@@ -24510,9 +24510,9 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='guest_learning_schema_phase'::regclass
       AND relnamespace=trusted_namespace AND relowner=trusted_owner)
     OR (SELECT count(*) FROM guest_learning_schema_phase
-      WHERE singleton AND phase='practice_only_owner_audio_producer_history_v5')<>1
+      WHERE singleton AND phase='practice_only_owner_legacy_audio_settlement_history_v6')<>1
     OR EXISTS(SELECT 1 FROM unnest(ARRAY[
-      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'
+      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'
       ]) required_name WHERE NOT EXISTS(SELECT 1 FROM pg_class relation
       WHERE relation.oid=to_regclass(required_name) AND relation.relnamespace=trusted_namespace
         AND relation.relowner=trusted_owner AND relation.relkind='r'))
@@ -24546,7 +24546,7 @@ BEGIN
           'study_sessions_v2','study_review_items','study_session_items_v2',
           'study_spoken_answer_commands','learner_audio_artifacts',
           'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
-          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'))
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
     OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE fk.contype='f' AND fk.confrelid=ANY(ARRAY[
@@ -24564,7 +24564,11 @@ BEGIN
           'study_sessions_v2','study_review_items','study_session_items_v2',
           'study_spoken_answer_commands','learner_audio_artifacts',
           'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
-          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'))
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
+    -- Legacy producer settlements are account history only; a guest owner can
+    -- never hold one, so admitting the relation adds no guest liability.
+    OR EXISTS(SELECT 1 FROM learner_audio_legacy_settlements s JOIN participation_owners o USING(owner_id)
+      WHERE o.kind<>'account')
     OR EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=trusted_namespace
       AND relname IN ('guest_owner_associations','participation_eligibility_decisions',
         'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
@@ -26520,25 +26524,13 @@ CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload text, p_d
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     SET pirate_baseline.pin_catalog TO 'on'
-    AS $$
-DECLARE upload learner_audio_upload_attempts%ROWTYPE; prior learner_audio_legacy_settlements%ROWTYPE;
- digest TEXT; observed_at TIMESTAMPTZ; cutover_at TIMESTAMPTZ;
+    AS $_$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE;
+ prior learner_audio_legacy_settlements%ROWTYPE; owner_kind TEXT; digest TEXT;
+ observed_at TIMESTAMPTZ; cutover_at TIMESTAMPTZ; keys TEXT[]; receipt_keys TEXT[]; version JSONB;
 BEGIN
- IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object'
-  OR NOT p_evidence ?& ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt','readbackRef']
-  OR p_evidence-ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt','readbackRef']<>'{}'::JSONB
-  OR jsonb_typeof(p_evidence->'objectRef')<>'string' OR jsonb_typeof(p_evidence->'readbackRef')<>'string'
-  OR char_length(p_evidence->>'readbackRef') NOT BETWEEN 1 AND 256
-  OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
-  OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
-  OR jsonb_typeof(p_evidence->'servingCutoverAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string' THEN
+ IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object' THEN
   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
- observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
- cutover_at:=(p_evidence->>'servingCutoverAt')::TIMESTAMPTZ;
- IF observed_at<=cutover_at OR observed_at>clock_timestamp() THEN
-  RAISE EXCEPTION 'legacy producer must be observed after serving cutover'; END IF;
- IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
-  RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
  SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
  PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
  SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
@@ -26548,13 +26540,63 @@ BEGIN
   IF prior.disposition<>p_disposition OR prior.evidence_sha256<>digest THEN
    RAISE EXCEPTION 'legacy settlement already recorded differently'; END IF;
   RETURN FALSE; END IF;
+ SELECT kind INTO STRICT owner_kind FROM participation_owners WHERE owner_id=upload.owner_id;
  IF upload.upload_attempt_id NOT LIKE 'lau\_legacy\_%' OR upload.captured_revision<>0
-  OR upload.io_state<>'unknown' OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
+  OR upload.io_state<>'unknown' OR owner_kind<>'account'
+  OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
   RAISE EXCEPTION 'only an unknown imported legacy producer of this key can be settled'; END IF;
- INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,disposition,evidence,evidence_sha256,settled_at)
-  VALUES(p_upload,p_disposition,p_evidence,digest,clock_timestamp());
+ keys:=ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt',
+  'servingVersions','receipts'];
+ receipt_keys:=ARRAY['servingReadback','head','listing'];
+ IF upload.source_kind='karaoke' THEN
+  keys:=array_append(keys,'abortedMultipartUploadIds');
+  receipt_keys:=array_append(receipt_keys,'abort');
+ ELSE keys:=array_append(keys,'contentSha256'); END IF;
+ IF NOT p_evidence ?& keys OR p_evidence-keys<>'{}'::JSONB
+  OR jsonb_typeof(p_evidence->'receipts')<>'object'
+  OR NOT (p_evidence->'receipts') ?& receipt_keys OR (p_evidence->'receipts')-receipt_keys<>'{}'::JSONB
+  OR EXISTS(SELECT 1 FROM jsonb_each(p_evidence->'receipts') r
+    WHERE jsonb_typeof(r.value)<>'string' OR r.value#>>'{}' !~ '^[0-9a-f]{64}$')
+  OR jsonb_typeof(p_evidence->'servingVersions')<>'array'
+  OR jsonb_array_length(p_evidence->'servingVersions') NOT BETWEEN 1 AND 16
+  OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
+  OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
+  OR jsonb_typeof(p_evidence->'servingCutoverAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string' THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ FOR version IN SELECT value FROM jsonb_array_elements(p_evidence->'servingVersions') LOOP
+  IF jsonb_typeof(version)<>'object' OR NOT version ?& ARRAY['script','versionId','sourceCommit','artifactSha256']
+   OR version-ARRAY['script','versionId','sourceCommit','artifactSha256']<>'{}'::JSONB
+   OR jsonb_typeof(version->'script')<>'string' OR char_length(version->>'script') NOT BETWEEN 1 AND 128
+   OR jsonb_typeof(version->'versionId')<>'string' OR char_length(version->>'versionId') NOT BETWEEN 1 AND 128
+   OR jsonb_typeof(version->'sourceCommit')<>'string' OR version->>'sourceCommit' !~ '^[0-9a-f]{40}$'
+   OR jsonb_typeof(version->'artifactSha256')<>'string' OR version->>'artifactSha256' !~ '^[0-9a-f]{64}$' THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ END LOOP;
+ observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
+ cutover_at:=(p_evidence->>'servingCutoverAt')::TIMESTAMPTZ;
+ IF observed_at<=cutover_at OR observed_at>clock_timestamp() THEN
+  RAISE EXCEPTION 'legacy producer must be observed after serving cutover'; END IF;
+ IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
+  RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
+ IF upload.source_kind='karaoke' THEN
+  IF jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
+   OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
+     WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048) THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ ELSE
+  SELECT * INTO STRICT artifact FROM learner_audio_artifacts
+   WHERE learner_audio_artifact_id=upload.artifact_id AND participation_owner_id=upload.owner_id;
+  IF p_disposition<>'stored' THEN
+   RAISE EXCEPTION 'an absent legacy Study object does not prove its write ended'; END IF;
+  IF jsonb_typeof(p_evidence->'contentSha256')<>'string'
+   OR p_evidence->>'contentSha256' IS DISTINCT FROM artifact.content_digest
+   OR upload.object_ref IS DISTINCT FROM 'learner-audio/study/'||upload.attempt_ref||'/'||artifact.content_digest THEN
+   RAISE EXCEPTION 'legacy Study object differs from its reserved content'; END IF;
+ END IF;
+ INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,owner_id,disposition,evidence,evidence_sha256,settled_at)
+  VALUES(p_upload,upload.owner_id,p_disposition,p_evidence,digest,clock_timestamp());
  RETURN settle_learner_audio_upload_private_v1(p_upload,p_disposition,TRUE,NULL);
-END $$;
+END $_$;
 
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -37290,7 +37332,7 @@ CREATE TABLE guest_learning_preferences (
 CREATE TABLE guest_learning_schema_phase (
     singleton boolean NOT NULL,
     phase text NOT NULL,
-    CONSTRAINT guest_learning_schema_phase_phase_check CHECK ((phase = 'practice_only_owner_audio_producer_history_v5'::text)),
+    CONSTRAINT guest_learning_schema_phase_phase_check CHECK ((phase = 'practice_only_owner_legacy_audio_settlement_history_v6'::text)),
     CONSTRAINT guest_learning_schema_phase_singleton_check CHECK (singleton)
 );
 
@@ -38926,6 +38968,7 @@ CREATE SEQUENCE learner_audio_fence_revision_v1
 
 CREATE TABLE learner_audio_legacy_settlements (
     upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
     disposition text NOT NULL,
     evidence jsonb NOT NULL,
     evidence_sha256 text NOT NULL,
@@ -44357,7 +44400,7 @@ INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'st
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
-INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_audio_producer_history_v5');
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_legacy_audio_settlement_history_v6');
 
 INSERT INTO guest_resource_global_lock VALUES (true);
 
@@ -48814,6 +48857,8 @@ CREATE TRIGGER learner_audio_delete_targets_immutable BEFORE DELETE OR UPDATE ON
 
 CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE DELETE OR UPDATE ON learner_audio_legacy_settlements FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
 
+CREATE TRIGGER learner_audio_legacy_settlements_no_truncate BEFORE TRUNCATE ON learner_audio_legacy_settlements FOR EACH STATEMENT EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
+
 CREATE TRIGGER learner_audio_object_names_immutable BEFORE DELETE OR UPDATE ON learner_audio_object_names FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 
 CREATE TRIGGER learner_audio_owner_fence_state BEFORE DELETE OR UPDATE ON learner_audio_owner_fences FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();
@@ -51140,6 +51185,9 @@ ALTER TABLE ONLY learner_audio_deleted_objects
 
 ALTER TABLE ONLY learner_audio_deleted_objects
     ADD CONSTRAINT learner_audio_deleted_objects_object_ref_fkey FOREIGN KEY (object_ref) REFERENCES learner_audio_object_names(object_ref);
+
+ALTER TABLE ONLY learner_audio_legacy_settlements
+    ADD CONSTRAINT learner_audio_legacy_settlement_upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
 
 ALTER TABLE ONLY learner_audio_object_names
     ADD CONSTRAINT learner_audio_object_names_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);

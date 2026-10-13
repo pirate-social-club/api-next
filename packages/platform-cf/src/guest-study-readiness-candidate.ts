@@ -1054,7 +1054,7 @@ export const guestStudyReadinessCandidate = {
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
-      checksum: "a53a9e1f0c4a50b712c3c538a0e4391d01eb6257d63846bf61a665a60622d452",
+      checksum: "c686ec8f6045a89ab5b76261732272291559cc3ff80373363100ef3ac20fb8dc",
       version: "0264_legacy_learner_audio_producer_disposition.sql",
     },
   ],
@@ -1668,12 +1668,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0262_ordinary_audio_producer_capture.sql",
     },
     {
-      body_sha256: "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
+      body_sha256: "caa10bc80e351c1ebf8e43592a6af745223fd97abd739b28ad575171a97cd087",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "list_guest_practice_participations_v1",
-      source_file: "0262_ordinary_audio_producer_capture.sql",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "1bc6d7f9e2e02e99ae8fc8abccf39bd02916b2576ece527b20835984390b7d03",
@@ -2196,12 +2196,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0252_guest_learning_controlled_row_admission.sql",
     },
     {
-      body_sha256: "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
+      body_sha256: "5b5b156fbffd958af6ed424dbe908693be747b43650c32676dbc283155138a63",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "require_guest_practice_only_schema_phase_v1",
-      source_file: "0262_ordinary_audio_producer_capture.sql",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "58f17f33cb89580b0e5ca72dc66af402eb1f9d78b4bf87d255918e04725b20b5",
@@ -2348,7 +2348,7 @@ export const guestStudyReadinessCandidate = {
       source_file: "0253_learner_audio_deletion_fence.sql",
     },
     {
-      body_sha256: "ffc6d741c431accfaec6d0fb4dc328ee421e76821e8a0ccdb9be7bf890ef769d",
+      body_sha256: "b3a3a453279eb839634bd4753db3303045d5591b59f5d03c348c9a9a99db483c",
       configuration: "pinned",
       definer: true,
       kind: "f",
@@ -2420,7 +2420,7 @@ export const guestStudyReadinessCandidate = {
       source_file: "0249_study_participation_owner_preservation.sql",
     },
   ],
-  native_phase: "practice_only_owner_audio_producer_history_v5",
+  native_phase: "practice_only_owner_legacy_audio_settlement_history_v6",
   phase_condition_sha256: "097a517f92cef02a657c77fe30b8b1066654087d21acb5896ff47bea2e89a683",
   profiles: {
     cron: {
@@ -2703,7 +2703,7 @@ export const guestStudyReadinessCandidate = {
       signature: "issue_guest_rotation_v1(text,text[],text,text,text,text,text,text,text)",
     },
     {
-      body_sha256: "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
+      body_sha256: "caa10bc80e351c1ebf8e43592a6af745223fd97abd739b28ad575171a97cd087",
       definer: true,
       signature: "list_guest_practice_participations_v1(jsonb,text,integer)",
     },
@@ -2809,7 +2809,7 @@ export const guestStudyReadinessCandidate = {
       signature: "renew_guest_authority_v1(text,text[],text,text)",
     },
     {
-      body_sha256: "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
+      body_sha256: "5b5b156fbffd958af6ed424dbe908693be747b43650c32676dbc283155138a63",
       definer: true,
       signature: "require_guest_practice_only_schema_phase_v1()",
     },

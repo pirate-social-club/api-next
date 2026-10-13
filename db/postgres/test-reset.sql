@@ -523,7 +523,7 @@ INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'st
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
-INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_audio_producer_history_v5');
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_legacy_audio_settlement_history_v6');
 
 INSERT INTO guest_resource_global_lock VALUES (true);
 
