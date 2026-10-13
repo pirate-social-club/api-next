@@ -20,8 +20,11 @@ export async function seedActivitySong(
 ): Promise<void> {
   const lyrics = LYRIC_LINES.join("\n");
   const lineHashes = await Promise.all(LYRIC_LINES.map((line) => digest(line)));
-  if (options?.accountAlreadyBorn !== true)
+  if (options?.accountAlreadyBorn !== true) {
     await admin.query("INSERT INTO users (user_id) VALUES ($1)", [AUTHOR_ID]);
+    // Genuine account birth provisions the participation owner in the same step.
+    await admin.query("SELECT provision_account_participation_owner_v1($1)", [AUTHOR_ID]);
+  }
   await admin.query(
     `INSERT INTO communities (
        community_id, display_name, status, created_by_user_id, created_at, updated_at

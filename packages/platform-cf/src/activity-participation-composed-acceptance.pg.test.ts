@@ -76,6 +76,11 @@ suite("Composed never-joined activity and reward acceptance", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('composed-unverified'),('composed-eligible')",
       );
+      // Genuine account birth provisions the participation owner in the same step.
+      await admin.query(
+        "SELECT provision_account_participation_owner_v1(user_id) FROM users WHERE user_id = ANY($1::text[])",
+        [["composed-unverified", "composed-eligible"]],
+      );
       await admin.query("SET session_replication_role = replica");
       try {
         await seedActivitySong(admin);
@@ -259,6 +264,11 @@ suite("Composed never-joined activity and reward acceptance", () => {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('composed-karaoke-unverified'),('composed-karaoke-eligible')",
+      );
+      // Genuine account birth provisions the participation owner in the same step.
+      await admin.query(
+        "SELECT provision_account_participation_owner_v1(user_id) FROM users WHERE user_id = ANY($1::text[])",
+        [["composed-karaoke-unverified", "composed-karaoke-eligible"]],
       );
       await admin.query("SET session_replication_role = replica");
       try {
