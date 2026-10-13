@@ -50,6 +50,28 @@ suite("Telegram practice through the webhook's inline path", () => {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
       const { lines } = await insertStudySongFixture(admin);
       await insertTelegramPracticeReadinessFixture(admin);
+      // This historical HTTP fixture serves through its original owned schema
+      // connection, not a newly invented production role. Existing account-birth
+      // EXECUTE is already available; no new role or blanket grant is needed.
+      expect(
+        (
+          await admin.query(
+            "SELECT has_function_privilege(current_user,'provision_account_participation_owner_v1(text)','EXECUTE') AS allowed",
+          )
+        ).rows,
+      ).toEqual([{ allowed: true }]);
+      const readLearnerSource = async (telegramUserId: string) =>
+        (
+          await admin.query(
+            `SELECT o.owner_id,o.kind,o.account_id,s.session_id,
+          s.participation_owner_id,s.participation_owner_kind,s.telegram_practice_only
+          FROM telegram_restricted_learners l JOIN participation_owners o
+            ON o.account_id=l.account_id AND o.kind='account'
+          JOIN study_sessions_v2 s ON s.account_id=l.account_id
+          WHERE l.telegram_user_id=$1 AND s.community_id='study-community'`,
+            [telegramUserId],
+          )
+        ).rows;
       const keys = { v1: "a".repeat(43) };
       const vault = await makeTelegramCredentialVault({ activeVersion: "v1", keys });
       await admin.query(
@@ -177,8 +199,20 @@ suite("Telegram practice through the webhook's inline path", () => {
       // The first prompt is the instruction and the line, with nothing after it.
       expect(prompt?.text).toBe(`Say this back:\n${lines[0]}`);
       expect(prompt?.reply_markup).toEqual({ force_reply: true, selective: true });
+      const originalInlineSource = await readLearnerSource("555");
+      expect(originalInlineSource).toHaveLength(1);
+      expect(originalInlineSource[0]).toMatchObject({
+        kind: "account",
+        participation_owner_kind: "account",
+        telegram_practice_only: true,
+      });
+      expect(originalInlineSource[0]?.owner_id).toMatch(/^owner_[0-9a-f-]{36}$/u);
+      expect(originalInlineSource[0]?.participation_owner_id).toBe(
+        originalInlineSource[0]?.owner_id,
+      );
       await receive(inline, message(555, "/resume"));
       expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}`);
+      expect(await readLearnerSource("555")).toEqual(originalInlineSource);
       // Nothing asked about age, and nothing pointed at the website. Only what the learner
       // reads is searched: a button's random token may contain any digits.
       const shown = sent.flatMap((call) => [
@@ -215,6 +249,27 @@ suite("Telegram practice through the webhook's inline path", () => {
       await receive(consumer, callback(777, songButton(lastMessage())));
       await drain();
       expect(lastMessage()?.text).toBe(`Say this back:\n${lines[0]}`);
+      const originalQueuedSource = await readLearnerSource("777");
+      expect(originalQueuedSource).toHaveLength(1);
+      expect(originalQueuedSource[0]).toMatchObject({
+        kind: "account",
+        participation_owner_kind: "account",
+        telegram_practice_only: true,
+      });
+      expect(originalQueuedSource[0]?.participation_owner_id).toBe(
+        originalQueuedSource[0]?.owner_id,
+      );
+      expect(originalQueuedSource[0]?.owner_id).not.toBe(originalInlineSource[0]?.owner_id);
+      expect(await readLearnerSource("555")).toEqual(originalInlineSource);
+      // Both actual source histories remain practice-only and cannot qualify or
+      // earn a chance merely from anonymous/restricted Telegram activity.
+      expect(
+        (
+          await admin.query(`SELECT
+        (SELECT count(*)::int FROM activity_qualifications) AS qualifications,
+        (SELECT count(*)::int FROM participation_owners WHERE kind='guest') AS guest_owners`)
+        ).rows,
+      ).toEqual([{ qualifications: 0, guest_owners: 0 }]);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();

@@ -64,7 +64,10 @@ export function makeTelegramStudyLearnerStore(
       db.transaction(async (query) => {
         const sender = lease.sender;
         if (sender.communityId !== communityId) return "unavailable";
-        // Match reconnect and revoke lock ordering: community, then integration.
+        // Account birth owns topology before any community/integration, sender,
+        // account or learner lock. Existing lookup/recovery never creates a map.
+        await query("SELECT pg_advisory_xact_lock(83000003,1)");
+        // Within topology, match reconnect/revoke: community, then integration.
         const bot = await lockLinkBot(query, sender.communityId);
         currentBot({ bot_id: sender.botId, bot_epoch: sender.epoch }, bot);
         // Only the current private-chat sender holding this conversation may enroll.
@@ -118,6 +121,9 @@ export function makeTelegramStudyLearnerStore(
           accountId = identifier("usr");
           // The account row provisions its reserved first persona; no handle or credential exists.
           await query("INSERT INTO users(user_id,status) VALUES($1,'active')", [accountId]);
+          // Establish the immutable original Account source in this SAME birth
+          // transaction before any practice activity can observe the new user.
+          await query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
           // The affirmed_* columns below record the ingress that enrolled the learner. Their
           // names date from the removed age question; no age answer is stored anywhere.
           await query(
