@@ -1,3 +1,4 @@
+import { type AccountOwnerRewardHooks, withAccountOwnerRewardMutation } from "./account-owner-reward-hooks.ts";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
@@ -258,13 +259,14 @@ const sessionSource = (db: ControlPlaneTransaction, communityId: string, postId:
     };
   });
 
-export const makeControlPlaneKaraokeRepository = () => ({
+export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRewardHooks) => ({
   reserveSession: (input: Parameters<KaraokeAttemptStore["reserveSession"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (ownerRewards !== undefined) yield* ownerRewards.lockBirth(transaction, input.accountId);
             yield* transaction.execute({
               label: "karaoke.audio.source-lock",
               text: "SELECT lock_original_account_audio_source_private_v1($1)",
@@ -312,6 +314,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
               }
               return authorityFromRow(row);
             }
+            const selectedBirth = ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
             const source = yield* sessionSource(transaction, input.communityId, input.postId);
             const clock = yield* transaction.execute<Row>({
               label: "karaoke.session.clock",
@@ -341,10 +344,11 @@ export const makeControlPlaneKaraokeRepository = () => ({
                        audio_revision, lyrics_revision, karaoke_revision_id,
                        qualification_policy_version_id, idempotency_key, request_hash, timezone,
                        created_at, expires_at, playback_kind, scoring_version, scoring_provider,
-                       scoring_model, line_snapshot, client_context
+                       scoring_model, line_snapshot, client_context,
+                       owner_reward_preview_hash, owner_reward_disclosure_version, owner_reward_disclosure_accepted, owner_reward_purchase_safety_margin_seconds
                      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
                        $14::timestamptz,$15::timestamptz,'instrumental',5,'elevenlabs',
-                       'scribe_v2_realtime',$16::jsonb,$17::jsonb)`,
+                       'scribe_v2_realtime',$16::jsonb,$17::jsonb,$18,$19,$20,$21)`,
               values: [
                 input.sessionId,
                 input.attemptId,
@@ -363,6 +367,10 @@ export const makeControlPlaneKaraokeRepository = () => ({
                 input.expiresAt,
                 JSON.stringify(source.lines),
                 input.clientContext === undefined ? null : JSON.stringify(input.clientContext),
+                selectedBirth?.rewardPreviewTermsHash ?? null,
+                selectedBirth?.disclosureVersion ?? null,
+                selectedBirth?.disclosureAccepted ?? null,
+                selectedBirth?.purchaseSafetyMarginSeconds ?? null,
               ],
               readonly: false,
             });
@@ -426,8 +434,11 @@ export const makeControlPlaneKaraokeRepository = () => ({
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.authority.accountId, communityId: input.authority.communityId, family: "karaoke", sessionId: input.authority.sessionId, producer: "karaoke", payload: input });
+        const qualificationId = prepared?.qualificationId ?? input.qualificationId;
         return yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
+          withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
+            yield* transaction.execute({ label: "rewards.owner-group.before-karaoke", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.authority.accountId, input.authority.communityId, input.authority.sessionId, "karaoke"], readonly: false });
             const currentAuthority = yield* transaction.execute<Row>({
               label: "karaoke.attempt.current-authority",
               text: `SELECT session_id FROM karaoke_sessions
@@ -446,6 +457,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
               readonly: false,
             });
             if (currentAuthority.rows.length !== 1) return yield* rejected("invalid-input");
+            if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
             const replay = yield* transaction.execute<Row>({
               label: "karaoke.attempt.replay",
               text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1 FOR UPDATE OF attempt`,
@@ -537,7 +549,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
                          $11::timestamptz,($11::timestamptz AT TIME ZONE $12)::date,
                          $13::jsonb,$11::timestamptz) ON CONFLICT DO NOTHING`,
                 values: [
-                  input.qualificationId,
+                  qualificationId,
                   input.authority.accountId,
                   input.authority.personaId,
                   input.authority.communityId,
@@ -559,7 +571,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
                 personaId: input.authority.personaId,
                 postId: input.authority.postId,
                 activity: "karaoke",
-                qualificationId: input.qualificationId,
+                qualificationId: qualificationId,
                 qualifiedAt: input.completedAt,
                 streakDay,
                 timezone: input.authority.timezone,
@@ -572,7 +584,7 @@ export const makeControlPlaneKaraokeRepository = () => ({
               readonly: true,
             });
             return attemptFromRow(stored.rows[0] as Row);
-          }),
+          })),
         );
       }),
     ),
@@ -779,8 +791,9 @@ export const makeControlPlaneKaraokeRepository = () => ({
 
 export const makeControlPlaneKaraokeStore = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  ownerRewards?: AccountOwnerRewardHooks,
 ): KaraokeAttemptStore => {
-  const repository = makeControlPlaneKaraokeRepository();
+  const repository = makeControlPlaneKaraokeRepository(ownerRewards);
   const provide = <A>(
     effect: Effect.Effect<A, KaraokeFailure | ControlPlaneError, ControlPlaneDb>,
   ) => mapErrors(Effect.provide(runtime)(effect));

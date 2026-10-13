@@ -1,3 +1,4 @@
+import type { AccountOwnerRewardHooks } from "./account-owner-reward-hooks.ts";
 import {
   type ControlPlaneDb,
   type ControlPlaneError,
@@ -16,8 +17,9 @@ export const makeControlledAccountSpokenComposition = (
   rerecordEnabled: boolean,
   retainTask: (task: Promise<unknown>) => void,
   admission?: StudyV2Admission,
+  ownerRewards?: AccountOwnerRewardHooks,
 ) => {
-  const store = makeControlledAccountStudyV2Store(runtime, admission);
+  const store = makeControlledAccountStudyV2Store(runtime, admission, ownerRewards);
   const protocol = makeAccountControlledSpokenProtocol(
     runtime,
     store.reserve,

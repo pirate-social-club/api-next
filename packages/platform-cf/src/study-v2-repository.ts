@@ -1,3 +1,4 @@
+import { type AccountOwnerRewardHooks, withAccountOwnerRewardMutation } from "./account-owner-reward-hooks.ts";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
@@ -438,6 +439,7 @@ const captureReservedAudio = Effect.fn("studyV2.captureReservedAudio")(function*
 export const makeControlPlaneStudyV2Repository = (
   admission?: StudyV2Admission,
   controlledAudio = false,
+  ownerRewards?: AccountOwnerRewardHooks,
 ) => ({
   getAvailability: (input: Parameters<StudyV2Store["getAvailability"]>[0]) =>
     mapErrors(
@@ -550,6 +552,7 @@ export const makeControlPlaneStudyV2Repository = (
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (ownerRewards !== undefined) yield* ownerRewards.lockBirth(transaction, input.accountId);
             if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             // Identical concurrent starts serialize here: the loser then finds
@@ -596,6 +599,7 @@ export const makeControlPlaneStudyV2Repository = (
               });
               return session ?? (yield* Effect.fail(failed("invalid-row")));
             }
+            const selectedBirth = ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
             const stems = yield* transaction.execute<Row>({
               label: "study-v2.start.stems",
               text: `SELECT 1 FROM media_publication_projections publication
@@ -652,10 +656,11 @@ export const makeControlPlaneStudyV2Repository = (
                 lyrics_revision, learning_language, target_language, learner_band,
                 study_profile_revision, source_set_revision, selection_policy_revision,
                 qualification_policy_revision, timezone, idempotency_key, request_hash, created_at,
-                current_session_item_id, current_presented_at, language_profile_revision, telegram_practice_only
+                current_session_item_id, current_presented_at, language_profile_revision, telegram_practice_only,
+                owner_reward_preview_hash, owner_reward_disclosure_version, owner_reward_disclosure_accepted, owner_reward_purchase_safety_margin_seconds
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,'en',$8,$9,1,1,
                 'study_selection_v1','study_session_first_pass_v2@1',$10,$11,$12,$13::timestamptz,
-                $14,$13::timestamptz,$15,$16)`,
+                $14,$13::timestamptz,$15,$16,$17,$18,$19,$20)`,
               values: [
                 input.sessionId,
                 input.accountId,
@@ -675,6 +680,10 @@ export const makeControlPlaneStudyV2Repository = (
                   ? null
                   : integer(first, "language_profile_revision"),
                 admission?.practiceOnly === true,
+                selectedBirth?.rewardPreviewTermsHash ?? null,
+                selectedBirth?.disclosureVersion ?? null,
+                selectedBirth?.disclosureAccepted ?? null,
+                selectedBirth?.purchaseSafetyMarginSeconds ?? null,
               ],
               readonly: false,
             });
@@ -1155,8 +1164,11 @@ export const makeControlPlaneStudyV2Repository = (
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.accountId, communityId: input.communityId, family: "study_v2", sessionId: input.sessionId, producer: "v2_spoken", payload: input });
+        const qualificationId = prepared?.qualificationId ?? input.qualificationId;
         return yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
+          withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
+            yield* transaction.execute({ label: "rewards.owner-group.before-study_v2", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.accountId, input.communityId, input.sessionId, "study_v2"], readonly: false });
             if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
             if (admission !== undefined && input.capture === undefined)
               yield* admission.authorize(transaction, input);
@@ -1178,6 +1190,7 @@ export const makeControlPlaneStudyV2Repository = (
                 readonly: false,
               });
             }
+            if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
             const command = yield* transaction.execute<Row>({
               label: "study-v2.spoken.complete-command",
               text: `SELECT request_hash, state, result_snapshot, lease_token,
@@ -1540,7 +1553,7 @@ export const makeControlPlaneStudyV2Repository = (
                            ) VALUES ($1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,
                              $11::date,$12::jsonb,$10::timestamptz)`,
                           values: [
-                            input.qualificationId,
+                            qualificationId,
                             input.accountId,
                             text(terminal, "persona_id"),
                             text(terminal, "community_id"),
@@ -1566,7 +1579,7 @@ export const makeControlPlaneStudyV2Repository = (
                           personaId: text(terminal, "persona_id"),
                           postId: text(terminal, "post_id"),
                           activity: "study",
-                          qualificationId: input.qualificationId,
+                          qualificationId: qualificationId,
                           qualifiedAt: input.acceptedAt,
                           streakDay: date(terminal.streak_day),
                           timezone: text(terminal, "timezone"),
@@ -1647,7 +1660,7 @@ export const makeControlPlaneStudyV2Repository = (
               readonly: false,
             });
             return result;
-          }),
+          })),
         );
       }),
     ),
@@ -1655,9 +1668,13 @@ export const makeControlPlaneStudyV2Repository = (
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.accountId, communityId: input.communityId, family: "study_v2", sessionId: input.sessionId, producer: "v2_choice", payload: input });
+        const qualificationId = prepared?.qualificationId ?? input.qualificationId;
         return yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
+          withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
+            yield* transaction.execute({ label: "rewards.owner-group.before-study_v2", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.accountId, input.communityId, input.sessionId, "study_v2"], readonly: false });
             if (admission !== undefined) yield* admission.authorize(transaction, input);
+            if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
             const replay = yield* transaction.execute<Row>({
               label: "study-v2.answer.replay",
               text: `SELECT request_hash, outcome, first_pass, attempt_state, feedback_kind,
@@ -1914,7 +1931,7 @@ export const makeControlPlaneStudyV2Repository = (
                            ) VALUES ($1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,
                              $11::date,$12::jsonb,$10::timestamptz)`,
                           values: [
-                            input.qualificationId,
+                            qualificationId,
                             input.accountId,
                             text(terminal, "persona_id"),
                             text(terminal, "community_id"),
@@ -1940,7 +1957,7 @@ export const makeControlPlaneStudyV2Repository = (
                           personaId: text(terminal, "persona_id"),
                           postId: text(terminal, "post_id"),
                           activity: "study",
-                          qualificationId: input.qualificationId,
+                          qualificationId: qualificationId,
                           qualifiedAt: input.acceptedAt,
                           streakDay: date(terminal.streak_day),
                           timezone: text(terminal, "timezone"),
@@ -2019,7 +2036,7 @@ export const makeControlPlaneStudyV2Repository = (
               feedback,
               session,
             } as StudyAnswerResultV2;
-          }),
+          })),
         );
       }),
     ),

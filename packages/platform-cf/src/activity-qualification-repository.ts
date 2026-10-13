@@ -1,3 +1,4 @@
+import { type AccountOwnerRewardHooks, withAccountOwnerRewardMutation } from "./account-owner-reward-hooks.ts";
 import {
   ActivityQualificationRejected,
   ActivityQualificationStorageFailed,
@@ -459,7 +460,7 @@ const publicationRevision = (
     readonly: true,
   });
 
-export function makeControlPlaneActivityQualificationRepository() {
+export function makeControlPlaneActivityQualificationRepository(ownerRewards?: AccountOwnerRewardHooks) {
   return {
     prepareStudySessionStart: (
       input: Parameters<ActivityQualificationStore["prepareStudySessionStart"]>[0],
@@ -545,6 +546,7 @@ export function makeControlPlaneActivityQualificationRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              if (ownerRewards !== undefined) yield* ownerRewards.lockBirth(transaction, input.accountId);
               yield* advisoryLock(
                 transaction,
                 15100001,
@@ -575,6 +577,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                 return session;
               }
 
+              const selectedBirth = ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
               const startAuthority = yield* transaction.execute<Row>({
                 label: "activity-qualification.study-start.authority-locked",
                 text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
@@ -638,9 +641,9 @@ export function makeControlPlaneActivityQualificationRepository() {
                          audio_revision, lyrics_revision, source_revision,
                          source_producer_id, source_producer_revision, source_snapshot_hash,
                          qualification_policy_version_id, idempotency_key, request_hash,
-                         timezone, qualifying_exercise_count, required_correct, created_at
+                         timezone, qualifying_exercise_count, required_correct, created_at, owner_reward_preview_hash, owner_reward_disclosure_version, owner_reward_disclosure_accepted, owner_reward_purchase_safety_margin_seconds
                        ) VALUES (
-                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::timestamptz
+                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::timestamptz,$19,$20,$21,$22
                        )`,
                 values: [
                   input.sessionId,
@@ -661,6 +664,10 @@ export function makeControlPlaneActivityQualificationRepository() {
                   input.source.items.length,
                   Math.max(1, Math.ceil((7 * input.source.items.length) / 10)),
                   input.createdAt,
+                  selectedBirth?.rewardPreviewTermsHash ?? null,
+                  selectedBirth?.disclosureVersion ?? null,
+                  selectedBirth?.disclosureAccepted ?? null,
+                  selectedBirth?.purchaseSafetyMarginSeconds ?? null,
                 ],
                 readonly: false,
               });
@@ -711,8 +718,11 @@ export function makeControlPlaneActivityQualificationRepository() {
       mapped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
+          const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.accountId, communityId: input.communityId, family: "study_legacy", sessionId: input.sessionId, producer: "legacy_choice", payload: input });
+          const qualificationId = prepared?.qualificationId ?? input.qualificationId;
           return yield* db.withTransaction((transaction) =>
-            Effect.gen(function* () {
+            withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
+              yield* transaction.execute({ label: "rewards.owner-group.before-study_legacy", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.accountId,input.communityId,input.sessionId,"study_legacy"], readonly: false });
               yield* advisoryLock(
                 transaction,
                 15100002,
@@ -778,6 +788,7 @@ export function makeControlPlaneActivityQualificationRepository() {
               if (input.attemptNumber !== answerCount + 1) {
                 return yield* Effect.fail(rejected("attempt-conflict"));
               }
+              if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
               const answer =
                 input.answer.kind === "single_select"
                   ? { kind: "single_select" as const, choiceKey: input.answer.choice_key }
@@ -901,7 +912,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                              $12::jsonb,$10::timestamptz
                            )`,
                     values: [
-                      input.qualificationId,
+                      qualificationId,
                       input.accountId,
                       text(terminalRow, "persona_id"),
                       text(terminalRow, "community_id"),
@@ -927,7 +938,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                     personaId: text(terminalRow, "persona_id"),
                     postId: text(terminalRow, "post_id"),
                     activity: "study",
-                    qualificationId: input.qualificationId,
+                    qualificationId: qualificationId,
                     qualifiedAt: input.answeredAt,
                     streakDay,
                     timezone: text(terminalRow, "timezone"),
@@ -948,7 +959,7 @@ export function makeControlPlaneActivityQualificationRepository() {
                 first_pass: firstPass,
                 session: updated,
               } as const;
-            }),
+            })),
           );
         }),
       ),
@@ -1308,8 +1319,9 @@ const leaderboard = (
 
 export function makeControlPlaneActivityQualificationStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  ownerRewards?: AccountOwnerRewardHooks,
 ): ActivityQualificationStore {
-  const repository = makeControlPlaneActivityQualificationRepository();
+  const repository = makeControlPlaneActivityQualificationRepository(ownerRewards);
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(runtime)(effect));
   return {
