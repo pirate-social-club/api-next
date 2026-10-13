@@ -259,7 +259,11 @@ suite("Study v2 Postgres foundation", () => {
            review_schedule_version, audio_byte_size, audio_duration_ms,
            provider_detected_language, provider_detected_language_confidence,
            token_diff, learner_audio_artifact_id
-         ) VALUES ('attempt-2', 'session-item-1', 1, 'raw_audio', '{}'::jsonb,
+         ) VALUES ('attempt-2', 'session-item-1', 1, 'raw_audio',
+           jsonb_build_object(
+             'audio_digest', (SELECT content_digest FROM learner_audio_artifacts
+                               WHERE learner_audio_artifact_id='audio-1'),
+             'learner_audio_artifact_id', 'audio-1'),
            'correct', TRUE, 'spent', 'transcript_diff', '{}'::jsonb,
            'grader-v1', 'feedback-v1', 'answer-command-2', $1, 'unit-1',
            'say_it_back', 'en', NULL, NULL, 1, NULL, NULL, 'grader-v1',
