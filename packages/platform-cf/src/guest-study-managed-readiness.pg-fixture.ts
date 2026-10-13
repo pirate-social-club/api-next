@@ -1,4 +1,3 @@
-import { ownerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 // Proposal for root adoption beside platform-cf tests. No external SQL overlay.
 import { expect } from "bun:test";
 import { randomBytes } from "node:crypto";
@@ -19,13 +18,14 @@ import {
   makeGuestStudyManagedReadiness,
 } from "./guest-study-managed-readiness.ts";
 import { guestStudyReadinessCandidate as historicalCandidate } from "./guest-study-readiness-candidate.ts";
+import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "./owner-financial-guest-study-readiness-source.ts";
+import { ownerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
-import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
-import { ownerFinancialGuestStudyReadinessSource } from "./owner-financial-guest-study-readiness-source.ts";
 
 export type Profile = keyof typeof historicalCandidate.profiles;
 type Principal = Readonly<{
@@ -542,4 +542,3 @@ export async function readinessFixture(
     options.schema === undefined ? {} : { schema: options.schema },
   );
 }
-

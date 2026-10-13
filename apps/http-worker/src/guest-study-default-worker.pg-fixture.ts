@@ -9,7 +9,9 @@ import {
   type ReadinessFixture,
   readinessFixture,
 } from "../../../packages/platform-cf/src/guest-study-managed-readiness.pg-fixture.ts";
+import type { OwnerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/guest-study-readiness-profile.ts";
 import { makeControlPlaneIdentityStore } from "../../../packages/platform-cf/src/identity-repository.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
 import {
   disclosure,
   editFixture,
@@ -20,6 +22,7 @@ import { makeRs256SessionTokenVerifier } from "../../../packages/platform-cf/src
 import { ELEVENLABS_STUDY_BATCH_ENDPOINT } from "../../../packages/platform-cf/src/study-spoken-audio.ts";
 import { workerBackground } from "../../../packages/platform-cf/src/worker-background.ts";
 import { makeHttpWorkerTestBindings } from "./composition.test-fixtures.ts";
+import { routeTable } from "./generated/route-table.ts";
 import {
   guestAccountingNames,
   guestLearningNames,
@@ -39,14 +42,12 @@ import {
   type GuestStudyServingName,
   makeGuestStudyServingComposition,
 } from "./guest-study-serving-composition.ts";
-import { createHttpWorker } from "./transport.ts";
-import { routeTable } from "./generated/route-table.ts";
 import {
   makeOwnerRewardGuestStudyServingComposition,
   type OwnerRewardGuestStudyServingName,
 } from "./owner-reward-guest-study-serving-composition.ts";
-import type { OwnerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/guest-study-readiness-profile.ts";
-import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
+import { createHttpWorker } from "./transport.ts";
+
 type ManagedServingName = GuestStudyServingName | OwnerRewardGuestStudyServingName;
 const financialImplementedSource =
   guestLearningNames.every(

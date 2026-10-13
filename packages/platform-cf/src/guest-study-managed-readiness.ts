@@ -1,4 +1,3 @@
-import { readOwnerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 // Proposed platform-cf internal adapter. No grants, secrets, migrations or provider/R2 I/O.
 import type {
   ControlPlaneDb,
@@ -18,6 +17,7 @@ import {
   phaseSql,
   rolesSql,
 } from "./guest-study-readiness-sql.ts";
+import { readOwnerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 
 type Runtime = Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
 type Profile = "learning" | "publicRead" | "cron" | "observer" | "ordinaryAccount";

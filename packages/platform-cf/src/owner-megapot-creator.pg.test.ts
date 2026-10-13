@@ -5,6 +5,7 @@ import { AddMegapotPoolLeg } from "@pirate/contracts";
 import { Schema } from "effect";
 import { makeHttpWorkerTestBindings } from "../../../apps/http-worker/src/composition.test-fixtures.ts";
 import { bounded } from "./account-study-producer.pg-fixture.ts";
+import { encodeMegapotJackpotTicketNft, encodeMegapotJackpotUsdc } from "./megapot-v2.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import {
   actor,
@@ -20,12 +21,11 @@ import {
 } from "./owner-megapot-creator.pg-fixture.ts";
 import { pgUrl } from "./owner-study-starter.pg-fixture.ts";
 import { makeSessionCrypto } from "./session-crypto.ts";
+import { makeControlPlaneSongOwnerPolicyStore } from "./song-owner-video-policy-repository.ts";
 import {
   insertStudySongFixture,
   insertTelegramPracticeReadinessFixture,
 } from "./study-v2-ready-song.pg-fixture.ts";
-import { makeControlPlaneSongOwnerPolicyStore } from "./song-owner-video-policy-repository.ts";
-import { encodeMegapotJackpotTicketNft, encodeMegapotJackpotUsdc } from "./megapot-v2.ts";
 
 // Same maintained Node platform stand-in. No DB/authority/handler/grading mocks.
 mock.module("cloudflare:workers", () => ({

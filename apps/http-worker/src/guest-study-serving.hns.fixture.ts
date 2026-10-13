@@ -8,8 +8,8 @@ import {
   makeStaticHnsForwarderKeyRegistryV1,
 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
-import type { HttpWorkerOptions } from "./transport.ts";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
+import type { HttpWorkerOptions } from "./transport.ts";
 import { createHttpWorker } from "./transport.ts";
 
 const activeState: HnsCommunityAppHostAuthorityStateV1 = {

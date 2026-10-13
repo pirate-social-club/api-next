@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import type { GuestStudyReadinessCandidate } from "./guest-study-readiness-profile.ts";
 import {
   ownerFinancialInheritedSourceDefaults as originals,
   readOwnerFinancialInheritedSourceDefaults,
 } from "./owner-financial-inherited-source-defaults.ts";
-import type { GuestStudyReadinessCandidate } from "./guest-study-readiness-profile.ts";
+
 function candidate(): GuestStudyReadinessCandidate {
   return {
     source_head: "9f317d01e4c954d877de4d9265c14480b5b05008",

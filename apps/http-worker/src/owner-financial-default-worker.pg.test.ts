@@ -1,18 +1,19 @@
-import { ownerFinancialInheritedSourceDefaults } from "../../../packages/platform-cf/src/owner-financial-inherited-source-defaults.ts";
 // Owned five-principal default/HNS extension. No mutable candidate or true verifier.
 import { expect, mock, test } from "bun:test";
-import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { Schema } from "effect";
+import { readFile } from "node:fs/promises";
 import {
   GuestAuthorityV1,
   GuestStudyPreparedContentV2,
-  ListMyOwnerRewardCreditsV1,
   ListMyOwnerParticipationsV1,
+  ListMyOwnerRewardCreditsV1,
 } from "@pirate/contracts";
-import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
+import { Schema } from "effect";
 import { pgUrl, q } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
+import { ownerFinancialInheritedSourceDefaults } from "../../../packages/platform-cf/src/owner-financial-inherited-source-defaults.ts";
 import { Browser, defaultWorkerFixture, source } from "./guest-study-default-worker.pg-fixture.ts";
+
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
 const pgTest = pgUrl ? test : test.skip;
 async function adoptedSource() {
