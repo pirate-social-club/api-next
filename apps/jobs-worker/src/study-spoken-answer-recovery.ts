@@ -170,7 +170,9 @@ export function makeStudySpokenAnswerRecoveryJob(
       collector = yield* AlertCollector;
     const summary = yield* runStudySourceRecoveryCycle(
       makeStudySourceRecoveryStages(
-        Layer.succeed(ControlPlaneDb, db), guest, guest?.accountOriginalAdmissionRuntime,
+        Layer.succeed(ControlPlaneDb, db),
+        guest,
+        guest?.accountOriginalAdmissionRuntime,
       ),
     );
     if (summary.account.fenced > 0)

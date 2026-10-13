@@ -1,7 +1,12 @@
 /** Genuine complete native source only. PG source/SDK/I/O protocol acceptance,
  * never live chain/R2/provider or staging acceptance. */
 import { describe, expect, test } from "bun:test";
-import { Clock, IdGen, makeSongRewardOfferService, prepareActivityPersona } from "@pirate/application";
+import {
+  Clock,
+  IdGen,
+  makeSongRewardOfferService,
+  prepareActivityPersona,
+} from "@pirate/application";
 import { Effect, Schema } from "effect";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -20,7 +25,10 @@ import {
 } from "./owner-megapot-rewarded-journey.pg-fixture.ts";
 import { makeControlPlaneOwnerMegapotSettlementStore } from "./owner-megapot-settlement-store.ts";
 import { hash, pgUrl, run } from "./owner-study-starter.pg-fixture.ts";
-import { makeControlPlanePersonaStore, makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
+import {
+  makeControlPlanePersonaStore,
+  makeControlPlanePersonaWalletStore,
+} from "./persona-repository.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardRunAuthority } from "./reward-operations-control.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
@@ -106,26 +114,38 @@ async function setupPool(f: RewardedFixture, suffix: string) {
     nowIso: () => Effect.sync(() => new Date().toISOString()),
   };
   const preparedPersona = await run(
-    prepareActivityPersona({
-      accountId: "study-account",
-      communityId: "study-community",
-      body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
-    }, personaServices),
+    prepareActivityPersona(
+      {
+        accountId: "study-account",
+        communityId: "study-community",
+        body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
+      },
+      personaServices,
+    ),
   );
   const sponsorPersonaId = preparedPersona.persona_id;
   expect(preparedPersona.persona_status).toBe("pending_wallet");
   expect(sponsorPersonaId).not.toBe("study-persona");
-  const pendingWallet = await run(makeControlPlanePersonaWalletStore(f.adminRuntime).getEvmPreparation({
-    accountId: "study-account", personaId: sponsorPersonaId,
-  }));
+  const pendingWallet = await run(
+    makeControlPlanePersonaWalletStore(f.adminRuntime).getEvmPreparation({
+      accountId: "study-account",
+      personaId: sponsorPersonaId,
+    }),
+  );
   expect(pendingWallet).toMatchObject({ persona_id: sponsorPersonaId, status: "pending" });
   // Existing deterministic verifier is the explicitly simulated provider boundary.
   // Native confirmation uses the original prepared HD slot and activates this persona.
   const wallet = await confirmWallet(f.adminRuntime)("study-account", sponsorPersonaId);
-  const replay = await run(prepareActivityPersona({
-    accountId: "study-account", communityId: "study-community",
-    body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
-  }, personaServices));
+  const replay = await run(
+    prepareActivityPersona(
+      {
+        accountId: "study-account",
+        communityId: "study-community",
+        body: { idempotency_key: `sponsor-persona-${suffix}`, choice: { kind: "create_new" } },
+      },
+      personaServices,
+    ),
+  );
   expect(replay.persona_id).toBe(sponsorPersonaId);
   expect(replay.persona_status).toBe("active");
   const clock = new Date(),
