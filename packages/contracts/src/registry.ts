@@ -4,7 +4,7 @@ import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
 import { guestParticipationRegistry } from "./guest-registry.ts";
-import { GetPublicGuestStudyPreparedContentV2 } from "./owner-study.ts";
+import { GetPublicGuestStudyPreparedContentV2, GetAccountStudyRewardPreviewV1, StartOwnerAccountStudySessionV1, GetOwnerAccountStudySessionV1, GetOwnerAccountStudyStartOperationV1, SubmitOwnerAccountStudyAnswerV1 } from "./owner-study.ts";
 import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 import { telegramLinkingRegistry } from "./telegram-linking.ts";
@@ -170,6 +170,11 @@ import {
 
 export const registry = {
   GetPublicGuestStudyPreparedContentV2,
+  GetAccountStudyRewardPreviewV1,
+  StartOwnerAccountStudySessionV1,
+  GetOwnerAccountStudySessionV1,
+  GetOwnerAccountStudyStartOperationV1,
+  SubmitOwnerAccountStudyAnswerV1,
   ...guestParticipationRegistry,
   GetPublicProfileActivity,
   ListPopularCommunities,

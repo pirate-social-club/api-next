@@ -250,7 +250,8 @@
     "./guest-reward-prepared-content-store": "./src/guest-reward-prepared-content-store.ts",
     "./owner-reward-study-continuation": "./src/owner-reward-study-continuation.ts",
     "./owner-drawing-opener": "./src/owner-drawing-opener.ts",
-    "./owner-participation-read-store": "./src/owner-participation-read-store.ts"
+    "./owner-participation-read-store": "./src/owner-participation-read-store.ts",
+    "./owner-account-study-facade": "./src/owner-account-study-facade.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
