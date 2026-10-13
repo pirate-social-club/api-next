@@ -643,7 +643,18 @@ export function makeControlPlaneActivityQualificationRepository(
 
               yield* transaction.execute({
                 label: "activity-qualification.study-session.insert",
-                text: `INSERT INTO study_sessions (
+                text:
+                  selectedBirth === null
+                    ? `INSERT INTO study_sessions (
+                         session_id, account_id, persona_id, community_id, post_id,
+                         audio_revision, lyrics_revision, source_revision,
+                         source_producer_id, source_producer_revision, source_snapshot_hash,
+                         qualification_policy_version_id, idempotency_key, request_hash,
+                         timezone, qualifying_exercise_count, required_correct, created_at
+                       ) VALUES (
+                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::timestamptz
+                       )`
+                    : `INSERT INTO study_sessions (
                          session_id, account_id, persona_id, community_id, post_id,
                          audio_revision, lyrics_revision, source_revision,
                          source_producer_id, source_producer_revision, source_snapshot_hash,
@@ -671,10 +682,14 @@ export function makeControlPlaneActivityQualificationRepository(
                   input.source.items.length,
                   Math.max(1, Math.ceil((7 * input.source.items.length) / 10)),
                   input.createdAt,
-                  selectedBirth?.rewardPreviewTermsHash ?? null,
-                  selectedBirth?.disclosureVersion ?? null,
-                  selectedBirth?.disclosureAccepted ?? null,
-                  selectedBirth?.purchaseSafetyMarginSeconds ?? null,
+                  ...(selectedBirth === null
+                    ? []
+                    : [
+                        selectedBirth.rewardPreviewTermsHash,
+                        selectedBirth.disclosureVersion,
+                        selectedBirth.disclosureAccepted,
+                        selectedBirth.purchaseSafetyMarginSeconds,
+                      ]),
                 ],
                 readonly: false,
               });

@@ -656,7 +656,18 @@ export const makeControlPlaneStudyV2Repository = (
             const first = exercises.rows[0] as Row;
             yield* transaction.execute({
               label: "study-v2.start.insert",
-              text: `INSERT INTO study_sessions_v2 (
+              text:
+                selectedBirth === null
+                  ? `INSERT INTO study_sessions_v2 (
+                session_id, account_id, persona_id, community_id, post_id, audio_revision,
+                lyrics_revision, learning_language, target_language, learner_band,
+                study_profile_revision, source_set_revision, selection_policy_revision,
+                qualification_policy_revision, timezone, idempotency_key, request_hash, created_at,
+                current_session_item_id, current_presented_at, language_profile_revision, telegram_practice_only
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,'en',$8,$9,1,1,
+                'study_selection_v1','study_session_first_pass_v2@1',$10,$11,$12,$13::timestamptz,
+                $14,$13::timestamptz,$15,$16)`
+                  : `INSERT INTO study_sessions_v2 (
                 session_id, account_id, persona_id, community_id, post_id, audio_revision,
                 lyrics_revision, learning_language, target_language, learner_band,
                 study_profile_revision, source_set_revision, selection_policy_revision,
@@ -685,10 +696,14 @@ export const makeControlPlaneStudyV2Repository = (
                   ? null
                   : integer(first, "language_profile_revision"),
                 admission?.practiceOnly === true,
-                selectedBirth?.rewardPreviewTermsHash ?? null,
-                selectedBirth?.disclosureVersion ?? null,
-                selectedBirth?.disclosureAccepted ?? null,
-                selectedBirth?.purchaseSafetyMarginSeconds ?? null,
+                ...(selectedBirth === null
+                  ? []
+                  : [
+                      selectedBirth.rewardPreviewTermsHash,
+                      selectedBirth.disclosureVersion,
+                      selectedBirth.disclosureAccepted,
+                      selectedBirth.purchaseSafetyMarginSeconds,
+                    ]),
               ],
               readonly: false,
             });

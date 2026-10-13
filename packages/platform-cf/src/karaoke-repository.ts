@@ -344,7 +344,18 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
             }
             yield* transaction.execute({
               label: "karaoke.session.insert",
-              text: `INSERT INTO karaoke_sessions (
+              text:
+                selectedBirth === null
+                  ? `INSERT INTO karaoke_sessions (
+                       session_id, attempt_id, account_id, persona_id, community_id, post_id,
+                       audio_revision, lyrics_revision, karaoke_revision_id,
+                       qualification_policy_version_id, idempotency_key, request_hash, timezone,
+                       created_at, expires_at, playback_kind, scoring_version, scoring_provider,
+                       scoring_model, line_snapshot, client_context
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                       $14::timestamptz,$15::timestamptz,'instrumental',5,'elevenlabs',
+                       'scribe_v2_realtime',$16::jsonb,$17::jsonb)`
+                  : `INSERT INTO karaoke_sessions (
                        session_id, attempt_id, account_id, persona_id, community_id, post_id,
                        audio_revision, lyrics_revision, karaoke_revision_id,
                        qualification_policy_version_id, idempotency_key, request_hash, timezone,
@@ -372,10 +383,14 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
                 input.expiresAt,
                 JSON.stringify(source.lines),
                 input.clientContext === undefined ? null : JSON.stringify(input.clientContext),
-                selectedBirth?.rewardPreviewTermsHash ?? null,
-                selectedBirth?.disclosureVersion ?? null,
-                selectedBirth?.disclosureAccepted ?? null,
-                selectedBirth?.purchaseSafetyMarginSeconds ?? null,
+                ...(selectedBirth === null
+                  ? []
+                  : [
+                      selectedBirth.rewardPreviewTermsHash,
+                      selectedBirth.disclosureVersion,
+                      selectedBirth.disclosureAccepted,
+                      selectedBirth.purchaseSafetyMarginSeconds,
+                    ]),
               ],
               readonly: false,
             });
