@@ -11,7 +11,7 @@ import {
   gradeStudySpokenTranscript,
   projectStudySpokenFeedback,
 } from "./study-shared-lesson-engine.ts";
-export const operation = {
+const operation = {
   sourceOwnerId: "owner-original",
   kind: "study_answer" as const,
   idempotencyKey: "answer-original",
@@ -22,7 +22,7 @@ export const transcript = {
   detectedLanguage: "en",
   detectedLanguageConfidence: 0.99,
 };
-export const grading = gradeStudySpokenTranscript({
+const grading = gradeStudySpokenTranscript({
   referenceText: transcript.transcript,
   transcript: transcript.transcript,
   dominantLanguage: null,
@@ -61,14 +61,14 @@ export const success: OwnerSpokenPreArchiveSuccess = {
     sessionItemId: "item-original",
   },
 };
-export const oldAccess: LearningAccess = {
+const oldAccess: LearningAccess = {
   kind: "guest",
   ownerId: "owner-original",
   credentialId: "credential-before-provider",
   origin: "https://community.example",
   leaseUntil: "2000-01-01T00:00:00.000Z",
 };
-export const committed = <A>(outcomeId: string, result: A) => ({
+const committed = <A>(outcomeId: string, result: A) => ({
   state: "completed" as const,
   operation,
   outcomeId,

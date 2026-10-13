@@ -55,7 +55,7 @@ export async function bounded<A>(
   }
 }
 
-export const privateTables = [
+const privateTables = [
   "learner_audio_account_producer_captures",
   "learner_audio_upload_terminal_facts",
   "learner_audio_upload_cleanup_commands",
@@ -64,7 +64,7 @@ export const privateTables = [
 ] as const;
 // Every function owned by the new producer migration, including trigger/private
 // helpers, is probed BEFORE any controlled EXECUTE grant is introduced.
-export const producerFunctions = [
+const producerFunctions = [
   "lock_account_audio_group_private_v1(text)",
   "lock_original_account_audio_source_private_v1(text)",
   "capture_account_study_audio_private_v1(text,text,text,text)",

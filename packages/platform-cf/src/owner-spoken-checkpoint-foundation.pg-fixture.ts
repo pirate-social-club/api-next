@@ -27,14 +27,14 @@ export const pgUrl = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !pgUrl)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 export const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
-export const hash = (value: string | Uint8Array) =>
+const hash = (value: string | Uint8Array) =>
   createHash("sha256").update(value).digest("hex");
-export const origin = "https://community.example";
-export const disclosure = {
+const origin = "https://community.example";
+const disclosure = {
   version: "owned-pg-disclosure-v1",
   text: "Synthetic owned fixture disclosure; no production policy inferred.",
 };
-export const policy = {
+const policy = {
   version: "owned-pg-policy-v1",
   costPolicyVersion: "owned-pg-cost-v1",
   maximumOwnerActiveSessions: 2 as const,
@@ -48,13 +48,13 @@ export const policy = {
   maximumProviderCallCostMicros: "1000",
 };
 type Store = Pick<OwnerAwareStudyV2Store, "startSession" | "getSession" | "findStartOperation">;
-export type StartInput = Parameters<Store["startSession"]>[0];
+type StartInput = Parameters<Store["startSession"]>[0];
 export const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.scoped(effect));
-export const rejected = <A, E>(effect: Effect.Effect<A, E>) => run(Effect.flip(effect));
+const rejected = <A, E>(effect: Effect.Effect<A, E>) => run(Effect.flip(effect));
 
-export const bytesHex = (bytes: Uint8Array) =>
+const bytesHex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-export const bytesBase64Url = (bytes: Uint8Array) =>
+const bytesBase64Url = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes))
     .replaceAll("+", "-")
     .replaceAll("/", "_")
@@ -140,7 +140,7 @@ export async function accountNew(f: Fixture, sessionId: string) {
   return await accountStart(f.accountStore, sessionId);
 }
 
-export async function editFixture(admin: Client, sql: string, values: readonly unknown[] = []) {
+async function editFixture(admin: Client, sql: string, values: readonly unknown[] = []) {
   await admin.query("SET session_replication_role=replica");
   try {
     return await admin.query(sql, [...values]);
@@ -432,7 +432,7 @@ export async function pendingGuest(f: Fixture, serial: number) {
   ]);
   return { ownerId, credentialId, digest };
 }
-export async function confirmGuest(
+async function confirmGuest(
   f: Fixture,
   proof: Awaited<ReturnType<typeof pendingGuest>>,
   carried: readonly Awaited<ReturnType<typeof pendingGuest>>[] = [proof],
@@ -528,7 +528,7 @@ export async function reserve(f: Fixture, access: GuestLearningAccess, key: stri
     reservationId: response.result.reservationId as string,
   };
 }
-export async function counts(f: Fixture) {
+async function counts(f: Fixture) {
   return (
     await f.admin.query(`SELECT (SELECT count(*)::int FROM study_sessions_v2 WHERE participation_owner_kind='guest') AS sessions,
    (SELECT count(*)::int FROM study_session_items_v2 WHERE participation_owner_kind='guest') AS items,
@@ -569,7 +569,7 @@ export async function financialFingerprint(f: Fixture) {
     ).rows;
   return rows;
 }
-export async function translation(f: Fixture, index: number, helper: string, band: "A1" | "B1") {
+async function translation(f: Fixture, index: number, helper: string, band: "A1" | "B1") {
   const id = `translation-${helper}-${band}-${index}`;
   const patch = {
     exercise_version_id: id,
@@ -613,7 +613,7 @@ export async function translation(f: Fixture, index: number, helper: string, ban
 }
 // Real PG COMMIT reaches PostgreSQL; only its successful acknowledgement is
 // withheld from the owning adapter. This does not fake a database write/result.
-export function lostCommitClient() {
+function lostCommitClient() {
   let committed = false,
     armed = true;
   const clientFactory: PostgresClientFactory = (_url, config) => {

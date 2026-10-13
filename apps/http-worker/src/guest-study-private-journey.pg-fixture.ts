@@ -50,8 +50,8 @@ import type { GuestLearningControllerName } from "./guest-learning-controllers.t
 import { makeGuestLearningPrivateComposition } from "./guest-learning-private-composition.ts";
 import { decodeInput } from "./transport.ts";
 
-export const origin = "https://community.example";
-export { disclosure, financialFingerprint, pgUrl, policy };
+const origin = "https://community.example";
+export { financialFingerprint, pgUrl };
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const coreNames = [

@@ -1,18 +1,18 @@
 // Private jobs composition. One registry writer, bounded serial source stages.
 import { Effect } from "effect";
-export type AccountClosedRecoverySummary = Readonly<{
+type AccountClosedRecoverySummary = Readonly<{
   claimed: number;
   recovered: number;
   storageFailures: number;
   fenced: number;
 }>;
-export type GuestClosedRecoverySummary = Readonly<{
+type GuestClosedRecoverySummary = Readonly<{
   examined: number;
   completed: number;
   pending: number;
   skipped: number;
 }>;
-export type ResourceRemainderRelease =
+type ResourceRemainderRelease =
   | Readonly<{ state: "idle" }>
   | Readonly<{ state: "released"; terminalState: "completed" | "expired" }>;
 export interface StudySourceRecoveryStages {

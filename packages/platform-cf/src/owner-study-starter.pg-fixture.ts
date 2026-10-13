@@ -48,11 +48,11 @@ export const policy = {
   maximumProviderCallCostMicros: "1000",
 };
 type Store = Pick<OwnerAwareStudyV2Store, "startSession" | "getSession" | "findStartOperation">;
-export type StartInput = Parameters<Store["startSession"]>[0];
+type StartInput = Parameters<Store["startSession"]>[0];
 export const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.scoped(effect));
 export const rejected = <A, E>(effect: Effect.Effect<A, E>) => run(Effect.flip(effect));
 
-export const bytesHex = (bytes: Uint8Array) =>
+const bytesHex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 export const bytesBase64Url = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes))
