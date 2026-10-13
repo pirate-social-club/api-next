@@ -205,7 +205,7 @@ suite("owned empty financial baseline reset", () => {
       expect(source).toEqual([
         {
           source_version: "owner_accounting_native_source_v1",
-          manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
+          manifest_sha256: "82be545a9596e7cad32de062e2be8707e59d968a73a71e316dcfa23b26aa9ed8",
         },
       ]);
       const functions = (
@@ -213,9 +213,9 @@ suite("owned empty financial baseline reset", () => {
           "SELECT f.signature,f.acl_class FROM owner_accounting_native_source_inventory_v1 m CROSS JOIN LATERAL jsonb_to_recordset(m.manifest->'functions') AS f(signature TEXT,acl_class TEXT) WHERE m.singleton ORDER BY f.signature COLLATE \"C\"",
         )
       ).rows;
-      expect(functions).toHaveLength(370);
+      expect(functions).toHaveLength(371);
       expect(functions.filter((f) => f.acl_class === "private_source_only")).toHaveLength(193);
-      expect(functions.filter((f) => f.acl_class === "controlled_financial")).toHaveLength(140);
+      expect(functions.filter((f) => f.acl_class === "controlled_financial")).toHaveLength(141);
       expect(functions.filter((f) => f.acl_class === "legacy_source_default")).toHaveLength(37);
       const privileges = (
         await reader.query<{ signature: string; allowed: boolean }>(
@@ -285,7 +285,7 @@ suite("owned empty financial baseline reset", () => {
       expect(originalSourceMetadata).toEqual([
         {
           source_version: "owner_accounting_native_source_v1",
-          manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
+          manifest_sha256: "82be545a9596e7cad32de062e2be8707e59d968a73a71e316dcfa23b26aa9ed8",
         },
       ]);
       expect(originalSeeds.reduce((sum, row) => sum + Number(row[1]), 0)).toBe(45);
