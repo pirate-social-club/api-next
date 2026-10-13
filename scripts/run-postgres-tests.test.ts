@@ -6,6 +6,7 @@ import {
   postgresLockCapacityError,
   postgresLockTableEntries,
   postgresTestFileWeight,
+  postgresTestSourceCallCount,
   postgresTestTimeoutMilliseconds,
   requiredPostgresLockTableEntries,
   shardPostgresTestFiles,
@@ -93,13 +94,32 @@ describe("PostgreSQL test discovery", () => {
     ).toBe(40);
     expect(
       postgresTestFileWeight("packages/platform-cf/src/content-repository.pg.test.ts", 2),
-    ).toBe(510);
+    ).toBe(821);
     expect(
       postgresTestFileWeight("packages/platform-cf/src/community-route-repository.pg.test.ts", 2),
     ).toBe(280);
     expect(() => postgresTestFileWeight("unclassified.pg.test.ts", 2)).toThrow(
       "PostgreSQL test suite is not classified for shard weighting",
     );
+  });
+
+  test("counts native pgTest aliases in the same shard model as ordinary calls", () => {
+    const source = [
+      "const pgTest = pgUrl ? test : test.skip;",
+      'test("ordinary", () => undefined);',
+      'pgTest("native", () => undefined);',
+      'pgTest.skip("native absent", () => undefined);',
+    ].join("\n");
+    expect(postgresTestSourceCallCount(source)).toBe(3);
+    expect(postgresTestSourceCallCount("const pgTest = pgUrl ? test : test.skip;")).toBe(0);
+    // Four actual readiness calls formerly received the normalized one-call
+    // weight20; their complete required-CI group measured90.124 seconds.
+    expect(
+      postgresTestFileWeight(
+        "packages/platform-cf/src/guest-study-managed-readiness.pg.test.ts",
+        4,
+      ),
+    ).toBe(902);
   });
 
   test("keeps the CI matrix and runner shard count in lockstep", async () => {
@@ -194,10 +214,12 @@ describe("PostgreSQL test discovery", () => {
     const weights: Record<string, number> = {};
     for (const file of partition.general) {
       const source = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
-      const testCount = source.match(/\btest(?:\.skip)?\s*\(/gu)?.length ?? 0;
+      const testCount = postgresTestSourceCallCount(source);
       weights[file] = postgresTestFileWeight(file, testCount);
     }
     const shards = shardPostgresTestFiles(audited, postgresGeneralShardCount, weights);
+    expect(shards.flat().sort()).toEqual([...audited].sort());
+    expect(new Set(shards.flat()).size).toBe(audited.length);
     const workflow = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
     for (const target of [
       {
