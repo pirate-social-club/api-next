@@ -220,7 +220,10 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
           const ledger = yield* rows(tx, "guest-readiness.ledger", ledgerSql(quoted));
           yield* Effect.try({
             try: () => {
-              const actual = decode(Schema.Array(Ledger).check(Schema.isMaxLength(262)), ledger);
+              const actual = decode(
+                Schema.Array(Ledger).check(Schema.isMaxLength(candidate.ledger.length)),
+                ledger,
+              );
               assert(actual.length === candidate.ledger.length);
               for (let i = 0; i < actual.length; i++) {
                 const expected = candidate.ledger[i],

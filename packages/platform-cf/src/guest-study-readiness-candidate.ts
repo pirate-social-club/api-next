@@ -1,4 +1,4 @@
-// Source-bound full native262 execution frames, body hashes, finite profiles and fixed PostgreSQL17 restricted probes.
+// Source-bound full native263 execution frames, body hashes, finite profiles and fixed PostgreSQL17 restricted probes.
 export const guestStudyReadinessCandidate = {
   ledger: [
     {
@@ -1049,6 +1049,10 @@ export const guestStudyReadinessCandidate = {
       checksum: "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
       version: "0262_ordinary_audio_producer_capture.sql",
     },
+    {
+      checksum: "89414a8fdec1ef43930c186f5a95699c599beb3c84b69d3c5044f648e6fde9c3",
+      version: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
   ],
   native_function_bodies: [
     {
@@ -1124,6 +1128,14 @@ export const guestStudyReadinessCandidate = {
       source_file: "0262_ordinary_audio_producer_capture.sql",
     },
     {
+      body_sha256: "3d960a8144c19e48edc45315a3205dfaf0bc3066d1c033fe33c5a85cc837422c",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "capture_guest_audio_retention_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
       body_sha256: "366a512fcc68e06873c88639ae6cc5222e26ff95f4a368cd9810014c3fe3dc42",
       configuration: "pinned",
       definer: true,
@@ -1140,12 +1152,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0262_ordinary_audio_producer_capture.sql",
     },
     {
-      body_sha256: "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
+      body_sha256: "2e9adb63fb00de91e8f111082c9d62796ffd9792c7427d4292b98b0dc5be9efa",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "claim_guest_audio_io_private_v1",
-      source_file: "0257_guest_spoken_audio_archive.sql",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
       body_sha256: "407ee6a804c21c6eb5e5a4ac48d59f24a5c1f072aa5c7f0f5086f63d370ce871",
@@ -1202,6 +1214,14 @@ export const guestStudyReadinessCandidate = {
       kind: "f",
       name: "confirm_captured_audio_cleanup_private_v1",
       source_file: "0262_ordinary_audio_producer_capture.sql",
+    },
+    {
+      body_sha256: "7ea8e9e864d0327abdea22e9ad0c0c4612204df663122a48131e7892df74a071",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_guest_ephemeral_audio_cleanup_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
       body_sha256: "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
@@ -1492,6 +1512,38 @@ export const guestStudyReadinessCandidate = {
       source_file: "0250_guest_browser_authority_transitions.sql",
     },
     {
+      body_sha256: "e1c771b152e754b9bd40d5e76fa178379b94b0a4fb14ff11949a005edbda2a3d",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_ephemeral_object_closed_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
+      body_sha256: "4e25fd131ee3eb7097b090ea0aeb78e4e65a0f94fb335cf9fcdee46596a65abb",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_ephemeral_owner_delete_witness_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
+      body_sha256: "dbf6cfdc4caf4e00a5c9a22c7976ecfe30cb446c9a605698f2d4b1c401667359",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_ephemeral_pending_cleanup_ready_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
+      body_sha256: "876b1be925db04307d4a422331553738031b51dc6e8aca83fbae8a5c06551db3",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_ephemeral_upload_ready_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
       body_sha256: "5695c0ea11f44fd0d5f5228fabb813968e25aee4f4babdbb6d09b682a4960aa8",
       configuration: "pinned",
       definer: true,
@@ -1764,6 +1816,14 @@ export const guestStudyReadinessCandidate = {
       source_file: "0250_guest_browser_authority_transitions.sql",
     },
     {
+      body_sha256: "3f7355a8a807ff1ff46d99bfda34f6e5d4392af51839d3ca3d9f1fd9aef5f19a",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_captured_audio_cleanup_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
+    },
+    {
       body_sha256: "80afe1076ed7b7a0a9eeae2398e355e20daa2466cd4bffc2009b3591a23d4eac",
       configuration: "pinned",
       definer: true,
@@ -1802,6 +1862,14 @@ export const guestStudyReadinessCandidate = {
       kind: "f",
       name: "prepare_learner_audio_delete_private_v1",
       source_file: "0253_learner_audio_deletion_fence.sql",
+    },
+    {
+      body_sha256: "a90d16a761a9af6f565860aa317056d365dbf9a1c479244403692f6951b65427",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_next_guest_ephemeral_audio_cleanup_private_v1",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
       body_sha256: "144372a843cd2a9134e0f2d5cc8414555310d0c920bc26c888dc447acf5012ed",
@@ -1988,12 +2056,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0254_guest_prepared_study_session_capture.sql",
     },
     {
-      body_sha256: "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
+      body_sha256: "27305b44c46779f5befa2cb92b86abcbf70e7c202e1fedd011a73204400382d4",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "register_learner_audio_upload_private_v1",
-      source_file: "0262_ordinary_audio_producer_capture.sql",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
       body_sha256: "619ecd9d3a8f8f1184b5ce3c15819d870dc3e4c0c330c8bf12589c5f017e73c4",
@@ -2244,12 +2312,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0258_guest_recovery_audio_deletion.sql",
     },
     {
-      body_sha256: "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
+      body_sha256: "083de7f985049e7f5164cbb02a61502f9a58830c7dfde44e30194bd0976c4d5a",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "settle_guest_audio_io_private_v1",
-      source_file: "0257_guest_spoken_audio_archive.sql",
+      source_file: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
       body_sha256: "2f66f0d2aca9c8c37ea31627a48ef1c8e2c4f120b95b12b983b22cbd73f483c4",
@@ -2341,9 +2409,11 @@ export const guestStudyReadinessCandidate = {
         "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
         "apply_guest_spoken_item_mutation_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb)",
         "claim_guest_audio_io_private_v1(jsonb)",
+        "confirm_guest_ephemeral_audio_cleanup_private_v1(text,text,text,timestamptz)",
         "finish_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb)",
         "list_guest_spoken_closed_recovery_v1(integer)",
         "prepare_guest_spoken_finalization_v1(text,jsonb,text)",
+        "prepare_next_guest_ephemeral_audio_cleanup_private_v1()",
         "read_guest_spoken_closed_recovery_v1(text)",
         "release_next_guest_study_resource_remainder_v1()",
         "resolve_guest_audio_io_capture_private_v1(jsonb,jsonb,text,text,bigint,text)",
@@ -2515,7 +2585,7 @@ export const guestStudyReadinessCandidate = {
       signature: "can_guest_access_activity_song_v1(text,text)",
     },
     {
-      body_sha256: "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
+      body_sha256: "2e9adb63fb00de91e8f111082c9d62796ffd9792c7427d4292b98b0dc5be9efa",
       definer: true,
       signature: "claim_guest_audio_io_private_v1(jsonb)",
     },
@@ -2529,6 +2599,11 @@ export const guestStudyReadinessCandidate = {
       definer: true,
       signature:
         "commit_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb,jsonb,jsonb,text,text,text,text,boolean)",
+    },
+    {
+      body_sha256: "7ea8e9e864d0327abdea22e9ad0c0c4612204df663122a48131e7892df74a071",
+      definer: true,
+      signature: "confirm_guest_ephemeral_audio_cleanup_private_v1(text,text,text,timestamptz)",
     },
     {
       body_sha256: "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
@@ -2643,6 +2718,11 @@ export const guestStudyReadinessCandidate = {
       signature: "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)",
     },
     {
+      body_sha256: "a90d16a761a9af6f565860aa317056d365dbf9a1c479244403692f6951b65427",
+      definer: true,
+      signature: "prepare_next_guest_ephemeral_audio_cleanup_private_v1()",
+    },
+    {
       body_sha256: "187b9ada99a71b4368dc34346b42d15c4b230bba0082b851763768c56b6bcdf5",
       definer: true,
       signature: "read_guest_browser_proof_snapshot_v1(text,jsonb,jsonb,boolean)",
@@ -2693,7 +2773,7 @@ export const guestStudyReadinessCandidate = {
       signature: "read_owner_study_session_snapshot_v1(jsonb,text,text)",
     },
     {
-      body_sha256: "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
+      body_sha256: "27305b44c46779f5befa2cb92b86abcbf70e7c202e1fedd011a73204400382d4",
       definer: true,
       signature:
         "register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)",
@@ -2741,7 +2821,7 @@ export const guestStudyReadinessCandidate = {
       signature: "set_guest_learning_retention_v1(jsonb,jsonb,text)",
     },
     {
-      body_sha256: "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
+      body_sha256: "083de7f985049e7f5164cbb02a61502f9a58830c7dfde44e30194bd0976c4d5a",
       definer: true,
       signature: "settle_guest_audio_io_private_v1(jsonb,text,boolean)",
     },
@@ -2757,6 +2837,6 @@ export const guestStudyReadinessCandidate = {
     },
   ],
   restricted_catalogue_probes: ["pg_ls_dir", "pg_read_binary_file", "pg_read_file", "pg_stat_file"],
-  source_head: "ef66927be5f078e0d68e9cc450a57cffc979ea8a",
-  source_manifest_sha256: "3a60ea6ef144e5c7c61fa9bd96b6eba412789fa6b7e8dcbffbb9f8bb66f14fb6",
+  source_head: "753ce82f9d5dca97214389c3e2258c62f8df5146",
+  source_manifest_sha256: "cab0fe2649c93808b3e378d9ca9acdaef08474d63738a23d37304d561d7d704b",
 } as const;

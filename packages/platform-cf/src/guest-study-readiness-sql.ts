@@ -141,7 +141,38 @@ SELECT NOT (NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class WHERE oid=pg_catalog.to
         'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
         'reward_credit_persona_bindings','reward_credit_recipient_selections'))
 
-) AS valid,
+)
+ AND EXISTS(SELECT 1 FROM pg_catalog.pg_class capture_relation
+  WHERE capture_relation.oid=pg_catalog.to_regclass($1 || '.guest_study_spoken_captures')
+   AND capture_relation.relnamespace=anchor.namespace_id AND capture_relation.relowner=anchor.owner_id
+   AND capture_relation.relkind='r')
+ AND (SELECT count(*) FROM pg_catalog.pg_attribute attribute
+  WHERE attribute.attrelid=pg_catalog.to_regclass($1 || '.guest_study_spoken_captures')
+   AND attribute.attnum>0 AND NOT attribute.attisdropped AND NOT attribute.attnotnull
+   AND NOT attribute.atthasdef AND attribute.attidentity='' AND attribute.attgenerated=''
+   AND attribute.attndims=0 AND attribute.atttypmod=-1
+   AND ((attribute.attname='captured_platform_retention' AND attribute.atttypid='pg_catalog.text'::regtype)
+    OR (attribute.attname='captured_retention_expires_at' AND attribute.atttypid='pg_catalog.timestamptz'::regtype)))=2
+ AND EXISTS(SELECT 1 FROM pg_catalog.pg_constraint shape
+  WHERE shape.conrelid=pg_catalog.to_regclass($1 || '.guest_study_spoken_captures')
+   AND shape.connamespace=anchor.namespace_id AND shape.conname='guest_capture_retention_shape'
+   AND shape.contype='c' AND shape.convalidated AND shape.conislocal AND NOT shape.connoinherit
+   AND NOT shape.condeferrable AND NOT shape.condeferred
+   AND ARRAY(SELECT key FROM unnest(shape.conkey) key ORDER BY key)=ARRAY(
+    SELECT attribute.attnum FROM pg_catalog.pg_attribute attribute
+    WHERE attribute.attrelid=shape.conrelid AND attribute.attnum>0 AND NOT attribute.attisdropped
+     AND attribute.attname IN('captured_platform_retention','captured_retention_expires_at','created_at')
+    ORDER BY attribute.attnum)
+   AND cardinality(shape.conkey)=3)
+ AND EXISTS(SELECT 1 FROM pg_catalog.pg_trigger retention_trigger
+  WHERE retention_trigger.tgrelid=pg_catalog.to_regclass($1 || '.guest_study_spoken_captures')
+   AND retention_trigger.tgname='guest_audio_retention_capture'
+   AND retention_trigger.tgfoid=pg_catalog.to_regprocedure($1 || '.capture_guest_audio_retention_private_v1()')
+   AND retention_trigger.tgtype=7 AND retention_trigger.tgenabled='O' AND NOT retention_trigger.tgisinternal
+   AND retention_trigger.tgconstraint=0 AND NOT retention_trigger.tgdeferrable AND NOT retention_trigger.tginitdeferred
+   AND retention_trigger.tgnargs=0 AND cardinality(retention_trigger.tgattr::smallint[])=0
+   AND retention_trigger.tgqual IS NULL AND retention_trigger.tgparentid=0
+   AND retention_trigger.tgoldtable IS NULL AND retention_trigger.tgnewtable IS NULL) AS valid,
  (SELECT phase FROM ${schema}.guest_learning_schema_phase WHERE singleton) AS phase FROM anchor`;
 
 /** Initial PostgreSQL17 ACLs come from native initdb pg_init_privs entries, or
