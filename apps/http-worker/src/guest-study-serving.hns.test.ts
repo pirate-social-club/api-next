@@ -1,8 +1,8 @@
 // Genuine Worker + actual Access RSA verifier + actual forwarder HMAC/replay.
 // Synthetic accepted HNS host state is copied byte-exact from the maintained test.
 import { describe, expect, test } from "bun:test";
-import type { HnsCommunityAppHostAuthorityStateV1 } from "@pirate/platform-cf/hns-community-app-api";
 import { makeCloudflareAccessJwtValidatorV1 } from "@pirate/platform-cf/cloudflare-access-jwt";
+import type { HnsCommunityAppHostAuthorityStateV1 } from "@pirate/platform-cf/hns-community-app-api";
 import {
   makeHnsForwarderV3Gateway,
   makeStaticHnsForwarderKeyRegistryV1,
@@ -10,6 +10,7 @@ import {
 import { Effect } from "effect";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { createHttpWorker } from "./transport.ts";
+
 const activeState: HnsCommunityAppHostAuthorityStateV1 = {
   variant: "community_app_v1",
   normalized_host: "app.xn--pokmon-dva",
@@ -157,12 +158,18 @@ describe("Guest Study serving real HNS trust dependencies", () => {
   test("actual Worker accepts RSA Access and HMAC; safe reads replay while unsafe replay and expired Access refuse", async () => {
     const f = await harness();
     const good = await f.signed("/api/health");
-    const response = await f.worker.fetch(new Request(good.url, { method: good.method, headers: good.headers }));
+    const response = await f.worker.fetch(
+      new Request(good.url, { method: good.method, headers: good.headers }),
+    );
     expect(response.status).toBe(200);
     expect(f.keyReads()).toBe(1);
-    expect((await f.worker.fetch(new Request(good.url, { method: good.method, headers: good.headers }))).status).toBe(200);
+    expect(
+      (await f.worker.fetch(new Request(good.url, { method: good.method, headers: good.headers })))
+        .status,
+    ).toBe(200);
     const unsafe = await f.signed("/api/auth/session/logout", "POST");
-    const replay = () => new Request(unsafe.url, { method: unsafe.method, headers: unsafe.headers });
+    const replay = () =>
+      new Request(unsafe.url, { method: unsafe.method, headers: unsafe.headers });
     expect((await f.worker.fetch(replay())).status).toBe(200);
     expect((await f.worker.fetch(replay())).status).toBe(400);
     const expired = await f.signed("/api/health", "GET", await f.token(now - 300));

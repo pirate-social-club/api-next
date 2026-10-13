@@ -1,14 +1,17 @@
-import { makeGuestStudyManagedReadiness } from "@pirate/platform-cf/guest-study-managed-readiness";
 // Serving-capable source only. Absent managed admission is disabled; production is refused.
 import {
-  type Clock, type ControlPlaneDb, type ControlPlaneError, type IdGen,
-  makeOwnerGuestStudyService, makeOwnerSpokenSuccessProtocol,
+  type Clock,
+  type ControlPlaneDb,
+  type ControlPlaneError,
+  type IdGen,
+  makeOwnerGuestStudyService,
+  makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application";
 import { guestParticipationRegistry } from "@pirate/contracts";
-import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
-import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";
 import { makeControlPlaneGuestPracticeParticipationReadStore } from "@pirate/platform-cf/guest-practice-participation-read-store";
+import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";
 import { makeGuestRecoveryAudioDeletionStores } from "@pirate/platform-cf/guest-recovery-deletion-store";
+import { makeGuestStudyManagedReadiness } from "@pirate/platform-cf/guest-study-managed-readiness";
 import { makeOriginalAccountStudySourceControl } from "@pirate/platform-cf/owner-account-source-control";
 import { makeOwnerLearnerAudioDeletionIo } from "@pirate/platform-cf/owner-audio-deletion-io";
 import { makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores } from "@pirate/platform-cf/owner-guest-spoken-checkpoint-recovery-store";
@@ -20,21 +23,29 @@ import { makeOwnerElevenLabsStudyInvokingTranscriber } from "@pirate/platform-cf
 import { makeControlPlaneOwnerStudyMutations } from "@pirate/platform-cf/owner-study-mutations";
 import { makeControlPlaneOwnerStudyStarter } from "@pirate/platform-cf/owner-study-starter";
 import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-store-composition";
+import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import type { Layer } from "effect";
 import {
-  guestAccountingNames, guestLearningNames, makeGuestAuthorityComposition,
+  guestAccountingNames,
+  guestLearningNames,
+  makeGuestAuthorityComposition,
 } from "./guest-authority-controller-composition.ts";
 import type { GuestAuthorityControllerName } from "./guest-authority-controllers.ts";
-import type { GuestLearningControllerName } from "./guest-learning-controllers.ts";
 import { makeGuestLearningComposition } from "./guest-learning-controller-composition.ts";
+import type { GuestLearningControllerName } from "./guest-learning-controllers.ts";
 import { readGuestStudyRuntimeConfiguration } from "./guest-study-runtime-configuration.ts";
 
 export type GuestStudyServingName = GuestAuthorityControllerName | GuestLearningControllerName;
 const authorityNames: readonly string[] = [
-  "GetGuestAuthorityV1", "IssueGuestBootstrapV1", "ConfirmGuestBootstrapV1",
-  "RenewGuestAuthorityV1", "RotateGuestCredentialV1", "AcknowledgeGuestCredentialV1",
-  "CleanupGuestBrowserProofV1", "CreateGuestAttachmentIntentV1",
+  "GetGuestAuthorityV1",
+  "IssueGuestBootstrapV1",
+  "ConfirmGuestBootstrapV1",
+  "RenewGuestAuthorityV1",
+  "RotateGuestCredentialV1",
+  "AcknowledgeGuestCredentialV1",
+  "CleanupGuestBrowserProofV1",
+  "CreateGuestAttachmentIntentV1",
 ];
 export function isGuestStudyServingName(name: string): name is GuestStudyServingName {
   return (guestLearningNames as readonly string[]).includes(name);
@@ -84,7 +95,10 @@ export interface GuestStudyServingInputs {
 export async function makeGuestStudyServingComposition(input: GuestStudyServingInputs) {
   // No constructor, DB lookup, body allocation, provider or storage I/O on the inert path.
   if (input.enabledBinding === undefined || input.enabledBinding === "false") return null;
-  if (input.enabledBinding !== "true" || !["staging", "development", "test"].includes(input.environment))
+  if (
+    input.enabledBinding !== "true" ||
+    !["staging", "development", "test"].includes(input.environment)
+  )
     throw new Error("Guest Study serving requires explicit nonproduction admission");
   if (input.managed === undefined) throw new Error("Managed Guest Study bindings unavailable");
   // Source acceptance and route activation are separate. Never override a frozen
@@ -97,8 +111,11 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
       throw new Error("Guest accounting declarations must remain disabled");
   const m = input.managed;
   const readiness = makeGuestStudyManagedReadiness({
-    learning: m.learning, publicRead: m.publicRead, cron: m.cron,
-    observer: m.observer, schema: m.schema,
+    learning: m.learning,
+    publicRead: m.publicRead,
+    cron: m.cron,
+    observer: m.observer,
+    schema: m.schema,
     workerLearnerAudioBinding: input.workerLearnerAudioBinding,
     selectedLearnerAudioBinding: m.bucket,
   });
@@ -108,36 +125,49 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
   const disclosure = config?.disclosure ?? null;
   const starter = makeControlPlaneOwnerStudyStarter(m.learning, disclosure, policy);
   const mutations = makeControlPlaneOwnerStudyMutations(m.learning, {
-    rawPolicy: policy, disclosureVersion: disclosure?.version ?? null,
-    rerecordEnabled: m.rerecordEnabled, providerRetention: "stored",
+    rawPolicy: policy,
+    disclosureVersion: disclosure?.version ?? null,
+    rerecordEnabled: m.rerecordEnabled,
+    providerRetention: "stored",
   });
   const prepared = makeControlPlanePreparedGuestStudyContentStore(m.publicRead, disclosure);
   const store = composeOwnerAwareStudyV2Store({
-    starter, mutations, prepared,
+    starter,
+    mutations,
+    prepared,
     ordinary: makeControlPlaneStudyV2Store(m.learning),
     originalAccountSources: makeOriginalAccountStudySourceControl(m.learning),
     verifiedOrdinaryAccount: null,
   });
   const success = makeOwnerSpokenSuccessProtocol(
-    makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(m.learning), store,
+    makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(m.learning),
+    store,
     makeOwnerSpokenFencedArchiveStage(m.learning, m.bucket, m.retainTask),
   );
   const study = makeOwnerGuestStudyService({
-    store, prepared, atomicStarter: starter,
+    store,
+    prepared,
+    atomicStarter: starter,
     dispatchContext: makeOwnerGuestSpokenDispatchContextStore(m.learning),
     resourcePolicy: policy,
     recovery: makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(m.learning).browser,
     visibility: makeOwnerGuestStudyPublicVisibilityStore(m.publicRead),
-    success, rerecordEnabled: m.rerecordEnabled,
+    success,
+    rerecordEnabled: m.rerecordEnabled,
     transcriber: makeOwnerElevenLabsStudyInvokingTranscriber(m.transcriber),
   });
   const authority = makeGuestAuthorityComposition({
-    controlPlane: m.learning, accountVerifier: input.accountVerifier,
+    controlPlane: m.learning,
+    accountVerifier: input.accountVerifier,
     ordinarySessionScope: input.ordinarySessionScope,
     ordinaryProductOrigin: m.ordinaryProductOrigin,
-    ...(input.hnsProtectedIngressOrigin === undefined ? {} : { hnsProtectedIngressOrigin: input.hnsProtectedIngressOrigin }),
-    nowMilliseconds: m.nowMilliseconds, retryAfterSeconds: m.retryAfterSeconds,
-    currentResourcePolicy: policy, disclosure,
+    ...(input.hnsProtectedIngressOrigin === undefined
+      ? {}
+      : { hnsProtectedIngressOrigin: input.hnsProtectedIngressOrigin }),
+    nowMilliseconds: m.nowMilliseconds,
+    retryAfterSeconds: m.retryAfterSeconds,
+    currentResourcePolicy: policy,
+    disclosure,
     // Canonical learning controller uses verified context.origin + actual decoded
     // CF edge metadata. The old pending callback supplies no privilege.
     trustedEdgeForRequest: async () => null,
@@ -153,22 +183,35 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
       await readiness.verify();
       return authority.requestAuthentication.authenticate(args);
     },
-    async precheckHnsBeforeBody(args: Parameters<typeof authority.requestAuthentication.precheckHnsBeforeBody>[0]) {
+    async precheckHnsBeforeBody(
+      args: Parameters<typeof authority.requestAuthentication.precheckHnsBeforeBody>[0],
+    ) {
       await readiness.verify();
       return authority.requestAuthentication.precheckHnsBeforeBody(args);
     },
   });
-  const learning = makeGuestLearningComposition({ authority, services: {
-    study, participations: makeControlPlaneGuestPracticeParticipationReadStore(m.learning),
-    retention: recovery.retention, deletion: recovery.deletion,
-    deletionIo: makeOwnerLearnerAudioDeletionIo(recovery.deletion, m.bucket),
-    clock: m.clock, ids: m.ids, retryAfterSeconds: m.retryAfterSeconds,
-  } });
+  const learning = makeGuestLearningComposition({
+    authority,
+    services: {
+      study,
+      participations: makeControlPlaneGuestPracticeParticipationReadStore(m.learning),
+      retention: recovery.retention,
+      deletion: recovery.deletion,
+      deletionIo: makeOwnerLearnerAudioDeletionIo(recovery.deletion, m.bucket),
+      clock: m.clock,
+      ids: m.ids,
+      retryAfterSeconds: m.retryAfterSeconds,
+    },
+  });
   return Object.freeze({
     requestAuthentication: checkedAuthentication,
     // Cron remains a distinct role/graph owned by cron composition. No browser
     // handler receives its runtime or controlled closed-checkpoint leaves.
-    async handle(input: Omit<Parameters<typeof authority.handleAuthorityOperation>[0], "name"> & { readonly name: GuestStudyServingName }) {
+    async handle(
+      input: Omit<Parameters<typeof authority.handleAuthorityOperation>[0], "name"> & {
+        readonly name: GuestStudyServingName;
+      },
+    ) {
       await readiness.verify();
       return isAuthorityName(input.name)
         ? authority.handleAuthorityOperation({ ...input, name: input.name })
@@ -176,4 +219,6 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
     },
   });
 }
-export type GuestStudyServingComposition = NonNullable<Awaited<ReturnType<typeof makeGuestStudyServingComposition>>>;
+export type GuestStudyServingComposition = NonNullable<
+  Awaited<ReturnType<typeof makeGuestStudyServingComposition>>
+>;

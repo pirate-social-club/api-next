@@ -1,2343 +1,2343 @@
 // Source-bound full native262 execution frames, body hashes, finite profiles and fixed PostgreSQL17 restricted probes.
 export const guestStudyReadinessCandidate = {
-  "ledger": [
+  ledger: [
     {
-      "checksum": "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93",
-      "version": "0001_v1_product_slice.sql"
+      checksum: "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93",
+      version: "0001_v1_product_slice.sql",
     },
     {
-      "checksum": "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112",
-      "version": "0002_identity.sql"
+      checksum: "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112",
+      version: "0002_identity.sql",
     },
     {
-      "checksum": "7201fac3e446d8f22056e412e938f595a17a71489cff83b74aec5440ee33007b",
-      "version": "0003_m2_community_content.sql"
+      checksum: "7201fac3e446d8f22056e412e938f595a17a71489cff83b74aec5440ee33007b",
+      version: "0003_m2_community_content.sql",
     },
     {
-      "checksum": "c14be1d97828bf424305860080a845953827babb36fd523d167cade523cef4cd",
-      "version": "0004_post_comment_lock.sql"
+      checksum: "c14be1d97828bf424305860080a845953827babb36fd523d167cade523cef4cd",
+      version: "0004_post_comment_lock.sql",
     },
     {
-      "checksum": "707bbc14af35783fd4f41f351122a55815e62b92680351ff671e94da554142e9",
-      "version": "0005_m2_behavior_invariants.sql"
+      checksum: "707bbc14af35783fd4f41f351122a55815e62b92680351ff671e94da554142e9",
+      version: "0005_m2_behavior_invariants.sql",
     },
     {
-      "checksum": "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522",
-      "version": "0006_public_profile_handle_index.sql"
+      checksum: "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522",
+      version: "0006_public_profile_handle_index.sql",
     },
     {
-      "checksum": "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1",
-      "version": "0007_public_profile_handle_invariants.sql"
+      checksum: "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1",
+      version: "0007_public_profile_handle_invariants.sql",
     },
     {
-      "checksum": "58b5e111b59eb094d976498646ff1269f6e8e5393774055c82872de8fa51bbf8",
-      "version": "0008_community_route_slug.sql"
+      checksum: "58b5e111b59eb094d976498646ff1269f6e8e5393774055c82872de8fa51bbf8",
+      version: "0008_community_route_slug.sql",
     },
     {
-      "checksum": "39a5312194ee479f92c31fdb4d0ddfcc6e4616b235203b45d43fa94afd29cbf0",
-      "version": "0009_gates_v2_foundation.sql"
+      checksum: "39a5312194ee479f92c31fdb4d0ddfcc6e4616b235203b45d43fa94afd29cbf0",
+      version: "0009_gates_v2_foundation.sql",
     },
     {
-      "checksum": "ad796f966ef55c4b3d9a7bb51978278d55387e7302e133fc7f15f6965b76c3ce",
-      "version": "0010_proof_session_provenance.sql"
+      checksum: "ad796f966ef55c4b3d9a7bb51978278d55387e7302e133fc7f15f6965b76c3ce",
+      version: "0010_proof_session_provenance.sql",
     },
     {
-      "checksum": "691628fe1be5fbfbd2e48ad227952560020c395b4776d0c2f70d056c34138159",
-      "version": "0011_verification_start_reservations.sql"
+      checksum: "691628fe1be5fbfbd2e48ad227952560020c395b4776d0c2f70d056c34138159",
+      version: "0011_verification_start_reservations.sql",
     },
     {
-      "checksum": "d04d65a642931cd62909986276779f6dd6ed84eb7ebd418cf04f085830211b32",
-      "version": "0012_verification_completion_attempts.sql"
+      checksum: "d04d65a642931cd62909986276779f6dd6ed84eb7ebd418cf04f085830211b32",
+      version: "0012_verification_completion_attempts.sql",
     },
     {
-      "checksum": "a3bb7deed76d76c1642220cf54b5dd277cbbaf0239946cd6a9967328e2e277a3",
-      "version": "0013_m3_community_purchase_funding_journal.sql"
+      checksum: "a3bb7deed76d76c1642220cf54b5dd277cbbaf0239946cd6a9967328e2e277a3",
+      version: "0013_m3_community_purchase_funding_journal.sql",
     },
     {
-      "checksum": "a60a534038ef9e56e5e8fb50ae10c92a74b7333f97c289cf8cc298676673ec98",
-      "version": "0014_m3_community_purchase_funding_plans.sql"
+      checksum: "a60a534038ef9e56e5e8fb50ae10c92a74b7333f97c289cf8cc298676673ec98",
+      version: "0014_m3_community_purchase_funding_plans.sql",
     },
     {
-      "checksum": "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f",
-      "version": "0015_identity_credentials.sql"
+      checksum: "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f",
+      version: "0015_identity_credentials.sql",
     },
     {
-      "checksum": "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220",
-      "version": "0016_identity_credential_invariants.sql"
+      checksum: "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220",
+      version: "0016_identity_credential_invariants.sql",
     },
     {
-      "checksum": "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa",
-      "version": "0017_identity_credential_delete_guard.sql"
+      checksum: "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa",
+      version: "0017_identity_credential_delete_guard.sql",
     },
     {
-      "checksum": "c19f6ec203846697d3a46f959b329e1e97fc3e4c603f653038017ab42074ec40",
-      "version": "0018_m3_funding_dormancy_and_retention.sql"
+      checksum: "c19f6ec203846697d3a46f959b329e1e97fc3e4c603f653038017ab42074ec40",
+      version: "0018_m3_funding_dormancy_and_retention.sql",
     },
     {
-      "checksum": "d7813cbab52d4bd14cc9d6eee7ac52e3715969fbc1f1edd6c79b75425aeb9434",
-      "version": "0019_m3_reconciliation_attempts.sql"
+      checksum: "d7813cbab52d4bd14cc9d6eee7ac52e3715969fbc1f1edd6c79b75425aeb9434",
+      version: "0019_m3_reconciliation_attempts.sql",
     },
     {
-      "checksum": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f",
-      "version": "0020_m3_reconciliation_finalization.sql"
+      checksum: "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f",
+      version: "0020_m3_reconciliation_finalization.sql",
     },
     {
-      "checksum": "1342c73b093b0f5411d50abd56f351ea3d933e98965a4cc3228acd17fcee7a85",
-      "version": "0021_m3_community_purchase_commerce.sql"
+      checksum: "1342c73b093b0f5411d50abd56f351ea3d933e98965a4cc3228acd17fcee7a85",
+      version: "0021_m3_community_purchase_commerce.sql",
     },
     {
-      "checksum": "98cf64d09d6f1e4d7b476bc012e9e02bca20a8a083b0376fd80dca5fef89cbb8",
-      "version": "0022_m3_community_purchase_immutability.sql"
+      checksum: "98cf64d09d6f1e4d7b476bc012e9e02bca20a8a083b0376fd80dca5fef89cbb8",
+      version: "0022_m3_community_purchase_immutability.sql",
     },
     {
-      "checksum": "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1",
-      "version": "0023_community_creation_intents.sql"
+      checksum: "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1",
+      version: "0023_community_creation_intents.sql",
     },
     {
-      "checksum": "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39",
-      "version": "0024_community_creation_preflight_transition.sql"
+      checksum: "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39",
+      version: "0024_community_creation_preflight_transition.sql",
     },
     {
-      "checksum": "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d",
-      "version": "0025_community_creation_storage_identity.sql"
+      checksum: "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d",
+      version: "0025_community_creation_storage_identity.sql",
     },
     {
-      "checksum": "08fe7eba04014d148a515f9a4c6074fd727ec58358678f1434d05c9a8bd0f703",
-      "version": "0026_text_moderation_foundation.sql"
+      checksum: "08fe7eba04014d148a515f9a4c6074fd727ec58358678f1434d05c9a8bd0f703",
+      version: "0026_text_moderation_foundation.sql",
     },
     {
-      "checksum": "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11",
-      "version": "0027_community_routes_and_creation_requirements.sql"
+      checksum: "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11",
+      version: "0027_community_routes_and_creation_requirements.sql",
     },
     {
-      "checksum": "bb67fa0b7a8c4bcab14d500cbf46a990e4e78c8171956075cf433c15ef977ad8",
-      "version": "0028_community_creation_requirement_result_guard.sql"
+      checksum: "bb67fa0b7a8c4bcab14d500cbf46a990e4e78c8171956075cf433c15ef977ad8",
+      version: "0028_community_creation_requirement_result_guard.sql",
     },
     {
-      "checksum": "4fcc989911f8dd07e05bcc490af4b0f63ba9c161487df3508471b5e01ccd96c2",
-      "version": "0029_namespace_ownership_persistence.sql"
+      checksum: "4fcc989911f8dd07e05bcc490af4b0f63ba9c161487df3508471b5e01ccd96c2",
+      version: "0029_namespace_ownership_persistence.sql",
     },
     {
-      "checksum": "002e4da17a07f22d71c47b7486e1e7d5ce103fe2ab6da698ad6e9386be44af67",
-      "version": "0030_namespace_ownership_completion_expiry.sql"
+      checksum: "002e4da17a07f22d71c47b7486e1e7d5ce103fe2ab6da698ad6e9386be44af67",
+      version: "0030_namespace_ownership_completion_expiry.sql",
     },
     {
-      "checksum": "d4f01fb04463f9003dd70e3eabfd01a23b9192031d44eb1cae5049ec29e8e984",
-      "version": "0031_community_creation_route_contract.sql"
+      checksum: "d4f01fb04463f9003dd70e3eabfd01a23b9192031d44eb1cae5049ec29e8e984",
+      version: "0031_community_creation_route_contract.sql",
     },
     {
-      "checksum": "4986031d6a8a300f688c98916b60e38152bb3d6ed1c5c484a39f77b1c1843a71",
-      "version": "0032_route_authority_version.sql"
+      checksum: "4986031d6a8a300f688c98916b60e38152bb3d6ed1c5c484a39f77b1c1843a71",
+      version: "0032_route_authority_version.sql",
     },
     {
-      "checksum": "8c61977312fa80550d2cd725c2907aaf4052b24b3b61f4081b8664ad3d67e843",
-      "version": "0033_namespace_ownership_challenge_topologies.sql"
+      checksum: "8c61977312fa80550d2cd725c2907aaf4052b24b3b61f4081b8664ad3d67e843",
+      version: "0033_namespace_ownership_challenge_topologies.sql",
     },
     {
-      "checksum": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d",
-      "version": "0034_effective_active_route.sql"
+      checksum: "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d",
+      version: "0034_effective_active_route.sql",
     },
     {
-      "checksum": "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de",
-      "version": "0035_route_revalidation_persistence.sql"
+      checksum: "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de",
+      version: "0035_route_revalidation_persistence.sql",
     },
     {
-      "checksum": "b4af7d73fe2cf540d10b44cd2f063f2f7f0168fee380aacb79333d5659941d4b",
-      "version": "0036_route_revalidation_completion_outcome_guard.sql"
+      checksum: "b4af7d73fe2cf540d10b44cd2f063f2f7f0168fee380aacb79333d5659941d4b",
+      version: "0036_route_revalidation_completion_outcome_guard.sql",
     },
     {
-      "checksum": "2bf8fcff4b86d40a2d9f86c0b4f9f56b2c962dacbb19ccaea3e3dd2afd55b581",
-      "version": "0037_text_submission_response_snapshot.sql"
+      checksum: "2bf8fcff4b86d40a2d9f86c0b4f9f56b2c962dacbb19ccaea3e3dd2afd55b581",
+      version: "0037_text_submission_response_snapshot.sql",
     },
     {
-      "checksum": "a8473ffa7623357cac90a7364fe7a0c237bdae419d0feb35714b495be2721a20",
-      "version": "0038_community_creation_very_web_evidence.sql"
+      checksum: "a8473ffa7623357cac90a7364fe7a0c237bdae419d0feb35714b495be2721a20",
+      version: "0038_community_creation_very_web_evidence.sql",
     },
     {
-      "checksum": "66089597fce8c360698ef11b8757926e1ca6eddfb59019c3bad6f86ca7c8d095",
-      "version": "0039_comments_replies_runtime.sql"
+      checksum: "66089597fce8c360698ef11b8757926e1ca6eddfb59019c3bad6f86ca7c8d095",
+      version: "0039_comments_replies_runtime.sql",
     },
     {
-      "checksum": "5fc51ad2ab08717fce95fae558e4ac1fad06e01bd952c4bdc5e307f4fa1e9df7",
-      "version": "0040_post_vote_actions.sql"
+      checksum: "5fc51ad2ab08717fce95fae558e4ac1fad06e01bd952c4bdc5e307f4fa1e9df7",
+      version: "0040_post_vote_actions.sql",
     },
     {
-      "checksum": "1c1cce2549d8568843c44e1ab0025ef90129a2feb01cf1c929454887ed52de9a",
-      "version": "0041_community_route_database_expiry.sql"
+      checksum: "1c1cce2549d8568843c44e1ab0025ef90129a2feb01cf1c929454887ed52de9a",
+      version: "0041_community_route_database_expiry.sql",
     },
     {
-      "checksum": "7366dd7df2e5d628406d1a638ea5217199044e84e1e03592be12698b545dc186",
-      "version": "0042_hns_control_observer_persistence.sql"
+      checksum: "7366dd7df2e5d628406d1a638ea5217199044e84e1e03592be12698b545dc186",
+      version: "0042_hns_control_observer_persistence.sql",
     },
     {
-      "checksum": "f9f3413a9f77d4f44c5ac465d0d620f965eea4703b7941c7531d6944d0b732c7",
-      "version": "0043_song_media_submission.sql"
+      checksum: "f9f3413a9f77d4f44c5ac465d0d620f965eea4703b7941c7531d6944d0b732c7",
+      version: "0043_song_media_submission.sql",
     },
     {
-      "checksum": "c2c16da7523f604e4d85e242ac0a43bbce9c95aa73215c2fd07d179b9d12e328",
-      "version": "0044_optional_route_v2.sql"
+      checksum: "c2c16da7523f604e4d85e242ac0a43bbce9c95aa73215c2fd07d179b9d12e328",
+      version: "0044_optional_route_v2.sql",
     },
     {
-      "checksum": "54c1a874bfe1800abe1c4f6e6189be35f960f5247da7fda3bf2603bbf6bf8d71",
-      "version": "0045_hns_owner_authority_custody.sql"
+      checksum: "54c1a874bfe1800abe1c4f6e6189be35f960f5247da7fda3bf2603bbf6bf8d71",
+      version: "0045_hns_owner_authority_custody.sql",
     },
     {
-      "checksum": "f9b16c3b24d193436064afb6603d4d8fa6f25708d7f711da3e47f9b7f915110a",
-      "version": "0046_account_persona_wallet_privacy.sql"
+      checksum: "f9b16c3b24d193436064afb6603d4d8fa6f25708d7f711da3e47f9b7f915110a",
+      version: "0046_account_persona_wallet_privacy.sql",
     },
     {
-      "checksum": "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567",
-      "version": "0047_hns_operator_managed_routes.sql"
+      checksum: "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567",
+      version: "0047_hns_operator_managed_routes.sql",
     },
     {
-      "checksum": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5",
-      "version": "0048_hns_first_party_host_persistence.sql"
+      checksum: "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5",
+      version: "0048_hns_first_party_host_persistence.sql",
     },
     {
-      "checksum": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c",
-      "version": "0049_bare_hns_community_route_v2.sql"
+      checksum: "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c",
+      version: "0049_bare_hns_community_route_v2.sql",
     },
     {
-      "checksum": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57",
-      "version": "0050_song_lyrics_foundation.sql"
+      checksum: "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57",
+      version: "0050_song_lyrics_foundation.sql",
     },
     {
-      "checksum": "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7",
-      "version": "0051_activity_qualification.sql"
+      checksum: "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7",
+      version: "0051_activity_qualification.sql",
     },
     {
-      "checksum": "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644",
-      "version": "0052_media_finalize_fence.sql"
+      checksum: "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644",
+      version: "0052_media_finalize_fence.sql",
     },
     {
-      "checksum": "5c6175c5e684f6adb0742cb75141e528810ab8b2cb44b1a90391dc72dc730cc0",
-      "version": "0053_rewards_song_offers.sql"
+      checksum: "5c6175c5e684f6adb0742cb75141e528810ab8b2cb44b1a90391dc72dc730cc0",
+      version: "0053_rewards_song_offers.sql",
     },
     {
-      "checksum": "869f13813fb28af2f850b17865057f532500a94a997c9b47587bbe499d6713bf",
-      "version": "0054_community_handle_sales.sql"
+      checksum: "869f13813fb28af2f850b17865057f532500a94a997c9b47587bbe499d6713bf",
+      version: "0054_community_handle_sales.sql",
     },
     {
-      "checksum": "7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552",
-      "version": "0055_megapot_claim_reconciliation.sql"
+      checksum: "7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552",
+      version: "0055_megapot_claim_reconciliation.sql",
     },
     {
-      "checksum": "52b7e2075d87ff91274774bafd94270744847728ada07deb2ff7a6aa35f4f054",
-      "version": "0056_media_processing_runtime_bridge.sql"
+      checksum: "52b7e2075d87ff91274774bafd94270744847728ada07deb2ff7a6aa35f4f054",
+      version: "0056_media_processing_runtime_bridge.sql",
     },
     {
-      "checksum": "a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921",
-      "version": "0057_data_registration_persistence.sql"
+      checksum: "a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921",
+      version: "0057_data_registration_persistence.sql",
     },
     {
-      "checksum": "550be77e955da377a0de24df9496e0d1a37a0b1f4ad133d1ff309d34647aed07",
-      "version": "0058_data_ipfs_and_signing_intent_repair.sql"
+      checksum: "550be77e955da377a0de24df9496e0d1a37a0b1f4ad133d1ff309d34647aed07",
+      version: "0058_data_ipfs_and_signing_intent_repair.sql",
     },
     {
-      "checksum": "0ff247fc81ea719bf90e40c693613cb456e46648c668ab10314b4ab527937f90",
-      "version": "0059_community_moderation_authority_policy.sql"
+      checksum: "0ff247fc81ea719bf90e40c693613cb456e46648c668ab10314b4ab527937f90",
+      version: "0059_community_moderation_authority_policy.sql",
     },
     {
-      "checksum": "1c07a066a155c65bcd0d7326dcb66ae39d92d27dd86b535586a0e4236e66c9ba",
-      "version": "0060_persona_wallet_provisioning.sql"
+      checksum: "1c07a066a155c65bcd0d7326dcb66ae39d92d27dd86b535586a0e4236e66c9ba",
+      version: "0060_persona_wallet_provisioning.sql",
     },
     {
-      "checksum": "77a2409573f48881abc047e552a5e449eaaa6fd2aede89aa7e1cf5508a9d99a3",
-      "version": "0061_openai_moderation_driver_cutover.sql"
+      checksum: "77a2409573f48881abc047e552a5e449eaaa6fd2aede89aa7e1cf5508a9d99a3",
+      version: "0061_openai_moderation_driver_cutover.sql",
     },
     {
-      "checksum": "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5",
-      "version": "0062_global_pirate_handle_cleanup_rename.sql"
+      checksum: "c1ff78018c39632d8f36637a3b5b46d9a788b1d120f5777d4b129168314f1ea5",
+      version: "0062_global_pirate_handle_cleanup_rename.sql",
     },
     {
-      "checksum": "5bfb22c32a6bc7d7fcaa92bd4297cbb919a48c41d6ea7699f4b4edbd21da7abe",
-      "version": "0063_community_moderation_owner_runtime.sql"
+      checksum: "5bfb22c32a6bc7d7fcaa92bd4297cbb919a48c41d6ea7699f4b4edbd21da7abe",
+      version: "0063_community_moderation_owner_runtime.sql",
     },
     {
-      "checksum": "6fff6043e2236061e77f3b87ee312ec6cca98a5dc9e2228660f38b6cedbae015",
-      "version": "0064_media_persona_recipient_trigger.sql"
+      checksum: "6fff6043e2236061e77f3b87ee312ec6cca98a5dc9e2228660f38b6cedbae015",
+      version: "0064_media_persona_recipient_trigger.sql",
     },
     {
-      "checksum": "29cc1bad5973a01647fd74000d4feaf10dcd0a1077ebe7af4dc50cc805e9e065",
-      "version": "0065_text_ratings_age_access.sql"
+      checksum: "29cc1bad5973a01647fd74000d4feaf10dcd0a1077ebe7af4dc50cc805e9e065",
+      version: "0065_text_ratings_age_access.sql",
     },
     {
-      "checksum": "2a62aed69cabd1f7786aa3d6f5baf8cd3b555320c67bf850b199211d4c0fe09f",
-      "version": "0066_song_ratings_age_access.sql"
+      checksum: "2a62aed69cabd1f7786aa3d6f5baf8cd3b555320c67bf850b199211d4c0fe09f",
+      version: "0066_song_ratings_age_access.sql",
     },
     {
-      "checksum": "8e8b7bb9b39de801f224c174ae51643ee6c43e97e2caf06a24e48aead8f0cd38",
-      "version": "0067_hns_authority_resolver_search_path.sql"
+      checksum: "8e8b7bb9b39de801f224c174ae51643ee6c43e97e2caf06a24e48aead8f0cd38",
+      version: "0067_hns_authority_resolver_search_path.sql",
     },
     {
-      "checksum": "131a3f48ad834650154085d691ef76e44be89e3a7317b45180c1481e082738e1",
-      "version": "0068_general_audience_song_covers.sql"
+      checksum: "131a3f48ad834650154085d691ef76e44be89e3a7317b45180c1481e082738e1",
+      version: "0068_general_audience_song_covers.sql",
     },
     {
-      "checksum": "7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca",
-      "version": "0069_media_analysis_snapshot_recovery.sql"
+      checksum: "7e26e0cff1f2c8a1b2e1d119a73971a2ae793caebaba89b4b5bf50fda0dd14ca",
+      version: "0069_media_analysis_snapshot_recovery.sql",
     },
     {
-      "checksum": "efd415fde354fa2e46c4aef53e8a7be0fef3f0f731495d1f265f5d08870e7905",
-      "version": "0070_localization_content_foundation.sql"
+      checksum: "efd415fde354fa2e46c4aef53e8a7be0fef3f0f731495d1f265f5d08870e7905",
+      version: "0070_localization_content_foundation.sql",
     },
     {
-      "checksum": "9e8e11f14384f8ff5eeaccdb8ff55de60917c6103de205f921aa0b75fc9601b5",
-      "version": "0071_canonical_lyric_line_lifecycle.sql"
+      checksum: "9e8e11f14384f8ff5eeaccdb8ff55de60917c6103de205f921aa0b75fc9601b5",
+      version: "0071_canonical_lyric_line_lifecycle.sql",
     },
     {
-      "checksum": "fcb1f6a349a1db0a7f6e67056c3c9269cec4e69c0bba1f1557c12f8d285b7af6",
-      "version": "0072_private_language_preferences.sql"
+      checksum: "fcb1f6a349a1db0a7f6e67056c3c9269cec4e69c0bba1f1557c12f8d285b7af6",
+      version: "0072_private_language_preferences.sql",
     },
     {
-      "checksum": "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae",
-      "version": "0073_immutable_lyrics_revision_line_anchor.sql"
+      checksum: "0e8ddf6480c3fdb81c2d72a205c7add48dbed7e979e5bb03fef8f41afefd5eae",
+      version: "0073_immutable_lyrics_revision_line_anchor.sql",
     },
     {
-      "checksum": "680b30cd8aeec54c931aa156cbedf88a6e23d929e97c22b646f8e063492acf5b",
-      "version": "0074_study_v2_foundation.sql"
+      checksum: "680b30cd8aeec54c931aa156cbedf88a6e23d929e97c22b646f8e063492acf5b",
+      version: "0074_study_v2_foundation.sql",
     },
     {
-      "checksum": "c5f62eee72522399510d2c3f04e861387cccc896d3a2e199c681c9009b83b3ea",
-      "version": "0075_study_v2_identity_fencing.sql"
+      checksum: "c5f62eee72522399510d2c3f04e861387cccc896d3a2e199c681c9009b83b3ea",
+      version: "0075_study_v2_identity_fencing.sql",
     },
     {
-      "checksum": "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38",
-      "version": "0076_study_v2_idempotency_fencing.sql"
+      checksum: "69586d61e0e22b9e3e13fa0be4de7fc2dd4c87133c30e1e136850cea78151b38",
+      version: "0076_study_v2_idempotency_fencing.sql",
     },
     {
-      "checksum": "fa1134d6f90385b18b73473e891edfa8d8112aaa2a52a8e1b20ef0d0d23f5f97",
-      "version": "0077_reserved_ordinal.sql"
+      checksum: "fa1134d6f90385b18b73473e891edfa8d8112aaa2a52a8e1b20ef0d0d23f5f97",
+      version: "0077_reserved_ordinal.sql",
     },
     {
-      "checksum": "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0",
-      "version": "0078_study_runtime_amendment.sql"
+      checksum: "3af2be51ad26c344347a99c5bda3732b008160a0989ce16d30447f1c00893fb0",
+      version: "0078_study_runtime_amendment.sql",
     },
     {
-      "checksum": "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953",
-      "version": "0079_karaoke_readiness_policy_v2.sql"
+      checksum: "0cfd96ba9106bb2ac46931b91bb0da7ca034e0d646b215a42cb987019b3e0953",
+      version: "0079_karaoke_readiness_policy_v2.sql",
     },
     {
-      "checksum": "91030aebbbbccbabec6cf198dfff9ad7abbe9a81074ea5a43187103e215e7f52",
-      "version": "0080_study_lesson_engine.sql"
+      checksum: "91030aebbbbccbabec6cf198dfff9ad7abbe9a81074ea5a43187103e215e7f52",
+      version: "0080_study_lesson_engine.sql",
     },
     {
-      "checksum": "59e41e7ee44ccbed70057bc1edd694a67ecfdde6726b46ca9b8254a4d4344f52",
-      "version": "0081_karaoke_realtime_runtime.sql"
+      checksum: "59e41e7ee44ccbed70057bc1edd694a67ecfdde6726b46ca9b8254a4d4344f52",
+      version: "0081_karaoke_realtime_runtime.sql",
     },
     {
-      "checksum": "f21cb37b7f83dccf085906a69104e915f0142ff0a29e944c87cd2d0b266d4f69",
-      "version": "0082_study_translation_exercises.sql"
+      checksum: "f21cb37b7f83dccf085906a69104e915f0142ff0a29e944c87cd2d0b266d4f69",
+      version: "0082_study_translation_exercises.sql",
     },
     {
-      "checksum": "e64265e6bf794319c544dfa7d803b84b381d6489c3128d981b2fe54fa681158b",
-      "version": "0083_learner_audio_deletion.sql"
+      checksum: "e64265e6bf794319c544dfa7d803b84b381d6489c3128d981b2fe54fa681158b",
+      version: "0083_learner_audio_deletion.sql",
     },
     {
-      "checksum": "f99d486922b84a85e05333aa4ceb83a2793bb8fe11de66f5d8b10fd768529dfa",
-      "version": "0084_study_language_profile_proper_names.sql"
+      checksum: "f99d486922b84a85e05333aa4ceb83a2793bb8fe11de66f5d8b10fd768529dfa",
+      version: "0084_study_language_profile_proper_names.sql",
     },
     {
-      "checksum": "9290143e9edbdf61a366d45065d65e48e2589127cc28b0230826f307732e1022",
-      "version": "0085_rewards_prebroadcast_purchase_terminal.sql"
+      checksum: "9290143e9edbdf61a366d45065d65e48e2589127cc28b0230826f307732e1022",
+      version: "0085_rewards_prebroadcast_purchase_terminal.sql",
     },
     {
-      "checksum": "4bebbf006bd365c843c63ef691d1f76fa172f3629d91d78476fa71d9d1af0d48",
-      "version": "0086_rewards_drawing_offer_window_guard.sql"
+      checksum: "4bebbf006bd365c843c63ef691d1f76fa172f3629d91d78476fa71d9d1af0d48",
+      version: "0086_rewards_drawing_offer_window_guard.sql",
     },
     {
-      "checksum": "80902f630f4db0e0dc135c9f5ec027a20ea71c5e391f375e90b3ecb259d04984",
-      "version": "0087_study_unit_exercise_eligibility.sql"
+      checksum: "80902f630f4db0e0dc135c9f5ec027a20ea71c5e391f375e90b3ecb259d04984",
+      version: "0087_study_unit_exercise_eligibility.sql",
     },
     {
-      "checksum": "549e78987df022b877ff365601c21146819a630d658b014b80ad35018fe09371",
-      "version": "0088_rewards_song_asset_bonus.sql"
+      checksum: "549e78987df022b877ff365601c21146819a630d658b014b80ad35018fe09371",
+      version: "0088_rewards_song_asset_bonus.sql",
     },
     {
-      "checksum": "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad",
-      "version": "0089_hns_app_host_active_refresh.sql"
+      checksum: "a2b620bf31ef26f9ca7004fac2db4c385ce67ab6cd5d931fb8119b0caf08efad",
+      version: "0089_hns_app_host_active_refresh.sql",
     },
     {
-      "checksum": "6015d7ff968adc93d433b1cce9ab39ee8a653db9071005a1e7581f8f3239d191",
-      "version": "0090_hns_operator_route_control_promotion.sql"
+      checksum: "6015d7ff968adc93d433b1cce9ab39ee8a653db9071005a1e7581f8f3239d191",
+      version: "0090_hns_operator_route_control_promotion.sql",
     },
     {
-      "checksum": "c43c90ac75b30d5189c8930427027c130fab6d02226f94b3f876039c6e3ba006",
-      "version": "0091_study_runtime_seam_hardening.sql"
+      checksum: "c43c90ac75b30d5189c8930427027c130fab6d02226f94b3f876039c6e3ba006",
+      version: "0091_study_runtime_seam_hardening.sql",
     },
     {
-      "checksum": "3719f3e50ae0823c0b59aff93ca0c21161558403b626b410717de71b2ee2729d",
-      "version": "0092_hns_sale_namespace_active_refresh.sql"
+      checksum: "3719f3e50ae0823c0b59aff93ca0c21161558403b626b410717de71b2ee2729d",
+      version: "0092_hns_sale_namespace_active_refresh.sql",
     },
     {
-      "checksum": "011eed958c509fafcad6a3c2dc1bcc1ea72d54486c37354665fb6e43c61db0c7",
-      "version": "0093_study_spoken_phonetic_parity.sql"
+      checksum: "011eed958c509fafcad6a3c2dc1bcc1ea72d54486c37354665fb6e43c61db0c7",
+      version: "0093_study_spoken_phonetic_parity.sql",
     },
     {
-      "checksum": "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3",
-      "version": "0094_dance_reference_shadow.sql"
+      checksum: "af0c57a819ccd1d95e6d2f8d512ede1131ad64f95bbd4b415747cda808dfd4a3",
+      version: "0094_dance_reference_shadow.sql",
     },
     {
-      "checksum": "739d115516286cadec790eb6623e4321336aed655ab6d9a07f7a4923c1b93bb3",
-      "version": "0095_hns_outer_operations.sql"
+      checksum: "739d115516286cadec790eb6623e4321336aed655ab6d9a07f7a4923c1b93bb3",
+      version: "0095_hns_outer_operations.sql",
     },
     {
-      "checksum": "30cf9030e7f63d82c26d22db43dcd3d13b8670b198ab4084596f6b7b7958a946",
-      "version": "0096_study_translation_prompt_v3.sql"
+      checksum: "30cf9030e7f63d82c26d22db43dcd3d13b8670b198ab4084596f6b7b7958a946",
+      version: "0096_study_translation_prompt_v3.sql",
     },
     {
-      "checksum": "028c89be72a2f001ef3d502ffb6204e0a43e9c86f94844461453630797443ecc",
-      "version": "0097_hns_operator_evidence_recovery.sql"
+      checksum: "028c89be72a2f001ef3d502ffb6204e0a43e9c86f94844461453630797443ecc",
+      version: "0097_hns_operator_evidence_recovery.sql",
     },
     {
-      "checksum": "2a0ab79bce1eeca59b69363952cbda3a71df4adfbf00c47118688b71be08984a",
-      "version": "0098_hns_dns_evidence_lease_window.sql"
+      checksum: "2a0ab79bce1eeca59b69363952cbda3a71df4adfbf00c47118688b71be08984a",
+      version: "0098_hns_dns_evidence_lease_window.sql",
     },
     {
-      "checksum": "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b",
-      "version": "0099_hns_root_import_foundation.sql"
+      checksum: "2d416fd997b4c5d924f614ae809ace47403a48449d0d194d0bf76e9464d46d9b",
+      version: "0099_hns_root_import_foundation.sql",
     },
     {
-      "checksum": "1c2c7a4dba458b33a89f26ccfa8c7abfe9aea775d9e4ea95118ebecb82f4c8e6",
-      "version": "0100_rewards_megapot_prize_pool_projection.sql"
+      checksum: "1c2c7a4dba458b33a89f26ccfa8c7abfe9aea775d9e4ea95118ebecb82f4c8e6",
+      version: "0100_rewards_megapot_prize_pool_projection.sql",
     },
     {
-      "checksum": "b7e0a1a056ea4e9859eead9ae724ed1967bc799c35f78961273f5acf81e8f6f9",
-      "version": "0101_hns_root_import_production_readiness.sql"
+      checksum: "b7e0a1a056ea4e9859eead9ae724ed1967bc799c35f78961273f5acf81e8f6f9",
+      version: "0101_hns_root_import_production_readiness.sql",
     },
     {
-      "checksum": "53975b928b5416017376a14ba32f5cf70e976f00153bffb6fab7ead9c8c21f40",
-      "version": "0102_dance_attempt_shadow.sql"
+      checksum: "53975b928b5416017376a14ba32f5cf70e976f00153bffb6fab7ead9c8c21f40",
+      version: "0102_dance_attempt_shadow.sql",
     },
     {
-      "checksum": "75c36d6615851a18e5dc0841aed778a3c935812a6da018b8a49170ddca5fdcf1",
-      "version": "0103_public_post_slug_aliases.sql"
+      checksum: "75c36d6615851a18e5dc0841aed778a3c935812a6da018b8a49170ddca5fdcf1",
+      version: "0103_public_post_slug_aliases.sql",
     },
     {
-      "checksum": "9df8df4b7459ee4ada09879da7c9aff35cb3ff9b3d11553604704cb11b6569b8",
-      "version": "0104_text_held_revision_visibility.sql"
+      checksum: "9df8df4b7459ee4ada09879da7c9aff35cb3ff9b3d11553604704cb11b6569b8",
+      version: "0104_text_held_revision_visibility.sql",
     },
     {
-      "checksum": "b5752e67ee87c1389994a68ac74bec3e51424ec81bea790bfa50aa8df717f52f",
-      "version": "0105_karaoke_finalization_recovery.sql"
+      checksum: "b5752e67ee87c1389994a68ac74bec3e51424ec81bea790bfa50aa8df717f52f",
+      version: "0105_karaoke_finalization_recovery.sql",
     },
     {
-      "checksum": "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5",
-      "version": "0106_hns_root_import_name_signature_proof.sql"
+      checksum: "e61e700c45b98320993f7a4f5f72570c074d505162ebeb8d94bc7f2d7357e1c5",
+      version: "0106_hns_root_import_name_signature_proof.sql",
     },
     {
-      "checksum": "f228772b3f6dd4c48edec3d4631731f45c413859c0ab7a6bd1edc021e3bb7233",
-      "version": "0107_song_owner_video_policy.sql"
+      checksum: "f228772b3f6dd4c48edec3d4631731f45c413859c0ab7a6bd1edc021e3bb7233",
+      version: "0107_song_owner_video_policy.sql",
     },
     {
-      "checksum": "c4f7bb18d83d8a22a3f3b189babb834f81a54098f5c1d1a28e50398bc8e87509",
-      "version": "0108_song_reward_leg_policy_freeze.sql"
+      checksum: "c4f7bb18d83d8a22a3f3b189babb834f81a54098f5c1d1a28e50398bc8e87509",
+      version: "0108_song_reward_leg_policy_freeze.sql",
     },
     {
-      "checksum": "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138",
-      "version": "0109_creation_requirement_removal.sql"
+      checksum: "e31e348370e1d55273a0d47366695f4fa0dd097f5e688c8ab523fc60204a8138",
+      version: "0109_creation_requirement_removal.sql",
     },
     {
-      "checksum": "a7d7746c78955dc6b417303484f7c35cf09d13e0709a73210a303919830f29f3",
-      "version": "0110_persona_community_bindings.sql"
+      checksum: "a7d7746c78955dc6b417303484f7c35cf09d13e0709a73210a303919830f29f3",
+      version: "0110_persona_community_bindings.sql",
     },
     {
-      "checksum": "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94",
-      "version": "0111_community_creation_create_new_persona.sql"
+      checksum: "9b4fb47d826ba7a8850c2d74221c362cf47d28949ecc6772b5c33f42c9cfcd94",
+      version: "0111_community_creation_create_new_persona.sql",
     },
     {
-      "checksum": "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
-      "version": "0112_community_membership_follow_invariant.sql"
+      checksum: "b756fb8665016a1e093cb5f1a86c9f23ea48d56796193b7554f0154da0789941",
+      version: "0112_community_membership_follow_invariant.sql",
     },
     {
-      "checksum": "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92",
-      "version": "0113_account_community_membership_discovery.sql"
+      checksum: "86e30ff9c9c4d5a6983edf61c2c7b5892ec8b2af630368c6d9f23dad81e02c92",
+      version: "0113_account_community_membership_discovery.sql",
     },
     {
-      "checksum": "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54",
-      "version": "0114_video_original_audio_publication.sql"
+      checksum: "f4d20f9dccdf2bae08d514751c4ad459c171032dff1ab4c246e403a9811e9d54",
+      version: "0114_video_original_audio_publication.sql",
     },
     {
-      "checksum": "06fdb46edb803867a074b40af3e4d1506bd43c0cb67268f2d1dc91a7834ac899",
-      "version": "0115_hns_community_root_import.sql"
+      checksum: "06fdb46edb803867a074b40af3e4d1506bd43c0cb67268f2d1dc91a7834ac899",
+      version: "0115_hns_community_root_import.sql",
     },
     {
-      "checksum": "d33231aa5084f885e5529b392d3534f7439336e6f12b402cdbe385d2527cb3f1",
-      "version": "0116_hns_community_root_import_transitions.sql"
+      checksum: "d33231aa5084f885e5529b392d3534f7439336e6f12b402cdbe385d2527cb3f1",
+      version: "0116_hns_community_root_import_transitions.sql",
     },
     {
-      "checksum": "fac26341f2a5717157a9db77702f0fd5abab220858c181a4c23198c4c5ba8ba3",
-      "version": "0117_hns_route_attachment_completion.sql"
+      checksum: "fac26341f2a5717157a9db77702f0fd5abab220858c181a4c23198c4c5ba8ba3",
+      version: "0117_hns_route_attachment_completion.sql",
     },
     {
-      "checksum": "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2",
-      "version": "0118_hns_community_root_activation.sql"
+      checksum: "f49062df910eb1fe89c44a1ac0bcad08857ab3d7978fcbd7480a084dc90838f2",
+      version: "0118_hns_community_root_activation.sql",
     },
     {
-      "checksum": "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a",
-      "version": "0119_hns_root_health_renewal.sql"
+      checksum: "1870db49b6e76c6cd748889e8bdb2a64a2283e2af0515b14c65f1f89d45cc73a",
+      version: "0119_hns_root_health_renewal.sql",
     },
     {
-      "checksum": "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399",
-      "version": "0120_hns_root_health_renewal_recovery.sql"
+      checksum: "c4cf5757d3c6951502186637398504df7b9be02ecbff1b7c30819bb226ada399",
+      version: "0120_hns_root_health_renewal_recovery.sql",
     },
     {
-      "checksum": "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977",
-      "version": "0121_hns_imported_inventory_renewal.sql"
+      checksum: "3d83fb50b91572af79780bd80deff588aa4d5a8b00f14c3f410793d57bca2977",
+      version: "0121_hns_imported_inventory_renewal.sql",
     },
     {
-      "checksum": "cbaba4484fa88ceed38e3ac8149e70e9309e0308d4e71f215f576038f6db5446",
-      "version": "0122_video_workflow_execution.sql"
+      checksum: "cbaba4484fa88ceed38e3ac8149e70e9309e0308d4e71f215f576038f6db5446",
+      version: "0122_video_workflow_execution.sql",
     },
     {
-      "checksum": "2cbee9ae295db74ca1c01cf70c9e5c1c4dcfa72d821bf22db702a533df956214",
-      "version": "0123_video_source_grants.sql"
+      checksum: "2cbee9ae295db74ca1c01cf70c9e5c1c4dcfa72d821bf22db702a533df956214",
+      version: "0123_video_source_grants.sql",
     },
     {
-      "checksum": "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf",
-      "version": "0124_video_safety_evidence.sql"
+      checksum: "1def57d4bddd8e1f218f3eb8e0111c1acb0fb9ecbb417b581265eba6d456d4bf",
+      version: "0124_video_safety_evidence.sql",
     },
     {
-      "checksum": "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4",
-      "version": "0125_video_publication_failure_reasons.sql"
+      checksum: "3e2d858364ac3ff1f672485c28322d8a9b0ff398d53dd3c7e696ab4fa1c966a4",
+      version: "0125_video_publication_failure_reasons.sql",
     },
     {
-      "checksum": "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36",
-      "version": "0126_hns_renewal_execution_privileges.sql"
+      checksum: "79096935d3a49b8fb3b178065264ceca37b167fc488ec1ac905610a091987e36",
+      version: "0126_hns_renewal_execution_privileges.sql",
     },
     {
-      "checksum": "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8",
-      "version": "0127_video_delivery_ingest.sql"
+      checksum: "3b154f8d9ce7aa90d743f719ad6c43033ed9fa8b1875d4b24f59a261d2045bf8",
+      version: "0127_video_delivery_ingest.sql",
     },
     {
-      "checksum": "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2",
-      "version": "0128_hns_provisional_community_import.sql"
+      checksum: "933ae29b72c704b5bc046e357b7b7bb156e115d11e4a52ce17a81002034897a2",
+      version: "0128_hns_provisional_community_import.sql",
     },
     {
-      "checksum": "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424",
-      "version": "0129_community_owner_activation.sql"
+      checksum: "1ea84e5253c85487a6200876cae1bd3caaf19da521afba8ab2a09f0677255424",
+      version: "0129_community_owner_activation.sql",
     },
     {
-      "checksum": "3fef5b0a9a29ffa126a46e5e27108c573501287c9cbad448af126c373c6ddc48",
-      "version": "0130_hns_publication_continuation.sql"
+      checksum: "3fef5b0a9a29ffa126a46e5e27108c573501287c9cbad448af126c373c6ddc48",
+      version: "0130_hns_publication_continuation.sql",
     },
     {
-      "checksum": "a0609b08f195fa61681893db007f2b88ba3d750a57d36806f2c27988237dcd77",
-      "version": "0131_community_telegram.sql"
+      checksum: "a0609b08f195fa61681893db007f2b88ba3d750a57d36806f2c27988237dcd77",
+      version: "0131_community_telegram.sql",
     },
     {
-      "checksum": "87616f9efad291b5c18475b0d472427616028ceaa8d8ede709ed2cad9b7c406e",
-      "version": "0132_song_reference_decision_wakeup.sql"
+      checksum: "87616f9efad291b5c18475b0d472427616028ceaa8d8ede709ed2cad9b7c406e",
+      version: "0132_song_reference_decision_wakeup.sql",
     },
     {
-      "checksum": "d8645cf1a114e82e6c0978403f8e2b61328dca85d481f10a62044615b89ea691",
-      "version": "0133_song_reference_publication_resume.sql"
+      checksum: "d8645cf1a114e82e6c0978403f8e2b61328dca85d481f10a62044615b89ea691",
+      version: "0133_song_reference_publication_resume.sql",
     },
     {
-      "checksum": "c4e42b5a044e36b56f212d7f33bcee10e126ab616757022f24b40b76f368b828",
-      "version": "0134_reward_qualification_terms.sql"
+      checksum: "c4e42b5a044e36b56f212d7f33bcee10e126ab616757022f24b40b76f368b828",
+      version: "0134_reward_qualification_terms.sql",
     },
     {
-      "checksum": "fdef3c6d12c22db8b9bb508510252b6e3c5c0dd3156b44ff97247eaced05e96c",
-      "version": "0135_song_source_recording_authority.sql"
+      checksum: "fdef3c6d12c22db8b9bb508510252b6e3c5c0dd3156b44ff97247eaced05e96c",
+      version: "0135_song_source_recording_authority.sql",
     },
     {
-      "checksum": "52daabc2ac8d8efc5138dad17c6f5e1e06f89e62880bd476e1dac82c2a35a621",
-      "version": "0136_hns_existing_name_attachment.sql"
+      checksum: "52daabc2ac8d8efc5138dad17c6f5e1e06f89e62880bd476e1dac82c2a35a621",
+      version: "0136_hns_existing_name_attachment.sql",
     },
     {
-      "checksum": "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889",
-      "version": "0137_hns_root_import_lifecycle.sql"
+      checksum: "d815181433623ed83fc32b7cb639ffb9238d19deff24ab8a8347f8fd186f6889",
+      version: "0137_hns_root_import_lifecycle.sql",
     },
     {
-      "checksum": "451b07af678160d77eaebe828aeb78f986553d4a3b6aa5b55877c2df358421d7",
-      "version": "0138_hns_lifecycle_execution_privileges.sql"
+      checksum: "451b07af678160d77eaebe828aeb78f986553d4a3b6aa5b55877c2df358421d7",
+      version: "0138_hns_lifecycle_execution_privileges.sql",
     },
     {
-      "checksum": "2aa962f9c7066d87c53ca63a70f5252985b31de8c6bcb95630c8126d3c9ca090",
-      "version": "0139_hns_lifecycle_readiness_invalidation.sql"
+      checksum: "2aa962f9c7066d87c53ca63a70f5252985b31de8c6bcb95630c8126d3c9ca090",
+      version: "0139_hns_lifecycle_readiness_invalidation.sql",
     },
     {
-      "checksum": "9aab02e9eaffea826ed9c564344b4c76d1053fed94356171ed8c5bef258bf23c",
-      "version": "0140_hns_retention_reviews.sql"
+      checksum: "9aab02e9eaffea826ed9c564344b4c76d1053fed94356171ed8c5bef258bf23c",
+      version: "0140_hns_retention_reviews.sql",
     },
     {
-      "checksum": "ee714304522f96e893e904f7b301332fa8e83ae61a3807c9d6fae220133a62e0",
-      "version": "0141_hns_lifecycle_execution_ownership.sql"
+      checksum: "ee714304522f96e893e904f7b301332fa8e83ae61a3807c9d6fae220133a62e0",
+      version: "0141_hns_lifecycle_execution_ownership.sql",
     },
     {
-      "checksum": "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869",
-      "version": "0142_hns_retention_reviewer.sql"
+      checksum: "2b2c48f4415e033576f0a49e4cdf20197fb0303042c441e6528b66351a569869",
+      version: "0142_hns_retention_reviewer.sql",
     },
     {
-      "checksum": "6363eb1608bca212fd4af7e687681f92774050284e67bc2e2bb1ec7a672abf0a",
-      "version": "0143_hns_lifecycle_observation_evidence.sql"
+      checksum: "6363eb1608bca212fd4af7e687681f92774050284e67bc2e2bb1ec7a672abf0a",
+      version: "0143_hns_lifecycle_observation_evidence.sql",
     },
     {
-      "checksum": "39a16e4f38b1af75262cd7ee3bff9438d4877af63e3c618a17924931792e2c37",
-      "version": "0144_hns_incident_recovery.sql"
+      checksum: "39a16e4f38b1af75262cd7ee3bff9438d4877af63e3c618a17924931792e2c37",
+      version: "0144_hns_incident_recovery.sql",
     },
     {
-      "checksum": "d42cf6f897d45f789a1c3cbd68634b74f8252a35d2ac5ecb2036f88d8e8bfa3c",
-      "version": "0145_hns_recovery_and_observation_fences.sql"
+      checksum: "d42cf6f897d45f789a1c3cbd68634b74f8252a35d2ac5ecb2036f88d8e8bfa3c",
+      version: "0145_hns_recovery_and_observation_fences.sql",
     },
     {
-      "checksum": "d040bcbe054543970778d7dab041136a617f01d521fb1624c76216d43bcd8a04",
-      "version": "0146_hns_recovery_adoption.sql"
+      checksum: "d040bcbe054543970778d7dab041136a617f01d521fb1624c76216d43bcd8a04",
+      version: "0146_hns_recovery_adoption.sql",
     },
     {
-      "checksum": "8ac8896a7140fdc48d11d508609e0261215e2af6068e24cd8b079377543a7068",
-      "version": "0147_hns_withdraw_readiness_ownership.sql"
+      checksum: "8ac8896a7140fdc48d11d508609e0261215e2af6068e24cd8b079377543a7068",
+      version: "0147_hns_withdraw_readiness_ownership.sql",
     },
     {
-      "checksum": "86e87ec877a999008f9d15f9e86896e8414b266569a76afe4f40bd97f1792f76",
-      "version": "0148_hns_observation_decision_fence_and_adoption_replay.sql"
+      checksum: "86e87ec877a999008f9d15f9e86896e8414b266569a76afe4f40bd97f1792f76",
+      version: "0148_hns_observation_decision_fence_and_adoption_replay.sql",
     },
     {
-      "checksum": "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700",
-      "version": "0149_hns_observation_provenance_fence.sql"
+      checksum: "933101c860163ee4c8b53afbf19288d295b439be12251efcbf5de3c9ddd36700",
+      version: "0149_hns_observation_provenance_fence.sql",
     },
     {
-      "checksum": "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0",
-      "version": "0150_hns_readiness_ownership_handover.sql"
+      checksum: "4e4b6436b2c483453fce346723909803b0f1df09d34d54b20ed2dab341a8ddf0",
+      version: "0150_hns_readiness_ownership_handover.sql",
     },
     {
-      "checksum": "9de4683d329d386da963c9b442313e41c71c28b07da93348eec89f24863afbad",
-      "version": "0151_hns_readiness_ownership_corrections.sql"
+      checksum: "9de4683d329d386da963c9b442313e41c71c28b07da93348eec89f24863afbad",
+      version: "0151_hns_readiness_ownership_corrections.sql",
     },
     {
-      "checksum": "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342",
-      "version": "0152_hns_lifecycle_activation.sql"
+      checksum: "9ac2995e6a552c8d99a2fbeccdf7587d2af929c1f845bc609833513b83f77342",
+      version: "0152_hns_lifecycle_activation.sql",
     },
     {
-      "checksum": "525b67fc6e379ecc33183cad0bc3451f2bcf96820d86984033daa3ffded7821c",
-      "version": "0153_hns_activation_policy.sql"
+      checksum: "525b67fc6e379ecc33183cad0bc3451f2bcf96820d86984033daa3ffded7821c",
+      version: "0153_hns_activation_policy.sql",
     },
     {
-      "checksum": "2cd4977a1f2f02e167d5ab38a2517c4531483e93109dd88f6496fbdb0776072a",
-      "version": "0154_hns_expiry_consumers.sql"
+      checksum: "2cd4977a1f2f02e167d5ab38a2517c4531483e93109dd88f6496fbdb0776072a",
+      version: "0154_hns_expiry_consumers.sql",
     },
     {
-      "checksum": "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3",
-      "version": "0155_hns_expiry_consumers_legacy.sql"
+      checksum: "97dd927ef8710e26bcafbe46d80e7a3cb54594527a88a01eea6eae5d76de3db3",
+      version: "0155_hns_expiry_consumers_legacy.sql",
     },
     {
-      "checksum": "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001",
-      "version": "0156_hns_readiness_deadline_guard_removal.sql"
+      checksum: "e33e1eb284ca2ebb15957db9fdf72336b42b0c992f5c24110623d1545205f001",
+      version: "0156_hns_readiness_deadline_guard_removal.sql",
     },
     {
-      "checksum": "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4",
-      "version": "0157_recovery_inspection_cursors.sql"
+      checksum: "9a50753f346f224f65faaf77db3f34965ce88d394dd525c64d341233f0257bb4",
+      version: "0157_recovery_inspection_cursors.sql",
     },
     {
-      "checksum": "f95400045d8475937173fc0dd4c1616a53452eeb9227249d7c4bd3f08727a1e7",
-      "version": "0158_song_video_render_identities.sql"
+      checksum: "f95400045d8475937173fc0dd4c1616a53452eeb9227249d7c4bd3f08727a1e7",
+      version: "0158_song_video_render_identities.sql",
     },
     {
-      "checksum": "a35a2ed408a7cca9eba6a7b8b78beed6387ae37e743f9dec9f5449d43b8e24ab",
-      "version": "0159_song_video_interval_reservation.sql"
+      checksum: "a35a2ed408a7cca9eba6a7b8b78beed6387ae37e743f9dec9f5449d43b8e24ab",
+      version: "0159_song_video_interval_reservation.sql",
     },
     {
-      "checksum": "013d6b91fdc82b198c75814098c655eb98e4d1ab1db3c4ef08d6a387bbf91eed",
-      "version": "0160_song_video_publication.sql"
+      checksum: "013d6b91fdc82b198c75814098c655eb98e4d1ab1db3c4ef08d6a387bbf91eed",
+      version: "0160_song_video_publication.sql",
     },
     {
-      "checksum": "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292",
-      "version": "0161_data_registration_derivative_video.sql"
+      checksum: "ba5c054305794c821e9d2472eb2987fad8e478f9ed7cc67d2dd2e206e6342292",
+      version: "0161_data_registration_derivative_video.sql",
     },
     {
-      "checksum": "6ec593a5fc65b59fa12e905d413ef9219fcc9ede5b64cbe7d15e82deb81cf9c3",
-      "version": "0162_data_registration_attached_license_backfill.sql"
+      checksum: "6ec593a5fc65b59fa12e905d413ef9219fcc9ede5b64cbe7d15e82deb81cf9c3",
+      version: "0162_data_registration_attached_license_backfill.sql",
     },
     {
-      "checksum": "d5435fe973890509b0339901b9be83bacef3c0984a73b29f1bc2ff64c30c1f4c",
-      "version": "0163_song_video_master_immutable_registration.sql"
+      checksum: "d5435fe973890509b0339901b9be83bacef3c0984a73b29f1bc2ff64c30c1f4c",
+      version: "0163_song_video_master_immutable_registration.sql",
     },
     {
-      "checksum": "4b2e12ae9ff413786e1978a57384d5b6761a8f71ebed2ea872e916a8b58ac9a5",
-      "version": "0164_song_video_render_execution_evidence.sql"
+      checksum: "4b2e12ae9ff413786e1978a57384d5b6761a8f71ebed2ea872e916a8b58ac9a5",
+      version: "0164_song_video_render_execution_evidence.sql",
     },
     {
-      "checksum": "e820cfc213423aa89cbf5c95fd6beefea35184b35280bd6bccc9a7e164cba38d",
-      "version": "0165_song_video_render_host_claim.sql"
+      checksum: "e820cfc213423aa89cbf5c95fd6beefea35184b35280bd6bccc9a7e164cba38d",
+      version: "0165_song_video_render_host_claim.sql",
     },
     {
-      "checksum": "1cad70fa97ba4a9a973352f836e7952cd13c84cf67763ab5da065385525ed62a",
-      "version": "0166_media_object_identity_kind.sql"
+      checksum: "1cad70fa97ba4a9a973352f836e7952cd13c84cf67763ab5da065385525ed62a",
+      version: "0166_media_object_identity_kind.sql",
     },
     {
-      "checksum": "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0",
-      "version": "0167_hns_readiness_withdrawal.sql"
+      checksum: "fd1b2153652e53814c2f6811f2666a2576432f93b9677a15803bda1b63a530d0",
+      version: "0167_hns_readiness_withdrawal.sql",
     },
     {
-      "checksum": "9e561f1327fc6a5d61d98a5bb330f323fc8e44fac107f8a7b8d8b1113149b25d",
-      "version": "0168_hns_readiness_cutover_preflight.sql"
+      checksum: "9e561f1327fc6a5d61d98a5bb330f323fc8e44fac107f8a7b8d8b1113149b25d",
+      version: "0168_hns_readiness_cutover_preflight.sql",
     },
     {
-      "checksum": "6b783bff58e5e15af6c9bbbd65a1bb64c2c42c51a903ccb705bf0b715e44f26f",
-      "version": "0169_hns_single_owner_readiness_cutover.sql"
+      checksum: "6b783bff58e5e15af6c9bbbd65a1bb64c2c42c51a903ccb705bf0b715e44f26f",
+      version: "0169_hns_single_owner_readiness_cutover.sql",
     },
     {
-      "checksum": "ede05876beff2f135cfafaad77c26f445659d4c5c940e529668f9abd7f57d8c2",
-      "version": "0170_hns_renewal_authoritative_evidence.sql"
+      checksum: "ede05876beff2f135cfafaad77c26f445659d4c5c940e529668f9abd7f57d8c2",
+      version: "0170_hns_renewal_authoritative_evidence.sql",
     },
     {
-      "checksum": "1e35f43dc2bb1107224b0f3e109b386a36b2ef66de38556de17c388ea31f9355",
-      "version": "0171_hns_cutover_execution_probe.sql"
+      checksum: "1e35f43dc2bb1107224b0f3e109b386a36b2ef66de38556de17c388ea31f9355",
+      version: "0171_hns_cutover_execution_probe.sql",
     },
     {
-      "checksum": "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
-      "version": "0172_hns_cutover_evidence_consistency.sql"
+      checksum: "aef42c302e3dfc72161c3470c3a259b75ea6a98016e9f891ad7ee9edda556566",
+      version: "0172_hns_cutover_evidence_consistency.sql",
     },
     {
-      "checksum": "bf4c63ae05979cb0ce21f098cfdcdec827002a17d99fc5e95bb39078cfeb66fe",
-      "version": "0173_community_policy_provider_bindings_provider_key.sql"
+      checksum: "bf4c63ae05979cb0ce21f098cfdcdec827002a17d99fc5e95bb39078cfeb66fe",
+      version: "0173_community_policy_provider_bindings_provider_key.sql",
     },
     {
-      "checksum": "251cb66833150e774c292caed09fea36095221252e285fc3d07bdb655af02daa",
-      "version": "0174_nationality_ceremony_intents.sql"
+      checksum: "251cb66833150e774c292caed09fea36095221252e285fc3d07bdb655af02daa",
+      version: "0174_nationality_ceremony_intents.sql",
     },
     {
-      "checksum": "c34a15f18cc82b526a44b0ca27453bddda8f318cea8de2994857218e0379fc3b",
-      "version": "0175_nationality_ceremony_creation_action.sql"
+      checksum: "c34a15f18cc82b526a44b0ca27453bddda8f318cea8de2994857218e0379fc3b",
+      version: "0175_nationality_ceremony_creation_action.sql",
     },
     {
-      "checksum": "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f",
-      "version": "0176_media_workflow_terminal_escalation.sql"
+      checksum: "980f6619a7e9b9f199311ac2dcbace699e6045926ec1c5757ee0b3f2626aeb6f",
+      version: "0176_media_workflow_terminal_escalation.sql",
     },
     {
-      "checksum": "3b167635f2fd2e9b565fa8ff2b91891c0d853bde1d5f1986a39e01f91c1b0790",
-      "version": "0177_media_operator_reprocess_actions.sql"
+      checksum: "3b167635f2fd2e9b565fa8ff2b91891c0d853bde1d5f1986a39e01f91c1b0790",
+      version: "0177_media_operator_reprocess_actions.sql",
     },
     {
-      "checksum": "c0b54a72e675cd4ac37326037c3685963e21f9e5a425fc0dbda506c9c2e9d46e",
-      "version": "0178_media_operator_reprocess_transition.sql"
+      checksum: "c0b54a72e675cd4ac37326037c3685963e21f9e5a425fc0dbda506c9c2e9d46e",
+      version: "0178_media_operator_reprocess_transition.sql",
     },
     {
-      "checksum": "27009d8f44d73168cf3dd07de7588394c4cadc6cbf7933ab1d027dc13e50dd8d",
-      "version": "0179_data_registration_confirmed_recovery.sql"
+      checksum: "27009d8f44d73168cf3dd07de7588394c4cadc6cbf7933ab1d027dc13e50dd8d",
+      version: "0179_data_registration_confirmed_recovery.sql",
     },
     {
-      "checksum": "de9903f6a79fe806f8444574bb6bf1e45cc3d465671fdbfafb9b83f3cb91f022",
-      "version": "0180_handle_nationality_policy_authoring.sql"
+      checksum: "de9903f6a79fe806f8444574bb6bf1e45cc3d465671fdbfafb9b83f3cb91f022",
+      version: "0180_handle_nationality_policy_authoring.sql",
     },
     {
-      "checksum": "c66e51c67e8472127a6ca7e1eca07a81292faa96259cdab61784bd909c6fa1b9",
-      "version": "0181_handle_nationality_quote_decisions.sql"
+      checksum: "c66e51c67e8472127a6ca7e1eca07a81292faa96259cdab61784bd909c6fa1b9",
+      version: "0181_handle_nationality_quote_decisions.sql",
     },
     {
-      "checksum": "5f5ca1db8ff8e0452590a2a9b33b5d8fc3a1d614416a24221b5c5b9f377d2408",
-      "version": "0182_accepted_adult_rating_evidence.sql"
+      checksum: "5f5ca1db8ff8e0452590a2a9b33b5d8fc3a1d614416a24221b5c5b9f377d2408",
+      version: "0182_accepted_adult_rating_evidence.sql",
     },
     {
-      "checksum": "5a9ae2b7882fd2bfa2353a4366f281b1e90955512e2723fede8e0ba6fb220149",
-      "version": "0183_account_age_verification_ceremonies.sql"
+      checksum: "5a9ae2b7882fd2bfa2353a4366f281b1e90955512e2723fede8e0ba6fb220149",
+      version: "0183_account_age_verification_ceremonies.sql",
     },
     {
-      "checksum": "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125",
-      "version": "0184_data_metadata_preparation_snapshots.sql"
+      checksum: "ed5c05f3f2fbfa7dbdd9e6d3987a5d90b22c7523e2349f8bf4b1bd173fe60125",
+      version: "0184_data_metadata_preparation_snapshots.sql",
     },
     {
-      "checksum": "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd",
-      "version": "0185_current_content_rating_floors.sql"
+      checksum: "eaa771de80de0a0c631b24a4970cf0c41571eae4212fe6660467c7c205f856bd",
+      version: "0185_current_content_rating_floors.sql",
     },
     {
-      "checksum": "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
-      "version": "0186_retained_content_rating_reconciliation.sql"
+      checksum: "794d386d138694ddfae87a26540fc89e3c7032f109c8e4d8134b080d5eee6cab",
+      version: "0186_retained_content_rating_reconciliation.sql",
     },
     {
-      "checksum": "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8",
-      "version": "0187_text_rating_raise_counts.sql"
+      checksum: "4eb58bd66f3f4d5f453e6033dc6f2e38eaba27dd18658e6cac6c6525487f49c8",
+      version: "0187_text_rating_raise_counts.sql",
     },
     {
-      "checksum": "d855a8f8b3abf31fea90656668fbbbb8aa08bf844b9522c13e62f38516638cdc",
-      "version": "0188_activity_participation_authority.sql"
+      checksum: "d855a8f8b3abf31fea90656668fbbbb8aa08bf844b9522c13e62f38516638cdc",
+      version: "0188_activity_participation_authority.sql",
     },
     {
-      "checksum": "c9118b9815c36efce72cc7f3605c8f3f5c313267d40f1bf998dcca2ca3911fde",
-      "version": "0189_filebase_gateway_verification.sql"
+      checksum: "c9118b9815c36efce72cc7f3605c8f3f5c313267d40f1bf998dcca2ca3911fde",
+      version: "0189_filebase_gateway_verification.sql",
     },
     {
-      "checksum": "52ed7ef3fb93b7e34b46615ea8c02ed4c501284a514ed5d3539fbae50b9db842",
-      "version": "0190_media_alignment_recovery_actions.sql"
+      checksum: "52ed7ef3fb93b7e34b46615ea8c02ed4c501284a514ed5d3539fbae50b9db842",
+      version: "0190_media_alignment_recovery_actions.sql",
     },
     {
-      "checksum": "51fbb0bb0b9b365052f5dbecd1030f2c57acaea42a889dc96304ae74d8728eed",
-      "version": "0191_media_processing_recovery_stage.sql"
+      checksum: "51fbb0bb0b9b365052f5dbecd1030f2c57acaea42a889dc96304ae74d8728eed",
+      version: "0191_media_processing_recovery_stage.sql",
     },
     {
-      "checksum": "7496fc6d72e25767a4d673d9ffdeff5b887bb2e1fdc4390dcbfb01efed5b7d47",
-      "version": "0192_media_processing_attempt_failure_evidence.sql"
+      checksum: "7496fc6d72e25767a4d673d9ffdeff5b887bb2e1fdc4390dcbfb01efed5b7d47",
+      version: "0192_media_processing_attempt_failure_evidence.sql",
     },
     {
-      "checksum": "7fa4f57725319a75621aea22a3182e6dd3060003f8c38d13c9ddf48d3c4bb4a8",
-      "version": "0193_creation_nationality_retirement.sql"
+      checksum: "7fa4f57725319a75621aea22a3182e6dd3060003f8c38d13c9ddf48d3c4bb4a8",
+      version: "0193_creation_nationality_retirement.sql",
     },
     {
-      "checksum": "4fe1e0d2afaebfccc10b93a4820c42eaaa2c6dab0cb0c174260627a8b0670686",
-      "version": "0194_creation_avatars.sql"
+      checksum: "4fe1e0d2afaebfccc10b93a4820c42eaaa2c6dab0cb0c174260627a8b0670686",
+      version: "0194_creation_avatars.sql",
     },
     {
-      "checksum": "c0b773fd57c8c11519366f1a89d0034e48417d90c27ad3b63d90687a6f83c34a",
-      "version": "0195_data_additional_workflow_attempt.sql"
+      checksum: "c0b773fd57c8c11519366f1a89d0034e48417d90c27ad3b63d90687a6f83c34a",
+      version: "0195_data_additional_workflow_attempt.sql",
     },
     {
-      "checksum": "9f91e86ad024969b36b325316304f4d2daeb825dbc17639c1090133ac21cffb4",
-      "version": "0196_active_song_submission_recovery.sql"
+      checksum: "9f91e86ad024969b36b325316304f4d2daeb825dbc17639c1090133ac21cffb4",
+      version: "0196_active_song_submission_recovery.sql",
     },
     {
-      "checksum": "25b5801040e50c39e2ba6f3510b3ed10eb415b67b8f5d15b8f6982987fe71db4",
-      "version": "0197_community_owner_session_sufficiency.sql"
+      checksum: "25b5801040e50c39e2ba6f3510b3ed10eb415b67b8f5d15b8f6982987fe71db4",
+      version: "0197_community_owner_session_sufficiency.sql",
     },
     {
-      "checksum": "93887d219c61fb6e8f77f7a5c243b8a7947048a7709348aa145699d0ef1d25f6",
-      "version": "0198_song_terms_analysis_resume.sql"
+      checksum: "93887d219c61fb6e8f77f7a5c243b8a7947048a7709348aa145699d0ef1d25f6",
+      version: "0198_song_terms_analysis_resume.sql",
     },
     {
-      "checksum": "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
-      "version": "0199_video_safety_provider_calls.sql"
+      checksum: "e8dfe8d17b52b831e748e4a1a128278ff1ee6e1ac893b0ee1eed0db8305fe8bb",
+      version: "0199_video_safety_provider_calls.sql",
     },
     {
-      "checksum": "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
-      "version": "0200_video_moderation_unresolved_abandonment.sql"
+      checksum: "8c440362972e34059a595c5551d4fcba0ebe9a08188029fd7e9dc25930ff78ef",
+      version: "0200_video_moderation_unresolved_abandonment.sql",
     },
     {
-      "checksum": "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
-      "version": "0201_song_transform_author_retry.sql"
+      checksum: "6c23cc7130595a52068fdbcc6c563e37f64dee13589ed43022965680af4be12c",
+      version: "0201_song_transform_author_retry.sql",
     },
     {
-      "checksum": "40d776d31595a8e860e8f7d2bf036c155270a9f9907cbc9c3129c05066523fdc",
-      "version": "0202_song_owner_policy_head_lock.sql"
+      checksum: "40d776d31595a8e860e8f7d2bf036c155270a9f9907cbc9c3129c05066523fdc",
+      version: "0202_song_owner_policy_head_lock.sql",
     },
     {
-      "checksum": "a37ce5b7c6fa2b2ecfd0515d5e0356fcac7fcbb56352d31102a62ffb0faeaf5e",
-      "version": "0203_megapot_claim_time_verification.sql"
+      checksum: "a37ce5b7c6fa2b2ecfd0515d5e0356fcac7fcbb56352d31102a62ffb0faeaf5e",
+      version: "0203_megapot_claim_time_verification.sql",
     },
     {
-      "checksum": "11a3c84d3d457c6f0c0b6cc244f01e96400894ec1bd324b085ef34183ff43ac5",
-      "version": "0204_hns_lifecycle_observation_scheduling.sql"
+      checksum: "11a3c84d3d457c6f0c0b6cc244f01e96400894ec1bd324b085ef34183ff43ac5",
+      version: "0204_hns_lifecycle_observation_scheduling.sql",
     },
     {
-      "checksum": "5259b2b068d7ba5c2f9d1fbbacd59704845fce76a4d7fe07190fefeef5a38503",
-      "version": "0205_video_safety_gate_unresolved.sql"
+      checksum: "5259b2b068d7ba5c2f9d1fbbacd59704845fce76a4d7fe07190fefeef5a38503",
+      version: "0205_video_safety_gate_unresolved.sql",
     },
     {
-      "checksum": "e3e3f1059b83dfbb0b20b22eddf54b21bbd78dd06d34aeb337dfbfc715fa38ea",
-      "version": "0206_megapot_winner_gas_topup.sql"
+      checksum: "e3e3f1059b83dfbb0b20b22eddf54b21bbd78dd06d34aeb337dfbfc715fa38ea",
+      version: "0206_megapot_winner_gas_topup.sql",
     },
     {
-      "checksum": "7f403b29bfd470ed34cb1004841019cf82884abbdae22b1093cc87e7618fa31f",
-      "version": "0207_video_safety_sampled_frame_allow.sql"
+      checksum: "7f403b29bfd470ed34cb1004841019cf82884abbdae22b1093cc87e7618fa31f",
+      version: "0207_video_safety_sampled_frame_allow.sql",
     },
     {
-      "checksum": "00d1be15197222329ac9e65f6fca3bcfc24ebf80652555ee33f1b2cc20b56247",
-      "version": "0208_hns_import_separated_clocks.sql"
+      checksum: "00d1be15197222329ac9e65f6fca3bcfc24ebf80652555ee33f1b2cc20b56247",
+      version: "0208_hns_import_separated_clocks.sql",
     },
     {
-      "checksum": "52d9649eebdbc30956b31bca23f5ad0ea064e150c84a20b1680ecdb0aa256b65",
-      "version": "0209_megapot_winner_send_record.sql"
+      checksum: "52d9649eebdbc30956b31bca23f5ad0ea064e150c84a20b1680ecdb0aa256b65",
+      version: "0209_megapot_winner_send_record.sql",
     },
     {
-      "checksum": "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688",
-      "version": "0210_spaces_sale_namespace_activation.sql"
+      checksum: "095c390e8f851d67db0af48aec61e828aa89e0d807e0490d21e9aaac41d01688",
+      version: "0210_spaces_sale_namespace_activation.sql",
     },
     {
-      "checksum": "a99fbbcb064de83bcd03612b492be73cf837a61ab537df745c53595f3cb836f2",
-      "version": "0211_spaces_native_claims.sql"
+      checksum: "a99fbbcb064de83bcd03612b492be73cf837a61ab537df745c53595f3cb836f2",
+      version: "0211_spaces_native_claims.sql",
     },
     {
-      "checksum": "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021",
-      "version": "0212_spaces_registry.sql"
+      checksum: "728abd7b19dec3742f90d14fd6b184bf532a6e7fcdc9a74ebde73c06ea529021",
+      version: "0212_spaces_registry.sql",
     },
     {
-      "checksum": "a9b594061f2f39fc28f0c484ac4ebda41c3c56eac80f50945bf8ecb4bd78c1f7",
-      "version": "0213_spaces_final_issuance.sql"
+      checksum: "a9b594061f2f39fc28f0c484ac4ebda41c3c56eac80f50945bf8ecb4bd78c1f7",
+      version: "0213_spaces_final_issuance.sql",
     },
     {
-      "checksum": "346ea2a9eb1dcdea6c7ae590baec633ab57a7ff9b7f6e257835a3bb9159acfea",
-      "version": "0214_spaces_owner_proof_ceremony.sql"
+      checksum: "346ea2a9eb1dcdea6c7ae590baec633ab57a7ff9b7f6e257835a3bb9159acfea",
+      version: "0214_spaces_owner_proof_ceremony.sql",
     },
     {
-      "checksum": "94324f48bfa846af0dbcb02d4503d082532153be0278cc6ecfec9a38398b8557",
-      "version": "0215_spaces_operator_ceremony.sql"
+      checksum: "94324f48bfa846af0dbcb02d4503d082532153be0278cc6ecfec9a38398b8557",
+      version: "0215_spaces_operator_ceremony.sql",
     },
     {
-      "checksum": "3ea2e4407ad75d6358a7c75cd40c741dfa76eeff775d2d3460bc3b591de215b1",
-      "version": "0216_spaces_taproot_inventory_intent.sql"
+      checksum: "3ea2e4407ad75d6358a7c75cd40c741dfa76eeff775d2d3460bc3b591de215b1",
+      version: "0216_spaces_taproot_inventory_intent.sql",
     },
     {
-      "checksum": "736e203778199ac05abe1fe126cf652373231121d74108048c7b3af0f98d95f4",
-      "version": "0217_song_activity_recency_indexes.sql"
+      checksum: "736e203778199ac05abe1fe126cf652373231121d74108048c7b3af0f98d95f4",
+      version: "0217_song_activity_recency_indexes.sql",
     },
     {
-      "checksum": "58c12c89e3b44174955c49dc73c625ced45d78ffd85590577164d2dac56cf6a7",
-      "version": "0218_song_stems.sql"
+      checksum: "58c12c89e3b44174955c49dc73c625ced45d78ffd85590577164d2dac56cf6a7",
+      version: "0218_song_stems.sql",
     },
     {
-      "checksum": "90a1bbf81be693f146d6f948a8fd5c3d77a161e281bbdc0579e01fdc974b6180",
-      "version": "0219_hns_readiness_zone_mutation_admission.sql"
+      checksum: "90a1bbf81be693f146d6f948a8fd5c3d77a161e281bbdc0579e01fdc974b6180",
+      version: "0219_hns_readiness_zone_mutation_admission.sql",
     },
     {
-      "checksum": "8f4dba1e9cd8205820bf6e8a6742296b35b53780adb29f9d2cf83826cf1dc540",
-      "version": "0220_study_spoken_rerecord_receipts.sql"
+      checksum: "8f4dba1e9cd8205820bf6e8a6742296b35b53780adb29f9d2cf83826cf1dc540",
+      version: "0220_study_spoken_rerecord_receipts.sql",
     },
     {
-      "checksum": "56fb3e8d91cafa34a0ff1135268383947584c37a242cd1b3560aa439736a83e3",
-      "version": "0221_hns_txt_only_attachment_holds.sql"
+      checksum: "56fb3e8d91cafa34a0ff1135268383947584c37a242cd1b3560aa439736a83e3",
+      version: "0221_hns_txt_only_attachment_holds.sql",
     },
     {
-      "checksum": "c97d8c4a11959fde710c807ca67f8a8403ecfca4078b3c6f6ab79913d98c0230",
-      "version": "0222_spaces_authority_lifetime.sql"
+      checksum: "c97d8c4a11959fde710c807ca67f8a8403ecfca4078b3c6f6ab79913d98c0230",
+      version: "0222_spaces_authority_lifetime.sql",
     },
     {
-      "checksum": "019770a3b0cd30529d3c49733b368a728d5acaf00f51e2c36f35d98874f4a1be",
-      "version": "0223_hns_txt_attachment_runtime_window_grant.sql"
+      checksum: "019770a3b0cd30529d3c49733b368a728d5acaf00f51e2c36f35d98874f4a1be",
+      version: "0223_hns_txt_attachment_runtime_window_grant.sql",
     },
     {
-      "checksum": "c57390e8a63618367605037976098116125536d7a23283277e1a9e8715f09b53",
-      "version": "0224_song_video_pcm_references.sql"
+      checksum: "c57390e8a63618367605037976098116125536d7a23283277e1a9e8715f09b53",
+      version: "0224_song_video_pcm_references.sql",
     },
     {
-      "checksum": "53ac22007721dbde05f6ce961f8386405ed6436081f3003fd34c1c362ba63882",
-      "version": "0225_hns_import_runtime_function_grants.sql"
+      checksum: "53ac22007721dbde05f6ce961f8386405ed6436081f3003fd34c1c362ba63882",
+      version: "0225_hns_import_runtime_function_grants.sql",
     },
     {
-      "checksum": "2b8f5e021da82a1d174f8664d5835b0da6ca84bb85a61b5812a4e94e75ebfbc3",
-      "version": "0226_reward_sponsored_send_reservations.sql"
+      checksum: "2b8f5e021da82a1d174f8664d5835b0da6ca84bb85a61b5812a4e94e75ebfbc3",
+      version: "0226_reward_sponsored_send_reservations.sql",
     },
     {
-      "checksum": "a0ec95711d39f612b0e415f54e472b21fa3ee315265387355054be40e290b9e4",
-      "version": "0227_wallet_sponsored_send_scope.sql"
+      checksum: "a0ec95711d39f612b0e415f54e472b21fa3ee315265387355054be40e290b9e4",
+      version: "0227_wallet_sponsored_send_scope.sql",
     },
     {
-      "checksum": "f574633c1d279f4f37b592de58e87cb3e7519f0e899d1ce01ac31e76e4412a30",
-      "version": "0228_reward_obligation_attestation_pinning.sql"
+      checksum: "f574633c1d279f4f37b592de58e87cb3e7519f0e899d1ce01ac31e76e4412a30",
+      version: "0228_reward_obligation_attestation_pinning.sql",
     },
     {
-      "checksum": "9d24271f5d322b8d3cc8ed88ae9bf9c05e9b68128b00508743d444c75958d62f",
-      "version": "0229_song_video_cloudconvert_attempts.sql"
+      checksum: "9d24271f5d322b8d3cc8ed88ae9bf9c05e9b68128b00508743d444c75958d62f",
+      version: "0229_song_video_cloudconvert_attempts.sql",
     },
     {
-      "checksum": "ebf1aa63689821c82c3389c635960c06ec59612fe7485d012fd9105d28ecff17",
-      "version": "0230_reward_operations_control.sql"
+      checksum: "ebf1aa63689821c82c3389c635960c06ec59612fe7485d012fd9105d28ecff17",
+      version: "0230_reward_operations_control.sql",
     },
     {
-      "checksum": "a84b82b4e1ec503d8338686d2f1dff62980133b5d13148c69257f1507dd56b51",
-      "version": "0231_reward_http_admission.sql"
+      checksum: "a84b82b4e1ec503d8338686d2f1dff62980133b5d13148c69257f1507dd56b51",
+      version: "0231_reward_http_admission.sql",
     },
     {
-      "checksum": "daa7ee36baf6a6408d65f0a9e56898d2d35948276f8d93ab37be3e629a8416c5",
-      "version": "0232_reward_money_destructive_privileges.sql"
+      checksum: "daa7ee36baf6a6408d65f0a9e56898d2d35948276f8d93ab37be3e629a8416c5",
+      version: "0232_reward_money_destructive_privileges.sql",
     },
     {
-      "checksum": "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca",
-      "version": "0233_song_video_pcm_admission.sql"
+      checksum: "a6d9bc67c1e4ea7fef4ff351c59daed9fbd2ff54fae0bf7de9db0841d194b6ca",
+      version: "0233_song_video_pcm_admission.sql",
     },
     {
-      "checksum": "d11788e082d6a5d8f8435e146a2f4951b832b0f28d7c5f20de4a499fa25f400b",
-      "version": "0234_hns_safe_ownership_completion.sql"
+      checksum: "d11788e082d6a5d8f8435e146a2f4951b832b0f28d7c5f20de4a499fa25f400b",
+      version: "0234_hns_safe_ownership_completion.sql",
     },
     {
-      "checksum": "b63bc56e0cf63184c0d962073081cda836a5372d46243b4e2ace210e9ecd1188",
-      "version": "0235_spaces_owner_proof_evidence_bound.sql"
+      checksum: "b63bc56e0cf63184c0d962073081cda836a5372d46243b4e2ace210e9ecd1188",
+      version: "0235_spaces_owner_proof_evidence_bound.sql",
     },
     {
-      "checksum": "0ebbd826d68948a8667746338ebf68bd52049c05176327d170c04eb8b0691682",
-      "version": "0236_video_outcome_claims.sql"
+      checksum: "0ebbd826d68948a8667746338ebf68bd52049c05176327d170c04eb8b0691682",
+      version: "0236_video_outcome_claims.sql",
     },
     {
-      "checksum": "0c3954ae61007d5e5488b214b1e66b19b3b6d5a750b1fd62beb9adc852334a22",
-      "version": "0237_telegram_learner_linking.sql"
+      checksum: "0c3954ae61007d5e5488b214b1e66b19b3b6d5a750b1fd62beb9adc852334a22",
+      version: "0237_telegram_learner_linking.sql",
     },
     {
-      "checksum": "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
-      "version": "0238_hns_attachment_control_identity.sql"
+      checksum: "1a9147184385c5361dd4bd25b083217b2818389638d131788d01baff82c7eb59",
+      version: "0238_hns_attachment_control_identity.sql",
     },
     {
-      "checksum": "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
-      "version": "0239_telegram_study_practice.sql"
+      checksum: "8915f5dca6b093a2c9a0c621122a297c9adbaa85b75e81418ccc1866ca150bdc",
+      version: "0239_telegram_study_practice.sql",
     },
     {
-      "checksum": "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404",
-      "version": "0240_telegram_interface_preferences.sql"
+      checksum: "733b8b0730e0f9f7cc039aa5e7489cf189f6480aa55435c7db37e99bb7677404",
+      version: "0240_telegram_interface_preferences.sql",
     },
     {
-      "checksum": "4a19a6351fa156a4cf7de8196895882d152bcd05388f284032d9b023992cfbf7",
-      "version": "0241_song_owner_policy_head_lock_runtime_grant.sql"
+      checksum: "4a19a6351fa156a4cf7de8196895882d152bcd05388f284032d9b023992cfbf7",
+      version: "0241_song_owner_policy_head_lock_runtime_grant.sql",
     },
     {
-      "checksum": "2c183509506a71cc73e8fd0441aa73662e949a1ba44ca662a3896f2073195e43",
-      "version": "0242_reward_operations_run_lease.sql"
+      checksum: "2c183509506a71cc73e8fd0441aa73662e949a1ba44ca662a3896f2073195e43",
+      version: "0242_reward_operations_run_lease.sql",
     },
     {
-      "checksum": "e778abb7096b1fd5bef118535355f97a6dac3794dbbd16f9176baf1390a42fc9",
-      "version": "0243_spaces_community_route_attachments.sql"
+      checksum: "e778abb7096b1fd5bef118535355f97a6dac3794dbbd16f9176baf1390a42fc9",
+      version: "0243_spaces_community_route_attachments.sql",
     },
     {
-      "checksum": "c1a0eb3ead1940484ce869217b602f0f66aba17b2a47506df542fd001d482c16",
-      "version": "0244_unmoderated_text_publication.sql"
+      checksum: "c1a0eb3ead1940484ce869217b602f0f66aba17b2a47506df542fd001d482c16",
+      version: "0244_unmoderated_text_publication.sql",
     },
     {
-      "checksum": "5e8307196b983c2920b0ec6cfdea4e85d24c1d1b092e0c4651d86a59d1e90293",
-      "version": "0245_reward_unsigned_purchase_recovery.sql"
+      checksum: "5e8307196b983c2920b0ec6cfdea4e85d24c1d1b092e0c4651d86a59d1e90293",
+      version: "0245_reward_unsigned_purchase_recovery.sql",
     },
     {
-      "checksum": "bdf58c8c9dce49a66779a800671f77daca9b19b96696079e525f2ae7f028747d",
-      "version": "0246_telegram_restricted_learners.sql"
+      checksum: "bdf58c8c9dce49a66779a800671f77daca9b19b96696079e525f2ae7f028747d",
+      version: "0246_telegram_restricted_learners.sql",
     },
     {
-      "checksum": "ea353c0d863a2532c47e793c7cb46b5104ba474ae92924d0b406ad73fb216258",
-      "version": "0247_karaoke_instrumental_qualification_policy.sql"
+      checksum: "ea353c0d863a2532c47e793c7cb46b5104ba474ae92924d0b406ad73fb216258",
+      version: "0247_karaoke_instrumental_qualification_policy.sql",
     },
     {
-      "checksum": "2c99571cedbe0640733b3509c657e81d4a89f505ba6d3fed61ea7e0c4befaed1",
-      "version": "0248_guest_learning_authority_foundation.sql"
+      checksum: "2c99571cedbe0640733b3509c657e81d4a89f505ba6d3fed61ea7e0c4befaed1",
+      version: "0248_guest_learning_authority_foundation.sql",
     },
     {
-      "checksum": "8c3578dcbbbdf929fb412e4493e6e16ab5d2af0fe13d518bd3f582892cd0c732",
-      "version": "0249_study_participation_owner_preservation.sql"
+      checksum: "8c3578dcbbbdf929fb412e4493e6e16ab5d2af0fe13d518bd3f582892cd0c732",
+      version: "0249_study_participation_owner_preservation.sql",
     },
     {
-      "checksum": "c025474320a4bc244d974929415fed95ad26b22d0e2cf9657fbd2f328ddafcf9",
-      "version": "0250_guest_browser_authority_transitions.sql"
+      checksum: "c025474320a4bc244d974929415fed95ad26b22d0e2cf9657fbd2f328ddafcf9",
+      version: "0250_guest_browser_authority_transitions.sql",
     },
     {
-      "checksum": "2de6e6508ec498a616b2db85ceafef1e2dbde7323a060cfae9956d0353d1aae4",
-      "version": "0251_guest_learning_resource_reservations.sql"
+      checksum: "2de6e6508ec498a616b2db85ceafef1e2dbde7323a060cfae9956d0353d1aae4",
+      version: "0251_guest_learning_resource_reservations.sql",
     },
     {
-      "checksum": "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
-      "version": "0252_guest_learning_controlled_row_admission.sql"
+      checksum: "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
+      version: "0252_guest_learning_controlled_row_admission.sql",
     },
     {
-      "checksum": "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
-      "version": "0253_learner_audio_deletion_fence.sql"
+      checksum: "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
+      version: "0253_learner_audio_deletion_fence.sql",
     },
     {
-      "checksum": "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
-      "version": "0254_guest_prepared_study_session_capture.sql"
+      checksum: "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
+      version: "0254_guest_prepared_study_session_capture.sql",
     },
     {
-      "checksum": "fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b",
-      "version": "0255_guest_spoken_success_checkpoints.sql"
+      checksum: "fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b",
+      version: "0255_guest_spoken_success_checkpoints.sql",
     },
     {
-      "checksum": "bb90ea35b74aa8fddfb206aad1ce8ddb439ba53ae5175de7a33fd2c7102684ce",
-      "version": "0256_guest_owned_study_mutations.sql"
+      checksum: "bb90ea35b74aa8fddfb206aad1ce8ddb439ba53ae5175de7a33fd2c7102684ce",
+      version: "0256_guest_owned_study_mutations.sql",
     },
     {
-      "checksum": "3c5eb872e14558e28f78e607012d498f6fb7c2e8bae05bbba8911fd2ad9bcfec",
-      "version": "0257_guest_spoken_audio_archive.sql"
+      checksum: "3c5eb872e14558e28f78e607012d498f6fb7c2e8bae05bbba8911fd2ad9bcfec",
+      version: "0257_guest_spoken_audio_archive.sql",
     },
     {
-      "checksum": "cc9792c45c8938b89025a3e723e58f01f021d93d11b426c7600cfcf677bf9aef",
-      "version": "0258_guest_recovery_audio_deletion.sql"
+      checksum: "cc9792c45c8938b89025a3e723e58f01f021d93d11b426c7600cfcf677bf9aef",
+      version: "0258_guest_recovery_audio_deletion.sql",
     },
     {
-      "checksum": "3b84f8f3798e777bd7aa674363add62854d330b9ef12079fa49e2f2b24ea0dc9",
-      "version": "0259_guest_captured_recovery_reads.sql"
+      checksum: "3b84f8f3798e777bd7aa674363add62854d330b9ef12079fa49e2f2b24ea0dc9",
+      version: "0259_guest_captured_recovery_reads.sql",
     },
     {
-      "checksum": "efe82c3b3c132217bc6c01f2b73fef5f7940465d9c08ab18c0bcbaeb3b897120",
-      "version": "0260_owner_study_original_source_reads.sql"
+      checksum: "efe82c3b3c132217bc6c01f2b73fef5f7940465d9c08ab18c0bcbaeb3b897120",
+      version: "0260_owner_study_original_source_reads.sql",
     },
     {
-      "checksum": "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c",
-      "version": "0261_guest_study_resource_expiry.sql"
+      checksum: "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c",
+      version: "0261_guest_study_resource_expiry.sql",
     },
     {
-      "checksum": "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
-      "version": "0262_ordinary_audio_producer_capture.sql"
-    }
+      checksum: "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
+      version: "0262_ordinary_audio_producer_capture.sql",
+    },
   ],
-  "native_function_bodies": [
-    {
-      "body_sha256": "1af16e58005dbde48e12162b5beb18470c1d1266ea413d8f97980dbdc5c55773",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "acknowledge_guest_rotation_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+  native_function_bodies: [
+    {
+      body_sha256: "1af16e58005dbde48e12162b5beb18470c1d1266ea413d8f97980dbdc5c55773",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "acknowledge_guest_rotation_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "e4a4120ba50d80aaa2ad8e12a503d42d25b63eba9ef857b8250694e085f90ad5",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "acknowledge_owner_guest_spoken_success_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "e4a4120ba50d80aaa2ad8e12a503d42d25b63eba9ef857b8250694e085f90ad5",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "acknowledge_owner_guest_spoken_success_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "3436fd4a0c42198722688b482687118cc67d4d70faeec70cb157c8d0520e5c00",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "apply_guest_json_item_mutation_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "3436fd4a0c42198722688b482687118cc67d4d70faeec70cb157c8d0520e5c00",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "apply_guest_json_item_mutation_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "0c393020e741c602bd167e545a8c114816066b6b2cfb05b192d1b0771812a4c3",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "apply_guest_lesson_transition_private_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "0c393020e741c602bd167e545a8c114816066b6b2cfb05b192d1b0771812a4c3",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "apply_guest_lesson_transition_private_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "109684d7fcc13283c512ade819c9c4ec974ce1dca1574bda017d93e75eb00ef4",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "apply_guest_spoken_item_mutation_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "109684d7fcc13283c512ade819c9c4ec974ce1dca1574bda017d93e75eb00ef4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "apply_guest_spoken_item_mutation_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "b4e9d698670185de8e0df85c586f614dd5bd9253f056b5d362340930b989d196",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "begin_account_spoken_provider_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "b4e9d698670185de8e0df85c586f614dd5bd9253f056b5d362340930b989d196",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "begin_account_spoken_provider_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "de485e33e63def62f63717242512beee3817296758413c2c29f35d9ee8d2e010",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "can_guest_access_activity_song_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "de485e33e63def62f63717242512beee3817296758413c2c29f35d9ee8d2e010",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "can_guest_access_activity_song_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "25b1d453371c8932347812c3f39df4f5561f3207d9c1241654c8737f7f34b02f",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "capture_account_karaoke_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "25b1d453371c8932347812c3f39df4f5561f3207d9c1241654c8737f7f34b02f",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "capture_account_karaoke_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "bb1bb279261f358ccb0b748a35477998832c7c25c5abee67d725d50a3fd0a074",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "capture_account_study_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "bb1bb279261f358ccb0b748a35477998832c7c25c5abee67d725d50a3fd0a074",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "capture_account_study_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "366a512fcc68e06873c88639ae6cc5222e26ff95f4a368cd9810014c3fe3dc42",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "capture_guest_spoken_dispatch_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "366a512fcc68e06873c88639ae6cc5222e26ff95f4a368cd9810014c3fe3dc42",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "capture_guest_spoken_dispatch_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "3cc53dc06cc6bce886ce12378baf096b79bb3a25bebab32a304fa66f1c778d1e",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "claim_captured_learner_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "3cc53dc06cc6bce886ce12378baf096b79bb3a25bebab32a304fa66f1c778d1e",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "claim_captured_learner_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "claim_guest_audio_io_private_v1",
-      "source_file": "0257_guest_spoken_audio_archive.sql"
+    {
+      body_sha256: "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "claim_guest_audio_io_private_v1",
+      source_file: "0257_guest_spoken_audio_archive.sql",
     },
-    {
-      "body_sha256": "407ee6a804c21c6eb5e5a4ac48d59f24a5c1f072aa5c7f0f5086f63d370ce871",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "claim_learner_audio_upload_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "407ee6a804c21c6eb5e5a4ac48d59f24a5c1f072aa5c7f0f5086f63d370ce871",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "claim_learner_audio_upload_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "6e67e622e18fdb4c293a3de38e247ec052b6371535b623d6caf5d0f18ebf0655",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "cleanup_guest_authority_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "6e67e622e18fdb4c293a3de38e247ec052b6371535b623d6caf5d0f18ebf0655",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "cleanup_guest_authority_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "986e128f967e9eb35090eb9bc93e573202b0596554583d3324f9b26f5c5f4d70",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "close_unclaimed_learner_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "986e128f967e9eb35090eb9bc93e573202b0596554583d3324f9b26f5c5f4d70",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "close_unclaimed_learner_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "d0a0ec4871fcf31f48454cea51e5832cc6449bb8e762ef83cb8569698c3f90d0",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "commit_guest_study_start_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "d0a0ec4871fcf31f48454cea51e5832cc6449bb8e762ef83cb8569698c3f90d0",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "commit_guest_study_start_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "d569f6bc80b6e3ed9762602473fda9ed9ab750f0e402cb65f36d05c594fe4d0f",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "complete_guest_provider_call_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "d569f6bc80b6e3ed9762602473fda9ed9ab750f0e402cb65f36d05c594fe4d0f",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "complete_guest_provider_call_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "01426c151c469d2f3e668549272455d588bb5ac04360f77bce23959c48fb3cd9",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "confirm_account_audio_delete_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "01426c151c469d2f3e668549272455d588bb5ac04360f77bce23959c48fb3cd9",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_account_audio_delete_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "f948d0b8e7ea2c25bda63d6c3e437a02a94748be1e64a5e7a1fead527079548f",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "confirm_captured_audio_cleanup_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "f948d0b8e7ea2c25bda63d6c3e437a02a94748be1e64a5e7a1fead527079548f",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_captured_audio_cleanup_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "confirm_guest_owner_audio_delete_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_guest_owner_audio_delete_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "1a9b8c669a6af9b4d35cf0781fe080bbe2aa5ca85b0dd073c745770e9d45d956",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "confirm_guest_pending_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "1a9b8c669a6af9b4d35cf0781fe080bbe2aa5ca85b0dd073c745770e9d45d956",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_guest_pending_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "533087f833b6d9cafc67d61f5757129fc179a8835b7d4c8d86dc520c6cb1b4dc",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "confirm_learner_audio_delete_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "533087f833b6d9cafc67d61f5757129fc179a8835b7d4c8d86dc520c6cb1b4dc",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "confirm_learner_audio_delete_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "74fb423847eaf152fca62294d917a43ed3440dd5b8a2783fafd6417e100ce0bb",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "continue_captured_learner_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "74fb423847eaf152fca62294d917a43ed3440dd5b8a2783fafd6417e100ce0bb",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "continue_captured_learner_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "83ac06d937f8a15ad6b65f9dd01ac3550d297fea09beb26b1a1557750f21e751",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "converge_proved_empty_guest_sources_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "83ac06d937f8a15ad6b65f9dd01ac3550d297fea09beb26b1a1557750f21e751",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "converge_proved_empty_guest_sources_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "002a4ac07b97f7eac334c87580c4705b7f598e3a09d420363fd9435be5c0e1bc",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "create_guest_attachment_intent_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "002a4ac07b97f7eac334c87580c4705b7f598e3a09d420363fd9435be5c0e1bc",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "create_guest_attachment_intent_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "4c2f849aee2e65c09b2214293aa0048770f9762fd2030f9eea1ae16465210608",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "discover_guest_authority_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "4c2f849aee2e65c09b2214293aa0048770f9762fd2030f9eea1ae16465210608",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "discover_guest_authority_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "2d235504701b0a732e8509356553a33ce7e3c4393dd2db84e87a21e5a9f9206f",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "fail_account_audio_delete_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "2d235504701b0a732e8509356553a33ce7e3c4393dd2db84e87a21e5a9f9206f",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "fail_account_audio_delete_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "31233dd66160073e18e6f8bfd0ab9e39b3cbeda8c6490127586f78e29a13af8d",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "fail_guest_owner_audio_delete_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "31233dd66160073e18e6f8bfd0ab9e39b3cbeda8c6490127586f78e29a13af8d",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "fail_guest_owner_audio_delete_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "c740074aaf99c452208d5f1c1874208735693bfce29c9337523349172c127cdd",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "fail_guest_spoken_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "c740074aaf99c452208d5f1c1874208735693bfce29c9337523349172c127cdd",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "fail_guest_spoken_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "60e102c1aecea78fb23a91ad285aba7adbdc1e48279c2f94a1c712fdc9c714a0",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "fail_learner_audio_delete_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "60e102c1aecea78fb23a91ad285aba7adbdc1e48279c2f94a1c712fdc9c714a0",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "fail_learner_audio_delete_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "326d24f5fcd43ae23c30713b61e163686ae5f4be42a26bfc64b49ea715ccdea0",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "find_account_spoken_success_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "326d24f5fcd43ae23c30713b61e163686ae5f4be42a26bfc64b49ea715ccdea0",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "find_account_spoken_success_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "33e73635d64ba2ecdf204fc4e1ccdd26689cc7d205c3fb04e11b1e4e9e695a35",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "find_guest_owner_audio_delete_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "33e73635d64ba2ecdf204fc4e1ccdd26689cc7d205c3fb04e11b1e4e9e695a35",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "find_guest_owner_audio_delete_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "bba54a6908c1b8b58eddc893375d81f6ae20c42007e56d917dcfdd8a50256df2",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "find_guest_study_start_operation_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "bba54a6908c1b8b58eddc893375d81f6ae20c42007e56d917dcfdd8a50256df2",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "find_guest_study_start_operation_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "63137a582947de81f519bb02fac60d8f1b7298e360306a802c14cb0cdd9804d7",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "find_owner_guest_spoken_success_for_audio_v1",
-      "source_file": "0259_guest_captured_recovery_reads.sql"
+    {
+      body_sha256: "63137a582947de81f519bb02fac60d8f1b7298e360306a802c14cb0cdd9804d7",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "find_owner_guest_spoken_success_for_audio_v1",
+      source_file: "0259_guest_captured_recovery_reads.sql",
     },
-    {
-      "body_sha256": "95312e7a462e8cfc369691788f5c2855166d0ee6f40fc0ab24b5d51e31fb3f9e",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "finish_guest_json_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "95312e7a462e8cfc369691788f5c2855166d0ee6f40fc0ab24b5d51e31fb3f9e",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "finish_guest_json_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "11260ee9eec14b51c92bbe27a7194f60a51c0b5e02e5742e1e1e2d2313d056f4",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "finish_guest_spoken_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "11260ee9eec14b51c92bbe27a7194f60a51c0b5e02e5742e1e1e2d2313d056f4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "finish_guest_spoken_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "9251fc0b18446edd0658439a01ccf1521f0a172dc4856c530fecb19fd1b72c78",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_account_audio_provider_call_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "9251fc0b18446edd0658439a01ccf1521f0a172dc4856c530fecb19fd1b72c78",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_account_audio_provider_call_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "50891cf2c77594ad070740357ec734acc0afe6befb1989a7870c7141d66d21da",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_captured_audio_cleanup_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "50891cf2c77594ad070740357ec734acc0afe6befb1989a7870c7141d66d21da",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_captured_audio_cleanup_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "153ab873cba19d02ac14d573e9ba0b208097e075f65043c70da6e003e38b7dad",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_controlled_guest_study_session_v1",
-      "source_file": "0252_guest_learning_controlled_row_admission.sql"
+    {
+      body_sha256: "153ab873cba19d02ac14d573e9ba0b208097e075f65043c70da6e003e38b7dad",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_controlled_guest_study_session_v1",
+      source_file: "0252_guest_learning_controlled_row_admission.sql",
     },
-    {
-      "body_sha256": "dfffb0b3b450f1e4304c9cada2de15aa2f917b406eba8dd88cc0cd130498df03",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_credential_insert_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "dfffb0b3b450f1e4304c9cada2de15aa2f917b406eba8dd88cc0cd130498df03",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_credential_insert_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "4172aa26c864b839e080df8452979c35ed1c2c0366d3d8290dbbf8d8c99dd91e",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_credential_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "4172aa26c864b839e080df8452979c35ed1c2c0366d3d8290dbbf8d8c99dd91e",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_credential_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "1458a4bab9a9cec68618e02b296a14e51c389e10af76f676b9909e0c781b87e5",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_empty_alias_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "1458a4bab9a9cec68618e02b296a14e51c389e10af76f676b9909e0c781b87e5",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_empty_alias_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "a6a5fc6b1b5238ac32a2ea9924c1daabc1d1bb60af7f0fc1c09effac74775333",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_intent_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "a6a5fc6b1b5238ac32a2ea9924c1daabc1d1bb60af7f0fc1c09effac74775333",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_intent_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "42b17b9c1a6827f69d70e1a3a70957ac25813c9c85a158f9107f323446372463",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_issuance_lineage_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "42b17b9c1a6827f69d70e1a3a70957ac25813c9c85a158f9107f323446372463",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_issuance_lineage_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "46511bcad65cf7b246cd7218faa3229527d00bb5fa1275329fc1b47cf933e0b3",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_operation_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "46511bcad65cf7b246cd7218faa3229527d00bb5fa1275329fc1b47cf933e0b3",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_operation_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "5258781a2842caaebda205ef674a14f2898759904363e46ee7c79a3e2f6b23fc",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_resource_provider_call_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "5258781a2842caaebda205ef674a14f2898759904363e46ee7c79a3e2f6b23fc",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_resource_provider_call_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "ab3565e7f94ce78f1abcc771dfb600d04f10fbcb0f789854dd8932456667c40a",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_guest_resource_session_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "ab3565e7f94ce78f1abcc771dfb600d04f10fbcb0f789854dd8932456667c40a",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_guest_resource_session_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "01c022f3ce0078d54f9d1343be6ff7162bb90ab1c82258827edfb4dea14ee2c6",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guard_karaoke_recording",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "01c022f3ce0078d54f9d1343be6ff7162bb90ab1c82258827edfb4dea14ee2c6",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guard_karaoke_recording",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "e03a90cc840fe46d808c891927dee6d307c3e4b81a388c84be60054a01239936",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guard_learner_audio_control_state_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "e03a90cc840fe46d808c891927dee6d307c3e4b81a388c84be60054a01239936",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guard_learner_audio_control_state_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "ad7d15bd97803669fa6e9e86c3919810c498884ec5f05b4378e23a8488a08fd6",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_participation_owner_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "ad7d15bd97803669fa6e9e86c3919810c498884ec5f05b4378e23a8488a08fd6",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_participation_owner_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "05ae405a13be9055a7fa20cfdca664d4ee8704d32f53fd2f1b2c15b054d0ec8f",
-      "configuration": "none",
-      "definer": false,
-      "kind": "f",
-      "name": "guard_study_v2_activity_authority",
-      "source_file": "0249_study_participation_owner_preservation.sql"
+    {
+      body_sha256: "05ae405a13be9055a7fa20cfdca664d4ee8704d32f53fd2f1b2c15b054d0ec8f",
+      configuration: "none",
+      definer: false,
+      kind: "f",
+      name: "guard_study_v2_activity_authority",
+      source_file: "0249_study_participation_owner_preservation.sql",
     },
-    {
-      "body_sha256": "ab821415b8c398fbd4f57f248bf7203b85a7a47949a11db6f154ce8bc732542d",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_attachment_operation_identity_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "ab821415b8c398fbd4f57f248bf7203b85a7a47949a11db6f154ce8bc732542d",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_attachment_operation_identity_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "56a82ce65c0599be139d05a83f2872afa89e3f7c7de86176e5e9b5f8b2cd4cbd",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_authority_component_is_empty_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "56a82ce65c0599be139d05a83f2872afa89e3f7c7de86176e5e9b5f8b2cd4cbd",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_authority_component_is_empty_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "840db3602b2d99a4d980e590326d85cfedd1ef34972fac64fe0065362129bea8",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_authority_issue_operation_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "840db3602b2d99a4d980e590326d85cfedd1ef34972fac64fe0065362129bea8",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_authority_issue_operation_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "d19d6b0d580e3e3b9aa03bd844e748bd217dc986bb7bab8e41aebb4aa0f1775b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_authority_metadata_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "d19d6b0d580e3e3b9aa03bd844e748bd217dc986bb7bab8e41aebb4aa0f1775b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_authority_metadata_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "5695c0ea11f44fd0d5f5228fabb813968e25aee4f4babdbb6d09b682a4960aa8",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_owner_audio_delete_projection_private_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "5695c0ea11f44fd0d5f5228fabb813968e25aee4f4babdbb6d09b682a4960aa8",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_owner_audio_delete_projection_private_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "d37bd089bcbf5cd408a266e54ad0eb0c85da0fc8ff77c691b30d1fbce0c04dae",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_resource_component_has_history_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "d37bd089bcbf5cd408a266e54ad0eb0c85da0fc8ff77c691b30d1fbce0c04dae",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_resource_component_has_history_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "320ff26e45d4f10890f5bb5c0bfc1cdb927abcb58c214289f4996d22120e92ea",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guest_resource_usage_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "320ff26e45d4f10890f5bb5c0bfc1cdb927abcb58c214289f4996d22120e92ea",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guest_resource_usage_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "1bfe1c540a3d855ea911390c79c60187e117dad0400b0b6569b3239d76eb9fdf",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_spoken_component_has_history_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "1bfe1c540a3d855ea911390c79c60187e117dad0400b0b6569b3239d76eb9fdf",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_spoken_component_has_history_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "d90ea893c010f983d2b85823ffb632b1c794e5b56ae016ae3cd41f7d8e28037a",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guest_study_answer_resource_scope_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "d90ea893c010f983d2b85823ffb632b1c794e5b56ae016ae3cd41f7d8e28037a",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guest_study_answer_resource_scope_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "e0096bc3ce07636bc21b78516ba652b1ca96d8815d3d7f335971e6f0af7bcfc3",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "guest_study_prepared_rows_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "e0096bc3ce07636bc21b78516ba652b1ca96d8815d3d7f335971e6f0af7bcfc3",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "guest_study_prepared_rows_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "436ed94160a45a49e13403005b6de68566676486af1884612efd6e70028e33b1",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "guest_study_start_resource_scope_v1",
-      "source_file": "0252_guest_learning_controlled_row_admission.sql"
+    {
+      body_sha256: "436ed94160a45a49e13403005b6de68566676486af1884612efd6e70028e33b1",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guest_study_start_resource_scope_v1",
+      source_file: "0252_guest_learning_controlled_row_admission.sql",
     },
-    {
-      "body_sha256": "e2a745cb37ae1e938afcd2553861734f8940bbe3cd5b0d75710e66fea7ccda68",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "issue_guest_pending_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "e2a745cb37ae1e938afcd2553861734f8940bbe3cd5b0d75710e66fea7ccda68",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "issue_guest_pending_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "25e66ec91222e2803875a3eeebcb44ded357ffa078ff032b1af2c0df19c2a9e0",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "issue_guest_rotation_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "25e66ec91222e2803875a3eeebcb44ded357ffa078ff032b1af2c0df19c2a9e0",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "issue_guest_rotation_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "51f887950ca814ffd1d562aab8a30fd9c19e17f6bebbeb10c138e30d4a930c83",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "karaoke_audio_target_can_tombstone_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "51f887950ca814ffd1d562aab8a30fd9c19e17f6bebbeb10c138e30d4a930c83",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "karaoke_audio_target_can_tombstone_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "a808bed5a24e4bf0d061655728f56e41c8c917ae5ef08ae8f394401dff7f4600",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "learner_audio_component_has_history_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "a808bed5a24e4bf0d061655728f56e41c8c917ae5ef08ae8f394401dff7f4600",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "learner_audio_component_has_history_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "dbd2ce5d8fa195ab3c236d423c2f7bc3a9b2d39f1c407f445c1b9a376e188236",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "learner_audio_producer_component_has_history_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "dbd2ce5d8fa195ab3c236d423c2f7bc3a9b2d39f1c407f445c1b9a376e188236",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "learner_audio_producer_component_has_history_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "a2f1ca2e2578da83db6cd7b2c8da5371449ec5cbd9e8e2ceee6c92fe43ac9c21",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "learner_audio_source_component_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "a2f1ca2e2578da83db6cd7b2c8da5371449ec5cbd9e8e2ceee6c92fe43ac9c21",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "learner_audio_source_component_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "474e4a3da25debad1a01cc6ed988bb102d43da858e234d34bf74a381e68b45ea",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "list_closed_account_spoken_checkpoints_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "474e4a3da25debad1a01cc6ed988bb102d43da858e234d34bf74a381e68b45ea",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "list_closed_account_spoken_checkpoints_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "list_guest_practice_participations_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "list_guest_practice_participations_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "1bc6d7f9e2e02e99ae8fc8abccf39bd02916b2576ece527b20835984390b7d03",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "list_guest_spoken_closed_recovery_v1",
-      "source_file": "0259_guest_captured_recovery_reads.sql"
+    {
+      body_sha256: "1bc6d7f9e2e02e99ae8fc8abccf39bd02916b2576ece527b20835984390b7d03",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "list_guest_spoken_closed_recovery_v1",
+      source_file: "0259_guest_captured_recovery_reads.sql",
     },
-    {
-      "body_sha256": "221b633670daf39f4674c11cfcd75cf14d45034719026f3aada9e2d00cf673ac",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "load_account_spoken_success_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "221b633670daf39f4674c11cfcd75cf14d45034719026f3aada9e2d00cf673ac",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "load_account_spoken_success_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "c28b9cabaecd8562d2bf80408289cbfa0feb3a76d591e723a222c32121e78a58",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "load_guest_spoken_success_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "c28b9cabaecd8562d2bf80408289cbfa0feb3a76d591e723a222c32121e78a58",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "load_guest_spoken_success_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "73dd19fe0a0a1c9a919b88a15c07e78560649fb8fa203e21ccff74c8b391676b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_account_audio_group_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "73dd19fe0a0a1c9a919b88a15c07e78560649fb8fa203e21ccff74c8b391676b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_account_audio_group_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "6b08e8bcd5e9d561843d4d3fdb6343feec60295c86fe10675a5601a37153f587",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_guest_authority_sources_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "6b08e8bcd5e9d561843d4d3fdb6343feec60295c86fe10675a5601a37153f587",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_guest_authority_sources_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "f9d5e26068fbf6ec5f037da872f434917f1ce01f753c37160769b19c6f56fd6c",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_guest_cleanup_components_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "f9d5e26068fbf6ec5f037da872f434917f1ce01f753c37160769b19c6f56fd6c",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_guest_cleanup_components_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "a35a8f82c5bfda2d54a3d01df2cecd7248163b055bb8c46b0963e5959ce23eb7",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_guest_resource_budget_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "a35a8f82c5bfda2d54a3d01df2cecd7248163b055bb8c46b0963e5959ce23eb7",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_guest_resource_budget_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "6396c18588ed947eb40f972e899207df593a4db8621b2e62c237bf4564b65743",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_learner_audio_sources_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "6396c18588ed947eb40f972e899207df593a4db8621b2e62c237bf4564b65743",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_learner_audio_sources_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "04c0022ee2e498661cfb9c995c50252b71387c63c1a8feacfaaafc9f38916945",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "lock_original_account_audio_source_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "04c0022ee2e498661cfb9c995c50252b71387c63c1a8feacfaaafc9f38916945",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "lock_original_account_audio_source_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "310109046dede3084364eddddb5c9d6fc7f4591b734af26c9474efbfb7eb3f68",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "map_controlled_guest_learning_source_v1",
-      "source_file": "0252_guest_learning_controlled_row_admission.sql"
+    {
+      body_sha256: "310109046dede3084364eddddb5c9d6fc7f4591b734af26c9474efbfb7eb3f68",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "map_controlled_guest_learning_source_v1",
+      source_file: "0252_guest_learning_controlled_row_admission.sql",
     },
-    {
-      "body_sha256": "056d3e8068322072b9baf7b4aa305f266a0286a2f62b59292545b429f7ac8fd5",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "map_existing_account_learning_source_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
+    {
+      body_sha256: "056d3e8068322072b9baf7b4aa305f266a0286a2f62b59292545b429f7ac8fd5",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "map_existing_account_learning_source_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
     },
-    {
-      "body_sha256": "49ba31a0381bd7d380bec051bed08f3e55e92a8d8b292cf707d6534ca75ec409",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "mark_account_spoken_provider_unknown_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "49ba31a0381bd7d380bec051bed08f3e55e92a8d8b292cf707d6534ca75ec409",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "mark_account_spoken_provider_unknown_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "43f4ff125735682884d3727d58ba3896acaab30d2022697782906af8d8793a65",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "note_learner_audio_multipart_id_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "43f4ff125735682884d3727d58ba3896acaab30d2022697782906af8d8793a65",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "note_learner_audio_multipart_id_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "412b77900900d4ea53db5eb15dac180476b9617eaf135fa146b18e769e35a135",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "persist_account_spoken_success_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "412b77900900d4ea53db5eb15dac180476b9617eaf135fa146b18e769e35a135",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "persist_account_spoken_success_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "5bf20f07ea1acf2bd16e87caa17206ea7d81fad41f3d37f5bb164736edb57302",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "persist_guest_spoken_success_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "5bf20f07ea1acf2bd16e87caa17206ea7d81fad41f3d37f5bb164736edb57302",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "persist_guest_spoken_success_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "b07b13baf9069dbf7130f4b3a59e15babedbec474fb391af9fe4203b7e4d8306",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "persist_owner_guest_spoken_success_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "b07b13baf9069dbf7130f4b3a59e15babedbec474fb391af9fe4203b7e4d8306",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "persist_owner_guest_spoken_success_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "8ecb09fcf55701cf5fa85760e7e2265657835538f721489f2ce4947eb6d95d02",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_account_audio_delete_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "8ecb09fcf55701cf5fa85760e7e2265657835538f721489f2ce4947eb6d95d02",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_account_audio_delete_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "62aaa89078ed21da8e41e9132edbc0070701c8a5294c1d36841f334c0bb43d87",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_captured_audio_cleanup_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "62aaa89078ed21da8e41e9132edbc0070701c8a5294c1d36841f334c0bb43d87",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_captured_audio_cleanup_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "d30ee11f5e4b210ca5f22337c3a6c10c6e4cbc1028a3902cf241e8daab069d09",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_guest_attachment_target_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "d30ee11f5e4b210ca5f22337c3a6c10c6e4cbc1028a3902cf241e8daab069d09",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_attachment_target_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "80afe1076ed7b7a0a9eeae2398e355e20daa2466cd4bffc2009b3591a23d4eac",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_guest_json_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "80afe1076ed7b7a0a9eeae2398e355e20daa2466cd4bffc2009b3591a23d4eac",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_json_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "9d6e5404d4dca7ef7c65a7194554260dd6567c9082382047d8c0f58e211f7efb",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_guest_owner_audio_delete_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "9d6e5404d4dca7ef7c65a7194554260dd6567c9082382047d8c0f58e211f7efb",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_owner_audio_delete_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "e73df0db4dea15d1db8616c19c88bb2db0fa09a7f32c50962b8b7cc390610774",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_guest_spoken_finalization_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "e73df0db4dea15d1db8616c19c88bb2db0fa09a7f32c50962b8b7cc390610774",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_spoken_finalization_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "840926dc59eebd28760bb718f41b8553e2b0cab39b28c7b5516073f1a60a23ba",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_guest_study_start_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "840926dc59eebd28760bb718f41b8553e2b0cab39b28c7b5516073f1a60a23ba",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_guest_study_start_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "13ee82f15a52619995916398e0a5513aeae33917cb036c42b05da78ec85756d9",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "prepare_learner_audio_delete_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "13ee82f15a52619995916398e0a5513aeae33917cb036c42b05da78ec85756d9",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "prepare_learner_audio_delete_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "144372a843cd2a9134e0f2d5cc8414555310d0c920bc26c888dc447acf5012ed",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "preserve_learning_source_identity_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
+    {
+      body_sha256: "144372a843cd2a9134e0f2d5cc8414555310d0c920bc26c888dc447acf5012ed",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "preserve_learning_source_identity_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
     },
-    {
-      "body_sha256": "e87c83b860e15e790bf6bab4a691559c017ed698a4b0b80a3e22d201dd459566",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "project_owner_study_session_private_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "e87c83b860e15e790bf6bab4a691559c017ed698a4b0b80a3e22d201dd459566",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "project_owner_study_session_private_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "063984196280954a6712e01801aba3c0e48a6d9a95f7728d8fa7df5f0a69594a",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "provision_account_participation_owner_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
+    {
+      body_sha256: "063984196280954a6712e01801aba3c0e48a6d9a95f7728d8fa7df5f0a69594a",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "provision_account_participation_owner_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
     },
-    {
-      "body_sha256": "ae7a1c62ce0c98ea62f254d85feb1b66aec459f64c56cb9e1378cb0ea1dc93b4",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_account_karaoke_audio_capture_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "ae7a1c62ce0c98ea62f254d85feb1b66aec459f64c56cb9e1378cb0ea1dc93b4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_account_karaoke_audio_capture_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "062fa1b2ac52527cbdc62b91bc0847d3ae6ce0f61fc166761368d037bd3478c9",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_captured_learner_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "062fa1b2ac52527cbdc62b91bc0847d3ae6ce0f61fc166761368d037bd3478c9",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_captured_learner_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "722fabc0c44407afd02191493a2d8498c71021b3c8c7b7049eb83f3823394736",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_audio_io_capture_private_v1",
-      "source_file": "0257_guest_spoken_audio_archive.sql"
+    {
+      body_sha256: "722fabc0c44407afd02191493a2d8498c71021b3c8c7b7049eb83f3823394736",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_audio_io_capture_private_v1",
+      source_file: "0257_guest_spoken_audio_archive.sql",
     },
-    {
-      "body_sha256": "187b9ada99a71b4368dc34346b42d15c4b230bba0082b851763768c56b6bcdf5",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_browser_proof_snapshot_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "187b9ada99a71b4368dc34346b42d15c4b230bba0082b851763768c56b6bcdf5",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_browser_proof_snapshot_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "e7b85bdf9f0b31ee571ac8bae78382eff0a4dd8edb9b3671067c03cafe883dae",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_credential_proof_matches_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "e7b85bdf9f0b31ee571ac8bae78382eff0a4dd8edb9b3671067c03cafe883dae",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_credential_proof_matches_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "5125f1100a42c497c9c1921129207972985552decba4ae136bc8a17b5acc6134",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_learning_lease_observation_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "5125f1100a42c497c9c1921129207972985552decba4ae136bc8a17b5acc6134",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_learning_lease_observation_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "c32c599def479f2978d38c4138b4f3746cd3e85384e64c83b24774f13c0c1380",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_owner_audio_delete_batch_private_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "c32c599def479f2978d38c4138b4f3746cd3e85384e64c83b24774f13c0c1380",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_owner_audio_delete_batch_private_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "c0541283515446874a4b9a8b9d4f6287eda4f0fddc30591d6c3f990d6fe72957",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_spoken_capture_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "c0541283515446874a4b9a8b9d4f6287eda4f0fddc30591d6c3f990d6fe72957",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_spoken_capture_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "c2e6cae518f12d7b77b0b8e2e34a8ad273f6036e859d370ccc03a874548d2aed",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_spoken_closed_recovery_v1",
-      "source_file": "0259_guest_captured_recovery_reads.sql"
+    {
+      body_sha256: "c2e6cae518f12d7b77b0b8e2e34a8ad273f6036e859d370ccc03a874548d2aed",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_spoken_closed_recovery_v1",
+      source_file: "0259_guest_captured_recovery_reads.sql",
     },
-    {
-      "body_sha256": "3b3b67e5678388070728c36f437f93bffa8d092ccc3e95f3e105deb2600a2e11",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_spoken_context_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "3b3b67e5678388070728c36f437f93bffa8d092ccc3e95f3e105deb2600a2e11",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_spoken_context_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "408f9fb0c359235da35e21a813354696824f1746bead1bd2dc7ec7521b4898aa",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_guest_study_session_snapshot_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "408f9fb0c359235da35e21a813354696824f1746bead1bd2dc7ec7521b4898aa",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_guest_study_session_snapshot_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "79718f616fb67950ec7b7cc98f34e0b42220caf10ea882dd170e125c16be8f78",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_learner_audio_upload_status_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "79718f616fb67950ec7b7cc98f34e0b42220caf10ea882dd170e125c16be8f78",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_learner_audio_upload_status_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "cc765c88e550e37026b8b280ba9dd72c03a50aeb16b356318828762254c71d0b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_original_account_study_answer_receipt_v1",
-      "source_file": "0260_owner_study_original_source_reads.sql"
+    {
+      body_sha256: "cc765c88e550e37026b8b280ba9dd72c03a50aeb16b356318828762254c71d0b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_original_account_study_answer_receipt_v1",
+      source_file: "0260_owner_study_original_source_reads.sql",
     },
-    {
-      "body_sha256": "0132849024067c72484ce136ada526e0a93fe853b13a0fb1b4893b7d8f99ec50",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_original_account_study_source_v1",
-      "source_file": "0260_owner_study_original_source_reads.sql"
+    {
+      body_sha256: "0132849024067c72484ce136ada526e0a93fe853b13a0fb1b4893b7d8f99ec50",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_original_account_study_source_v1",
+      source_file: "0260_owner_study_original_source_reads.sql",
     },
-    {
-      "body_sha256": "a0156f3ea49844531172242f664613fc470db2451a5a25b169fbfe7ae4bdd0b6",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_guest_answer_operation_v1",
-      "source_file": "0260_owner_study_original_source_reads.sql"
+    {
+      body_sha256: "a0156f3ea49844531172242f664613fc470db2451a5a25b169fbfe7ae4bdd0b6",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_guest_answer_operation_v1",
+      source_file: "0260_owner_study_original_source_reads.sql",
     },
-    {
-      "body_sha256": "12673712ad920fb51898935f07d68f9384b16d8740bffacd15d4861b1192585b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_guest_answer_source_v1",
-      "source_file": "0260_owner_study_original_source_reads.sql"
+    {
+      body_sha256: "12673712ad920fb51898935f07d68f9384b16d8740bffacd15d4861b1192585b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_guest_answer_source_v1",
+      source_file: "0260_owner_study_original_source_reads.sql",
     },
-    {
-      "body_sha256": "97b491e42e9216d3da7868e04b4b55d69ddf6aeedc8c56afe0312bf9adc71ecc",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_guest_spoken_capture_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "97b491e42e9216d3da7868e04b4b55d69ddf6aeedc8c56afe0312bf9adc71ecc",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_guest_spoken_capture_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "15dae995ac18b22c3dd4e88b70a198a42271be774157e167563ff9712ffaed61",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_guest_spoken_dispatch_context_v1",
-      "source_file": "0260_owner_study_original_source_reads.sql"
+    {
+      body_sha256: "15dae995ac18b22c3dd4e88b70a198a42271be774157e167563ff9712ffaed61",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_guest_spoken_dispatch_context_v1",
+      source_file: "0260_owner_study_original_source_reads.sql",
     },
-    {
-      "body_sha256": "e033fed36612f9d9049b72319dd3e054fc34564673f554ace76eeb743d6a522e",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_guest_spoken_success_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "e033fed36612f9d9049b72319dd3e054fc34564673f554ace76eeb743d6a522e",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_guest_spoken_success_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "3da4cb4e2490a595318355c52e3362e431196f62fb684842fba78b2337a44279",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "read_owner_study_session_snapshot_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "3da4cb4e2490a595318355c52e3362e431196f62fb684842fba78b2337a44279",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "read_owner_study_session_snapshot_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "register_learner_audio_upload_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "register_learner_audio_upload_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "619ecd9d3a8f8f1184b5ce3c15819d870dc3e4c0c330c8bf12589c5f017e73c4",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "reject_guest_copresent_established_conflict_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "619ecd9d3a8f8f1184b5ce3c15819d870dc3e4c0c330c8bf12589c5f017e73c4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "reject_guest_copresent_established_conflict_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "92cc06d485cf6ff04a9269c222d4ac5be6f067441b360cd029a0a7249c3d1a0d",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "reject_guest_immutable_mutation_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "92cc06d485cf6ff04a9269c222d4ac5be6f067441b360cd029a0a7249c3d1a0d",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "reject_guest_immutable_mutation_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "7308379d856333c5d6f6f191bdec0be8d8e9ef6b176c0e80b7d898edc864194b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "release_guest_resource_session_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "7308379d856333c5d6f6f191bdec0be8d8e9ef6b176c0e80b7d898edc864194b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "release_guest_resource_session_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "a8c1aa78a9db90fc9434031102d4de1234b884e8e9f26bc636abe4a0ebae14af",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "release_next_guest_study_resource_remainder_v1",
-      "source_file": "0261_guest_study_resource_expiry.sql"
+    {
+      body_sha256: "a8c1aa78a9db90fc9434031102d4de1234b884e8e9f26bc636abe4a0ebae14af",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "release_next_guest_study_resource_remainder_v1",
+      source_file: "0261_guest_study_resource_expiry.sql",
     },
-    {
-      "body_sha256": "d13773e55f04cad7cf5c543d7b28afc34ae09a22f9a208ebd8bf5d16334c02c7",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "renew_guest_authority_v1",
-      "source_file": "0250_guest_browser_authority_transitions.sql"
+    {
+      body_sha256: "d13773e55f04cad7cf5c543d7b28afc34ae09a22f9a208ebd8bf5d16334c02c7",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "renew_guest_authority_v1",
+      source_file: "0250_guest_browser_authority_transitions.sql",
     },
-    {
-      "body_sha256": "525bb644cd1d00a44393aac94b9261e30d19222aae68418eeb067f8a487830ab",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_account_spoken_archive_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "525bb644cd1d00a44393aac94b9261e30d19222aae68418eeb067f8a487830ab",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_account_spoken_archive_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "f8baf736a384423403cb67df9614fa2274f40cbfc7aaed8b85b14eea14819589",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_account_spoken_success_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "f8baf736a384423403cb67df9614fa2274f40cbfc7aaed8b85b14eea14819589",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_account_spoken_success_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "23925f2d4162e1c37aafb28466d509753414f4668f86ace79befedae4379aa8d",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_captured_audio_deletion_stop_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "23925f2d4162e1c37aafb28466d509753414f4668f86ace79befedae4379aa8d",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_captured_audio_deletion_stop_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "29c06bac0bf2a8d1851eb101d1df61499b0046286175ffe78aef0baabca1b307",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_captured_karaoke_recording_result_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "29c06bac0bf2a8d1851eb101d1df61499b0046286175ffe78aef0baabca1b307",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_captured_karaoke_recording_result_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "4f4a5d441f55e16109046fd655f3f243a0ebbb449effc2b355858e33fa528814",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_captured_learner_audio_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "4f4a5d441f55e16109046fd655f3f243a0ebbb449effc2b355858e33fa528814",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_captured_learner_audio_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "d53443f3760f9254a038d3f4b63ba232a0e19106d2d5ae7b26dde12b3daf5175",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_existing_account_participation_owner_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
+    {
+      body_sha256: "d53443f3760f9254a038d3f4b63ba232a0e19106d2d5ae7b26dde12b3daf5175",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_existing_account_participation_owner_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
     },
-    {
-      "body_sha256": "fe5a2b329fac045563a91826c995f6bffc6985ca13e533d64a0a6ae5efd4ac53",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_answer_operation_private_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "fe5a2b329fac045563a91826c995f6bffc6985ca13e533d64a0a6ae5efd4ac53",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_answer_operation_private_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "84bdaaaaadd99a5123daefdd3a220a2eef72c2af464fe7e95e921cd8dac064cf",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_audio_io_capture_private_v1",
-      "source_file": "0257_guest_spoken_audio_archive.sql"
+    {
+      body_sha256: "84bdaaaaadd99a5123daefdd3a220a2eef72c2af464fe7e95e921cd8dac064cf",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_audio_io_capture_private_v1",
+      source_file: "0257_guest_spoken_audio_archive.sql",
     },
-    {
-      "body_sha256": "ae811a8b0d41662b4025a8263bd2df55d9589ba297aa52e8fd814295e862e9c1",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_audio_recovery_access_private_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
+    {
+      body_sha256: "ae811a8b0d41662b4025a8263bd2df55d9589ba297aa52e8fd814295e862e9c1",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_audio_recovery_access_private_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
     },
-    {
-      "body_sha256": "dfd432b22f461ca957a8e9f12fac26fdeab4b0c943cdefbe1d7e191a6124e245",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_learning_runtime_role_v1",
-      "source_file": "0252_guest_learning_controlled_row_admission.sql"
+    {
+      body_sha256: "dfd432b22f461ca957a8e9f12fac26fdeab4b0c943cdefbe1d7e191a6124e245",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_learning_runtime_role_v1",
+      source_file: "0252_guest_learning_controlled_row_admission.sql",
     },
-    {
-      "body_sha256": "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_practice_only_schema_phase_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
+    {
+      body_sha256: "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_practice_only_schema_phase_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
     },
-    {
-      "body_sha256": "58f17f33cb89580b0e5ca72dc66af402eb1f9d78b4bf87d255918e04725b20b5",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_resource_success_checkpoint_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "58f17f33cb89580b0e5ca72dc66af402eb1f9d78b4bf87d255918e04725b20b5",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_resource_success_checkpoint_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "3baa7dfc26a116035b3e0583f2064ff28291bb9ad7f9b978ce886c643b210abc",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "require_guest_review_schedule_private_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "3baa7dfc26a116035b3e0583f2064ff28291bb9ad7f9b978ce886c643b210abc",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "require_guest_review_schedule_private_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "41523143aa638abd7bdf01911b77d81f919da17dfbf7990f1c98d22475b20524",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_spoken_resource_plan_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "41523143aa638abd7bdf01911b77d81f919da17dfbf7990f1c98d22475b20524",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_spoken_resource_plan_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "91eeed0da1e80279afed4a7d9acf8ee9a96036557ee4486ba05279942704d799",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_study_composition_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "91eeed0da1e80279afed4a7d9acf8ee9a96036557ee4486ba05279942704d799",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_study_composition_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "3b32044933f13177013c53fc678637386cc98227a288fa5f3033dfcbc3c44631",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_guest_study_learning_access_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "3b32044933f13177013c53fc678637386cc98227a288fa5f3033dfcbc3c44631",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_guest_study_learning_access_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "49a5c72e02fbe04a403fded8b0c0051939b1f77c73385c4e8d63598afbfab7ee",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "require_owner_guest_source_private_v1",
-      "source_file": "0255_guest_spoken_success_checkpoints.sql"
+    {
+      body_sha256: "49a5c72e02fbe04a403fded8b0c0051939b1f77c73385c4e8d63598afbfab7ee",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "require_owner_guest_source_private_v1",
+      source_file: "0255_guest_spoken_success_checkpoints.sql",
     },
-    {
-      "body_sha256": "c4b6ca744952242878fac25a89138ed60335f863a60a24792855ab3a79e82616",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "reserve_guest_prepared_study_start_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
+    {
+      body_sha256: "c4b6ca744952242878fac25a89138ed60335f863a60a24792855ab3a79e82616",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "reserve_guest_prepared_study_start_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
     },
-    {
-      "body_sha256": "3fda8f22481b14f409698b2b6f707bbff97952b208e1d8711665b09da7213543",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "reserve_guest_provider_call_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "3fda8f22481b14f409698b2b6f707bbff97952b208e1d8711665b09da7213543",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "reserve_guest_provider_call_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "c3a4b226e3cb2c18900bc9395df59d359c3297bb936d96bd75fda04729b6581b",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "reserve_guest_resource_session_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
+    {
+      body_sha256: "c3a4b226e3cb2c18900bc9395df59d359c3297bb936d96bd75fda04729b6581b",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "reserve_guest_resource_session_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
     },
-    {
-      "body_sha256": "ba6c0d727f4c4884cd8e06e7c54cbc98888039fee1d1ac47f3f644631b32e2bf",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "reserve_guest_spoken_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
+    {
+      body_sha256: "ba6c0d727f4c4884cd8e06e7c54cbc98888039fee1d1ac47f3f644631b32e2bf",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "reserve_guest_spoken_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
     },
-    {
-      "body_sha256": "fd5dd4aa6a8e71dc94813d651d37f6c7dbcd6d673766344bf0d0c2e8329a8dc0",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "resolve_guest_audio_io_capture_private_v1",
-      "source_file": "0257_guest_spoken_audio_archive.sql"
+    {
+      body_sha256: "fd5dd4aa6a8e71dc94813d651d37f6c7dbcd6d673766344bf0d0c2e8329a8dc0",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "resolve_guest_audio_io_capture_private_v1",
+      source_file: "0257_guest_spoken_audio_archive.sql",
     },
-    {
-      "body_sha256": "dcad62c24dcdbd2f825ceb4054adca30c57f94fa0eb23c2c83834b9df88a81f1",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "resolve_guest_empty_owner_root_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
+    {
+      body_sha256: "dcad62c24dcdbd2f825ceb4054adca30c57f94fa0eb23c2c83834b9df88a81f1",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "resolve_guest_empty_owner_root_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
     },
-    {
-      "body_sha256": "5e33761aa56811e3910062b3f31f715ee33b40d4401899916de75ea45e112924",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "retain_learner_audio_immutable_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
+    {
+      body_sha256: "5e33761aa56811e3910062b3f31f715ee33b40d4401899916de75ea45e112924",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "retain_learner_audio_immutable_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
     },
-    {
-      "body_sha256": "cf03899d508ebecda2cd3f32f37ad46dc8df8544127cc61905203e302f38ad4e",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "select_guest_study_start_plan_v1",
-      "source_file": "0254_guest_prepared_study_session_capture.sql"
-    },
-    {
-      "body_sha256": "bddbb0dfd905c90919f9f27af09cd9c68bfb3d30828ce601e810bd1761cf25b5",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "set_guest_learning_retention_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
-    },
-    {
-      "body_sha256": "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "settle_guest_audio_io_private_v1",
-      "source_file": "0257_guest_spoken_audio_archive.sql"
-    },
-    {
-      "body_sha256": "2f66f0d2aca9c8c37ea31627a48ef1c8e2c4f120b95b12b983b22cbd73f483c4",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "settle_learner_audio_terminal_fact_private_v1",
-      "source_file": "0262_ordinary_audio_producer_capture.sql"
-    },
-    {
-      "body_sha256": "433e06b478fe9b2f33b22799cbd63ae54b0bfb985d201c2f4ce2c8a6facb1ddd",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "settle_learner_audio_upload_private_v1",
-      "source_file": "0253_learner_audio_deletion_fence.sql"
-    },
-    {
-      "body_sha256": "0a606fa9647326016bf4f0c3836799882394bde039650cbb90bcf406c0b26de2",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "transition_guest_json_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
-    },
-    {
-      "body_sha256": "6791e13c19099b09af00055d6e840a1942f566a91d5bc5d1e4da53688fd21966",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "transition_guest_spoken_answer_v1",
-      "source_file": "0256_guest_owned_study_mutations.sql"
-    },
-    {
-      "body_sha256": "017fd90c4d3ee320a6fcb243f253ffec37e669630b98c374c85700fbd42a73d3",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "validate_guest_alias_state_v1",
-      "source_file": "0248_guest_learning_authority_foundation.sql"
-    },
-    {
-      "body_sha256": "e387c6d9e2cb30fda1aca8b4976dd767c76ddf803eec329af8ff74c8f875693a",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "validate_guest_recovery_operation_private_v1",
-      "source_file": "0258_guest_recovery_audio_deletion.sql"
-    },
-    {
-      "body_sha256": "bae62f65445e29afe2ca80229729452aa10d47a7da6627fb643d845ec452ccdd",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "validate_guest_resource_operation_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
-    },
-    {
-      "body_sha256": "bb94a1045e0a94f9dee957a6bd2e4c041ac8f38d0d5d255bb3dd0fc9aec7dd5a",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "validate_guest_resource_policy_v1",
-      "source_file": "0251_guest_learning_resource_reservations.sql"
-    },
-    {
-      "body_sha256": "abd5a5e2811648082a2c3a2c5fa3565598e3aece838c5fb2a48cd19f64a6f7d5",
-      "configuration": "pinned",
-      "definer": false,
-      "kind": "f",
-      "name": "validate_study_attempt_audio_source_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
-    },
-    {
-      "body_sha256": "698e3af853abb578b4f691e30cd4ed60d78a9751372738d472c81e2669e0914e",
-      "configuration": "pinned",
-      "definer": true,
-      "kind": "f",
-      "name": "validate_study_command_audio_source_v1",
-      "source_file": "0249_study_participation_owner_preservation.sql"
-    }
+    {
+      body_sha256: "cf03899d508ebecda2cd3f32f37ad46dc8df8544127cc61905203e302f38ad4e",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "select_guest_study_start_plan_v1",
+      source_file: "0254_guest_prepared_study_session_capture.sql",
+    },
+    {
+      body_sha256: "bddbb0dfd905c90919f9f27af09cd9c68bfb3d30828ce601e810bd1761cf25b5",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "set_guest_learning_retention_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
+    },
+    {
+      body_sha256: "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "settle_guest_audio_io_private_v1",
+      source_file: "0257_guest_spoken_audio_archive.sql",
+    },
+    {
+      body_sha256: "2f66f0d2aca9c8c37ea31627a48ef1c8e2c4f120b95b12b983b22cbd73f483c4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "settle_learner_audio_terminal_fact_private_v1",
+      source_file: "0262_ordinary_audio_producer_capture.sql",
+    },
+    {
+      body_sha256: "433e06b478fe9b2f33b22799cbd63ae54b0bfb985d201c2f4ce2c8a6facb1ddd",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "settle_learner_audio_upload_private_v1",
+      source_file: "0253_learner_audio_deletion_fence.sql",
+    },
+    {
+      body_sha256: "0a606fa9647326016bf4f0c3836799882394bde039650cbb90bcf406c0b26de2",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "transition_guest_json_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
+    },
+    {
+      body_sha256: "6791e13c19099b09af00055d6e840a1942f566a91d5bc5d1e4da53688fd21966",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "transition_guest_spoken_answer_v1",
+      source_file: "0256_guest_owned_study_mutations.sql",
+    },
+    {
+      body_sha256: "017fd90c4d3ee320a6fcb243f253ffec37e669630b98c374c85700fbd42a73d3",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "validate_guest_alias_state_v1",
+      source_file: "0248_guest_learning_authority_foundation.sql",
+    },
+    {
+      body_sha256: "e387c6d9e2cb30fda1aca8b4976dd767c76ddf803eec329af8ff74c8f875693a",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "validate_guest_recovery_operation_private_v1",
+      source_file: "0258_guest_recovery_audio_deletion.sql",
+    },
+    {
+      body_sha256: "bae62f65445e29afe2ca80229729452aa10d47a7da6627fb643d845ec452ccdd",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "validate_guest_resource_operation_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
+    },
+    {
+      body_sha256: "bb94a1045e0a94f9dee957a6bd2e4c041ac8f38d0d5d255bb3dd0fc9aec7dd5a",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "validate_guest_resource_policy_v1",
+      source_file: "0251_guest_learning_resource_reservations.sql",
+    },
+    {
+      body_sha256: "abd5a5e2811648082a2c3a2c5fa3565598e3aece838c5fb2a48cd19f64a6f7d5",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "validate_study_attempt_audio_source_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
+    },
+    {
+      body_sha256: "698e3af853abb578b4f691e30cd4ed60d78a9751372738d472c81e2669e0914e",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "validate_study_command_audio_source_v1",
+      source_file: "0249_study_participation_owner_preservation.sql",
+    },
   ],
-  "native_phase": "practice_only_owner_audio_producer_history_v5",
-  "phase_condition_sha256": "097a517f92cef02a657c77fe30b8b1066654087d21acb5896ff47bea2e89a683",
-  "profiles": {
-    "cron": {
-      "columns": {},
-      "functions": [
+  native_phase: "practice_only_owner_audio_producer_history_v5",
+  phase_condition_sha256: "097a517f92cef02a657c77fe30b8b1066654087d21acb5896ff47bea2e89a683",
+  profiles: {
+    cron: {
+      columns: {},
+      functions: [
         "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
         "apply_guest_spoken_item_mutation_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb)",
         "claim_guest_audio_io_private_v1(jsonb)",
@@ -2348,12 +2348,12 @@ export const guestStudyReadinessCandidate = {
         "release_next_guest_study_resource_remainder_v1()",
         "resolve_guest_audio_io_capture_private_v1(jsonb,jsonb,text,text,bigint,text)",
         "settle_guest_audio_io_private_v1(jsonb,text,boolean)",
-        "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)"
-      ]
+        "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)",
+      ],
     },
-    "learning": {
-      "columns": {},
-      "functions": [
+    learning: {
+      columns: {},
+      functions: [
         "acknowledge_guest_rotation_v1(text,text[],text,text,text)",
         "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
         "apply_guest_json_item_mutation_v1(jsonb,jsonb,jsonb,jsonb,text,text)",
@@ -2396,85 +2396,61 @@ export const guestStudyReadinessCandidate = {
         "set_guest_learning_retention_v1(jsonb,jsonb,text)",
         "settle_guest_audio_io_private_v1(jsonb,text,boolean)",
         "transition_guest_json_answer_v1(jsonb,text,jsonb,jsonb,jsonb)",
-        "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)"
-      ]
+        "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)",
+      ],
     },
-    "observer": {
-      "columns": {
-        "guest_learning_schema_phase": [
-          "singleton",
-          "phase"
-        ],
-        "schema_migrations": [
-          "version",
-          "checksum"
-        ]
+    observer: {
+      columns: {
+        guest_learning_schema_phase: ["singleton", "phase"],
+        schema_migrations: ["version", "checksum"],
       },
-      "functions": []
+      functions: [],
     },
-    "publicRead": {
-      "columns": {
-        "communities": [
-          "community_id",
-          "status"
-        ],
-        "localization_lyric_line_study_units": [
+    publicRead: {
+      columns: {
+        communities: ["community_id", "status"],
+        localization_lyric_line_study_units: [
           "community_id",
           "post_id",
           "lyric_line_id",
           "line_version",
-          "study_unit_id"
+          "study_unit_id",
         ],
-        "localization_lyric_line_versions": [
+        localization_lyric_line_versions: [
           "community_id",
           "post_id",
           "lyric_line_id",
           "line_version",
-          "source_hash"
+          "source_hash",
         ],
-        "localization_lyrics_revision_lines": [
+        localization_lyrics_revision_lines: [
           "community_id",
           "post_id",
           "lyrics_revision",
           "lyric_line_id",
-          "line_version"
+          "line_version",
         ],
-        "media_post_submissions": [
+        media_post_submissions: [
           "submission_id",
           "community_id",
           "post_id",
           "audio_revision",
           "current_lyrics_revision",
-          "status"
+          "status",
         ],
-        "media_publication_projections": [
+        media_publication_projections: [
           "submission_id",
           "community_id",
           "post_id",
           "audio_revision",
           "lyrics_revision",
           "lyrics_status",
-          "language_status"
+          "language_status",
         ],
-        "media_song_lyrics_revisions": [
-          "submission_id",
-          "lyrics_revision",
-          "lyrics_sha256"
-        ],
-        "media_song_stems": [
-          "submission_id",
-          "community_id",
-          "slot"
-        ],
-        "posts": [
-          "community_id",
-          "post_id",
-          "post_type",
-          "status",
-          "visibility",
-          "content_rating"
-        ],
-        "study_exercise_versions": [
+        media_song_lyrics_revisions: ["submission_id", "lyrics_revision", "lyrics_sha256"],
+        media_song_stems: ["submission_id", "community_id", "slot"],
+        posts: ["community_id", "post_id", "post_type", "status", "visibility", "content_rating"],
+        study_exercise_versions: [
           "exercise_review_key",
           "exercise_type",
           "learning_language",
@@ -2490,296 +2466,297 @@ export const guestStudyReadinessCandidate = {
           "study_unit_id",
           "language_profile_revision",
           "retired_at",
-          "content_revision"
+          "content_revision",
         ],
-        "study_language_profile_units": [
+        study_language_profile_units: [
           "community_id",
           "post_id",
           "lyrics_revision",
           "study_unit_id",
-          "language_profile_revision"
+          "language_profile_revision",
         ],
-        "study_language_profiles": [
+        study_language_profiles: [
           "community_id",
           "post_id",
           "lyrics_revision",
           "source_hash",
-          "language_profile_revision"
-        ]
+          "language_profile_revision",
+        ],
       },
-      "functions": [
-        "can_guest_access_activity_song_v1(text,text)"
-      ]
-    }
+      functions: ["can_guest_access_activity_song_v1(text,text)"],
+    },
   },
-  "required_frames": [
+  required_frames: [
     {
-      "body_sha256": "1af16e58005dbde48e12162b5beb18470c1d1266ea413d8f97980dbdc5c55773",
-      "definer": true,
-      "signature": "acknowledge_guest_rotation_v1(text,text[],text,text,text)"
+      body_sha256: "1af16e58005dbde48e12162b5beb18470c1d1266ea413d8f97980dbdc5c55773",
+      definer: true,
+      signature: "acknowledge_guest_rotation_v1(text,text[],text,text,text)",
     },
     {
-      "body_sha256": "e4a4120ba50d80aaa2ad8e12a503d42d25b63eba9ef857b8250694e085f90ad5",
-      "definer": true,
-      "signature": "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)"
+      body_sha256: "e4a4120ba50d80aaa2ad8e12a503d42d25b63eba9ef857b8250694e085f90ad5",
+      definer: true,
+      signature:
+        "acknowledge_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb,text,bigint)",
     },
     {
-      "body_sha256": "3436fd4a0c42198722688b482687118cc67d4d70faeec70cb157c8d0520e5c00",
-      "definer": true,
-      "signature": "apply_guest_json_item_mutation_v1(jsonb,jsonb,jsonb,jsonb,text,text)"
+      body_sha256: "3436fd4a0c42198722688b482687118cc67d4d70faeec70cb157c8d0520e5c00",
+      definer: true,
+      signature: "apply_guest_json_item_mutation_v1(jsonb,jsonb,jsonb,jsonb,text,text)",
     },
     {
-      "body_sha256": "109684d7fcc13283c512ade819c9c4ec974ce1dca1574bda017d93e75eb00ef4",
-      "definer": true,
-      "signature": "apply_guest_spoken_item_mutation_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb)"
+      body_sha256: "109684d7fcc13283c512ade819c9c4ec974ce1dca1574bda017d93e75eb00ef4",
+      definer: true,
+      signature:
+        "apply_guest_spoken_item_mutation_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb)",
     },
     {
-      "body_sha256": "de485e33e63def62f63717242512beee3817296758413c2c29f35d9ee8d2e010",
-      "definer": false,
-      "signature": "can_guest_access_activity_song_v1(text,text)"
+      body_sha256: "de485e33e63def62f63717242512beee3817296758413c2c29f35d9ee8d2e010",
+      definer: false,
+      signature: "can_guest_access_activity_song_v1(text,text)",
     },
     {
-      "body_sha256": "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
-      "definer": true,
-      "signature": "claim_guest_audio_io_private_v1(jsonb)"
+      body_sha256: "5b1592af5b446a810d0dc176376a892d9497b4e5cd26cfbb5f66bf776bc9e0d7",
+      definer: true,
+      signature: "claim_guest_audio_io_private_v1(jsonb)",
     },
     {
-      "body_sha256": "6e67e622e18fdb4c293a3de38e247ec052b6371535b623d6caf5d0f18ebf0655",
-      "definer": true,
-      "signature": "cleanup_guest_authority_v1(text,text[],text[],text,text[],text[])"
+      body_sha256: "6e67e622e18fdb4c293a3de38e247ec052b6371535b623d6caf5d0f18ebf0655",
+      definer: true,
+      signature: "cleanup_guest_authority_v1(text,text[],text[],text,text[],text[])",
     },
     {
-      "body_sha256": "d0a0ec4871fcf31f48454cea51e5832cc6449bb8e762ef83cb8569698c3f90d0",
-      "definer": true,
-      "signature": "commit_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb,jsonb,jsonb,text,text,text,text,boolean)"
+      body_sha256: "d0a0ec4871fcf31f48454cea51e5832cc6449bb8e762ef83cb8569698c3f90d0",
+      definer: true,
+      signature:
+        "commit_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb,jsonb,jsonb,text,text,text,text,boolean)",
     },
     {
-      "body_sha256": "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
-      "definer": true,
-      "signature": "confirm_guest_owner_audio_delete_v1(jsonb,text,timestamptz)"
+      body_sha256: "fdd116ddd86224ca101cf7c34685ecb5c7550f101d25f35e69a7521a3b1ac749",
+      definer: true,
+      signature: "confirm_guest_owner_audio_delete_v1(jsonb,text,timestamptz)",
     },
     {
-      "body_sha256": "1a9b8c669a6af9b4d35cf0781fe080bbe2aa5ca85b0dd073c745770e9d45d956",
-      "definer": true,
-      "signature": "confirm_guest_pending_v1(text,text[],text,text)"
+      body_sha256: "1a9b8c669a6af9b4d35cf0781fe080bbe2aa5ca85b0dd073c745770e9d45d956",
+      definer: true,
+      signature: "confirm_guest_pending_v1(text,text[],text,text)",
     },
     {
-      "body_sha256": "533087f833b6d9cafc67d61f5757129fc179a8835b7d4c8d86dc520c6cb1b4dc",
-      "definer": true,
-      "signature": "confirm_learner_audio_delete_private_v1(text,bigint,text,timestamptz)"
+      body_sha256: "533087f833b6d9cafc67d61f5757129fc179a8835b7d4c8d86dc520c6cb1b4dc",
+      definer: true,
+      signature: "confirm_learner_audio_delete_private_v1(text,bigint,text,timestamptz)",
     },
     {
-      "body_sha256": "002a4ac07b97f7eac334c87580c4705b7f598e3a09d420363fd9435be5c0e1bc",
-      "definer": true,
-      "signature": "create_guest_attachment_intent_v1(text,text[],text,text,text[],text,text,text,text,text)"
+      body_sha256: "002a4ac07b97f7eac334c87580c4705b7f598e3a09d420363fd9435be5c0e1bc",
+      definer: true,
+      signature:
+        "create_guest_attachment_intent_v1(text,text[],text,text,text[],text,text,text,text,text)",
     },
     {
-      "body_sha256": "4c2f849aee2e65c09b2214293aa0048770f9762fd2030f9eea1ae16465210608",
-      "definer": true,
-      "signature": "discover_guest_authority_v1(text,text[],text,text,text)"
+      body_sha256: "4c2f849aee2e65c09b2214293aa0048770f9762fd2030f9eea1ae16465210608",
+      definer: true,
+      signature: "discover_guest_authority_v1(text,text[],text,text,text)",
     },
     {
-      "body_sha256": "31233dd66160073e18e6f8bfd0ab9e39b3cbeda8c6490127586f78e29a13af8d",
-      "definer": true,
-      "signature": "fail_guest_owner_audio_delete_v1(jsonb,text)"
+      body_sha256: "31233dd66160073e18e6f8bfd0ab9e39b3cbeda8c6490127586f78e29a13af8d",
+      definer: true,
+      signature: "fail_guest_owner_audio_delete_v1(jsonb,text)",
     },
     {
-      "body_sha256": "c740074aaf99c452208d5f1c1874208735693bfce29c9337523349172c127cdd",
-      "definer": true,
-      "signature": "fail_guest_spoken_answer_v1(text,jsonb,text,text,text,text,text)"
+      body_sha256: "c740074aaf99c452208d5f1c1874208735693bfce29c9337523349172c127cdd",
+      definer: true,
+      signature: "fail_guest_spoken_answer_v1(text,jsonb,text,text,text,text,text)",
     },
     {
-      "body_sha256": "33e73635d64ba2ecdf204fc4e1ccdd26689cc7d205c3fb04e11b1e4e9e695a35",
-      "definer": true,
-      "signature": "find_guest_owner_audio_delete_v1(jsonb,text,text)"
+      body_sha256: "33e73635d64ba2ecdf204fc4e1ccdd26689cc7d205c3fb04e11b1e4e9e695a35",
+      definer: true,
+      signature: "find_guest_owner_audio_delete_v1(jsonb,text,text)",
     },
     {
-      "body_sha256": "bba54a6908c1b8b58eddc893375d81f6ae20c42007e56d917dcfdd8a50256df2",
-      "definer": true,
-      "signature": "find_guest_study_start_operation_v1(jsonb,text,text,text,text)"
+      body_sha256: "bba54a6908c1b8b58eddc893375d81f6ae20c42007e56d917dcfdd8a50256df2",
+      definer: true,
+      signature: "find_guest_study_start_operation_v1(jsonb,text,text,text,text)",
     },
     {
-      "body_sha256": "63137a582947de81f519bb02fac60d8f1b7298e360306a802c14cb0cdd9804d7",
-      "definer": true,
-      "signature": "find_owner_guest_spoken_success_for_audio_v1(jsonb,text,text,text,text,integer,text,text,integer,integer)"
+      body_sha256: "63137a582947de81f519bb02fac60d8f1b7298e360306a802c14cb0cdd9804d7",
+      definer: true,
+      signature:
+        "find_owner_guest_spoken_success_for_audio_v1(jsonb,text,text,text,text,integer,text,text,integer,integer)",
     },
     {
-      "body_sha256": "95312e7a462e8cfc369691788f5c2855166d0ee6f40fc0ab24b5d51e31fb3f9e",
-      "definer": true,
-      "signature": "finish_guest_json_answer_v1(jsonb,text,jsonb,jsonb)"
+      body_sha256: "95312e7a462e8cfc369691788f5c2855166d0ee6f40fc0ab24b5d51e31fb3f9e",
+      definer: true,
+      signature: "finish_guest_json_answer_v1(jsonb,text,jsonb,jsonb)",
     },
     {
-      "body_sha256": "11260ee9eec14b51c92bbe27a7194f60a51c0b5e02e5742e1e1e2d2313d056f4",
-      "definer": true,
-      "signature": "finish_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb)"
+      body_sha256: "11260ee9eec14b51c92bbe27a7194f60a51c0b5e02e5742e1e1e2d2313d056f4",
+      definer: true,
+      signature: "finish_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb,jsonb)",
     },
     {
-      "body_sha256": "56a82ce65c0599be139d05a83f2872afa89e3f7c7de86176e5e9b5f8b2cd4cbd",
-      "definer": true,
-      "signature": "guest_authority_component_is_empty_v1(text)"
+      body_sha256: "56a82ce65c0599be139d05a83f2872afa89e3f7c7de86176e5e9b5f8b2cd4cbd",
+      definer: true,
+      signature: "guest_authority_component_is_empty_v1(text)",
     },
     {
-      "body_sha256": "e2a745cb37ae1e938afcd2553861734f8940bbe3cd5b0d75710e66fea7ccda68",
-      "definer": true,
-      "signature": "issue_guest_pending_v1(text,text[],text,text,text,text,text,text,text)"
+      body_sha256: "e2a745cb37ae1e938afcd2553861734f8940bbe3cd5b0d75710e66fea7ccda68",
+      definer: true,
+      signature: "issue_guest_pending_v1(text,text[],text,text,text,text,text,text,text)",
     },
     {
-      "body_sha256": "25e66ec91222e2803875a3eeebcb44ded357ffa078ff032b1af2c0df19c2a9e0",
-      "definer": true,
-      "signature": "issue_guest_rotation_v1(text,text[],text,text,text,text,text,text,text)"
+      body_sha256: "25e66ec91222e2803875a3eeebcb44ded357ffa078ff032b1af2c0df19c2a9e0",
+      definer: true,
+      signature: "issue_guest_rotation_v1(text,text[],text,text,text,text,text,text,text)",
     },
     {
-      "body_sha256": "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
-      "definer": true,
-      "signature": "list_guest_practice_participations_v1(jsonb,text,integer)"
+      body_sha256: "aa991ac0015a8e74c29d8fe6148d8b5cc31b3270929ddea5a2396c633fe0a933",
+      definer: true,
+      signature: "list_guest_practice_participations_v1(jsonb,text,integer)",
     },
     {
-      "body_sha256": "1bc6d7f9e2e02e99ae8fc8abccf39bd02916b2576ece527b20835984390b7d03",
-      "definer": true,
-      "signature": "list_guest_spoken_closed_recovery_v1(integer)"
+      body_sha256: "1bc6d7f9e2e02e99ae8fc8abccf39bd02916b2576ece527b20835984390b7d03",
+      definer: true,
+      signature: "list_guest_spoken_closed_recovery_v1(integer)",
     },
     {
-      "body_sha256": "b07b13baf9069dbf7130f4b3a59e15babedbec474fb391af9fe4203b7e4d8306",
-      "definer": true,
-      "signature": "persist_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb)"
+      body_sha256: "b07b13baf9069dbf7130f4b3a59e15babedbec474fb391af9fe4203b7e4d8306",
+      definer: true,
+      signature: "persist_owner_guest_spoken_success_v1(jsonb,jsonb,text,text,jsonb,jsonb)",
     },
     {
-      "body_sha256": "80afe1076ed7b7a0a9eeae2398e355e20daa2466cd4bffc2009b3591a23d4eac",
-      "definer": true,
-      "signature": "prepare_guest_json_answer_v1(jsonb,jsonb,text,text,text,integer,jsonb)"
+      body_sha256: "80afe1076ed7b7a0a9eeae2398e355e20daa2466cd4bffc2009b3591a23d4eac",
+      definer: true,
+      signature: "prepare_guest_json_answer_v1(jsonb,jsonb,text,text,text,integer,jsonb)",
     },
     {
-      "body_sha256": "9d6e5404d4dca7ef7c65a7194554260dd6567c9082382047d8c0f58e211f7efb",
-      "definer": true,
-      "signature": "prepare_guest_owner_audio_delete_v1(jsonb,jsonb,integer)"
+      body_sha256: "9d6e5404d4dca7ef7c65a7194554260dd6567c9082382047d8c0f58e211f7efb",
+      definer: true,
+      signature: "prepare_guest_owner_audio_delete_v1(jsonb,jsonb,integer)",
     },
     {
-      "body_sha256": "e73df0db4dea15d1db8616c19c88bb2db0fa09a7f32c50962b8b7cc390610774",
-      "definer": true,
-      "signature": "prepare_guest_spoken_finalization_v1(text,jsonb,text)"
+      body_sha256: "e73df0db4dea15d1db8616c19c88bb2db0fa09a7f32c50962b8b7cc390610774",
+      definer: true,
+      signature: "prepare_guest_spoken_finalization_v1(text,jsonb,text)",
     },
     {
-      "body_sha256": "840926dc59eebd28760bb718f41b8553e2b0cab39b28c7b5516073f1a60a23ba",
-      "definer": true,
-      "signature": "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)"
+      body_sha256: "840926dc59eebd28760bb718f41b8553e2b0cab39b28c7b5516073f1a60a23ba",
+      definer: true,
+      signature: "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)",
     },
     {
-      "body_sha256": "187b9ada99a71b4368dc34346b42d15c4b230bba0082b851763768c56b6bcdf5",
-      "definer": true,
-      "signature": "read_guest_browser_proof_snapshot_v1(text,jsonb,jsonb,boolean)"
+      body_sha256: "187b9ada99a71b4368dc34346b42d15c4b230bba0082b851763768c56b6bcdf5",
+      definer: true,
+      signature: "read_guest_browser_proof_snapshot_v1(text,jsonb,jsonb,boolean)",
     },
     {
-      "body_sha256": "5125f1100a42c497c9c1921129207972985552decba4ae136bc8a17b5acc6134",
-      "definer": true,
-      "signature": "read_guest_learning_lease_observation_v1(text,text,text)"
+      body_sha256: "5125f1100a42c497c9c1921129207972985552decba4ae136bc8a17b5acc6134",
+      definer: true,
+      signature: "read_guest_learning_lease_observation_v1(text,text,text)",
     },
     {
-      "body_sha256": "c2e6cae518f12d7b77b0b8e2e34a8ad273f6036e859d370ccc03a874548d2aed",
-      "definer": true,
-      "signature": "read_guest_spoken_closed_recovery_v1(text)"
+      body_sha256: "c2e6cae518f12d7b77b0b8e2e34a8ad273f6036e859d370ccc03a874548d2aed",
+      definer: true,
+      signature: "read_guest_spoken_closed_recovery_v1(text)",
     },
     {
-      "body_sha256": "3b3b67e5678388070728c36f437f93bffa8d092ccc3e95f3e105deb2600a2e11",
-      "definer": true,
-      "signature": "read_guest_spoken_context_v1(jsonb,text,text,text,text)"
+      body_sha256: "3b3b67e5678388070728c36f437f93bffa8d092ccc3e95f3e105deb2600a2e11",
+      definer: true,
+      signature: "read_guest_spoken_context_v1(jsonb,text,text,text,text)",
     },
     {
-      "body_sha256": "a0156f3ea49844531172242f664613fc470db2451a5a25b169fbfe7ae4bdd0b6",
-      "definer": true,
-      "signature": "read_owner_guest_answer_operation_v1(jsonb,text,jsonb,text,text,text,integer)"
+      body_sha256: "a0156f3ea49844531172242f664613fc470db2451a5a25b169fbfe7ae4bdd0b6",
+      definer: true,
+      signature: "read_owner_guest_answer_operation_v1(jsonb,text,jsonb,text,text,text,integer)",
     },
     {
-      "body_sha256": "12673712ad920fb51898935f07d68f9384b16d8740bffacd15d4861b1192585b",
-      "definer": true,
-      "signature": "read_owner_guest_answer_source_v1(jsonb,text,text,text)"
+      body_sha256: "12673712ad920fb51898935f07d68f9384b16d8740bffacd15d4861b1192585b",
+      definer: true,
+      signature: "read_owner_guest_answer_source_v1(jsonb,text,text,text)",
     },
     {
-      "body_sha256": "97b491e42e9216d3da7868e04b4b55d69ddf6aeedc8c56afe0312bf9adc71ecc",
-      "definer": true,
-      "signature": "read_owner_guest_spoken_capture_v1(jsonb,jsonb,text,text)"
+      body_sha256: "97b491e42e9216d3da7868e04b4b55d69ddf6aeedc8c56afe0312bf9adc71ecc",
+      definer: true,
+      signature: "read_owner_guest_spoken_capture_v1(jsonb,jsonb,text,text)",
     },
     {
-      "body_sha256": "15dae995ac18b22c3dd4e88b70a198a42271be774157e167563ff9712ffaed61",
-      "definer": true,
-      "signature": "read_owner_guest_spoken_dispatch_context_v1(jsonb,text,text,text,text)"
+      body_sha256: "15dae995ac18b22c3dd4e88b70a198a42271be774157e167563ff9712ffaed61",
+      definer: true,
+      signature: "read_owner_guest_spoken_dispatch_context_v1(jsonb,text,text,text,text)",
     },
     {
-      "body_sha256": "e033fed36612f9d9049b72319dd3e054fc34564673f554ace76eeb743d6a522e",
-      "definer": true,
-      "signature": "read_owner_guest_spoken_success_v1(jsonb,jsonb,text,text)"
+      body_sha256: "e033fed36612f9d9049b72319dd3e054fc34564673f554ace76eeb743d6a522e",
+      definer: true,
+      signature: "read_owner_guest_spoken_success_v1(jsonb,jsonb,text,text)",
     },
     {
-      "body_sha256": "3da4cb4e2490a595318355c52e3362e431196f62fb684842fba78b2337a44279",
-      "definer": true,
-      "signature": "read_owner_study_session_snapshot_v1(jsonb,text,text)"
+      body_sha256: "3da4cb4e2490a595318355c52e3362e431196f62fb684842fba78b2337a44279",
+      definer: true,
+      signature: "read_owner_study_session_snapshot_v1(jsonb,text,text)",
     },
     {
-      "body_sha256": "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
-      "definer": true,
-      "signature": "register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)"
+      body_sha256: "1af9bd6c3181709c1196e4b08130437870fd7d088ee869fe537e5e6eb435ca6a",
+      definer: true,
+      signature:
+        "register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)",
     },
     {
-      "body_sha256": "a8c1aa78a9db90fc9434031102d4de1234b884e8e9f26bc636abe4a0ebae14af",
-      "definer": true,
-      "signature": "release_next_guest_study_resource_remainder_v1()"
+      body_sha256: "a8c1aa78a9db90fc9434031102d4de1234b884e8e9f26bc636abe4a0ebae14af",
+      definer: true,
+      signature: "release_next_guest_study_resource_remainder_v1()",
     },
     {
-      "body_sha256": "d13773e55f04cad7cf5c543d7b28afc34ae09a22f9a208ebd8bf5d16334c02c7",
-      "definer": true,
-      "signature": "renew_guest_authority_v1(text,text[],text,text)"
+      body_sha256: "d13773e55f04cad7cf5c543d7b28afc34ae09a22f9a208ebd8bf5d16334c02c7",
+      definer: true,
+      signature: "renew_guest_authority_v1(text,text[],text,text)",
     },
     {
-      "body_sha256": "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
-      "definer": true,
-      "signature": "require_guest_practice_only_schema_phase_v1()"
+      body_sha256: "1bfd28cefdfe08ea55e99c50720a61ba7791f481222f5459dc979e80be519210",
+      definer: true,
+      signature: "require_guest_practice_only_schema_phase_v1()",
     },
     {
-      "body_sha256": "91eeed0da1e80279afed4a7d9acf8ee9a96036557ee4486ba05279942704d799",
-      "definer": true,
-      "signature": "require_guest_study_composition_v1()"
+      body_sha256: "91eeed0da1e80279afed4a7d9acf8ee9a96036557ee4486ba05279942704d799",
+      definer: true,
+      signature: "require_guest_study_composition_v1()",
     },
     {
-      "body_sha256": "c4b6ca744952242878fac25a89138ed60335f863a60a24792855ab3a79e82616",
-      "definer": true,
-      "signature": "reserve_guest_prepared_study_start_v1(jsonb,jsonb,text,text,text,text,text,text,jsonb,text)"
+      body_sha256: "c4b6ca744952242878fac25a89138ed60335f863a60a24792855ab3a79e82616",
+      definer: true,
+      signature:
+        "reserve_guest_prepared_study_start_v1(jsonb,jsonb,text,text,text,text,text,text,jsonb,text)",
     },
     {
-      "body_sha256": "ba6c0d727f4c4884cd8e06e7c54cbc98888039fee1d1ac47f3f644631b32e2bf",
-      "definer": true,
-      "signature": "reserve_guest_spoken_answer_v1(jsonb,jsonb,text,jsonb,text,bigint,jsonb,text,boolean,text,text,text)"
+      body_sha256: "ba6c0d727f4c4884cd8e06e7c54cbc98888039fee1d1ac47f3f644631b32e2bf",
+      definer: true,
+      signature:
+        "reserve_guest_spoken_answer_v1(jsonb,jsonb,text,jsonb,text,bigint,jsonb,text,boolean,text,text,text)",
     },
     {
-      "body_sha256": "fd5dd4aa6a8e71dc94813d651d37f6c7dbcd6d673766344bf0d0c2e8329a8dc0",
-      "definer": true,
-      "signature": "resolve_guest_audio_io_capture_private_v1(jsonb,jsonb,text,text,bigint,text)"
+      body_sha256: "fd5dd4aa6a8e71dc94813d651d37f6c7dbcd6d673766344bf0d0c2e8329a8dc0",
+      definer: true,
+      signature: "resolve_guest_audio_io_capture_private_v1(jsonb,jsonb,text,text,bigint,text)",
     },
     {
-      "body_sha256": "bddbb0dfd905c90919f9f27af09cd9c68bfb3d30828ce601e810bd1761cf25b5",
-      "definer": true,
-      "signature": "set_guest_learning_retention_v1(jsonb,jsonb,text)"
+      body_sha256: "bddbb0dfd905c90919f9f27af09cd9c68bfb3d30828ce601e810bd1761cf25b5",
+      definer: true,
+      signature: "set_guest_learning_retention_v1(jsonb,jsonb,text)",
     },
     {
-      "body_sha256": "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
-      "definer": true,
-      "signature": "settle_guest_audio_io_private_v1(jsonb,text,boolean)"
+      body_sha256: "2eb0253a41f0f267ce739973efb7af731473bbc0c14747361951b43f7b206460",
+      definer: true,
+      signature: "settle_guest_audio_io_private_v1(jsonb,text,boolean)",
     },
     {
-      "body_sha256": "0a606fa9647326016bf4f0c3836799882394bde039650cbb90bcf406c0b26de2",
-      "definer": true,
-      "signature": "transition_guest_json_answer_v1(jsonb,text,jsonb,jsonb,jsonb)"
+      body_sha256: "0a606fa9647326016bf4f0c3836799882394bde039650cbb90bcf406c0b26de2",
+      definer: true,
+      signature: "transition_guest_json_answer_v1(jsonb,text,jsonb,jsonb,jsonb)",
     },
     {
-      "body_sha256": "6791e13c19099b09af00055d6e840a1942f566a91d5bc5d1e4da53688fd21966",
-      "definer": true,
-      "signature": "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)"
-    }
+      body_sha256: "6791e13c19099b09af00055d6e840a1942f566a91d5bc5d1e4da53688fd21966",
+      definer: true,
+      signature: "transition_guest_spoken_answer_v1(text,jsonb,text,jsonb,jsonb,jsonb)",
+    },
   ],
-  "restricted_catalogue_probes": [
-    "pg_ls_dir",
-    "pg_read_binary_file",
-    "pg_read_file",
-    "pg_stat_file"
-  ],
-  "source_head": "ef66927be5f078e0d68e9cc450a57cffc979ea8a",
-  "source_manifest_sha256": "3a60ea6ef144e5c7c61fa9bd96b6eba412789fa6b7e8dcbffbb9f8bb66f14fb6"
+  restricted_catalogue_probes: ["pg_ls_dir", "pg_read_binary_file", "pg_read_file", "pg_stat_file"],
+  source_head: "ef66927be5f078e0d68e9cc450a57cffc979ea8a",
+  source_manifest_sha256: "3a60ea6ef144e5c7c61fa9bd96b6eba412789fa6b7e8dcbffbb9f8bb66f14fb6",
 } as const;

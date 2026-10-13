@@ -10,12 +10,21 @@ const workspaceAliases: [string, string][] = [];
 for (const name of ["application", "platform-cf", "contracts", "domain"]) {
   const directory = new URL(`../../packages/${name}/`, import.meta.url);
   const manifest: unknown = JSON.parse(readFileSync(new URL("package.json", directory), "utf8"));
-  if (typeof manifest !== "object" || manifest === null || !("exports" in manifest) ||
-      typeof manifest.exports !== "object" || manifest.exports === null)
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("exports" in manifest) ||
+    typeof manifest.exports !== "object" ||
+    manifest.exports === null
+  )
     throw new Error(`Invalid workspace exports: ${name}`);
   for (const [subpath, target] of Object.entries(manifest.exports)) {
-    if ((subpath !== "." && !subpath.startsWith("./")) || subpath.includes("*") ||
-        typeof target !== "string" || !target.startsWith("./"))
+    if (
+      (subpath !== "." && !subpath.startsWith("./")) ||
+      subpath.includes("*") ||
+      typeof target !== "string" ||
+      !target.startsWith("./")
+    )
       throw new Error(`Unsupported workspace export: ${name}/${subpath}`);
     workspaceAliases.push([
       `@pirate/${name}${subpath === "." ? "" : subpath.slice(1)}`,
@@ -29,10 +38,11 @@ for (const subpath of [
   "media-processing-cloudflare",
   "media-processing-store",
   "namespace-ownership/hns-owner-service-binding",
-]) workspaceAliases.push([
-  `@pirate/platform-cf/${subpath}`,
-  new URL(`../../packages/platform-cf/src/${subpath}.ts`, import.meta.url).pathname,
-]);
+])
+  workspaceAliases.push([
+    `@pirate/platform-cf/${subpath}`,
+    new URL(`../../packages/platform-cf/src/${subpath}.ts`, import.meta.url).pathname,
+  ]);
 const alias = Object.fromEntries(workspaceAliases.sort(([a], [b]) => b.length - a.length));
 
 export default defineConfig({

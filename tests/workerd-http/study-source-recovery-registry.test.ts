@@ -1,12 +1,13 @@
-import { expect, test } from "vitest";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect, Layer } from "effect";
-import { runStudySourceRecoveryCycle } from "../../apps/jobs-worker/src/study-source-recovery-cycle.ts";
-import { makeGuestStudyRecoveryComposition } from "../../apps/jobs-worker/src/study-source-recovery-composition.ts";
-import { makeStudySpokenAnswerRecoveryJob } from "../../apps/jobs-worker/src/study-spoken-answer-recovery.ts";
+import { expect, test } from "vitest";
 import { makeGuestStudyResourceExpiryJob } from "../../apps/jobs-worker/src/guest-study-resource-expiry-job.ts";
-import { buildJobRegistry } from "../../apps/jobs-worker/src/registry.ts";
 import { makeJobsWorkerDeclarations } from "../../apps/jobs-worker/src/index.ts";
+import { buildJobRegistry } from "../../apps/jobs-worker/src/registry.ts";
+import { makeGuestStudyRecoveryComposition } from "../../apps/jobs-worker/src/study-source-recovery-composition.ts";
+import { runStudySourceRecoveryCycle } from "../../apps/jobs-worker/src/study-source-recovery-cycle.ts";
+import { makeStudySpokenAnswerRecoveryJob } from "../../apps/jobs-worker/src/study-spoken-answer-recovery.ts";
+
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 const account = { claimed: 1, recovered: 1, storageFailures: 0, fenced: 0 };
 const inertGuestRuntime = Layer.effect(ControlPlaneDb)(
