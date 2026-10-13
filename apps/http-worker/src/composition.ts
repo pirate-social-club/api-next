@@ -1820,6 +1820,7 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const guestStudy = await makeGuestStudyServingComposition({
+    ...(bindings.LEARNER_AUDIO === undefined ? {} : { workerLearnerAudioBinding: bindings.LEARNER_AUDIO }),
     environment: config.API_NEXT_ENV,
     ...(bindings.GUEST_STUDY_SERVING_ENABLED === undefined ? {} : { enabledBinding: bindings.GUEST_STUDY_SERVING_ENABLED }),
     ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined ? {} : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),

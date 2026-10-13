@@ -1,11 +1,8 @@
+import { makeGuestStudyManagedReadiness } from "@pirate/platform-cf/guest-study-managed-readiness";
 // Serving-capable source only. Absent managed admission is disabled; production is refused.
 import {
-  type Clock,
-  type ControlPlaneDb,
-  type ControlPlaneError,
-  type IdGen,
-  makeOwnerGuestStudyService,
-  makeOwnerSpokenSuccessProtocol,
+  type Clock, type ControlPlaneDb, type ControlPlaneError, type IdGen,
+  makeOwnerGuestStudyService, makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application";
 import { guestParticipationRegistry } from "@pirate/contracts";
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
@@ -26,9 +23,7 @@ import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-s
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import type { Layer } from "effect";
 import {
-  guestAccountingNames,
-  guestLearningNames,
-  makeGuestAuthorityComposition,
+  guestAccountingNames, guestLearningNames, makeGuestAuthorityComposition,
 } from "./guest-authority-controller-composition.ts";
 import type { GuestAuthorityControllerName } from "./guest-authority-controllers.ts";
 import type { GuestLearningControllerName } from "./guest-learning-controllers.ts";
@@ -37,14 +32,9 @@ import { readGuestStudyRuntimeConfiguration } from "./guest-study-runtime-config
 
 export type GuestStudyServingName = GuestAuthorityControllerName | GuestLearningControllerName;
 const authorityNames: readonly string[] = [
-  "GetGuestAuthorityV1",
-  "IssueGuestBootstrapV1",
-  "ConfirmGuestBootstrapV1",
-  "RenewGuestAuthorityV1",
-  "RotateGuestCredentialV1",
-  "AcknowledgeGuestCredentialV1",
-  "CleanupGuestBrowserProofV1",
-  "CreateGuestAttachmentIntentV1",
+  "GetGuestAuthorityV1", "IssueGuestBootstrapV1", "ConfirmGuestBootstrapV1",
+  "RenewGuestAuthorityV1", "RotateGuestCredentialV1", "AcknowledgeGuestCredentialV1",
+  "CleanupGuestBrowserProofV1", "CreateGuestAttachmentIntentV1",
 ];
 export function isGuestStudyServingName(name: string): name is GuestStudyServingName {
   return (guestLearningNames as readonly string[]).includes(name);
@@ -72,12 +62,14 @@ export interface GuestStudyManagedRuntime {
   readonly retryAfterSeconds: number;
   readonly ordinaryProductOrigin: string;
   readonly rerecordEnabled: boolean;
-  /** Fail closed unless three DISTINCT real LOGIN roles satisfy the reviewed
+  /** Actual observer checks three DISTINCT real LOGIN roles satisfy the reviewed
    * exact catalogue-column / controlled-leaf / closed-cron ACL contracts and
    * current positive native phase + schema ledger + original storage producer closure.
-   * Must not install grants, apply migrations, probe provider billing, or mutate files.
+   * Native readonly adapter additionally derives the separate observer LOGIN.
+   * No grants, migrations, provider calls or files are mutated by inspection.
    */
-  readonly verifyReadiness: () => Promise<void>;
+  readonly observer: Runtime;
+  readonly schema: string;
 }
 export interface GuestStudyServingInputs {
   readonly environment: string;
@@ -87,14 +79,12 @@ export interface GuestStudyServingInputs {
   readonly accountVerifier: SessionTokenVerifier;
   readonly ordinarySessionScope: string;
   readonly hnsProtectedIngressOrigin?: string;
+  readonly workerLearnerAudioBinding?: object;
 }
 export async function makeGuestStudyServingComposition(input: GuestStudyServingInputs) {
   // No constructor, DB lookup, body allocation, provider or storage I/O on the inert path.
   if (input.enabledBinding === undefined || input.enabledBinding === "false") return null;
-  if (
-    input.enabledBinding !== "true" ||
-    !["staging", "development", "test"].includes(input.environment)
-  )
+  if (input.enabledBinding !== "true" || !["staging", "development", "test"].includes(input.environment))
     throw new Error("Guest Study serving requires explicit nonproduction admission");
   if (input.managed === undefined) throw new Error("Managed Guest Study bindings unavailable");
   // Source acceptance and route activation are separate. Never override a frozen
@@ -106,88 +96,84 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
     if (guestParticipationRegistry[name].implementation !== "disabled")
       throw new Error("Guest accounting declarations must remain disabled");
   const m = input.managed;
-  await m.verifyReadiness();
+  const readiness = makeGuestStudyManagedReadiness({
+    learning: m.learning, publicRead: m.publicRead, cron: m.cron,
+    observer: m.observer, schema: m.schema,
+    workerLearnerAudioBinding: input.workerLearnerAudioBinding,
+    selectedLearnerAudioBinding: m.bucket,
+  });
+  await readiness.verify();
   const config = readGuestStudyRuntimeConfiguration(input.configurationBinding);
   const policy = config?.policy ?? null;
   const disclosure = config?.disclosure ?? null;
   const starter = makeControlPlaneOwnerStudyStarter(m.learning, disclosure, policy);
   const mutations = makeControlPlaneOwnerStudyMutations(m.learning, {
-    rawPolicy: policy,
-    disclosureVersion: disclosure?.version ?? null,
-    rerecordEnabled: m.rerecordEnabled,
-    providerRetention: "stored",
+    rawPolicy: policy, disclosureVersion: disclosure?.version ?? null,
+    rerecordEnabled: m.rerecordEnabled, providerRetention: "stored",
   });
   const prepared = makeControlPlanePreparedGuestStudyContentStore(m.publicRead, disclosure);
   const store = composeOwnerAwareStudyV2Store({
-    starter,
-    mutations,
-    prepared,
+    starter, mutations, prepared,
     ordinary: makeControlPlaneStudyV2Store(m.learning),
     originalAccountSources: makeOriginalAccountStudySourceControl(m.learning),
     verifiedOrdinaryAccount: null,
   });
   const success = makeOwnerSpokenSuccessProtocol(
-    makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(m.learning),
-    store,
+    makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(m.learning), store,
     makeOwnerSpokenFencedArchiveStage(m.learning, m.bucket, m.retainTask),
   );
   const study = makeOwnerGuestStudyService({
-    store,
-    prepared,
-    atomicStarter: starter,
+    store, prepared, atomicStarter: starter,
     dispatchContext: makeOwnerGuestSpokenDispatchContextStore(m.learning),
     resourcePolicy: policy,
     recovery: makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(m.learning).browser,
     visibility: makeOwnerGuestStudyPublicVisibilityStore(m.publicRead),
-    success,
-    rerecordEnabled: m.rerecordEnabled,
+    success, rerecordEnabled: m.rerecordEnabled,
     transcriber: makeOwnerElevenLabsStudyInvokingTranscriber(m.transcriber),
   });
   const authority = makeGuestAuthorityComposition({
-    controlPlane: m.learning,
-    accountVerifier: input.accountVerifier,
+    controlPlane: m.learning, accountVerifier: input.accountVerifier,
     ordinarySessionScope: input.ordinarySessionScope,
     ordinaryProductOrigin: m.ordinaryProductOrigin,
-    ...(input.hnsProtectedIngressOrigin === undefined
-      ? {}
-      : { hnsProtectedIngressOrigin: input.hnsProtectedIngressOrigin }),
-    nowMilliseconds: m.nowMilliseconds,
-    retryAfterSeconds: m.retryAfterSeconds,
-    currentResourcePolicy: policy,
-    disclosure,
+    ...(input.hnsProtectedIngressOrigin === undefined ? {} : { hnsProtectedIngressOrigin: input.hnsProtectedIngressOrigin }),
+    nowMilliseconds: m.nowMilliseconds, retryAfterSeconds: m.retryAfterSeconds,
+    currentResourcePolicy: policy, disclosure,
     // Canonical learning controller uses verified context.origin + actual decoded
     // CF edge metadata. The old pending callback supplies no privilege.
     trustedEdgeForRequest: async () => null,
   });
   const recovery = makeGuestRecoveryAudioDeletionStores(m.learning);
-  const learning = makeGuestLearningComposition({
-    authority,
-    services: {
-      study,
-      participations: makeControlPlaneGuestPracticeParticipationReadStore(m.learning),
-      retention: recovery.retention,
-      deletion: recovery.deletion,
-      deletionIo: makeOwnerLearnerAudioDeletionIo(recovery.deletion, m.bucket),
-      clock: m.clock,
-      ids: m.ids,
-      retryAfterSeconds: m.retryAfterSeconds,
+  // No positive/negative cache. Each ordinary handler admits once before
+  // native proof/decoder work; HNS also admits before its body MAC, then freshly
+  // at route dispatch. Accepted asynchronous producer callbacks retain their
+  // original source authority and are not interrupted by a later ingress check.
+  const checkedAuthentication = Object.freeze({
+    ...authority.requestAuthentication,
+    async authenticate(args: Parameters<typeof authority.requestAuthentication.authenticate>[0]) {
+      await readiness.verify();
+      return authority.requestAuthentication.authenticate(args);
+    },
+    async precheckHnsBeforeBody(args: Parameters<typeof authority.requestAuthentication.precheckHnsBeforeBody>[0]) {
+      await readiness.verify();
+      return authority.requestAuthentication.precheckHnsBeforeBody(args);
     },
   });
+  const learning = makeGuestLearningComposition({ authority, services: {
+    study, participations: makeControlPlaneGuestPracticeParticipationReadStore(m.learning),
+    retention: recovery.retention, deletion: recovery.deletion,
+    deletionIo: makeOwnerLearnerAudioDeletionIo(recovery.deletion, m.bucket),
+    clock: m.clock, ids: m.ids, retryAfterSeconds: m.retryAfterSeconds,
+  } });
   return Object.freeze({
-    requestAuthentication: authority.requestAuthentication,
+    requestAuthentication: checkedAuthentication,
     // Cron remains a distinct role/graph owned by cron composition. No browser
     // handler receives its runtime or controlled closed-checkpoint leaves.
-    async handle(
-      input: Omit<Parameters<typeof authority.handleAuthorityOperation>[0], "name"> & {
-        readonly name: GuestStudyServingName;
-      },
-    ) {
+    async handle(input: Omit<Parameters<typeof authority.handleAuthorityOperation>[0], "name"> & { readonly name: GuestStudyServingName }) {
+      await readiness.verify();
       return isAuthorityName(input.name)
         ? authority.handleAuthorityOperation({ ...input, name: input.name })
         : learning.handleLearningOperation({ ...input, name: input.name });
     },
   });
 }
-export type GuestStudyServingComposition = NonNullable<
-  Awaited<ReturnType<typeof makeGuestStudyServingComposition>>
->;
+export type GuestStudyServingComposition = NonNullable<Awaited<ReturnType<typeof makeGuestStudyServingComposition>>>;
