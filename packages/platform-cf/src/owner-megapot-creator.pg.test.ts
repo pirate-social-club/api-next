@@ -2,7 +2,7 @@
  * live RPC/provider/storage, injected native readiness or widened app budgets. */
 import { expect, mock, test } from "bun:test";
 import { AddMegapotPoolLeg } from "@pirate/contracts";
-import { Schema } from "effect";
+import { type Effect, Schema } from "effect";
 import { makeHttpWorkerTestBindings } from "../../../apps/http-worker/src/composition.test-fixtures.ts";
 import { bounded } from "./account-study-producer.pg-fixture.ts";
 import { encodeMegapotJackpotTicketNft, encodeMegapotJackpotUsdc } from "./megapot-v2.ts";
@@ -253,7 +253,7 @@ pgTest(
           | Promise<
               | {
                   ok: true;
-                  value: Awaited<ReturnType<typeof prepared.service.addMegapotPoolLeg>>;
+                  value: Effect.Success<ReturnType<typeof prepared.service.addMegapotPoolLeg>>;
                 }
               | { ok: false; error: unknown }
             >
@@ -267,7 +267,8 @@ pgTest(
           // Existing EXCLUSIVE identity/topology namespace, not a custom test lock.
           await mutation.query("SELECT pg_advisory_xact_lock(83000003,1)");
           const before = await actorFacts(f, prepared.offerId);
-          operation = observed(withClock(prepared.service.addMegapotPoolLeg(prepared.legInput)));
+          const running = observed(withClock(prepared.service.addMegapotPoolLeg(prepared.legInput)));
+          operation = running;
           await waitForRoleLock(f, f.ordinaryRole);
           // Owned lifecycle fault, not a fabricated positive financial/source row.
           if (transition === "alias")
@@ -278,7 +279,7 @@ pgTest(
           else await mutation.query("UPDATE users SET status='deleted' WHERE user_id=$1", [actor]);
           await mutation.query("COMMIT");
           active = false;
-          const outcome = await bounded(operation, "original actor waiter settlement", 5000);
+          const outcome = await bounded(running, "original actor waiter settlement", 5000);
           expect(outcome.ok).toBe(false);
           if (outcome.ok) throw new Error("Stale actor NEW creator unexpectedly succeeded");
           expect(outcome.error).toMatchObject({

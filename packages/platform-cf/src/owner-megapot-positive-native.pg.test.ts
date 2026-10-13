@@ -1256,7 +1256,7 @@ suite("actual original Guest owning COMMIT and source recovery", () => {
         expect(await run(store.freeze(pool.original, ceilings))).toEqual(frozen);
         await expect(
           run(
-            makeControlPlaneMegapotPurchaseStore(f.adminRuntime).loadCandidate({
+            makeControlPlaneMegapotPurchaseStore(f.adminRuntime, { purchaseSafetyMarginSeconds: 300 }).loadCandidate({
               poolLegId: pool.original.poolLegId,
               drawingId: BigInt(pool.original.drawingId),
             }),

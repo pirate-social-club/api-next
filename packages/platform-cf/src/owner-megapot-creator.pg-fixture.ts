@@ -197,7 +197,7 @@ export async function creatorFixture(
         },
       ]);
       const role = `creator_login_${crypto.randomUUID().replaceAll("-", "")}`,
-        password = randomBytes(32).toString("hex");
+        password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join("");
       const url = new URL(f.guestUrl);
       url.username = role;
       url.password = password;
@@ -486,16 +486,14 @@ export async function prepareCreatorSource(f: CreatorFixture, suffix: string) {
   );
   expect(prepared.persona_status).toBe("pending_wallet");
   const personaId = prepared.persona_id;
-  expect(
-    (
-      await run(
-        makeControlPlanePersonaWalletStore(f.adminRuntime).getEvmPreparation({
-          accountId: actor,
-          personaId,
-        }),
-      )
-    ).status,
-  ).toBe("pending");
+  const walletPreparation = await run(
+    makeControlPlanePersonaWalletStore(f.adminRuntime).getEvmPreparation({
+      accountId: actor,
+      personaId,
+    }),
+  );
+  if (walletPreparation === null) throw new Error("Genuine prepared persona wallet required");
+  expect(walletPreparation.status).toBe("pending");
   const wallet = await confirmWallet(f.adminRuntime)(actor, personaId);
   const now = new Date();
   await run(
