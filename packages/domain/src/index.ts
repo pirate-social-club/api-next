@@ -100,6 +100,7 @@ export * from "./money/reconciliation-backoff.ts";
 export * from "./money/state-machine.ts";
 export * from "./rewards/activity-qualification.ts";
 export * from "./rewards/capacity-freshness.ts";
+export * from "./rewards/megapot-owner-snapshot.ts";
 export * from "./rewards/megapot-pool.ts";
 export * from "./rewards/payout-fairness.ts";
 export * from "./rewards/reward-claim-intent-binding.ts";
