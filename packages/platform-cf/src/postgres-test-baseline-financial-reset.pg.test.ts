@@ -139,7 +139,7 @@ suite("owned empty financial baseline reset", () => {
       for (const table of privateRelations) {
         await expect(reader.query(`SELECT * FROM ${quote(table)}`)).rejects.toMatchObject({ code: "42501" });
         await expect(reader.query(`TRUNCATE ${quote(table)}`)).rejects.toMatchObject({ code: "42501" });
-        await expect(admin.query(`TRUNCATE ${quote(table)}`)).rejects.toMatchObject({ code: "GP003" });
+        await expect(admin.query(`TRUNCATE ${quote(table)} CASCADE`)).rejects.toMatchObject({ code: "GP003" });
       }
       for (const signature of privateFunctions) {
         expect((await reader.query<{ allowed: boolean }>("SELECT has_function_privilege(current_user,to_regprocedure($1),'EXECUTE') AS allowed", [signature])).rows).toEqual([{ allowed: false }]);
@@ -152,7 +152,7 @@ suite("owned empty financial baseline reset", () => {
       await admin.query("SELECT require_guest_practice_only_schema_phase_v1(); SELECT require_disabled_owner_financial_inventory_private_v1()");
       for (const table of privateRelations) {
         await expect(reader.query(`SELECT * FROM ${quote(table)}`)).rejects.toMatchObject({ code: "42501" });
-        await expect(admin.query(`TRUNCATE ${quote(table)}`)).rejects.toMatchObject({ code: "GP003" });
+        await expect(admin.query(`TRUNCATE ${quote(table)} CASCADE`)).rejects.toMatchObject({ code: "GP003" });
       }
     });
   }, 180000);
