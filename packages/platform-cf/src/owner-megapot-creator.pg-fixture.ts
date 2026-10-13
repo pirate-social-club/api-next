@@ -33,7 +33,7 @@ import {
 
 export const actor = "study-account";
 export const endpoint = "/reward-offers/:offerId/megapot-pool-legs";
-export const creatorSignature =
+const creatorSignature =
 	"authorize_owner_megapot_leg_creation_v1(text,text,text,text)";
 export const bytecode = {
 	jackpot: "0x6001",

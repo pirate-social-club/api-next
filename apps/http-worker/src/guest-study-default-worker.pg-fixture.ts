@@ -48,7 +48,7 @@ import {
 import type { OwnerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/guest-study-readiness-profile.ts";
 import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
 type ManagedServingName = GuestStudyServingName | OwnerRewardGuestStudyServingName;
-export const financialImplementedSource =
+const financialImplementedSource =
   guestLearningNames.every(
     (name) => guestParticipationRegistry[name].implementation !== "disabled",
   ) &&

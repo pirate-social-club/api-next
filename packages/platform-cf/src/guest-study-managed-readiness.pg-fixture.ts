@@ -543,23 +543,3 @@ export async function readinessFixture(
   );
 }
 
-export type FinancialReadinessFixture = Omit<ReadinessFixture, "principals"> & {
-  readonly principals: Readonly<Record<Profile | "ordinaryAccount", Principal>>;
-};
-export async function financialReadinessFixture(
-  use: (f: FinancialReadinessFixture) => Promise<void>,
-  source: OwnerFinancialGuestStudyReadinessSource,
-  options: Readonly<{ schema?: "api_next" }> = {},
-): Promise<void> {
-  if (source !== ownerFinancialGuestStudyReadinessSource)
-    throw new Error("Actual adopted compiled financial source required, not a fixture candidate");
-  await readinessFixture(
-    async (f) => {
-      const ordinaryAccount = f.principals.ordinaryAccount;
-      if (ordinaryAccount === undefined)
-        throw new Error("Fifth real ordinary Account principal missing");
-      await use({ ...f, principals: { ...f.principals, ordinaryAccount } });
-    },
-    { ...options, financialSource: source },
-  );
-}
