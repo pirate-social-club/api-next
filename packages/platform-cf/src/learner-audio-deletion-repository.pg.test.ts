@@ -178,7 +178,7 @@ suite("learner audio deletion repository", () => {
       if (originalWriter === undefined) throw new Error("Original historical writer was not owned");
       await closeOwnedHistoricalApiNextWriter(admin, originalWriter);
       const deleted = await run("account-1", "2026-08-29T09:01:00.000Z");
-      expect(deleted).toMatchObject({ deleted_count: 2, remaining_count: 0 });
+      expect(deleted).toMatchObject({ deleted_count: 1, remaining_count: 0 });
       // The prior known DELETE already covered the other two original names;
       // only the SAME original writer's re-created canonical key needs deletion.
       expect(deletedKeys.at(-1)).toEqual(["karaoke/account-1/karaoke-attempt.pcm"]);

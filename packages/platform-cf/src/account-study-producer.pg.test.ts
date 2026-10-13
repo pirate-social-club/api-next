@@ -636,9 +636,12 @@ suite("genuine controlled ordinary Study producer", () => {
         // Unknown's positive-confirmation no-op must not regress the exact batch.
         await run(deletion.unknown(firstBatch));
         expect(await callbackFingerprint(f)).toEqual(confirmedPending);
-        // Confirm has a different contract: even a confirmed pending batch runs
-        // native reconciliation. The still-held writer leaves the same partial DTO.
-        expect(await run(deletion.confirm(firstBatch, now()))).toEqual(partial);
+        // Reconciliation still runs for a confirmed pending batch. With no NEW
+        // tombstone and the original writer still held, this call is in-flight.
+        expect(await rejected(deletion.confirm(firstBatch, now()))).toMatchObject({
+          _tag: "LearnerAudioDeletionFailed",
+          reason: "in-flight",
+        });
         expect(await callbackFingerprint(f)).toEqual(confirmedPending);
         const firstCommand = (
           await f.admin.query(
@@ -725,7 +728,11 @@ suite("genuine controlled ordinary Study producer", () => {
         const completedState = await callbackFingerprint(f);
         await run(deletion.unknown(newBatch));
         expect(await callbackFingerprint(f)).toEqual(completedState);
-        expect(await run(deletion.confirm(newBatch, now()))).toEqual(completedDeletion);
+        // The same positively completed batch has no NEW tombstone on replay.
+        expect(await run(deletion.confirm(newBatch, now()))).toEqual({
+          ...completedDeletion,
+          deleted_count: 0,
+        });
         expect(await callbackFingerprint(f)).toEqual(completedState);
         expect((await rowsFor(f, lateInput)).recording_state).toBe("deleted");
         expect(objects.has(lateOriginal.expected_object_ref)).toBe(false);

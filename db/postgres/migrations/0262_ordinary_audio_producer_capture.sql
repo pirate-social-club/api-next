@@ -615,7 +615,7 @@ BEGIN
 END $$;
 CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch TEXT,p_revision BIGINT,p_deleted_at TIMESTAMPTZ) RETURNS JSONB
  LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
+DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; before_deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
  original_command TEXT; original_source TEXT; original_account TEXT;
  source_ids TEXT[]; captured_sources TEXT[];
  batch_row learner_audio_delete_batches%ROWTYPE;
@@ -667,14 +667,22 @@ BEGIN
     WHERE f.owner_id IS NULL OR f.revision IS DISTINCT FROM p_revision
       OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
   RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
- complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
  SELECT b.command_id INTO STRICT resolved_command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
+ -- Ordinary Account deletion reports this invocation's newly tombstoned artifacts.
+ -- Full source/batch/command locks above stabilize the SAME captured target set.
+ SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted'))
+ INTO before_deleted_count FROM learner_audio_delete_target_artifacts target
+ LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
+ LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
+ WHERE target.command_id=resolved_command_id;
+ complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
  SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted')),
   count(*) FILTER(WHERE COALESCE(a.recording_state,r.state,'unpublished')<>'deleted')
  INTO deleted_count,remaining_count FROM learner_audio_delete_target_artifacts target
  LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
  LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
  WHERE target.command_id=resolved_command_id;
+ deleted_count:=deleted_count-before_deleted_count;
  IF NOT complete AND deleted_count=0 THEN RAISE EXCEPTION 'audio producers remain unresolved' USING ERRCODE='GA001'; END IF;
  SELECT max(a.deleted_at) INTO latest FROM learner_audio_artifacts a JOIN learner_audio_delete_sources s ON s.owner_id=a.participation_owner_id
   WHERE s.command_id=resolved_command_id;
