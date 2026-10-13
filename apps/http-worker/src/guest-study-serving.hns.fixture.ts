@@ -8,7 +8,7 @@ import {
   makeStaticHnsForwarderKeyRegistryV1,
 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
-import type { GuestStudyServingComposition } from "./guest-study-serving-composition.ts";
+import type { HttpWorkerOptions } from "./transport.ts";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { createHttpWorker } from "./transport.ts";
 
@@ -53,7 +53,7 @@ const b64 = (bytes: Uint8Array) =>
     .replace(/=+$/u, "");
 const encode = (value: unknown) => b64(new TextEncoder().encode(JSON.stringify(value)));
 export async function servingHnsHarness(
-  guestStudy?: GuestStudyServingComposition,
+  guestStudy?: HttpWorkerOptions["guestStudy"],
   communityId = activeState.community_id,
 ) {
   const acceptedState = { ...activeState, community_id: communityId };

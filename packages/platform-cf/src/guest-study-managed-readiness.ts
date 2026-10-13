@@ -1,3 +1,4 @@
+import { readOwnerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 // Proposed platform-cf internal adapter. No grants, secrets, migrations or provider/R2 I/O.
 import type {
   ControlPlaneDb,
@@ -206,6 +207,13 @@ export function makeGuestStudyManagedReadiness(
             typeof actual.delete === "function",
         );
       },
+      catch: refuse,
+    });
+    const inheritedFunctions = yield* Effect.try({
+      try: () =>
+        options.roleProfile === "owner_financial"
+          ? readOwnerFinancialInheritedSourceDefaults(candidate)
+          : [],
       catch: refuse,
     });
     const principals: { profile: Profile; identity: Schema.Schema.Type<typeof Identity> }[] = [];
@@ -449,7 +457,10 @@ export function makeGuestStudyManagedReadiness(
                           privilege: "SELECT",
                         })),
                       );
-                const expectedFunctions = expected.functions.map((signature) => {
+                const callableFunctions = [
+                  ...new Set([...expected.functions, ...inheritedFunctions]),
+                ];
+                const expectedFunctions = callableFunctions.map((signature) => {
                   const frame = nativeFrames.find((frame) => frame.signature === signature);
                   assert(frame !== undefined);
                   if (frame === undefined) throw refuse();

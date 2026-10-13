@@ -14,6 +14,9 @@ export interface GuestStudyReadinessCandidate {
   }>[];
   /** Exact separately accepted retained source callbacks only; no blanket legacy pin. */
   readonly retained_schema_pinned_signatures?: readonly string[];
+  /** Financial-only finite original INVOKER PUBLIC surface; native ACL stays exact.
+   * This list is source-owned, separately verified, and never a purpose grant. */
+  readonly inherited_source_default_signatures?: readonly string[];
   readonly native_function_bodies: readonly Readonly<{
     name: string;
     body_sha256: string;

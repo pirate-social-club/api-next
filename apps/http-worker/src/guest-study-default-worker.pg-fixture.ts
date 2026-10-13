@@ -2,10 +2,7 @@
 // real native263, real cookie/decoder/transport; no metadata rewrite or overlay.
 import { expect } from "bun:test";
 import { createHash } from "node:crypto";
-import {
-  GetPublicGuestStudyPreparedContentV2,
-  guestParticipationRegistry,
-} from "@pirate/contracts";
+import { guestParticipationRegistry } from "@pirate/contracts";
 import { Schema } from "effect";
 import { bounded } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
 import {
@@ -30,6 +27,7 @@ import {
 import {
   type GuestStudyManagedBindings,
   makeDefaultGuestStudyManagedRuntime,
+  makeDefaultOwnerRewardGuestStudyManagedRuntime,
 } from "./guest-study-managed-bindings.ts";
 import { Browser, json, startBody } from "./guest-study-private-journey.pg-fixture.ts";
 import {
@@ -42,6 +40,21 @@ import {
   makeGuestStudyServingComposition,
 } from "./guest-study-serving-composition.ts";
 import { createHttpWorker } from "./transport.ts";
+import { routeTable } from "./generated/route-table.ts";
+import {
+  makeOwnerRewardGuestStudyServingComposition,
+  type OwnerRewardGuestStudyServingName,
+} from "./owner-reward-guest-study-serving-composition.ts";
+import type { OwnerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/guest-study-readiness-profile.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
+type ManagedServingName = GuestStudyServingName | OwnerRewardGuestStudyServingName;
+export const financialImplementedSource =
+  guestLearningNames.every(
+    (name) => guestParticipationRegistry[name].implementation !== "disabled",
+  ) &&
+  guestAccountingNames.every(
+    (name) => guestParticipationRegistry[name].implementation !== "disabled",
+  );
 
 export { Browser, disclosure, json, startBody };
 export const ordinaryOrigin = "https://community.example";
@@ -83,6 +96,7 @@ export async function defaultWorkerFixture(
     f: Omit<ReadinessFixture, "bindings"> & {
       bindings: OwnedManagedBindings;
       ordinaryBindings: Awaited<ReturnType<typeof makeHttpWorkerTestBindings>>;
+      ordinarySessionToken: () => Promise<string>;
       makeWorker: (configuration?: string | null) => Promise<ReturnType<typeof createHttpWorker>>;
       makeHns: (
         configuration?: string | null,
@@ -90,13 +104,13 @@ export async function defaultWorkerFixture(
       request: (
         worker: ReturnType<typeof createHttpWorker>,
         browser: Browser,
-        name: GuestStudyServingName,
+        name: ManagedServingName,
         options?: RequestOptions,
       ) => Promise<Response>;
       forwarded: (
         hns: Awaited<ReturnType<typeof servingHnsHarness>>,
         browser: Browser,
-        name: GuestStudyServingName,
+        name: ManagedServingName,
         options?: RequestOptions,
       ) => Promise<Response>;
       snapshot: () => Promise<Schema.Schema.Type<typeof Snapshot>>;
@@ -106,8 +120,11 @@ export async function defaultWorkerFixture(
       taskFetch: (worker: WorkerFetchTarget, request: Request) => Promise<Response>;
     },
   ) => Promise<void>,
+  financialSource?: OwnerFinancialGuestStudyReadinessSource,
 ) {
-  if (!implementedSource)
+  if (financialSource !== undefined && financialSource !== ownerFinancialGuestStudyReadinessSource)
+    throw new Error("Fixture requires the actual adopted compiled financial source object");
+  if (financialSource === undefined ? !implementedSource : !financialImplementedSource)
     throw new Error(
       "Canonical positive journey requires actual admitted 16 declarations and five disabled accounting declarations",
     );
@@ -196,7 +213,12 @@ export async function defaultWorkerFixture(
       );
       globalThis.fetch = providerFetch;
       try {
-        const ordinaryBindings = await makeHttpWorkerTestBindings(f.runtimeUrl);
+        const ordinaryPrincipal = f.principals.ordinaryAccount;
+        if (financialSource !== undefined && ordinaryPrincipal === undefined)
+          throw new Error("Fifth actual restricted ordinary Account LOGIN required");
+        const ordinaryBindings = await makeHttpWorkerTestBindings(
+          financialSource === undefined ? f.runtimeUrl : (ordinaryPrincipal?.url ?? ""),
+        );
         const required = (value: string | undefined) => {
           if (value === undefined) throw new Error("Owned session key configuration unavailable");
           return value;
@@ -211,6 +233,13 @@ export async function defaultWorkerFixture(
         });
         const bindings: OwnedManagedBindings = {
           GUEST_STUDY_SERVING_ENABLED: "true",
+          ...(financialSource === undefined
+            ? {}
+            : {
+                GUEST_STUDY_REWARDS_ENABLED: "true",
+                CONTROL_PLANE: { connectionString: ordinaryPrincipal?.url ?? "" },
+                MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
+              }),
           GUEST_STUDY_PRODUCT_ORIGIN: ordinaryOrigin,
           GUEST_STUDY_RUNTIME_CONFIGURATION: JSON.stringify({ policy, disclosure }),
           GUEST_STUDY_PUBLIC_READ: { connectionString: f.principals.publicRead.url },
@@ -221,7 +250,7 @@ export async function defaultWorkerFixture(
           ELEVENLABS_API_KEY: "owned-disposable-provider-fixture",
           STUDY_SPOKEN_RERECORD_ENABLED: "true",
         };
-        const compose = async (configuration: string | null | undefined) => {
+        const selectedBindings = (configuration: string | null | undefined) => {
           const selected =
             configuration === null
               ? {
@@ -248,6 +277,32 @@ export async function defaultWorkerFixture(
               : { GUEST_STUDY_RUNTIME_CONFIGURATION: currentConfiguration }),
             ...(currentKey === undefined ? {} : { ELEVENLABS_API_KEY: currentKey }),
           };
+          return actual;
+        };
+        const compose = async (configuration: string | null | undefined) => {
+          const actual = selectedBindings(configuration);
+          const currentConfiguration = actual.GUEST_STUDY_RUNTIME_CONFIGURATION;
+          if (financialSource !== undefined) {
+            const managed = makeDefaultOwnerRewardGuestStudyManagedRuntime(actual, "test");
+            if (managed === null) throw new Error("Financial default factory unexpectedly inert");
+            const graph = await makeOwnerRewardGuestStudyServingComposition({
+              managed,
+              workerLearnerAudioBinding: bucket,
+              environment: "test",
+              enabledBinding: "true",
+              ...(currentConfiguration === undefined
+                ? {}
+                : { configurationBinding: currentConfiguration }),
+              accountVerifier: makeRs256SessionTokenVerifier(
+                sessionCrypto,
+                makeControlPlaneIdentityStore(managed.ordinaryAccount),
+              ),
+              ordinarySessionScope: sessionCrypto.defaultScope,
+              hnsProtectedIngressOrigin: protectedOrigin,
+            });
+            if (graph === null) throw new Error("Financial default graph unexpectedly inert");
+            return graph;
+          }
           const managed = makeDefaultGuestStudyManagedRuntime(actual, "test");
           if (managed === null)
             throw new Error("Admitted source default factory unexpectedly inert");
@@ -279,11 +334,9 @@ export async function defaultWorkerFixture(
           requests.push(observe(response));
           return response;
         };
-        const locations = (name: GuestStudyServingName, input: RequestOptions) => {
-          const definition =
-            name === "GetPublicGuestStudyPreparedContentV2"
-              ? GetPublicGuestStudyPreparedContentV2
-              : guestParticipationRegistry[name];
+        const locations = (name: ManagedServingName, input: RequestOptions) => {
+          const definition = routeTable.find((row) => row.name === name)?.endpoint;
+          if (definition === undefined) throw new Error("Exact genuine registered route required");
           let path: string = definition.path;
           for (const [key, value] of Object.entries(input.path ?? {}))
             path = path.replace(`:${key}`, encodeURIComponent(value));
@@ -299,14 +352,11 @@ export async function defaultWorkerFixture(
         };
         const headers = (
           browser: Browser,
-          name: GuestStudyServingName,
+          name: ManagedServingName,
           input: RequestOptions,
           origin: string,
         ) => {
-          const result = browser.headers(
-            name !== "GetPublicGuestStudyPreparedContentV2" &&
-              guestParticipationRegistry[name].method !== "GET",
-          );
+          const result = browser.headers(locations(name, input).definition.method !== "GET");
           if (result.has("origin")) result.set("origin", origin);
           for (const [key, value] of Object.entries(input.extraHeaders ?? {}))
             result.set(key, value);
@@ -317,17 +367,30 @@ export async function defaultWorkerFixture(
           ...f,
           bindings,
           ordinaryBindings,
+          ordinarySessionToken: () =>
+            sessionCrypto.sign({ sub: "study-account", scope: sessionCrypto.defaultScope }),
           objects,
           providerCalls: () => providerCalls,
           transcript: (value) => {
             transcript = value;
           },
           taskFetch,
-          makeWorker: async (configuration) =>
-            createHttpWorker({
+          makeWorker: async (configuration) => {
+            if (financialSource !== undefined) {
+              // Actual production binding selection: no injected financial graph or verifier.
+              const { createProductionHttpWorker } = await import("./composition.ts");
+              return createProductionHttpWorker({
+                ...ordinaryBindings,
+                ...selectedBindings(configuration),
+                CORS_ORIGIN: ordinaryOrigin,
+                API_NEXT_ENV: "development",
+              });
+            }
+            return createHttpWorker({
               config: { corsOrigin: ordinaryOrigin },
               guestStudy: await compose(configuration),
-            }),
+            });
+          },
           makeHns: async (configuration) =>
             servingHnsHarness(await compose(configuration), source.communityId),
           request: async (worker, browser, name, input = {}) => {
@@ -445,6 +508,6 @@ export async function defaultWorkerFixture(
         );
       if (primaryFailed) throw primaryFailure;
     },
-    { schema: "api_next" },
+    { schema: "api_next", ...(financialSource === undefined ? {} : { financialSource }) },
   );
 }
