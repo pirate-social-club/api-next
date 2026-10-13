@@ -212,6 +212,16 @@ $body$;
     expect(normalized).not.toContain("DO $baseline_owner_source_privileges$");
   });
 
+  test("preserves raw function-body blank lines for source attestation", () => {
+    const originalBody = "\nBEGIN\n  PERFORM 1;\n\n\n  PERFORM 2;\nEND\n";
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.preserved_body() RETURNS void
+    LANGUAGE plpgsql
+    AS $body$${originalBody}$body$;
+`);
+    expect(normalized).toContain(`AS $body$${originalBody}$body$;`);
+  });
+
   test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
     expect(() =>
       normalizePostgresBaselineDump(`

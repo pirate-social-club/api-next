@@ -281,10 +281,9 @@ export function normalizePostgresBaselineDump(dump: string): string {
   if (catalogFirstFunction !== undefined)
     throw new Error("Unclosed catalog-first portable function body");
 
-  const body = normalized
-    .join("\n")
-    .replaceAll(/\n{3,}/g, "\n\n")
-    .trim();
+  // Raw native bodies are hashed by the committed source attestation.
+  // Preserve their whitespace; pg_dump object separators are deterministic.
+  const body = normalized.join("\n").trim();
   return [
     "-- GENERATED FILE. DO NOT EDIT. Regenerate with bun run db:generate:baseline.",
     "-- Source of truth: db/postgres/migrations/*.sql",
