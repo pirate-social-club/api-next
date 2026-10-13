@@ -1,4 +1,4 @@
-// Migration0265 positively requires these exact private helper ACLs after baseline replay.
+// Migration0266 positively requires these exact private helper ACLs after baseline replay.
 // Preserve ordinary baseline privilege behavior for every unrelated routine.
 const ownerFinancialPrivateFunctions = new Set([
   "reject_disabled_owner_financial_dml_v1",

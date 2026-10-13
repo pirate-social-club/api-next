@@ -265,6 +265,6 @@
     "0262_ordinary_audio_producer_capture.sql": "e266708eae7b1d954421adc8b322ec51103f50506c42da91c22120f57bbcb485",
     "0263_guest_ephemeral_audio_cleanup.sql": "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55",
     "0264_legacy_learner_audio_producer_disposition.sql": "04a395bef0a06e3a405387123ec85ccdd3f4503b202cb365154375e6d7186097",
-    "0265_disabled_owner_financial_history.sql": "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77"
+    "0266_disabled_owner_financial_history.sql": "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77"
   }
 }

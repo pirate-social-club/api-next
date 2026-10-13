@@ -39,7 +39,7 @@ import {
 } from "./rewards-composed-pool.pg-fixture.ts";
 
 const suite = pgUrl ? describe : describe.skip;
-const checkpointVersion = "0265_disabled_owner_financial_history.sql";
+const checkpointVersion = "0266_disabled_owner_financial_history.sql";
 const checkpointSha = "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77";
 const privateTables = [
   "guest_owner_associations",
@@ -99,9 +99,9 @@ async function sourcePacket() {
     ),
   );
   const all = await loadPostgresMigrations();
-  const first = all.slice(0, 265);
+  const first = all.slice(0, 266);
   expect(first.map(({ version }) => Number(version.slice(0, 4)))).toEqual(
-    Array.from({ length: 265 }, (_, index) => index + 1),
+    Array.from({ length: 266 }, (_, index) => index + 1),
   );
   expect(Object.keys(literal).sort()).toEqual(first.slice(0, 264).map(({ version }) => version));
   for (const entry of first.slice(0, 264)) {
