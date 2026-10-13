@@ -110,6 +110,9 @@ export type Fixture = {
   accountStore: ReturnType<typeof makeControlPlaneStudyV2Store>;
   accountOriginal: Awaited<ReturnType<typeof accountStart>>;
   lines: readonly string[];
+  /** TEST ONLY: unknown owned work requires app-kill/PG-stop before DROP. */
+  deferDestructiveCleanup: () => void;
+  destructiveCleanupDeferred: () => boolean;
   storeFor: (
     config?: PostgresControlPlaneOptions,
     policyInput?: unknown,
@@ -162,11 +165,12 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     connectionTimeoutMillis: 5000,
     statement_timeout: 15000,
   });
+  let cleanupDeferred = false;
   let guest: Client | undefined;
   let createdSchema = false,
     createdRole = false;
-  await admin.connect();
   try {
+    await admin.connect();
     await admin.query(`CREATE SCHEMA ${q(schema)}`);
     createdSchema = true;
     await admin.query(`SET search_path TO ${q(schema)},pg_catalog`);
@@ -332,13 +336,15 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       accountOriginal,
       lines,
       storeFor,
+      deferDestructiveCleanup: () => { cleanupDeferred = true; },
+      destructiveCleanupDeferred: () => cleanupDeferred,
     });
   } finally {
     if (guest) await guest.end().catch(() => undefined);
     await admin.query("ROLLBACK").catch(() => undefined);
     try {
-      if (createdSchema) await admin.query(`DROP SCHEMA ${q(schema)} CASCADE`);
-      if (createdRole) await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
+      if (createdSchema && !cleanupDeferred) await admin.query(`DROP SCHEMA ${q(schema)} CASCADE`);
+      if (createdRole && !cleanupDeferred) await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
     } finally {
       await admin.end();
     }
