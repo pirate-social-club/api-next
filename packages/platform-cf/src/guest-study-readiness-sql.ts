@@ -72,7 +72,7 @@ export const bodiesSql = `SELECT p.proname AS name,encode(sha256(convert_to(p.pr
   ELSE 'unreviewed' END AS configuration
 FROM pg_catalog.pg_proc p CROSS JOIN (SELECT relnamespace AS namespace_id,relowner AS owner_id
  FROM pg_catalog.pg_class WHERE oid=pg_catalog.to_regclass($1 || '.participation_owners')) anchor
-WHERE p.pronamespace=anchor.namespace_id AND p.proname=ANY($2::text[]) ORDER BY name COLLATE "C"`;
+WHERE p.pronamespace=anchor.namespace_id AND p.proname=ANY($2::text[]) ORDER BY p.proname COLLATE "C"`;
 export const ledgerSql = (schema: string) =>
   `SELECT version,checksum FROM ${schema}.schema_migrations ORDER BY version COLLATE "C"`;
 export const phaseSql = (schema: string) => `WITH anchor AS (
