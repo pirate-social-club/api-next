@@ -5,8 +5,10 @@ import {
   type BrowserParticipationContext,
   ControlPlaneTransactionOutcomeUnknown,
   GuestParticipationStoreRejected,
+  LearnerAudioStorageOutcomeUnknown,
   type ParticipationOperationIdentity,
-} from "@pirate/application";
+} from "@pirate/application/use-cases/guest-learning";
+import { finalAnswer } from "@pirate/application/use-cases/guest-learning-test-fixture";
 import {
   GuestBadRequest,
   GuestPendingConflict,
@@ -18,8 +20,6 @@ import {
   toErrorBody,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
-import { LearnerAudioStorageOutcomeUnknown } from "../../../packages/application/src/learner-audio-io-outcome.ts";
-import { finalAnswer } from "../../../packages/application/src/owner-study-service.test-fixture.ts";
 import {
   type GuestLearningControllerServices,
   makeGuestLearningControllers,

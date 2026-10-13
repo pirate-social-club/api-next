@@ -2,7 +2,7 @@ import type { BrowserParticipationContext } from "@pirate/application/guest-part
 import {
   HNS_FORWARDER_HOST_HEADER,
   isCanonicalHnsForwarderHost,
-} from "@pirate/application/hns-forwarder-v3";
+} from "@pirate/application/use-cases/hns-browser-transport";
 import {
   type IdentityRegistrationHandlerServices,
   makeIdentityRegistrationHandler,

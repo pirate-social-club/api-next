@@ -1,16 +1,16 @@
 // PRIVATE TEST PROPOSAL. No gate executed by this author; no provider keys used.
 // Intended placement apps/http-worker/src, after actual request factory adoption.
 import { expect, test } from "bun:test";
-import {
-  ControlPlaneAcquireFailed,
-  IdentityResolutionError,
-  type IdentityStore,
-} from "@pirate/application";
 import type {
   GuestCredentialVerifier,
   ProvedGuestCredential,
   ProvedGuestIntent,
 } from "@pirate/application/guest-participation-authority";
+import {
+  ControlPlaneAcquireFailed,
+  IdentityResolutionError,
+  type IdentityStore,
+} from "@pirate/application/use-cases/guest-learning";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import { type BrowserParticipationPolicy, GuestAuthError, InternalError } from "@pirate/contracts";
 import { digestGuestProof } from "@pirate/platform-cf/guest-proof-crypto";

@@ -3,7 +3,7 @@ import type {
   ControlPlaneDb,
   ControlPlaneError,
   GuestResourceAdmissionPolicy,
-} from "@pirate/application";
+} from "@pirate/application/use-cases/guest-learning";
 import { GuestStudyPreparedContentV1, guestParticipationRegistry } from "@pirate/contracts";
 import { makeControlPlaneGuestAttachmentPreparation } from "@pirate/platform-cf/guest-attachment-preparation-store";
 import { makeControlPlaneGuestAuthorityTransitions } from "@pirate/platform-cf/guest-authority-store";

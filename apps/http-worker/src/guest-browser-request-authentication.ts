@@ -7,7 +7,7 @@ import type {
 import {
   HNS_FORWARDER_HOST_HEADER,
   isCanonicalHnsForwarderHost,
-} from "@pirate/application/hns-forwarder-v3";
+} from "@pirate/application/use-cases/hns-browser-transport";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import {
   type BrowserParticipationPolicy,

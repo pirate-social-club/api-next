@@ -3,7 +3,10 @@
 import { expect } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { makeOwnerGuestStudyService, makeOwnerSpokenSuccessProtocol } from "@pirate/application";
+import {
+  makeOwnerGuestStudyService,
+  makeOwnerSpokenSuccessProtocol,
+} from "@pirate/application/use-cases/guest-learning";
 import { guestParticipationRegistry, toErrorBody } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { type Context, Hono } from "hono";

@@ -1,10 +1,5 @@
 // PRIVATE SOURCE PROPOSAL. Transport-private response plans; no endpoint activation.
-import {
-  ControlPlaneOperationTimedOut,
-  ControlPlaneStatementFailed,
-  ControlPlaneTransactionOutcomeUnknown,
-  canonicalBodyHash,
-} from "@pirate/application";
+
 import {
   type BrowserParticipationContext,
   type DurableParticipationOutcome,
@@ -16,6 +11,12 @@ import {
   GuestParticipationStoreRejected,
   type ParticipationOperationIdentity,
 } from "@pirate/application/guest-participation-authority";
+import {
+  ControlPlaneOperationTimedOut,
+  ControlPlaneStatementFailed,
+  ControlPlaneTransactionOutcomeUnknown,
+  canonicalBodyHash,
+} from "@pirate/application/use-cases/guest-learning";
 import {
   AcknowledgeGuestCredentialV1,
   CleanupGuestBrowserProofV1,

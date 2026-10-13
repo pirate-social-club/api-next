@@ -1,6 +1,5 @@
 // PRIVATE TEST PROPOSAL; proposing agent executes no tests or gates.
 import { expect, test } from "bun:test";
-import { ControlPlaneTransactionOutcomeUnknown } from "@pirate/application";
 import {
   type BrowserParticipationContext,
   type GuestAttachmentStore,
@@ -9,6 +8,7 @@ import {
   type ParticipationOperationIdentity,
   type ProvedGuestCredential,
 } from "@pirate/application/guest-participation-authority";
+import { ControlPlaneTransactionOutcomeUnknown } from "@pirate/application/use-cases/guest-learning";
 import {
   type GuestAuthorityV1,
   GuestBadRequest,

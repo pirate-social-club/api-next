@@ -6,7 +6,7 @@ import {
   type IdGen,
   makeOwnerGuestStudyService,
   makeOwnerSpokenSuccessProtocol,
-} from "@pirate/application";
+} from "@pirate/application/use-cases/guest-learning";
 import { guestParticipationRegistry } from "@pirate/contracts";
 import { makeControlPlaneGuestPracticeParticipationReadStore } from "@pirate/platform-cf/guest-practice-participation-read-store";
 import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";

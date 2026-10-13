@@ -12,9 +12,13 @@ import {
   GuestParticipationStoreRejected,
   type GuestRecoveryAccess,
   IdGen,
+  LearnerAudioStorageOutcomeUnknown,
+  type makeOwnerGuestStudyService,
+  OwnerGuestStudyCommandRejected,
+  type OwnerLearnerAudioDeletionStore,
   type ParticipationOperationIdentity,
-} from "@pirate/application";
-import type { OwnerLearnerAudioDeletionStore } from "@pirate/application/owner-learner-audio-deletion";
+} from "@pirate/application/use-cases/guest-learning";
+
 import {
   DeleteGuestLearnerAudioV1,
   GetGuestStudySessionV1,
@@ -36,11 +40,7 @@ import {
   SubmitGuestStudyAnswerV1,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
-import { LearnerAudioStorageOutcomeUnknown } from "../../../packages/application/src/learner-audio-io-outcome.ts";
-import {
-  type makeOwnerGuestStudyService,
-  OwnerGuestStudyCommandRejected,
-} from "../../../packages/application/src/owner-guest-study-service.ts";
+
 import type { makeOwnerLearnerAudioDeletionIo } from "../../../packages/platform-cf/src/owner-audio-deletion-io.ts";
 import { makeGuestStudyTrustedEdge } from "./guest-study-runtime-configuration.ts";
 import {

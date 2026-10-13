@@ -1,4 +1,4 @@
-import type { GuestResourceAdmissionPolicy } from "@pirate/application";
+import type { GuestResourceAdmissionPolicy } from "@pirate/application/use-cases/guest-learning";
 import { GuestStudyPreparedContentV1 } from "@pirate/contracts";
 import { readGuestResourceAdmissionPolicy } from "@pirate/platform-cf/guest-resource-policy";
 import { Schema } from "effect";

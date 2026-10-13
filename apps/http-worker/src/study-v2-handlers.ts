@@ -1,5 +1,6 @@
 import {
   Clock,
+  type ControlledAccountStudySpokenService,
   IdGen,
   makeStudyV2Service,
   type StudyAudioArchive,
@@ -60,13 +61,11 @@ const wireFailure = (failure: StudyV2Failure) => {
   }
 };
 
-import type { makeControlledAccountSpokenService } from "@pirate/application/controlled-account-spoken";
-
 export const makeStudyV2Handlers = (services: {
   readonly clock: Clock["Service"];
   readonly ids: IdGen["Service"];
   readonly store: StudyV2Store;
-  readonly controlledSpoken?: ReturnType<typeof makeControlledAccountSpokenService>;
+  readonly controlledSpoken?: ControlledAccountStudySpokenService;
   readonly spoken?: Readonly<{
     readonly archive: StudyAudioArchive;
     readonly transcriber: StudyBatchTranscriber;

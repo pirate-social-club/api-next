@@ -5,7 +5,7 @@ import type {
   ProvedGuestCredential,
   ProvedGuestIntent,
 } from "@pirate/application/guest-participation-authority";
-import { HNS_FORWARDER_HOST_HEADER } from "@pirate/application/hns-forwarder-v3";
+import { HNS_FORWARDER_HOST_HEADER } from "@pirate/application/use-cases/hns-browser-transport";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import { type BrowserParticipationPolicy, GuestAuthError, InternalError } from "@pirate/contracts";
 import { digestGuestProof } from "@pirate/platform-cf/guest-proof-crypto";
