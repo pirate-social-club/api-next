@@ -35,6 +35,7 @@ export * from "./learner-audio.ts";
 export * from "./money.ts";
 export * from "./namespace-ownership.ts";
 export * from "./openapi-diff.ts";
+export * from "./owner-study.ts";
 export * from "./personas.ts";
 export * from "./platform-pirate-handles.ts";
 export * from "./profile-activity.ts";
