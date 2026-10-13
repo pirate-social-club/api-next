@@ -4714,6 +4714,7 @@ CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch text, p_revision
     SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
+ previously_deleted BIGINT;
  original_command TEXT; original_source TEXT; original_account TEXT;
  source_ids TEXT[]; captured_sources TEXT[];
  batch_row learner_audio_delete_batches%ROWTYPE;
@@ -4765,6 +4766,12 @@ BEGIN
     WHERE f.owner_id IS NULL OR f.revision IS DISTINCT FROM p_revision
       OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
   RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
+ -- The account contract reports what THIS request deleted, as before.
+ SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted'))
+ INTO previously_deleted FROM learner_audio_delete_target_artifacts target
+ LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
+ LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
+ WHERE target.command_id=original_command;
  complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
  SELECT b.command_id INTO STRICT resolved_command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
  SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted')),
@@ -4773,6 +4780,7 @@ BEGIN
  LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
  LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
  WHERE target.command_id=resolved_command_id;
+ deleted_count:=deleted_count-previously_deleted;
  IF NOT complete AND deleted_count=0 THEN RAISE EXCEPTION 'audio producers remain unresolved' USING ERRCODE='GA001'; END IF;
  SELECT max(a.deleted_at) INTO latest FROM learner_audio_artifacts a JOIN learner_audio_delete_sources s ON s.owner_id=a.participation_owner_id
   WHERE s.command_id=resolved_command_id;
@@ -20635,7 +20643,7 @@ BEGIN
        WHERE o.owner_id=ANY(authorized_sources) AND r.state IN('pending','failed')
          AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.owner_id=o.owner_id
            AND u.attempt_ref=r.attempt_id AND u.source_kind='karaoke')) THEN
-     RAISE EXCEPTION 'untracked legacy producer requires durable disposition'; END IF;
+     RAISE EXCEPTION 'untracked legacy producer requires durable disposition' USING ERRCODE='GA001'; END IF;
    next_revision:=nextval('learner_audio_fence_revision_v1');
    INSERT INTO learner_audio_delete_commands(command_id,source_owner_id,idempotency_key,request_hash,
      revision,state,provider_disposition,created_at)
@@ -20658,8 +20666,12 @@ BEGIN
    UPDATE participation_owners SET state='established' WHERE owner_id=expected_source AND state='empty';
    UPDATE learner_audio_owner_fences SET revision=next_revision,active_delete_command_id=command.command_id
      WHERE owner_id=ANY(authorized_sources);
-   UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE owner_id=ANY(authorized_sources)
-     AND captured_revision<next_revision;
+   -- A closed writer whose exact object is already recorded deleted has
+   -- nothing left to clean; a later stored write removes that record first.
+   UPDATE learner_audio_upload_attempts u SET cleanup_required=TRUE WHERE u.owner_id=ANY(authorized_sources)
+     AND u.captured_revision<next_revision
+     AND NOT (u.io_state='closed' AND EXISTS(SELECT 1 FROM learner_audio_deleted_objects d
+       WHERE d.object_ref=u.object_ref));
    -- Claim is serialized by the same owner lock and is mandatory before I/O.
    -- Still-registered intents therefore have a positive no-I/O witness and may
    -- close atomically. Writing/unknown intents NEVER close through this path.
