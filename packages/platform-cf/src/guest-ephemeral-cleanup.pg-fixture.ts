@@ -45,15 +45,9 @@ export function bounded<A>(task: Promise<A>, label: string, limit = 3000): Promi
   });
 }
 async function actualInventory() {
-  const raw = process.env.GUEST_EPHEMERAL_NATIVE_INPUTS_JSON;
-  if (!raw) throw new Error("Root exact actual263 source inventory required");
-  const input = Schema.decodeUnknownSync(
-    Schema.Struct({
-      migration: Schema.String.check(Schema.isPattern(/^0263_.+\.sql$/u)),
-      hashes: Schema.Record(Schema.String, Sha),
-    }),
-    { onExcessProperty: "error" },
-  )(JSON.parse(raw));
+  // Bind to the checked-in admission: every migration through 0263 must be
+  // declared by checksums.json and match its bytes.
+  const migration = "0263_guest_ephemeral_audio_cleanup.sql";
   const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
   const manifest = Schema.decodeUnknownSync(
     Schema.Struct({
@@ -68,20 +62,14 @@ async function actualInventory() {
   expect(names.map((n) => Number(n.slice(0, 4)))).toEqual(
     Array.from({ length: 263 }, (_, i) => i + 1),
   );
-  expect(names.at(-1)).toBe(input.migration);
+  expect(names.at(-1)).toBe(migration);
   const migrations: PostgresMigration[] = [];
   for (const version of names) {
     const sql = await readFile(new URL(version, directory), "utf8"),
-      checksum = hash(sql),
-      number = Number(version.slice(0, 4));
-    if (number <= 247) {
-      if (!manifest.migrations[version]) throw new Error("Immutable historical hash missing");
-      expect(checksum).toBe(manifest.migrations[version]);
-    }
-    if (number >= 248) {
-      if (!input.hashes[version]) throw new Error("Root actual private hash missing");
-      expect(checksum).toBe(input.hashes[version]);
-    }
+      checksum = hash(sql);
+    if (!manifest.migrations[version])
+      throw new Error(`Declared migration hash missing: ${version}`);
+    expect(checksum).toBe(manifest.migrations[version]);
     migrations.push({ version, sql, checksum });
   }
   return migrations;

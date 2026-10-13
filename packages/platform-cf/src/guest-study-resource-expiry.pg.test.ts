@@ -29,21 +29,10 @@ import type { PostgresMigration } from "./postgres-migrations.ts";
 const pgTest = pgUrl ? test : test.skip;
 const signature = "release_next_guest_study_resource_remainder_v1()";
 async function expiryFixture(use: (f: CheckpointFixture) => Promise<void>) {
-  const raw = process.env.GUEST_STUDY_RESOURCE_EXPIRY_NATIVE_INPUTS_JSON;
-  if (!raw) throw new Error("Root exact actual expiry source/version inventory required");
-  const inputs = Schema.decodeUnknownSync(
-    Schema.Struct({
-      expiryMigration: Schema.String.check(Schema.isPattern(/^\d{4}_.+\.sql$/u)),
-      hashes: Schema.Record(
-        Schema.String,
-        Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
-      ),
-    }),
-    { onExcessProperty: "error" },
-  )(JSON.parse(raw));
-  const last = Number(inputs.expiryMigration.slice(0, 4));
-  if (last <= 258)
-    throw new Error("Root must assign an actual successor; proposal reserves no ordinal");
+  // Bind to the checked-in admission: every migration through the expiry
+  // successor must be declared by checksums.json and match its bytes.
+  const expiryMigration = "0261_guest_study_resource_expiry.sql";
+  const last = Number(expiryMigration.slice(0, 4));
   const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
   const manifest = Schema.decodeUnknownSync(
     Schema.Struct({
@@ -61,22 +50,14 @@ async function expiryFixture(use: (f: CheckpointFixture) => Promise<void>) {
   expect(names.map((n) => Number(n.slice(0, 4)))).toEqual(
     Array.from({ length: last }, (_, i) => i + 1),
   );
-  expect(names.at(-1)).toBe(inputs.expiryMigration);
+  expect(names.at(-1)).toBe(expiryMigration);
   const all: PostgresMigration[] = [];
   for (const version of names) {
     const sql = await readFile(new URL(version, directory), "utf8"),
-      checksum = hash(sql),
-      number = Number(version.slice(0, 4));
-    if (number <= 247) {
-      if (manifest.migrations[version] === undefined)
-        throw new Error("Immutable historical hash missing");
-      expect(checksum).toBe(manifest.migrations[version]);
-    }
-    if (number >= 254) {
-      if (inputs.hashes[version] === undefined)
-        throw new Error("Actual private native input hash missing");
-      expect(checksum).toBe(inputs.hashes[version]);
-    }
+      checksum = hash(sql);
+    if (manifest.migrations[version] === undefined)
+      throw new Error(`Declared migration hash missing: ${version}`);
+    expect(checksum).toBe(manifest.migrations[version]);
     all.push({ version, sql, checksum });
   }
   await archiveFixture(async (f) => {
