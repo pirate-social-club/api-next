@@ -349,10 +349,16 @@ pgTest(
         f,
         () =>
           f.admin.query(`GRANT SELECT ON ${q(f.schema)}.media_song_lyrics_revisions TO ${reader}`),
-        () =>
-          f.admin.query(
+        async () => {
+          await f.admin.query(
             `REVOKE SELECT ON ${q(f.schema)}.media_song_lyrics_revisions FROM ${reader}`,
-          ),
+          );
+          // PostgreSQL table REVOKE also removes corresponding column grants.
+          // Restore only the exact original source-bound public reader columns.
+          await f.admin.query(
+            `GRANT SELECT(${candidate.profiles.publicRead.columns.media_song_lyrics_revisions.map(q).join(",")}) ON ${q(f.schema)}.media_song_lyrics_revisions TO ${reader}`,
+          );
+        },
       );
       await fault(
         f,
