@@ -14,7 +14,7 @@ import {
 } from "../../../scripts/postgres-migrations.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
@@ -73,7 +73,7 @@ async function withSchema<A>(
   use: (admin: Client, scopedConnection: string) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return withPreservedPostgresTestSchema({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_rewards_song_offers_pg_test_ts",
     use: async ({ admin, schema }) => {

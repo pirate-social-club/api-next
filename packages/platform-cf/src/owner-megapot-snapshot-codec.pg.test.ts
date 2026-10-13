@@ -56,7 +56,12 @@ suite("native owner snapshot byte codec", () => {
       ),
     );
     for (const m of accepted.slice(0, 264)) expect(m.checksum).toBe(historical[m.version]);
+    expect(accepted[264]?.version).toBe("0265_account_karaoke_unclaimed_cancellation.sql");
     expect(accepted[264]?.checksum).toBe(
+      "337b5469bdf01595413349517f1c0750530280a4a38ac8fd007a2d2e3c4e106f",
+    );
+    expect(accepted[265]?.version).toBe("0266_disabled_owner_financial_history.sql");
+    expect(accepted[265]?.checksum).toBe(
       "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77",
     );
     await fixture(async (f) => {

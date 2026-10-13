@@ -4,7 +4,7 @@ import { Client } from "pg";
 import { makeRewardOperationsGuard } from "../../../apps/http-worker/src/reward-operations-guard.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
@@ -31,7 +31,7 @@ const pause = (client: Client, paused: boolean) =>
 suite("HTTP database reward admission", () => {
   test("stale running reads cannot create liabilities; previously issued funding still settles", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await withPreservedPostgresTestSchema({
       baseConnectionString: url,
       schemaName: "reward_http_admission",
       use: async ({ admin, schema }) => {
