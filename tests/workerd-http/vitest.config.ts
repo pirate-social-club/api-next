@@ -23,6 +23,16 @@ for (const name of ["application", "platform-cf", "contracts", "domain"]) {
     ]);
   }
 }
+// Existing jobs internals also use the maintained tsconfig wildcard source path.
+// These are real source modules, without adding new package-public exports.
+for (const subpath of [
+  "media-processing-cloudflare",
+  "media-processing-store",
+  "namespace-ownership/hns-owner-service-binding",
+]) workspaceAliases.push([
+  `@pirate/platform-cf/${subpath}`,
+  new URL(`../../packages/platform-cf/src/${subpath}.ts`, import.meta.url).pathname,
+]);
 const alias = Object.fromEntries(workspaceAliases.sort(([a], [b]) => b.length - a.length));
 
 export default defineConfig({
