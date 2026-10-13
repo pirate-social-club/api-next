@@ -116,4 +116,64 @@ describe("alignment recovery terminal alerts", () => {
       );
     expect(logs).toEqual([]);
   });
+
+  test("inspects and deduplicates a retained failure beyond the first 50 healthy candidates", async () => {
+    const candidates = Array.from({ length: 51 }, (_, index) => {
+      const operationId = `pagination-operation-${String(index + 1).padStart(3, "0")}`;
+      return {
+        operation_id: operationId,
+        workflow_revision: "1",
+        workflow_instance_id: `media-${operationId}-r1`,
+      };
+    });
+    const controlPlane = Layer.succeed(ControlPlaneDb, {
+      execute: (statement) => {
+        if (!statement.label.endsWith("lookups")) return Effect.succeed({ rows: [], rowCount: 0 });
+        const after = typeof statement.values[0] === "string" ? statement.values[0] : "";
+        const page = candidates.filter((candidate) => candidate.operation_id > after).slice(0, 50);
+        return Effect.succeed({ rows: page, rowCount: page.length });
+      },
+      withTransaction: () => Effect.die("alert observation is read-only"),
+    } as ControlPlaneDb["Service"]);
+    const inspected: string[] = [];
+    const diagnostic = alignmentRecoveryTerminalMessage({
+      outcome: "alignment_recovery_lookup_stale",
+      reason: "invalid_projection_row_count",
+    });
+    const workflow: CloudflareMediaWorkflowBinding = {
+      get: async (instanceId) => {
+        inspected.push(instanceId);
+        return {
+          status: async () => ({
+            status: instanceId === "media-pagination-operation-051-r1" ? "errored" : "running",
+            error: { name: "Error", message: diagnostic },
+          }),
+          sendEvent: async () => undefined,
+        };
+      },
+      createBatch: async () => [],
+    };
+    const logs: PipelineLogFields[] = [];
+    const sink = {
+      ...makeLocalAlertSink(),
+      log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+    };
+    for (let tick = 0; tick < 2; tick += 1) {
+      expect(
+        await Effect.runPromise(
+          alertTick(
+            sink,
+            collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane)),
+          ),
+        ),
+      ).toBe(1);
+    }
+    expect(inspected).toHaveLength(102);
+    expect(new Set(inspected).size).toBe(51);
+    expect(logs.map((entry) => entry.event)).toEqual([
+      "pipeline.alert",
+      "pipeline.alert.suppression",
+    ]);
+    expect(logs[0]).toMatchObject({ operation_id: "pagination-operation-051", severity: "high" });
+  });
 });

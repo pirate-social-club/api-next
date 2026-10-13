@@ -1,5 +1,6 @@
 import { AlertCollector, ControlPlaneDb } from "@pirate/application";
 import { Effect, Option, Schema } from "effect";
+import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import { isWorkflowInstanceMissingError } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -12,6 +13,11 @@ const Candidate = Schema.Struct({
   workflow_revision: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0)),
 });
 const LookupCandidate = Schema.Struct({ ...Candidate.fields, workflow_instance_id: Identity });
+const LookupCursor = Schema.Struct({
+  operation_id: Schema.String,
+  workflow_instance_id: Schema.String,
+});
+const LOOKUP_PAGE_SIZE = 50;
 
 const EXHAUSTED_SQL = `SELECT submission.operation_id,
        submission.workflow_revision::text AS workflow_revision
@@ -47,12 +53,15 @@ const LOOKUP_SQL = `SELECT DISTINCT submission.operation_id,
    AND launch.operation_id=submission.operation_id
    AND launch.workflow_revision=submission.workflow_revision
    AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
- WHERE submission.status='published'
-   AND EXISTS (SELECT 1 FROM media_alignment_recovery_actions recovery
+ WHERE submission.workflow_revision>0
+   AND (${mediaRecoveryRequiredSql("submission")} OR (
+     submission.status='published'
+     AND EXISTS (SELECT 1 FROM media_alignment_recovery_actions recovery
                 WHERE recovery.submission_id=submission.submission_id
-                  AND recovery.operation_id=submission.operation_id)
+                  AND recovery.operation_id=submission.operation_id)))
    AND launch.state IN ('delivered','exhausted')
- ORDER BY submission.operation_id LIMIT 50`;
+   AND (submission.operation_id,launch.workflow_instance_id)>($1,$2)
+ ORDER BY submission.operation_id,launch.workflow_instance_id LIMIT ${LOOKUP_PAGE_SIZE}`;
 
 const alert = (operationId: string, revision: number, reason: string, failureClass = reason) => ({
   key: `song-pipeline:${reason}`,
@@ -72,12 +81,12 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
   function* (binding: CloudflareMediaWorkflowBinding | undefined) {
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
-    const rows = (label: string, text: string) =>
+    const rows = (label: string, text: string, values: readonly unknown[] = []) =>
       db
         .execute<Readonly<Record<string, unknown>>>({
           label,
           text,
-          values: [],
+          values,
           readonly: true,
         })
         .pipe(
@@ -110,34 +119,54 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
       binding,
       isWorkflowInstanceMissingError,
     );
-    for (const row of yield* rows(
-      "song-pipeline.terminal.alignment-recovery-lookups",
-      LOOKUP_SQL,
-    )) {
-      const decoded = Schema.decodeUnknownOption(LookupCandidate)(row);
-      if (Option.isNone(decoded)) continue;
-      const failure = yield* Effect.tryPromise(() =>
-        launcher.getRecoveryFailure(decoded.value.workflow_instance_id),
-      ).pipe(
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            console.error("song_alignment_recovery_workflow_observation_unavailable", {
-              operationId: decoded.value.operation_id,
-              workflowRevision: decoded.value.workflow_revision,
-            });
-            return null;
-          }),
-        ),
+    // Advance within the tick rather than repeatedly inspecting only the
+    // lexicographically first 50 operations. Progress includes healthy and
+    // malformed rows, not just operations that produced an alert.
+    let cursor: readonly [string, string] = ["", ""];
+    while (true) {
+      const page = yield* rows(
+        "song-pipeline.terminal.alignment-recovery-lookups",
+        LOOKUP_SQL,
+        cursor,
       );
-      if (failure === null) continue;
-      const reason =
-        failure.outcome === "alignment_recovery_lookup_stale"
-          ? `${failure.outcome}:${failure.reason}`
-          : `${failure.outcome}:${failure.reason.errorClass}:${failure.reason.code ?? "unknown"}:${failure.reason.query}`;
-      yield* collector.emit(
-        alert(decoded.value.operation_id, decoded.value.workflow_revision, reason, failure.outcome),
-      );
-      emitted += 1;
+      for (const row of page) {
+        const decoded = Schema.decodeUnknownOption(LookupCandidate)(row);
+        if (Option.isNone(decoded)) continue;
+        const failure = yield* Effect.tryPromise(() =>
+          launcher.getRecoveryFailure(decoded.value.workflow_instance_id),
+        ).pipe(
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              console.error("song_alignment_recovery_workflow_observation_unavailable", {
+                operationId: decoded.value.operation_id,
+                workflowRevision: decoded.value.workflow_revision,
+              });
+              return null;
+            }),
+          ),
+        );
+        if (failure === null) continue;
+        const reason =
+          failure.outcome === "alignment_recovery_lookup_stale"
+            ? `${failure.outcome}:${failure.reason}`
+            : `${failure.outcome}:${failure.reason.errorClass}:${failure.reason.code ?? "unknown"}:${failure.reason.query}`;
+        yield* collector.emit(
+          alert(
+            decoded.value.operation_id,
+            decoded.value.workflow_revision,
+            reason,
+            failure.outcome,
+          ),
+        );
+        emitted += 1;
+      }
+      if (page.length < LOOKUP_PAGE_SIZE) break;
+      const next = Schema.decodeUnknownOption(LookupCursor)(page[page.length - 1]);
+      if (Option.isNone(next)) {
+        console.error("song_alignment_recovery_alert_cursor_unavailable");
+        break;
+      }
+      cursor = [next.value.operation_id, next.value.workflow_instance_id];
     }
     return emitted;
   },

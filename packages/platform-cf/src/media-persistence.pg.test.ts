@@ -84,7 +84,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 83;
+const testCount = 84;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -8013,6 +8013,124 @@ async function createRequestedAlignmentRecovery(admin: Client, connection: strin
 }
 
 suite("bounded alignment recovery persistence", () => {
+  test("alerts and deduplicates ordinary published alignment failures without a recovery-action row", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(
+        connection,
+        {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        },
+        {
+          ...analysis,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: "ordinary_alignment_alert_lyrics",
+            policyRevision: "fixture-v1",
+            adapterRevision: "fixture-v1",
+          },
+          lyricsSafety: "allow",
+        },
+        false,
+        "Ordinary alignment alert fixture lyrics",
+      );
+      const outboxEventId = "ordinary_alignment_alert_outbox";
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "ordinary-alignment-alert",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId: `media-post-${operation}`,
+          outbox: {
+            outboxEventId,
+            effectIdentity: "ordinary_alignment_alert_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: `media-post-${operation}`,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      const controlPlane = makeDirectPostgresControlPlaneLayer(connection);
+      const processing = makeMediaProcessingStore(controlPlane);
+      const launch = await processing.claimOutbox(outboxEventId, "ordinary-alignment-alert-worker");
+      if (launch === null) throw new Error("missing ordinary alignment launch");
+      expect(await processing.completeOutbox(launch)).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+      expect(
+        (await processing.listWorkflowCandidates()).map((candidate) => candidate.operationId),
+      ).toContain(operation);
+      const diagnostic = alignmentRecoveryTerminalMessage({
+        outcome: "alignment_recovery_lookup_failed",
+        reason: {
+          errorClass: "ControlPlaneStatementFailed",
+          code: "57014",
+          query: "media-processing.alignment-recovery-authorization",
+        },
+      });
+      const logs: PipelineLogFields[] = [];
+      const sink = {
+        ...makeLocalAlertSink("development"),
+        log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+      };
+      const collect = () =>
+        collectSongPipelineTerminalAlerts(
+          controlPlane,
+          { media: true, data: false },
+          {
+            media: {
+              get: async (instanceId) => {
+                expect(instanceId).toBe(`media-${operation}-r2`);
+                return {
+                  status: async () => ({
+                    status: "errored" as const,
+                    error: { name: "Error", message: diagnostic },
+                  }),
+                  sendEvent: async () => undefined,
+                };
+              },
+              createBatch: async () => [],
+            },
+          },
+        );
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(logs.map((entry) => entry.event)).toEqual([
+        "pipeline.alert",
+        "pipeline.alert.suppression",
+      ]);
+      expect(logs[0]).toMatchObject({
+        severity: "high",
+        failure_class: "alignment_recovery_lookup_failed",
+        operation_id: operation,
+      });
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
   test("exhaustion completes the action, alerts after completion and preserves the one-recovery rule", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const { processing, request, payload } = await createRequestedAlignmentRecovery(
