@@ -428,6 +428,11 @@ suite("first disabled owner accounting checkpoint", () => {
         return value;
       };
       for (const accountId of people.slice(0, 3)) await prepare(accountId);
+      // Retained0203's original invoker projector records its decision before
+      // the share. Only this isolated pre264 producer role needs these inserts.
+      await f.admin.query(
+        `GRANT INSERT ON decision_records,reward_eligibility_decisions TO ${q(f.role)}`,
+      );
       await f.admin.query(
         `GRANT INSERT ON megapot_pool_shares TO ${q(f.role)},PUBLIC; GRANT INSERT(account_id) ON megapot_pool_shares TO ${q(f.role)},PUBLIC; GRANT EXECUTE ON FUNCTION list_guest_practice_participations_v1(jsonb,text,integer) TO ${q(f.role)}`,
       );
@@ -600,7 +605,25 @@ suite("first disabled owner accounting checkpoint", () => {
       expect(
         await run(projections.listCredits({ accountId: heldAccount, cursor: null, limit: 10 })),
       ).toEqual(beforePublic);
+      // Post264 qualification must use the secured original projector, without
+      // retaining the fixture's two temporary pre264 direct write privileges.
+      await f.admin.query(
+        `REVOKE INSERT ON decision_records,reward_eligibility_decisions FROM ${q(f.role)}`,
+      );
       await nativeBoundaries(f);
+      for (const table of [
+        "decision_records",
+        "reward_eligibility_decisions",
+        "megapot_pool_shares",
+      ])
+        expect(
+          (
+            await f.serving.query(
+              "SELECT has_table_privilege(current_user,$1,'INSERT') AS allowed",
+              [`${f.schema}.${table}`],
+            )
+          ).rows,
+        ).toEqual([{ allowed: false }]);
       expect(
         (
           await f.serving.query(
