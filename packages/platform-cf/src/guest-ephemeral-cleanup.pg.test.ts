@@ -20,6 +20,7 @@ import {
   financialFingerprint,
   hash,
   pgUrl,
+  q,
   run,
   seedGuest,
 } from "./owner-study-starter.pg-fixture.ts";
@@ -525,6 +526,44 @@ pgTest(
   "unknown provider and unfinished/unknown writer stay held; SAME late original CP then finalizes and cleans",
   () =>
     ephemeralFixture(async (f) => {
+      // Actual256 controlled original-capture failure callback, not a raw/core grant.
+      const failureLeaf = "fail_guest_spoken_answer_v1(text,jsonb,text,text,text,text,text)";
+      expect(
+        (
+          await f.admin.query(
+            `SELECT p.proowner=c.relowner AS owner,
+        p.pronamespace=c.relnamespace AS namespace,p.prosecdef AS definer,
+        p.proconfig @> ARRAY[format('search_path=pg_catalog, %I, pg_temp',n.nspname)] AS pinned,
+        NOT EXISTS(SELECT 1 FROM aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+          WHERE a.grantee<>p.proowner AND a.privilege_type='EXECUTE') AS private
+        FROM pg_proc p CROSS JOIN pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE p.oid=$1::regprocedure AND c.oid='participation_owners'::regclass`,
+            [failureLeaf],
+          )
+        ).rows,
+      ).toEqual([{ owner: true, namespace: true, definer: true, pinned: true, private: true }]);
+      await expect(
+        f.guest.query(
+          "SELECT fail_guest_spoken_answer_v1('unavailable','{}'::jsonb,'unavailable','unavailable','unavailable','unknown','timeout')",
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await f.admin.query(`GRANT EXECUTE ON FUNCTION ${failureLeaf} TO ${q(f.role)}`);
+      expect(
+        (
+          await f.guest.query(
+            "SELECT has_function_privilege(current_user,$1,'EXECUTE') AS allowed",
+            [failureLeaf],
+          )
+        ).rows,
+      ).toEqual([{ allowed: true }]);
+      expect(
+        (
+          await f.cleanup.query(
+            "SELECT has_function_privilege(current_user,$1,'EXECUTE') AS allowed",
+            [failureLeaf],
+          )
+        ).rows,
+      ).toEqual([{ allowed: false }]);
       const provider = await fresh(f, 805);
       await age(f, provider, "24 hours 1 minute");
       expect(
