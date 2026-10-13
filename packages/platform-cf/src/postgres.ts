@@ -106,6 +106,11 @@ const DEFAULT_LOGGER: ControlPlaneLogger = {
 const defaultClientFactory: PostgresClientFactory = async (_connectionString, config) => {
   const { Client } = await import("pg");
   const client = new Client(config);
+  // pg rejects outstanding queries AND emits a separate lifecycle error when
+  // the socket dies. Observe that duplicate notification before connect and
+  // through final close; query/COMMIT promises retain the existing typed errors.
+  // Never expose the raw event, which can include connection/provider details.
+  client.on("error", () => undefined);
   return {
     connection: client.connection,
     connect: () => client.connect(),
