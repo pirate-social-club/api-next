@@ -10,9 +10,6 @@ import { makeControlPlaneMegapotApprovalStore } from "@pirate/platform-cf/megapo
 import { makeMegapotClaimCoordinator } from "@pirate/platform-cf/megapot-claim-coordinator";
 import { makeControlPlaneMegapotClaimStore } from "@pirate/platform-cf/megapot-claim-repository";
 import { makeMegapotCommitmentCoordinator } from "@pirate/platform-cf/megapot-commitment-coordinator";
-import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
-import { makeOwnerMegapotCommitmentCoordinator } from "@pirate/platform-cf/owner-megapot-commitment-coordinator";
-import { makeVersionedMegapotCommitmentCoordinator } from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { makeR2MegapotCommitmentPublisher } from "@pirate/platform-cf/megapot-commitment-r2";
 import { makeControlPlaneMegapotCommitmentStore } from "@pirate/platform-cf/megapot-commitment-repository";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
@@ -29,11 +26,14 @@ import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "@pirate/platform-cf/megapot-v2-signer";
+import { makeOwnerMegapotCommitmentCoordinator } from "@pirate/platform-cf/owner-megapot-commitment-coordinator";
+import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
 import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardPayoutCoordinator } from "@pirate/platform-cf/reward-payout-coordinator";
 import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-payout-repository";
 import { makeRewardRefundCoordinator } from "@pirate/platform-cf/reward-refund-coordinator";
 import { makeControlPlaneRewardRefundStore } from "@pirate/platform-cf/reward-refund-repository";
+import { makeVersionedMegapotCommitmentCoordinator } from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { Effect, type Layer } from "effect";
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
 import { observeMegapotDrawingForCycle } from "./megapot-rewards-cycle.ts";
@@ -191,11 +191,15 @@ export function makeMegapotAttestationRuntime(input: {
       runtime: controlPlane,
       account: makeMegapotCommitmentCoordinator({
         store: makeControlPlaneMegapotCommitmentStore(controlPlane),
-        signer: commitmentSigner, authority, publisher: commitmentPublisher,
+        signer: commitmentSigner,
+        authority,
+        publisher: commitmentPublisher,
       }),
       owner: makeOwnerMegapotCommitmentCoordinator({
         store: makeControlPlaneOwnerMegapotSettlementStore(controlPlane),
-        signer: commitmentSigner, authority, publisher: commitmentPublisher,
+        signer: commitmentSigner,
+        authority,
+        publisher: commitmentPublisher,
       }),
     });
     return { approval, purchase, claim, payout, refund, commitment };

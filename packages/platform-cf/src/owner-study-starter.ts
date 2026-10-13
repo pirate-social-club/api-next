@@ -19,8 +19,8 @@ import type {
   OwnerGuestAtomicStartOutcome,
 } from "@pirate/application/owner-guest-atomic-start";
 import {
-  GuestRewardTermsV1,
   GuestIdentifierV1,
+  GuestRewardTermsV1,
   GuestSha256V1,
   GuestStudyPreparedContentV1,
   GuestStudySessionV1,
@@ -266,10 +266,15 @@ const assertGuestResult = (
   )
     throw new Error();
   if (result.session.reward_mode === "megapot_guest_v1") {
-    const original=decode(GuestRewardTermsV1,input.rewardTerms);
-    const stored=decode(GuestRewardTermsV1,result.session.reward_terms);
-    if(!Object.entries(original).every(([key,value])=>Object.entries(stored).some(([other,otherValue])=>key===other && value===otherValue))) throw new Error();
-  } else if(result.session.reward_terms!==null) throw new Error();
+    const original = decode(GuestRewardTermsV1, input.rewardTerms);
+    const stored = decode(GuestRewardTermsV1, result.session.reward_terms);
+    if (
+      !Object.entries(original).every(([key, value]) =>
+        Object.entries(stored).some(([other, otherValue]) => key === other && value === otherValue),
+      )
+    )
+      throw new Error();
+  } else if (result.session.reward_terms !== null) throw new Error();
 };
 const assertReadResult = (result: OwnerStudySession | null, input: Input<"getSession">) => {
   if (result === null) return;
@@ -355,15 +360,23 @@ export const makeControlPlaneOwnerStudyStarter = (
     input: StartIntent,
     acceptedRewardPreviewTermsHash?: string,
   ) {
-    if(acceptedRewardPreviewTermsHash!==undefined){
-      if(input.rewardMode!=="megapot_guest_v1")return yield* reject("resource-policy-unavailable");
-      yield* Effect.try({try:()=>decode(GuestSha256V1,acceptedRewardPreviewTermsHash),catch:()=>reject("resource-policy-unavailable")});
+    if (acceptedRewardPreviewTermsHash !== undefined) {
+      if (input.rewardMode !== "megapot_guest_v1")
+        return yield* reject("resource-policy-unavailable");
+      yield* Effect.try({
+        try: () => decode(GuestSha256V1, acceptedRewardPreviewTermsHash),
+        catch: () => reject("resource-policy-unavailable"),
+      });
     }
     // Practice-only still has paid spoken work. Missing policy cannot yield
     // a NEW candidate; SQL may only recover an already accepted exact receipt.
-    if ((input.rewardMode === "practice_only" && input.rewardTerms !== null)
-      || (input.rewardMode === "megapot_guest_v1" && input.rewardTerms === null && acceptedRewardPreviewTermsHash === undefined)
-      || (input.rewardMode !== "practice_only" && input.rewardMode !== "megapot_guest_v1"))
+    if (
+      (input.rewardMode === "practice_only" && input.rewardTerms !== null) ||
+      (input.rewardMode === "megapot_guest_v1" &&
+        input.rewardTerms === null &&
+        acceptedRewardPreviewTermsHash === undefined) ||
+      (input.rewardMode !== "practice_only" && input.rewardMode !== "megapot_guest_v1")
+    )
       return yield* reject("resource-policy-unavailable");
     if (
       input.source.kind !== "guest" ||
@@ -472,28 +485,48 @@ export const makeControlPlaneOwnerStudyStarter = (
       input.disclosure.version !== configuredDisclosure.version
     )
       return yield* reject("resource-policy-unavailable");
-    const safetyMargin=input.rewardMode==="practice_only"?null:yield* Effect.try({
-      try:()=>decode(Schema.Int.check(Schema.isBetween({minimum:1,maximum:86400})),rawPurchaseSafetyMarginSeconds),
-      catch:()=>reject("resource-policy-unavailable"),
-    });
-    let acceptedTerms=input.rewardTerms;
-    if(input.rewardMode==="megapot_guest_v1" && acceptedRewardPreviewTermsHash!==undefined){
-      const first=prepared.rows[0];
-      if(first===undefined) return yield* reject("resource-policy-unavailable");
-      const quote=yield* one(transaction,"owner-reward.start.original-terms",
-       "SELECT read_guest_reward_start_terms_v1($1,$2,$3::bigint,$4::bigint,$5,$6::integer) AS result",
-       [input.communityId,input.postId,first.audio_revision,first.lyrics_revision,configuredDisclosure.version,safetyMargin],Schema.NullOr(Schema.Struct({terms:GuestRewardTermsV1,reward_preview_terms_hash:GuestSha256V1})));
-      if(quote===null || quote.reward_preview_terms_hash!==acceptedRewardPreviewTermsHash)
-       return yield* reject("resource-policy-unavailable");
-      acceptedTerms=quote.terms;
+    const safetyMargin =
+      input.rewardMode === "practice_only"
+        ? null
+        : yield* Effect.try({
+            try: () =>
+              decode(
+                Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86400 })),
+                rawPurchaseSafetyMarginSeconds,
+              ),
+            catch: () => reject("resource-policy-unavailable"),
+          });
+    let acceptedTerms = input.rewardTerms;
+    if (input.rewardMode === "megapot_guest_v1" && acceptedRewardPreviewTermsHash !== undefined) {
+      const first = prepared.rows[0];
+      if (first === undefined) return yield* reject("resource-policy-unavailable");
+      const quote = yield* one(
+        transaction,
+        "owner-reward.start.original-terms",
+        "SELECT read_guest_reward_start_terms_v1($1,$2,$3::bigint,$4::bigint,$5,$6::integer) AS result",
+        [
+          input.communityId,
+          input.postId,
+          first.audio_revision,
+          first.lyrics_revision,
+          configuredDisclosure.version,
+          safetyMargin,
+        ],
+        Schema.NullOr(
+          Schema.Struct({ terms: GuestRewardTermsV1, reward_preview_terms_hash: GuestSha256V1 }),
+        ),
+      );
+      if (quote === null || quote.reward_preview_terms_hash !== acceptedRewardPreviewTermsHash)
+        return yield* reject("resource-policy-unavailable");
+      acceptedTerms = quote.terms;
     }
     const operationId = capturedOperationId ?? newOperationId();
     const committed = yield* one(
       transaction,
       "guest-study.start.commit",
-      input.rewardMode === "practice_only" ?
-        "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result" :
-        "SELECT commit_guest_study_start_with_rewards_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::integer) AS result",
+      input.rewardMode === "practice_only"
+        ? "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result"
+        : "SELECT commit_guest_study_start_with_rewards_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::integer) AS result",
       [
         ...values,
         JSON.stringify(prepared),
@@ -503,7 +536,13 @@ export const makeControlPlaneOwnerStudyStarter = (
         configuredDisclosure.version,
         input.disclosure.version,
         input.disclosure.accepted,
-        ...(input.rewardMode === "practice_only" ? [] : [input.rewardMode,JSON.stringify(decode(GuestRewardTermsV1,acceptedTerms)),safetyMargin]),
+        ...(input.rewardMode === "practice_only"
+          ? []
+          : [
+              input.rewardMode,
+              JSON.stringify(decode(GuestRewardTermsV1, acceptedTerms)),
+              safetyMargin,
+            ]),
       ],
       Resolved,
     );
@@ -511,7 +550,11 @@ export const makeControlPlaneOwnerStudyStarter = (
       try: () => {
         if (committed.state === "completed" && committed.result !== null) {
           if (committed.operationId !== operationId) throw new Error();
-          assertGuestResult(committed.result, {...input,rewardTerms:acceptedTerms}, prepared.sessionId);
+          assertGuestResult(
+            committed.result,
+            { ...input, rewardTerms: acceptedTerms },
+            prepared.sessionId,
+          );
         }
         return outcome(committed, input);
       },
@@ -535,7 +578,7 @@ export const makeControlPlaneOwnerStudyStarter = (
     startPreparedSession: (input) =>
       provide(
         Effect.gen(function* () {
-          yield* validateIntent(input,input.acceptedRewardPreviewTermsHash);
+          yield* validateIntent(input, input.acceptedRewardPreviewTermsHash);
           if (input.trustedEdge.kind !== "trusted_edge")
             return yield* Effect.fail(reject("resource-policy-unavailable"));
           const db = yield* ControlPlaneDb;
@@ -564,8 +607,15 @@ export const makeControlPlaneOwnerStudyStarter = (
                 return yield* Effect.try({
                   try: (): GuestAtomicStudyStartOutcome => ({
                     kind: "start",
-                    outcome: outcome(prepared.outcome, input.rewardMode==="megapot_guest_v1" && input.rewardTerms===null && prepared.outcome.result!==null && prepared.outcome.result.session.object==="guest_study_session_v1"
-                      ? {...input,rewardTerms:prepared.outcome.result.session.reward_terms} : input),
+                    outcome: outcome(
+                      prepared.outcome,
+                      input.rewardMode === "megapot_guest_v1" &&
+                        input.rewardTerms === null &&
+                        prepared.outcome.result !== null &&
+                        prepared.outcome.result.session.object === "guest_study_session_v1"
+                        ? { ...input, rewardTerms: prepared.outcome.result.session.reward_terms }
+                        : input,
+                    ),
                   }),
                   catch: () => invalid("guest-study.start.atomic-replay"),
                 });

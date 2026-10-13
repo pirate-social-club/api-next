@@ -1,12 +1,15 @@
 // Canonical learning dispatcher. Construction never enables a declaration.
-import { GetPublicGuestStudyPreparedContentV2, guestParticipationRegistry } from "@pirate/contracts";
-import type { makeGuestAuthorityComposition } from "./guest-authority-controller-composition.ts";
 import {
+  GetPublicGuestStudyPreparedContentV2,
+  guestParticipationRegistry,
+} from "@pirate/contracts";
+import type { makeGuestAuthorityComposition } from "./guest-authority-controller-composition.ts";
+import type { VerifiedHnsCommunityAppApiRequest } from "./hns-community-app-api-transport.ts";
+import {
+  makeOwnerRewardGuestLearningControllers,
   type OwnerRewardGuestLearningControllerName,
   type OwnerRewardGuestLearningControllerServices,
-  makeOwnerRewardGuestLearningControllers,
 } from "./owner-reward-guest-controllers.ts";
-import type { VerifiedHnsCommunityAppApiRequest } from "./hns-community-app-api-transport.ts";
 import type { DecodedRequest, EndpointHandlerResult } from "./transport.ts";
 
 type Authority = ReturnType<typeof makeGuestAuthorityComposition>;
@@ -34,9 +37,14 @@ export function makeOwnerRewardGuestLearningComposition(
         >;
       }>,
     ): Promise<EndpointHandlerResult> {
-      const policy = input.name === "GetPublicGuestStudyPreparedContentV2"
-        ? GetPublicGuestStudyPreparedContentV2.auth.policy : guestParticipationRegistry[input.name].auth.policy;
-      if (input.name === "GetPublicStudyPreparedContentV1" || input.name === "GetPublicGuestStudyPreparedContentV2") {
+      const policy =
+        input.name === "GetPublicGuestStudyPreparedContentV2"
+          ? GetPublicGuestStudyPreparedContentV2.auth.policy
+          : guestParticipationRegistry[input.name].auth.policy;
+      if (
+        input.name === "GetPublicStudyPreparedContentV1" ||
+        input.name === "GetPublicGuestStudyPreparedContentV2"
+      ) {
         if (policy.kind !== "public") throw new Error("Prepared content policy differs");
         // Existing transport owns current public visibility/HNS host trust.
         // No account/guest proof lookup, owner creation, CSRF/cookie issuance,

@@ -16,8 +16,8 @@ import {
 } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
 import { makeControlledAccountSpokenRecovery } from "../../../packages/platform-cf/src/controlled-account-spoken-recovery.ts";
 import { makeControlledAccountStudyV2Store } from "../../../packages/platform-cf/src/controlled-account-study-store.ts";
-import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
 import { runSerialStudyMegapotRecovery } from "./serial-study-megapot-recovery.ts";
+import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
 
 const pgTest = pgUrl === undefined ? test.skip : test;
 const Original = Schema.Struct({
@@ -145,29 +145,32 @@ pgTest(
       const result = await run(
         Effect.result(
           runSerialStudyMegapotRecovery({
-            outerStartedAtMs: originalStartedAtMs, now: Date.now,
+            outerStartedAtMs: originalStartedAtMs,
+            now: Date.now,
             // Only an execution observer follows the real Study native stage;
             // this is not a successful financial SDK/receipt or money fixture.
-            financial: Effect.sync(() => { financialStageCalls++; }),
+            financial: Effect.sync(() => {
+              financialStageCalls++;
+            }),
             study: runStudySourceRecoveryCycle({
-            account: account.recover(),
-            guest: {
-              // These are only downstream execution observers, never mocked DB
-              // results or claimed successful Guest/release authority.
-              closed: Effect.sync(() => {
-                guestStageCalls++;
-                return { examined: 0, completed: 0, pending: 0, skipped: 0 };
-              }),
-              releaseNext: () =>
-                Effect.sync(() => {
-                  expiryStageCalls++;
-                  return { state: "idle" as const };
+              account: account.recover(),
+              guest: {
+                // These are only downstream execution observers, never mocked DB
+                // results or claimed successful Guest/release authority.
+                closed: Effect.sync(() => {
+                  guestStageCalls++;
+                  return { examined: 0, completed: 0, pending: 0, skipped: 0 };
                 }),
-              maximumReleases: 1,
-              ephemeralCleanup: Effect.sync(() => {
-                cleanupStageCalls++;
-              }),
-            },
+                releaseNext: () =>
+                  Effect.sync(() => {
+                    expiryStageCalls++;
+                    return { state: "idle" as const };
+                  }),
+                maximumReleases: 1,
+                ephemeralCleanup: Effect.sync(() => {
+                  cleanupStageCalls++;
+                }),
+              },
             }).pipe(Effect.asVoid),
           }),
         ),

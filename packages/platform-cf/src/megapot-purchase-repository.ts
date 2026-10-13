@@ -312,24 +312,31 @@ export type MegapotOriginalPurchaseWindow = Readonly<{
 
 type OriginalPurchaseWindowOptions = Readonly<{ purchaseSafetyMarginSeconds: number }>;
 
-const beginOriginalPurchase = Effect.fn("MegapotPurchaseStore.beginOriginalPurchase")(
-  function* (transaction: ControlPlaneTransaction) {
-    const isolation = yield* transaction.execute<Row>({
-      label: "megapot-purchase.isolation.read",
-      text: "SELECT current_setting('transaction_isolation') AS isolation", values: [], readonly: true,
-    });
-    if (isolation.rows.length !== 1 || isolation.rows[0]?.isolation !== "read committed")
-      return yield* storage("constraint");
-    yield* transaction.execute({
-      label: "megapot-purchase.topology.lock",
-      text: "SELECT pg_advisory_xact_lock_shared(83000003,1)", values: [], readonly: false,
-    });
-  },
-);
+const beginOriginalPurchase = Effect.fn("MegapotPurchaseStore.beginOriginalPurchase")(function* (
+  transaction: ControlPlaneTransaction,
+) {
+  const isolation = yield* transaction.execute<Row>({
+    label: "megapot-purchase.isolation.read",
+    text: "SELECT current_setting('transaction_isolation') AS isolation",
+    values: [],
+    readonly: true,
+  });
+  if (isolation.rows.length !== 1 || isolation.rows[0]?.isolation !== "read committed")
+    return yield* storage("constraint");
+  yield* transaction.execute({
+    label: "megapot-purchase.topology.lock",
+    text: "SELECT pg_advisory_xact_lock_shared(83000003,1)",
+    values: [],
+    readonly: false,
+  });
+});
 
 const readOriginalWindowSnapshotIn = Effect.fn("MegapotPurchaseStore.readOriginalWindowSnapshotIn")(
-  function* (transaction: ControlPlaneTransaction, candidate: MegapotPurchaseCandidate,
-    options: OriginalPurchaseWindowOptions) {
+  function* (
+    transaction: ControlPlaneTransaction,
+    candidate: MegapotPurchaseCandidate,
+    options: OriginalPurchaseWindowOptions,
+  ) {
     const result = yield* transaction.execute<Row>({
       label: "megapot-purchase.original-window.read",
       text: `WITH original AS MATERIALIZED (
@@ -337,16 +344,24 @@ const readOriginalWindowSnapshotIn = Effect.fn("MegapotPurchaseStore.readOrigina
       ) SELECT (original_window->>'open')::boolean AS open,
         EXTRACT(EPOCH FROM ((original_window->>'deadlineAt')::timestamptz -
           (original_window->>'checkedAt')::timestamptz))*1000 AS remaining_ms FROM original`,
-      values: [candidate.poolLegId, candidate.drawingId.toString(), candidate.observationId,
-        candidate.snapshotId, candidate.commitmentEffectId, options.purchaseSafetyMarginSeconds],
+      values: [
+        candidate.poolLegId,
+        candidate.drawingId.toString(),
+        candidate.observationId,
+        candidate.snapshotId,
+        candidate.commitmentEffectId,
+        options.purchaseSafetyMarginSeconds,
+      ],
       readonly: false,
     });
     const row = result.rows[0];
     if (result.rows.length !== 1 || typeof row?.open !== "boolean")
       return yield* storage("invalid-row");
     const raw = row.remaining_ms;
-    if ((typeof raw !== "number" && typeof raw !== "string") ||
-        (typeof raw === "string" && !/^-?[0-9]+(?:\.[0-9]+)?$/u.test(raw)))
+    if (
+      (typeof raw !== "number" && typeof raw !== "string") ||
+      (typeof raw === "string" && !/^-?[0-9]+(?:\.[0-9]+)?$/u.test(raw))
+    )
       return yield* storage("invalid-row");
     const remainingMilliseconds = Math.floor(Number(raw));
     if (!Number.isSafeInteger(remainingMilliseconds)) return yield* storage("invalid-row");
@@ -354,9 +369,14 @@ const readOriginalWindowSnapshotIn = Effect.fn("MegapotPurchaseStore.readOrigina
   },
 );
 
-const readOriginalWindowIn = (transaction: ControlPlaneTransaction,
-  candidate: MegapotPurchaseCandidate, options: OriginalPurchaseWindowOptions) =>
-  readOriginalWindowSnapshotIn(transaction, candidate, options).pipe(Effect.map((window) => window.open));
+const readOriginalWindowIn = (
+  transaction: ControlPlaneTransaction,
+  candidate: MegapotPurchaseCandidate,
+  options: OriginalPurchaseWindowOptions,
+) =>
+  readOriginalWindowSnapshotIn(transaction, candidate, options).pipe(
+    Effect.map((window) => window.open),
+  );
 
 function reserveNonceIn(
   transaction: ControlPlaneTransaction,
@@ -525,7 +545,9 @@ function reserveNonceIn(
         candidate.drawingId.toString(),
         input.effectId,
         candidate.drawingVersion,
-        candidate.observationId, candidate.snapshotId, candidate.commitmentEffectId,
+        candidate.observationId,
+        candidate.snapshotId,
+        candidate.commitmentEffectId,
         options.purchaseSafetyMarginSeconds,
       ],
       readonly: false,
@@ -547,13 +569,15 @@ export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurch
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
-          readOriginalWindowSnapshotIn(transaction, candidate, options));
+          readOriginalWindowSnapshotIn(transaction, candidate, options),
+        );
       }).pipe(mapped),
     isOriginalWindowOpen: (candidate: MegapotPurchaseCandidate) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
-          readOriginalWindowIn(transaction, candidate, options));
+          readOriginalWindowIn(transaction, candidate, options),
+        );
       }).pipe(mapped),
     findProgress: (effectId: string) =>
       Effect.gen(function* () {
@@ -675,7 +699,9 @@ export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurch
             }
             const clock = yield* transaction.execute<Row>({
               label: "megapot-purchase.prebroadcast-close.clock.read",
-              text: "SELECT clock_timestamp() AS closed_at", values: [], readonly: true,
+              text: "SELECT clock_timestamp() AS closed_at",
+              values: [],
+              readonly: true,
             });
             if (clock.rows.length !== 1) return yield* storage("invalid-row");
             const failedAt = yield* Effect.try({
@@ -728,7 +754,9 @@ export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurch
     reserveNonce: (input: Parameters<MegapotPurchaseStore["reserveNonce"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* db.withTransaction((transaction) => reserveNonceIn(transaction, input, options));
+        return yield* db.withTransaction((transaction) =>
+          reserveNonceIn(transaction, input, options),
+        );
       }).pipe(mappedReservation),
     prepare: (input: Parameters<MegapotPurchaseStore["prepare"]>[0]) =>
       Effect.gen(function* () {
@@ -742,7 +770,11 @@ export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurch
                 JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
                 WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2 AND drawing.purchase_effect_id=$3
                 FOR UPDATE OF drawing,leg`,
-              values: [input.reservation.poolLegId, input.reservation.drawingId.toString(), input.reservation.effectId],
+              values: [
+                input.reservation.poolLegId,
+                input.reservation.drawingId.toString(),
+                input.reservation.effectId,
+              ],
               readonly: false,
             });
             if (lockedDrawing.rows.length !== 1) return yield* rejected("effect-conflict");
@@ -833,9 +865,12 @@ export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurch
                 input.signedTransaction,
                 input.signedTransactionHash,
                 input.preparedAt,
-                input.reservation.poolLegId, input.reservation.drawingId.toString(),
-                input.reservation.observationId, input.reservation.snapshotId,
-                input.reservation.commitmentEffectId, options.purchaseSafetyMarginSeconds,
+                input.reservation.poolLegId,
+                input.reservation.drawingId.toString(),
+                input.reservation.observationId,
+                input.reservation.snapshotId,
+                input.reservation.commitmentEffectId,
+                options.purchaseSafetyMarginSeconds,
               ],
               readonly: false,
             });
@@ -1234,8 +1269,12 @@ export const makeControlPlaneMegapotPurchaseStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   options: OriginalPurchaseWindowOptions,
 ): MegapotPurchaseStore & {
-  readonly isOriginalWindowOpen: (candidate: MegapotPurchaseCandidate) => Effect.Effect<boolean, MegapotPurchaseFailure>;
-  readonly readOriginalWindow: (candidate: MegapotPurchaseCandidate) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
+  readonly isOriginalWindowOpen: (
+    candidate: MegapotPurchaseCandidate,
+  ) => Effect.Effect<boolean, MegapotPurchaseFailure>;
+  readonly readOriginalWindow: (
+    candidate: MegapotPurchaseCandidate,
+  ) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
 } => {
   const repository = makeControlPlaneMegapotPurchaseRepository(options);
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>

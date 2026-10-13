@@ -49,6 +49,10 @@ import {
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
 import {
+  type GuestStudyRecoveryManagedBindings,
+  makeDefaultGuestStudyRecoveryComposition,
+} from "./guest-study-recovery-managed-composition.ts";
+import {
   type HnsActiveLeaseRenewalBindings,
   makeHnsActiveLeaseRenewalJob,
 } from "./hns-active-lease-renewal";
@@ -70,6 +74,7 @@ import {
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -86,10 +91,8 @@ import {
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
-import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
-import { makeDefaultGuestStudyRecoveryComposition, type GuestStudyRecoveryManagedBindings } from "./guest-study-recovery-managed-composition.ts";
+import type { GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
-import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 // Runtime boundary: the entrypoint exports only the default handler, the cron
@@ -112,6 +115,7 @@ export {
   makeMegapotRewardsJob,
   runMegapotRewardsCycle,
 } from "./megapot-rewards";
+export { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
 export {
   buildJobRegistry,
   groupDueJobsByLane,
@@ -130,7 +134,6 @@ export {
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
 export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
-export { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
 export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {
@@ -769,7 +772,10 @@ export function makeJobsWorkerDeclarations(
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
   const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
-  const studyJob = learnerAudio === undefined ? undefined : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+  const studyJob =
+    learnerAudio === undefined
+      ? undefined
+      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
   // One actual writer owns both source families. The unchanged registry still
   // rejects arbitrary duplicate declarations; no shared-writer waiver exists.
   if (megapotJob !== undefined && studyJob !== undefined) {
@@ -858,7 +864,10 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
-    const guestStudyRecovery=await makeDefaultGuestStudyRecoveryComposition(env,config.API_NEXT_ENV);
+    const guestStudyRecovery = await makeDefaultGuestStudyRecoveryComposition(
+      env,
+      config.API_NEXT_ENV,
+    );
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,

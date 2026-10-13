@@ -19,9 +19,14 @@ import {
 } from "./guest-study-readiness-sql.ts";
 
 type Runtime = Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
-type Profile = "learning"|"publicRead"|"cron"|"observer"|"ordinaryAccount";
-import type { GuestStudyReadinessCandidate, GuestStudyReadinessRoleProfile } from "./guest-study-readiness-profile.ts";
+type Profile = "learning" | "publicRead" | "cron" | "observer" | "ordinaryAccount";
+
+import type {
+  GuestStudyReadinessCandidate,
+  GuestStudyReadinessRoleProfile,
+} from "./guest-study-readiness-profile.ts";
 import { ownerFinancialGuestStudyReadinessSource } from "./owner-financial-guest-study-readiness-source.ts";
+
 const Identity = Schema.Struct({
   role_name: Schema.NonEmptyString,
   login_name: Schema.NonEmptyString,
@@ -151,18 +156,32 @@ export interface GuestStudyReadinessBindings {
   readonly workerLearnerAudioBinding: object | undefined;
   readonly selectedLearnerAudioBinding: object | undefined;
 }
-export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBindings,
- options:Readonly<{roleProfile:GuestStudyReadinessRoleProfile}>={roleProfile:"practice"}) {
- if(options.roleProfile!=="practice" && options.roleProfile!=="owner_financial") throw refuse();
- const selected=options.roleProfile==="practice"?
-  {candidate:practiceCandidate,phaseSql}:ownerFinancialGuestStudyReadinessSource;
- if(selected===null) throw refuse();
- const candidate:GuestStudyReadinessCandidate=selected.candidate;
- const selectedPhaseSql=selected.phaseSql;
- const ordinaryProfile=options.roleProfile==="owner_financial"?ownerFinancialGuestStudyReadinessSource?.candidate.profiles.ordinaryAccount:null;
- if(options.roleProfile==="owner_financial" && (ordinaryProfile==null || bindings.ordinaryAccount===undefined)) throw refuse();
- const profiles:readonly Profile[]=options.roleProfile==="owner_financial"?
-  ["learning","publicRead","cron","observer","ordinaryAccount"]:["learning","publicRead","cron","observer"];
+export function makeGuestStudyManagedReadiness(
+  bindings: GuestStudyReadinessBindings,
+  options: Readonly<{ roleProfile: GuestStudyReadinessRoleProfile }> = { roleProfile: "practice" },
+) {
+  if (options.roleProfile !== "practice" && options.roleProfile !== "owner_financial")
+    throw refuse();
+  const selected =
+    options.roleProfile === "practice"
+      ? { candidate: practiceCandidate, phaseSql }
+      : ownerFinancialGuestStudyReadinessSource;
+  if (selected === null) throw refuse();
+  const candidate: GuestStudyReadinessCandidate = selected.candidate;
+  const selectedPhaseSql = selected.phaseSql;
+  const ordinaryProfile =
+    options.roleProfile === "owner_financial"
+      ? ownerFinancialGuestStudyReadinessSource?.candidate.profiles.ordinaryAccount
+      : null;
+  if (
+    options.roleProfile === "owner_financial" &&
+    (ordinaryProfile == null || bindings.ordinaryAccount === undefined)
+  )
+    throw refuse();
+  const profiles: readonly Profile[] =
+    options.roleProfile === "owner_financial"
+      ? ["learning", "publicRead", "cron", "observer", "ordinaryAccount"]
+      : ["learning", "publicRead", "cron", "observer"];
   const schema = bindings.schema;
   if (
     !/^[a-z][a-z0-9_]{0,62}$/u.test(schema) ||
@@ -190,8 +209,8 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
     });
     const principals: { profile: Profile; identity: Schema.Schema.Type<typeof Identity> }[] = [];
     for (const profile of profiles) {
-      const principalRuntime=bindings[profile];
-      if(principalRuntime===undefined) throw refuse();
+      const principalRuntime = bindings[profile];
+      if (principalRuntime === undefined) throw refuse();
       const identity = yield* Effect.gen(function* () {
         return yield* boundedLearnerAudioTransaction((tx) =>
           Effect.gen(function* () {
@@ -257,19 +276,33 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
             },
             catch: refuse,
           });
-          if(options.roleProfile==="owner_financial") {
-            const expected=ownerFinancialGuestStudyReadinessSource?.accountingManifestSha256;
-            const value=yield* rows(tx,"guest-readiness.accounting-manifest",`SELECT ${quoted}.read_owner_accounting_readiness_v1() AS readiness`);
-            yield* Effect.try({try:()=>{
-              assert(typeof expected==="string"&&/^[0-9a-f]{64}$/u.test(expected));
-              const actual=one(Schema.Struct({readiness:Schema.Struct({
-                source_version:Schema.Literal("owner_accounting_native_source_v1"),
-                manifest_sha256:Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
-              })}),value);
-              assert(actual.readiness.manifest_sha256===expected);
-            },catch:refuse});
+          if (options.roleProfile === "owner_financial") {
+            const expected = ownerFinancialGuestStudyReadinessSource?.accountingManifestSha256;
+            const value = yield* rows(
+              tx,
+              "guest-readiness.accounting-manifest",
+              `SELECT ${quoted}.read_owner_accounting_readiness_v1() AS readiness`,
+            );
+            yield* Effect.try({
+              try: () => {
+                assert(typeof expected === "string" && /^[0-9a-f]{64}$/u.test(expected));
+                const actual = one(
+                  Schema.Struct({
+                    readiness: Schema.Struct({
+                      source_version: Schema.Literal("owner_accounting_native_source_v1"),
+                      manifest_sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+                    }),
+                  }),
+                  value,
+                );
+                assert(actual.readiness.manifest_sha256 === expected);
+              },
+              catch: refuse,
+            });
           }
-          const phase = yield* rows(tx, "guest-readiness.native-phase", selectedPhaseSql(quoted), [schema]);
+          const phase = yield* rows(tx, "guest-readiness.native-phase", selectedPhaseSql(quoted), [
+            schema,
+          ]);
           yield* Effect.try({
             try: () =>
               one(
@@ -367,25 +400,29 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
             yield* Effect.try({
               try: () => {
                 const observed = one(Acl, acl);
-                const expected=profile==="ordinaryAccount"?ordinaryProfile:candidate.profiles[profile];
-                if(expected===null || expected===undefined) throw refuse();
+                const expected =
+                  profile === "ordinaryAccount" ? ordinaryProfile : candidate.profiles[profile];
+                if (expected === null || expected === undefined) throw refuse();
                 assert(
                   observed.catalog_functions.length === 1 &&
                     observed.catalog_functions[0]?.function_oid === identity.control_function_oid,
                 );
                 const profileColumns: Readonly<Record<string, readonly string[]>> =
                   expected.columns;
-                const expectedColumns = profile==="ordinaryAccount" && ordinaryProfile!=null?
-                  ordinaryProfile.column_grants.map(column=>({schema_name:schema,...column})):
-                  Object.entries(profileColumns).flatMap(
-                  ([table_name, columns]) =>
-                    columns.map((column_name) => ({
-                      schema_name: schema,
-                      table_name,
-                      column_name,
-                      privilege: "SELECT",
-                    })),
-                );
+                const expectedColumns =
+                  profile === "ordinaryAccount" && ordinaryProfile != null
+                    ? ordinaryProfile.column_grants.map((column) => ({
+                        schema_name: schema,
+                        ...column,
+                      }))
+                    : Object.entries(profileColumns).flatMap(([table_name, columns]) =>
+                        columns.map((column_name) => ({
+                          schema_name: schema,
+                          table_name,
+                          column_name,
+                          privilege: "SELECT",
+                        })),
+                      );
                 const expectedFunctions = expected.functions.map((signature) => {
                   const frame = nativeFrames.find((frame) => frame.signature === signature);
                   assert(frame !== undefined);
@@ -411,14 +448,36 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
                 const functionTuples = (
                   items: readonly { schema_name: string; function_oid: string }[],
                 ) => items.map((item) => [item.schema_name, item.function_oid]);
-                const expectedTables=profile==="ordinaryAccount"&&ordinaryProfile!=null?
-                  ordinaryProfile.table_grants.map(grant=>({schema_name:schema,...grant})):[];
-                const expectedSequences=profile==="ordinaryAccount"&&ordinaryProfile!=null?
-                  ordinaryProfile.sequence_grants.map(grant=>({schema_name:schema,...grant})):[];
-                assert(canonical(observed.tables.map(t=>[t.schema_name,t.table_name,t.privilege]))===
-                  canonical(expectedTables.map(t=>[t.schema_name,t.table_name,t.privilege])));
-                assert(canonical(observed.sequences.map(t=>[t.schema_name,t.sequence_name,t.privilege]))===
-                  canonical(expectedSequences.map(t=>[t.schema_name,t.sequence_name,t.privilege])));
+                const expectedTables =
+                  profile === "ordinaryAccount" && ordinaryProfile != null
+                    ? ordinaryProfile.table_grants.map((grant) => ({
+                        schema_name: schema,
+                        ...grant,
+                      }))
+                    : [];
+                const expectedSequences =
+                  profile === "ordinaryAccount" && ordinaryProfile != null
+                    ? ordinaryProfile.sequence_grants.map((grant) => ({
+                        schema_name: schema,
+                        ...grant,
+                      }))
+                    : [];
+                assert(
+                  canonical(
+                    observed.tables.map((t) => [t.schema_name, t.table_name, t.privilege]),
+                  ) ===
+                    canonical(
+                      expectedTables.map((t) => [t.schema_name, t.table_name, t.privilege]),
+                    ),
+                );
+                assert(
+                  canonical(
+                    observed.sequences.map((t) => [t.schema_name, t.sequence_name, t.privilege]),
+                  ) ===
+                    canonical(
+                      expectedSequences.map((t) => [t.schema_name, t.sequence_name, t.privilege]),
+                    ),
+                );
                 assert(
                   canonical(columnTuples(observed.columns)) ===
                     canonical(columnTuples(expectedColumns)),

@@ -1,4 +1,3 @@
-import { type AccountOwnerRewardHooks, withAccountOwnerRewardMutation } from "./account-owner-reward-hooks.ts";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
@@ -16,6 +15,10 @@ import {
   KaraokeSongLeaderboard as KaraokeSongLeaderboardSchema,
 } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
+import {
+  type AccountOwnerRewardHooks,
+  withAccountOwnerRewardMutation,
+} from "./account-owner-reward-hooks.ts";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import {
   buildKaraokePayloadLines,
@@ -266,7 +269,8 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if (ownerRewards !== undefined) yield* ownerRewards.lockBirth(transaction, input.accountId);
+            if (ownerRewards !== undefined)
+              yield* ownerRewards.lockBirth(transaction, input.accountId);
             yield* transaction.execute({
               label: "karaoke.audio.source-lock",
               text: "SELECT lock_original_account_audio_source_private_v1($1)",
@@ -314,7 +318,8 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
               }
               return authorityFromRow(row);
             }
-            const selectedBirth = ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
+            const selectedBirth =
+              ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
             const source = yield* sessionSource(transaction, input.communityId, input.postId);
             const clock = yield* transaction.execute<Row>({
               label: "karaoke.session.clock",
@@ -434,55 +439,80 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.authority.accountId, communityId: input.authority.communityId, family: "karaoke", sessionId: input.authority.sessionId, producer: "karaoke", payload: input });
+        const prepared =
+          ownerRewards === undefined
+            ? null
+            : yield* ownerRewards.prepare({
+                accountId: input.authority.accountId,
+                communityId: input.authority.communityId,
+                family: "karaoke",
+                sessionId: input.authority.sessionId,
+                producer: "karaoke",
+                payload: input,
+              });
         const qualificationId = prepared?.qualificationId ?? input.qualificationId;
         return yield* db.withTransaction((transaction) =>
-          withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
-            yield* transaction.execute({ label: "rewards.owner-group.before-karaoke", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.authority.accountId, input.authority.communityId, input.authority.sessionId, "karaoke"], readonly: false });
-            const currentAuthority = yield* transaction.execute<Row>({
-              label: "karaoke.attempt.current-authority",
-              text: `SELECT session_id FROM karaoke_sessions
+          withAccountOwnerRewardMutation(
+            ownerRewards,
+            transaction,
+            prepared,
+            Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "rewards.owner-group.before-karaoke",
+                text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)",
+                values: [
+                  input.authority.accountId,
+                  input.authority.communityId,
+                  input.authority.sessionId,
+                  "karaoke",
+                ],
+                readonly: false,
+              });
+              const currentAuthority = yield* transaction.execute<Row>({
+                label: "karaoke.attempt.current-authority",
+                text: `SELECT session_id FROM karaoke_sessions
                       WHERE session_id=$1 AND attempt_id=$2 AND account_id=$3
                         AND persona_id=$4 AND community_id=$5 AND post_id=$6
                         AND active_activity_persona(account_id,persona_id,community_id)
                         AND can_account_access_activity_song(account_id,community_id,post_id)`,
-              values: [
-                input.authority.sessionId,
-                input.authority.attemptId,
-                input.authority.accountId,
-                input.authority.personaId,
-                input.authority.communityId,
-                input.authority.postId,
-              ],
-              readonly: false,
-            });
-            if (currentAuthority.rows.length !== 1) return yield* rejected("invalid-input");
-            if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
-            const replay = yield* transaction.execute<Row>({
-              label: "karaoke.attempt.replay",
-              text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1 FOR UPDATE OF attempt`,
-              values: [input.authority.attemptId],
-              readonly: false,
-            });
-            if (replay.rows.length === 1) return attemptFromRow(replay.rows[0] as Row);
-            const summary = input.summary;
-            const finalScore = input.completionReason === "completed" ? bps(summary.finalScore) : 0;
-            const scoredLineCount =
-              input.completionReason === "completed" ? summary.scoredLineCount : 0;
-            const evidence = {
-              kind: "karaoke_qualification_v2",
-              scored_line_count: scoredLineCount,
-              line_count: summary.lineCount,
-              coverage_bps: Math.floor((10_000 * scoredLineCount) / summary.lineCount),
-              final_score_bps: finalScore,
-              scoring_version: input.authority.scoringVersion,
-              scoring_provider: input.authority.scoringProvider,
-              karaoke_revision_id: input.authority.karaokeRevisionId,
-              playback_kind: input.authority.playbackKind,
-            };
-            yield* transaction.execute({
-              label: "karaoke.attempt.insert",
-              text: `INSERT INTO karaoke_attempts (
+                values: [
+                  input.authority.sessionId,
+                  input.authority.attemptId,
+                  input.authority.accountId,
+                  input.authority.personaId,
+                  input.authority.communityId,
+                  input.authority.postId,
+                ],
+                readonly: false,
+              });
+              if (currentAuthority.rows.length !== 1) return yield* rejected("invalid-input");
+              if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
+              const replay = yield* transaction.execute<Row>({
+                label: "karaoke.attempt.replay",
+                text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1 FOR UPDATE OF attempt`,
+                values: [input.authority.attemptId],
+                readonly: false,
+              });
+              if (replay.rows.length === 1) return attemptFromRow(replay.rows[0] as Row);
+              const summary = input.summary;
+              const finalScore =
+                input.completionReason === "completed" ? bps(summary.finalScore) : 0;
+              const scoredLineCount =
+                input.completionReason === "completed" ? summary.scoredLineCount : 0;
+              const evidence = {
+                kind: "karaoke_qualification_v2",
+                scored_line_count: scoredLineCount,
+                line_count: summary.lineCount,
+                coverage_bps: Math.floor((10_000 * scoredLineCount) / summary.lineCount),
+                final_score_bps: finalScore,
+                scoring_version: input.authority.scoringVersion,
+                scoring_provider: input.authority.scoringProvider,
+                karaoke_revision_id: input.authority.karaokeRevisionId,
+                playback_kind: input.authority.playbackKind,
+              };
+              yield* transaction.execute({
+                label: "karaoke.attempt.insert",
+                text: `INSERT INTO karaoke_attempts (
                        attempt_id, session_id, completion_reason, scoring_version,
                        scoring_provider, scoring_model, final_score_bps, scored_line_count,
                        line_count, evidence_summary, completed_at, created_at,
@@ -491,56 +521,56 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
                        low_confidence_line_count, scoring_diagnostics, transport_facts
                      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::timestamptz,
                        $12::timestamptz,$13,$14,$15,$16,$17,$18,$19::jsonb,$20::jsonb)`,
-              values: [
-                input.authority.attemptId,
-                input.authority.sessionId,
-                input.completionReason,
-                input.authority.scoringVersion,
-                input.authority.scoringProvider,
-                input.authority.scoringModel,
-                finalScore,
-                scoredLineCount,
-                summary.lineCount,
-                JSON.stringify(evidence),
-                input.completedAt,
-                input.authority.createdAt,
-                input.completionReason === "completed" ? bps(summary.lyricsScore) : 0,
-                input.completionReason === "completed" && summary.timingScore !== null
-                  ? bps(summary.timingScore)
-                  : null,
-                summary.timingTrend,
-                summary.uncertainLineCount,
-                summary.noRecognitionLineCount,
-                summary.lowConfidenceLineCount,
-                JSON.stringify(input.diagnostics),
-                JSON.stringify(input.transportFacts),
-              ],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "karaoke.session.complete",
-              text: `UPDATE karaoke_sessions SET status='completed', completed_at=$2::timestamptz
-                      WHERE session_id=$1 AND status='active'`,
-              values: [input.authority.sessionId, input.completedAt],
-              readonly: false,
-            });
-            const coverage = Math.floor((10_000 * scoredLineCount) / summary.lineCount);
-            if (
-              input.completionReason === "completed" &&
-              scoredLineCount >= 5 &&
-              coverage >= 8500 &&
-              finalScore >= 7000
-            ) {
-              const day = yield* transaction.execute<Row>({
-                label: "karaoke.qualification.streak-day",
-                text: "SELECT ($1::timestamptz AT TIME ZONE $2)::date AS streak_day",
-                values: [input.completedAt, input.authority.timezone],
-                readonly: true,
+                values: [
+                  input.authority.attemptId,
+                  input.authority.sessionId,
+                  input.completionReason,
+                  input.authority.scoringVersion,
+                  input.authority.scoringProvider,
+                  input.authority.scoringModel,
+                  finalScore,
+                  scoredLineCount,
+                  summary.lineCount,
+                  JSON.stringify(evidence),
+                  input.completedAt,
+                  input.authority.createdAt,
+                  input.completionReason === "completed" ? bps(summary.lyricsScore) : 0,
+                  input.completionReason === "completed" && summary.timingScore !== null
+                    ? bps(summary.timingScore)
+                    : null,
+                  summary.timingTrend,
+                  summary.uncertainLineCount,
+                  summary.noRecognitionLineCount,
+                  summary.lowConfidenceLineCount,
+                  JSON.stringify(input.diagnostics),
+                  JSON.stringify(input.transportFacts),
+                ],
+                readonly: false,
               });
-              const streakDay = date((day.rows[0] as Row).streak_day);
               yield* transaction.execute({
-                label: "karaoke.qualification.insert",
-                text: `INSERT INTO activity_qualifications (
+                label: "karaoke.session.complete",
+                text: `UPDATE karaoke_sessions SET status='completed', completed_at=$2::timestamptz
+                      WHERE session_id=$1 AND status='active'`,
+                values: [input.authority.sessionId, input.completedAt],
+                readonly: false,
+              });
+              const coverage = Math.floor((10_000 * scoredLineCount) / summary.lineCount);
+              if (
+                input.completionReason === "completed" &&
+                scoredLineCount >= 5 &&
+                coverage >= 8500 &&
+                finalScore >= 7000
+              ) {
+                const day = yield* transaction.execute<Row>({
+                  label: "karaoke.qualification.streak-day",
+                  text: "SELECT ($1::timestamptz AT TIME ZONE $2)::date AS streak_day",
+                  values: [input.completedAt, input.authority.timezone],
+                  readonly: true,
+                });
+                const streakDay = date((day.rows[0] as Row).streak_day);
+                yield* transaction.execute({
+                  label: "karaoke.qualification.insert",
+                  text: `INSERT INTO activity_qualifications (
                          qualification_id, account_id, persona_id, community_id, post_id,
                          audio_revision, activity_key, karaoke_session_id, karaoke_attempt_id,
                          score_bps, qualification_policy_version_id, qualified_at, streak_day,
@@ -548,43 +578,44 @@ export const makeControlPlaneKaraokeRepository = (ownerRewards?: AccountOwnerRew
                        ) VALUES ($1,$2,$3,$4,$5,$6,'karaoke',$7,$8,$9,$10,
                          $11::timestamptz,($11::timestamptz AT TIME ZONE $12)::date,
                          $13::jsonb,$11::timestamptz) ON CONFLICT DO NOTHING`,
-                values: [
-                  qualificationId,
-                  input.authority.accountId,
-                  input.authority.personaId,
-                  input.authority.communityId,
-                  input.authority.postId,
-                  input.authority.audioRevision,
-                  input.authority.sessionId,
-                  input.authority.attemptId,
-                  finalScore,
-                  input.authority.qualificationPolicyVersionId,
-                  input.completedAt,
-                  input.authority.timezone,
-                  JSON.stringify(evidence),
-                ],
-                readonly: false,
+                  values: [
+                    qualificationId,
+                    input.authority.accountId,
+                    input.authority.personaId,
+                    input.authority.communityId,
+                    input.authority.postId,
+                    input.authority.audioRevision,
+                    input.authority.sessionId,
+                    input.authority.attemptId,
+                    finalScore,
+                    input.authority.qualificationPolicyVersionId,
+                    input.completedAt,
+                    input.authority.timezone,
+                    JSON.stringify(evidence),
+                  ],
+                  readonly: false,
+                });
+                yield* recordQualificationProjections(transaction, {
+                  accountId: input.authority.accountId,
+                  communityId: input.authority.communityId,
+                  personaId: input.authority.personaId,
+                  postId: input.authority.postId,
+                  activity: "karaoke",
+                  qualificationId: qualificationId,
+                  qualifiedAt: input.completedAt,
+                  streakDay,
+                  timezone: input.authority.timezone,
+                }).pipe(Effect.mapError(() => failed("constraint")));
+              }
+              const stored = yield* transaction.execute<Row>({
+                label: "karaoke.attempt.finalized",
+                text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1`,
+                values: [input.authority.attemptId],
+                readonly: true,
               });
-              yield* recordQualificationProjections(transaction, {
-                accountId: input.authority.accountId,
-                communityId: input.authority.communityId,
-                personaId: input.authority.personaId,
-                postId: input.authority.postId,
-                activity: "karaoke",
-                qualificationId: qualificationId,
-                qualifiedAt: input.completedAt,
-                streakDay,
-                timezone: input.authority.timezone,
-              }).pipe(Effect.mapError(() => failed("constraint")));
-            }
-            const stored = yield* transaction.execute<Row>({
-              label: "karaoke.attempt.finalized",
-              text: `${ATTEMPT_SELECT} WHERE attempt.attempt_id=$1`,
-              values: [input.authority.attemptId],
-              readonly: true,
-            });
-            return attemptFromRow(stored.rows[0] as Row);
-          })),
+              return attemptFromRow(stored.rows[0] as Row);
+            }),
+          ),
         );
       }),
     ),

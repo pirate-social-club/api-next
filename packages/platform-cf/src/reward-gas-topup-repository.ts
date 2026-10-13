@@ -122,7 +122,7 @@ function findByKeyIn(
   return Effect.gen(function* () {
     const result = yield* executor.execute<Row>({
       label: "reward-gas-topup.idempotency.read",
-      text: `${VIEW_SELECT} WHERE ${originalRecipient ? 'topup.account_id=$1' : 'account_owns_reward_credit_v1($1,topup.credit_id) IS TRUE'} AND topup.idempotency_key=$2`,
+      text: `${VIEW_SELECT} WHERE ${originalRecipient ? "topup.account_id=$1" : "account_owns_reward_credit_v1($1,topup.credit_id) IS TRUE"} AND topup.idempotency_key=$2`,
       values: [input.accountId, input.idempotencyKey],
       readonly: !lock,
     });
@@ -159,8 +159,25 @@ function reserveIn(
 ): Effect.Effect<RewardGasTopupReservation, RewardGasTopupFailure | ControlPlaneError> {
   return Effect.gen(function* () {
     const { context } = input;
-    yield* transaction.execute({ label: "reward-gas-topup.original-identity.lock", text: "SELECT lock_reward_credit_for_payout_v1($1)", values: [context.creditId], readonly: false });
-    yield* transaction.execute({ label: "reward-gas-topup.current-actor.recheck", text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)", values: [context.authenticatedAccountId,context.creditId,context.accountId,context.personaId,context.walletAssignmentId,context.recipientAddress], readonly: true });
+    yield* transaction.execute({
+      label: "reward-gas-topup.original-identity.lock",
+      text: "SELECT lock_reward_credit_for_payout_v1($1)",
+      values: [context.creditId],
+      readonly: false,
+    });
+    yield* transaction.execute({
+      label: "reward-gas-topup.current-actor.recheck",
+      text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)",
+      values: [
+        context.authenticatedAccountId,
+        context.creditId,
+        context.accountId,
+        context.personaId,
+        context.walletAssignmentId,
+        context.recipientAddress,
+      ],
+      readonly: true,
+    });
     const dayResult = yield* transaction.execute<Row>({
       label: "reward-gas-topup.budget-day.read",
       text: "SELECT ((clock_timestamp() AT TIME ZONE 'UTC')::date)::text AS budget_day",

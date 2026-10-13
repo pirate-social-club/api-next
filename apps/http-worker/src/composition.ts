@@ -1,7 +1,3 @@
-import { makeControlPlaneOwnerParticipationReadStore } from '@pirate/platform-cf/owner-participation-read-store';
-import { makeOwnerParticipationReadHandlers } from './owner-participation-read-handlers.ts';
-import { makeControlPlaneOwnerRewardCreditReads } from "@pirate/platform-cf/owner-reward-credit-read-store";
-import { makeOwnerRewardCreditReadHandlers } from "./owner-reward-credit-read-handlers.ts";
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
@@ -166,6 +162,8 @@ import {
   OPENAI_MODERATION_TIMEOUT_MS,
   type OpenAiModerationTransport,
 } from "@pirate/platform-cf/openai-text-moderation";
+import { makeControlPlaneOwnerParticipationReadStore } from "@pirate/platform-cf/owner-participation-read-store";
+import { makeControlPlaneOwnerRewardCreditReads } from "@pirate/platform-cf/owner-reward-credit-read-store";
 import {
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletStore,
@@ -276,7 +274,6 @@ import {
   ownerFinancialGuestStudySelected,
 } from "./guest-study-managed-bindings.ts";
 import { makeGuestStudyServingComposition } from "./guest-study-serving-composition.ts";
-import { makeOwnerRewardGuestStudyServingComposition } from "./owner-reward-guest-study-serving-composition.ts";
 import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
@@ -296,6 +293,9 @@ import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-han
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
+import { makeOwnerParticipationReadHandlers } from "./owner-participation-read-handlers.ts";
+import { makeOwnerRewardCreditReadHandlers } from "./owner-reward-credit-read-handlers.ts";
+import { makeOwnerRewardGuestStudyServingComposition } from "./owner-reward-guest-study-serving-composition.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
@@ -1837,29 +1837,35 @@ export async function createProductionHttpWorker(
     avatarAuthoring,
   );
   const guestStudy = await (async () => {
-    const inputs={
-    ...(bindings.LEARNER_AUDIO === undefined
-      ? {}
-      : { workerLearnerAudioBinding: bindings.LEARNER_AUDIO }),
-    environment: config.API_NEXT_ENV,
-    ...(bindings.GUEST_STUDY_SERVING_ENABLED === undefined
-      ? {}
-      : { enabledBinding: bindings.GUEST_STUDY_SERVING_ENABLED }),
-    ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined
-      ? {}
-      : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),
-    accountVerifier: tokenVerifier,
-    ordinarySessionScope: sessionCrypto.defaultScope,
-    ...(config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN === ""
-      ? {}
-      : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
+    const inputs = {
+      ...(bindings.LEARNER_AUDIO === undefined
+        ? {}
+        : { workerLearnerAudioBinding: bindings.LEARNER_AUDIO }),
+      environment: config.API_NEXT_ENV,
+      ...(bindings.GUEST_STUDY_SERVING_ENABLED === undefined
+        ? {}
+        : { enabledBinding: bindings.GUEST_STUDY_SERVING_ENABLED }),
+      ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined
+        ? {}
+        : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),
+      accountVerifier: tokenVerifier,
+      ordinarySessionScope: sessionCrypto.defaultScope,
+      ...(config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN === ""
+        ? {}
+        : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
     };
-    if(ownerFinancialGuestStudySelected(bindings,config.API_NEXT_ENV)) {
-      const managed=makeDefaultOwnerRewardGuestStudyManagedRuntime(bindings,config.API_NEXT_ENV);
-      return makeOwnerRewardGuestStudyServingComposition({...inputs,...(managed===null?{}:{managed})});
+    if (ownerFinancialGuestStudySelected(bindings, config.API_NEXT_ENV)) {
+      const managed = makeDefaultOwnerRewardGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
+      return makeOwnerRewardGuestStudyServingComposition({
+        ...inputs,
+        ...(managed === null ? {} : { managed }),
+      });
     }
-    const managed=makeDefaultGuestStudyManagedRuntime(bindings,config.API_NEXT_ENV);
-    return makeGuestStudyServingComposition({...inputs,...(managed===null?{}:{managed})});
+    const managed = makeDefaultGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
+    return makeGuestStudyServingComposition({
+      ...inputs,
+      ...(managed === null ? {} : { managed }),
+    });
   })();
   const worker = createHttpWorker({
     ...(guestStudy === null ? {} : { guestStudy }),
@@ -1903,7 +1909,9 @@ export async function createProductionHttpWorker(
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
       ...makeOwnerRewardCreditReadHandlers(makeControlPlaneOwnerRewardCreditReads(controlPlane)),
-      ...makeOwnerParticipationReadHandlers(makeControlPlaneOwnerParticipationReadStore(controlPlane)),
+      ...makeOwnerParticipationReadHandlers(
+        makeControlPlaneOwnerParticipationReadStore(controlPlane),
+      ),
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),

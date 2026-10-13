@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import { makeSerialStudyMegapotRecoveryJob } from "../../apps/jobs-worker/src/serial-study-megapot-recovery.ts";
 import { describe, expect, test } from "vitest";
 import {
   type MegapotRewardsJobOptions,
@@ -9,6 +8,7 @@ import {
   buildJobRegistry,
   RegistryConfigurationError,
 } from "../../apps/jobs-worker/src/registry.ts";
+import { makeSerialStudyMegapotRecoveryJob } from "../../apps/jobs-worker/src/serial-study-megapot-recovery.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "../../apps/jobs-worker/src/study-spoken-answer-recovery.ts";
 
 // Use genuine modules under the maintained Workerd pool, without module mocks.
@@ -95,7 +95,11 @@ describe("actual Study recovery qualification closure registry admission", () =>
     expect(joint.timeout).toBe("50 seconds");
     expect(joint.reads).toEqual([...new Set([...f.study.reads, ...f.megapot.reads])]);
     expect(joint.writes).toEqual([...new Set([...f.study.writes, ...f.megapot.writes])]);
-    for (const key of ["postgres:megapot_owner_snapshot_leaves", "postgres:megapot_owner_allocations", "postgres:reward_credit_persona_bindings"])
+    for (const key of [
+      "postgres:megapot_owner_snapshot_leaves",
+      "postgres:megapot_owner_allocations",
+      "postgres:reward_credit_persona_bindings",
+    ])
       expect(joint.writes).toContain(key);
     const error = await Effect.runPromise(Effect.flip(buildJobRegistry([joint, f.study])));
     expect(error).toBeInstanceOf(RegistryConfigurationError);

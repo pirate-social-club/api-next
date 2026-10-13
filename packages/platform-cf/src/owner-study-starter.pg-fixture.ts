@@ -336,7 +336,9 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       accountOriginal,
       lines,
       storeFor,
-      deferDestructiveCleanup: () => { cleanupDeferred = true; },
+      deferDestructiveCleanup: () => {
+        cleanupDeferred = true;
+      },
       destructiveCleanupDeferred: () => cleanupDeferred,
     });
   } finally {
@@ -344,7 +346,8 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     await admin.query("ROLLBACK").catch(() => undefined);
     try {
       if (createdSchema && !cleanupDeferred) await admin.query(`DROP SCHEMA ${q(schema)} CASCADE`);
-      if (createdRole && !cleanupDeferred) await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
+      if (createdRole && !cleanupDeferred)
+        await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
     } finally {
       await admin.end();
     }

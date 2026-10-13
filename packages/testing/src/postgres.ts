@@ -96,15 +96,20 @@ DECLARE
 BEGIN
   -- Reset is a test-only owner operation. No runtime principal or production
   -- namespace receives the temporary guard exception.
-  IF schema_name IS NULL OR ${ownedVideoDatabase === undefined
-    ? `schema_name !~ '^(api_next_reuse_[a-z0-9_]{1,24}_[0-9a-f]{12}_[0-9]+|api_next_hns_observer_[0-9a-f]{32})$'`
-    : `schema_name<>'api_next' OR pg_catalog.current_database()<>'${ownedVideoDatabase}'`}
+  IF schema_name IS NULL OR ${
+    ownedVideoDatabase === undefined
+      ? `schema_name !~ '^(api_next_reuse_[a-z0-9_]{1,24}_[0-9a-f]{12}_[0-9]+|api_next_hns_observer_[0-9a-f]{32})$'`
+      : `schema_name<>'api_next' OR pg_catalog.current_database()<>'${ownedVideoDatabase}'`
+  }
   THEN RAISE EXCEPTION 'owned disposable PostgreSQL test schema required' USING ERRCODE='GP003'; END IF;
   SELECT n.oid,c.relowner INTO STRICT namespace_id,owner_id
     FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid
     WHERE n.nspname=schema_name AND c.relname='participation_owners' AND c.relkind='r'
       AND n.nspowner=c.relowner AND c.relowner=pg_catalog.to_regrole(current_user);
-  ${ownedVideoDatabase === undefined ? "" : `
+  ${
+    ownedVideoDatabase === undefined
+      ? ""
+      : `
   -- This exact database is created and destroyed by the video harness. Never
   -- admit a normal api_next namespace from only caller configuration/ownership.
   IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database()
@@ -118,7 +123,8 @@ BEGIN
     INTO STRICT video_custody FROM api_next.owned_video_test_custody;
   IF video_custody IS DISTINCT FROM TRUE THEN
     RAISE EXCEPTION 'owned video fixture marker mismatch' USING ERRCODE='GP003'; END IF;
-  `}
+  `
+  }
 
   -- Same topology order as source migration/guest authority: first topology,
   -- then the complete reset table set. Owner DDL does not obey this advisory
@@ -202,11 +208,15 @@ $verify_empty_financial_reset$;`;
 
 /** Builds a transaction-only reset for an owned, positively empty financial fixture. */
 export function preparePostgresTestBaselineReset(
-  sql: string, options: { readonly ownedVideoDatabase?: string } = {},
+  sql: string,
+  options: { readonly ownedVideoDatabase?: string } = {},
 ): string {
   // Closed harness-created database family only; this literal is checked against
   // actual current_database, database/schema/table owner and native fixture custody.
-  if (options.ownedVideoDatabase !== undefined && !/^api_next_video_[0-9]{13}_[a-f0-9]{1,8}$/u.test(options.ownedVideoDatabase)) {
+  if (
+    options.ownedVideoDatabase !== undefined &&
+    !/^api_next_video_[0-9]{13}_[a-f0-9]{1,8}$/u.test(options.ownedVideoDatabase)
+  ) {
     throw new Error("Exact owned video fixture database required");
   }
   const truncateEnd = "RESTART IDENTITY CASCADE;";

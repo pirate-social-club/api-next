@@ -234,11 +234,13 @@ function loadCandidateIn(
   input: { readonly creditId: string; readonly lock: boolean },
 ): Effect.Effect<RewardPayoutCandidate, RewardPayoutFailure | ControlPlaneError> {
   return Effect.gen(function* () {
-    if (input.lock) yield* transaction.execute({
-      label: "reward-payout.original-identity.lock",
-      text: "SELECT lock_reward_credit_for_payout_v1($1)",
-      values: [input.creditId], readonly: false,
-    });
+    if (input.lock)
+      yield* transaction.execute({
+        label: "reward-payout.original-identity.lock",
+        text: "SELECT lock_reward_credit_for_payout_v1($1)",
+        values: [input.creditId],
+        readonly: false,
+      });
     const result = yield* transaction.execute<Row>({
       label: "reward-payout.candidate.read",
       text: `${CANDIDATE_SELECT}

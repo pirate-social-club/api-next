@@ -13,7 +13,9 @@ export function makeGuestAuthorityPrivateComposition(
   // this helper neither clones nor rewrites learning declarations.
   for (const name of guestAccountingNames)
     if (guestParticipationRegistry[name].implementation !== undefined)
-      throw new Error("Private authority composition requires source-admitted accounting declarations");
+      throw new Error(
+        "Private authority composition requires source-admitted accounting declarations",
+      );
   return Object.freeze({
     ...makeGuestAuthorityComposition(dependencies),
     pendingLearningInputs: Object.freeze({

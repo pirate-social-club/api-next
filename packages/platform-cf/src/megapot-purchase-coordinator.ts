@@ -11,6 +11,7 @@ import type {
 import { deriveMegapotTicket } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
+import type { MegapotOriginalPurchaseWindow } from "./megapot-purchase-repository.ts";
 import {
   encodeMegapotBuyTickets,
   MEGAPOT_REFERRAL_SPLIT_SCALE,
@@ -19,7 +20,6 @@ import {
   megapotKeccak256,
   validateMegapotPurchaseReceipt,
 } from "./megapot-v2.ts";
-import type { MegapotOriginalPurchaseWindow } from "./megapot-purchase-repository.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
 import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
@@ -199,7 +199,9 @@ function preparedFrom(
 
 export function makeMegapotPurchaseCoordinator(input: {
   readonly store: MegapotPurchaseStore;
-  readonly readOriginalWindow: (candidate: MegapotPurchaseCandidate) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
+  readonly readOriginalWindow: (
+    candidate: MegapotPurchaseCandidate,
+  ) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
   readonly authority: RewardRunAuthority;
@@ -228,9 +230,13 @@ export function makeMegapotPurchaseCoordinator(input: {
       const startedAt = monotonicNow();
       const window = yield* input.readOriginalWindow(candidate);
       const deadline = startedAt + window.remainingMilliseconds;
-      if (!window.open || !Number.isFinite(startedAt) ||
-          !Number.isSafeInteger(window.remainingMilliseconds) ||
-          window.remainingMilliseconds <= 0 || !Number.isFinite(deadline))
+      if (
+        !window.open ||
+        !Number.isFinite(startedAt) ||
+        !Number.isSafeInteger(window.remainingMilliseconds) ||
+        window.remainingMilliseconds <= 0 ||
+        !Number.isFinite(deadline)
+      )
         return yield* failed("cutoff_safety_margin", "preflight");
       return deadline;
     },
@@ -438,14 +444,14 @@ export function makeMegapotPurchaseCoordinator(input: {
     // is never taken for a broadcast of unknown outcome.
     const originalDeadline = yield* originalWindowDeadline(purchase);
     yield* input.authority.ensure();
-    const submission = yield* (originalWindowIsLive(originalDeadline)
+    const submission = yield* originalWindowIsLive(originalDeadline)
       ? rpcEffect("receipt", "receipt_evidence_invalid", () =>
           rpc.sendRawTransaction(purchase.signedTransaction as Hex),
         ).pipe(
           Effect.map((hash) => ({ kind: "accepted" as const, hash })),
           Effect.catch(() => Effect.succeed({ kind: "uncertain" as const })),
         )
-      : Effect.fail(failed("cutoff_safety_margin", "preflight")));
+      : Effect.fail(failed("cutoff_safety_margin", "preflight"));
     if (
       submission.kind === "uncertain" ||
       submission.hash.toLowerCase() !== purchase.signedTransactionHash.toLowerCase()
@@ -489,7 +495,7 @@ export function makeMegapotPurchaseCoordinator(input: {
     // Signing needs authority, on a resumed reservation as much as a new one.
     const originalDeadline = yield* originalWindowDeadline(reservation);
     yield* input.authority.ensure();
-    const signed = yield* (originalWindowIsLive(originalDeadline)
+    const signed = yield* originalWindowIsLive(originalDeadline)
       ? rpcEffect("prepare", "signer_mismatch", () =>
           signer.sign({
             chainId: reservation.chainId,
@@ -503,7 +509,7 @@ export function makeMegapotPurchaseCoordinator(input: {
             maxPriorityFeePerGas,
           }),
         )
-      : Effect.fail(failed("cutoff_safety_margin", "preflight")));
+      : Effect.fail(failed("cutoff_safety_margin", "preflight"));
     const calldataHash = yield* sha256Hex(hexToBytes(calldata));
     yield* store.prepare({
       reservation,
@@ -683,25 +689,29 @@ export function makeMegapotPurchaseCoordinator(input: {
     if (nativeBalance < requiredNative) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
-    const reserved = yield* store.reserveNonce({
-      candidate,
-      effectId,
-      ticket,
-      observedPendingNonce: pendingNonce,
-      observedBlockNumber: feeQuote.observedBlockNumber,
-      observedBlockHash: feeQuote.observedBlockHash,
-      observedAt: new Date(now()).toISOString(),
-    }).pipe(
-      Effect.map((reservation) => ({ kind: "reserved" as const, reservation })),
-      Effect.catchTag("MegapotPurchaseStorageFailed", (error) => Effect.gen(function* () {
-        // An unknown COMMIT is NEVER a no-effect witness or permission to close.
-        if (error.reason !== "constraint") return yield* error;
-        if ((yield* store.findProgress(effectId)) !== null) return yield* error;
-        const closed = yield* checkPreBroadcastWindow(candidate);
-        if (closed === null) return yield* error;
-        return closed;
-      })),
-    );
+    const reserved = yield* store
+      .reserveNonce({
+        candidate,
+        effectId,
+        ticket,
+        observedPendingNonce: pendingNonce,
+        observedBlockNumber: feeQuote.observedBlockNumber,
+        observedBlockHash: feeQuote.observedBlockHash,
+        observedAt: new Date(now()).toISOString(),
+      })
+      .pipe(
+        Effect.map((reservation) => ({ kind: "reserved" as const, reservation })),
+        Effect.catchTag("MegapotPurchaseStorageFailed", (error) =>
+          Effect.gen(function* () {
+            // An unknown COMMIT is NEVER a no-effect witness or permission to close.
+            if (error.reason !== "constraint") return yield* error;
+            if ((yield* store.findProgress(effectId)) !== null) return yield* error;
+            const closed = yield* checkPreBroadcastWindow(candidate);
+            if (closed === null) return yield* error;
+            return closed;
+          }),
+        ),
+      );
     if (reserved.kind === "closed") return reserved;
     return yield* signReserved(
       reserved.reservation,

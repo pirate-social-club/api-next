@@ -56,7 +56,9 @@ export async function repairFixtureAuthentication(
       try {
         await target.query("SELECT pg_advisory_xact_lock(83000003,1)");
         // This offline seed tool has no authority to reparent accepted financial history.
-        const ownerFinancial = await target.query("SELECT to_regclass('api_next.guest_owner_associations') IS NOT NULL AS present");
+        const ownerFinancial = await target.query(
+          "SELECT to_regclass('api_next.guest_owner_associations') IS NOT NULL AS present",
+        );
         if (ownerFinancial.rows[0]?.present === true)
           throw Error("Owner-accounting topology requires its reviewed association writer");
         const receipt = await target.query(

@@ -7,8 +7,8 @@ import {
 } from "@pirate/application";
 import {
   GuestIdentifierV1,
-  GuestStudyAnswerResultV1,
   GuestParticipationResultV1,
+  GuestStudyAnswerResultV1,
   StudySessionItemV2,
   StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";

@@ -18,6 +18,7 @@ import {
   GuestSha256V1,
 } from "./guest-participation.ts";
 import { GuestRewardTermsV1, GuestStudyPreparedContentV1 } from "./guest-study.ts";
+import { LanguageTagV1 } from "./language.ts";
 import {
   GetStudySessionV2,
   StartStudySessionV2,
@@ -26,7 +27,6 @@ import {
   StudySessionV2,
   SubmitStudyAnswerV2,
 } from "./study-v2.ts";
-import { LanguageTagV1 } from "./language.ts";
 
 /** The full preview hash is issued by the server. It is not the offer-leg hash
  * in reward_terms.terms_hash, and browsers never serialize PostgreSQL JSONB.
@@ -47,7 +47,9 @@ export type GuestStudyPreparedContentV2 = Schema.Schema.Type<typeof GuestStudyPr
 
 const RewardedParticipation = GuestParticipationResultV1.check(
   Schema.makeFilter((value) =>
-    value.state === "practice_only" ? "A captured rewarded activity cannot become practice" : undefined,
+    value.state === "practice_only"
+      ? "A captured rewarded activity cannot become practice"
+      : undefined,
   ),
 );
 function sourceMismatch(
@@ -55,17 +57,25 @@ function sourceMismatch(
   terms: Schema.Schema.Type<typeof GuestRewardTermsV1>,
   participation: Schema.Schema.Type<typeof GuestParticipationResultV1>,
 ): string | undefined {
-  if (session.community_id !== terms.community_id || session.post_id !== terms.post_id
-    || session.audio_revision !== terms.audio_revision || session.lyrics_revision !== terms.lyrics_revision
-    || session.qualification_policy_revision !== terms.qualification_policy_version_id)
+  if (
+    session.community_id !== terms.community_id ||
+    session.post_id !== terms.post_id ||
+    session.audio_revision !== terms.audio_revision ||
+    session.lyrics_revision !== terms.lyrics_revision ||
+    session.qualification_policy_revision !== terms.qualification_policy_version_id
+  )
     return "Immutable reward terms must bind the original activity source";
-  if (participation.state === "admitted"
-    && (session.status !== "completed"
-      || session.progress.first_pass_correct < session.progress.required_correct))
+  if (
+    participation.state === "admitted" &&
+    (session.status !== "completed" ||
+      session.progress.first_pass_correct < session.progress.required_correct)
+  )
     return "Admission requires the original completed qualifying lesson";
-  if (participation.state === "admitted"
-    && (participation.original_drawing_id !== terms.original_drawing_id
-      || participation.pool_leg_id !== terms.pool_leg_id))
+  if (
+    participation.state === "admitted" &&
+    (participation.original_drawing_id !== terms.original_drawing_id ||
+      participation.pool_leg_id !== terms.pool_leg_id)
+  )
     return "Admission must retain the original drawing and offer leg";
   return undefined;
 }
@@ -74,21 +84,36 @@ export const OwnerAccountStudySessionV1 = Schema.Struct({
   session: StudySessionV2,
   reward_terms: GuestRewardTermsV1,
   participation: RewardedParticipation,
-}).check(Schema.makeFilter((value) => sourceMismatch(value.session, value.reward_terms, value.participation)));
+}).check(
+  Schema.makeFilter((value) =>
+    sourceMismatch(value.session, value.reward_terms, value.participation),
+  ),
+);
 export type OwnerAccountStudySessionV1 = Schema.Schema.Type<typeof OwnerAccountStudySessionV1>;
 export const OwnerAccountStudyStartOperationV1 = Schema.Union([
   Schema.Struct({ state: Schema.Literal("completed"), result: OwnerAccountStudySessionV1 }),
-  Schema.Struct({ state: Schema.Literals(["pending_confirmation", "not_started"]), result: Schema.Null }),
+  Schema.Struct({
+    state: Schema.Literals(["pending_confirmation", "not_started"]),
+    result: Schema.Null,
+  }),
 ]);
-export type OwnerAccountStudyStartOperationV1 = Schema.Schema.Type<typeof OwnerAccountStudyStartOperationV1>;
+export type OwnerAccountStudyStartOperationV1 = Schema.Schema.Type<
+  typeof OwnerAccountStudyStartOperationV1
+>;
 
 export const OwnerAccountStudyAnswerResultV1 = Schema.Struct({
   object: Schema.Literal("owner_account_study_answer_result_v1"),
   answer: StudyAnswerResultV2,
   reward_terms: GuestRewardTermsV1,
   participation: RewardedParticipation,
-}).check(Schema.makeFilter((value) => sourceMismatch(value.answer.session, value.reward_terms, value.participation)));
-export type OwnerAccountStudyAnswerResultV1 = Schema.Schema.Type<typeof OwnerAccountStudyAnswerResultV1>;
+}).check(
+  Schema.makeFilter((value) =>
+    sourceMismatch(value.answer.session, value.reward_terms, value.participation),
+  ),
+);
+export type OwnerAccountStudyAnswerResultV1 = Schema.Schema.Type<
+  typeof OwnerAccountStudyAnswerResultV1
+>;
 
 const postPath = Schema.Struct({ communityId: GuestIdentifierV1, postId: GuestIdentifierV1 });
 const publicQuery = Schema.Struct({
@@ -96,8 +121,14 @@ const publicQuery = Schema.Struct({
   learner_band: Schema.optional(StudyLearnerBandV2),
 });
 const accountErrors = [
-  AuthError, BadRequest, GuestConflict, GuestPendingConflict,
-  NotFound, RateLimited, InternalError, ProviderUnavailable,
+  AuthError,
+  BadRequest,
+  GuestConflict,
+  GuestPendingConflict,
+  NotFound,
+  RateLimited,
+  InternalError,
+  ProviderUnavailable,
 ] as const;
 /** These declarations belong to the complete accounting successor. Concrete
  * handlers and native readiness are required before registration/acceptance.

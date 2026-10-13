@@ -6,8 +6,8 @@ import {
 } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -28,7 +28,9 @@ const connectionForSchema = (raw: string, schema: string): string => {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
 
-async function withSchema<A>(use: (admin: Client, scopedConnection: string) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (admin: Client, scopedConnection: string) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   return withReusablePostgresTestSchema({
     baseConnectionString: connectionString,
@@ -56,7 +58,9 @@ async function seedAccountSong(
   const communityId = `community-${suffix}`;
   const postId = `post-${suffix}`;
   // Genuine identity birth commits user and immutable Account owner together.
-  await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scopedConnection))(accountId);
+  await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scopedConnection))(
+    accountId,
+  );
   await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas

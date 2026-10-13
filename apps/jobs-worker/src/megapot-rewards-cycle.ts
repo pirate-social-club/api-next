@@ -665,7 +665,10 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.allocate,
     );
     recordFailures(allocationFailures);
-    const zeroAllocated = input.runtime.allocateZeroNet === undefined ? [] : yield* input.runtime.allocateZeroNet(limit);
+    const zeroAllocated =
+      input.runtime.allocateZeroNet === undefined
+        ? []
+        : yield* input.runtime.allocateZeroNet(limit);
     mark("allocated");
 
     const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);

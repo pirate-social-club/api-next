@@ -7,7 +7,10 @@ import {
   makeOwnerGuestStudyService,
   makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application/use-cases/guest-learning";
-import { GetPublicGuestStudyPreparedContentV2, guestParticipationRegistry } from "@pirate/contracts";
+import {
+  GetPublicGuestStudyPreparedContentV2,
+  guestParticipationRegistry,
+} from "@pirate/contracts";
 import { makeControlPlaneGuestPracticeParticipationReadStore } from "@pirate/platform-cf/guest-practice-participation-read-store";
 import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";
 import { makeGuestRecoveryAudioDeletionStores } from "@pirate/platform-cf/guest-recovery-deletion-store";
@@ -25,9 +28,7 @@ import { makeControlPlaneOwnerStudyStarter } from "@pirate/platform-cf/owner-stu
 import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-store-composition";
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
-import { Effect, Schema, type Layer } from "effect";
-import { withEndpointResult } from "./transport.ts";
-import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-prepared-v2.ts";
+import { Effect, type Layer, Schema } from "effect";
 import {
   guestLearningNames,
   makeGuestAuthorityComposition,
@@ -35,9 +36,14 @@ import {
 import type { GuestAuthorityControllerName } from "./guest-authority-controllers.ts";
 import { makeGuestLearningComposition } from "./guest-learning-controller-composition.ts";
 import type { GuestLearningControllerName } from "./guest-learning-controllers.ts";
+import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-prepared-v2.ts";
 import { readGuestStudyRuntimeConfiguration } from "./guest-study-runtime-configuration.ts";
+import { withEndpointResult } from "./transport.ts";
 
-export type GuestStudyServingName = GuestAuthorityControllerName | GuestLearningControllerName | "GetPublicGuestStudyPreparedContentV2";
+export type GuestStudyServingName =
+  | GuestAuthorityControllerName
+  | GuestLearningControllerName
+  | "GetPublicGuestStudyPreparedContentV2";
 const authorityNames: readonly string[] = [
   "GetGuestAuthorityV1",
   "IssueGuestBootstrapV1",
@@ -49,7 +55,10 @@ const authorityNames: readonly string[] = [
   "CreateGuestAttachmentIntentV1",
 ];
 export function isGuestStudyServingName(name: string): name is GuestStudyServingName {
-  return name === "GetPublicGuestStudyPreparedContentV2" || (guestLearningNames as readonly string[]).includes(name);
+  return (
+    name === "GetPublicGuestStudyPreparedContentV2" ||
+    (guestLearningNames as readonly string[]).includes(name)
+  );
 }
 function isAuthorityName(name: GuestStudyServingName): name is GuestAuthorityControllerName {
   return authorityNames.includes(name);
@@ -215,14 +224,25 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
       },
     ) {
       await readiness.verify();
-      if(input.name==="GetPublicGuestStudyPreparedContentV2") {
-        const locations=await input.decodeRequestLocations();
-        const path=Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.path,{onExcessProperty:"error"})(locations.params);
-        const query=Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.query,{onExcessProperty:"error"})(locations.query);
-        const actual=await Effect.runPromise(prepared.get({communityId:path.communityId,postId:path.postId,
-            targetLanguage:query.target_language??null,learnerBand:query.learner_band??null}));
-        return withEndpointResult(projectPracticePreparedGuestStudyContentV2(actual), 200,
-          {"Cache-Control":"private, no-store"});
+      if (input.name === "GetPublicGuestStudyPreparedContentV2") {
+        const locations = await input.decodeRequestLocations();
+        const path = Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.path, {
+          onExcessProperty: "error",
+        })(locations.params);
+        const query = Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.query, {
+          onExcessProperty: "error",
+        })(locations.query);
+        const actual = await Effect.runPromise(
+          prepared.get({
+            communityId: path.communityId,
+            postId: path.postId,
+            targetLanguage: query.target_language ?? null,
+            learnerBand: query.learner_band ?? null,
+          }),
+        );
+        return withEndpointResult(projectPracticePreparedGuestStudyContentV2(actual), 200, {
+          "Cache-Control": "private, no-store",
+        });
       }
       return isAuthorityName(input.name)
         ? authority.handleAuthorityOperation({ ...input, name: input.name })

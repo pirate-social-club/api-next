@@ -1,5 +1,6 @@
-import {Schema} from 'effect';
-import {OwnerAccountStudySessionV1,GuestStudyPreparedContentV2} from '@pirate/contracts';
+import { GuestStudyPreparedContentV2, OwnerAccountStudySessionV1 } from "@pirate/contracts";
+import { Schema } from "effect";
+
 const instant = "2026-10-11T10:00:00.000Z";
 const item = (ordinal: number) => ({
   object: "study_session_item_v2",
@@ -71,16 +72,44 @@ const session = () => ({
   completed_at: null,
 });
 const terms = {
- community_id: "community-1", post_id: "post-1", audio_revision: 1, lyrics_revision: 1,
- offer_id: "offer-1", pool_leg_id: "leg-1", original_drawing_id: "7",
- qualification_policy_version_id: "study_session_first_pass_v2@1", policy_hash: "a".repeat(64),
- terms_hash: "b".repeat(64), entry_cutoff_at: instant, disclosure_version: "disclosure-v1",
+  community_id: "community-1",
+  post_id: "post-1",
+  audio_revision: 1,
+  lyrics_revision: 1,
+  offer_id: "offer-1",
+  pool_leg_id: "leg-1",
+  original_drawing_id: "7",
+  qualification_policy_version_id: "study_session_first_pass_v2@1",
+  policy_hash: "a".repeat(64),
+  terms_hash: "b".repeat(64),
+  entry_cutoff_at: instant,
+  disclosure_version: "disclosure-v1",
 };
 const publicPractice = {
- object: "guest_study_prepared_content_v1", reward_preview: null,
- disclosure: {version: "disclosure-v1", text: "Actual server disclosure"},
- availability: {state: "ready", available_exercise_types: ["say_it_back"], learning_language: "en", target_languages: ["es"], learner_bands: ["A1"]},
+  object: "guest_study_prepared_content_v1",
+  reward_preview: null,
+  disclosure: { version: "disclosure-v1", text: "Actual server disclosure" },
+  availability: {
+    state: "ready",
+    available_exercise_types: ["say_it_back"],
+    learning_language: "en",
+    target_languages: ["es"],
+    learner_bands: ["A1"],
+  },
 };
 
-export const ownerSession=Schema.decodeUnknownSync(OwnerAccountStudySessionV1,{onExcessProperty:'error'})({object:'owner_account_study_session_v1',session:session(),reward_terms:terms,participation:{state:'not_yet_qualified'}});
-export const publicPrepared=Schema.decodeUnknownSync(GuestStudyPreparedContentV2,{onExcessProperty:'error'})({...publicPractice,object:'guest_study_prepared_content_v2',reward_preview_terms_hash:null});
+export const ownerSession = Schema.decodeUnknownSync(OwnerAccountStudySessionV1, {
+  onExcessProperty: "error",
+})({
+  object: "owner_account_study_session_v1",
+  session: session(),
+  reward_terms: terms,
+  participation: { state: "not_yet_qualified" },
+});
+export const publicPrepared = Schema.decodeUnknownSync(GuestStudyPreparedContentV2, {
+  onExcessProperty: "error",
+})({
+  ...publicPractice,
+  object: "guest_study_prepared_content_v2",
+  reward_preview_terms_hash: null,
+});

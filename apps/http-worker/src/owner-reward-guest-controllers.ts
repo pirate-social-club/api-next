@@ -24,8 +24,8 @@ import {
   DeleteGuestLearnerAudioV1,
   GetGuestStudySessionV1,
   GetGuestStudyStartOperationV1,
-  GetPublicStudyPreparedContentV1,
   GetPublicGuestStudyPreparedContentV2,
+  GetPublicStudyPreparedContentV1,
   GuestAuthError,
   GuestBadRequest,
   GuestConflict,
@@ -67,7 +67,9 @@ type Study = ReturnType<typeof makeOwnerGuestStudyService>;
 type DeletionIo = ReturnType<typeof makeOwnerLearnerAudioDeletionIo>;
 export interface OwnerRewardGuestLearningControllerServices {
   readonly study: Study;
-  readonly rewardPrepared: ReturnType<typeof import("@pirate/platform-cf/guest-reward-prepared-content-store").makeControlPlanePreparedGuestRewardContentStore>;
+  readonly rewardPrepared: ReturnType<
+    typeof import("@pirate/platform-cf/guest-reward-prepared-content-store").makeControlPlanePreparedGuestRewardContentStore
+  >;
   readonly participations: GuestParticipationReadStore;
   readonly retention: GuestLearningRetentionStore;
   readonly deletion: OwnerLearnerAudioDeletionStore;
@@ -142,7 +144,9 @@ const unknown = (error: unknown) =>
     error instanceof ControlPlaneStatementFailed) &&
     error.outcomeCertainty === "unknown");
 
-export function makeOwnerRewardGuestLearningControllers(services: OwnerRewardGuestLearningControllerServices) {
+export function makeOwnerRewardGuestLearningControllers(
+  services: OwnerRewardGuestLearningControllerServices,
+) {
   if (
     !Number.isInteger(services.retryAfterSeconds) ||
     services.retryAfterSeconds < 1 ||
@@ -293,12 +297,26 @@ export function makeOwnerRewardGuestLearningControllers(services: OwnerRewardGue
     ): Promise<EndpointHandlerResult> {
       switch (name) {
         case "GetPublicGuestStudyPreparedContentV2": {
-          if (input.principal !== null || input.browserParticipation !== undefined) throw internal();
-          const path=requestValue(GetPublicGuestStudyPreparedContentV2.request.path,input.params);
-          const query=requestValue(GetPublicGuestStudyPreparedContentV2.request.query,input.query);
-          const result=await run(services.rewardPrepared.get({communityId:path.communityId,postId:path.postId,
-            targetLanguage:query.target_language??null,learnerBand:query.learner_band??null}),name);
-          return response(name,result);
+          if (input.principal !== null || input.browserParticipation !== undefined)
+            throw internal();
+          const path = requestValue(
+            GetPublicGuestStudyPreparedContentV2.request.path,
+            input.params,
+          );
+          const query = requestValue(
+            GetPublicGuestStudyPreparedContentV2.request.query,
+            input.query,
+          );
+          const result = await run(
+            services.rewardPrepared.get({
+              communityId: path.communityId,
+              postId: path.postId,
+              targetLanguage: query.target_language ?? null,
+              learnerBand: query.learner_band ?? null,
+            }),
+            name,
+          );
+          return response(name, result);
         }
         case "GetPublicStudyPreparedContentV1": {
           if (input.principal !== null || input.browserParticipation !== undefined)
@@ -428,7 +446,7 @@ export function makeOwnerRewardGuestLearningControllers(services: OwnerRewardGue
             body.session_id !== path.sessionId
           )
             throw internal();
-          projected(GetGuestStudySessionV1.response,body);
+          projected(GetGuestStudySessionV1.response, body);
           return response(name, body);
         }
         case "SubmitGuestStudyAnswerV1": {
@@ -487,9 +505,7 @@ export function makeOwnerRewardGuestLearningControllers(services: OwnerRewardGue
             owned.answer.attempt_number !== base.attemptNumber
           )
             throw internal();
-          if (
-            JSON.stringify(owned.participation) !== JSON.stringify(owned.answer.participation)
-          )
+          if (JSON.stringify(owned.participation) !== JSON.stringify(owned.answer.participation))
             throw internal();
           return response(name, owned.answer);
         }

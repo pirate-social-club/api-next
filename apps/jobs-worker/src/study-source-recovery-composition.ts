@@ -1,8 +1,8 @@
 // Internal reviewed composition, no activation/flags/runtime role grants.
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import { makeOwnerGuestSpokenClosedRecovery } from "@pirate/application/owner-guest-spoken-closed-recovery";
-import { makeControlPlaneAccountOwnerRewardHooks } from "@pirate/platform-cf/account-owner-reward-hooks";
 import { makeControlPlaneAccountOriginalAdmissionReconciliation } from "@pirate/platform-cf/account-original-admission-reconciliation";
+import { makeControlPlaneAccountOwnerRewardHooks } from "@pirate/platform-cf/account-owner-reward-hooks";
 import { makeControlledAccountSpokenRecovery } from "@pirate/platform-cf/controlled-account-spoken-recovery";
 import { makeControlledAccountStudyV2Store } from "@pirate/platform-cf/controlled-account-study-store";
 import { makeGuestEphemeralCleanupStage } from "@pirate/platform-cf/guest-ephemeral-cleanup";
@@ -46,9 +46,16 @@ export function makeStudySourceRecoveryStages(
   const originalRewards = makeControlPlaneAccountOwnerRewardHooks(runtime, null);
   const accountStore = makeControlledAccountStudyV2Store(runtime, undefined, originalRewards);
   const account = makeControlledAccountSpokenRecovery(runtime, accountStore.finalize);
-  return { account: account.recover(),
-    ...(accountOriginalAdmissionReconciliation === undefined ? {} : {
-      accountOriginalAdmissionReconciliation: makeControlPlaneAccountOriginalAdmissionReconciliation(accountOriginalAdmissionReconciliation).recover(8),
-    }),
-    ...(guest === undefined ? {} : { guest: guest() }) };
+  return {
+    account: account.recover(),
+    ...(accountOriginalAdmissionReconciliation === undefined
+      ? {}
+      : {
+          accountOriginalAdmissionReconciliation:
+            makeControlPlaneAccountOriginalAdmissionReconciliation(
+              accountOriginalAdmissionReconciliation,
+            ).recover(8),
+        }),
+    ...(guest === undefined ? {} : { guest: guest() }),
+  };
 }

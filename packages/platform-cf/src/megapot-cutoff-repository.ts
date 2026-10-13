@@ -318,7 +318,9 @@ export function makeControlPlaneMegapotCutoffRepository() {
               const readClock = Effect.fn("MegapotCutoffStore.readLockedClock")(function* () {
                 const result = yield* transaction.execute<Row>({
                   label: "megapot-cutoff.clock.read",
-                  text: "SELECT clock_timestamp() AS checked_at", values: [], readonly: true,
+                  text: "SELECT clock_timestamp() AS checked_at",
+                  values: [],
+                  readonly: true,
                 });
                 if (result.rows.length !== 1) return yield* storage("invalid-row");
                 return yield* Effect.try({
@@ -436,10 +438,8 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     (availabilityRow) =>
                       nullableText(availabilityRow, "availability_observation_id") !== null &&
                       text(availabilityRow, "state") === "available" &&
-                      Date.parse(instant(availabilityRow, "observed_at")) <=
-                        Date.parse(frozenAt) &&
-                      Date.parse(instant(availabilityRow, "expires_at")) >
-                        Date.parse(frozenAt),
+                      Date.parse(instant(availabilityRow, "observed_at")) <= Date.parse(frozenAt) &&
+                      Date.parse(instant(availabilityRow, "expires_at")) > Date.parse(frozenAt),
                   );
                 if (!available) {
                   return yield* closeDrawing(transaction, {
@@ -648,11 +648,16 @@ export function makeControlPlaneMegapotCutoffRepository() {
               frozenAt = yield* readClock();
               // A funding/daily-budget wait cannot preserve expired fallback evidence.
               // Roll back this whole reservation if its original day/evidence changed.
-              if ((needsDailyReservation && sponsorDay !== frozenAt.slice(0, 10)) ||
-                (fallbackDecision !== null && Date.parse(instant(fallbackDecision, "expires_at")) <= Date.parse(frozenAt)) ||
-                availabilityRows.some((availabilityRow) =>
-                  Date.parse(instant(availabilityRow, "observed_at")) > Date.parse(frozenAt) ||
-                  Date.parse(instant(availabilityRow, "expires_at")) <= Date.parse(frozenAt))) {
+              if (
+                (needsDailyReservation && sponsorDay !== frozenAt.slice(0, 10)) ||
+                (fallbackDecision !== null &&
+                  Date.parse(instant(fallbackDecision, "expires_at")) <= Date.parse(frozenAt)) ||
+                availabilityRows.some(
+                  (availabilityRow) =>
+                    Date.parse(instant(availabilityRow, "observed_at")) > Date.parse(frozenAt) ||
+                    Date.parse(instant(availabilityRow, "expires_at")) <= Date.parse(frozenAt),
+                )
+              ) {
                 return yield* rejected("cutoff-conflict");
               }
 

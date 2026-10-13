@@ -185,11 +185,21 @@ function lockIn(
       status: text(row, "status") as RewardWinnerSendStatus,
     }));
     if (input.accountId !== undefined) {
-      const observed = yield* transaction.execute({ label: "reward-winner-send.owner-access.read", text: "SELECT account_owns_reward_credit_v1($1,$2) AS owned", values: [input.accountId, locked.creditId], readonly: true });
-      const owned = yield* Effect.try({ try: () => {
-        if (observed.rows.length !== 1) throw new Error();
-        return Schema.decodeUnknownSync(Schema.Struct({ owned: Schema.Boolean }), { onExcessProperty: "error" })(observed.rows[0]).owned;
-      }, catch: () => storage("invalid-row") });
+      const observed = yield* transaction.execute({
+        label: "reward-winner-send.owner-access.read",
+        text: "SELECT account_owns_reward_credit_v1($1,$2) AS owned",
+        values: [input.accountId, locked.creditId],
+        readonly: true,
+      });
+      const owned = yield* Effect.try({
+        try: () => {
+          if (observed.rows.length !== 1) throw new Error();
+          return Schema.decodeUnknownSync(Schema.Struct({ owned: Schema.Boolean }), {
+            onExcessProperty: "error",
+          })(observed.rows[0]).owned;
+        },
+        catch: () => storage("invalid-row"),
+      });
       if (!owned) return yield* rejected("not-found");
     }
     return locked;
@@ -422,8 +432,25 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const { context } = input;
-              yield* transaction.execute({ label: "reward-winner-send.original-identity.lock", text: "SELECT lock_reward_credit_for_payout_v1($1)", values: [context.creditId], readonly: false });
-              yield* transaction.execute({ label: "reward-winner-send.current-actor.recheck", text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)", values: [context.authenticatedAccountId,context.creditId,context.accountId,context.personaId,context.walletAssignmentId,context.senderAddress], readonly: true });
+              yield* transaction.execute({
+                label: "reward-winner-send.original-identity.lock",
+                text: "SELECT lock_reward_credit_for_payout_v1($1)",
+                values: [context.creditId],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "reward-winner-send.current-actor.recheck",
+                text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)",
+                values: [
+                  context.authenticatedAccountId,
+                  context.creditId,
+                  context.accountId,
+                  context.personaId,
+                  context.walletAssignmentId,
+                  context.senderAddress,
+                ],
+                readonly: true,
+              });
               const nonce = yield* reserveSenderNonceIn(transaction, {
                 chainId: context.chainId,
                 senderAddress: context.senderAddress,
@@ -478,8 +505,18 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "reward-winner-send.original-source.lock", text: "SELECT lock_reward_send_financial_source_v1($1)", values: [input.sendId], readonly: false });
-              yield* transaction.execute({ label: "reward-winner-send.retry-current-actor.recheck", text: "SELECT require_reward_send_new_spend_authority_v1($1,$2)", values: [input.accountId,input.sendId], readonly: true });
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "reward-winner-send.retry-current-actor.recheck",
+                text: "SELECT require_reward_send_new_spend_authority_v1($1,$2)",
+                values: [input.accountId, input.sendId],
+                readonly: true,
+              });
               const sender = yield* transaction.execute<Row>({
                 label: "reward-winner-send.sender.read",
                 text: `SELECT chain_id, sender_address FROM reward_winner_sends
@@ -540,7 +577,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "reward-winner-send.original-source.lock", text: "SELECT lock_reward_send_financial_source_v1($1)", values: [input.sendId], readonly: false });
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               const existing = yield* transaction.execute<Row>({
                 label: "reward-winner-send.transaction.read",
@@ -600,7 +642,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "reward-winner-send.original-source.lock", text: "SELECT lock_reward_send_financial_source_v1($1)", values: [input.sendId], readonly: false });
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               // Another request settled or moved this attempt first.
               if (
@@ -637,7 +684,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "reward-winner-send.original-source.lock", text: "SELECT lock_reward_send_financial_source_v1($1)", values: [input.sendId], readonly: false });
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               if (locked.attempt !== input.attempt || locked.status !== "settled_unverified") {
                 return yield* rejected("send-conflict");

@@ -1,5 +1,8 @@
 import { Client } from "pg";
-import { postgresCiWaitDiagnosticsEnabled, startPostgresCiWaitDiagnostic } from "./postgres-ci-wait-diagnostic.ts";
+import {
+  postgresCiWaitDiagnosticsEnabled,
+  startPostgresCiWaitDiagnostic,
+} from "./postgres-ci-wait-diagnostic.ts";
 import {
   freshSchemaPostgresTestSuites,
   noBaselinePostgresTestSuites,
@@ -181,12 +184,22 @@ async function runBunTests(
   const command = [process.execPath, "test", "--timeout", "15000", ...files];
   const diagnosticEnabled = postgresCiWaitDiagnosticsEnabled(process.env);
   const diagnosticConnection = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
-  if (diagnosticEnabled && diagnosticConnection === undefined) throw new Error("Required CI PostgreSQL diagnostic connection is unavailable");
-  const diagnostic = startPostgresCiWaitDiagnostic({ enabled: diagnosticEnabled,
-    connectionString: diagnosticConnection ?? "", label, maximumLifetimeMs: timeoutMilliseconds });
+  if (diagnosticEnabled && diagnosticConnection === undefined)
+    throw new Error("Required CI PostgreSQL diagnostic connection is unavailable");
+  const diagnostic = startPostgresCiWaitDiagnostic({
+    enabled: diagnosticEnabled,
+    connectionString: diagnosticConnection ?? "",
+    label,
+    maximumLifetimeMs: timeoutMilliseconds,
+  });
   let child: { readonly exited: Promise<number>; kill(signal?: "SIGKILL"): void } | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined, forceKill: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false, terminated = false, primaryFailed = false, primary: unknown, cleanup: unknown;
+  let timeout: ReturnType<typeof setTimeout> | undefined,
+    forceKill: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false,
+    terminated = false,
+    primaryFailed = false,
+    primary: unknown,
+    cleanup: unknown;
   const terminate = () => {
     child?.kill();
     if (diagnosticEnabled) {
@@ -194,29 +207,59 @@ async function runBunTests(
       forceKill ??= setTimeout(() => child?.kill("SIGKILL"), 500);
     }
   };
-  const onTermination = () => { terminated = true; terminate(); };
+  const onTermination = () => {
+    terminated = true;
+    terminate();
+  };
   try {
     child = Bun.spawn(command, {
-      env: { ...process.env, CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1", CONTROL_PLANE_POSTGRES_BACKFILL_TEST_REQUIRED: "1" },
-      stderr: "inherit", stdin: "inherit", stdout: "inherit",
+      env: {
+        ...process.env,
+        CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1",
+        CONTROL_PLANE_POSTGRES_BACKFILL_TEST_REQUIRED: "1",
+      },
+      stderr: "inherit",
+      stdin: "inherit",
+      stdout: "inherit",
     });
-    if (diagnosticEnabled) { process.on("SIGTERM", onTermination); process.on("SIGINT", onTermination); }
-    timeout = setTimeout(() => { timedOut = true; terminate(); }, timeoutMilliseconds);
+    if (diagnosticEnabled) {
+      process.on("SIGTERM", onTermination);
+      process.on("SIGINT", onTermination);
+    }
+    timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, timeoutMilliseconds);
     const exitCode = await child.exited;
     if (timedOut) throw new Error(`${label} exceeded its unchanged runner deadline`);
     if (terminated) throw new Error(`${label} was terminated`);
     if (exitCode !== 0) throw new Error(`${label} failed with exit ${exitCode}`);
-  } catch (error) { primaryFailed = true; primary = error; }
-  finally {
+  } catch (error) {
+    primaryFailed = true;
+    primary = error;
+  } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     if (forceKill !== undefined) clearTimeout(forceKill);
-    if (diagnosticEnabled) { process.removeListener("SIGTERM", onTermination); process.removeListener("SIGINT", onTermination); }
-    try { await diagnostic.stop(); } catch (error) { cleanup = error; }
+    if (diagnosticEnabled) {
+      process.removeListener("SIGTERM", onTermination);
+      process.removeListener("SIGINT", onTermination);
+    }
+    try {
+      await diagnostic.stop();
+    } catch (error) {
+      cleanup = error;
+    }
   }
   // Preserve the original child failure even when diagnostic release also fails.
-  if (primaryFailed) { if (cleanup !== undefined) throw new AggregateError([primary, cleanup], "PostgreSQL child and diagnostic cleanup failed"); throw primary; }
+  if (primaryFailed) {
+    if (cleanup !== undefined)
+      throw new AggregateError(
+        [primary, cleanup],
+        "PostgreSQL child and diagnostic cleanup failed",
+      );
+    throw primary;
+  }
   if (cleanup !== undefined) throw cleanup;
-
 }
 
 export function shardPostgresTestFiles(

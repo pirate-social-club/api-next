@@ -44,6 +44,7 @@ export * from "./public-post-routes.ts";
 export * from "./registry.ts";
 export * from "./rewards-owner-claims.ts";
 export * from "./rewards-owner-credit-reads.ts";
+export * from "./rewards-owner-participation-reads.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./song-library.ts";
@@ -60,5 +61,3 @@ export * from "./v1.ts";
 export * from "./verification.ts";
 export * from "./video-access.ts";
 export * from "./video-outcomes.ts";
-
-export * from './rewards-owner-participation-reads.ts';

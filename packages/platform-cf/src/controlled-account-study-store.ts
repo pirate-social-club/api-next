@@ -1,5 +1,5 @@
 import {
-  ControlPlaneDb,
+  type ControlPlaneDb,
   type ControlPlaneError,
   type StudyV2Failure,
   type StudyV2Store,
@@ -8,8 +8,8 @@ import {
 import type { ControlledAccountSpokenProtocol } from "@pirate/application/controlled-account-spoken";
 import { StudyAnswerResultV2 } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
-import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
 import type { AccountOwnerRewardHooks } from "./account-owner-reward-hooks.ts";
+import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
 import { makeControlPlaneStudyV2Repository, type StudyV2Admission } from "./study-v2-repository.ts";
 
 const Reserved = Schema.Union([

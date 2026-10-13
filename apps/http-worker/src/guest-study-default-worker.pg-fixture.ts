@@ -2,7 +2,10 @@
 // real native263, real cookie/decoder/transport; no metadata rewrite or overlay.
 import { expect } from "bun:test";
 import { createHash } from "node:crypto";
-import { GetPublicGuestStudyPreparedContentV2, guestParticipationRegistry } from "@pirate/contracts";
+import {
+  GetPublicGuestStudyPreparedContentV2,
+  guestParticipationRegistry,
+} from "@pirate/contracts";
 import { Schema } from "effect";
 import { bounded } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
 import {
@@ -277,7 +280,10 @@ export async function defaultWorkerFixture(
           return response;
         };
         const locations = (name: GuestStudyServingName, input: RequestOptions) => {
-          const definition = name === "GetPublicGuestStudyPreparedContentV2" ? GetPublicGuestStudyPreparedContentV2 : guestParticipationRegistry[name];
+          const definition =
+            name === "GetPublicGuestStudyPreparedContentV2"
+              ? GetPublicGuestStudyPreparedContentV2
+              : guestParticipationRegistry[name];
           let path: string = definition.path;
           for (const [key, value] of Object.entries(input.path ?? {}))
             path = path.replace(`:${key}`, encodeURIComponent(value));
@@ -297,7 +303,10 @@ export async function defaultWorkerFixture(
           input: RequestOptions,
           origin: string,
         ) => {
-          const result = browser.headers(name !== "GetPublicGuestStudyPreparedContentV2" && guestParticipationRegistry[name].method !== "GET");
+          const result = browser.headers(
+            name !== "GetPublicGuestStudyPreparedContentV2" &&
+              guestParticipationRegistry[name].method !== "GET",
+          );
           if (result.has("origin")) result.set("origin", origin);
           for (const [key, value] of Object.entries(input.extraHeaders ?? {}))
             result.set(key, value);

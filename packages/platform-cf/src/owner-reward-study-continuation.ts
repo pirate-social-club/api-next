@@ -21,14 +21,14 @@ import {
 import type { OwnerSpokenCapturedContinuationStore } from "@pirate/application/owner-spoken-captured-continuation";
 import {
   GuestIdentifierV1,
+  GuestParticipationResultV1,
   GuestSha256V1,
   GuestStudyAnswerResultV1,
-  GuestParticipationResultV1,
   StudySessionItemV2,
   StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
-import { Effect, type Layer, Schema } from "effect";
 import { scheduleStudyReviewV1 } from "@pirate/domain";
+import { Effect, type Layer, Schema } from "effect";
 import { readGuestResourceAdmissionPolicy } from "./guest-resource-policy.ts";
 import { OwnerSpokenRetainedSuccessResultSchema } from "./owner-spoken-checkpoint-store.ts";
 
@@ -297,13 +297,22 @@ const assertAnswer = (
       saved.answer.session.owner_id === sourceOwnerId &&
       saved.participation.state === saved.answer.participation.state,
   );
-  const economic=saved.participation;const projected=saved.answer.participation;
-  if(economic.state==="admitted")check(projected.state==="admitted" && economic.share_id===projected.share_id
-   && economic.original_drawing_id===projected.original_drawing_id && economic.pool_leg_id===projected.pool_leg_id);
-  if(economic.state==="pending_confirmation")check(projected.state==="pending_confirmation"
-   && economic.operation.operation_kind===projected.operation.operation_kind
-   && economic.operation.idempotency_key===projected.operation.idempotency_key
-   && economic.operation.operation_id===projected.operation.operation_id);
+  const economic = saved.participation;
+  const projected = saved.answer.participation;
+  if (economic.state === "admitted")
+    check(
+      projected.state === "admitted" &&
+        economic.share_id === projected.share_id &&
+        economic.original_drawing_id === projected.original_drawing_id &&
+        economic.pool_leg_id === projected.pool_leg_id,
+    );
+  if (economic.state === "pending_confirmation")
+    check(
+      projected.state === "pending_confirmation" &&
+        economic.operation.operation_kind === projected.operation.operation_kind &&
+        economic.operation.idempotency_key === projected.operation.idempotency_key &&
+        economic.operation.operation_id === projected.operation.operation_id,
+    );
   if (expected !== undefined)
     check(
       saved.answer.session.community_id === expected.communityId &&
@@ -390,38 +399,93 @@ const makeOwnerStudyMutationRunner = (
   return run;
 };
 
-
-const AttemptToken=Schema.NullOr(Schema.Struct({admissionId:Id,attemptFence:GuestSha256V1}));
-const CapturedChoice = Schema.Struct({state:Schema.Literal("captured"),operationId:Id,commandId:Id,originalContinuationNonce:GuestSha256V1});
-const ChoiceLookup = Schema.NullOr(Schema.Union([CapturedChoice,Resolved,Schema.Struct({state:Schema.Literal("practice_only")})]));
-const RetainedChoiceGrade=Schema.Struct({correct:Schema.Boolean,spent:Schema.Boolean,resolved:Schema.Boolean,firstPass:Schema.Boolean,
- outcome:Schema.Literals(["correct","incorrect"]),attemptState:Schema.Literals(["spent","retryable"]),
- feedback:Schema.Union([Schema.Struct({kind:Schema.Literal("none")}),Schema.Struct({kind:Schema.Literal("choice_reveal"),
- correct_choice_key:Schema.NonEmptyString,correct_text:Schema.String,explanation:Schema.optional(Schema.String)})])});
-const RecoveryChoice=Schema.Struct({source:Source,operation:Operation,communityId:Id,sessionId:Id,sessionItemId:Id,attemptNumber:Attempt,
- captured:CapturedChoice});
-type ChoiceContinuationInput=Pick<Input<"submitAnswer">,"source"|"operation"|"communityId"|"sessionId"|"sessionItemId"|"attemptNumber">;
-const CapturedChoiceReady = Schema.Struct({state:Schema.Literal("candidate"),commandId:Id,operationId:Id,attemptId:Id,capture:JsonCandidate,
- grade:RetainedChoiceGrade,originalAdmissionResult:Schema.Unknown,effectiveReviewAt:ClockText});
-const CapturedChoiceRead = Schema.Union([CapturedChoiceReady,Resolved]);
-const Hold = Schema.Union([Resolved,Schema.Struct({state:Schema.Literal("practice_only")}),Schema.Struct({state:Schema.Literal("prepare_required")}),
- Schema.Struct({state:Schema.Literal("hold_refused")}),Schema.Struct({state:Schema.Literal("hold_prepared"),admissionId:Id,attemptFence:GuestSha256V1})]);
-const randomHex = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), byte=>byte.toString(16).padStart(2,"0")).join("");
-const saltBytes = (hex:string) => Uint8Array.from(hex.match(/../g) ?? [],part=>Number.parseInt(part,16));
+const AttemptToken = Schema.NullOr(Schema.Struct({ admissionId: Id, attemptFence: GuestSha256V1 }));
+const CapturedChoice = Schema.Struct({
+  state: Schema.Literal("captured"),
+  operationId: Id,
+  commandId: Id,
+  originalContinuationNonce: GuestSha256V1,
+});
+const ChoiceLookup = Schema.NullOr(
+  Schema.Union([
+    CapturedChoice,
+    Resolved,
+    Schema.Struct({ state: Schema.Literal("practice_only") }),
+  ]),
+);
+const RetainedChoiceGrade = Schema.Struct({
+  correct: Schema.Boolean,
+  spent: Schema.Boolean,
+  resolved: Schema.Boolean,
+  firstPass: Schema.Boolean,
+  outcome: Schema.Literals(["correct", "incorrect"]),
+  attemptState: Schema.Literals(["spent", "retryable"]),
+  feedback: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("none") }),
+    Schema.Struct({
+      kind: Schema.Literal("choice_reveal"),
+      correct_choice_key: Schema.NonEmptyString,
+      correct_text: Schema.String,
+      explanation: Schema.optional(Schema.String),
+    }),
+  ]),
+});
+const RecoveryChoice = Schema.Struct({
+  source: Source,
+  operation: Operation,
+  communityId: Id,
+  sessionId: Id,
+  sessionItemId: Id,
+  attemptNumber: Attempt,
+  captured: CapturedChoice,
+});
+type ChoiceContinuationInput = Pick<
+  Input<"submitAnswer">,
+  "source" | "operation" | "communityId" | "sessionId" | "sessionItemId" | "attemptNumber"
+>;
+const CapturedChoiceReady = Schema.Struct({
+  state: Schema.Literal("candidate"),
+  commandId: Id,
+  operationId: Id,
+  attemptId: Id,
+  capture: JsonCandidate,
+  grade: RetainedChoiceGrade,
+  originalAdmissionResult: Schema.Unknown,
+  effectiveReviewAt: ClockText,
+});
+const CapturedChoiceRead = Schema.Union([CapturedChoiceReady, Resolved]);
+const Hold = Schema.Union([
+  Resolved,
+  Schema.Struct({ state: Schema.Literal("practice_only") }),
+  Schema.Struct({ state: Schema.Literal("prepare_required") }),
+  Schema.Struct({ state: Schema.Literal("hold_refused") }),
+  Schema.Struct({
+    state: Schema.Literal("hold_prepared"),
+    admissionId: Id,
+    attemptFence: GuestSha256V1,
+  }),
+]);
+const randomHex = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+const saltBytes = (hex: string) =>
+  Uint8Array.from(hex.match(/../g) ?? [], (part) => Number.parseInt(part, 16));
 
 /** Private concrete successor. Caller dispatches ordinary Accounts separately.
  * No flags/grants or frozen port/client edit. NEW safety config is required only
  * after an original-capture lookup returned authoritative absence under locks.
  */
 export const makeControlPlaneGuestRewardStudyContinuations = (
- runtime:Layer.Layer<ControlPlaneDb,ControlPlaneError,never>,
- practice:Partial<Pick<OwnerAwareStudyV2Store,"submitAnswer">> & OwnerSpokenCapturedContinuationStore,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  practice: Partial<Pick<OwnerAwareStudyV2Store, "submitAnswer">> &
+    OwnerSpokenCapturedContinuationStore,
 ) => {
- const run=makeOwnerStudyMutationRunner(runtime);
- const originalSpoken={
+  const run = makeOwnerStudyMutationRunner(runtime);
+  const originalSpoken = {
     complete: (
       input: Parameters<OwnerSpokenCapturedContinuationStore["completeCapturedSpokenAnswer"]>[0],
-      expectedFence:string|null,
+      expectedFence: string | null,
     ) =>
       run((tx) =>
         Effect.gen(function* () {
@@ -444,7 +508,7 @@ export const makeControlPlaneGuestRewardStudyContinuations = (
             tx,
             "guest-study.spoken.complete-prepare",
             "SELECT prepare_owner_guest_reward_spoken_v1($1::jsonb,$2::jsonb,$3,$4) AS result",
-            [JSON.stringify(input.source),values[1],values[2],expectedFence],
+            [JSON.stringify(input.source), values[1], values[2], expectedFence],
             SpokenPrepared,
           );
           if (prepared.state !== "candidate")
@@ -489,12 +553,15 @@ export const makeControlPlaneGuestRewardStudyContinuations = (
             "guest-study.spoken.complete-item",
             "SELECT apply_owner_guest_reward_spoken_v1($1::jsonb,$2::jsonb,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9) AS result",
             [
-              JSON.stringify(input.source),values[1],values[2],
+              JSON.stringify(input.source),
+              values[1],
+              values[2],
               JSON.stringify(prepared),
               JSON.stringify(schedule),
               JSON.stringify(facts.feedback),
               JSON.stringify(facts.tokenDiff),
-              JSON.stringify(facts.spoken),expectedFence,
+              JSON.stringify(facts.spoken),
+              expectedFence,
             ],
             SpokenApplied,
           );
@@ -543,11 +610,14 @@ export const makeControlPlaneGuestRewardStudyContinuations = (
             "guest-study.spoken.finish",
             "SELECT finish_owner_guest_reward_spoken_v1($1::jsonb,$2::jsonb,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb,$8) AS result",
             [
-              JSON.stringify(input.source),values[1],values[2],
+              JSON.stringify(input.source),
+              values[1],
+              values[2],
               JSON.stringify(prepared),
               JSON.stringify(schedule),
               JSON.stringify(facts.feedback),
-              JSON.stringify(facts.spoken),expectedFence,
+              JSON.stringify(facts.spoken),
+              expectedFence,
             ],
             Resolved,
           );
@@ -563,99 +633,287 @@ export const makeControlPlaneGuestRewardStudyContinuations = (
           });
         }),
       ),
-
- };
- const completeChoice=Effect.fn("GuestRewardStudy.completeChoice")(function*(input:ChoiceContinuationInput,saved:typeof CapturedChoice.Type){
-  const originalBase=[JSON.stringify(input.source),JSON.stringify(input.operation),saved.commandId,saved.originalContinuationNonce];
-  const token=yield* run(tx=>one(tx,"owner-reward.choice.retry-hold","SELECT resume_owner_guest_reward_choice_hold_v1($1::jsonb,$2::jsonb,$3,$4,$5) AS result",[...originalBase,randomHex()],AttemptToken));
-  const expectedFence=token?.attemptFence??null;
-  return yield* run(tx=>Effect.gen(function*(){
-   const base=[JSON.stringify(input.source),JSON.stringify(input.operation),saved.commandId,saved.originalContinuationNonce];
-   const retained=yield* one(tx,"owner-reward.choice.retained","SELECT read_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4) AS result",base,CapturedChoiceRead);
-   if(retained.state!=="candidate") return outcome(retained,input.operation,input);
-   const candidate=retained.capture;
-   yield* Effect.try({try:()=>check(retained.operationId===saved.operationId && candidate.sourceOwnerId===input.source.ownerId && candidate.communityId===input.communityId
-    && candidate.sessionId===input.sessionId && candidate.sessionItemId===input.sessionItemId && candidate.attemptNumber===input.attemptNumber),catch:()=>invalid("owner-reward.choice.original")});
-   // Original grade is immutable; only the current locked review schedule is derived.
-   const grade=retained.grade;
-   const decision={...grade,review:scheduleStudyReviewV1({...candidate.review,reviewedAt:Date.parse(retained.effectiveReviewAt)},
-    grade.correct?(grade.firstPass?"good":"hard"):"again")};
-   const schedule=serializedSchedule(decision);
-   const applied=yield* one(tx,"owner-reward.choice.apply","SELECT apply_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4,$5::jsonb,$6::jsonb,$7) AS result",
-    [...base,JSON.stringify(candidate),JSON.stringify(schedule),expectedFence],JsonApplied);
-   if(applied.state!=="mutated") return outcome(applied,input.operation,input);
-   const continuation=(transition:unknown)=>statement(tx,"owner-reward.choice.transition","SELECT transition_guest_json_answer_v1($1::jsonb,$2,$3::jsonb,$4::jsonb,$5::jsonb)",
-    [base[1],retained.operationId,JSON.stringify(candidate),JSON.stringify(schedule),JSON.stringify(transition)]);
-   yield* continueStudyLessonMutation({complete:continuation,advance:continuation,keepCurrent:continuation},
-    {kind:decision.spent?"advance":"choice_retryable",priorPresentationCount:applied.priorPresentationCount,totalCards:applied.totalCards,remainingUnresolvedCards:applied.remainingCards});
-   const done=yield* one(tx,"owner-reward.choice.finish","SELECT finish_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4,$5::jsonb,$6::jsonb,$7) AS result",
-    [...base,JSON.stringify(candidate),JSON.stringify(schedule),expectedFence],Resolved);
-   return outcome(done,input.operation,input);
-  }));
- });
- return {
-  recoverCapturedChoices:Effect.fn("GuestRewardStudy.recoverCapturedChoices")(function*(maximum:number){
-   const candidates=yield* run(tx=>one(tx,"owner-reward.choice.recovery-list",
-    "SELECT list_captured_owner_guest_reward_choices_v1($1::integer) AS result",[maximum],Schema.Array(RecoveryChoice)));
-   // Each original owning protocol has its own bounded transactions. Failure or
-   // unknown COMMIT retains the original capture; a later cron repeats its key.
-   return yield* Effect.forEach(candidates,c=>completeChoice(c,c.captured),{concurrency:1});
-  }),
-  submitAnswer:Effect.fn("GuestRewardStudy.submitAnswer")(function*(input:Input<"submitAnswer">){
-   if(input.source.kind!=="guest" || input.access.kind!=="guest") return yield* Effect.fail(rejected("owner-mismatch"));
-   const access={kind:input.access.kind,ownerId:input.access.ownerId,credentialId:input.access.credentialId,origin:input.access.origin};
-   const values=[JSON.stringify(access),JSON.stringify(input.operation),input.communityId,input.sessionId,input.sessionItemId,input.attemptNumber,JSON.stringify(input.answer)];
-   const existing=yield* run(tx=>one(tx,"owner-reward.choice.find","SELECT find_owner_guest_reward_choice_for_answer_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6::integer,$7::jsonb) AS result",values,ChoiceLookup));
-   if(existing?.state==="practice_only") {
-    if(practice.submitAnswer===undefined) return yield* Effect.fail(rejected("resource-policy-unavailable"));
-    return yield* practice.submitAnswer(input);
-   }
-   if(existing!==null) return existing.state==="captured" ? yield* completeChoice(input,existing) : outcome(existing,input.operation,input);
-   const captured=yield* run(tx=>Effect.gen(function*(){
-    const prepared=yield* one(tx,"owner-reward.choice.prepare","SELECT prepare_guest_reward_json_answer_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6::integer,$7::jsonb) AS result",
-     [JSON.stringify(input.access),...values.slice(1)],JsonPrepared);
-    if(prepared.state!=="candidate") return prepared;
-    const margin=null;
-    const decision=evaluateStudyChoice({submittedChoiceKey:prepared.answer.choice_key,correctChoiceKey:prepared.grader.correctChoiceKey,correctText:prepared.grader.correctText,
-     explanation:prepared.grader.explanation??undefined,attemptNumber:prepared.attemptNumber,maximumAttempts:prepared.item.maximum_attempts,
-     review:{...prepared.review,reviewedAt:Date.parse(prepared.acceptedAt)}});
-    return yield* one(tx,"owner-reward.choice.reserve","SELECT reserve_guest_reward_choice_with_hold_v1($1::jsonb,$2::jsonb,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11::bytea,$12::integer) AS result",
-     [JSON.stringify(input.access),values[1],JSON.stringify(prepared),JSON.stringify(serializedSchedule(decision)),`guest_answer_${crypto.randomUUID()}`,input.attemptId,
-      `guest_choice_${crypto.randomUUID()}`,randomHex(),`owner_admission_${crypto.randomUUID()}`,randomHex(),saltBytes(randomHex()),margin],Schema.Union([CapturedChoice,Resolved]));
-   }));
-   return captured.state==="captured" ? yield* completeChoice(input,captured) : outcome(captured,input.operation,input);
-  }),
-  completeCapturedSpokenAnswer:Effect.fn("GuestRewardStudy.completeCapturedSpokenAnswer")(function*(input:Parameters<OwnerSpokenCapturedContinuationStore["completeCapturedSpokenAnswer"]>[0]){
-   const values=[JSON.stringify(input.source),JSON.stringify(input.operation),input.checkpointId];
-   const old=yield* run(tx=>one(tx,"owner-reward.spoken.find","SELECT find_guest_reward_spoken_hold_v1($1::jsonb,$2::jsonb,$3) AS result",values,Hold));
-   if(old.state==="practice_only") return yield* practice.completeCapturedSpokenAnswer(input);
-   if(old.state==="completed" || old.state==="reserved" || old.state==="known_aborted") return outcome(old,input.operation);
-   if(old.state==="prepare_required"){
-    const margin=null;
-    yield* run(tx=>one(tx,"owner-reward.spoken.hold","SELECT prepare_guest_reward_spoken_hold_v1($1,$2::jsonb,$3,$4,$5,$6::bytea,$7::integer) AS result",
-     [input.source.ownerId,values[1],input.checkpointId,`owner_admission_${crypto.randomUUID()}`,randomHex(),saltBytes(randomHex()),margin],Hold));
-   }
-   const token=yield* run(tx=>one(tx,"owner-reward.spoken.retry-hold","SELECT resume_owner_guest_reward_spoken_hold_v1($1::jsonb,$2::jsonb,$3,$4) AS result",[...values,randomHex()],AttemptToken));
-   return yield* originalSpoken.complete(input,token?.attemptFence??null);
-  }),
- };
+  };
+  const completeChoice = Effect.fn("GuestRewardStudy.completeChoice")(function* (
+    input: ChoiceContinuationInput,
+    saved: typeof CapturedChoice.Type,
+  ) {
+    const originalBase = [
+      JSON.stringify(input.source),
+      JSON.stringify(input.operation),
+      saved.commandId,
+      saved.originalContinuationNonce,
+    ];
+    const token = yield* run((tx) =>
+      one(
+        tx,
+        "owner-reward.choice.retry-hold",
+        "SELECT resume_owner_guest_reward_choice_hold_v1($1::jsonb,$2::jsonb,$3,$4,$5) AS result",
+        [...originalBase, randomHex()],
+        AttemptToken,
+      ),
+    );
+    const expectedFence = token?.attemptFence ?? null;
+    return yield* run((tx) =>
+      Effect.gen(function* () {
+        const base = [
+          JSON.stringify(input.source),
+          JSON.stringify(input.operation),
+          saved.commandId,
+          saved.originalContinuationNonce,
+        ];
+        const retained = yield* one(
+          tx,
+          "owner-reward.choice.retained",
+          "SELECT read_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4) AS result",
+          base,
+          CapturedChoiceRead,
+        );
+        if (retained.state !== "candidate") return outcome(retained, input.operation, input);
+        const candidate = retained.capture;
+        yield* Effect.try({
+          try: () =>
+            check(
+              retained.operationId === saved.operationId &&
+                candidate.sourceOwnerId === input.source.ownerId &&
+                candidate.communityId === input.communityId &&
+                candidate.sessionId === input.sessionId &&
+                candidate.sessionItemId === input.sessionItemId &&
+                candidate.attemptNumber === input.attemptNumber,
+            ),
+          catch: () => invalid("owner-reward.choice.original"),
+        });
+        // Original grade is immutable; only the current locked review schedule is derived.
+        const grade = retained.grade;
+        const decision = {
+          ...grade,
+          review: scheduleStudyReviewV1(
+            { ...candidate.review, reviewedAt: Date.parse(retained.effectiveReviewAt) },
+            grade.correct ? (grade.firstPass ? "good" : "hard") : "again",
+          ),
+        };
+        const schedule = serializedSchedule(decision);
+        const applied = yield* one(
+          tx,
+          "owner-reward.choice.apply",
+          "SELECT apply_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4,$5::jsonb,$6::jsonb,$7) AS result",
+          [...base, JSON.stringify(candidate), JSON.stringify(schedule), expectedFence],
+          JsonApplied,
+        );
+        if (applied.state !== "mutated") return outcome(applied, input.operation, input);
+        const continuation = (transition: unknown) =>
+          statement(
+            tx,
+            "owner-reward.choice.transition",
+            "SELECT transition_guest_json_answer_v1($1::jsonb,$2,$3::jsonb,$4::jsonb,$5::jsonb)",
+            [
+              base[1],
+              retained.operationId,
+              JSON.stringify(candidate),
+              JSON.stringify(schedule),
+              JSON.stringify(transition),
+            ],
+          );
+        yield* continueStudyLessonMutation(
+          { complete: continuation, advance: continuation, keepCurrent: continuation },
+          {
+            kind: decision.spent ? "advance" : "choice_retryable",
+            priorPresentationCount: applied.priorPresentationCount,
+            totalCards: applied.totalCards,
+            remainingUnresolvedCards: applied.remainingCards,
+          },
+        );
+        const done = yield* one(
+          tx,
+          "owner-reward.choice.finish",
+          "SELECT finish_owner_guest_reward_choice_v1($1::jsonb,$2::jsonb,$3,$4,$5::jsonb,$6::jsonb,$7) AS result",
+          [...base, JSON.stringify(candidate), JSON.stringify(schedule), expectedFence],
+          Resolved,
+        );
+        return outcome(done, input.operation, input);
+      }),
+    );
+  });
+  return {
+    recoverCapturedChoices: Effect.fn("GuestRewardStudy.recoverCapturedChoices")(function* (
+      maximum: number,
+    ) {
+      const candidates = yield* run((tx) =>
+        one(
+          tx,
+          "owner-reward.choice.recovery-list",
+          "SELECT list_captured_owner_guest_reward_choices_v1($1::integer) AS result",
+          [maximum],
+          Schema.Array(RecoveryChoice),
+        ),
+      );
+      // Each original owning protocol has its own bounded transactions. Failure or
+      // unknown COMMIT retains the original capture; a later cron repeats its key.
+      return yield* Effect.forEach(candidates, (c) => completeChoice(c, c.captured), {
+        concurrency: 1,
+      });
+    }),
+    submitAnswer: Effect.fn("GuestRewardStudy.submitAnswer")(function* (
+      input: Input<"submitAnswer">,
+    ) {
+      if (input.source.kind !== "guest" || input.access.kind !== "guest")
+        return yield* Effect.fail(rejected("owner-mismatch"));
+      const access = {
+        kind: input.access.kind,
+        ownerId: input.access.ownerId,
+        credentialId: input.access.credentialId,
+        origin: input.access.origin,
+      };
+      const values = [
+        JSON.stringify(access),
+        JSON.stringify(input.operation),
+        input.communityId,
+        input.sessionId,
+        input.sessionItemId,
+        input.attemptNumber,
+        JSON.stringify(input.answer),
+      ];
+      const existing = yield* run((tx) =>
+        one(
+          tx,
+          "owner-reward.choice.find",
+          "SELECT find_owner_guest_reward_choice_for_answer_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6::integer,$7::jsonb) AS result",
+          values,
+          ChoiceLookup,
+        ),
+      );
+      if (existing?.state === "practice_only") {
+        if (practice.submitAnswer === undefined)
+          return yield* Effect.fail(rejected("resource-policy-unavailable"));
+        return yield* practice.submitAnswer(input);
+      }
+      if (existing !== null)
+        return existing.state === "captured"
+          ? yield* completeChoice(input, existing)
+          : outcome(existing, input.operation, input);
+      const captured = yield* run((tx) =>
+        Effect.gen(function* () {
+          const prepared = yield* one(
+            tx,
+            "owner-reward.choice.prepare",
+            "SELECT prepare_guest_reward_json_answer_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6::integer,$7::jsonb) AS result",
+            [JSON.stringify(input.access), ...values.slice(1)],
+            JsonPrepared,
+          );
+          if (prepared.state !== "candidate") return prepared;
+          const margin = null;
+          const decision = evaluateStudyChoice({
+            submittedChoiceKey: prepared.answer.choice_key,
+            correctChoiceKey: prepared.grader.correctChoiceKey,
+            correctText: prepared.grader.correctText,
+            explanation: prepared.grader.explanation ?? undefined,
+            attemptNumber: prepared.attemptNumber,
+            maximumAttempts: prepared.item.maximum_attempts,
+            review: { ...prepared.review, reviewedAt: Date.parse(prepared.acceptedAt) },
+          });
+          return yield* one(
+            tx,
+            "owner-reward.choice.reserve",
+            "SELECT reserve_guest_reward_choice_with_hold_v1($1::jsonb,$2::jsonb,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11::bytea,$12::integer) AS result",
+            [
+              JSON.stringify(input.access),
+              values[1],
+              JSON.stringify(prepared),
+              JSON.stringify(serializedSchedule(decision)),
+              `guest_answer_${crypto.randomUUID()}`,
+              input.attemptId,
+              `guest_choice_${crypto.randomUUID()}`,
+              randomHex(),
+              `owner_admission_${crypto.randomUUID()}`,
+              randomHex(),
+              saltBytes(randomHex()),
+              margin,
+            ],
+            Schema.Union([CapturedChoice, Resolved]),
+          );
+        }),
+      );
+      return captured.state === "captured"
+        ? yield* completeChoice(input, captured)
+        : outcome(captured, input.operation, input);
+    }),
+    completeCapturedSpokenAnswer: Effect.fn("GuestRewardStudy.completeCapturedSpokenAnswer")(
+      function* (
+        input: Parameters<OwnerSpokenCapturedContinuationStore["completeCapturedSpokenAnswer"]>[0],
+      ) {
+        const values = [
+          JSON.stringify(input.source),
+          JSON.stringify(input.operation),
+          input.checkpointId,
+        ];
+        const old = yield* run((tx) =>
+          one(
+            tx,
+            "owner-reward.spoken.find",
+            "SELECT find_guest_reward_spoken_hold_v1($1::jsonb,$2::jsonb,$3) AS result",
+            values,
+            Hold,
+          ),
+        );
+        if (old.state === "practice_only")
+          return yield* practice.completeCapturedSpokenAnswer(input);
+        if (old.state === "completed" || old.state === "reserved" || old.state === "known_aborted")
+          return outcome(old, input.operation);
+        if (old.state === "prepare_required") {
+          const margin = null;
+          yield* run((tx) =>
+            one(
+              tx,
+              "owner-reward.spoken.hold",
+              "SELECT prepare_guest_reward_spoken_hold_v1($1,$2::jsonb,$3,$4,$5,$6::bytea,$7::integer) AS result",
+              [
+                input.source.ownerId,
+                values[1],
+                input.checkpointId,
+                `owner_admission_${crypto.randomUUID()}`,
+                randomHex(),
+                saltBytes(randomHex()),
+                margin,
+              ],
+              Hold,
+            ),
+          );
+        }
+        const token = yield* run((tx) =>
+          one(
+            tx,
+            "owner-reward.spoken.retry-hold",
+            "SELECT resume_owner_guest_reward_spoken_hold_v1($1::jsonb,$2::jsonb,$3,$4) AS result",
+            [...values, randomHex()],
+            AttemptToken,
+          ),
+        );
+        return yield* originalSpoken.complete(input, token?.attemptFence ?? null);
+      },
+    ),
+  };
 };
 
 /** Install into both foreground protocol and private closed-upload recovery.
  * Accepted checkpoint ACK is unchanged; every Guest owning completion takes
  * the original-draw preparation path, including config-free process recovery. */
 export const composeGuestRewardCapturedContinuation = (
- accepted:OwnerSpokenCapturedContinuationStore,
- reward:ReturnType<typeof makeControlPlaneGuestRewardStudyContinuations>,
-):OwnerSpokenCapturedContinuationStore=>({
- acknowledgeCapturedSpokenResult:accepted.acknowledgeCapturedSpokenResult,
- completeCapturedSpokenAnswer:reward.completeCapturedSpokenAnswer,
+  accepted: OwnerSpokenCapturedContinuationStore,
+  reward: ReturnType<typeof makeControlPlaneGuestRewardStudyContinuations>,
+): OwnerSpokenCapturedContinuationStore => ({
+  acknowledgeCapturedSpokenResult: accepted.acknowledgeCapturedSpokenResult,
+  completeCapturedSpokenAnswer: reward.completeCapturedSpokenAnswer,
 });
 export const composeGuestRewardStudyMutationMethods = (
- base:Methods,
- reward:ReturnType<typeof makeControlPlaneGuestRewardStudyContinuations>,
-):Methods=>({
- ...base,
- submitAnswer:reward.submitAnswer,
- completeSpokenAnswer:(input)=>reward.completeCapturedSpokenAnswer({source:input.source,operation:input.operation,checkpointId:input.checkpointId}),
+  base: Methods,
+  reward: ReturnType<typeof makeControlPlaneGuestRewardStudyContinuations>,
+): Methods => ({
+  ...base,
+  submitAnswer: reward.submitAnswer,
+  completeSpokenAnswer: (input) =>
+    reward.completeCapturedSpokenAnswer({
+      source: input.source,
+      operation: input.operation,
+      checkpointId: input.checkpointId,
+    }),
 });

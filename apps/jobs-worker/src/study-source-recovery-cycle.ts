@@ -47,10 +47,11 @@ export const runStudySourceRecoveryCycle = Effect.fn("StudySourceRecoveryCycle.r
   )
     throw new Error("Reviewed expiry maximum1..8 required");
   const account = yield* stages.account;
-  if (stages.accountOriginalAdmissionReconciliation !== undefined) yield* stages.accountOriginalAdmissionReconciliation;
+  if (stages.accountOriginalAdmissionReconciliation !== undefined)
+    yield* stages.accountOriginalAdmissionReconciliation;
   if (stages.guest === undefined) return { account, guest: null, released: 0 };
   const guest = yield* stages.guest.closed;
-  if(stages.guest.capturedChoices!==undefined) yield* stages.guest.capturedChoices;
+  if (stages.guest.capturedChoices !== undefined) yield* stages.guest.capturedChoices;
   let released = 0;
   for (let i = 0; i < stages.guest.maximumReleases; i++) {
     const result = yield* stages.guest.releaseNext();

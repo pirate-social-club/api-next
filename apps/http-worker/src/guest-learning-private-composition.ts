@@ -7,6 +7,8 @@ export function makeGuestLearningPrivateComposition(
 ) {
   for (const name of guestAccountingNames)
     if (guestParticipationRegistry[name].implementation !== undefined)
-      throw new Error("Private learning composition requires source-admitted accounting declarations");
+      throw new Error(
+        "Private learning composition requires source-admitted accounting declarations",
+      );
   return Object.freeze({ ...makeGuestLearningComposition(dependencies) });
 }

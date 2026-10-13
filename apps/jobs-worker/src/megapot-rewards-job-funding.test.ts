@@ -36,10 +36,16 @@ function harness(
         yield* Effect.sleep(counted || !track ? slowMs : 0);
         if (counted) funding.finished += 1;
         if (statement.label === "learner-audio.limits.verify")
-          return { rows: [{ transaction: "3s", lock: "250ms", statement: "2s", idle: "2s" }], rowCount: 1 };
+          return {
+            rows: [{ transaction: "3s", lock: "250ms", statement: "2s", idle: "2s" }],
+            rowCount: 1,
+          };
         if (statement.label === "versioned-megapot.isolation")
           return { rows: [{ isolation: "read committed" }], rowCount: 1 };
-        if (statement.label === "versioned-megapot.due" || statement.label === "versioned-megapot.zero-due")
+        if (
+          statement.label === "versioned-megapot.due" ||
+          statement.label === "versioned-megapot.zero-due"
+        )
           return { rows: [{ result: [] }], rowCount: 1 };
         return { rows: [], rowCount: 0 };
       }).pipe(

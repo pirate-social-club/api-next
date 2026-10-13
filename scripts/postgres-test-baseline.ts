@@ -181,8 +181,15 @@ export async function withReusablePostgresTestSchema<A>(options: {
       await prepareReusableSchema(state, admin);
       emitPostgresCiFixturePhase("prepare_finished", state.schema, admin);
       emitPostgresCiFixturePhase("use_started", state.schema, admin);
-      try { return await options.use({ admin, connectionString: state.scopedConnectionString, schema: state.schema }); }
-      finally { emitPostgresCiFixturePhase("use_finished", state.schema, admin); }
+      try {
+        return await options.use({
+          admin,
+          connectionString: state.scopedConnectionString,
+          schema: state.schema,
+        });
+      } finally {
+        emitPostgresCiFixturePhase("use_finished", state.schema, admin);
+      }
     } finally {
       emitPostgresCiFixturePhase("rollback_started", state.schema, admin);
       await admin.query("ROLLBACK").catch(() => undefined);

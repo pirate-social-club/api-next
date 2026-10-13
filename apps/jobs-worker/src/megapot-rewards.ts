@@ -19,12 +19,15 @@ import {
   makeRewardGasTopupCoordinator,
   type RewardFundingCoordinator,
 } from "@pirate/platform-cf";
+import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
 import {
   makeControlPlaneRewardLeaseExpiryPause,
   makeControlPlaneRewardRunAuthority,
 } from "@pirate/platform-cf/reward-operations-control";
-import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
-import { makeVersionedMegapotCutoffCoordinator, makeVersionedMegapotAllocationCoordinator } from "@pirate/platform-cf/versioned-megapot-coordinators";
+import {
+  makeVersionedMegapotAllocationCoordinator,
+  makeVersionedMegapotCutoffCoordinator,
+} from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { Effect, Exit, Fiber, Layer } from "effect";
 import {
   MEGAPOT_REWARDS_CYCLE_JOB,
@@ -402,8 +405,11 @@ export function makeMegapotRewardsJob(
         },
       });
       const allocation = makeVersionedMegapotAllocationCoordinator({
-        runtime: controlPlane, ownerStore,
-        account: makeMegapotAllocationCoordinator({ store: makeControlPlaneMegapotAllocationStore(controlPlane) }),
+        runtime: controlPlane,
+        ownerStore,
+        account: makeMegapotAllocationCoordinator({
+          store: makeControlPlaneMegapotAllocationStore(controlPlane),
+        }),
       });
 
       const leaseAlert = yield* pauseOnRunLeaseExpiry(
@@ -438,7 +444,10 @@ export function makeMegapotRewardsJob(
           sweep: routing.sweep,
           claim: routing.claim,
           allocate: (work) =>
-            allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId.toString() }),
+            allocation.allocate({
+              poolLegId: work.poolLegId,
+              drawingId: work.drawingId.toString(),
+            }),
           allocateZeroNet: allocation.allocateZeroNet,
           closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
           refund: routing.refund,

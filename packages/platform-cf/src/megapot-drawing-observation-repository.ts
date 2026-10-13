@@ -9,8 +9,8 @@ import {
   type MegapotDrawingObserverCandidate,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
-import { openOwnerDrawingsForObservation } from "./owner-drawing-opener.ts";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { openOwnerDrawingsForObservation } from "./owner-drawing-opener.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -303,14 +303,23 @@ export const makeControlPlaneMegapotDrawingObservationStore = (
 /** Managed prospective3 observer composition. The original chain observation
  * must ACK before an opening is attempted; retry uses native original drawing
  * identity/salt. Provider observation and ticket purchase remain separate. */
-export const makeControlPlaneOwnerMegapotDrawingObservationStore=(layer:Layer.Layer<ControlPlaneDb,ControlPlaneError,never>):MegapotDrawingObservationStore=>{
- const ordinary=makeControlPlaneMegapotDrawingObservationStore(layer);
- return {
-  loadCandidate:ordinary.loadCandidate,
-  recordAndOpen:Effect.fn("OwnerDrawingObservationStore.recordAndOpen")(function*(input:Parameters<MegapotDrawingObservationStore["recordAndOpen"]>[0]){
-   const accepted=yield* ordinary.recordAndOpen(input);
-   const ownerOpened=yield* mapped<string[], never, never>(openOwnerDrawingsForObservation(accepted.observationId).pipe(Effect.provide(layer)));
-   return {...accepted,openedPoolLegIds:[...new Set([...accepted.openedPoolLegIds,...ownerOpened])].sort()};
-  }),
- };
+export const makeControlPlaneOwnerMegapotDrawingObservationStore = (
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): MegapotDrawingObservationStore => {
+  const ordinary = makeControlPlaneMegapotDrawingObservationStore(layer);
+  return {
+    loadCandidate: ordinary.loadCandidate,
+    recordAndOpen: Effect.fn("OwnerDrawingObservationStore.recordAndOpen")(function* (
+      input: Parameters<MegapotDrawingObservationStore["recordAndOpen"]>[0],
+    ) {
+      const accepted = yield* ordinary.recordAndOpen(input);
+      const ownerOpened = yield* mapped<string[], never, never>(
+        openOwnerDrawingsForObservation(accepted.observationId).pipe(Effect.provide(layer)),
+      );
+      return {
+        ...accepted,
+        openedPoolLegIds: [...new Set([...accepted.openedPoolLegIds, ...ownerOpened])].sort(),
+      };
+    }),
+  };
 };

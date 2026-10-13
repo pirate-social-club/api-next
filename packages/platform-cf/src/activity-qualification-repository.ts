@@ -1,4 +1,3 @@
-import { type AccountOwnerRewardHooks, withAccountOwnerRewardMutation } from "./account-owner-reward-hooks.ts";
 import {
   ActivityQualificationRejected,
   ActivityQualificationStorageFailed,
@@ -23,6 +22,10 @@ import {
   recomputeActivityStreak,
 } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
+import {
+  type AccountOwnerRewardHooks,
+  withAccountOwnerRewardMutation,
+} from "./account-owner-reward-hooks.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -460,7 +463,9 @@ const publicationRevision = (
     readonly: true,
   });
 
-export function makeControlPlaneActivityQualificationRepository(ownerRewards?: AccountOwnerRewardHooks) {
+export function makeControlPlaneActivityQualificationRepository(
+  ownerRewards?: AccountOwnerRewardHooks,
+) {
   return {
     prepareStudySessionStart: (
       input: Parameters<ActivityQualificationStore["prepareStudySessionStart"]>[0],
@@ -546,7 +551,8 @@ export function makeControlPlaneActivityQualificationRepository(ownerRewards?: A
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              if (ownerRewards !== undefined) yield* ownerRewards.lockBirth(transaction, input.accountId);
+              if (ownerRewards !== undefined)
+                yield* ownerRewards.lockBirth(transaction, input.accountId);
               yield* advisoryLock(
                 transaction,
                 15100001,
@@ -577,7 +583,8 @@ export function makeControlPlaneActivityQualificationRepository(ownerRewards?: A
                 return session;
               }
 
-              const selectedBirth = ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
+              const selectedBirth =
+                ownerRewards === undefined ? null : yield* ownerRewards.birthFields();
               const startAuthority = yield* transaction.execute<Row>({
                 label: "activity-qualification.study-start.authority-locked",
                 text: `SELECT active_owned_persona($1,$2) AS persona_eligible,
@@ -718,168 +725,187 @@ export function makeControlPlaneActivityQualificationRepository(ownerRewards?: A
       mapped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
-          const prepared = ownerRewards === undefined ? null : yield* ownerRewards.prepare({ accountId: input.accountId, communityId: input.communityId, family: "study_legacy", sessionId: input.sessionId, producer: "legacy_choice", payload: input });
+          const prepared =
+            ownerRewards === undefined
+              ? null
+              : yield* ownerRewards.prepare({
+                  accountId: input.accountId,
+                  communityId: input.communityId,
+                  family: "study_legacy",
+                  sessionId: input.sessionId,
+                  producer: "legacy_choice",
+                  payload: input,
+                });
           const qualificationId = prepared?.qualificationId ?? input.qualificationId;
           return yield* db.withTransaction((transaction) =>
-            withAccountOwnerRewardMutation(ownerRewards, transaction, prepared, Effect.gen(function* () {
-              yield* transaction.execute({ label: "rewards.owner-group.before-study_legacy", text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)", values: [input.accountId,input.communityId,input.sessionId,"study_legacy"], readonly: false });
-              yield* advisoryLock(
-                transaction,
-                15100002,
-                [input.accountId, input.sessionId],
-                "activity-qualification.study-answer.lock",
-              );
-              const replay = yield* transaction.execute<Row>({
-                label: "activity-qualification.study-answer.replay",
-                text: `SELECT answer_id, session_item_id, attempt_number, request_hash,
+            withAccountOwnerRewardMutation(
+              ownerRewards,
+              transaction,
+              prepared,
+              Effect.gen(function* () {
+                yield* transaction.execute({
+                  label: "rewards.owner-group.before-study_legacy",
+                  text: "SELECT lock_account_reward_finalization_v1($1,$2,$3,$4)",
+                  values: [input.accountId, input.communityId, input.sessionId, "study_legacy"],
+                  readonly: false,
+                });
+                yield* advisoryLock(
+                  transaction,
+                  15100002,
+                  [input.accountId, input.sessionId],
+                  "activity-qualification.study-answer.lock",
+                );
+                const replay = yield* transaction.execute<Row>({
+                  label: "activity-qualification.study-answer.replay",
+                  text: `SELECT answer_id, session_item_id, attempt_number, request_hash,
                               outcome, first_pass
                          FROM study_session_answers
                         WHERE session_id=$1 AND idempotency_key=$2`,
-                values: [input.sessionId, input.idempotencyKey],
-                readonly: false,
-              });
-              if (replay.rows.length > 1) return yield* Effect.fail(storage("invalid-row"));
-              if (replay.rows.length === 1) {
-                const row = replay.rows[0] as Row;
-                if (row.request_hash !== input.requestHash) {
-                  return yield* Effect.fail(rejected("idempotency-conflict"));
-                }
-                const session = yield* readStudySessionIn(transaction, {
-                  accountId: input.accountId,
-                  communityId: input.communityId,
-                  sessionId: input.sessionId,
+                  values: [input.sessionId, input.idempotencyKey],
+                  readonly: false,
                 });
-                if (session === null) return yield* Effect.fail(rejected("not-found"));
-                return {
-                  object: "study_answer_result",
-                  session_item_id: text(row, "session_item_id"),
-                  attempt_number: integer(row, "attempt_number"),
-                  outcome: text(row, "outcome") as "correct" | "incorrect",
-                  first_pass: row.first_pass === true,
-                  session,
-                } as const;
-              }
+                if (replay.rows.length > 1) return yield* Effect.fail(storage("invalid-row"));
+                if (replay.rows.length === 1) {
+                  const row = replay.rows[0] as Row;
+                  if (row.request_hash !== input.requestHash) {
+                    return yield* Effect.fail(rejected("idempotency-conflict"));
+                  }
+                  const session = yield* readStudySessionIn(transaction, {
+                    accountId: input.accountId,
+                    communityId: input.communityId,
+                    sessionId: input.sessionId,
+                  });
+                  if (session === null) return yield* Effect.fail(rejected("not-found"));
+                  return {
+                    object: "study_answer_result",
+                    session_item_id: text(row, "session_item_id"),
+                    attempt_number: integer(row, "attempt_number"),
+                    outcome: text(row, "outcome") as "correct" | "incorrect",
+                    first_pass: row.first_pass === true,
+                    session,
+                  } as const;
+                }
 
-              const session = yield* readStudySessionIn(
-                transaction,
-                {
-                  accountId: input.accountId,
-                  communityId: input.communityId,
-                  sessionId: input.sessionId,
-                },
-                true,
-              );
-              if (session === null) return yield* Effect.fail(rejected("not-found"));
-              if (session.status !== "active") {
-                return yield* Effect.fail(rejected("attempt-conflict"));
-              }
-              const itemResult = yield* transaction.execute<Row>({
-                label: "activity-qualification.study-answer.item",
-                text: `SELECT prompt, answer_key, answer_count, first_pass_outcome
+                const session = yield* readStudySessionIn(
+                  transaction,
+                  {
+                    accountId: input.accountId,
+                    communityId: input.communityId,
+                    sessionId: input.sessionId,
+                  },
+                  true,
+                );
+                if (session === null) return yield* Effect.fail(rejected("not-found"));
+                if (session.status !== "active") {
+                  return yield* Effect.fail(rejected("attempt-conflict"));
+                }
+                const itemResult = yield* transaction.execute<Row>({
+                  label: "activity-qualification.study-answer.item",
+                  text: `SELECT prompt, answer_key, answer_count, first_pass_outcome
                          FROM study_session_items
                         WHERE session_id=$1 AND session_item_id=$2 FOR UPDATE`,
-                values: [input.sessionId, input.sessionItemId],
-                readonly: false,
-              });
-              if (itemResult.rows.length === 0) return yield* Effect.fail(rejected("not-found"));
-              if (itemResult.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
-              const itemRow = itemResult.rows[0] as Row;
-              const answerCount = integer(itemRow, "answer_count");
-              if (input.attemptNumber !== answerCount + 1) {
-                return yield* Effect.fail(rejected("attempt-conflict"));
-              }
-              if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
-              const answer =
-                input.answer.kind === "single_select"
-                  ? { kind: "single_select" as const, choiceKey: input.answer.choice_key }
-                  : input.answer;
-              const answerKeyValue = json(itemRow.answer_key) as {
-                readonly kind?: unknown;
-                readonly accepted_answers?: unknown;
-                readonly correct_choice_key?: unknown;
-              };
-              const answerKey =
-                answerKeyValue.kind === "single_select" &&
-                typeof answerKeyValue.correct_choice_key === "string"
-                  ? {
-                      kind: "single_select" as const,
-                      correctChoiceKey: answerKeyValue.correct_choice_key,
-                    }
-                  : answerKeyValue.kind === "text_response" &&
-                      Array.isArray(answerKeyValue.accepted_answers) &&
-                      answerKeyValue.accepted_answers.every(
-                        (candidate) => typeof candidate === "string",
-                      ) &&
-                      answerKeyValue.accepted_answers.length > 0
+                  values: [input.sessionId, input.sessionItemId],
+                  readonly: false,
+                });
+                if (itemResult.rows.length === 0) return yield* Effect.fail(rejected("not-found"));
+                if (itemResult.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
+                const itemRow = itemResult.rows[0] as Row;
+                const answerCount = integer(itemRow, "answer_count");
+                if (input.attemptNumber !== answerCount + 1) {
+                  return yield* Effect.fail(rejected("attempt-conflict"));
+                }
+                if (ownerRewards !== undefined) yield* ownerRewards.draw(transaction, prepared);
+                const answer =
+                  input.answer.kind === "single_select"
+                    ? { kind: "single_select" as const, choiceKey: input.answer.choice_key }
+                    : input.answer;
+                const answerKeyValue = json(itemRow.answer_key) as {
+                  readonly kind?: unknown;
+                  readonly accepted_answers?: unknown;
+                  readonly correct_choice_key?: unknown;
+                };
+                const answerKey =
+                  answerKeyValue.kind === "single_select" &&
+                  typeof answerKeyValue.correct_choice_key === "string"
                     ? {
-                        kind: "text_response" as const,
-                        comparison: "unicode_casefold_whitespace_v1" as const,
-                        acceptedAnswers: answerKeyValue.accepted_answers as [string, ...string[]],
+                        kind: "single_select" as const,
+                        correctChoiceKey: answerKeyValue.correct_choice_key,
                       }
-                    : null;
-              if (answerKey === null) return yield* Effect.fail(storage("invalid-row"));
-              const correct = yield* Effect.try({
-                try: () => gradeStudyAnswer(answer, answerKey),
-                catch: () => storage("invalid-row"),
-              });
-              const outcome = correct ? "correct" : "incorrect";
-              const firstPass = input.attemptNumber === 1;
-              yield* transaction.execute({
-                label: "activity-qualification.study-answer.insert",
-                text: `INSERT INTO study_session_answers (
+                    : answerKeyValue.kind === "text_response" &&
+                        Array.isArray(answerKeyValue.accepted_answers) &&
+                        answerKeyValue.accepted_answers.every(
+                          (candidate) => typeof candidate === "string",
+                        ) &&
+                        answerKeyValue.accepted_answers.length > 0
+                      ? {
+                          kind: "text_response" as const,
+                          comparison: "unicode_casefold_whitespace_v1" as const,
+                          acceptedAnswers: answerKeyValue.accepted_answers as [string, ...string[]],
+                        }
+                      : null;
+                if (answerKey === null) return yield* Effect.fail(storage("invalid-row"));
+                const correct = yield* Effect.try({
+                  try: () => gradeStudyAnswer(answer, answerKey),
+                  catch: () => storage("invalid-row"),
+                });
+                const outcome = correct ? "correct" : "incorrect";
+                const firstPass = input.attemptNumber === 1;
+                yield* transaction.execute({
+                  label: "activity-qualification.study-answer.insert",
+                  text: `INSERT INTO study_session_answers (
                          answer_id, session_id, session_item_id, attempt_number,
                          idempotency_key, request_hash, answer, outcome, first_pass, answered_at
                        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::timestamptz)`,
-                values: [
-                  input.answerId,
-                  input.sessionId,
-                  input.sessionItemId,
-                  input.attemptNumber,
-                  input.idempotencyKey,
-                  input.requestHash,
-                  JSON.stringify(input.answer),
-                  outcome,
-                  firstPass,
-                  input.answeredAt,
-                ],
-                readonly: false,
-              });
-              yield* transaction.execute({
-                label: "activity-qualification.study-item.advance",
-                text: `UPDATE study_session_items
+                  values: [
+                    input.answerId,
+                    input.sessionId,
+                    input.sessionItemId,
+                    input.attemptNumber,
+                    input.idempotencyKey,
+                    input.requestHash,
+                    JSON.stringify(input.answer),
+                    outcome,
+                    firstPass,
+                    input.answeredAt,
+                  ],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "activity-qualification.study-item.advance",
+                  text: `UPDATE study_session_items
                           SET answer_count=answer_count + 1,
                               first_pass_outcome=coalesce(first_pass_outcome,$3)
                         WHERE session_id=$1 AND session_item_id=$2`,
-                values: [input.sessionId, input.sessionItemId, outcome],
-                readonly: false,
-              });
-
-              const completionRows = yield* transaction.execute<Row>({
-                label: "activity-qualification.study-completion-evidence.read",
-                text: `SELECT presentation_count, first_pass_outcome
-                         FROM study_session_items WHERE session_id=$1 ORDER BY ordinal`,
-                values: [input.sessionId],
-                readonly: false,
-              });
-              const complete = completionRows.rows.every(
-                (row) => nullableText(row, "first_pass_outcome") !== null,
-              );
-              if (complete) {
-                const evaluation = yield* Effect.try({
-                  try: () =>
-                    evaluateStudyQualification(
-                      completionRows.rows.map((row) => ({
-                        presentationCount: integer(row, "presentation_count"),
-                        firstPassOutcome: nullableText(row, "first_pass_outcome") as
-                          | "correct"
-                          | "incorrect",
-                      })),
-                    ),
-                  catch: () => storage("invalid-row"),
+                  values: [input.sessionId, input.sessionItemId, outcome],
+                  readonly: false,
                 });
-                const terminal = yield* transaction.execute<Row>({
-                  label: "activity-qualification.study-session.complete",
-                  text: `UPDATE study_sessions
+
+                const completionRows = yield* transaction.execute<Row>({
+                  label: "activity-qualification.study-completion-evidence.read",
+                  text: `SELECT presentation_count, first_pass_outcome
+                         FROM study_session_items WHERE session_id=$1 ORDER BY ordinal`,
+                  values: [input.sessionId],
+                  readonly: false,
+                });
+                const complete = completionRows.rows.every(
+                  (row) => nullableText(row, "first_pass_outcome") !== null,
+                );
+                if (complete) {
+                  const evaluation = yield* Effect.try({
+                    try: () =>
+                      evaluateStudyQualification(
+                        completionRows.rows.map((row) => ({
+                          presentationCount: integer(row, "presentation_count"),
+                          firstPassOutcome: nullableText(row, "first_pass_outcome") as
+                            | "correct"
+                            | "incorrect",
+                        })),
+                      ),
+                    catch: () => storage("invalid-row"),
+                  });
+                  const terminal = yield* transaction.execute<Row>({
+                    label: "activity-qualification.study-session.complete",
+                    text: `UPDATE study_sessions
                             SET status='completed', answered_exercise_count=$2,
                                 first_pass_correct=$3, score_bps=$4,
                                 streak_day=($5::timestamptz AT TIME ZONE timezone)::date,
@@ -887,22 +913,22 @@ export function makeControlPlaneActivityQualificationRepository(ownerRewards?: A
                           WHERE session_id=$1
                       RETURNING persona_id, community_id, post_id, audio_revision,
                                 qualification_policy_version_id, timezone, streak_day`,
-                  values: [
-                    input.sessionId,
-                    evaluation.qualifyingExerciseCount,
-                    evaluation.firstPassCorrect,
-                    evaluation.scoreBps,
-                    input.answeredAt,
-                  ],
-                  readonly: false,
-                });
-                if (terminal.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
-                if (evaluation.qualifies) {
-                  const terminalRow = terminal.rows[0] as Row;
-                  const streakDay = date(terminalRow.streak_day);
-                  yield* transaction.execute({
-                    label: "activity-qualification.study-qualification.insert",
-                    text: `INSERT INTO activity_qualifications (
+                    values: [
+                      input.sessionId,
+                      evaluation.qualifyingExerciseCount,
+                      evaluation.firstPassCorrect,
+                      evaluation.scoreBps,
+                      input.answeredAt,
+                    ],
+                    readonly: false,
+                  });
+                  if (terminal.rows.length !== 1) return yield* Effect.fail(storage("invalid-row"));
+                  if (evaluation.qualifies) {
+                    const terminalRow = terminal.rows[0] as Row;
+                    const streakDay = date(terminalRow.streak_day);
+                    yield* transaction.execute({
+                      label: "activity-qualification.study-qualification.insert",
+                      text: `INSERT INTO activity_qualifications (
                              qualification_id, account_id, persona_id, community_id, post_id,
                              audio_revision, activity_key, study_session_id, score_bps,
                              qualification_policy_version_id, qualified_at, streak_day,
@@ -911,55 +937,56 @@ export function makeControlPlaneActivityQualificationRepository(ownerRewards?: A
                              $1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,$11::date,
                              $12::jsonb,$10::timestamptz
                            )`,
-                    values: [
-                      qualificationId,
-                      input.accountId,
-                      text(terminalRow, "persona_id"),
-                      text(terminalRow, "community_id"),
-                      text(terminalRow, "post_id"),
-                      integer(terminalRow, "audio_revision"),
-                      input.sessionId,
-                      evaluation.scoreBps,
-                      text(terminalRow, "qualification_policy_version_id"),
-                      input.answeredAt,
+                      values: [
+                        qualificationId,
+                        input.accountId,
+                        text(terminalRow, "persona_id"),
+                        text(terminalRow, "community_id"),
+                        text(terminalRow, "post_id"),
+                        integer(terminalRow, "audio_revision"),
+                        input.sessionId,
+                        evaluation.scoreBps,
+                        text(terminalRow, "qualification_policy_version_id"),
+                        input.answeredAt,
+                        streakDay,
+                        JSON.stringify({
+                          kind: "study_session_first_pass_v2",
+                          qualifying_exercise_count: evaluation.qualifyingExerciseCount,
+                          first_pass_correct: evaluation.firstPassCorrect,
+                          required_correct: evaluation.requiredCorrect,
+                        }),
+                      ],
+                      readonly: false,
+                    });
+                    yield* recordQualificationProjections(transaction, {
+                      accountId: input.accountId,
+                      communityId: text(terminalRow, "community_id"),
+                      personaId: text(terminalRow, "persona_id"),
+                      postId: text(terminalRow, "post_id"),
+                      activity: "study",
+                      qualificationId: qualificationId,
+                      qualifiedAt: input.answeredAt,
                       streakDay,
-                      JSON.stringify({
-                        kind: "study_session_first_pass_v2",
-                        qualifying_exercise_count: evaluation.qualifyingExerciseCount,
-                        first_pass_correct: evaluation.firstPassCorrect,
-                        required_correct: evaluation.requiredCorrect,
-                      }),
-                    ],
-                    readonly: false,
-                  });
-                  yield* recordQualificationProjections(transaction, {
-                    accountId: input.accountId,
-                    communityId: text(terminalRow, "community_id"),
-                    personaId: text(terminalRow, "persona_id"),
-                    postId: text(terminalRow, "post_id"),
-                    activity: "study",
-                    qualificationId: qualificationId,
-                    qualifiedAt: input.answeredAt,
-                    streakDay,
-                    timezone: text(terminalRow, "timezone"),
-                  });
+                      timezone: text(terminalRow, "timezone"),
+                    });
+                  }
                 }
-              }
-              const updated = yield* readStudySessionIn(transaction, {
-                accountId: input.accountId,
-                communityId: input.communityId,
-                sessionId: input.sessionId,
-              });
-              if (updated === null) return yield* Effect.fail(storage("invalid-row"));
-              return {
-                object: "study_answer_result",
-                session_item_id: input.sessionItemId,
-                attempt_number: input.attemptNumber,
-                outcome,
-                first_pass: firstPass,
-                session: updated,
-              } as const;
-            })),
+                const updated = yield* readStudySessionIn(transaction, {
+                  accountId: input.accountId,
+                  communityId: input.communityId,
+                  sessionId: input.sessionId,
+                });
+                if (updated === null) return yield* Effect.fail(storage("invalid-row"));
+                return {
+                  object: "study_answer_result",
+                  session_item_id: input.sessionItemId,
+                  attempt_number: input.attemptNumber,
+                  outcome,
+                  first_pass: firstPass,
+                  session: updated,
+                } as const;
+              }),
+            ),
           );
         }),
       ),

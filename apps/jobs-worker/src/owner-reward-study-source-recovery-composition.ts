@@ -4,9 +4,12 @@ import { makeOwnerGuestSpokenClosedRecovery } from "@pirate/application/owner-gu
 import { makeGuestEphemeralCleanupStage } from "@pirate/platform-cf/guest-ephemeral-cleanup";
 import { makeControlPlaneGuestStudyResourceExpiry } from "@pirate/platform-cf/guest-study-resource-expiry";
 import { makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores } from "@pirate/platform-cf/owner-guest-spoken-checkpoint-recovery-store";
+import {
+  composeGuestRewardCapturedContinuation,
+  makeControlPlaneGuestRewardStudyContinuations,
+} from "@pirate/platform-cf/owner-reward-study-continuation";
 import { makeControlPlaneOwnerSpokenCapturedContinuationStore } from "@pirate/platform-cf/owner-study-mutations";
 import type { Layer } from "effect";
-import { makeControlPlaneGuestRewardStudyContinuations, composeGuestRewardCapturedContinuation } from "@pirate/platform-cf/owner-reward-study-continuation";
 import type { StudySourceRecoveryStages } from "./study-source-recovery-cycle.ts";
 
 type Runtime = Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
@@ -23,9 +26,9 @@ export function makeOwnerRewardGuestStudyRecoveryComposition(
 ): GuestStudyRecoveryComposition {
   return () => {
     const retained = makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(runtime).closed;
-    const accepted=makeControlPlaneOwnerSpokenCapturedContinuationStore(runtime);
-    const reward=makeControlPlaneGuestRewardStudyContinuations(runtime,accepted);
-    const continuation=composeGuestRewardCapturedContinuation(accepted,reward);
+    const accepted = makeControlPlaneOwnerSpokenCapturedContinuationStore(runtime);
+    const reward = makeControlPlaneGuestRewardStudyContinuations(runtime, accepted);
+    const continuation = composeGuestRewardCapturedContinuation(accepted, reward);
     const expiry = makeControlPlaneGuestStudyResourceExpiry(runtime);
     return {
       closed: makeOwnerGuestSpokenClosedRecovery(retained, continuation).run(8),

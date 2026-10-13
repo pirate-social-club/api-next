@@ -117,8 +117,17 @@ describe("PostgreSQL test baseline", () => {
 
   test("owned video reset refuses live/system/database identifiers before rendering SQL", () => {
     const sql = "TRUNCATE TABLE fixture RESTART IDENTITY CASCADE;";
-    for (const ownedVideoDatabase of ["postgres", "api_next", "api_next_staging", "video_workflow_123", "api_next_video_1234567890123_deadbeef'", "api_next_video_123_deadbeef"]) {
-      expect(() => preparePostgresTestBaselineReset(sql, { ownedVideoDatabase })).toThrow("Exact owned video fixture database required");
+    for (const ownedVideoDatabase of [
+      "postgres",
+      "api_next",
+      "api_next_staging",
+      "video_workflow_123",
+      "api_next_video_1234567890123_deadbeef'",
+      "api_next_video_123_deadbeef",
+    ]) {
+      expect(() => preparePostgresTestBaselineReset(sql, { ownedVideoDatabase })).toThrow(
+        "Exact owned video fixture database required",
+      );
     }
   });
 

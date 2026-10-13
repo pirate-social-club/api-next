@@ -277,7 +277,12 @@ export function makeControlPlanePersonaRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "personas.reward-identity.lock", text: "SELECT lock_account_persona_reward_identity_v1($1)", values: [accountId], readonly: false });
+              yield* transaction.execute({
+                label: "personas.reward-identity.lock",
+                text: "SELECT lock_account_persona_reward_identity_v1($1)",
+                values: [accountId],
+                readonly: false,
+              });
               yield* transaction.execute({
                 label: "personas.create.lock",
                 text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
@@ -447,7 +452,12 @@ export function makeControlPlanePersonaRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "personas.reward-identity.lock", text: "SELECT lock_account_persona_reward_identity_v1($1)", values: [input.accountId], readonly: false });
+              yield* transaction.execute({
+                label: "personas.reward-identity.lock",
+                text: "SELECT lock_account_persona_reward_identity_v1($1)",
+                values: [input.accountId],
+                readonly: false,
+              });
               yield* transaction.execute({
                 label: "personas.activity-preparation.lock",
                 text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 15100005))",
@@ -845,7 +855,12 @@ export function makeControlPlanePersonaWalletRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "personas.reward-identity.lock", text: "SELECT lock_account_persona_reward_identity_v1($1)", values: [accountId], readonly: false });
+              yield* transaction.execute({
+                label: "personas.reward-identity.lock",
+                text: "SELECT lock_account_persona_reward_identity_v1($1)",
+                values: [accountId],
+                readonly: false,
+              });
               yield* transaction.execute({
                 label: "persona-wallets.reserve.lock",
                 text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
@@ -914,7 +929,12 @@ export function makeControlPlanePersonaWalletRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "personas.reward-identity.lock", text: "SELECT lock_account_persona_reward_identity_v1($1)", values: [accountId], readonly: false });
+              yield* transaction.execute({
+                label: "personas.reward-identity.lock",
+                text: "SELECT lock_account_persona_reward_identity_v1($1)",
+                values: [accountId],
+                readonly: false,
+              });
               yield* transaction.execute({
                 label: "personas.retire.lock",
                 text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
@@ -1133,7 +1153,12 @@ export function makeControlPlanePersonaWalletRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* transaction.execute({ label: "personas.reward-identity.lock", text: "SELECT lock_account_persona_reward_identity_v1($1)", values: [accountId], readonly: false });
+              yield* transaction.execute({
+                label: "personas.reward-identity.lock",
+                text: "SELECT lock_account_persona_reward_identity_v1($1)",
+                values: [accountId],
+                readonly: false,
+              });
               const owned = yield* transaction.execute<{
                 status: string;
                 is_first_persona: boolean;

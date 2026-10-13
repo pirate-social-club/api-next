@@ -342,7 +342,7 @@ const lockQualificationPolicies = Effect.fn("SongRewardOffer.lockQualificationPo
   }
 });
 
-function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion:2|3) {
+function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion: 2 | 3) {
   return {
     listAdmittedAssets: (input: Parameters<SongRewardOfferStore["listAdmittedAssets"]>[0]) =>
       Effect.gen(function* () {
@@ -612,8 +612,13 @@ function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion:2|3) {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if(beneficiaryVersion===3) yield* transaction.execute({label:"owner-reward.leg.structural-ready",
-              text:"SELECT require_owner_accounting_ready_private_v1()",values:[],readonly:true});
+            if (beneficiaryVersion === 3)
+              yield* transaction.execute({
+                label: "owner-reward.leg.structural-ready",
+                text: "SELECT require_owner_accounting_ready_private_v1()",
+                values: [],
+                readonly: true,
+              });
             const endpoint = "/reward-offers/:offerId/megapot-pool-legs";
             yield* lockAction(transaction, { ...input, endpoint });
             const replay = yield* transaction.execute<Row>({
@@ -629,13 +634,24 @@ function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion:2|3) {
               if (text(row, "request_hash") !== input.requestHash) {
                 return yield* rejected("idempotency-conflict");
               }
-              const originalVersion=yield* transaction.execute<unknown>({label:"owner-reward.leg.original-version",
-                text:"SELECT beneficiary_version FROM song_reward_offer_legs WHERE leg_id=$1",values:[text(row,"leg_id")],readonly:true});
-              const storedVersion=yield* Effect.try({try:()=>{
-                if(originalVersion.rows.length!==1)throw new Error();
-                return Schema.decodeUnknownSync(Schema.Struct({beneficiary_version:Schema.Literals([2,3])}),{onExcessProperty:"error"})(originalVersion.rows[0]).beneficiary_version;
-              },catch:()=>storage("unavailable")});
-              if(storedVersion!==beneficiaryVersion)return yield* rejected("idempotency-conflict");
+              const originalVersion = yield* transaction.execute<unknown>({
+                label: "owner-reward.leg.original-version",
+                text: "SELECT beneficiary_version FROM song_reward_offer_legs WHERE leg_id=$1",
+                values: [text(row, "leg_id")],
+                readonly: true,
+              });
+              const storedVersion = yield* Effect.try({
+                try: () => {
+                  if (originalVersion.rows.length !== 1) throw new Error();
+                  return Schema.decodeUnknownSync(
+                    Schema.Struct({ beneficiary_version: Schema.Literals([2, 3]) }),
+                    { onExcessProperty: "error" },
+                  )(originalVersion.rows[0]).beneficiary_version;
+                },
+                catch: () => storage("unavailable"),
+              });
+              if (storedVersion !== beneficiaryVersion)
+                return yield* rejected("idempotency-conflict");
               return { leg: yield* readLeg(transaction, text(row, "leg_id")), replayed: true };
             }
             const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
@@ -1027,10 +1043,17 @@ function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion:2|3) {
 
 /** Existing ordinary creator retains its original2 behavior. Version is trusted
  * source composition, never a browser/admin request flag or an old-leg promotion. */
-export function makeControlPlaneSongRewardOfferRepository(){return makeSongRewardOfferRepositoryWithVersion(2);}
-export const makeControlPlaneOwnerMegapotPoolLegCreator=(layer:Layer.Layer<ControlPlaneDb,ControlPlaneError,never>):Pick<SongRewardOfferStore,"addMegapotPoolLeg">=>{
- const repository=makeSongRewardOfferRepositoryWithVersion(3);
- return {addMegapotPoolLeg:(input)=>mapped(Effect.provide(layer)(repository.addMegapotPoolLeg(input)))};
+export function makeControlPlaneSongRewardOfferRepository() {
+  return makeSongRewardOfferRepositoryWithVersion(2);
+}
+export const makeControlPlaneOwnerMegapotPoolLegCreator = (
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): Pick<SongRewardOfferStore, "addMegapotPoolLeg"> => {
+  const repository = makeSongRewardOfferRepositoryWithVersion(3);
+  return {
+    addMegapotPoolLeg: (input) =>
+      mapped(Effect.provide(layer)(repository.addMegapotPoolLeg(input))),
+  };
 };
 
 export const makeControlPlaneSongRewardOfferStore = (

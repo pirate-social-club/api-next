@@ -38,8 +38,13 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
     await admin.query("SET search_path TO api_next,pg_catalog");
     try {
       await admin.query("BEGIN");
-      try { await admin.query(bindings.VIDEO_TEST_RESET); await admin.query("COMMIT"); }
-      catch (error) { await admin.query("ROLLBACK").catch(() => undefined); throw error; }
+      try {
+        await admin.query(bindings.VIDEO_TEST_RESET);
+        await admin.query("COMMIT");
+      } catch (error) {
+        await admin.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      }
       await seedVideoActors(admin);
       const url = new URL(bindings.VIDEO_TEST_DATABASE);
       url.searchParams.set("options", "-c search_path=api_next,pg_catalog");

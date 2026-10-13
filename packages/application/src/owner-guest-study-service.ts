@@ -340,7 +340,9 @@ export function makeOwnerGuestStudyService(
           timezone: body.timezone,
           rewardMode: body.reward_mode,
           rewardTerms: null,
-          ...(body.reward_preview_terms_hash===null?{}:{acceptedRewardPreviewTermsHash:body.reward_preview_terms_hash}),
+          ...(body.reward_preview_terms_hash === null
+            ? {}
+            : { acceptedRewardPreviewTermsHash: body.reward_preview_terms_hash }),
           disclosure: body.disclosure,
           trustedEdge: input.trustedEdge,
           policy: deps.resourcePolicy,
