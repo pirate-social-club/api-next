@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { preparePostgresTestBaselineReset } from "@pirate/testing/postgres";
+import { preparePostgresTestBaselineReset } from "../../packages/testing/src/postgres.ts";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import { videoPlatformAliases as alias, videoPostgresAliases } from "../video-platform-aliases.ts";
