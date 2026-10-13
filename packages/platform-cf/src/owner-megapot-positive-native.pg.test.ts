@@ -149,8 +149,8 @@ async function setupPool(f: RewardedFixture, suffix: string) {
   expect(replay.persona_id).toBe(sponsorPersonaId);
   expect(replay.persona_status).toBe("active");
   const clock = new Date(),
-    cutoffAt = new Date(clock.getTime() + 45000),
-    drawingTime = new Date(cutoffAt.getTime() + 300000);
+    initialCutoffAt = new Date(clock.getTime() + 45000),
+    drawingTime = new Date(initialCutoffAt.getTime() + 300000);
   const observation = makeControlPlaneMegapotDrawingObservationStore(f.adminRuntime);
   await run(
     observation.recordAndOpen({
@@ -268,11 +268,48 @@ async function setupPool(f: RewardedFixture, suffix: string) {
       createdAt: new Date().toISOString(),
     }),
   );
-  const openedLegs = await run(
-    openOwnerDrawingsForObservation(`observation-${suffix}`).pipe(Effect.provide(f.adminRuntime)),
-  );
+  // A NEW leg starts AFTER the observation current at its creation. Original101
+  // is genuinely ineligible; never rewrite the captured prospective start floor.
+  expect(created.leg.participationStartsDrawingId).toBe(102n);
+  expect(await run(openOwnerDrawingsForObservation(`observation-${suffix}`).pipe(
+    Effect.provide(f.adminRuntime)))).toEqual([]);
+  expect((await f.admin.query(`SELECT leg.status,leg.beneficiary_version,leg.funded_atomic::text,
+    leg.participation_starts_drawing_id::text,offer.status AS offer_status,
+    funding.state AS funding_state,funding.confirmed_amount_atomic::text,
+    (SELECT count(*)::integer FROM megapot_pool_drawings WHERE pool_leg_id=leg.leg_id) AS prior_draws
+    FROM song_reward_offer_legs leg JOIN song_reward_offers offer USING(offer_id)
+    JOIN song_reward_leg_funding_effects funding ON funding.leg_id=leg.leg_id
+    WHERE leg.leg_id=$1 AND funding.funding_effect_id=$2`,
+    [created.leg.legId,created.funding.intent.fundingEffectId])).rows).toEqual([{status:"active",
+      beneficiary_version:3,funded_atomic:"100000",participation_starts_drawing_id:"102",
+      offer_status:"active",funding_state:"confirmed",confirmed_amount_atomic:"100000",prior_draws:0}]);
+  const originalDrawingId = created.leg.participationStartsDrawingId;
+  const nextClock = new Date(),cutoffAt = new Date(nextClock.getTime() + 45000);
+  const nextObservationId = `observation-next-${suffix}`;
+  // New deterministic observation AT the actual repository boundary after
+  // source-owned funding. This is neither a draw insert nor a live RPC claim.
+  const next = await run(observation.recordAndOpen({
+    observationId:nextObservationId,attestationId:"megapot-base-sepolia-v2",chainId:84532,
+    drawingId:originalDrawingId,grossPrizePoolAtomic:100000n,globalTicketsBought:10n,
+    ticketPriceAtomic:10000n,drawingTime:new Date(cutoffAt.getTime()+300000).toISOString(),
+    ballMax:25,bonusballMax:13,drawingLocked:false,
+    referralFeeWei:100000000000000000n,referralWinShareWei:100000000000000000n,
+    blockNumber:103n,blockHash:hex(nextObservationId),blockTimestamp:nextClock.toISOString(),
+    confirmations:3,observedAt:nextClock.toISOString(),expiresAt:new Date(nextClock.getTime()+3600000).toISOString(),
+    rawStateHash:hash(`state-next-${suffix}`),legacyRawStateHash:hash(`legacy-next-${suffix}`),
+  }));
+  expect(next.drawingId).toBe(originalDrawingId);
+  expect(next.openedPoolLegIds).toEqual([]); // Retained ordinary observer opens only version2.
+  const openedLegs = await run(openOwnerDrawingsForObservation(nextObservationId).pipe(
+    Effect.provide(f.adminRuntime)));
   expect(openedLegs).toEqual([created.leg.legId]);
-  const original = { poolLegId: created.leg.legId, drawingId: "101" };
+  expect((await f.admin.query(`SELECT drawing_id::text,observation_id,beneficiary_version,status,
+    octet_length(owner_fallback_leaf_salt) AS salt_bytes,entry_cutoff_at=$3::timestamptz AS exact_cutoff
+    FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric`,
+    [created.leg.legId,originalDrawingId.toString(),cutoffAt.toISOString()])).rows).toEqual([{
+      drawing_id:originalDrawingId.toString(),observation_id:nextObservationId,beneficiary_version:3,
+      status:"entry_open",salt_bytes:32,exact_cutoff:true}]);
+  const original = { poolLegId: created.leg.legId, drawingId: originalDrawingId.toString() };
   return { key, custody, original, cutoffAt };
 }
 
@@ -383,7 +420,7 @@ async function purchaseAndSweep(
   pool: Awaited<ReturnType<typeof setupPool>>,
   net: bigint,
 ) {
-  const key = { poolLegId: pool.original.poolLegId, drawingId: 101n },
+  const key = { poolLegId: pool.original.poolLegId, drawingId: BigInt(pool.original.drawingId) },
     store = makeControlPlaneMegapotPurchaseStore(f.adminRuntime, {
       purchaseSafetyMarginSeconds: 120,
     });
@@ -527,7 +564,7 @@ suite("actual rewarded Guest producer into private v3 settlement", () => {
         expect(f.providerCalls() - beforeCalls).toBe(8);
         expect(f.putCalls()).toBe(8);
         expect(first.session.reward_terms?.pool_leg_id).toBe(pool.original.poolLegId);
-        expect(second.session.reward_terms?.original_drawing_id).toBe("101");
+        expect(second.session.reward_terms?.original_drawing_id).toBe(pool.original.drawingId);
         const snapshot = await freezeAndCommit(f, pool);
         await purchaseAndSweep(f, pool, net);
         const allocated = await run(snapshot.store.allocate(pool.original));
@@ -582,8 +619,8 @@ suite("actual rewarded Guest producer into private v3 settlement", () => {
         ).toEqual([{ n: 0 }]);
         const source = (
           await f.admin.query(
-            "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=101",
-            [pool.original.poolLegId],
+            "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
+            [pool.original.poolLegId,pool.original.drawingId],
           )
         ).rows;
         expect(source).toEqual([
