@@ -10,7 +10,7 @@ import {
 describe("media scheduled maintenance", () => {
   test("retains the sanitized terminal recovery reason in the real scheduled logger", () => {
     const logs: string[] = [];
-    const original = console.error;
+    const original = console.warn;
     const diagnostic = {
       outcome: "alignment_recovery_lookup_failed",
       reason: sanitizeAlignmentRecoveryLookupFailure(
@@ -23,7 +23,7 @@ describe("media scheduled maintenance", () => {
         "media-processing.alignment-recovery-authorization",
       ),
     } as const;
-    console.error = (message) => logs.push(String(message));
+    console.warn = (message) => logs.push(String(message));
     try {
       observeMediaWorkflowRecovery({
         event: "workflow_terminal_recovery_failed",
@@ -33,7 +33,7 @@ describe("media scheduled maintenance", () => {
         recoveryFailure: diagnostic,
       });
     } finally {
-      console.error = original;
+      console.warn = original;
     }
     expect(logs.map((value) => JSON.parse(value))).toEqual([
       expect.objectContaining({

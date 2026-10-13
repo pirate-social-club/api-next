@@ -1,5 +1,6 @@
 import { AlertCollector, ControlPlaneDb } from "@pirate/application";
 import { Effect, Option, Schema } from "effect";
+import { mediaRecoveryRequiredSql } from "../../../packages/application/src/media/media-recovery-eligibility.ts";
 import { isWorkflowInstanceMissingError } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
 import {
   type CloudflareMediaWorkflowBinding,
@@ -12,6 +13,12 @@ const Candidate = Schema.Struct({
   workflow_revision: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0)),
 });
 const LookupCandidate = Schema.Struct({ ...Candidate.fields, workflow_instance_id: Identity });
+const LookupCursor = Schema.Struct({
+  operation_id: Schema.String,
+  workflow_instance_id: Schema.String,
+});
+const StoredLookupCursor = Schema.Struct({ last_identifier: Schema.fromJsonString(LookupCursor) });
+const LOOKUP_PAGE_SIZE = 50;
 
 const EXHAUSTED_SQL = `SELECT submission.operation_id,
        submission.workflow_revision::text AS workflow_revision
@@ -47,12 +54,15 @@ const LOOKUP_SQL = `SELECT DISTINCT submission.operation_id,
    AND launch.operation_id=submission.operation_id
    AND launch.workflow_revision=submission.workflow_revision
    AND launch.event_type IN ('analysis_launch','workflow_replacement','alignment')
- WHERE submission.status='published'
-   AND EXISTS (SELECT 1 FROM media_alignment_recovery_actions recovery
+ WHERE submission.workflow_revision>0
+   AND (${mediaRecoveryRequiredSql("submission")} OR (
+     submission.status='published'
+     AND EXISTS (SELECT 1 FROM media_alignment_recovery_actions recovery
                 WHERE recovery.submission_id=submission.submission_id
-                  AND recovery.operation_id=submission.operation_id)
+                  AND recovery.operation_id=submission.operation_id)))
    AND launch.state IN ('delivered','exhausted')
- ORDER BY submission.operation_id LIMIT 50`;
+   AND (submission.operation_id,launch.workflow_instance_id)>($1,$2)
+ ORDER BY submission.operation_id,launch.workflow_instance_id LIMIT ${LOOKUP_PAGE_SIZE}`;
 
 const alert = (operationId: string, revision: number, reason: string, failureClass = reason) => ({
   key: `song-pipeline:${reason}`,
@@ -72,12 +82,12 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
   function* (binding: CloudflareMediaWorkflowBinding | undefined) {
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
-    const rows = (label: string, text: string) =>
+    const rows = (label: string, text: string, values: readonly unknown[] = []) =>
       db
         .execute<Readonly<Record<string, unknown>>>({
           label,
           text,
-          values: [],
+          values,
           readonly: true,
         })
         .pipe(
@@ -110,10 +120,70 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
       binding,
       isWorkflowInstanceMissingError,
     );
-    for (const row of yield* rows(
-      "song-pipeline.terminal.alignment-recovery-lookups",
-      LOOKUP_SQL,
-    )) {
+    // Reserve one page under the cursor lock, advancing even for healthy or
+    // malformed candidates. Release the transaction before Workflow I/O.
+    const page = yield* db
+      .withTransaction((tx) =>
+        Effect.gen(function* () {
+          const readCursor = () =>
+            tx.execute<Readonly<Record<string, unknown>>>({
+              label: "song-pipeline.terminal.alignment-recovery-cursor",
+              text: "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE",
+              values: [],
+              readonly: false,
+            });
+          let saved = yield* readCursor();
+          if (saved.rows.length === 0) {
+            // INSERT is needed only for first-run initialization. An operator
+            // can pre-seed the key for a role with SELECT/UPDATE permissions.
+            // Concurrent first runs serialize on the unique key, then re-read
+            // the winning cursor under lock without resetting its progress.
+            yield* tx.execute({
+              label: "song-pipeline.terminal.alignment-recovery-cursor.initialize",
+              text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier) VALUES ('media-alignment-alerts','epoch',$1) ON CONFLICT (cursor_key) DO NOTHING",
+              values: [JSON.stringify({ operation_id: "", workflow_instance_id: "" })],
+              readonly: false,
+            });
+            saved = yield* readCursor();
+          }
+          const decoded = Schema.decodeUnknownOption(StoredLookupCursor)(saved.rows[0]);
+          if (Option.isNone(decoded))
+            return yield* Effect.die("alignment alert cursor unavailable");
+          const cursor = decoded.value.last_identifier;
+          const select = (after: readonly [string, string]) =>
+            tx.execute<Readonly<Record<string, unknown>>>({
+              label: "song-pipeline.terminal.alignment-recovery-lookups",
+              text: LOOKUP_SQL,
+              values: after,
+              readonly: true,
+            });
+          const forward = yield* select([cursor.operation_id, cursor.workflow_instance_id]);
+          // Wrap only when no rows remain, inspecting at most one nonempty page.
+          const selected =
+            forward.rows.length === 0 ? (yield* select(["", ""])).rows : forward.rows;
+          const last = selected[selected.length - 1];
+          if (last !== undefined) {
+            const next = Schema.decodeUnknownOption(LookupCursor)(last);
+            if (Option.isNone(next)) return yield* Effect.die("alignment alert cursor unavailable");
+            yield* tx.execute({
+              label: "song-pipeline.terminal.alignment-recovery-cursor.advance",
+              text: "UPDATE recovery_inspection_cursors SET last_identifier=$1,updated_at=clock_timestamp() WHERE cursor_key='media-alignment-alerts'",
+              values: [JSON.stringify(next.value)],
+              readonly: false,
+            });
+          }
+          return selected;
+        }),
+      )
+      .pipe(
+        Effect.catchCause(() =>
+          Effect.sync(() => {
+            console.error("song_alignment_recovery_alert_scan_unavailable");
+            return [];
+          }),
+        ),
+      );
+    for (const row of page) {
       const decoded = Schema.decodeUnknownOption(LookupCandidate)(row);
       if (Option.isNone(decoded)) continue;
       const failure = yield* Effect.tryPromise(() =>
