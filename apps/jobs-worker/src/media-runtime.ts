@@ -74,20 +74,28 @@ export const observeMediaWorkflowRecovery: MediaProcessingObserver = (observatio
     observation.event !== "workflow_terminal_recovery_failed"
   )
     return;
-  console.error(
-    JSON.stringify({
-      event: "song-pipeline.media-workflow-recovery",
-      severity: "high",
-      outcome: "failed",
-      failure_class: observation.event,
-      operation_id: observation.operationId,
-      submission_id: observation.submissionId,
-      workflow_revision: observation.workflowRevision,
-      ...(observation.recoveryFailure === undefined
-        ? {}
-        : { recovery_failure: observation.recoveryFailure }),
-    }),
-  );
+  const message = JSON.stringify({
+    event: "song-pipeline.media-workflow-recovery",
+    severity: "high",
+    outcome: "failed",
+    failure_class: observation.event,
+    operation_id: observation.operationId,
+    submission_id: observation.submissionId,
+    workflow_revision: observation.workflowRevision,
+    ...(observation.recoveryFailure === undefined
+      ? {}
+      : { recovery_failure: observation.recoveryFailure }),
+  });
+  // Only a retained terminal diagnostic is covered by the deduplicated
+  // alignment-recovery alert. Fresh lookup/storage failures remain errors.
+  if (
+    observation.event === "workflow_terminal_recovery_failed" &&
+    observation.recoveryFailure !== undefined
+  ) {
+    console.warn(message);
+  } else {
+    console.error(message);
+  }
 };
 
 export async function isolateMediaMaintenanceAction(
