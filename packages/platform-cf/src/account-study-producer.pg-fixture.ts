@@ -164,6 +164,35 @@ async function migrations() {
   return { historical: all.slice(0, 247), all, candidate };
 }
 
+// Fixture diagnostics expose statement names and backend constraint metadata,
+// never connection strings, bound values, payloads or synthetic credentials.
+const diagnosticClientFactory: PostgresClientFactory = (_url, config) => {
+  const client = new Client(config);
+  return {
+    connection: client.connection,
+    connect: () => client.connect(),
+    end: () => client.end(),
+    query: async ({ text, values }) => {
+      try {
+        return await client.query({ text, values: values === undefined ? [] : [...values] });
+      } catch (error) {
+        if (error !== null && typeof error === "object") {
+          console.error(
+            JSON.stringify({
+              fixture: "ordinary-native-statement-failure",
+              statement: text.slice(0, 80),
+              code: Reflect.get(error, "code"),
+              constraint: Reflect.get(error, "constraint"),
+              message: Reflect.get(error, "message"),
+            }),
+          );
+        }
+        throw error;
+      }
+    },
+  };
+};
+
 export function dropCommitAcknowledgement(needle: string) {
   let dropped = false;
   const clientFactory: PostgresClientFactory = (_url, config) => {
@@ -344,7 +373,8 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
         allowed: false,
       });
       const frame = rows.rows[0]?.proconfig;
-      if (!Array.isArray(frame)) throw new Error(`Private native search path missing: ${signature}`);
+      if (!Array.isArray(frame))
+        throw new Error(`Private native search path missing: ${signature}`);
       expect(frame).toContain(`search_path=pg_catalog, ${schema}, pg_temp`);
     }
     // These native raw primitives remain inaccessible even AFTER controlled grants.
@@ -419,6 +449,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       runtime: (options) =>
         makeDirectPostgresControlPlaneLayer(runtimeUrl.toString(), {
           closeTimeoutMs: 2000,
+          clientFactory: diagnosticClientFactory,
           ...options,
         }),
       registerDrain: (drain) => drainers.push(drain),
