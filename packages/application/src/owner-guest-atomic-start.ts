@@ -18,6 +18,9 @@ export type OwnerGuestAtomicStartInput = Omit<
     trustedEdge: Readonly<{ kind: "trusted_edge"; fingerprint: string }>;
     policy: GuestResourceAdmissionPolicy | null;
     freshRefusalOperationId: string;
+    /** NEW rewarded start only. Actual trusted terms are selected after original
+     * SQL replay and the atomic prepared-source plan, then frozen under locks. */
+    acceptedRewardPreviewTermsHash?: string;
   }>;
 /** Adapter returns only after owning COMMIT acknowledges. Authoritative
  * refusal's resource operation and main known-aborted witness commit together.

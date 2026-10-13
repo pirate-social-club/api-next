@@ -1,8 +1,10 @@
+import { ListMyOwnerParticipationsV1, GetMyOwnerParticipationV1 } from './rewards-owner-participation-reads.ts';
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
 import { guestParticipationRegistry } from "./guest-registry.ts";
+import { GetPublicGuestStudyPreparedContentV2 } from "./owner-study.ts";
 import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 import { telegramLinkingRegistry } from "./telegram-linking.ts";
@@ -167,6 +169,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  GetPublicGuestStudyPreparedContentV2,
   ...guestParticipationRegistry,
   GetPublicProfileActivity,
   ListPopularCommunities,
@@ -275,6 +278,8 @@ export const registry = {
   GetMegapotPoolStanding,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
+  ListMyOwnerParticipationsV1,
+  GetMyOwnerParticipationV1,
   ListMyOwnerRewardCreditsV1,
   GetMyOwnerRewardCreditV1,
   ClaimRewardCredit,

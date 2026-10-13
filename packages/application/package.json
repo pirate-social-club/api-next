@@ -141,6 +141,7 @@
     "./use-cases/guest-learning-test-fixture": "./src/use-cases/guest-learning-test-fixture.ts",
     "./owner-megapot-settlement": "./src/owner-megapot-settlement.ts",
     "./owner-reward-credit-reads": "./src/owner-reward-credit-reads.ts",
-    "./owner-credit-erasure-admission": "./src/owner-credit-erasure-admission.ts"
+    "./owner-credit-erasure-admission": "./src/owner-credit-erasure-admission.ts",
+    "./owner-participation-reads": "./src/owner-participation-reads.ts"
   }
 }

@@ -129,6 +129,7 @@ export {
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
 export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
+export { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
 export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {
