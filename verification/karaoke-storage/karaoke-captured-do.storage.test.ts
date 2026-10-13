@@ -1,7 +1,7 @@
 // MUST run alone in its own Bun test process: only Cloudflare base and runtime
 // factory are mocked. Actual DO, SQLite journal, ledger and repository execute.
 import { afterAll,expect,mock,test } from "bun:test";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import {
  type ControlPlaneError,ControlPlaneDb,ControlPlaneAcquireFailed,ControlPlaneOperationTimedOut,
  ControlPlaneStatementFailed,ControlPlaneTransactionOutcomeUnknown,type KaraokeSessionAuthority,type KaraokeSessionState,
@@ -21,7 +21,7 @@ const {KaraokeAttemptDO}=await import("../../packages/platform-cf/src/karaoke-at
 afterAll(()=>mock.restore());
 const authority:KaraokeSessionAuthority={accountId:"account-original",artifactId:capture.artifactId,attemptId:capture.attemptRef,
  audioRevision:1,communityId:"community-original",createdAt:"2026-10-12T00:00:00.000Z",expiresAt:"2050-10-12T00:30:00.000Z",
- karaokeRevisionId:"revision-original",lines:[{id:"line-original",index:0,text:"Hold on",start_ms:0,end_ms:1000,words:[{text:"Hold",start_ms:0,end_ms:400},{text:"on",start_ms:500,end_ms:1000}]}],
+ karaokeRevisionId:"revision-original",lines:[{id:"line-original",index:0,kind:"lyric",text:"Hold on",start_ms:0,end_ms:1000,words:[{text:"Hold",start_ms:0,end_ms:400},{text:"on",start_ms:500,end_ms:1000}]}],
  lyricsRevision:1,personaId:"persona-original",playbackKind:"instrumental",postId:"post-original",qualificationPolicyVersionId:"karaoke_qualification_v2@1",
  requestHash:"a".repeat(64),scoringModel:"scribe_v2_realtime",scoringProvider:"elevenlabs",scoringVersion:5,sessionId:capture.commandRef,timezone:"UTC"};
 const summary:NonNullable<KaraokeSessionState["summary"]>={finalScore:0,lyricsScore:0,timingScore:null,confidenceMean:null,lineCount:1,scoredLineCount:0,
@@ -42,7 +42,7 @@ async function fixture(){
  try{
   const object=new KaraokeAttemptDO(ctx,{CONTROL_PLANE:{connectionString:key},ELEVENLABS_API_KEY:"synthetic-provider-not-called",API_NEXT_ENV:"staging",KARAOKE_FINALIZATION_RECOVERY_ENABLED:"true",LEARNER_AUDIO:bucket});
   succeeded(await bounded(barrier,"DO-constructor-barrier"));
-  return{...sql,driver,key,object,calls,fail:(error:ControlPlaneError)=>runtimes.set(key,Layer.fail(error)),close:()=>{runtimes.delete(key);sql.db.close();}};
+  return{...sql,driver,key,object,calls,fail:(error:ControlPlaneError)=>runtimes.set(key,Layer.effect(ControlPlaneDb)(Effect.fail(error))),close:()=>{runtimes.delete(key);sql.db.close();}};
  }catch(error){await bounded(barrier,"DO-constructor-cleanup");runtimes.delete(key);sql.db.close();throw error;}
 }
 test("concurrent actual DO initialize uses one cached binding/serializer and one later CREATE",async()=>{

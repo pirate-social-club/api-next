@@ -73,9 +73,9 @@ test("persisted unknown nonce survives physical SQLite close/reopen; restart can
  }
 });
 test("genuine SQLite rejects clearing or changing immutable terminal result after exact stored completion",async()=>{
- const f=fixture();try{f.append(1);expect((await f.make().finish()).state).toBe("stored");const original=f.journal.load();if(original.result===null)throw new Error("actual stored result missing");
+ const f=fixture();try{f.append(1);expect((await f.make().finish()).state).toBe("stored");const original=f.journal.load();const result=original.result;if(result===null)throw new Error("actual stored result missing");
   expect(()=>f.journal.save({...original,result:null})).toThrow("terminal_result_changed");
-  expect(()=>f.journal.save({...original,result:{...original.result,byteSize:original.result.byteSize+1}})).toThrow("terminal_result_changed");
+  expect(()=>f.journal.save({...original,result:{...result,byteSize:result.byteSize+1}})).toThrow("terminal_result_changed");
   expect(f.journal.load()).toEqual(original);
  }finally{f.close();}
 });
