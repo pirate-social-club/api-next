@@ -26,7 +26,7 @@ const migration = () =>
 // migrations restrict them, which is tested where they are introduced.
 const laterTables = Object.values(REWARDS_MONEY_TABLES_AFTER_0232).flat();
 const privateLaterTables =
-  REWARDS_MONEY_TABLES_AFTER_0232["0265_disabled_owner_financial_history.sql"];
+  REWARDS_MONEY_TABLES_AFTER_0232["0266_disabled_owner_financial_history.sql"];
 if (privateLaterTables === undefined || privateLaterTables.length !== 7) {
   throw new Error("Exact private owner financial inventory required");
 }
