@@ -153,6 +153,28 @@ CREATE FUNCTION public.legacy_example() RETURNS integer
     expect(normalized).not.toContain("pg_catalog.format('pg_catalog, %I");
   });
 
+  test("restores private owner-financial ACLs without widening ordinary function normalization", () => {
+    const source = `
+CREATE FUNCTION public.require_disabled_owner_financial_inventory_private_v1() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$ BEGIN RETURN; END $$;
+CREATE FUNCTION public.ordinary_example() RETURNS integer
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$ SELECT 2 $$;
+`;
+    const normalized = normalizePostgresBaselineDump(source);
+    const ordinary = normalized.indexOf("CREATE FUNCTION ordinary_example()");
+    const privateOutput = normalized.slice(0, ordinary);
+    expect(privateOutput).toContain("REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC");
+    expect(privateOutput).toContain("a.grantee<>0 AND a.grantee<>p.proowner");
+    expect(privateOutput).toContain("p.oid=target_function.oid");
+    expect(privateOutput).toContain("REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE");
+    expect(normalized.slice(ordinary)).not.toContain("REVOKE");
+    expect(normalized).not.toContain("GRANT");
+  });
+
   test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
     expect(() =>
       normalizePostgresBaselineDump(`
