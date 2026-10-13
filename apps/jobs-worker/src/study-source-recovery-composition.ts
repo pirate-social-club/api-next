@@ -13,7 +13,10 @@ import type { Layer } from "effect";
 import type { StudySourceRecoveryStages } from "./study-source-recovery-cycle.ts";
 
 type Runtime = Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
-export type GuestStudyRecoveryComposition = () => NonNullable<StudySourceRecoveryStages["guest"]>;
+export type GuestStudyRecoveryComposition = (() => NonNullable<StudySourceRecoveryStages["guest"]>) & {
+  /** Only the verified financial factory attaches this actual Account layer. */
+  readonly accountOriginalAdmissionRuntime?: Runtime;
+};
 /** Explicit reviewed source composition; callers do not infer this from an R2
  * binding, cookie/proof, current provider key, today's lease or a generic flag.
  * Both the Guest cron principal and its exact DELETE bucket are explicit; the

@@ -69,7 +69,16 @@ export async function makeDefaultGuestStudyRecoveryComposition(
     { roleProfile: financial === "true" ? "owner_financial" : "practice" },
   );
   await readiness.verify();
-  return financial === "true"
-    ? makeOwnerRewardGuestStudyRecoveryComposition(actual.cron, bucket)
-    : makeGuestStudyRecoveryComposition(actual.cron, bucket);
+  if (financial === "true") {
+    if (ordinaryAccount === undefined)
+      throw new Error("Verified ordinary Account recovery binding unavailable");
+    // This exact layer participated in the five-principal native inspection.
+    // Practice callback presence supplies no Account financial authority.
+    return Object.freeze(
+      Object.assign(makeOwnerRewardGuestStudyRecoveryComposition(actual.cron, bucket), {
+        accountOriginalAdmissionRuntime: ordinaryAccount,
+      }),
+    );
+  }
+  return makeGuestStudyRecoveryComposition(actual.cron, bucket);
 }
