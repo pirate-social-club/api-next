@@ -1472,12 +1472,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0248_guest_learning_authority_foundation.sql",
     },
     {
-      body_sha256: "05ae405a13be9055a7fa20cfdca664d4ee8704d32f53fd2f1b2c15b054d0ec8f",
+      body_sha256: "b47e29a7201d5d5019d40bc0a353dfc699fee21abf13e3dfc5037570d16cf231",
       configuration: "none",
       definer: false,
       kind: "f",
       name: "guard_study_v2_activity_authority",
-      source_file: "0249_study_participation_owner_preservation.sql",
+      source_file: "0188_activity_participation_authority.sql",
     },
     {
       body_sha256: "ab821415b8c398fbd4f57f248bf7203b85a7a47949a11db6f154ce8bc732542d",
@@ -2837,6 +2837,6 @@ export const guestStudyReadinessCandidate = {
     },
   ],
   restricted_catalogue_probes: ["pg_ls_dir", "pg_read_binary_file", "pg_read_file", "pg_stat_file"],
-  source_head: "e44bc5ce317df401cf307cdb733ae2839c626feb",
+  source_head: "c8bd8ae83efce0d244d1e73626e5898c2c87df80",
   source_manifest_sha256: "2368f2ddba45b370e738ebbdca3f98533432dde3f7fe311f5f99fccccc93b7cc",
 } as const;
