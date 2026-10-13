@@ -2,10 +2,16 @@
 // in the SAME normal transaction as user/credential birth. No activity fallback,
 // direct owner-row seed, guard bypass or alternate Study store is installed.
 import { expect } from "bun:test";
+import { createHash } from "node:crypto";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { Effect } from "effect";
 import { makeControlPlaneIdentityRepository } from "./identity-repository.ts";
 import type { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+
+// Stable synthetic label is independent of identifier length: ASCII LDH32,
+// with no reserved/generated-placeholder prefix. Identity IDs remain exact.
+const fixtureLabel = (userId: string): string =>
+  `fixture-${createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 24)}`;
 
 const account = (userId: string, label: string, createdAt: string): IdentityAccountDocument => ({
   user: {
@@ -72,7 +78,7 @@ export const makeOwnedOrdinaryAccountBirthFixture = (
             providerSubject: `did:privy:owned-fixture-${userId}`,
             credentialId: `owned-fixture-credential-${userId}`,
             userId,
-            account: account(userId, `fixture-${userId}`, new Date().toISOString()),
+            account: account(userId, fixtureLabel(userId), new Date().toISOString()),
           })
           .pipe(Effect.provide(runtime)),
       ),
