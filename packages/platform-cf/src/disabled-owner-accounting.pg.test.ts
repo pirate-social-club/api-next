@@ -593,7 +593,7 @@ suite("first disabled owner accounting checkpoint", () => {
         f.admin,
         heldAccount,
         "retained-recovered",
-        subjectDigest,
+        hash("retained-v2-recovery-claim-evidence"),
         "current",
         { subject: "retained-first", previous: "retained-first", epoch: 2 },
       );
