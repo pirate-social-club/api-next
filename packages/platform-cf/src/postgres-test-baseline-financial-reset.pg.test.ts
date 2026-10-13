@@ -178,6 +178,39 @@ async function observeLockWait(
 }
 
 suite("owned empty financial baseline reset", () => {
+  test("preserves all source-declared privileges and immutable metadata on baseline replay", async () => {
+    await withOwnedBaseline(async (admin, reader, schema) => {
+      const source = (await admin.query<{ source_version: string; manifest_sha256: string }>(
+        "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
+      )).rows;
+      expect(source).toEqual([{
+        source_version: "owner_accounting_native_source_v1",
+        manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
+      }]);
+      const functions = (await admin.query<{ signature: string; acl_class: string }>(
+        "SELECT f.signature,f.acl_class FROM owner_accounting_native_source_inventory_v1 m CROSS JOIN LATERAL jsonb_to_recordset(m.manifest->'functions') AS f(signature TEXT,acl_class TEXT) WHERE m.singleton ORDER BY f.signature COLLATE \"C\"",
+      )).rows;
+      expect(functions).toHaveLength(370);
+      expect(functions.filter((f) => f.acl_class === "private_source_only")).toHaveLength(193);
+      expect(functions.filter((f) => f.acl_class === "controlled_financial")).toHaveLength(140);
+      expect(functions.filter((f) => f.acl_class === "legacy_source_default")).toHaveLength(37);
+      const privileges = (await reader.query<{ signature: string; allowed: boolean }>(
+        "SELECT signature,has_function_privilege(current_user,to_regprocedure(format('%I.%s',$1::TEXT,signature)),'EXECUTE') AS allowed FROM unnest($2::TEXT[]) signature ORDER BY signature COLLATE \"C\"",
+        [schema,functions.map((f) => f.signature)],
+      )).rows;
+      expect(privileges).toEqual(functions.map((f) => ({
+        signature: f.signature,
+        allowed: f.acl_class === "legacy_source_default",
+      })));
+      await expect(reader.query("SELECT * FROM owner_accounting_native_source_inventory_v1")).rejects.toMatchObject({ code: "42501" });
+      await expect(admin.query("TRUNCATE owner_accounting_native_source_inventory_v1")).rejects.toMatchObject({ code: "GP003" });
+      expect((await admin.query("SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton")).rows).toEqual(source);
+      await admin.query("BEGIN READ ONLY");
+      await admin.query("SELECT require_owner_accounting_ready_private_v1()");
+      await admin.query("COMMIT");
+    });
+  }, 180000);
+
   test("preserves native catalog, all seed rows and every restricted private boundary", async () => {
     await withOwnedBaseline(async (admin, reader) => {
       const before = await postgresTestSchemaCatalogFingerprint(admin);

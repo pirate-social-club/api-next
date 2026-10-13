@@ -175,6 +175,43 @@ CREATE FUNCTION public.ordinary_example() RETURNS integer
     expect(normalized).not.toContain("GRANT");
   });
 
+  test("restores exact source privileges after protected metadata and post-data", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE TABLE public.owner_accounting_native_source_inventory_v1 (
+    singleton boolean NOT NULL,
+    source_version text NOT NULL,
+    manifest jsonb NOT NULL
+);
+INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{}');
+CREATE TRIGGER original_accounting_source_inventory_immutable BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.owner_accounting_native_source_inventory_v1 FOR EACH STATEMENT EXECUTE FUNCTION public.reject_owner_accounting_source_inventory_mutation_v1();
+`);
+    const protectedRow = normalized.indexOf("INSERT INTO owner_accounting_native_source_inventory_v1");
+    const immutableGuard = normalized.indexOf("CREATE TRIGGER original_accounting_source_inventory_immutable");
+    const sourceBinder = normalized.indexOf("DO $baseline_owner_source_privileges$");
+    expect(protectedRow).toBeGreaterThan(0);
+    expect(immutableGuard).toBeGreaterThan(protectedRow);
+    expect(sourceBinder).toBeGreaterThan(immutableGuard);
+    expect(normalized.lastIndexOf("SET check_function_bodies = true;")).toBeGreaterThan(sourceBinder);
+    expect(normalized).toContain("pg_catalog.to_regprocedure(pg_catalog.format('%I.%s',target_schema,expected.signature))");
+    expect(normalized).toContain("baseline raw function source differs");
+    expect(normalized).toContain("actual_acl IS DISTINCT FROM expected.source_acl");
+    expect(normalized).toContain("private baseline relation custody differs");
+    expect(normalized).toContain("SELECT %I.require_owner_accounting_ready_private_v1()");
+    expect(normalized).not.toContain("GRANT ");
+    expect(normalized).not.toContain("ALTER DEFAULT PRIVILEGES");
+  });
+
+  test("does not select full-source privileges from a metadata name inside an ordinary body", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.ordinary_example() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+CREATE TABLE owner_accounting_native_source_inventory_v1 (singleton boolean);
+END
+$body$;
+`);
+    expect(normalized).not.toContain("DO $baseline_owner_source_privileges$");
+  });
+
   test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
     expect(() =>
       normalizePostgresBaselineDump(`
