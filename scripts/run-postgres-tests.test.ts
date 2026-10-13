@@ -86,9 +86,18 @@ describe("PostgreSQL test discovery", () => {
         2,
       ),
     ).toBe(36);
+    // An unmeasured suite retains the independent fresh-schema40 estimate.
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/persona-repository.pg.test.ts", 2),
+    ).toBe(40);
+    // Measured cost is a floor; it neither disappears for small call counts nor
+    // caps a larger fixture-aware estimate.
     expect(
       postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 2),
-    ).toBe(40);
+    ).toBe(751);
+    expect(
+      postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 40),
+    ).toBe(800);
     expect(
       postgresTestFileWeight("packages/platform-cf/src/community-route-migration.pg.test.ts", 2),
     ).toBe(40);
