@@ -68,10 +68,17 @@ export type RequestOptions = Readonly<{
   audio?: Uint8Array;
   extraHeaders?: Readonly<Record<string, string>>;
 }>;
+type OwnedAudioBucket = Readonly<{
+  put: (key: string, bytes: Uint8Array) => Promise<{ size: number }>;
+  delete: (keys: string | string[]) => Promise<void>;
+}>;
+type OwnedManagedBindings = GuestStudyManagedBindings &
+  Readonly<{ LEARNER_AUDIO: OwnedAudioBucket }>;
+type WorkerFetchTarget = Readonly<{ fetch: (request: Request) => Response | Promise<Response> }>;
 export async function defaultWorkerFixture(
   use: (
     f: Omit<ReadinessFixture, "bindings"> & {
-      bindings: GuestStudyManagedBindings;
+      bindings: OwnedManagedBindings;
       ordinaryBindings: Awaited<ReturnType<typeof makeHttpWorkerTestBindings>>;
       makeWorker: (configuration?: string | null) => Promise<ReturnType<typeof createHttpWorker>>;
       makeHns: (
@@ -93,10 +100,7 @@ export async function defaultWorkerFixture(
       objects: Map<string, Uint8Array>;
       providerCalls: () => number;
       transcript: (value: string) => void;
-      taskFetch: (
-        worker: ReturnType<typeof createHttpWorker>,
-        request: Request,
-      ) => Promise<Response>;
+      taskFetch: (worker: WorkerFetchTarget, request: Request) => Promise<Response>;
     },
   ) => Promise<void>,
 ) {
@@ -157,7 +161,7 @@ export async function defaultWorkerFixture(
             )
           ).rows,
         ).toEqual([{ n: 0 }]);
-      const bucket = {
+      const bucket: OwnedAudioBucket = {
         put: async (key: string, bytes: Uint8Array) => {
           await outsideSql();
           objects.set(key, new Uint8Array(bytes));
@@ -202,7 +206,7 @@ export async function defaultWorkerFixture(
           defaultScope: required(ordinaryBindings.PIRATE_APP_JWT_SCOPE),
           defaultTtlSeconds: 300,
         });
-        const bindings: GuestStudyManagedBindings = {
+        const bindings: OwnedManagedBindings = {
           GUEST_STUDY_SERVING_ENABLED: "true",
           GUEST_STUDY_PRODUCT_ORIGIN: ordinaryOrigin,
           GUEST_STUDY_RUNTIME_CONFIGURATION: JSON.stringify({ policy, disclosure }),
@@ -263,7 +267,7 @@ export async function defaultWorkerFixture(
             throw new Error("Admitted source serving graph unexpectedly inert");
           return guestStudy;
         };
-        const taskFetch = (worker: ReturnType<typeof createHttpWorker>, request: Request) => {
+        const taskFetch = (worker: WorkerFetchTarget, request: Request) => {
           if (requestRegistrationClosed)
             throw new Error("Owned Worker request registration is closed");
           const response = Promise.resolve(

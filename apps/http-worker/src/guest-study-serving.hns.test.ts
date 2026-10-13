@@ -1,6 +1,6 @@
 // Genuine HNS fixture is shared with the canonical default managed journey.
 import { describe, expect, test } from "bun:test";
-import { servingHnsHarness } from "./guest-study-serving.hns.fixture.ts";
+import { now, servingHnsHarness } from "./guest-study-serving.hns.fixture.ts";
 
 describe("Guest Study serving real HNS trust dependencies", () => {
   test("actual Worker accepts RSA Access and HMAC; safe reads replay while unsafe replay and expired Access refuse", async () => {

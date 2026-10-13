@@ -41,7 +41,7 @@ const activeState: HnsCommunityAppHostAuthorityStateV1 = {
     gateway_health: "healthy",
   },
 };
-const now = 1_770_000_000;
+export const now = 1_770_000_000;
 export const exactOrigin = `https://${activeState.normalized_host}`;
 export const protectedOrigin = "https://guest-study-api.internal";
 const issuer = "https://owned-study.cloudflareaccess.com";
