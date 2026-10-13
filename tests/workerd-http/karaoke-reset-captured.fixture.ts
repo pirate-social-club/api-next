@@ -89,6 +89,7 @@ const authority: KaraokeSessionAuthority = {
     {
       id: "line-workerd-original",
       index: 0,
+      kind: "lyric",
       text: "Hold on",
       start_ms: 0,
       end_ms: 1000,
