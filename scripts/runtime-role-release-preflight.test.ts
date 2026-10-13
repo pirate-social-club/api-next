@@ -156,6 +156,38 @@ describe("destructive money-table inventory", () => {
       const laterSql = await Bun.file(
         new URL(`../db/postgres/migrations/${migration}`, import.meta.url),
       ).text();
+      if (migration === "0264_disabled_owner_financial_history.sql") {
+        //264 owns a stronger closed private boundary than0242's read-only
+        // lease tables. Validate its trusted-schema loop and native positive
+        // custody checks explicitly; do not make the legacy parser permissive.
+        const install = laterSql.split("DO $install_disabled_financial_guards$")[1]?.split("END $install_disabled_financial_guards$;")[0];
+        if (install === undefined) throw new Error("Native264 financial custody block is unavailable");
+        const privateArray = install.split("FOREACH relation_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
+        expect([...privateArray.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([...tables]);
+        expect(tables).toHaveLength(7);
+        expect(install).toContain("WHERE c.oid='participation_owners'::regclass");
+        expect(install).toContain("schema_name IN('pg_catalog','information_schema') OR schema_name LIKE 'pg_%'");
+        expect(install).toContain("oid=object_id AND relnamespace=namespace_id AND relowner=owner_id");
+        expect(install).toContain("ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY");
+        expect(install).toContain("REVOKE ALL ON TABLE %I.%I FROM PUBLIC");
+        expect(install).toContain("a.grantee<>0 AND a.grantee<>c.relowner");
+        expect(install).toContain("REVOKE ALL ON TABLE %I.%I FROM %I");
+        expect(install).toContain("CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON %I.%I FOR EACH STATEMENT");
+        expect(install).not.toMatch(/\bGRANT\s+(?:ALL|SELECT|INSERT|UPDATE|DELETE|TRUNCATE)\b/u);
+        const attestation = laterSql.split("CREATE FUNCTION require_disabled_owner_financial_inventory_private_v1()")[1]?.split("END $$;")[0];
+        if (attestation === undefined) throw new Error("Native264 positive private attestation is unavailable");
+        const attestedArray = attestation.split("FOREACH relation_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
+        expect([...attestedArray.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([...tables]);
+        expect(attestation).toContain("relkind='r' AND relrowsecurity AND NOT relforcerowsecurity");
+        expect(attestation).toContain("pg_policy WHERE polrelid=relation_id");
+        expect(attestation).toContain("aclexplode(coalesce(c.relacl,acldefault('r',c.relowner)))");
+        expect(attestation).toContain("a.grantee<>c.relowner");
+        expect(attestation).toContain("aclexplode(c.attacl)");
+        expect(attestation).toContain("a.grantee<>owner_id");
+        expect(attestation).toContain("tgenabled='O' AND tgtype=62 AND tgfoid='reject_disabled_owner_financial_dml_v1()'::regprocedure");
+        expect(attestation).toContain("disabled phase cannot attest financial history as empty");
+        continue;
+      }
       const revoked =
         laterSql.split("FOREACH table_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
       expect([...revoked.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1])).toEqual([
