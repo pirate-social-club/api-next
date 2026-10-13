@@ -1,6 +1,6 @@
 import { GuestParticipationStoreRejected } from "@pirate/application/guest-participation-authority";
-import type { OwnerParticipationReadStore } from "@pirate/application/owner-participation-reads";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
+import type { OwnerParticipationReadStore } from "@pirate/application/use-cases/owner-financial-study";
 import {
   AuthError,
   BadRequest,

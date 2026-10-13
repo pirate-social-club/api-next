@@ -137,6 +137,7 @@
     "./account-study-capture-protocol": "./src/account-study-capture-protocol.ts",
     "./controlled-account-spoken": "./src/controlled-account-spoken.ts",
     "./use-cases/guest-learning": "./src/use-cases/guest-learning.ts",
+    "./use-cases/owner-financial-study": "./src/use-cases/owner-financial-study.ts",
     "./use-cases/hns-browser-transport": "./src/use-cases/hns-browser-transport.ts",
     "./use-cases/guest-learning-test-fixture": "./src/use-cases/guest-learning-test-fixture.ts",
     "./owner-megapot-settlement": "./src/owner-megapot-settlement.ts",

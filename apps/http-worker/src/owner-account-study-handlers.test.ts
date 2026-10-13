@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
-import { ControlPlaneTransactionOutcomeUnknown, StudyV2CommandRejected } from "@pirate/application";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
+import {
+  ControlPlaneTransactionOutcomeUnknown,
+  StudyV2CommandRejected,
+} from "@pirate/application/use-cases/owner-financial-study";
 import { AuthError, BadRequest, GuestPendingConflict } from "@pirate/contracts";
 import type { OwnerAccountStudyFacade } from "@pirate/platform-cf/owner-account-study-facade";
 import { Effect } from "effect";

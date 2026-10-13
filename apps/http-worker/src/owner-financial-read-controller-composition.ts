@@ -1,4 +1,7 @@
-import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
+import type {
+  ControlPlaneDb,
+  ControlPlaneError,
+} from "@pirate/application/use-cases/owner-financial-study";
 import {
   AuthError,
   BadRequest,

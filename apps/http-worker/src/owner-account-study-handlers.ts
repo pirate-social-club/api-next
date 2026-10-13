@@ -1,3 +1,4 @@
+import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
 import {
   ControlPlaneOperationTimedOut,
   ControlPlaneStatementFailed,
@@ -5,8 +6,7 @@ import {
   GuestParticipationStoreRejected,
   StudyV2CommandRejected,
   StudyV2StoreFailed,
-} from "@pirate/application";
-import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
+} from "@pirate/application/use-cases/owner-financial-study";
 import {
   AuthError,
   BadRequest,

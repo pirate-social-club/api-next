@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { OwnerRewardCreditReadStore } from "@pirate/application/owner-reward-credit-reads";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
+import type { OwnerRewardCreditReadStore } from "@pirate/application/use-cases/owner-financial-study";
 import { AuthError, BadRequest, OwnerRewardCreditV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { makeOwnerRewardCreditReadHandlers } from "./owner-reward-credit-read-handlers.ts";

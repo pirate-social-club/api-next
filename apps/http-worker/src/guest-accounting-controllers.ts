@@ -10,18 +10,18 @@ import {
   type ParticipationOperationIdentity,
   type SetupBrowserAccount,
 } from "@pirate/application/guest-participation-authority";
-import type {
-  OwnerRewardCreditAuthority,
-  OwnerRewardCreditClaimStore,
-  OwnerRewardCreditStore,
-  RewardCreditRecipientStore,
-} from "@pirate/application/owner-reward-credit-ports";
 import {
   ControlPlaneOperationTimedOut,
   ControlPlaneStatementFailed,
   ControlPlaneTransactionOutcomeUnknown,
   canonicalBodyHash,
 } from "@pirate/application/use-cases/guest-learning";
+import type {
+  OwnerRewardCreditAuthority,
+  OwnerRewardCreditClaimStore,
+  OwnerRewardCreditStore,
+  RewardCreditRecipientStore,
+} from "@pirate/application/use-cases/owner-financial-study";
 import {
   ClaimOwnerRewardCreditV1,
   ConfirmGuestAttachmentTargetV1,

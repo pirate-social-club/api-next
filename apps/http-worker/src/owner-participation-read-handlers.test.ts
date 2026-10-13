@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { OwnerParticipationReadStore } from "@pirate/application/owner-participation-reads";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
+import type { OwnerParticipationReadStore } from "@pirate/application/use-cases/owner-financial-study";
 import { AuthError, BadRequest, GuestParticipationProjectionV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { makeOwnerParticipationReadHandlers } from "./owner-participation-read-handlers.ts";
