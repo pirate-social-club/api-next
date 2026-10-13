@@ -47,7 +47,6 @@ const controlled = [
   "reserve_guest_prepared_study_start_v1(jsonb,jsonb,text,text,text,text,text,text,jsonb,text)",
   "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)",
   "commit_guest_study_start_with_rewards_v1(jsonb,jsonb,text,text,text,text,text,jsonb,jsonb,jsonb,text,text,text,text,boolean,text,jsonb,integer)",
-  "require_owner_guest_source_private_v1(jsonb)",
   "read_owner_guest_answer_source_v1(jsonb,text,text,text)",
   "read_owner_guest_spoken_dispatch_context_v1(jsonb,text,text,text,text)",
   "read_owner_guest_answer_operation_v1(jsonb,text,jsonb,text,text,text,integer)",
@@ -206,6 +205,16 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
       // Only this explicit actual source-consumer list; never the entire manifest.
       await f.admin.query(`GRANT EXECUTE ON FUNCTION ${signature} TO ${q(f.role)}`);
     }
+    expect(
+      (
+        await f.guest.query(
+          "SELECT has_function_privilege(current_user,'require_owner_guest_source_private_v1(jsonb)','EXECUTE') AS allowed",
+        )
+      ).rows,
+    ).toEqual([{ allowed: false }]);
+    await expect(
+      f.guest.query("SELECT require_owner_guest_source_private_v1('{}'::jsonb)"),
+    ).rejects.toMatchObject({ code: "42501" });
     await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
     const adminRuntime = makeDirectPostgresControlPlaneLayer(scoped.toString(), {
       closeTimeoutMs: 2000,
