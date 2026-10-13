@@ -237,13 +237,16 @@ export type Fixture = {
   deferDestructiveCleanup: () => void;
   destructiveCleanupDeferred: () => boolean;
 };
-export async function fixture(use: (f: Fixture) => Promise<void>) {
+export async function fixture(
+  use: (f: Fixture) => Promise<void>,
+  options: Readonly<{ schema?: "api_next" }> = {},
+) {
   if (!pgUrl) throw new Error("Owned Postgres URL missing");
   if (!["127.0.0.1", "localhost"].includes(new URL(pgUrl).hostname))
     throw new Error("Owned loopback PostgreSQL required");
   const packet = await migrations(),
     suffix = crypto.randomUUID().replaceAll("-", "");
-  const schema = `account_capture_${suffix}`,
+  const schema = options.schema ?? `account_capture_${suffix}`,
     role = `account_capture_login_${suffix}`;
   const password = hash(randomBytes(32)); // synthetic fixture-only credential
   const admin = new Client({
@@ -261,6 +264,13 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
   const cleanupFailures: Error[] = [];
   try {
     await bounded(admin.connect(), "admin initial connect", 5000);
+    if (options.schema !== undefined) {
+      const existing = await admin.query("SELECT to_regnamespace($1) IS NOT NULL AS exists", [
+        schema,
+      ]);
+      if (existing.rows[0]?.exists !== false)
+        throw new Error("Canonical owned fixture schema must be absent before creation");
+    }
     await admin.query(`CREATE SCHEMA ${q(schema)}`);
     schemaCreated = true;
     await admin.query(`SET search_path TO ${q(schema)},pg_catalog`);

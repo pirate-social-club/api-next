@@ -70,7 +70,10 @@ export type ReadinessFixture = AccountFixture &
     registerRestoration: (restore: () => Promise<unknown>) => void;
   }>;
 
-export async function readinessFixture(use: (f: ReadinessFixture) => Promise<void>): Promise<void> {
+export async function readinessFixture(
+  use: (f: ReadinessFixture) => Promise<void>,
+  options: Readonly<{ schema?: "api_next" }> = {},
+): Promise<void> {
   await accountFixture(async (f) => {
     const identities: Principal[] = [],
       restorations: Array<() => Promise<unknown>> = [];
@@ -414,5 +417,5 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
         "Owned readiness cleanup incomplete",
       );
     if (primaryFailed) throw primaryFailure;
-  });
+  }, options);
 }
