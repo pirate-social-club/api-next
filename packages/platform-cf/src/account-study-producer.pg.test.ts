@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { StudyV2StoreFailed } from "@pirate/application";
 import { makeControlledAccountSpokenRecovery } from "./controlled-account-spoken-recovery.ts";
 import { makeAccountLearnerAudioDeleteProtocol } from "./account-audio-deletion-protocol.ts";
@@ -12,8 +12,10 @@ import {
   deferred,
   dropCommitAcknowledgement,
   fixture,
+  hash,
   harness,
   pgUrl,
+  q,
   rejected,
   run,
   stopBeforeFinalize,
@@ -58,10 +60,152 @@ async function expireLease(f: Fixture, input: AccountSpokenInput) {
   expect((await f.admin.query("SHOW session_replication_role")).rows).toEqual([
     { session_replication_role: "origin" },
   ]);
-  await f.admin.query(
-    "UPDATE study_spoken_answer_commands SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE session_id=$1 AND session_item_id=$2 AND idempotency_key=$3 AND state='reserved'",
+  const expiry = await f.admin.query(
+    "UPDATE study_spoken_answer_commands SET lease_expires_at=reserved_at+interval '1 microsecond' WHERE session_id=$1 AND session_item_id=$2 AND idempotency_key=$3 AND state='reserved' RETURNING lease_expires_at<=clock_timestamp() AS expired",
     [input.sessionId, input.sessionItemId, input.idempotencyKey],
   );
+  expect(expiry.rows).toEqual([{ expired: true }]);
+}
+
+const CallbackPreparation = Schema.Struct({
+  batchId: Schema.NonEmptyString,
+  objectRefs: Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(1000)),
+  fenceRevision: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+});
+const Fingerprint = Schema.Struct({
+  n: Schema.Int,
+  hash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+});
+// Counts/ordered-row hashes only: no raw credential digest, private lease or CP
+// payload is exposed by negative-boundary failure diagnostics.
+async function callbackFingerprint(f: Fixture) {
+  const snapshot: Record<string, { readonly n: number; readonly hash: string }> = {};
+  for (const table of [
+    "participation_owners",
+    "guest_credentials",
+    "guest_secret_issuance_operations",
+    "guest_participation_operations",
+    "learner_audio_owner_fences",
+    "learner_audio_delete_commands",
+    "learner_audio_delete_sources",
+    "learner_audio_delete_target_artifacts",
+    "learner_audio_delete_batches",
+    "learner_audio_delete_batch_items",
+    "learner_audio_deleted_objects",
+    "learner_audio_object_names",
+    "learner_audio_upload_attempts",
+    "learner_audio_artifacts",
+    "learner_audio_account_producer_captures",
+    "learner_audio_upload_terminal_facts",
+    "learner_audio_upload_cleanup_commands",
+    "learner_audio_account_spoken_checkpoints",
+    "learner_audio_account_provider_calls",
+    "guest_study_spoken_captures",
+    "guest_study_spoken_checkpoints",
+    "guest_resource_session_reservations",
+    "guest_resource_provider_calls",
+    "guest_resource_release_receipts",
+    "study_attempts_v2",
+    "activity_qualifications",
+    "song_streak_days",
+    "community_streak_days",
+    "megapot_pool_shares",
+    "megapot_ticket_inventory",
+    "reward_ledger_credits",
+  ]) {
+    const rows = (
+      await f.admin.query(`SELECT count(*)::integer AS n,
+      encode(sha256(convert_to(COALESCE(jsonb_agg(to_jsonb(source) ORDER BY to_jsonb(source)::text),'[]'::jsonb)::text,'UTF8')),'hex') AS hash
+      FROM ${q(table)} source`)
+    ).rows;
+    if (rows.length !== 1) throw new Error("Actual callback fingerprint row missing");
+    snapshot[table] = Schema.decodeUnknownSync(Fingerprint, { onExcessProperty: "error" })(rows[0]);
+  }
+  return snapshot;
+}
+async function actualGuestDeleteBatch(f: Fixture) {
+  const origin = "https://community.example",
+    suffix = crypto.randomUUID();
+  const ownerId = `owner_${crypto.randomUUID()}`;
+  const credentialId = btoa(
+    Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+      String.fromCharCode(byte),
+    ).join(""),
+  )
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+  const secretDigest = hash(crypto.getRandomValues(new Uint8Array(32)));
+  const key = `callback-bootstrap-${suffix}`;
+  // The actual maintained controlled producer creates owner/credential/issuance
+  // rows. The actual private proof reader verifies the digest before confirmation.
+  await f.admin.query("SELECT issue_guest_pending_v1($1,'{}',NULL,$2,$3,$4,$5,$6,$7)", [
+    origin,
+    key,
+    hash(key),
+    `callback-bootstrap-op-${suffix}`,
+    ownerId,
+    credentialId,
+    secretDigest,
+  ]);
+  expect(
+    (
+      await f.admin.query(
+        `SELECT proof->>'credentialId' AS credential_id
+    FROM jsonb_array_elements((read_guest_browser_proof_snapshot_v1($1,$2::jsonb,'[]',FALSE))->'provedCredentials') proof`,
+        [origin, JSON.stringify([{ credentialId, digest: secretDigest }])],
+      )
+    ).rows,
+  ).toEqual([{ credential_id: credentialId }]);
+  await f.admin.query("SELECT confirm_guest_pending_v1($1,$2::text[],$3,$4)", [
+    origin,
+    [credentialId],
+    credentialId,
+    ownerId,
+  ]);
+  expect(
+    (
+      await f.admin.query("SELECT state FROM guest_credentials WHERE credential_id=$1", [
+        credentialId,
+      ])
+    ).rows,
+  ).toEqual([{ state: "confirmed" }]);
+  const operation = {
+    sourceOwnerId: ownerId,
+    kind: "learner_audio_deletion",
+    idempotencyKey: `callback-delete-${suffix}`,
+    requestHash: hash(`callback-delete-${suffix}`),
+  };
+  const rows = (
+    await f.admin.query(
+      `SELECT jsonb_build_object(
+      'batchId',prepared.value#>>'{result,batchId}',
+      'fenceRevision',prepared.value#>'{result,fenceRevision}',
+      'objectRefs',COALESCE((SELECT jsonb_agg(artifact->>'objectRef') FROM jsonb_array_elements(prepared.value#>'{result,artifacts}') artifact),'[]'::jsonb)) AS batch
+    FROM (SELECT prepare_guest_owner_audio_delete_v1($1::jsonb,$2::jsonb,1000) AS value) prepared`,
+      [JSON.stringify({ kind: "guest", ownerId, credentialId, origin }), JSON.stringify(operation)],
+    )
+  ).rows;
+  if (rows.length !== 1) throw new Error("Actual native Guest batch missing");
+  const row = Schema.decodeUnknownSync(Schema.Struct({ batch: CallbackPreparation }), {
+    onExcessProperty: "error",
+  })(rows[0]);
+  expect(row.batch.objectRefs).toEqual([]);
+  expect(
+    (
+      await f.admin.query(
+        `SELECT o.kind,o.account_id,c.state AS command_state,b.state AS batch_state
+    FROM learner_audio_delete_batches b JOIN learner_audio_delete_commands c USING(command_id)
+    JOIN participation_owners o ON o.owner_id=c.source_owner_id WHERE b.batch_id=$1`,
+        [row.batch.batchId],
+      )
+    ).rows,
+  ).toEqual([
+    { kind: "guest", account_id: null, command_state: "pending", batch_state: "prepared" },
+  ]);
+  return row.batch;
 }
 
 suite("genuine controlled ordinary Study producer", () => {
@@ -473,9 +617,27 @@ suite("genuine controlled ordinary Study producer", () => {
         expect(firstBatch.objectRefs.length).toBeLessThanOrEqual(1000);
         expect(firstBatch.objectRefs).toContain(lateOriginal.expected_object_ref);
         for (const key of firstBatch.objectRefs) objects.delete(key);
-        // Other previous stored objects can make positive progress; completion
-        // still cannot pass the outstanding writer. Zero progress may be in-flight.
-        await run(Effect.exit(deletion.confirm(firstBatch, now())));
+        // Earlier actual stored generations make positive progress. The batch
+        // confirms, but the active captured writer keeps its command pending.
+        const partial = await run(deletion.confirm(firstBatch, now()));
+        expect(partial.deleted_count).toBeGreaterThan(0);
+        expect(partial.remaining_count).toBeGreaterThan(0);
+        expect(
+          (
+            await f.admin.query(
+              "SELECT state FROM learner_audio_delete_batches WHERE batch_id=$1",
+              [firstBatch.batchId],
+            )
+          ).rows,
+        ).toEqual([{ state: "confirmed" }]);
+        const confirmedPending = await callbackFingerprint(f);
+        // Unknown's positive-confirmation no-op must not regress the exact batch.
+        await run(deletion.unknown(firstBatch));
+        expect(await callbackFingerprint(f)).toEqual(confirmedPending);
+        // Confirm has a different contract: even a confirmed pending batch runs
+        // native reconciliation. The still-held writer leaves the same partial DTO.
+        expect(await run(deletion.confirm(firstBatch, now()))).toEqual(partial);
+        expect(await callbackFingerprint(f)).toEqual(confirmedPending);
         const firstCommand = (
           await f.admin.query(
             "SELECT c.command_id,c.state FROM learner_audio_delete_commands c JOIN learner_audio_delete_batches b USING(command_id) WHERE b.batch_id=$1",
@@ -547,7 +709,22 @@ suite("genuine controlled ordinary Study producer", () => {
         expect(newBatch.batchId).not.toBe(firstBatch.batchId);
         expect(newBatch.objectRefs).toContain(lateOriginal.expected_object_ref);
         for (const key of newBatch.objectRefs) objects.delete(key);
-        expect((await run(deletion.confirm(newBatch, now()))).remaining_count).toBe(0);
+        const completedDeletion = await run(deletion.confirm(newBatch, now()));
+        expect(completedDeletion.remaining_count).toBe(0);
+        expect(
+          (
+            await f.admin.query(
+              `SELECT c.state AS command_state,b.state AS batch_state
+          FROM learner_audio_delete_batches b JOIN learner_audio_delete_commands c USING(command_id) WHERE b.batch_id=$1`,
+              [newBatch.batchId],
+            )
+          ).rows,
+        ).toEqual([{ command_state: "completed", batch_state: "confirmed" }]);
+        const completedState = await callbackFingerprint(f);
+        await run(deletion.unknown(newBatch));
+        expect(await callbackFingerprint(f)).toEqual(completedState);
+        expect(await run(deletion.confirm(newBatch, now()))).toEqual(completedDeletion);
+        expect(await callbackFingerprint(f)).toEqual(completedState);
         expect((await rowsFor(f, lateInput)).recording_state).toBe("deleted");
         expect(objects.has(lateOriginal.expected_object_ref)).toBe(false);
         expect(await run(recovery.recover())).toMatchObject({
@@ -682,4 +859,38 @@ suite("genuine controlled ordinary Study producer", () => {
       );
     });
   }, 180000);
+
+  test("genuine Guest batch cannot enter either Account callback and raw253 stays denied", async () => {
+    await fixture(async (f) => {
+      const guestBatch = await actualGuestDeleteBatch(f);
+      const deletion = makeAccountLearnerAudioDeleteProtocol(f.runtime());
+      const before = await callbackFingerprint(f);
+      expect(await rejected(deletion.unknown(guestBatch))).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        sqlState: "P0001",
+      });
+      expect(await callbackFingerprint(f)).toEqual(before);
+      expect(await rejected(deletion.confirm(guestBatch, now()))).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        sqlState: "P0001",
+      });
+      expect(await callbackFingerprint(f)).toEqual(before);
+      // No wrapper fix may be made by granting either actual raw253 primitive.
+      await expect(
+        f.serving.query("SELECT fail_learner_audio_delete_private_v1($1,'unknown')", [
+          guestBatch.batchId,
+        ]),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        f.serving.query(
+          "SELECT confirm_learner_audio_delete_private_v1($1,$2,'deleted',$3::timestamptz)",
+          [guestBatch.batchId, guestBatch.fenceRevision, now()],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      expect(await callbackFingerprint(f)).toEqual(before);
+      expect((await f.admin.query("SHOW session_replication_role")).rows).toEqual([
+        { session_replication_role: "origin" },
+      ]);
+    });
+  }, 60000);
 });

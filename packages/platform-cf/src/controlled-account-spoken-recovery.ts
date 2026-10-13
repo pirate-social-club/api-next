@@ -54,7 +54,7 @@ export const makeControlledAccountSpokenRecovery = (
         }),
     });
     let recovered = 0;
-    let fenced = 0;
+    const fenced = 0;
     for (const candidate of ready) {
       if (
         candidate.capture.sourceKind !== "study" ||
@@ -69,11 +69,10 @@ export const makeControlledAccountSpokenRecovery = (
           constraint: null,
           outcomeCertainty: "completed",
         });
-      const success = yield* finalize(candidate.capture, candidate.success, candidate.archive).pipe(
-        Effect.match({ onFailure: () => false, onSuccess: () => true }),
-      );
-      if (success) recovered++;
-      else fenced++;
+      // A lost COMMIT acknowledgement must stop before any later candidate or
+      // guest/expiry stage. The original native receipt remains reconcilable.
+      yield* finalize(candidate.capture, candidate.success, candidate.archive);
+      recovered++;
     }
     return { claimed: ready.length, recovered, storageFailures: 0, fenced };
   }),
