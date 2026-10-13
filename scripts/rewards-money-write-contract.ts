@@ -5,6 +5,15 @@
  * inherited privileges removed by the migration that creates it instead.
  */
 export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly string[]>> = {
+  "0264_disabled_owner_financial_history.sql": [
+    "guest_owner_associations",
+    "participation_eligibility_decisions",
+    "megapot_owner_shares",
+    "megapot_owner_snapshot_leaves",
+    "megapot_owner_allocations",
+    "reward_credit_persona_bindings",
+    "reward_credit_recipient_selections",
+  ],
   "0242_reward_operations_run_lease.sql": [
     "reward_operations_run_lease",
     "reward_operations_run_lease_events",
@@ -13,6 +22,7 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
 
 export const REWARDS_MONEY_TABLES = [
   "custody_solvency_observations",
+  "guest_owner_associations",
   "megapot_allocation_batches",
   "megapot_allocations",
   "megapot_claim_effects",
@@ -22,6 +32,9 @@ export const REWARDS_MONEY_TABLES = [
   "megapot_drawing_sweeps",
   "megapot_fallback_cutoff_activity_evidence",
   "megapot_fallback_cutoff_evidence",
+  "megapot_owner_allocations",
+  "megapot_owner_shares",
+  "megapot_owner_snapshot_leaves",
   "megapot_participant_claim_guards",
   "megapot_participant_claims",
   "megapot_pool_beneficiary_snapshots",
@@ -37,6 +50,7 @@ export const REWARDS_MONEY_TABLES = [
   "megapot_ticket_review_evidence",
   "megapot_usdc_approval_effects",
   "megapot_usdc_approval_receipt_evidence",
+  "participation_eligibility_decisions",
   "platform_referral_revenue_ledger",
   "platform_sponsorship_budget_entries",
   "platform_sponsorship_budgets",
@@ -44,6 +58,8 @@ export const REWARDS_MONEY_TABLES = [
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
   "reward_chain_effects",
+  "reward_credit_persona_bindings",
+  "reward_credit_recipient_selections",
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_gas_topup_daily_budgets",
@@ -77,7 +93,7 @@ export const REWARDS_MONEY_TABLES = [
 
 /** A new matching table requires explicit review and a forward denial migration. */
 export const REWARDS_MONEY_TABLE_PATTERN =
-  "(reward|megapot|sponsor|custody|winner|payout|refund)|^platform_referral_revenue_ledger$";
+  "(reward|megapot|sponsor|custody|winner|payout|refund)|^(platform_referral_revenue_ledger|guest_owner_associations|participation_eligibility_decisions)$";
 
 export function moneyTableInventoryViolations(actual: readonly string[]): string[] {
   const reviewed = new Set<string>(REWARDS_MONEY_TABLES);

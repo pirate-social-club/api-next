@@ -263,6 +263,7 @@
     "0260_owner_study_original_source_reads.sql": "efe82c3b3c132217bc6c01f2b73fef5f7940465d9c08ab18c0bcbaeb3b897120",
     "0261_guest_study_resource_expiry.sql": "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c",
     "0262_ordinary_audio_producer_capture.sql": "e266708eae7b1d954421adc8b322ec51103f50506c42da91c22120f57bbcb485",
-    "0263_guest_ephemeral_audio_cleanup.sql": "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55"
+    "0263_guest_ephemeral_audio_cleanup.sql": "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55",
+    "0264_disabled_owner_financial_history.sql": "96afb781bc957c1fc69c128b715ae079c4db72e6fa1f86162592199509559f55"
   }
 }
