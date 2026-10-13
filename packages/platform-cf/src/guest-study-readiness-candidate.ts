@@ -1057,6 +1057,10 @@ export const guestStudyReadinessCandidate = {
       checksum: "04a395bef0a06e3a405387123ec85ccdd3f4503b202cb365154375e6d7186097",
       version: "0264_legacy_learner_audio_producer_disposition.sql",
     },
+    {
+      checksum: "337b5469bdf01595413349517f1c0750530280a4a38ac8fd007a2d2e3c4e106f",
+      version: "0265_account_karaoke_unclaimed_cancellation.sql",
+    },
   ],
   native_function_bodies: [
     {
@@ -1114,6 +1118,14 @@ export const guestStudyReadinessCandidate = {
       kind: "f",
       name: "can_guest_access_activity_song_v1",
       source_file: "0248_guest_learning_authority_foundation.sql",
+    },
+    {
+      body_sha256: "ae7c0121308ecf6b544682d5ba0d7aba89db91eb68bb1e805c2faa960a2964e4",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "cancel_unclaimed_account_karaoke_audio_private_v1",
+      source_file: "0265_account_karaoke_unclaimed_cancellation.sql",
     },
     {
       body_sha256: "25b1d453371c8932347812c3f39df4f5561f3207d9c1241654c8737f7f34b02f",

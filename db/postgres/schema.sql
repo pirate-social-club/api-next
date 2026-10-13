@@ -3095,6 +3095,38 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION cancel_unclaimed_account_karaoke_audio_private_v1(p_account text, p_session text, p_attempt text, p_artifact text, p_capture jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT;
+BEGIN
+ -- Same account audio group lock and exact account/session/attempt/artifact
+ -- lookup as the attempt host's capture read. Study, guest and other accounts'
+ -- captures have no matching Karaoke row and refuse.
+ IF p_capture IS NULL
+  OR read_account_karaoke_audio_capture_private_v1(p_account,p_session,p_attempt,p_artifact) IS DISTINCT FROM p_capture
+ THEN RAISE EXCEPTION 'Karaoke capture differs'; END IF;
+ -- Exact immutable capture generation: owner, key and captured revision.
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ -- Mandatory claim takes the same source lock and upload row lock. Only a
+ -- registered upload with no storage I/O closes; writing, unknown and closed
+ -- producers answer false and change nothing.
+ RETURN close_unclaimed_learner_audio_private_v1(upload_id);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='cancel_unclaimed_account_karaoke_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_attempt text, p_artifact text, p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION capture_account_karaoke_audio_private_v1(p_account text, p_session text, p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
