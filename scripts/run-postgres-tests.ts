@@ -1,6 +1,7 @@
 import { Client } from "pg";
 import {
   freshSchemaPostgresTestSuites,
+  postgresGeneralSuiteCostEstimates,
   noBaselinePostgresTestSuites,
   reusablePostgresTestSuites,
 } from "./postgres-test-suite-manifest.ts";
@@ -109,7 +110,7 @@ export const postgresTestTimeoutMilliseconds = {
   general: 900_000,
 } as const;
 
-export const postgresGeneralShardCount = 4;
+export const postgresGeneralShardCount = 5;
 
 // Weight units approximate tenths of a second from the first baseline-reuse benchmark:
 // reusable suites pay once for installation, then once per reset and test; other suites
@@ -234,12 +235,21 @@ export function postgresTestFileWeight(file: string, testCount: number): number 
   } else {
     throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
   }
+  const measured = postgresGeneralSuiteCostEstimates[file];
+  if (measured !== undefined) {
+    // A recorded whole-file estimate replaces its old category estimate rather
+    // than accumulating that estimator's unrelated overestimates. New source
+    // calls scale the observation upward; fewer calls retain its setup cost.
+    const sourceGrowth =
+      Math.max(normalizedTestCount, measured.sourceCallCount) / measured.sourceCallCount;
+    return Math.ceil((measured.milliseconds / 100) * sourceGrowth);
+  }
   return Math.max(estimatedWeight, measuredMinimumWeights[file] ?? 0);
 }
 
 /** Source-call estimate only: pgTest aliases select the same required native
  * test API. Parametric expansions and setup/cleanup remain approximate, so
- * measured minima still override the count model where required CI proves it.
+ * recorded file costs replace the count model; all future shards still must pass.
  */
 export function postgresTestSourceCallCount(source: string): number {
   return source.match(/\b(?:test|pgTest)(?:\.skip)?\s*\(/gu)?.length ?? 0;

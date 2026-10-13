@@ -12,6 +12,8 @@ import {
   shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
 
+import { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-manifest.ts";
+
 describe("PostgreSQL lock capacity preflight", () => {
   test("a default postgres:17 server is refused before any suite starts", () => {
     const failure = postgresLockCapacityError({
@@ -59,19 +61,21 @@ describe("PostgreSQL test discovery", () => {
     });
   });
 
-  test("balances every general file across four independent CI shards", () => {
-    expect(postgresGeneralShardCount).toBe(4);
+  test("balances every general file across five independent CI shards", () => {
+    expect(postgresGeneralShardCount).toBe(5);
     const files = [
       "heavy.pg.test.ts",
       "medium.pg.test.ts",
       "small-a.pg.test.ts",
       "small-b.pg.test.ts",
+      "small-c.pg.test.ts",
     ];
     const weights = {
       "heavy.pg.test.ts": 8,
       "medium.pg.test.ts": 6,
       "small-a.pg.test.ts": 2,
       "small-b.pg.test.ts": 2,
+      "small-c.pg.test.ts": 1,
     };
     const shards = shardPostgresTestFiles(files, postgresGeneralShardCount, weights);
 
@@ -79,40 +83,70 @@ describe("PostgreSQL test discovery", () => {
     expect(shards.every((shard) => shard.length === 1)).toBe(true);
   });
 
-  test("weights reusable fixtures below fresh and migration-owned fixtures", () => {
+  test("uses observed whole-file costs while source growth and unmeasured profiles stay bounded", () => {
+    const file = "packages/platform-cf/src/data-registration-repository.pg.test.ts";
+    const cost = postgresGeneralSuiteCostEstimates[file];
+    if (cost === undefined) throw new Error("Required historical cost was missing");
+    expect(postgresTestFileWeight(file, cost.sourceCallCount)).toBe(
+      Math.ceil(cost.milliseconds / 100),
+    );
+    expect(postgresTestFileWeight(file, 1)).toBe(Math.ceil(cost.milliseconds / 100));
+    expect(postgresTestFileWeight(file, cost.sourceCallCount * 2)).toBe(
+      Math.ceil(cost.milliseconds / 50),
+    );
     expect(
-      postgresTestFileWeight(
-        "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
-        2,
-      ),
-    ).toBe(36);
-    // An unmeasured suite retains the independent fresh-schema40 estimate.
-    expect(
-      postgresTestFileWeight("packages/platform-cf/src/persona-repository.pg.test.ts", 2),
-    ).toBe(40);
-    // Measured cost is a floor; it neither disappears for small call counts nor
-    // caps a larger fixture-aware estimate.
-    expect(
-      postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 2),
-    ).toBe(751);
-    expect(
-      postgresTestFileWeight(
-        "packages/platform-cf/src/data-registration-repository.pg.test.ts",
-        40,
-      ),
-    ).toBe(800);
-    expect(
-      postgresTestFileWeight("packages/platform-cf/src/community-route-migration.pg.test.ts", 2),
-    ).toBe(40);
-    expect(
-      postgresTestFileWeight("packages/platform-cf/src/content-repository.pg.test.ts", 2),
-    ).toBe(821);
-    expect(
-      postgresTestFileWeight("packages/platform-cf/src/community-route-repository.pg.test.ts", 2),
-    ).toBe(280);
+      postgresTestFileWeight("packages/platform-cf/src/hns-incident-evidence.pg.test.ts", 1),
+    ).toBe(20);
     expect(() => postgresTestFileWeight("unclassified.pg.test.ts", 2)).toThrow(
       "PostgreSQL test suite is not classified for shard weighting",
     );
+  });
+
+  test("redistributes the observed required workload across five shards without losing any tracked file", async () => {
+    const tracked = Bun.spawnSync(["git", "ls-files", "-z", "*.pg.test.ts"]);
+    expect(tracked.exitCode).toBe(0);
+    const files = tracked.stdout
+      .toString()
+      .split("\0")
+      .filter((file) => file.length > 0);
+    const audited = partitionPostgresRecoveryFiles(
+      partitionPostgresTestFiles(files).general,
+    ).audited;
+    const entries = await Promise.all(
+      audited.map(
+        async (file) =>
+          [
+            file,
+            postgresTestFileWeight(file, postgresTestSourceCallCount(await Bun.file(file).text())),
+          ] as const,
+      ),
+    );
+    const weights = Object.fromEntries(entries);
+    const shards = shardPostgresTestFiles(audited, postgresGeneralShardCount, weights);
+    expect(shards).toHaveLength(5);
+    expect(shards.flat().sort()).toEqual([...audited].sort());
+    expect(new Set(shards.flat()).size).toBe(audited.length);
+    const media = "packages/platform-cf/src/media-persistence.pg.test.ts";
+    const video = "packages/platform-cf/src/video-workflow-composed.pg.test.ts";
+    expect(shards.findIndex((shard) => shard.includes(media))).not.toBe(
+      shards.findIndex((shard) => shard.includes(video)),
+    );
+    const totals = shards.map((shard) =>
+      shard.reduce((sum, file) => sum + (weights[file] ?? 0), 0),
+    );
+    // Reviewed current observations + explicit tail bounds leave about192s per
+    // shard. Historical planning cannot substitute for five actual green runs.
+    expect(Math.max(...totals) * 100).toBeLessThanOrEqual(720_000);
+    const four = shardPostgresTestFiles(audited, 4, weights);
+    const fourTotals = four.map((shard) =>
+      shard.reduce((sum, file) => sum + (weights[file] ?? 0), 0),
+    );
+    expect(Math.max(...fourTotals) * 100).toBeGreaterThanOrEqual(880_000);
+    for (const [file, cost] of Object.entries(postgresGeneralSuiteCostEstimates)) {
+      expect(audited).toContain(file);
+      expect(Number.isSafeInteger(cost.milliseconds) && cost.milliseconds > 0).toBe(true);
+      expect(Number.isSafeInteger(cost.sourceCallCount) && cost.sourceCallCount > 0).toBe(true);
+    }
   });
 
   test("counts native pgTest aliases in the same shard model as ordinary calls", () => {
@@ -124,14 +158,14 @@ describe("PostgreSQL test discovery", () => {
     ].join("\n");
     expect(postgresTestSourceCallCount(source)).toBe(3);
     expect(postgresTestSourceCallCount("const pgTest = pgUrl ? test : test.skip;")).toBe(0);
-    // Four actual readiness calls formerly received the normalized one-call
-    // weight20; their complete required-CI group measured90.124 seconds.
+    // The full current four-case readiness group is measured as one complete
+    // file; alias discovery never restores the old one-call weight20.
     expect(
       postgresTestFileWeight(
         "packages/platform-cf/src/guest-study-managed-readiness.pg.test.ts",
         4,
       ),
-    ).toBe(902);
+    ).toBe(810);
   });
 
   test("keeps the CI matrix and runner shard count in lockstep", async () => {
