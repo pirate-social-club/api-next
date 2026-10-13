@@ -315,7 +315,7 @@ async function nativeBoundaries(f: Fixture) {
       await expect(f.admin.query(statement)).rejects.toMatchObject({ code: "GP003" });
     const column = (
       await f.admin.query<{ column: string }>(
-        "SELECT attname AS column FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped ORDER BY attnum LIMIT 1",
+        "SELECT attname AS column FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 AND NOT attisdropped AND attgenerated='' ORDER BY attnum LIMIT 1",
         [table],
       )
     ).rows[0]?.column;
