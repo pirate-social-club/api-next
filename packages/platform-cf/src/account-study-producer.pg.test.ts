@@ -604,6 +604,8 @@ suite("genuine controlled ordinary Study producer", () => {
         (error) => ({ kind: "rejected" as const, error }),
       );
       let lateFailure: unknown;
+      let lateFailed = false;
+      const lateCleanupFailures: unknown[] = [];
       try {
         const entry = await bounded(
           Promise.race([putEntered.promise.then(() => ({ kind: "entered" as const })), lateRun]),
@@ -739,7 +741,7 @@ suite("genuine controlled ordinary Study producer", () => {
         expect((await rowsFor(f, lateInput)).payload_sha256).toBe(lateOriginal.payload_sha256);
       } catch (error) {
         lateFailure = error;
-        throw error;
+        lateFailed = true;
       } finally {
         // Resolving twice is harmless; every early assertion/SQL failure releases
         // the known original PUT and drains its already-handled original run.
@@ -748,14 +750,15 @@ suite("genuine controlled ordinary Study producer", () => {
           bounded(lateRun, "late original final drain"),
           bounded(late.drain(), "late all background final drain"),
         ]);
-        if (drains.some((result) => result.status === "rejected"))
-          throw new AggregateError(
-            lateFailure === undefined
-              ? [new Error("Owned deferred PUT final drain did not complete")]
-              : [lateFailure, new Error("Owned deferred PUT final drain did not complete")],
-            "Owned deferred PUT cleanup failed",
-          );
+        for (const result of drains)
+          if (result.status === "rejected") lateCleanupFailures.push(result.reason);
       }
+      if (lateCleanupFailures.length > 0)
+        throw new AggregateError(
+          lateFailed ? [lateFailure, ...lateCleanupFailures] : lateCleanupFailures,
+          "Owned deferred PUT cleanup failed",
+        );
+      if (lateFailed) throw lateFailure;
 
       // 5. Rejected PUT is actual storage uncertainty, never a failed archive
       // or terminal no-I/O fact. Lease expiry/retry/delete cannot erase the CP

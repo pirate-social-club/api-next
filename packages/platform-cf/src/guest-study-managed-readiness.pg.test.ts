@@ -66,22 +66,27 @@ async function fault(
   f.registerRestoration(unwind);
   armed = true;
   let primaryFailure: unknown;
+  let primaryFailed = false;
+  const cleanupFailures: unknown[] = [];
   try {
     await apply();
     await refused(f.inspector);
   } catch (error) {
     primaryFailure = error;
-    throw error;
+    primaryFailed = true;
   } finally {
     try {
       await unwind();
     } catch (cleanupFailure) {
-      throw new AggregateError(
-        primaryFailure === undefined ? [cleanupFailure] : [primaryFailure, cleanupFailure],
-        "Owned readiness fault restoration failed",
-      );
+      cleanupFailures.push(cleanupFailure);
     }
   }
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(
+      primaryFailed ? [primaryFailure, ...cleanupFailures] : cleanupFailures,
+      "Owned readiness fault restoration failed",
+    );
+  if (primaryFailed) throw primaryFailure;
   // Reuse the SAME verifier after a positive/fault/restore sequence: no TTL credit.
   await f.inspector.verify();
 }
@@ -399,6 +404,8 @@ pgTest(
       };
       f.registerRestoration(drop);
       let privilegedRoleFailure: unknown;
+      let privilegedRoleFailed = false;
+      const privilegedRoleCleanupFailures: unknown[] = [];
       try {
         await fault(
           f,
@@ -412,19 +419,22 @@ pgTest(
         );
       } catch (error) {
         privilegedRoleFailure = error;
-        throw error;
+        privilegedRoleFailed = true;
       } finally {
         try {
           await drop();
         } catch (cleanupFailure) {
-          throw new AggregateError(
-            privilegedRoleFailure === undefined
-              ? [cleanupFailure]
-              : [privilegedRoleFailure, cleanupFailure],
-            "Owned privileged-role removal incomplete",
-          );
+          privilegedRoleCleanupFailures.push(cleanupFailure);
         }
       }
+      if (privilegedRoleCleanupFailures.length > 0)
+        throw new AggregateError(
+          privilegedRoleFailed
+            ? [privilegedRoleFailure, ...privilegedRoleCleanupFailures]
+            : privilegedRoleCleanupFailures,
+          "Owned privileged-role removal incomplete",
+        );
+      if (privilegedRoleFailed) throw privilegedRoleFailure;
       expect(f.ioCalls()).toBe(0);
     }),
   180000,
@@ -655,6 +665,8 @@ pgTest(
       };
       f.registerRestoration(drop);
       let databaseFailure: unknown;
+      let databaseFailed = false;
+      const databaseCleanupFailures: unknown[] = [];
       try {
         const url = new URL(f.principals.learning.url);
         url.pathname = `/${database}`;
@@ -671,6 +683,8 @@ pgTest(
           statement_timeout: 3000,
         });
         let identityFailure: unknown;
+        let identityFailed = false;
+        const identityCleanupFailures: unknown[] = [];
         try {
           await bounded(peerAdmin.connect(), "owned second-database metadata admission", 4000);
           // pg_proc ACLs are PER DATABASE. Grant only the same readonly metadata
@@ -690,7 +704,7 @@ pgTest(
           expect(other.database_oid).not.toBe(original.database_oid);
         } catch (error) {
           identityFailure = error;
-          throw error;
+          identityFailed = true;
         } finally {
           // Each close starts independently; one synchronous failure or timeout
           // cannot skip the other owned socket's bounded close.
@@ -702,17 +716,17 @@ pgTest(
               await bounded(peerAdmin.end(), "owned second-database admin close", 3000);
             })(),
           ]);
-          const cleanupFailures: unknown[] = [];
           for (const result of closed)
-            if (result.status === "rejected") cleanupFailures.push(result.reason);
-          if (cleanupFailures.length > 0)
-            throw new AggregateError(
-              identityFailure === undefined
-                ? cleanupFailures
-                : [identityFailure, ...cleanupFailures],
-              "Owned second-database socket cleanup incomplete",
-            );
+            if (result.status === "rejected") identityCleanupFailures.push(result.reason);
         }
+        if (identityCleanupFailures.length > 0)
+          throw new AggregateError(
+            identityFailed
+              ? [identityFailure, ...identityCleanupFailures]
+              : identityCleanupFailures,
+            "Owned second-database socket cleanup incomplete",
+          );
+        if (identityFailed) throw identityFailure;
         await refused(
           makeGuestStudyManagedReadiness({
             ...f.bindings,
@@ -724,17 +738,20 @@ pgTest(
         );
       } catch (error) {
         databaseFailure = error;
-        throw error;
+        databaseFailed = true;
       } finally {
         try {
           await drop();
         } catch (cleanupFailure) {
-          throw new AggregateError(
-            databaseFailure === undefined ? [cleanupFailure] : [databaseFailure, cleanupFailure],
-            "Owned second-database removal incomplete",
-          );
+          databaseCleanupFailures.push(cleanupFailure);
         }
       }
+      if (databaseCleanupFailures.length > 0)
+        throw new AggregateError(
+          databaseFailed ? [databaseFailure, ...databaseCleanupFailures] : databaseCleanupFailures,
+          "Owned second-database removal incomplete",
+        );
+      if (databaseFailed) throw databaseFailure;
       // Real observer SELECTs and genuine successful COMMIT precede acknowledgement
       // loss. No fabricated boolean/SQL result or uncertain successful admission.
       let lost = false;
