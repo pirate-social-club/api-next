@@ -239,7 +239,8 @@
     "./captured-karaoke-bindings": "./src/captured-karaoke-bindings.ts",
     "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts",
     "./guest-study-managed-readiness": "./src/guest-study-managed-readiness.ts",
-    "./guest-study-managed-control-planes": "./src/guest-study-managed-control-planes.ts"
+    "./guest-study-managed-control-planes": "./src/guest-study-managed-control-planes.ts",
+    "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
