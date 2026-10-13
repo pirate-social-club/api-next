@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  beginHistoricalAudioDeletionFixture,
+  beginOwnedHistoricalApiNextWriter,
+  closeOwnedHistoricalApiNextWriter,
+  finishHistoricalAudioDeletionFixture,
+} from "./learner-audio-deletion-history.pg-fixture.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
+import { runCapturedStudyDeletionExpiryRegression } from "./learner-audio-deletion-captured-expiry.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -28,15 +34,16 @@ suite("learner audio deletion repository", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     const scopedConnection = connectionForSchema(connectionString, schema);
 
+    let originalWriter: ReturnType<typeof beginOwnedHistoricalApiNextWriter> | undefined;
+    let primaryFailure: unknown;
+    let failed = false;
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-      await admin.query("SET session_replication_role = replica");
-      try {
-        await admin.query(
-          "INSERT INTO users (user_id) VALUES ('account-1'), ('account-2'), ('account-3'), ('account-4'), ('account-5')",
-        );
-        await admin.query(
-          `INSERT INTO learner_audio_artifacts (
+      // Historical stored metadata is present BEFORE the real253 namespace backfill.
+      // Account identities and immutable owners are born normally in the exact252 prefix.
+      const history = await beginHistoricalAudioDeletionFixture(scopedConnection);
+      const retainedObjectRefs = new Set<string>(["study/object", "karaoke/object", "other/object"]);
+      await admin.query(
+        `INSERT INTO learner_audio_artifacts (
              learner_audio_artifact_id, account_id, source_kind, attempt_ref,
              expected_object_ref, object_ref, content_digest, content_type,
              byte_size, duration_ms, platform_retention, provider_retention,
@@ -54,6 +61,8 @@ suite("learner audio deletion repository", () => {
               'private_learning', 'not_stored', 'stored', clock_timestamp() + interval '24 months')`,
           ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
         );
+      await admin.query("SET session_replication_role = replica");
+      try {
         await admin.query(
           `INSERT INTO karaoke_recordings (
              session_id, attempt_id, account_id, artifact_id, state, object_ref,
@@ -67,6 +76,28 @@ suite("learner audio deletion repository", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      await admin.query(
+        `INSERT INTO learner_audio_artifacts (
+           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+           expected_object_ref, object_ref, content_digest, content_type,
+           byte_size, duration_ms, platform_retention, provider_retention,
+           recording_state, expires_at
+         ) SELECT 'bulk-' || lpad(value::text, 4, '0'), 'account-5', 'study',
+             'bulk-attempt-' || value, 'bulk/object/' || value, 'bulk/object/' || value,
+             repeat('9', 64), 'audio/ogg', 100, 1000, 'private_learning', 'not_stored',
+             'stored', clock_timestamp() + interval '24 months'
+           FROM generate_series(1, 1001) AS value`,
+      );
+      for (let value = 1; value <= 1001; value++) retainedObjectRefs.add(`bulk/object/${value}`);
+      originalWriter = beginOwnedHistoricalApiNextWriter(retainedObjectRefs);
+      await finishHistoricalAudioDeletionFixture(scopedConnection, history);
+      expect(
+        (await admin.query("SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'" )).rows,
+      ).toEqual([{ io_state: "unknown" }]);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM learner_audio_account_producer_captures")).rows,
+      ).toEqual([{ n: 0 }]);
+
       let failStorage = true;
       const deletedKeys: string[][] = [];
       const store = makeControlPlaneLearnerAudioDeletionStore(
@@ -75,6 +106,8 @@ suite("learner audio deletion repository", () => {
           delete: async (keys) => {
             deletedKeys.push(typeof keys === "string" ? [keys] : [...keys]);
             if (failStorage) throw new Error("fixture storage unavailable");
+            for (const key of typeof keys === "string" ? [keys] : keys)
+              retainedObjectRefs.delete(key);
           },
         },
       );
@@ -97,9 +130,26 @@ suite("learner audio deletion repository", () => {
       ]);
 
       failStorage = false;
+      // A fulfilled exact DELETE does not close an unknown historical writer.
+      await expect(run("account-1", "2026-08-29T09:00:30.000Z")).rejects.toMatchObject({
+        reason: "in-flight",
+      });
+      expect(
+        (await admin.query("SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'")).rows,
+      ).toEqual([{ io_state: "unknown" }]);
+      expect(
+        (await admin.query("SELECT recording_state,object_ref FROM learner_audio_artifacts WHERE learner_audio_artifact_id='karaoke-artifact'")).rows,
+      ).toEqual([{ recording_state: "stored", object_ref: "karaoke/object" }]);
+      // Native-core model only: an owned finite pre253 api-next writer actually
+      // finishes on its original key; ALL work is drained before the terminal fact.
+      if (originalWriter === undefined) throw new Error("Original historical writer was not owned");
+      await closeOwnedHistoricalApiNextWriter(admin, originalWriter);
       const deleted = await run("account-1", "2026-08-29T09:01:00.000Z");
       expect(deleted).toMatchObject({ deleted_count: 2, remaining_count: 0 });
-      expect(deletedKeys.at(-1)?.sort()).toEqual(["karaoke/object", "study/object"]);
+      expect(deletedKeys.at(-1)?.sort()).toEqual([
+        "karaoke/account-1/karaoke-attempt.pcm", "karaoke/object", "study/object",
+      ]);
+      expect(retainedObjectRefs.has("karaoke/account-1/karaoke-attempt.pcm")).toBe(false);
       expect(
         (
           await admin.query(
@@ -142,121 +192,46 @@ suite("learner audio deletion repository", () => {
         remaining_count: 0,
         last_deleted_at: "2026-08-29T09:01:00.000Z",
       });
-      expect(deletedKeys).toHaveLength(2);
+      // Failed storage, fulfilled-but-unknown refusal, then positively closed deletion.
+      expect(deletedKeys).toHaveLength(3);
 
-      await admin.query(
-        `INSERT INTO learner_audio_artifacts (
-           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
-           expected_object_ref, object_ref, content_digest, content_type,
-           byte_size, duration_ms, platform_retention, provider_retention,
-           recording_state, expires_at
-         ) SELECT 'bulk-' || lpad(value::text, 4, '0'), 'account-5', 'study',
-             'bulk-attempt-' || value, 'bulk/object/' || value, 'bulk/object/' || value,
-             repeat('9', 64), 'audio/ogg', 100, 1000, 'private_learning', 'not_stored',
-             'stored', clock_timestamp() + interval '24 months'
-           FROM generate_series(1, 1001) AS value`,
-      );
       const firstBatch = await run("account-5", "2026-08-29T09:03:00.000Z");
       expect(firstBatch).toMatchObject({ deleted_count: 1000, remaining_count: 1 });
       expect(deletedKeys.at(-1)).toHaveLength(1000);
       const secondBatch = await run("account-5", "2026-08-29T09:04:00.000Z");
       expect(secondBatch).toMatchObject({ deleted_count: 1, remaining_count: 0 });
       expect(deletedKeys.at(-1)).toHaveLength(1);
-    } finally {
-      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-      await admin.end();
+    } catch (error) {
+      failed = true;
+      primaryFailure = error;
     }
-  });
-
-  test("blocks live producers but ignores an expired Study lease", async () => {
-    if (connectionString === undefined) throw new Error("test URL was not configured");
-    const schema = `api_next_audio_lock_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const admin = new Client({ connectionString });
-    await admin.connect();
-    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
-    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    const scopedConnection = connectionForSchema(connectionString, schema);
-
+    const cleanupFailures: unknown[] = [];
+    // EVERY outcome drains the SAME original writer before schema teardown.
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-      await admin.query("SET session_replication_role = replica");
-      try {
-        await admin.query("INSERT INTO users (user_id) VALUES ('account-3'), ('account-4')");
-        await admin.query(
-          `INSERT INTO learner_audio_artifacts (
-             learner_audio_artifact_id, account_id, source_kind, attempt_ref,
-             expected_object_ref, content_digest, content_type, byte_size, duration_ms,
-             platform_retention, provider_retention, recording_state, expires_at
-           ) VALUES ('pending-study', 'account-3', 'study', 'attempt-3', 'pending/object',
-             $1, 'audio/ogg', 100, 1000, 'private_learning', 'not_stored', 'pending',
-             clock_timestamp() + interval '24 months')`,
-          ["d".repeat(64)],
-        );
-        await admin.query(
-          `INSERT INTO study_spoken_answer_commands (
-             command_id, account_id, session_id, session_item_id, attempt_number,
-             idempotency_key, request_hash, audio_digest, audio_content_type,
-             audio_byte_size, audio_duration_ms, attempt_id,
-             learner_audio_artifact_id, lease_token, reserved_at, lease_expires_at, state
-           ) VALUES ('command-3', 'account-3', 'session-3', 'item-3', 1, 'idem-3',
-             $1, $2, 'audio/ogg', 100, 1000, 'attempt-3', 'pending-study', 'lease-3',
-             clock_timestamp() - interval '1 second',
-             clock_timestamp() + interval '1 hour', 'reserved')`,
-          ["e".repeat(64), "d".repeat(64)],
-        );
-        await admin.query(
-          `INSERT INTO karaoke_sessions (
-             session_id, attempt_id, account_id, persona_id, community_id, post_id,
-             audio_revision, karaoke_revision_id, qualification_policy_version_id,
-             idempotency_key, request_hash, timezone, status, expires_at,
-             lyrics_revision, line_snapshot
-           ) VALUES ('session-4', 'attempt-4', 'account-4', 'persona-4', 'community-4',
-             'post-4', 1, 'revision-4', 'policy-4', 'idem-4', $1, 'UTC', 'active',
-             clock_timestamp() + interval '1 hour', 1, '[{}]'::jsonb)`,
-          ["f".repeat(64)],
-        );
-      } finally {
-        await admin.query("SET session_replication_role = origin");
-      }
-
-      const store = makeControlPlaneLearnerAudioDeletionStore(
-        makeDirectPostgresControlPlaneLayer(scopedConnection),
-        { delete: async () => {} },
-      );
-      const run = (accountId: string) =>
-        Effect.runPromise(store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }));
-      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
-      await expect(run("account-4")).rejects.toMatchObject({ reason: "in-flight" });
-
-      await admin.query("SET session_replication_role = replica");
-      await admin.query(
-        "UPDATE study_spoken_answer_commands SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE command_id='command-3'",
-      );
-      await admin.query("SET session_replication_role = origin");
-      await expect(run("account-3")).resolves.toMatchObject({
-        deleted_count: 0,
-        remaining_count: 0,
-      });
-
-      const locker = new Client({ connectionString: scopedConnection });
-      await locker.connect();
-      await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))", [
-        "account-3",
-        83_000_001,
-      ]);
-      let settled = false;
-      const blocked = run("account-3").finally(() => {
-        settled = true;
-      });
-      await Bun.sleep(50);
-      expect(settled).toBe(false);
-      await locker.query("COMMIT");
-      await locker.end();
-      await expect(blocked).resolves.toMatchObject({ deleted_count: 0 });
-    } finally {
-      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-      await admin.end();
+      if (originalWriter !== undefined) await originalWriter.releaseAndDrain();
+    } catch (error) {
+      cleanupFailures.push(error);
     }
+    try {
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      await admin.end();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    if (failed && cleanupFailures.length > 0)
+      throw new AggregateError([primaryFailure, ...cleanupFailures], "Historical audio fixture and cleanup failed");
+    if (failed) throw primaryFailure;
+    if (cleanupFailures.length > 0)
+      throw new AggregateError(cleanupFailures, "Historical audio fixture cleanup failed");
+  }, 60_000);
+
+  test("holds unresolved Account writers after expiry and deletes only positive no-I/O generations", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    await runCapturedStudyDeletionExpiryRegression();
   });
+
 });
