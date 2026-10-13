@@ -3,6 +3,7 @@ import {
   type StudyAudioBucket,
   type StudyBatchFetch,
 } from "@pirate/platform-cf/study-spoken-audio";
+
 type StudyBatchTranscriber = ReturnType<typeof makeElevenLabsStudyBatchTranscriber>;
 export interface StudySpokenProductionBindings {
   readonly ELEVENLABS_API_KEY?: string;

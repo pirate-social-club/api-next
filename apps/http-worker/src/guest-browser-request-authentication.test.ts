@@ -10,8 +10,8 @@ import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-case
 import { type BrowserParticipationPolicy, GuestAuthError, InternalError } from "@pirate/contracts";
 import { digestGuestProof } from "@pirate/platform-cf/guest-proof-crypto";
 import {
-  type SessionTokenVerifier,
   SessionTokenVerificationError,
+  type SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { Effect } from "effect";
 import { makeGuestBrowserRequestAuthenticator } from "./guest-browser-request-authentication.ts";

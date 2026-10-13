@@ -1,10 +1,10 @@
 // Runnable proposal after root adoption + exact sealed private successor SQL.
 // No SQL/browser/application gate was executed by this reviewer.
 import { describe, expect, test } from "bun:test";
-import { Schema } from "effect";
-import { GuestStudyAnswerResultV1 } from "@pirate/contracts";
 import type { OwnerAwareStudyV2Store } from "@pirate/application";
-import { mutationFixture, type MutationFixture } from "./owner-study-mutations.pg-fixture.ts";
+import { GuestStudyAnswerResultV1 } from "@pirate/contracts";
+import { Schema } from "effect";
+import { type MutationFixture, mutationFixture } from "./owner-study-mutations.pg-fixture.ts";
 import {
   completed,
   counts,

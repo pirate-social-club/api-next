@@ -3,7 +3,6 @@
 // No public activation/provider/checkpoint acceptance is implied by these cases.
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 import {
   accountNew,
   bytesBase64Url,
@@ -27,6 +26,7 @@ import {
   seedGuest,
   translation,
 } from "./owner-study-starter.pg-fixture.ts";
+import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
 const suite = pgUrl ? describe : describe.skip;
 suite("private owner-aware guest Study starter genuine PostgreSQL", () => {

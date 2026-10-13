@@ -1,30 +1,30 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Schema } from "effect";
 import { StudyV2StoreFailed } from "@pirate/application";
-import { makeControlledAccountSpokenRecovery } from "./controlled-account-spoken-recovery.ts";
+import type {
+  AccountSpokenInput,
+  ControlledAccountSpokenProtocol,
+} from "@pirate/application/controlled-account-spoken";
+import { Effect, Schema } from "effect";
 import { makeAccountLearnerAudioDeleteProtocol } from "./account-audio-deletion-protocol.ts";
-import { makeTelegramDatabase } from "./telegram-database.ts";
-import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
-import { makeTelegramStudyStore } from "./telegram-study-store.ts";
-import { telegramStudyAdmission } from "./telegram-study-admission.ts";
 import {
   bounded,
   deferred,
   dropCommitAcknowledgement,
+  type Fixture,
   fixture,
-  hash,
   harness,
+  hash,
   pgUrl,
   q,
   rejected,
   run,
   stopBeforeFinalize,
-  type Fixture,
 } from "./account-study-producer.pg-fixture.ts";
-import type {
-  AccountSpokenInput,
-  ControlledAccountSpokenProtocol,
-} from "@pirate/application/controlled-account-spoken";
+import { makeControlledAccountSpokenRecovery } from "./controlled-account-spoken-recovery.ts";
+import { makeTelegramDatabase } from "./telegram-database.ts";
+import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
+import { telegramStudyAdmission } from "./telegram-study-admission.ts";
+import { makeTelegramStudyStore } from "./telegram-study-store.ts";
 
 const suite = pgUrl === undefined ? describe.skip : describe;
 const now = () => new Date().toISOString();

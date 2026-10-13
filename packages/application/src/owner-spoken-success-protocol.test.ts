@@ -1,20 +1,20 @@
 import { expect, test } from "bun:test";
-import { Effect, Schema } from "effect";
 import { GuestStudyAnswerResultV1 } from "@pirate/contracts";
-import { ControlPlaneTransactionOutcomeUnknown } from "./ports.ts";
+import { Effect, Schema } from "effect";
+import type { LearningAccess } from "./guest-participation-authority.ts";
+import type { OwnerAwareStudyV2Store, OwnerStudyAnswer } from "./guest-study-ports.ts";
 import { LearnerAudioStorageOutcomeUnknown } from "./learner-audio-io-outcome.ts";
+import {
+  makeOwnerSpokenSuccessProtocol,
+  type OwnerSpokenFencedArchiveStage,
+  type OwnerSpokenPreArchiveCheckpointStore,
+  type OwnerSpokenPreArchiveSuccess,
+} from "./owner-spoken-success-protocol.ts";
+import { ControlPlaneTransactionOutcomeUnknown } from "./ports.ts";
 import {
   gradeStudySpokenTranscript,
   projectStudySpokenFeedback,
 } from "./study-shared-lesson-engine.ts";
-import {
-  makeOwnerSpokenSuccessProtocol,
-  type OwnerSpokenPreArchiveSuccess,
-  type OwnerSpokenPreArchiveCheckpointStore,
-  type OwnerSpokenFencedArchiveStage,
-} from "./owner-spoken-success-protocol.ts";
-import type { OwnerAwareStudyV2Store, OwnerStudyAnswer } from "./guest-study-ports.ts";
-import type { LearningAccess } from "./guest-participation-authority.ts";
 
 const operation = {
   sourceOwnerId: "owner-original",

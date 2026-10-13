@@ -1,10 +1,11 @@
 // Platform producer implementation; all remote calls occur after short SQL.
-import { Effect } from "effect";
+
 import { createHash } from "node:crypto";
 import { LearnerAudioStorageOutcomeUnknown } from "@pirate/application/learner-audio-io-outcome";
+import { Effect } from "effect";
 import {
-  LearnerAudioCaptureRejected,
   type CapturedLearnerAudioUploadStore,
+  LearnerAudioCaptureRejected,
   type LearnerAudioUploadCapture,
 } from "./learner-audio-captured-io.ts";
 export type CapturedKaraokePart = Readonly<{ partNumber: number; etag: string }>;

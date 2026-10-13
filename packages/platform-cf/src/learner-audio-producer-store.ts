@@ -7,10 +7,11 @@ import {
 import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import {
-  LearnerAudioCaptureRejected,
   type CapturedLearnerAudioUploadStore,
   type CapturedUploadDisposition,
+  LearnerAudioCaptureRejected,
 } from "./learner-audio-captured-io.ts";
+
 const Capture = Schema.Struct({
   uploadAttemptId: Schema.NonEmptyString,
   sourceOwnerId: Schema.NonEmptyString,

@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   confirmGuest,
   editFixture,
+  type Fixture,
   financialFingerprint,
   fixture,
   hash,
@@ -14,7 +15,6 @@ import {
   rejected,
   run,
   seedGuest,
-  type Fixture,
 } from "./owner-study-starter.pg-fixture.ts";
 
 const suite = pgUrl ? describe : describe.skip;

@@ -1,22 +1,23 @@
 // INTERNAL controlled ordinary-account producer. No OwnerAware financial IDs.
-import { Effect, Schema } from "effect";
+
 import { StudyAnswerResultV2, StudySessionV2 } from "@pirate/contracts";
+import { Effect, Schema } from "effect";
+import type { AccountSpokenSuccess } from "./account-study-capture-protocol.ts";
+import type { LearnerAudioUploadCapture } from "./learner-audio-capture.ts";
 import { Clock, IdGen } from "./ports.ts";
 import { gradeStudySpokenTranscript } from "./study-shared-lesson-engine.ts";
-import { canonicalBodyHash } from "./use-cases/content/common.ts";
 import {
-  StudyV2CommandRejected,
-  StudyV2StoreFailed,
-  type StudyV2Store,
-  type StudySpokenAnswerReservation,
-  type StudySpokenAnswerContext,
-  type StudyBatchTranscriber,
-  type StudyAudioArchiveResult,
-  type StudyV2Failure,
   type makeStudyV2Service,
+  type StudyAudioArchiveResult,
+  type StudyBatchTranscriber,
+  type StudySpokenAnswerContext,
+  type StudySpokenAnswerReservation,
+  StudyV2CommandRejected,
+  type StudyV2Failure,
+  type StudyV2Store,
+  StudyV2StoreFailed,
 } from "./study-v2-service.ts";
-import type { LearnerAudioUploadCapture } from "./learner-audio-capture.ts";
-import type { AccountSpokenSuccess } from "./account-study-capture-protocol.ts";
+import { canonicalBodyHash } from "./use-cases/content/common.ts";
 export type AccountSpokenInput = Parameters<
   ReturnType<typeof makeStudyV2Service>["submitSpokenAnswer"]
 >[0];

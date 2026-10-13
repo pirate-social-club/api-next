@@ -9,17 +9,17 @@ import type {
   OwnerAwareStudyV2Store,
   ParticipationOperationIdentity,
 } from "@pirate/application";
-import { Effect, Schema } from "effect";
 import { GuestStudySessionV1 } from "@pirate/contracts";
+import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import type { PostgresMigration } from "./postgres-migrations.ts";
 import { makeControlPlaneOwnerStudyStarter } from "./owner-study-starter.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientFactory,
   type PostgresControlPlaneOptions,
 } from "./postgres.ts";
+import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
 import { makeControlPlaneStudyV2Store } from "./study-v2-repository.ts";
 
@@ -27,8 +27,7 @@ export const pgUrl = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !pgUrl)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 export const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
-const hash = (value: string | Uint8Array) =>
-  createHash("sha256").update(value).digest("hex");
+const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const origin = "https://community.example";
 const disclosure = {
   version: "owned-pg-disclosure-v1",

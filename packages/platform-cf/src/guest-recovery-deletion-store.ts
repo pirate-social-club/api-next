@@ -153,7 +153,7 @@ export const makeGuestRecoveryAudioDeletionStores = (
       if (
         !sameOperation(result.operation, input.batch.operation) ||
         result.result.operation.operation_id !== result.outcomeId ||
-          result.result.operation.idempotency_key !== input.batch.operation.idempotencyKey ||
+        result.result.operation.idempotency_key !== input.batch.operation.idempotencyKey ||
         result.result.operation.operation_kind !== input.batch.operation.kind
       )
         return yield* invalid();
@@ -174,7 +174,7 @@ export const makeGuestRecoveryAudioDeletionStores = (
       if (
         !sameOperation(result.operation, input.batch.operation) ||
         result.result.operation.operation_id !== result.outcomeId ||
-          result.result.operation.idempotency_key !== input.batch.operation.idempotencyKey ||
+        result.result.operation.idempotency_key !== input.batch.operation.idempotencyKey ||
         result.result.operation.operation_kind !== input.batch.operation.kind
       )
         return yield* invalid();

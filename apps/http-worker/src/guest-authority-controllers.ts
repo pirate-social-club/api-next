@@ -1,9 +1,9 @@
 // PRIVATE SOURCE PROPOSAL. Transport-private response plans; no endpoint activation.
 import {
-  canonicalBodyHash,
   ControlPlaneOperationTimedOut,
   ControlPlaneStatementFailed,
   ControlPlaneTransactionOutcomeUnknown,
+  canonicalBodyHash,
 } from "@pirate/application";
 import {
   type BrowserParticipationContext,
@@ -27,8 +27,8 @@ import {
   GuestConflict,
   GuestIdentifierV1,
   GuestInstantV1,
-  GuestPendingConflict,
   type GuestOperationLocatorV1,
+  GuestPendingConflict,
   InternalError,
   IssueGuestBootstrapV1,
   RenewGuestAuthorityV1,

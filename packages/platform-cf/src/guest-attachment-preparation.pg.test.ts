@@ -3,9 +3,9 @@
 // Minimal owner/identity/five-family fixture; not populated 0249 backfill acceptance.
 import { describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { Client } from "pg";
-import { Schema } from "effect";
 import { GuestAttachmentIntentV1, GuestAttachmentPreparedV1 } from "@pirate/contracts";
+import { Schema } from "effect";
+import { Client } from "pg";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)

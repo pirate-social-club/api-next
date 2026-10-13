@@ -51,6 +51,7 @@ import { makeGuestLearningPrivateComposition } from "./guest-learning-private-co
 import { decodeInput } from "./transport.ts";
 
 const origin = "https://community.example";
+
 export { financialFingerprint, pgUrl };
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");

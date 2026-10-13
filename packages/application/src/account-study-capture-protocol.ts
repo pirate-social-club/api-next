@@ -1,6 +1,6 @@
 import type { Effect } from "effect";
 import type { LearnerAudioUploadCapture } from "./learner-audio-capture.ts";
-import type { StudyV2Store, StudyV2Failure } from "./study-v2-service.ts";
+import type { StudyV2Failure, StudyV2Store } from "./study-v2-service.ts";
 export type AccountSpokenSuccess = Omit<
   Parameters<StudyV2Store["completeSpokenAnswer"]>[0],
   "archive"

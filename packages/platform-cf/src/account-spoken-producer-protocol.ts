@@ -1,9 +1,9 @@
 import {
   ControlPlaneDb,
-  StudyV2CommandRejected,
-  StudyV2StoreFailed,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  StudyV2CommandRejected,
+  StudyV2StoreFailed,
 } from "@pirate/application";
 import {
   assertAccountSpokenSavedSuccess,
@@ -13,15 +13,16 @@ import { LearnerAudioStorageOutcomeUnknown } from "@pirate/application/learner-a
 import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import {
+  type CapturedStudyAudioBucket,
   LearnerAudioCaptureRejected,
   makeCapturedR2StudyAudioArchive,
-  type CapturedStudyAudioBucket,
 } from "./learner-audio-captured-io.ts";
 import {
-  makeCapturedLearnerAudioUploadStore,
   LearnerAudioUploadCaptureSchema,
+  makeCapturedLearnerAudioUploadStore,
 } from "./learner-audio-producer-store.ts";
 import { OwnerSpokenRetainedSuccessResultSchema } from "./owner-spoken-checkpoint-store.ts";
+
 const Success = Schema.Struct({
   ...OwnerSpokenRetainedSuccessResultSchema.fields,
   accountId: Schema.NonEmptyString,

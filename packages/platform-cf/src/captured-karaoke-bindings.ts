@@ -1,16 +1,16 @@
 import {
+  ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
   type KaraokeSessionAuthority,
-  ControlPlaneDb,
 } from "@pirate/application";
 import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
+import { LearnerAudioCaptureRejected } from "./learner-audio-captured-io.ts";
 import {
   LearnerAudioUploadCaptureSchema,
   makeCapturedLearnerAudioUploadStore,
 } from "./learner-audio-producer-store.ts";
-import { LearnerAudioCaptureRejected } from "./learner-audio-captured-io.ts";
 export const makeCapturedKaraokeBindings = Effect.fn("makeCapturedKaraokeBindings")(function* (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   authority: KaraokeSessionAuthority,

@@ -1,13 +1,14 @@
 import {
+  ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
-  ControlPlaneDb,
   LearnerAudioDeletionFailed,
 } from "@pirate/application";
 import { LearnerAudioDeletionResult } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import type { AccountLearnerAudioDeleteProtocol } from "./owner-audio-deletion-io.ts";
+
 const invalid = () => new LearnerAudioDeletionFailed({ reason: "store-unavailable" });
 const Prepared = Schema.Struct({
   batchId: Schema.NonEmptyString,

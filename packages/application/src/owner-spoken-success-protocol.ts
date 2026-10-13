@@ -1,9 +1,9 @@
 // Additional INTERNAL application protocol. No frozen port/wire/client change.
 import { Effect } from "effect";
 import {
-  GuestParticipationStoreRejected,
   type DurableParticipationOutcome,
   type GuestParticipationStoreFailure,
+  GuestParticipationStoreRejected,
   type LearningAccess,
   type ParticipationSource,
 } from "./guest-participation-authority.ts";
@@ -13,8 +13,8 @@ import type {
   OwnerStudyAnswer,
   OwnerStudyAudioArchive,
 } from "./guest-study-ports.ts";
-import type { StudyAudioArchiveResult } from "./study-v2-service.ts";
 import type { LearnerAudioStorageOutcomeUnknown } from "./learner-audio-io-outcome.ts";
+import type { StudyAudioArchiveResult } from "./study-v2-service.ts";
 
 export type OwnerSpokenSuccessFailure =
   | GuestParticipationStoreFailure

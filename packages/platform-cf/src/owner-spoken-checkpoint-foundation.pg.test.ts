@@ -13,6 +13,7 @@ import {
   run,
   seedGuest,
 } from "./owner-spoken-checkpoint-foundation.pg-fixture.ts";
+
 const pgTest = pgUrl ? test : test.skip;
 const tables = ["guest_study_spoken_captures", "guest_study_spoken_checkpoints"] as const;
 const leaves = [

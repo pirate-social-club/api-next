@@ -10,11 +10,11 @@ import {
   type ProvedGuestCredential,
 } from "@pirate/application/guest-participation-authority";
 import {
+  type GuestAuthorityV1,
   GuestBadRequest,
   GuestConflict,
   GuestPendingConflict,
   InternalError,
-  type GuestAuthorityV1,
 } from "@pirate/contracts";
 import { digestGuestProof } from "@pirate/platform-cf/guest-proof-crypto";
 import { Effect } from "effect";

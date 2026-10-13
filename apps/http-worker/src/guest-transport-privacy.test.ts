@@ -1,7 +1,6 @@
 // PRIVATE TEST PROPOSAL. All definitions remain disabled.
 import { expect, test } from "bun:test";
-import { guestParticipationRegistry } from "@pirate/contracts";
-import { GuestAuthError } from "@pirate/contracts";
+import { GuestAuthError, guestParticipationRegistry } from "@pirate/contracts";
 import { makeStaticHnsForwarderKeyRegistryV1 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";

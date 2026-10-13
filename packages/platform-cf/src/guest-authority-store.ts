@@ -4,17 +4,17 @@ import {
   ControlPlaneStatementFailed,
 } from "@pirate/application";
 import {
+  type DurableParticipationOutcome,
   type GuestAuthorityStore,
   type GuestAuthorityTransition,
   type GuestParticipationStoreFailure,
   GuestParticipationStoreRejected,
-  type DurableParticipationOutcome,
   type ParticipationOperationIdentity,
 } from "@pirate/application/guest-participation-authority";
 import {
+  GuestAttachmentIntentIdV1,
   GuestAuthorityV1,
   GuestCleanupAuthorityV1,
-  GuestAttachmentIntentIdV1,
   GuestCredentialIdV1,
   GuestIdentifierV1,
   GuestSha256V1,

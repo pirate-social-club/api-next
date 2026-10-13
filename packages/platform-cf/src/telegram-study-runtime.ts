@@ -12,17 +12,17 @@ import type {
   TelegramStudyServices,
 } from "@pirate/application/telegram-study";
 import { Effect, type Layer, Result, Schema } from "effect";
+import { makeControlledAccountSpokenComposition } from "./controlled-account-spoken-composition.ts";
 import {
   makeElevenLabsStudyBatchTranscriber,
   type StudyAudioBucket,
 } from "./study-spoken-audio.ts";
-import { makeControlledAccountSpokenComposition } from "./controlled-account-spoken-composition.ts";
-import { workerBackground } from "./worker-background.ts";
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { telegramStudyAdmission } from "./telegram-study-admission.ts";
 import { makeTelegramStudyLearnerStore } from "./telegram-study-learner-store.ts";
 import { makeTelegramStudyStore } from "./telegram-study-store.ts";
+import { workerBackground } from "./worker-background.ts";
 
 export interface TelegramPracticeBindings {
   readonly TELEGRAM_STUDY_PRACTICE_ENABLED?: string;

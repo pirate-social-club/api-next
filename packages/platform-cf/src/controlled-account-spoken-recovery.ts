@@ -8,6 +8,7 @@ import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
 import { OwnerSpokenRetainedSuccessResultSchema } from "./owner-spoken-checkpoint-store.ts";
+
 const Success = Schema.Struct({
   ...OwnerSpokenRetainedSuccessResultSchema.fields,
   accountId: Schema.NonEmptyString,

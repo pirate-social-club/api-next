@@ -1,10 +1,10 @@
 // Private accepted integration seam: definitions remain disabled.
 import { guestParticipationRegistry } from "@pirate/contracts";
 import {
+  type GuestAuthorityCompositionDependencies,
   guestAccountingNames,
   guestLearningNames,
   makeGuestAuthorityComposition,
-  type GuestAuthorityCompositionDependencies,
 } from "./guest-authority-controller-composition.ts";
 export type GuestAuthorityPrivateCompositionDependencies = GuestAuthorityCompositionDependencies;
 export function makeGuestAuthorityPrivateComposition(

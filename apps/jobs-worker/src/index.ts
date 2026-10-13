@@ -86,9 +86,8 @@ import {
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
-import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
-export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
+import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 // Runtime boundary: the entrypoint exports only the default handler, the cron
@@ -128,6 +127,7 @@ export {
   type CommunityCatalogIntegrityJobOptions,
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
+export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {

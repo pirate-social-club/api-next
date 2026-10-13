@@ -8,9 +8,9 @@ import { GuestStudyPreparedContentV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import type { PostgresMigration } from "./postgres-migrations.ts";
 import { makeControlPlanePreparedGuestStudyContentStore } from "./guest-prepared-study-content-store.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;

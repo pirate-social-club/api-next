@@ -1,11 +1,11 @@
 // REVIEW PROPOSAL ONLY: root must adopt/review before the maintained owned PG gate.
 // Reconstruct genuine0001..0250; no regenerated baseline or immutable-guard bypass.
 import { describe, expect, test } from "bun:test";
-import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { Client } from "pg";
+import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
+import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   type IdentityRegistrationInput,
