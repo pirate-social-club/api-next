@@ -1,5 +1,5 @@
 import { AlertCollector, ControlPlaneDb } from "@pirate/application";
-import { type AlertSink, type StudySpokenAnswerRecoveryBucket } from "@pirate/platform-cf";
+import type { AlertSink, StudySpokenAnswerRecoveryBucket } from "@pirate/platform-cf";
 import { Effect, Layer, Schedule } from "effect";
 import {
   JobContext,
@@ -8,8 +8,8 @@ import {
   type TableKey,
 } from "./registry.ts";
 import {
-  makeStudySourceRecoveryStages,
   type GuestStudyRecoveryComposition,
+  makeStudySourceRecoveryStages,
 } from "./study-source-recovery-composition.ts";
 import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
 
@@ -51,6 +51,29 @@ const READS = [
   "postgres:song_streak_day_activities",
   "postgres:community_streak_days",
   "postgres:persona_activity_presentations",
+  // Existing Account qualification triggers and adult-song authorization.
+  "postgres:song_reward_offers",
+  "postgres:song_reward_offer_legs",
+  "postgres:megapot_pool_drawings",
+  "postgres:policy_versions",
+  "postgres:megapot_pool_shares",
+  "postgres:reward_eligibility_decisions",
+  "postgres:song_reward_bundle_claims",
+  "postgres:song_reward_bundle_claim_legs",
+  "postgres:reward_ledger_credits",
+  "postgres:reward_subject_consumptions",
+  "postgres:subject_keys",
+  "postgres:active_subject_key_bindings",
+  "postgres:assertion_bindings",
+  "postgres:assertions",
+  "postgres:evidence_receipts",
+  "postgres:proof_sessions",
+  "postgres:assertion_revalidation_events",
+  "postgres:reward_uniqueness_authorities",
+  "postgres:reward_asset_whitelist",
+  "postgres:age_verification_ceremony_attempts",
+  "postgres:age_verification_requirement_states",
+  "postgres:account_age_verification_current",
 ] as const satisfies readonly TableKey[];
 const GUEST_READS = [
   "postgres:guest_study_spoken_captures",
@@ -77,6 +100,16 @@ export const STUDY_SPOKEN_ANSWER_RECOVERY_WRITES = [
   "postgres:song_streak_day_activities",
   "postgres:community_streak_days",
   "postgres:persona_activity_presentations",
+  // These existing Account fourth-card projections can execute in this job.
+  // Shared Megapot writer ownership must be resolved before joint admission.
+  "postgres:decision_records",
+  "postgres:reward_eligibility_decisions",
+  "postgres:megapot_pool_shares",
+  "postgres:reward_subject_consumptions",
+  "postgres:song_reward_bundle_claims",
+  "postgres:song_reward_bundle_claim_legs",
+  "postgres:song_reward_offer_legs",
+  "postgres:reward_ledger_credits",
 ] as const satisfies readonly TableKey[];
 const GUEST_WRITES = [
   "postgres:guest_participation_operations",
