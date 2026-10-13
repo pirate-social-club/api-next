@@ -96,7 +96,10 @@ describe("PostgreSQL test discovery", () => {
       postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 2),
     ).toBe(751);
     expect(
-      postgresTestFileWeight("packages/platform-cf/src/data-registration-repository.pg.test.ts", 40),
+      postgresTestFileWeight(
+        "packages/platform-cf/src/data-registration-repository.pg.test.ts",
+        40,
+      ),
     ).toBe(800);
     expect(
       postgresTestFileWeight("packages/platform-cf/src/community-route-migration.pg.test.ts", 2),

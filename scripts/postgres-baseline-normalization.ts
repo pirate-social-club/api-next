@@ -6,12 +6,16 @@ export function normalizePostgresBaselineDump(dump: string): string {
   let functionDeclaration: Readonly<{ name: string; arguments: string }> | undefined;
   let catalogFirstFunction: Readonly<{ name: string; arguments: string }> | undefined;
   const sqlLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-  const catalogFirstAlter = (declaration: Readonly<{ name: string; arguments: string }>): string => {
+  const catalogFirstAlter = (
+    declaration: Readonly<{ name: string; arguments: string }>,
+  ): string => {
     // pg_dump's declaration arguments are pg_get_function_arguments output,
     // including defaults. Select that exact overload in the unchanged target
     // namespace, then ALTER with its actual identity arguments (no defaults).
     const name = sqlLiteral(declaration.name);
-    const argumentsLiteral = sqlLiteral(declaration.arguments.replaceAll(/"public"\.|\bpublic\./gu, ""));
+    const argumentsLiteral = sqlLiteral(
+      declaration.arguments.replaceAll(/"public"\.|\bpublic\./gu, ""),
+    );
     let delimiter = "$baseline_function_path$";
     while (name.includes(delimiter) || argumentsLiteral.includes(delimiter))
       delimiter = delimiter.replace("$", "$_");
@@ -39,9 +43,10 @@ export function normalizePostgresBaselineDump(dump: string): string {
       const declaration = trimmed.match(
         /^CREATE (?:OR REPLACE )?FUNCTION (?:public\.|"public"\.)?([a-z_][a-z0-9_]*)\((.*)\) RETURNS /u,
       );
-      functionDeclaration = declaration?.[1] === undefined || declaration[2] === undefined
-        ? undefined
-        : { name: declaration[1], arguments: declaration[2] };
+      functionDeclaration =
+        declaration?.[1] === undefined || declaration[2] === undefined
+          ? undefined
+          : { name: declaration[1], arguments: declaration[2] };
     }
     // pg_dump emits function-local configuration before the dollar-quoted
     // body. Preserve configured search paths without baking the generator's
@@ -134,7 +139,8 @@ export function normalizePostgresBaselineDump(dump: string): string {
       dollarDelimiter = undefined;
     }
     if (delimiter !== undefined && dollarDelimiter === undefined) {
-      if (catalogFirstFunction !== undefined) normalized.push(catalogFirstAlter(catalogFirstFunction));
+      if (catalogFirstFunction !== undefined)
+        normalized.push(catalogFirstAlter(catalogFirstFunction));
       catalogFirstFunction = undefined;
       functionDeclaration = undefined;
     }
