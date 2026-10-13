@@ -142,6 +142,26 @@ export async function readinessFixture(
         ).toEqual(candidate.ledger.slice(0, 262));
         const scoped = new URL(pgUrl);
         scoped.searchParams.set("options", `-c search_path=${f.schema},pg_catalog`);
+        if (financial !== undefined) {
+          // The owned Account parent deliberately probes inherited blanket grants
+          // through262. Its tracked legacy LOGIN is not a financial principal.
+          // Remove only that owned role's defaults and explicit schema grants
+          // before native267 evaluates actual source privacy; keep PUBLIC and
+          // every other role untouched. Five finite serving profiles follow the
+          // full native proof below, rather than inheriting this legacy surface.
+          await f.admin.query(
+            `ALTER DEFAULT PRIVILEGES IN SCHEMA ${q(f.schema)} REVOKE ALL ON TABLES FROM ${q(f.role)}`,
+          );
+          await f.admin.query(
+            `ALTER DEFAULT PRIVILEGES IN SCHEMA ${q(f.schema)} REVOKE EXECUTE ON FUNCTIONS FROM ${q(f.role)}`,
+          );
+          await f.admin.query(
+            `REVOKE ALL ON ALL TABLES IN SCHEMA ${q(f.schema)} FROM ${q(f.role)}`,
+          );
+          await f.admin.query(
+            `REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(f.schema)} FROM ${q(f.role)}`,
+          );
+        }
         await runPostgresMigrations({
           connectionString: scoped.toString(),
           migrations: all,
