@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { ProviderUnavailable } from "./errors.ts";
-import { guestBrowserErrorsV1, guestInterfaceEndpoint } from "./guest-browser-authority.ts";
+import { guestBrowserErrorsV1, guestFinancialEndpoint } from "./guest-browser-authority.ts";
 import {
   GuestAtomicAmountV1,
   GuestDrawingIdV1,
@@ -111,7 +111,7 @@ export const OwnerRewardCreditV1 = RewardCreditV1.mapFields(
 );
 export type OwnerRewardCreditV1 = Schema.Schema.Type<typeof OwnerRewardCreditV1>;
 const path = Schema.Struct({ creditId: GuestIdentifierV1 });
-export const SelectOwnerRewardCreditRecipientV1 = guestInterfaceEndpoint({
+export const SelectOwnerRewardCreditRecipientV1 = guestFinancialEndpoint({
   method: "POST",
   path: "/rewards/credits/:creditId/recipient-selections/v1",
   auth: Auth.user({ browserSessionOnly: true }),
@@ -124,7 +124,7 @@ export const SelectOwnerRewardCreditRecipientV1 = guestInterfaceEndpoint({
   response: Schema.Struct({ selection: Selection, credit: OwnerRewardCreditV1 }),
   errors: guestBrowserErrorsV1,
 });
-export const ClaimOwnerRewardCreditV1 = guestInterfaceEndpoint({
+export const ClaimOwnerRewardCreditV1 = guestFinancialEndpoint({
   method: "POST",
   path: "/rewards/credits/:creditId/owner-claims/v1",
   auth: Auth.user({ browserSessionOnly: true }),

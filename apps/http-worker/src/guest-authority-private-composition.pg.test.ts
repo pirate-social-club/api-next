@@ -307,7 +307,7 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
       expect(guestParticipationRegistry[name].cacheControl).toBe("private, no-store");
     }
     for (const name of guestAccountingNames)
-      expect(guestParticipationRegistry[name].implementation).toBe("disabled");
+      expect(guestParticipationRegistry[name].implementation).toBeUndefined();
     process.stdout.write(
       `${JSON.stringify({
         fixture: "guest-http-private-genuine255",

@@ -134,7 +134,7 @@ const credit = () => ({
   recipient: { kind: "guest_owner", selection: null, binding: null },
 });
 
-describe("Guest learning contracts with accounting held", () => {
+describe("Guest learning and source-admitted financial contracts", () => {
   test("the single correlated vocabulary rejects impossible policies", () => {
     for (const [authority, operations] of Object.entries(browserParticipationOperations)) {
       for (const operation of operations)
@@ -539,7 +539,7 @@ describe("Guest learning contracts with accounting held", () => {
     expect(openApi.paths["/guest/authority"]?.get?.["x-implementation"]).toBeUndefined();
     expect(
       openApi.paths["/guest/attachment-intents/{id}/prepare"]?.post?.["x-implementation"],
-    ).toBe("disabled");
+    ).toBeUndefined();
     expect(() =>
       decode(GuestAuthorityV1, {
         object: "guest_authority",

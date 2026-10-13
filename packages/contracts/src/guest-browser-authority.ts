@@ -43,13 +43,24 @@ export function guestInterfaceEndpoint<const E extends EndpointDefinition>(defin
 }
 /** Source-admitted learning declaration. Managed serving and native readiness
  * remain mandatory at transport; metadata alone creates no runtime authority.
- * Accounting keeps guestInterfaceEndpoint's disabled default.
+ * Other checkpoints retain guestInterfaceEndpoint's historical disabled default.
  */
 export function guestLearningEndpoint<const E extends EndpointDefinition>(
   definition: E,
 ): E & Readonly<{ implementation?: "disabled"; cacheControl: "private, no-store" }> {
   if (definition.implementation !== undefined)
     throw new Error("Learning declarations must not override implementation metadata");
+  return endpoint({ ...definition, cacheControl: "private, no-store" } as const);
+}
+/** Source-admitted financial declaration. The complete verified financial graph,
+ * nonproduction flags and native readiness remain mandatory at transport. This
+ * helper never creates a runtime, permission, role grant or configuration value.
+ */
+export function guestFinancialEndpoint<const E extends EndpointDefinition>(
+  definition: E,
+): E & Readonly<{ implementation?: "disabled"; cacheControl: "private, no-store" }> {
+  if (definition.implementation !== undefined)
+    throw new Error("Financial declarations must not override implementation metadata");
   return endpoint({ ...definition, cacheControl: "private, no-store" } as const);
 }
 const command = { idempotency_key: GuestIdentifierV1 };
@@ -251,7 +262,7 @@ export const CreateGuestAttachmentIntentV1 = guestLearningEndpoint({
   response: GuestAttachmentIntentV1,
   errors: guestBrowserErrorsV1,
 });
-export const PrepareGuestAttachmentTargetV1 = guestInterfaceEndpoint({
+export const PrepareGuestAttachmentTargetV1 = guestFinancialEndpoint({
   method: "POST",
   path: "/guest/attachment-intents/:id/prepare",
   auth: Auth.browserParticipation({ authority: "attachment", operation: "prepare_target" }),
@@ -259,7 +270,7 @@ export const PrepareGuestAttachmentTargetV1 = guestInterfaceEndpoint({
   response: GuestAttachmentPreparedV1,
   errors: guestBrowserErrorsV1,
 });
-export const ConfirmGuestAttachmentTargetV1 = guestInterfaceEndpoint({
+export const ConfirmGuestAttachmentTargetV1 = guestFinancialEndpoint({
   method: "POST",
   path: "/guest/attachment-intents/:id/confirm",
   auth: Auth.browserParticipation({ authority: "attachment", operation: "confirm_target" }),
@@ -275,7 +286,7 @@ export const ConfirmGuestAttachmentTargetV1 = guestInterfaceEndpoint({
   response: GuestAttachmentBindingV1,
   errors: guestBrowserErrorsV1,
 });
-export const GetMySuccessfulGuestAttachmentV1 = guestInterfaceEndpoint({
+export const GetMySuccessfulGuestAttachmentV1 = guestFinancialEndpoint({
   method: "GET",
   path: "/users/me/guest-attachments/:id",
   auth: Auth.successfulGuestAttachment(),
