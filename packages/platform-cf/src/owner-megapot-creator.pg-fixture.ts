@@ -515,7 +515,7 @@ export async function prepareCreatorSource(f: CreatorFixture, suffix: string) {
   );
   await f.admin.query(
     `INSERT INTO reward_asset_whitelist(chain_id,token_address,decimals,symbol,asset_kind,environment,status,policy_version,activated_at,plain_erc20_verified_at)
- VALUES(84532,$1,6,'USDC','settlement_usdc','staging','active','base-sepolia-usdc-v1',clock_timestamp(),clock_timestamp())`,
+ VALUES(84532,$1,6,'USDC','settlement_usdc','staging','active','base-sepolia-usdc-v1',statement_timestamp(),statement_timestamp())`,
     [address("1")],
   );
   await f.admin.query(
