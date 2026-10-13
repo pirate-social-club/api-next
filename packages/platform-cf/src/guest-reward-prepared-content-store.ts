@@ -88,7 +88,7 @@ export const makeControlPlanePreparedGuestRewardContentRepository = (
       catch: () => reject("resource-policy-unavailable"),
     });
     const safetyMargin=yield* Effect.try({try:()=>decode(Schema.Int.check(Schema.isBetween({minimum:1,maximum:86400})),rawPurchaseSafetyMarginSeconds),
-     catch:()=>reject("resource-policy-unavailable")}).pipe(Effect.catchAll(()=>Effect.succeed(null)));
+     catch:()=>reject("resource-policy-unavailable")}).pipe(Effect.catch(()=>Effect.succeed(null)));
     const { input } = configured;
     const db = yield* ControlPlaneDb;
     const result = yield* db.execute({
@@ -143,5 +143,5 @@ export const makeControlPlanePreparedGuestRewardContentStore = (
   rawPurchaseSafetyMarginSeconds:unknown,
 ) => {
   const repository = makeControlPlanePreparedGuestRewardContentRepository(disclosure, rawPurchaseSafetyMarginSeconds);
-  return { get: (input) => repository.get(input).pipe(Effect.provide(runtime)) };
+  return { get: (input: Input) => repository.get(input).pipe(Effect.provide(runtime)) };
 };

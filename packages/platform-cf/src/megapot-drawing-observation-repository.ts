@@ -309,7 +309,7 @@ export const makeControlPlaneOwnerMegapotDrawingObservationStore=(layer:Layer.La
   loadCandidate:ordinary.loadCandidate,
   recordAndOpen:Effect.fn("OwnerDrawingObservationStore.recordAndOpen")(function*(input:Parameters<MegapotDrawingObservationStore["recordAndOpen"]>[0]){
    const accepted=yield* ordinary.recordAndOpen(input);
-   const ownerOpened=yield* mapped(openOwnerDrawingsForObservation(accepted.observationId).pipe(Effect.provide(layer)));
+   const ownerOpened=yield* mapped<string[], never, never>(openOwnerDrawingsForObservation(accepted.observationId).pipe(Effect.provide(layer)));
    return {...accepted,openedPoolLegIds:[...new Set([...accepted.openedPoolLegIds,...ownerOpened])].sort()};
   }),
  };
