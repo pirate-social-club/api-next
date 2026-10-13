@@ -144,6 +144,13 @@ suite("restricted Telegram practice identity", () => {
       expect(await count("account_minimum_age_attestations")).toBe(0);
 
       const birthFunction = "provision_account_participation_owner_v1(text)";
+      // Portable schema exports deliberately omit ACLs, recreating PostgreSQL's
+      // default PUBLIC EXECUTE. Establish this owned fixture's exact denied
+      // capability before its real rollback/serving-only admission assertions.
+      // Native249 separately proves private installation; no live policy changes.
+      await admin.query(
+        `REVOKE EXECUTE ON FUNCTION ${birthFunction} FROM PUBLIC, ${servingRole}, ${websiteRole}`,
+      );
       for (const role of [servingRole, websiteRole])
         expect(
           (
@@ -154,7 +161,7 @@ suite("restricted Telegram practice identity", () => {
           ).rows,
         ).toEqual([{ allowed: false }]);
       const originalOwnerCount = await count("participation_owners");
-      // The native helper remains private before controlled birth admission.
+      // The owned fixture denies the helper before controlled birth admission.
       // A denied owner provision must roll back user/first persona/learner birth.
       await expect(first.learners.enroll(first.lease)).rejects.toMatchObject({
         _tag: "TelegramFailure",
