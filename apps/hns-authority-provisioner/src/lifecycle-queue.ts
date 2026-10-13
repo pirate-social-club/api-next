@@ -573,18 +573,31 @@ export function makePostgresHnsLifecycleReadinessPorts(
 }
 
 /**
- * The earliest persisted lifecycle due time, or null when no job is waiting.
- * Reclaimable expired leases count as due now, so a crashed executor's work is
- * picked up on the next sweep rather than at its original due time.
+ * The earliest time current lifecycle work can be claimed, or null when none
+ * is waiting. Queued work waits for its due time and any live observation
+ * lease; leased work waits for lease expiry rather than its original due time.
  */
 export async function nextHnsLifecycleJobDueEpochMs(
   connectionString: string,
 ): Promise<number | null> {
   return withClient(connectionString, async (client) => {
     const result = await client.query<{ readonly due_at: Date | null }>(
-      `SELECT MIN(due_at) AS due_at FROM hns_root_import_lifecycle_jobs
-        WHERE state = 'queued'
-           OR (state = 'leased' AND lease_expires_at <= clock_timestamp())`,
+      // Schedule only current, non-synthetic work. A live lease delays its
+      // next claim even when due_at is in the past; using due_at alone makes
+      // an idle executor spin on work the claim function cannot take.
+      `SELECT MIN(GREATEST(
+          CASE WHEN job.state = 'queued' THEN job.due_at ELSE job.lease_expires_at END,
+          (SELECT MAX(legacy.lease_expires_at)
+             FROM hns_root_import_observation_jobs AS legacy
+            WHERE legacy.root_import_session_id = job.root_import_session_id
+              AND legacy.state = 'leased')
+        )) AS due_at
+         FROM hns_root_import_lifecycle_jobs AS job
+         JOIN hns_root_import_lifecycle AS lifecycle
+           ON lifecycle.root_import_session_id = job.root_import_session_id
+        WHERE job.state IN ('queued', 'leased')
+          AND job.generation = lifecycle.generation
+          AND NOT lifecycle.synthetic`,
     );
     const dueAt = result.rows[0]?.due_at;
     return dueAt === null || dueAt === undefined ? null : dueAt.getTime();
