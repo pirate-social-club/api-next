@@ -125,21 +125,27 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
     const page = yield* db
       .withTransaction((tx) =>
         Effect.gen(function* () {
-          // This table already owns runtime scan progress. Create only this
-          // scanner's key, preserving existing progress on subsequent ticks.
-          // Concurrent first runs serialize on the unique key before locking.
-          yield* tx.execute({
-            label: "song-pipeline.terminal.alignment-recovery-cursor.initialize",
-            text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier) VALUES ('media-alignment-alerts','epoch',$1) ON CONFLICT (cursor_key) DO NOTHING",
-            values: [JSON.stringify({ operation_id: "", workflow_instance_id: "" })],
-            readonly: false,
-          });
-          const saved = yield* tx.execute<Readonly<Record<string, unknown>>>({
-            label: "song-pipeline.terminal.alignment-recovery-cursor",
-            text: "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE",
-            values: [],
-            readonly: false,
-          });
+          const readCursor = () =>
+            tx.execute<Readonly<Record<string, unknown>>>({
+              label: "song-pipeline.terminal.alignment-recovery-cursor",
+              text: "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE",
+              values: [],
+              readonly: false,
+            });
+          let saved = yield* readCursor();
+          if (saved.rows.length === 0) {
+            // INSERT is needed only for first-run initialization. An operator
+            // can pre-seed the key for a role with SELECT/UPDATE permissions.
+            // Concurrent first runs serialize on the unique key, then re-read
+            // the winning cursor under lock without resetting its progress.
+            yield* tx.execute({
+              label: "song-pipeline.terminal.alignment-recovery-cursor.initialize",
+              text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier) VALUES ('media-alignment-alerts','epoch',$1) ON CONFLICT (cursor_key) DO NOTHING",
+              values: [JSON.stringify({ operation_id: "", workflow_instance_id: "" })],
+              readonly: false,
+            });
+            saved = yield* readCursor();
+          }
           const decoded = Schema.decodeUnknownOption(StoredLookupCursor)(saved.rows[0]);
           if (Option.isNone(decoded))
             return yield* Effect.die("alignment alert cursor unavailable");

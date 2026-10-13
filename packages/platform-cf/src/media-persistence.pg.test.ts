@@ -8156,6 +8156,23 @@ suite("bounded alignment recovery persistence", () => {
             },
           );
         expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        // After initialization, a pre-seeded cursor requires only SELECT and
+        // UPDATE. PostgreSQL still checks INSERT for ON CONFLICT DO NOTHING,
+        // so revoking it catches any unconditional initialization attempt.
+        await admin.query(`REVOKE INSERT ON recovery_inspection_cursors FROM "${alertRole}"`);
+        expect(
+          await Effect.runPromise(
+            Effect.gen(function* () {
+              const db = yield* ControlPlaneDb;
+              return (yield* db.execute({
+                label: "alignment-alert.fixture.runtime-privileges",
+                text: "SELECT current_user AS role,has_table_privilege(current_user, 'recovery_inspection_cursors', 'INSERT') AS can_insert",
+                values: [],
+                readonly: true,
+              })).rows;
+            }).pipe(Effect.provide(alertControlPlane)),
+          ),
+        ).toEqual([{ role: alertRole, can_insert: false }]);
         expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
         expect(logs.map((entry) => entry.event)).toEqual([
           "pipeline.alert",

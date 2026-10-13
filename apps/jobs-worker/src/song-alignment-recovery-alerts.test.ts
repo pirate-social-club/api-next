@@ -29,7 +29,10 @@ function cursorRuntime(
       });
     }
     if (statement.label.endsWith("-cursor"))
-      return Effect.succeed({ rows: [{ last_identifier: stored }], rowCount: 1 });
+      return Effect.succeed({
+        rows: stored === undefined ? [] : [{ last_identifier: stored }],
+        rowCount: stored === undefined ? 0 : 1,
+      });
     if (statement.label.endsWith("cursor.advance")) {
       if (options.fail === "advance") return Effect.die("private storage failure");
       return Effect.sync(() => {
@@ -254,6 +257,37 @@ describe("alignment recovery terminal alerts", () => {
     expect(JSON.stringify(errors)).not.toContain("private");
   });
 
+  test("uses an existing cursor without attempting INSERT or resetting progress", async () => {
+    const controlPlane = cursorRuntime(
+      [
+        { operation_id: "operation-a", workflow_revision: "1", workflow_instance_id: "workflow-a" },
+        { operation_id: "operation-b", workflow_revision: "1", workflow_instance_id: "workflow-b" },
+      ],
+      {
+        stored: JSON.stringify({ operation_id: "operation-a", workflow_instance_id: "workflow-a" }),
+        fail: "initialize",
+      },
+    );
+    const inspected: string[] = [];
+    const workflow: CloudflareMediaWorkflowBinding = {
+      get: async (instanceId) => {
+        inspected.push(instanceId);
+        return { status: async () => ({ status: "running" }), sendEvent: async () => undefined };
+      },
+      createBatch: async () => [],
+    };
+    expect(
+      await Effect.runPromise(
+        alertTick(
+          makeLocalAlertSink(),
+          collectSongAlignmentRecoveryAlerts(workflow).pipe(Effect.provide(controlPlane.layer)),
+        ),
+      ),
+    ).toBe(0);
+    expect(inspected).toEqual(["workflow-b"]);
+    expect(controlPlane.advances()).toBe(1);
+  });
+
   for (const failure of ["initialize", "stored", "candidate", "lookups", "advance"] as const)
     test(`logs an error and performs no Workflow I/O when the scan fails at ${failure}`, async () => {
       const candidate = {
@@ -262,6 +296,7 @@ describe("alignment recovery terminal alerts", () => {
         workflow_instance_id: failure === "candidate" ? null : "media-scan-operation-r1",
       };
       const controlPlane = cursorRuntime([candidate], {
+        ...(failure === "initialize" ? { missing: true } : {}),
         ...(failure === "stored" ? { stored: "private malformed cursor" } : {}),
         ...(failure === "initialize" || failure === "lookups" || failure === "advance"
           ? { fail: failure }
