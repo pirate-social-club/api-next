@@ -1,10 +1,10 @@
+import type { Effect } from "effect";
 import type {
   GuestCredentialVerifier,
   GuestParticipationStoreFailure,
   ProvedGuestCredential,
   ProvedGuestIntent,
-} from "@pirate/application/guest-participation-authority";
-import type { Effect } from "effect";
+} from "./guest-participation-authority.ts";
 
 export type GuestProofInput = Parameters<GuestCredentialVerifier["verify"]>[0];
 export type CredentialProvenance = Readonly<{

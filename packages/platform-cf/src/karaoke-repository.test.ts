@@ -73,7 +73,12 @@ const fakeLayer = (
 const sourceResponse = (label: string): Result => {
   if (label === "karaoke.session.source") return sourceResult;
   if (label === "karaoke.session.catalog") return catalogResult;
-  if (label === "learner-audio.account-lock") return { rows: [], rowCount: 1 };
+  if (
+    label === "learner-audio.account-lock" ||
+    label === "karaoke.audio.source-lock" ||
+    label === "karaoke.audio.capture"
+  )
+    return { rows: [], rowCount: 1 };
   if (label === "karaoke.session.identity") {
     return {
       rows: [
@@ -198,6 +203,7 @@ describe("Karaoke session timezone authority", () => {
     expect(authority.timezone).toBe("America/New_York");
     expect(authority.playbackKind).toBe("full_mix");
     expect(statements.map(({ label }) => label)).not.toContain("karaoke.session.clock");
+    expect(statements.map(({ label }) => label)).not.toContain("karaoke.audio.capture");
 
     const changedRequest = await Effect.runPromise(
       Effect.flip(
