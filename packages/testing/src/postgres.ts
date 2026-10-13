@@ -63,9 +63,149 @@ $baseline_search_path$;`);
   }
 }
 
-/** Restores baseline data and sequence state without rebuilding schema objects. */
+const financialResetRelations = [
+  "guest_owner_associations",
+  "participation_eligibility_decisions",
+  "megapot_owner_shares",
+  "megapot_owner_snapshot_leaves",
+  "megapot_owner_allocations",
+  "reward_credit_persona_bindings",
+  "reward_credit_recipient_selections",
+] as const;
+
+const financialResetRelationSql = financialResetRelations
+  .map((relation) => `'${relation}'`)
+  .join(",");
+
+const beforeFinancialResetSql = (resetTargets: readonly string[]) => `DO $owned_empty_financial_reset$
+DECLARE
+  schema_name TEXT := pg_catalog.current_schema();
+  namespace_id OID;
+  owner_id OID;
+  relation_name TEXT;
+  relation_id OID;
+  outstanding_credit BOOLEAN;
+  locked_oids OID[] := ARRAY[]::OID[];
+  census_round INTEGER := 0;
+  changed BOOLEAN;
+  relation_row RECORD;
+BEGIN
+  -- Reset is a test-only owner operation. No runtime principal or production
+  -- namespace receives the temporary guard exception.
+  IF schema_name IS NULL OR schema_name !~
+    '^(api_next_reuse_[a-z0-9_]{1,24}_[0-9a-f]{12}_[0-9]+|api_next_hns_observer_[0-9a-f]{32})$'
+  THEN RAISE EXCEPTION 'owned disposable PostgreSQL test schema required' USING ERRCODE='GP003'; END IF;
+  SELECT n.oid,c.relowner INTO STRICT namespace_id,owner_id
+    FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid
+    WHERE n.nspname=schema_name AND c.relname='participation_owners' AND c.relkind='r'
+      AND n.nspowner=c.relowner AND c.relowner=pg_catalog.to_regrole(current_user);
+
+  -- Same topology order as source migration/guest authority: first topology,
+  -- then the complete reset table set. Owner DDL does not obey this advisory
+  -- lock, so every current table is locked before checking outward CASCADE.
+  PERFORM pg_catalog.pg_advisory_xact_lock(83000003,1);
+  LOOP
+    census_round:=census_round+1;
+    changed:=FALSE;
+    FOR relation_row IN SELECT c.oid,c.relname,c.relowner FROM pg_catalog.pg_class c
+      WHERE c.relnamespace=namespace_id AND c.relkind IN('r','p')
+        AND NOT(c.oid=ANY(locked_oids)) ORDER BY c.relname COLLATE "C"
+    LOOP
+      IF relation_row.relowner<>owner_id THEN
+        RAISE EXCEPTION 'reset target must retain its owned fixture authority' USING ERRCODE='GP003'; END IF;
+      -- ONLY avoids taking an outward inheritance lock before its rejection.
+      EXECUTE pg_catalog.format('LOCK TABLE ONLY %I.%I IN ACCESS EXCLUSIVE MODE',schema_name,relation_row.relname);
+      IF pg_catalog.to_regclass(pg_catalog.format('%I.%I',schema_name,relation_row.relname))
+        IS DISTINCT FROM relation_row.oid
+      THEN RAISE EXCEPTION 'reset relation identity changed while locking' USING ERRCODE='GP003'; END IF;
+      locked_oids:=pg_catalog.array_append(locked_oids,relation_row.oid);
+      changed:=TRUE;
+    END LOOP;
+    -- A FK child committed during an earlier parent-lock wait is included on
+    -- the next census. Every held parent blocks later FK/INHERIT attachment.
+    EXIT WHEN NOT changed;
+    IF census_round>=8 THEN
+      RAISE EXCEPTION 'reset table custody did not stabilize' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  FOREACH relation_name IN ARRAY ARRAY[${resetTargets.map((relation) => `'${relation}'`).join(",")}] LOOP
+    relation_id:=pg_catalog.to_regclass(pg_catalog.format('%I.%I',schema_name,relation_name));
+    IF relation_id IS NULL OR NOT(relation_id=ANY(locked_oids)) OR NOT EXISTS(
+      SELECT 1 FROM pg_catalog.pg_class WHERE oid=relation_id AND relnamespace=namespace_id
+        AND relowner=owner_id AND relkind='r')
+    THEN RAISE EXCEPTION 'complete tracked reset relation inventory required' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  IF EXISTS(SELECT 1 FROM pg_catalog.pg_constraint fk
+    JOIN pg_catalog.pg_class parent ON parent.oid=fk.confrelid
+    JOIN pg_catalog.pg_class child ON child.oid=fk.conrelid
+    WHERE fk.contype='f' AND parent.relnamespace=namespace_id
+      AND child.relnamespace<>namespace_id)
+    OR EXISTS(SELECT 1 FROM pg_catalog.pg_inherits inheritance
+      JOIN pg_catalog.pg_class parent ON parent.oid=inheritance.inhparent
+      JOIN pg_catalog.pg_class child ON child.oid=inheritance.inhrelid
+      WHERE parent.relnamespace=namespace_id AND child.relnamespace<>namespace_id)
+  THEN RAISE EXCEPTION 'test reset cannot cascade outside its owned schema' USING ERRCODE='GP003'; END IF;
+
+  EXECUTE pg_catalog.format('SELECT %I.require_guest_practice_only_schema_phase_v1()',schema_name);
+  EXECUTE pg_catalog.format('SELECT %I.require_disabled_owner_financial_inventory_private_v1()',schema_name);
+  EXECUTE pg_catalog.format(
+    'SELECT EXISTS(SELECT 1 FROM %I.reward_ledger_credits WHERE state<>''sent'' AND amount_atomic>paid_atomic)',
+    schema_name
+  ) INTO STRICT outstanding_credit;
+  IF outstanding_credit THEN
+    RAISE EXCEPTION 'test reset must preserve positive outstanding credits' USING ERRCODE='GP003';
+  END IF;
+
+  -- Attestation above checks native empty rows, exact statement guards, private
+  -- function frames, RLS, and ACLs. Suspend only these seven named guards.
+  FOREACH relation_name IN ARRAY ARRAY[${financialResetRelationSql}] LOOP
+    EXECUTE pg_catalog.format('ALTER TABLE %I.%I DISABLE TRIGGER disabled_owner_financial_dml',schema_name,relation_name);
+  END LOOP;
+END;
+$owned_empty_financial_reset$;`;
+
+const restoreFinancialResetGuardsSql = `DO $restore_empty_financial_reset_guards$
+DECLARE schema_name TEXT := pg_catalog.current_schema(); relation_name TEXT;
+BEGIN
+  FOREACH relation_name IN ARRAY ARRAY[${financialResetRelationSql}] LOOP
+    EXECUTE pg_catalog.format('ALTER TABLE %I.%I ENABLE TRIGGER disabled_owner_financial_dml',schema_name,relation_name);
+  END LOOP;
+END;
+$restore_empty_financial_reset_guards$;`;
+
+const verifyFinancialResetSql = `DO $verify_empty_financial_reset$
+DECLARE schema_name TEXT := pg_catalog.current_schema();
+BEGIN
+  EXECUTE pg_catalog.format('SELECT %I.require_guest_practice_only_schema_phase_v1()',schema_name);
+  EXECUTE pg_catalog.format('SELECT %I.require_disabled_owner_financial_inventory_private_v1()',schema_name);
+END;
+$verify_empty_financial_reset$;`;
+
+/** Builds a transaction-only reset for an owned, positively empty financial fixture. */
+export function preparePostgresTestBaselineReset(sql: string): string {
+  const truncateEnd = "RESTART IDENTITY CASCADE;";
+  const first = sql.indexOf(truncateEnd);
+  if (first < 0 || sql.indexOf(truncateEnd, first + truncateEnd.length) >= 0) {
+    throw new Error("PostgreSQL test reset requires exactly one tracked TRUNCATE boundary");
+  }
+  const targets = sql.match(/^TRUNCATE TABLE\s+([\s\S]*?)RESTART IDENTITY CASCADE;/mu)?.[1];
+  if (targets === undefined) throw new Error("Tracked PostgreSQL reset target list is unavailable");
+  const resetTargets = targets.split(",").map((target) => {
+    const name = target.trim().replace(/^"([a-z_][a-z0-9_]*)"$/u, "$1");
+    if (!/^[a-z_][a-z0-9_]*$/u.test(name)) {
+      throw new Error("Tracked PostgreSQL reset target is not a closed table identifier");
+    }
+    return name;
+  });
+  if (new Set(resetTargets).size !== resetTargets.length) {
+    throw new Error("Tracked PostgreSQL reset target list repeats a relation");
+  }
+  const split = first + truncateEnd.length;
+  return `${beforeFinancialResetSql(resetTargets)}\n${sql.slice(0, split)}\n${restoreFinancialResetGuardsSql}\n${sql.slice(split)}\n${verifyFinancialResetSql}`;
+}
+
+/** Restores only a disposable, empty-financial baseline in one owner transaction. */
 export async function resetPostgresTestBaseline(client: PostgresTestQueryClient): Promise<void> {
-  await applyAtomically(client, loadResetSql());
+  await applyAtomically(client, loadResetSql().then(preparePostgresTestBaselineReset));
 }
 
 const catalogFingerprintSql = `

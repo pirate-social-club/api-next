@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyPostgresTestBaseline,
   postgresTestSchemaCatalogFingerprint,
+  preparePostgresTestBaselineReset,
   resetPostgresTestBaseline,
 } from "./postgres.ts";
 
@@ -63,6 +64,52 @@ describe("PostgreSQL test baseline", () => {
     expect(queries[1]).toContain("TRUNCATE TABLE");
     expect(queries[1]).toContain("RESTART IDENTITY CASCADE");
     expect(queries.at(-1)).toBe("COMMIT");
+  });
+
+
+  test("restores native financial guards before unchanged seeds and verifies after them", () => {
+    const original = "-- GENERATED FILE. DO NOT EDIT.\nTRUNCATE TABLE fixture RESTART IDENTITY CASCADE;\nINSERT INTO fixture VALUES ('seed');";
+    const wrapped = preparePostgresTestBaselineReset(original);
+    const truncate = wrapped.indexOf("TRUNCATE TABLE fixture");
+    const restore = wrapped.indexOf("DO $restore_empty_financial_reset_guards$");
+    const seeds = wrapped.indexOf("INSERT INTO fixture VALUES ('seed')");
+    const verify = wrapped.indexOf("DO $verify_empty_financial_reset$");
+    expect(truncate).toBeGreaterThan(wrapped.indexOf("DISABLE TRIGGER disabled_owner_financial_dml"));
+    expect(restore).toBeGreaterThan(truncate);
+    expect(seeds).toBeGreaterThan(restore);
+    expect(verify).toBeGreaterThan(seeds);
+    expect(wrapped).toContain("pg_advisory_xact_lock(83000003,1)");
+    expect(wrapped).toContain("positive outstanding credits");
+    expect(wrapped).toContain("LOCK TABLE ONLY %I.%I IN ACCESS EXCLUSIVE MODE");
+    expect(wrapped.indexOf("LOCK TABLE ONLY")).toBeLessThan(wrapped.indexOf("test reset cannot cascade outside"));
+    expect(wrapped).toContain("complete tracked reset relation inventory required");
+    expect(wrapped).toContain("reset table custody did not stabilize");
+    expect(wrapped).not.toContain("session_replication_role");
+    expect(wrapped).not.toContain("DISABLE TRIGGER ALL");
+    const restoredOriginal = wrapped
+      .slice(wrapped.indexOf("-- GENERATED FILE. DO NOT EDIT."), verify)
+      .replace(/\nDO \$restore_empty_financial_reset_guards\$[\s\S]*?\$restore_empty_financial_reset_guards\$;\n/u, "")
+      .trimEnd();
+    expect(restoredOriginal).toBe(original);
+  });
+
+  test("refuses a missing or repeated reset boundary", () => {
+    expect(() => preparePostgresTestBaselineReset("SELECT 1;")).toThrow("exactly one");
+    expect(() => preparePostgresTestBaselineReset("RESTART IDENTITY CASCADE; RESTART IDENTITY CASCADE;")).toThrow("exactly one");
+    expect(() => preparePostgresTestBaselineReset("TRUNCATE TABLE fixture, fixture RESTART IDENTITY CASCADE;")).toThrow("repeats a relation");
+    expect(() => preparePostgresTestBaselineReset("TRUNCATE TABLE foreign_schema.fixture RESTART IDENTITY CASCADE;")).toThrow("closed table identifier");
+  });
+
+  test("rolls back a reset refusal without masking it when rollback also fails", async () => {
+    const queries: string[] = [];
+    const refusal = new Error("native financial inventory refused");
+    await expect(resetPostgresTestBaseline({ query: async (text) => {
+      queries.push(text);
+      if (text.includes("DO $owned_empty_financial_reset$")) throw refusal;
+      if (text === "ROLLBACK") throw new Error("connection cleanup failed");
+    } })).rejects.toBe(refusal);
+    expect(queries.at(-1)).toBe("ROLLBACK");
+    expect(queries).not.toContain("COMMIT");
   });
 
   test("requires a catalog fingerprint result", async () => {
