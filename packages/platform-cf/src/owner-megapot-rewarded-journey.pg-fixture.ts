@@ -139,7 +139,11 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
         ),
       ),
     );
-    for (const m of full.slice(0, 264)) expect(m.checksum).toBe(old[m.version]);
+    for (const m of full.slice(0, 264)) {
+      const acceptedChecksum = old[m.version];
+      if (acceptedChecksum === undefined) throw new Error("Accepted migration checksum missing");
+      expect(m.checksum).toBe(acceptedChecksum);
+    }
     expect(full[264]?.checksum).toBe(
       "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77",
     );
