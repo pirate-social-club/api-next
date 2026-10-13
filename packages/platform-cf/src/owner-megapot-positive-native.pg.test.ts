@@ -7,6 +7,7 @@ import {
   makeSongRewardOfferService,
   prepareActivityPersona,
 } from "@pirate/application";
+import { resetPostgresTestBaseline, postgresTestSchemaCatalogFingerprint } from "@pirate/testing/postgres";
 import { Effect, Schema } from "effect";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -623,6 +624,15 @@ suite("actual rewarded Guest producer into private v3 settlement", () => {
             [pool.original.poolLegId,pool.original.drawingId],
           )
         ).rows;
+        const beforeReset = await postgresTestSchemaCatalogFingerprint(f.admin);
+        const originalFinancialRows = async () => (await f.admin.query(
+          "SELECT jsonb_build_object('credits',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY credit_id),'[]') FROM reward_ledger_credits c),'allocations',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY owner_id,ordinal),'[]') FROM megapot_owner_allocations a),'journals',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY admission_id),'[]') FROM owner_participation_admission_operations o)) AS facts",
+        )).rows;
+        const retainedFinancialRows = await originalFinancialRows();
+        await expect(resetPostgresTestBaseline(f.admin)).rejects.toMatchObject({ code: "GP003" });
+        expect(await postgresTestSchemaCatalogFingerprint(f.admin)).toBe(beforeReset);
+        expect(await originalFinancialRows()).toEqual(retainedFinancialRows);
+        await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
         expect(source).toEqual([
           {
             frozen_share_count: 2,
@@ -632,6 +642,6 @@ suite("actual rewarded Guest producer into private v3 settlement", () => {
         ]);
         expect(f.providerCalls() - beforeCalls).toBe(8);
         expect(f.putCalls()).toBe(8);
-      });
+      }, { ownedResetNamespace: true });
     }, 180000);
 });

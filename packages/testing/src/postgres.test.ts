@@ -100,6 +100,38 @@ describe("PostgreSQL test baseline", () => {
     expect(restoredOriginal).toBe(original);
   });
 
+  test("renders source-owned positive reset after locks and zero proof, preserving metadata", () => {
+    const sql = "TRUNCATE TABLE fixture RESTART IDENTITY CASCADE;";
+    const wrapped = preparePostgresTestBaselineReset(sql);
+    const zeroProof = wrapped.indexOf("test reset retains financial or original operation history");
+    const suspend = wrapped.indexOf("ALTER TABLE %I.%I DISABLE TRIGGER %I");
+    const truncate = wrapped.indexOf(sql);
+    const restore = wrapped.indexOf("ALTER TABLE %I.%I ENABLE TRIGGER %I");
+    expect(zeroProof).toBeGreaterThan(wrapped.indexOf("test reset cannot cascade outside"));
+    expect(suspend).toBeGreaterThan(zeroProof);
+    expect(truncate).toBeGreaterThan(suspend);
+    expect(restore).toBeGreaterThan(truncate);
+    expect(wrapped).toContain("source_guard_count<>19");
+    expect(wrapped).toContain("owner_participation_admission_operations");
+    expect(wrapped).toContain("learner_audio_account_provider_calls");
+    expect(wrapped).toContain("guest_resource_session_reservations");
+    expect(wrapped).toContain("platform_sponsorship_budgets");
+    expect(wrapped).toContain("platform_sponsorship_budget_entries");
+    expect(wrapped).toContain("sponsor_withdrawal_effects");
+    expect(wrapped).toContain("sponsor_daily_ticket_totals");
+    expect(wrapped).toContain("platform_referral_revenue_ledger");
+    expect(wrapped).toContain("custody_solvency_observations");
+    expect(wrapped).toContain("require_owner_accounting_ready_private_v1");
+    expect(wrapped).not.toContain("DISABLE TRIGGER ALL");
+    expect(wrapped).not.toContain("session_replication_role");
+    expect(() => preparePostgresTestBaselineReset(
+      "TRUNCATE TABLE owner_accounting_native_source_inventory_v1 RESTART IDENTITY CASCADE;",
+    )).toThrow("preserve immutable source metadata");
+    expect(() => preparePostgresTestBaselineReset(
+      "TRUNCATE TABLE fixture RESTART IDENTITY CASCADE; INSERT INTO owner_accounting_native_source_inventory_v1 VALUES(true,'source','{}');",
+    )).toThrow("preserve immutable source metadata");
+  });
+
   test("refuses a missing or repeated reset boundary", () => {
     expect(() => preparePostgresTestBaselineReset("SELECT 1;")).toThrow("exactly one");
     expect(() =>

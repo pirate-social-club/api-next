@@ -334,6 +334,10 @@ export function normalizePostgresBaselineResetDump(
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim();
+      if (sourceInventorySeedLine.test(line)) {
+        if (!trimmed.endsWith(";")) throw new Error("Complete source metadata seed statement required");
+        return false;
+      }
       return !(
         trimmed.startsWith("--") ||
         trimmed.startsWith("\\restrict ") ||
@@ -347,6 +351,7 @@ export function normalizePostgresBaselineResetDump(
     .replaceAll(/\n{3,}/g, "\n\n")
     .trim();
   const quotedTables = [...tableNames]
+    .filter((table) => table !== "owner_accounting_native_source_inventory_v1")
     .sort()
     .map((table) => `"${table.replaceAll('"', '""')}"`)
     .join(",\n  ");

@@ -310,6 +310,17 @@ INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
     expect(normalized).not.toContain("statement_timeout");
   });
 
+  test("retains immutable source metadata outside destructive reset and seed replay", () => {
+    const metadata = `INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{}');`;
+    const normalized = normalizePostgresBaselineResetDump(
+      `${metadata}\nINSERT INTO public.seed_table VALUES ('original');`,
+      ["seed_table", "owner_accounting_native_source_inventory_v1"],
+    );
+    expect(normalized).toContain('TRUNCATE TABLE\n  "seed_table"');
+    expect(normalized).not.toContain("owner_accounting_native_source_inventory_v1");
+    expect(normalized).toContain("INSERT INTO seed_table VALUES ('original');");
+  });
+
   test("fails closed when migration-owned seed tables drift from the manifest", () => {
     expect(() =>
       assertPostgresBaselineSeedInventory(["activity_registry", "unexpected_seed_table"]),

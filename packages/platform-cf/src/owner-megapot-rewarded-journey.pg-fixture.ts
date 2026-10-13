@@ -109,7 +109,7 @@ export type RewardedFixture = ArchiveFixture & {
   ) => Promise<{ access: GuestLearningAccess; session: GuestStudySessionV1 }>;
 };
 
-export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>) {
+export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>, options?: Readonly<{ ownedResetNamespace?: true }>) {
   await archiveFixture(async (f) => {
     // Preserve every financial source/owed ledger row until Root physically
     // tears down this owned app and PostgreSQL; no business DROP/delete.
@@ -486,5 +486,5 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
         [...(failed ? [primary] : []), ...cleanup],
         "Owned rewarded producer failed or cleanup incomplete",
       );
-  }, { initializeOwnerPolicy: true });
+  }, { initializeOwnerPolicy: true, ...options });
 }

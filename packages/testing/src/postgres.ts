@@ -93,6 +93,7 @@ DECLARE
   changed BOOLEAN;
   relation_row RECORD;
   video_custody BOOLEAN;
+  source_manifest JSONB; source_guard RECORD; source_guard_count INTEGER; retained_history BOOLEAN;
 BEGIN
   -- Reset is a test-only owner operation. No runtime principal or production
   -- namespace receives the temporary guard exception.
@@ -171,6 +172,49 @@ BEGIN
       WHERE parent.relnamespace=namespace_id AND child.relnamespace<>namespace_id)
   THEN RAISE EXCEPTION 'test reset cannot cascade outside its owned schema' USING ERRCODE='GP003'; END IF;
 
+  -- The positive source row is never a caller flag. Existing owner/census/locks
+  -- and outward-CASCADE checks above have already stabilized every parent.
+  IF pg_catalog.to_regclass(pg_catalog.format('%I.owner_accounting_native_source_inventory_v1',schema_name)) IS NOT NULL THEN
+    EXECUTE pg_catalog.format('SELECT %I.require_owner_accounting_ready_private_v1()',schema_name);
+    EXECUTE pg_catalog.format('SELECT manifest FROM %I.owner_accounting_native_source_inventory_v1 WHERE singleton',schema_name)
+      INTO STRICT source_manifest;
+    IF source_manifest->>'phase' IS DISTINCT FROM 'owner_accounting_native_source_v1' THEN
+      RAISE EXCEPTION 'complete positive test source required' USING ERRCODE='GP003'; END IF;
+    EXECUTE pg_catalog.format(
+      'SELECT EXISTS(SELECT 1 FROM %I.reward_ledger_credits WHERE state<>''sent'' AND amount_atomic>paid_atomic)',schema_name)
+      INTO STRICT outstanding_credit;
+    IF outstanding_credit THEN
+      RAISE EXCEPTION 'test reset must preserve positive outstanding credits' USING ERRCODE='GP003'; END IF;
+    -- Strictly stronger than a time/state guess: ANY original financial, captured,
+    -- pending or unknown row in this exact closed source footprint refuses reset.
+    FOREACH relation_name IN ARRAY ARRAY['account_owner_reward_operations','account_owner_reward_sources','activity_qualifications','community_purchase_funding_journal','community_purchase_funding_plans','community_purchase_funding_receipts','community_purchase_funding_reconciliation_attempts','community_purchase_funding_reconciliation_operator_actions','community_purchase_funding_requests','community_purchase_funding_transaction_claims','community_purchase_funding_transitions','custody_solvency_observations','guest_owner_association_conflicts','guest_owner_associations','guest_participation_operations','guest_resource_provider_calls','guest_resource_session_reservations','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_account_provider_calls','learner_audio_account_spoken_checkpoints','learner_audio_delete_batches','learner_audio_delete_commands','learner_audio_upload_attempts','learner_audio_upload_cleanup_commands','learner_audio_upload_terminal_facts','megapot_allocation_batches','megapot_allocations','megapot_claim_effects','megapot_claim_receipt_evidence','megapot_deployment_attestations','megapot_drawing_observations','megapot_drawing_sweeps','megapot_fallback_cutoff_activity_evidence','megapot_fallback_cutoff_evidence','megapot_owner_allocations','megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_participant_claim_guards','megapot_participant_claims','megapot_pool_beneficiary_snapshots','megapot_pool_commitment_effects','megapot_pool_drawing_transitions','megapot_pool_drawings','megapot_pool_shares','megapot_pool_snapshot_private_leaves','megapot_purchase_receipt_evidence','megapot_sweep_ticket_evidence','megapot_ticket_inventory','megapot_ticket_purchase_effects','megapot_ticket_review_evidence','megapot_usdc_approval_effects','megapot_usdc_approval_receipt_evidence','owner_captured_guest_choice_commands','owner_participation_admission_attempts','owner_participation_admission_operations','participation_eligibility_decisions','platform_referral_revenue_ledger','platform_sponsorship_budget_entries','platform_sponsorship_budgets','reward_activity_availability_observations','reward_asset_whitelist','reward_chain_effect_transitions','reward_chain_effects','reward_credit_persona_bindings','reward_credit_recipient_selections','reward_eligibility_decisions','reward_erc20_transfer_receipt_evidence','reward_gas_topup_daily_budgets','reward_gas_topup_wallets','reward_gas_topups','reward_ledger_credits','reward_native_transfer_receipt_evidence','reward_operations_run_lease_events','reward_payout_effects','reward_refund_effects','reward_signer_nonces','reward_subject_consumptions','reward_uniqueness_authorities','reward_winner_send_attempts','reward_winner_send_outcomes','reward_winner_send_transactions','reward_winner_sends','song_reward_bundle_claim_legs','song_reward_bundle_claims','song_reward_leg_funding_effects','song_reward_offer_actions','song_reward_offer_legs','song_reward_offers','sponsor_daily_ticket_totals','sponsor_withdrawal_effects','wallet_sponsored_sends'] LOOP
+      IF NOT EXISTS(SELECT 1 FROM pg_catalog.jsonb_array_elements_text(source_manifest->'sourceReferences') r(name)
+          WHERE r.name=relation_name) THEN
+        RAISE EXCEPTION 'reset zero source relation missing' USING ERRCODE='GP003'; END IF;
+      EXECUTE pg_catalog.format('SELECT EXISTS(SELECT 1 FROM %I.%I)',schema_name,relation_name)
+        INTO STRICT retained_history;
+      IF retained_history IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'test reset retains financial or original operation history' USING ERRCODE='GP003'; END IF;
+    END LOOP;
+    SELECT count(*) INTO STRICT source_guard_count FROM pg_catalog.jsonb_to_recordset(source_manifest->'triggers')
+      AS t(relation TEXT,name TEXT,type INTEGER,enabled TEXT)
+      WHERE (t.type & 32)<>0 AND t.relation<>'owner_accounting_native_source_inventory_v1';
+    IF source_guard_count<>19 THEN
+      RAISE EXCEPTION 'exact owned reset guard inventory required' USING ERRCODE='GP003'; END IF;
+    FOR source_guard IN SELECT * FROM pg_catalog.jsonb_to_recordset(source_manifest->'triggers')
+      AS t(relation TEXT,name TEXT,type INTEGER,enabled TEXT)
+      WHERE (t.type & 32)<>0 AND t.relation<>'owner_accounting_native_source_inventory_v1'
+      ORDER BY t.relation COLLATE "C",t.name COLLATE "C"
+    LOOP
+      IF source_guard.enabled IS DISTINCT FROM 'O' OR NOT EXISTS(
+          SELECT 1 FROM pg_catalog.pg_class c WHERE c.relnamespace=namespace_id AND c.relowner=owner_id
+            AND c.relname=source_guard.relation AND c.oid=ANY(locked_oids)) THEN
+        RAISE EXCEPTION 'owned source guard cannot be suspended' USING ERRCODE='GP003'; END IF;
+      EXECUTE pg_catalog.format('ALTER TABLE %I.%I DISABLE TRIGGER %I',schema_name,source_guard.relation,source_guard.name);
+    END LOOP;
+    RETURN;
+  END IF;
+
   EXECUTE pg_catalog.format('SELECT %I.require_guest_practice_only_schema_phase_v1()',schema_name);
   EXECUTE pg_catalog.format('SELECT %I.require_disabled_owner_financial_inventory_private_v1()',schema_name);
   EXECUTE pg_catalog.format(
@@ -191,7 +235,27 @@ $owned_empty_financial_reset$;`;
 
 const restoreFinancialResetGuardsSql = `DO $restore_empty_financial_reset_guards$
 DECLARE schema_name TEXT := pg_catalog.current_schema(); relation_name TEXT;
+ source_manifest JSONB; source_guard RECORD; source_guard_count INTEGER;
 BEGIN
+  IF pg_catalog.to_regclass(pg_catalog.format('%I.owner_accounting_native_source_inventory_v1',schema_name)) IS NOT NULL THEN
+    EXECUTE pg_catalog.format('SELECT manifest FROM %I.owner_accounting_native_source_inventory_v1 WHERE singleton',schema_name)
+      INTO STRICT source_manifest;
+    SELECT count(*) INTO STRICT source_guard_count FROM pg_catalog.jsonb_to_recordset(source_manifest->'triggers')
+      AS t(relation TEXT,name TEXT,type INTEGER,enabled TEXT)
+      WHERE (t.type & 32)<>0 AND t.relation<>'owner_accounting_native_source_inventory_v1';
+    IF source_guard_count<>19 THEN
+      RAISE EXCEPTION 'exact owned reset restoration inventory required' USING ERRCODE='GP003'; END IF;
+    FOR source_guard IN SELECT * FROM pg_catalog.jsonb_to_recordset(source_manifest->'triggers')
+      AS t(relation TEXT,name TEXT,type INTEGER,enabled TEXT)
+      WHERE (t.type & 32)<>0 AND t.relation<>'owner_accounting_native_source_inventory_v1'
+      ORDER BY t.relation COLLATE "C",t.name COLLATE "C"
+    LOOP
+      IF source_guard.enabled IS DISTINCT FROM 'O' THEN
+        RAISE EXCEPTION 'original guard enablement differs' USING ERRCODE='GP003'; END IF;
+      EXECUTE pg_catalog.format('ALTER TABLE %I.%I ENABLE TRIGGER %I',schema_name,source_guard.relation,source_guard.name);
+    END LOOP;
+    RETURN;
+  END IF;
   FOREACH relation_name IN ARRAY ARRAY[${financialResetRelationSql}] LOOP
     EXECUTE pg_catalog.format('ALTER TABLE %I.%I ENABLE TRIGGER disabled_owner_financial_dml',schema_name,relation_name);
   END LOOP;
@@ -201,6 +265,10 @@ $restore_empty_financial_reset_guards$;`;
 const verifyFinancialResetSql = `DO $verify_empty_financial_reset$
 DECLARE schema_name TEXT := pg_catalog.current_schema();
 BEGIN
+  IF pg_catalog.to_regclass(pg_catalog.format('%I.owner_accounting_native_source_inventory_v1',schema_name)) IS NOT NULL THEN
+    EXECUTE pg_catalog.format('SELECT %I.require_owner_accounting_ready_private_v1()',schema_name);
+    RETURN;
+  END IF;
   EXECUTE pg_catalog.format('SELECT %I.require_guest_practice_only_schema_phase_v1()',schema_name);
   EXECUTE pg_catalog.format('SELECT %I.require_disabled_owner_financial_inventory_private_v1()',schema_name);
 END;
@@ -233,6 +301,10 @@ export function preparePostgresTestBaselineReset(
     }
     return name;
   });
+  if (resetTargets.includes("owner_accounting_native_source_inventory_v1") ||
+    /\bINSERT\s+INTO\s+(?:(?:"[a-z_][a-z0-9_]*"|[a-z_][a-z0-9_]*)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1)\s/u.test(sql)) {
+    throw new Error("PostgreSQL test reset must preserve immutable source metadata");
+  }
   if (new Set(resetTargets).size !== resetTargets.length) {
     throw new Error("Tracked PostgreSQL reset target list repeats a relation");
   }
