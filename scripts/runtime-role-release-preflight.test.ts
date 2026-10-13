@@ -156,6 +156,33 @@ describe("destructive money-table inventory", () => {
       const laterSql = await Bun.file(
         new URL(`../db/postgres/migrations/${migration}`, import.meta.url),
       ).text();
+      if (migration === "0267_complete_owner_financial_source.sql") {
+        const bind = laterSql
+          .split("DO $bind_account_reward_producers$")[1]
+          ?.split("END $bind_account_reward_producers$;")[0];
+        if (bind === undefined)
+          throw new Error("Private Account reward source custody block is unavailable");
+        const privateArray =
+          bind.split("FOREACH relation_name IN ARRAY ARRAY[")[1]?.split("] LOOP")[0] ?? "";
+        expect(
+          [...privateArray.matchAll(/'([a-z][a-z0-9_]*)'/gu)].map((match) => match[1]),
+        ).toEqual([...tables]);
+        expect(tables).toHaveLength(2);
+        expect(bind).toContain("c.oid='participation_owners'::regclass");
+        expect(bind).toContain(
+          "relowner=expected_owner AND relnamespace=expected_namespace AND relkind='r'",
+        );
+        expect(bind).toContain("ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY");
+        expect(bind).toContain("REVOKE ALL ON TABLE %I.%I FROM PUBLIC");
+        expect(bind).toContain("a.grantee<>0 AND a.grantee<>c.relowner");
+        expect(bind).toContain("REVOKE ALL ON TABLE %I.%I FROM %I");
+        expect(bind).toContain("CROSS JOIN LATERAL aclexplode(att.attacl)");
+        expect(bind).toContain("a.grantee<>c.relowner");
+        expect(bind).toContain("REVOKE ALL(%I) ON %I.%I FROM PUBLIC");
+        expect(bind).toContain("REVOKE ALL(%I) ON %I.%I FROM %I");
+        expect(bind).not.toMatch(/\bGRANT\s+(?:ALL|SELECT|INSERT|UPDATE|DELETE|TRUNCATE)\b/u);
+        continue;
+      }
       if (migration === "0266_disabled_owner_financial_history.sql") {
         //264 owns a stronger closed private boundary than0242's read-only
         // lease tables. Validate its trusted-schema loop and native positive

@@ -14,6 +14,10 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_credit_persona_bindings",
     "reward_credit_recipient_selections",
   ],
+  "0267_complete_owner_financial_source.sql": [
+    "account_owner_reward_sources",
+    "account_owner_reward_operations",
+  ],
   "0242_reward_operations_run_lease.sql": [
     "reward_operations_run_lease",
     "reward_operations_run_lease_events",
@@ -21,6 +25,8 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
 };
 
 export const REWARDS_MONEY_TABLES = [
+  "account_owner_reward_operations",
+  "account_owner_reward_sources",
   "custody_solvency_observations",
   "guest_owner_associations",
   "megapot_allocation_batches",
