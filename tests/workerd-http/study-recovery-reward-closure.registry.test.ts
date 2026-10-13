@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { makeSerialStudyMegapotRecoveryJob } from "../../apps/jobs-worker/src/serial-study-megapot-recovery.ts";
 import { describe, expect, test } from "vitest";
 import {
   type MegapotRewardsJobOptions,
@@ -83,6 +84,25 @@ const conditionalReadClosure = [
 ] as const;
 
 describe("actual Study recovery qualification closure registry admission", () => {
+  test("the one actual serial source declaration owns the complete union and arbitrary duplicates still refuse", async () => {
+    const f = fixture();
+    const joint = makeSerialStudyMegapotRecoveryJob({}, f.study, f.megapot);
+    const registry = await Effect.runPromise(buildJobRegistry([joint]));
+    expect(registry.declarations).toEqual([joint]);
+    expect(joint.name).toBe(f.megapot.name);
+    expect(joint.lane).toBe(f.megapot.lane);
+    expect(joint.schedule).toBe(f.megapot.schedule);
+    expect(joint.timeout).toBe("50 seconds");
+    expect(joint.reads).toEqual([...new Set([...f.study.reads, ...f.megapot.reads])]);
+    expect(joint.writes).toEqual([...new Set([...f.study.writes, ...f.megapot.writes])]);
+    for (const key of ["postgres:megapot_owner_snapshot_leaves", "postgres:megapot_owner_allocations", "postgres:reward_credit_persona_bindings"])
+      expect(joint.writes).toContain(key);
+    const error = await Effect.runPromise(Effect.flip(buildJobRegistry([joint, f.study])));
+    expect(error).toBeInstanceOf(RegistryConfigurationError);
+    expect(error).toMatchObject({ reason: "duplicate-table-writer" });
+    expect(f.storageCalls()).toBe(0);
+  });
+
   test("each genuine job declaration admits alone without executing a job or storage", async () => {
     const f = fixture();
     for (const job of [f.study, f.megapot]) {

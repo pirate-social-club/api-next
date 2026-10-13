@@ -17,6 +17,7 @@ import {
 import { makeControlledAccountSpokenRecovery } from "../../../packages/platform-cf/src/controlled-account-spoken-recovery.ts";
 import { makeControlledAccountStudyV2Store } from "../../../packages/platform-cf/src/controlled-account-study-store.ts";
 import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
+import { runSerialStudyMegapotRecovery } from "./serial-study-megapot-recovery.ts";
 
 const pgTest = pgUrl === undefined ? test.skip : test;
 const Original = Schema.Struct({
@@ -139,9 +140,16 @@ pgTest(
       let guestStageCalls = 0,
         expiryStageCalls = 0,
         cleanupStageCalls = 0;
+      let financialStageCalls = 0;
+      const originalStartedAtMs = Date.now();
       const result = await run(
         Effect.result(
-          runStudySourceRecoveryCycle({
+          runSerialStudyMegapotRecovery({
+            outerStartedAtMs: originalStartedAtMs, now: Date.now,
+            // Only an execution observer follows the real Study native stage;
+            // this is not a successful financial SDK/receipt or money fixture.
+            financial: Effect.sync(() => { financialStageCalls++; }),
+            study: runStudySourceRecoveryCycle({
             account: account.recover(),
             guest: {
               // These are only downstream execution observers, never mocked DB
@@ -160,9 +168,11 @@ pgTest(
                 cleanupStageCalls++;
               }),
             },
+            }).pipe(Effect.asVoid),
           }),
         ),
       );
+      expect(financialStageCalls).toBe(0);
       expect(lost.observed()).toBe(true);
       expect(result._tag).toBe("Failure");
       if (result._tag === "Failure")

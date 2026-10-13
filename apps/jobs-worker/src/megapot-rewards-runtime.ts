@@ -10,6 +10,9 @@ import { makeControlPlaneMegapotApprovalStore } from "@pirate/platform-cf/megapo
 import { makeMegapotClaimCoordinator } from "@pirate/platform-cf/megapot-claim-coordinator";
 import { makeControlPlaneMegapotClaimStore } from "@pirate/platform-cf/megapot-claim-repository";
 import { makeMegapotCommitmentCoordinator } from "@pirate/platform-cf/megapot-commitment-coordinator";
+import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
+import { makeOwnerMegapotCommitmentCoordinator } from "@pirate/platform-cf/owner-megapot-commitment-coordinator";
+import { makeVersionedMegapotCommitmentCoordinator } from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { makeR2MegapotCommitmentPublisher } from "@pirate/platform-cf/megapot-commitment-r2";
 import { makeControlPlaneMegapotCommitmentStore } from "@pirate/platform-cf/megapot-commitment-repository";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
@@ -180,11 +183,16 @@ export function makeMegapotAttestationRuntime(input: {
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
-    const commitment = makeMegapotCommitmentCoordinator({
-      store: makeControlPlaneMegapotCommitmentStore(controlPlane),
-      signer: commitmentSigner,
-      authority,
-      publisher: commitmentPublisher,
+    const commitment = makeVersionedMegapotCommitmentCoordinator({
+      runtime: controlPlane,
+      account: makeMegapotCommitmentCoordinator({
+        store: makeControlPlaneMegapotCommitmentStore(controlPlane),
+        signer: commitmentSigner, authority, publisher: commitmentPublisher,
+      }),
+      owner: makeOwnerMegapotCommitmentCoordinator({
+        store: makeControlPlaneOwnerMegapotSettlementStore(controlPlane),
+        signer: commitmentSigner, authority, publisher: commitmentPublisher,
+      }),
     });
     return { approval, purchase, claim, payout, refund, commitment };
   };
@@ -229,7 +237,7 @@ export function makeMegapotAttestationRuntime(input: {
     publishCommitment: (work) =>
       signing().pipe(
         Effect.flatMap(({ commitment }) =>
-          commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+          commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId.toString() }),
         ),
       ),
     approve: (work) =>

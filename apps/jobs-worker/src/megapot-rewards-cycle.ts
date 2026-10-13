@@ -86,6 +86,8 @@ export interface MegapotRewardsRuntime {
   readonly observeSolvency: () => Effect.Effect<unknown, unknown>;
   readonly freezeDue: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
   readonly publishCommitment: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
+  /** v3 sealed original zero-sweep allocations only; no fabricated claim. */
+  readonly allocateZeroNet?: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
   readonly approve: (
     work: MegapotDrawingWork,
   ) => Effect.Effect<Readonly<{ readonly kind: string }>, unknown>;
@@ -663,6 +665,7 @@ export function runMegapotRewardsCycle(input: {
       input.runtime.allocate,
     );
     recordFailures(allocationFailures);
+    const zeroAllocated = input.runtime.allocateZeroNet === undefined ? [] : yield* input.runtime.allocateZeroNet(limit);
     mark("allocated");
 
     const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);
@@ -744,7 +747,7 @@ export function runMegapotRewardsCycle(input: {
       purchased: purchaseResults.filter(Boolean).length,
       swept: swept.length,
       claimed: claimed.length,
-      allocated: allocated.length,
+      allocated: allocated.length + zeroAllocated.length,
       terminalOffers: terminalOffers.length,
       refunded: refunded.length,
       paid: paid.length,

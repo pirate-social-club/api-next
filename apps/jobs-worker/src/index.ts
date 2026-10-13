@@ -88,6 +88,7 @@ import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
 import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
+import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 // Runtime boundary: the entrypoint exports only the default handler, the cron
@@ -764,10 +765,14 @@ export function makeJobsWorkerDeclarations(
   }
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
-  if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
-  if (learnerAudio !== undefined) {
-    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery));
-  }
+  const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
+  const studyJob = learnerAudio === undefined ? undefined : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+  // One actual writer owns both source families. The unchanged registry still
+  // rejects arbitrary duplicate declarations; no shared-writer waiver exists.
+  if (megapotJob !== undefined && studyJob !== undefined) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  } else if (megapotJob !== undefined) declarations.push(megapotJob);
+  else if (studyJob !== undefined) declarations.push(studyJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }

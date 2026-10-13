@@ -74,6 +74,12 @@ const READS = [
   "postgres:age_verification_ceremony_attempts",
   "postgres:age_verification_requirement_states",
   "postgres:account_age_verification_current",
+  // Prospective Account/Guest completion/retained-group source closure.
+  "postgres:guest_owner_associations",
+  "postgres:participation_eligibility_decisions",
+  "postgres:megapot_owner_shares",
+  "postgres:owner_participation_admission_operations",
+  "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_READS = [
   "postgres:guest_study_spoken_captures",
@@ -116,6 +122,12 @@ export const STUDY_SPOKEN_ANSWER_RECOVERY_WRITES = [
   "postgres:song_reward_bundle_claim_legs",
   "postgres:song_reward_offer_legs",
   "postgres:reward_ledger_credits",
+  // Actual qualified fourth-card completion can create original held/admitted
+  // owner facts. Plain practice neither fabricates nor drops these liabilities.
+  "postgres:participation_eligibility_decisions",
+  "postgres:megapot_owner_shares",
+  "postgres:owner_participation_admission_operations",
+  "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_WRITES = [
   "postgres:guest_participation_operations",
