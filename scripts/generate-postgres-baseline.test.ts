@@ -122,6 +122,58 @@ $function$;
     expect(normalized).toEndWith("SET check_function_bodies = true;\n");
   });
 
+  test("alters an exact catalog-first overload after creation without changing its ambient namespace", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.private_example(input_value integer DEFAULT 7) RETURNS integer
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $private$ SELECT input_value + 1 $private$;
+CREATE FUNCTION public.legacy_example() RETURNS integer
+    LANGUAGE sql
+    SET search_path = 'public', 'pg_temp'
+    AS $$ SELECT 2 $$;
+`);
+    const create = normalized.indexOf("CREATE FUNCTION private_example(");
+    const end = normalized.indexOf("$private$;");
+    const alter = normalized.indexOf("DO $baseline_function_path$");
+    const legacy = normalized.indexOf("CREATE FUNCTION legacy_example()");
+    expect(create).toBeGreaterThan(0);
+    expect(end).toBeLessThan(alter);
+    expect(alter).toBeLessThan(legacy);
+    expect(normalized).toContain("p.proname='private_example'");
+    expect(normalized).toContain("pg_catalog.pg_get_function_arguments(p.oid)='input_value integer DEFAULT 7'");
+    expect(normalized).toContain("INTO STRICT target_function");
+    expect(normalized).toContain("ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp");
+    expect(normalized.match(/SET search_path FROM CURRENT/gu)).toHaveLength(2);
+    expect(normalized.match(/SELECT pg_catalog.set_config\(/gu)).toHaveLength(1);
+    expect(normalized).not.toContain("pg_catalog.format('pg_catalog, %I");
+  });
+
+  test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
+    expect(() => normalizePostgresBaselineDump(`
+CREATE FUNCTION public.unsupported() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'pg_catalog', 'public', 'unreviewed_schema', 'pg_temp'
+    AS $$ SELECT 1 $$;
+`)).toThrow("Unsupported catalog-first portable function declaration");
+    expect(() => normalizePostgresBaselineDump(`
+CREATE FUNCTION public.incomplete() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $body$ SELECT 1
+`)).toThrow("Unclosed catalog-first portable function body");
+  });
+
+  test("restores the original bounded Guest call-plan BETWEEN and preserves maximum paid calls", () => {
+    const range = "(((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20)";
+    const maximum = "((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)";
+    const normalized = normalizePostgresBaselineDump(`CHECK ((${range}) AND (${maximum}));`);
+    expect(normalized).toContain("::integer BETWEEN 0 AND 20");
+    expect(normalized).toContain(maximum);
+    expect(normalized).not.toContain("::integer >= 0");
+    expect(normalized).not.toContain("::integer <= 20");
+  });
+
   test("normalizes equals-form function configuration but drops a session search path", () => {
     const normalized = normalizePostgresBaselineDump(`
 SET search_path TO session_schema;
