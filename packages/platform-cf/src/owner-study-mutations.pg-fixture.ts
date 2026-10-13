@@ -24,11 +24,21 @@ import type { PostgresMigration } from "./postgres-migrations.ts";
 const Hash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const ExactSuffix = Schema.Struct({ "0254": Hash, "0255": Hash, "0256": Hash });
 async function migrations(): Promise<readonly PostgresMigration[]> {
-  const declared = process.env.GUEST_STUDY_MUTATION_SUFFIX_SHA256;
-  if (!declared) throw new Error("Root-sealed exact actual254/255/256 source hashes required");
-  const suffix = Schema.decodeUnknownSync(ExactSuffix, {
+  // Independently accepted exact source hashes are committed with this fixture.
+  // An owned runner declaration can assert equality; it cannot override them.
+  const decodeSuffix = Schema.decodeUnknownSync(ExactSuffix, {
     onExcessProperty: "error",
-  })(JSON.parse(declared));
+  });
+  const suffix = decodeSuffix(
+    JSON.parse(
+      await readFile(
+        new URL("./owner-study-mutation-suffix.pg-fixture.json", import.meta.url),
+        "utf8",
+      ),
+    ),
+  );
+  const declared = process.env.GUEST_STUDY_MUTATION_SUFFIX_SHA256;
+  if (declared !== undefined) expect(decodeSuffix(JSON.parse(declared))).toEqual(suffix);
   const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
   const manifest = Schema.decodeUnknownSync(
     Schema.Struct({
