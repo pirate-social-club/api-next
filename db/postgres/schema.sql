@@ -11840,6 +11840,15 @@ BEGIN
  RETURN NEW;
 END $$;
 
+CREATE FUNCTION guard_learner_audio_legacy_settlement_private_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
+    AS $$
+BEGIN
+ RAISE EXCEPTION 'legacy producer settlement evidence is immutable';
+END $$;
+
 CREATE FUNCTION guard_localization_lyric_line_lifecycle() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -26507,6 +26516,46 @@ BEGIN
  RETURN publish_allowed;
 END $$;
 
+CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload text, p_disposition text, p_evidence jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; prior learner_audio_legacy_settlements%ROWTYPE;
+ digest TEXT; observed_at TIMESTAMPTZ; cutover_at TIMESTAMPTZ;
+BEGIN
+ IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object'
+  OR NOT p_evidence ?& ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt','readbackRef']
+  OR p_evidence-ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt','readbackRef']<>'{}'::JSONB
+  OR jsonb_typeof(p_evidence->'objectRef')<>'string' OR jsonb_typeof(p_evidence->'readbackRef')<>'string'
+  OR char_length(p_evidence->>'readbackRef') NOT BETWEEN 1 AND 256
+  OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
+  OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
+  OR jsonb_typeof(p_evidence->'servingCutoverAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string' THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
+ cutover_at:=(p_evidence->>'servingCutoverAt')::TIMESTAMPTZ;
+ IF observed_at<=cutover_at OR observed_at>clock_timestamp() THEN
+  RAISE EXCEPTION 'legacy producer must be observed after serving cutover'; END IF;
+ IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
+  RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ digest:=encode(sha256(convert_to(p_evidence::TEXT,'UTF8')),'hex');
+ SELECT * INTO prior FROM learner_audio_legacy_settlements WHERE upload_attempt_id=p_upload;
+ IF FOUND THEN
+  IF prior.disposition<>p_disposition OR prior.evidence_sha256<>digest THEN
+   RAISE EXCEPTION 'legacy settlement already recorded differently'; END IF;
+  RETURN FALSE; END IF;
+ IF upload.upload_attempt_id NOT LIKE 'lau\_legacy\_%' OR upload.captured_revision<>0
+  OR upload.io_state<>'unknown' OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
+  RAISE EXCEPTION 'only an unknown imported legacy producer of this key can be settled'; END IF;
+ INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,disposition,evidence,evidence_sha256,settled_at)
+  VALUES(p_upload,p_disposition,p_evidence,digest,clock_timestamp());
+ RETURN settle_learner_audio_upload_private_v1(p_upload,p_disposition,TRUE,NULL);
+END $$;
+
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -38875,6 +38924,17 @@ CREATE SEQUENCE learner_audio_fence_revision_v1
     MAXVALUE 9007199254740991
     CACHE 1;
 
+CREATE TABLE learner_audio_legacy_settlements (
+    upload_attempt_id text NOT NULL,
+    disposition text NOT NULL,
+    evidence jsonb NOT NULL,
+    evidence_sha256 text NOT NULL,
+    settled_at timestamp with time zone NOT NULL,
+    CONSTRAINT learner_audio_legacy_settlements_disposition_check CHECK ((disposition = ANY (ARRAY['stored'::text, 'absent'::text]))),
+    CONSTRAINT learner_audio_legacy_settlements_evidence_sha256_check CHECK ((evidence_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_legacy_settlements_upload_attempt_id_check CHECK ((upload_attempt_id ~ '^lau_legacy_[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE learner_audio_object_names (
     object_ref text NOT NULL,
     owner_id text NOT NULL,
@@ -45861,6 +45921,9 @@ ALTER TABLE ONLY learner_audio_delete_target_artifacts
 ALTER TABLE ONLY learner_audio_deleted_objects
     ADD CONSTRAINT learner_audio_deleted_objects_pkey PRIMARY KEY (object_ref);
 
+ALTER TABLE ONLY learner_audio_legacy_settlements
+    ADD CONSTRAINT learner_audio_legacy_settlements_pkey PRIMARY KEY (upload_attempt_id);
+
 ALTER TABLE ONLY learner_audio_object_names
     ADD CONSTRAINT learner_audio_object_names_object_ref_owner_id_artifact_id_key UNIQUE (object_ref, owner_id, artifact_id);
 
@@ -48748,6 +48811,8 @@ CREATE TRIGGER learner_audio_delete_command_state BEFORE DELETE OR UPDATE ON lea
 CREATE TRIGGER learner_audio_delete_sources_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_sources FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 
 CREATE TRIGGER learner_audio_delete_targets_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_target_artifacts FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE DELETE OR UPDATE ON learner_audio_legacy_settlements FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
 
 CREATE TRIGGER learner_audio_object_names_immutable BEFORE DELETE OR UPDATE ON learner_audio_object_names FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 

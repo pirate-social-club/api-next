@@ -264,6 +264,6 @@
     "0261_guest_study_resource_expiry.sql": "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c",
     "0262_ordinary_audio_producer_capture.sql": "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
     "0263_guest_ephemeral_audio_cleanup.sql": "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55",
-    "0264_legacy_karaoke_terminal_upload_closure.sql": "5079bca24832523e7bbd687ba24df819e7577eca74f31d90478ac0fc6da8d53f"
+    "0264_legacy_learner_audio_producer_disposition.sql": "a53a9e1f0c4a50b712c3c538a0e4391d01eb6257d63846bf61a665a60622d452"
   }
 }

@@ -1054,8 +1054,8 @@ export const guestStudyReadinessCandidate = {
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
-      checksum: "5079bca24832523e7bbd687ba24df819e7577eca74f31d90478ac0fc6da8d53f",
-      version: "0264_legacy_karaoke_terminal_upload_closure.sql",
+      checksum: "a53a9e1f0c4a50b712c3c538a0e4391d01eb6257d63846bf61a665a60622d452",
+      version: "0264_legacy_learner_audio_producer_disposition.sql",
     },
   ],
   native_function_bodies: [
@@ -1209,7 +1209,7 @@ export const guestStudyReadinessCandidate = {
       definer: true,
       kind: "f",
       name: "confirm_account_audio_delete_private_v1",
-      source_file: "0264_legacy_karaoke_terminal_upload_closure.sql",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "f948d0b8e7ea2c25bda63d6c3e437a02a94748be1e64a5e7a1fead527079548f",
@@ -1466,6 +1466,14 @@ export const guestStudyReadinessCandidate = {
       kind: "f",
       name: "guard_learner_audio_control_state_private_v1",
       source_file: "0253_learner_audio_deletion_fence.sql",
+    },
+    {
+      body_sha256: "2197339190385aa96ec47d6a767460a0d1b473b2f9fb5075935c20831f3e6cd4",
+      configuration: "pinned",
+      definer: false,
+      kind: "f",
+      name: "guard_learner_audio_legacy_settlement_private_v1",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "ad7d15bd97803669fa6e9e86c3919810c498884ec5f05b4378e23a8488a08fd6",
@@ -1865,7 +1873,7 @@ export const guestStudyReadinessCandidate = {
       definer: true,
       kind: "f",
       name: "prepare_learner_audio_delete_private_v1",
-      source_file: "0264_legacy_karaoke_terminal_upload_closure.sql",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "a90d16a761a9af6f565860aa317056d365dbf9a1c479244403692f6951b65427",
@@ -2338,6 +2346,14 @@ export const guestStudyReadinessCandidate = {
       kind: "f",
       name: "settle_learner_audio_upload_private_v1",
       source_file: "0253_learner_audio_deletion_fence.sql",
+    },
+    {
+      body_sha256: "ffc6d741c431accfaec6d0fb4dc328ee421e76821e8a0ccdb9be7bf890ef769d",
+      configuration: "pinned",
+      definer: true,
+      kind: "f",
+      name: "settle_legacy_learner_audio_upload_private_v1",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
       body_sha256: "0a606fa9647326016bf4f0c3836799882394bde039650cbb90bcf406c0b26de2",

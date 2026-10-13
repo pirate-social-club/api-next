@@ -1433,6 +1433,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "learner_audio_delete_sources",
         "learner_audio_delete_target_artifacts",
         "learner_audio_deleted_objects",
+        "learner_audio_legacy_settlements",
         "learner_audio_object_names",
         "learner_audio_owner_fences",
         "learner_audio_upload_attempts",

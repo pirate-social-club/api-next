@@ -318,6 +318,33 @@ suite("learner audio deletion repository", () => {
         await admin.query("SET session_replication_role = origin");
       }
       await upgrade(scopedConnection);
+      // The unresolved legacy Study reservation is now an unknown producer of its
+      // exact key. Before any deletion starts, a reclaim still cannot open a new
+      // generation on that key while the legacy write is unresolved.
+      const study = await admin.query<{
+        upload_attempt_id: string;
+        object_ref: string;
+        io_state: string;
+      }>(
+        "SELECT upload_attempt_id, object_ref, io_state FROM learner_audio_upload_attempts WHERE command_ref='command-3'",
+      );
+      expect(study.rows).toEqual([
+        {
+          upload_attempt_id: expect.stringMatching(/^lau_legacy_[0-9a-f]{64}$/),
+          object_ref: "pending/object",
+          io_state: "unknown",
+        },
+      ]);
+      await admin.query("SET session_replication_role = replica");
+      await admin.query(
+        "UPDATE study_spoken_answer_commands SET lease_token='lease-3-reclaim', lease_expires_at=clock_timestamp() + interval '1 hour' WHERE command_id='command-3'",
+      );
+      await admin.query("SET session_replication_role = origin");
+      await expect(
+        admin.query(
+          "SELECT capture_account_study_audio_private_v1('account-3','command-3','lease-3-reclaim','upload-reclaim')",
+        ),
+      ).rejects.toThrow("prior object write or cleanup is unresolved");
 
       const deletedKeys: string[][] = [];
       const store = makeControlPlaneLearnerAudioDeletionStore(
@@ -330,11 +357,26 @@ suite("learner audio deletion repository", () => {
       );
       const run = (accountId: string) =>
         Effect.runPromise(store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }));
-      const settle = (client: Client, upload: string, disposition: "stored" | "absent") =>
-        client.query("SELECT settle_learner_audio_upload_private_v1($1,$2,TRUE,NULL)", [
-          upload,
-          disposition,
-        ]);
+      // The reviewed operator closure: the exact key observed after every serving
+      // version that predates producer capture was retired.
+      const evidence = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
+        objectRef: key,
+        headStatus: head,
+        openMultipartUploads: 0,
+        servingCutoverAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        observedAt: new Date(Date.now() - observedMinutesAgo * 60_000).toISOString(),
+        readbackRef: "fixture-serving-readback",
+      });
+      const settle = (
+        client: Client,
+        upload: string,
+        disposition: "stored" | "absent",
+        proof: ReturnType<typeof evidence>,
+      ) =>
+        client.query(
+          "SELECT settle_legacy_learner_audio_upload_private_v1($1,$2,$3::jsonb) AS settled",
+          [upload, disposition, JSON.stringify(proof)],
+        );
       const expireProducers = async () => {
         await admin.query("SET session_replication_role = replica");
         await admin.query(
@@ -356,7 +398,23 @@ suite("learner audio deletion repository", () => {
       await expect(run("account-6")).rejects.toMatchObject({ reason: "in-flight" });
 
       // An authoritative absent settlement lets deletion finish.
-      await settle(admin, legacyUpload("session-6", "attempt-6", "artifact-attempt-6"), "absent");
+      const upload6 = legacyUpload("session-6", "attempt-6", "artifact-attempt-6");
+      const key6 = "karaoke/account-6/attempt-6.pcm";
+      await expect(
+        settle(admin, upload6, "absent", evidence("karaoke/other.pcm", "absent")),
+      ).rejects.toThrow("only an unknown imported legacy producer of this key can be settled");
+      await expect(settle(admin, upload6, "stored", evidence(key6, "absent"))).rejects.toThrow(
+        "legacy settlement disposition differs from the observed object",
+      );
+      await expect(settle(admin, upload6, "absent", evidence(key6, "absent", 20))).rejects.toThrow(
+        "legacy producer must be observed after serving cutover",
+      );
+      const proof6 = evidence(key6, "absent");
+      await settle(admin, upload6, "absent", proof6);
+      expect((await settle(admin, upload6, "absent", proof6)).rows).toEqual([{ settled: false }]);
+      await expect(
+        settle(admin, upload6, "absent", { ...proof6, readbackRef: "other-readback" }),
+      ).rejects.toThrow("legacy settlement already recorded differently");
       await expect(run("account-6")).resolves.toMatchObject({ remaining_count: 0 });
       expect(
         (await admin.query("SELECT state FROM karaoke_recordings WHERE session_id='session-6'"))
@@ -383,6 +441,7 @@ suite("learner audio deletion repository", () => {
           writer,
           legacyUpload("session-4", "attempt-4", "artifact-attempt-4"),
           "stored",
+          evidence(key4, "present"),
         );
         await writer.query("COMMIT");
         await expect(blocked).resolves.toMatchObject({ remaining_count: 0 });
@@ -395,9 +454,17 @@ suite("learner audio deletion repository", () => {
           .rows,
       ).toEqual([{ state: "deleted" }]);
 
-      // The untracked legacy Study reservation has no producer record to settle,
-      // so it stays in flight rather than being guessed finished.
-      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
+      // Evidence-bound settlement of the legacy Study write lets deletion finish.
+      const studyUpload = study.rows[0]?.upload_attempt_id ?? "";
+      await settle(admin, studyUpload, "absent", evidence("pending/object", "absent"));
+      await expect(run("account-3")).resolves.toMatchObject({ remaining_count: 0 });
+      expect(
+        (
+          await admin.query(
+            "SELECT recording_state FROM learner_audio_artifacts WHERE learner_audio_artifact_id='pending-study'",
+          )
+        ).rows,
+      ).toEqual([{ recording_state: "deleted" }]);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
