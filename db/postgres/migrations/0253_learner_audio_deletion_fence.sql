@@ -369,7 +369,10 @@ BEGIN
    UPDATE learner_audio_owner_fences SET revision=next_revision,active_delete_command_id=command.command_id
      WHERE owner_id=ANY(authorized_sources);
    UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE owner_id=ANY(authorized_sources)
-     AND captured_revision<next_revision;
+     AND captured_revision<next_revision
+     AND (io_state<>'closed' OR NOT EXISTS(
+       SELECT 1 FROM learner_audio_deleted_objects deleted
+        WHERE deleted.object_ref=learner_audio_upload_attempts.object_ref));
    -- Claim is serialized by the same owner lock and is mandatory before I/O.
    -- Still-registered intents therefore have a positive no-I/O witness and may
    -- close atomically. Writing/unknown intents NEVER close through this path.

@@ -6,7 +6,7 @@
     "0250_guest_browser_authority_transitions.sql": "c025474320a4bc244d974929415fed95ad26b22d0e2cf9657fbd2f328ddafcf9",
     "0251_guest_learning_resource_reservations.sql": "2de6e6508ec498a616b2db85ceafef1e2dbde7323a060cfae9956d0353d1aae4",
     "0252_guest_learning_controlled_row_admission.sql": "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
-    "0253_learner_audio_deletion_fence.sql": "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
+    "0253_learner_audio_deletion_fence.sql": "27ce4e1c6e3185badb27e23bad96b84a3c9c5a226c7678d736d05072138f6cdb",
     "0254_guest_prepared_study_session_capture.sql": "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
     "0255_guest_spoken_success_checkpoints.sql": "fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b",
     "0256_guest_owned_study_mutations.sql": "bb90ea35b74aa8fddfb206aad1ce8ddb439ba53ae5175de7a33fd2c7102684ce",
