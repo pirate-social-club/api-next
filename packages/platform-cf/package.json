@@ -237,7 +237,8 @@
     "./captured-karaoke-multipart": "./src/captured-karaoke-multipart.ts",
     "./captured-karaoke-sqlite-journal": "./src/captured-karaoke-sqlite-journal.ts",
     "./captured-karaoke-bindings": "./src/captured-karaoke-bindings.ts",
-    "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts"
+    "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts",
+    "./guest-study-managed-readiness": "./src/guest-study-managed-readiness.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",
