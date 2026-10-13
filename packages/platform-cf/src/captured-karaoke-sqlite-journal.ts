@@ -1,21 +1,29 @@
 import { Schema } from "effect";
-import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
-import type { LearnerAudioUploadCapture } from "./learner-audio-captured-io.ts";
 import type {
   CapturedKaraokeJournal,
   CapturedKaraokeJournalStore,
 } from "./captured-karaoke-multipart.ts";
+import type { LearnerAudioUploadCapture } from "./learner-audio-captured-io.ts";
+import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
 export interface CapturedKaraokeSqlite {
-  exec<A extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>>(
+  exec(
     query: string,
     ...bindings: readonly unknown[]
-  ): { toArray(): A[] };
+  ): { toArray(): readonly Readonly<Record<string, unknown>>[] };
 }
 export interface CapturedKaraokeSqliteStorage {
   sql: CapturedKaraokeSqlite;
   transactionSync: <A>(use: () => A) => A;
 }
 const count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }));
+// SQLite drivers return unknown records. Never promise caller-selected row
+// types; validate the BLOB/sequence projection before handing it to R2.
+const Frame = Schema.Struct({
+  frame_sequence: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  payload: Schema.instanceOf(ArrayBuffer),
+});
 const Part = Schema.Struct({
   partNumber: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10000 })),
   etag: Schema.NonEmptyString,
@@ -131,12 +139,11 @@ export const makeCapturedKaraokeSqliteJournal = (
     load,
     save: (journal) => storage.transactionSync(() => save(journal)),
     chunks: () =>
-      sql
-        .exec<{ frame_sequence: number; payload: ArrayBuffer }>(
-          "SELECT frame_sequence,payload FROM karaoke_audio_chunk ORDER BY frame_sequence",
-        )
-        .toArray()
-        .map((row) => ({ frameSequence: row.frame_sequence, payload: row.payload })),
+      Schema.decodeUnknownSync(Schema.Array(Frame), { onExcessProperty: "error" })(
+        sql
+          .exec("SELECT frame_sequence,payload FROM karaoke_audio_chunk ORDER BY frame_sequence")
+          .toArray(),
+      ).map((row) => ({ frameSequence: row.frame_sequence, payload: row.payload })),
     savePartAndRemoveThrough: (journal, sequence) =>
       storage.transactionSync(() => {
         save(journal);

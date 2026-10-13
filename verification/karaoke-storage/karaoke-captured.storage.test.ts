@@ -93,3 +93,24 @@ test("actual deletion stop journals ABORT and DELETE before calls and leaves no 
   expect(await rejection(archive.finish())).toMatchObject({_tag:"LearnerAudioCaptureRejected"});expect(f.calls).toEqual(["create","part","abort","delete"]);
  }finally{f.close();}
 });
+
+test("SQLite journal refuses a non-BLOB payload before issuing any R2 call",()=>{
+ const f=fixture();try{
+  f.db.query("INSERT INTO karaoke_audio_chunk VALUES(1,?,3)").run("not-a-BLOB");
+  expect(()=>f.journal.chunks()).toThrow();expect(f.calls).toEqual([]);
+ }finally{f.close();}
+});
+test("SQLite journal refuses a nonpositive frame sequence before issuing any R2 call",()=>{
+ const f=fixture();try{
+  f.append(0);expect(()=>f.journal.chunks()).toThrow();expect(f.calls).toEqual([]);
+ }finally{f.close();}
+});
+test("SQLite journal strictly decodes an actual BLOB and retains its positive sequence",()=>{
+ const f=fixture();try{
+  f.append(7,new Uint8Array([9,8]));const frames=f.journal.chunks();
+  expect(frames).toHaveLength(1);expect(frames[0]?.frameSequence).toBe(7);
+  if(frames[0]===undefined)throw new Error("actual frame missing");
+  expect(frames[0].payload).toBeInstanceOf(ArrayBuffer);
+  expect(Array.from(new Uint8Array(frames[0].payload))).toEqual([9,8]);expect(f.calls).toEqual([]);
+ }finally{f.close();}
+});
