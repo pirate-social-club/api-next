@@ -1050,7 +1050,7 @@ export const guestStudyReadinessCandidate = {
       version: "0262_ordinary_audio_producer_capture.sql",
     },
     {
-      checksum: "89414a8fdec1ef43930c186f5a95699c599beb3c84b69d3c5044f648e6fde9c3",
+      checksum: "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55",
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
   ],
@@ -1128,7 +1128,7 @@ export const guestStudyReadinessCandidate = {
       source_file: "0262_ordinary_audio_producer_capture.sql",
     },
     {
-      body_sha256: "3d960a8144c19e48edc45315a3205dfaf0bc3066d1c033fe33c5a85cc837422c",
+      body_sha256: "6cb06ee721449dabdc87bb49d55ac51ee6bbfe7907eb59487e690d95f7737c45",
       configuration: "pinned",
       definer: true,
       kind: "f",
@@ -2837,6 +2837,6 @@ export const guestStudyReadinessCandidate = {
     },
   ],
   restricted_catalogue_probes: ["pg_ls_dir", "pg_read_binary_file", "pg_read_file", "pg_stat_file"],
-  source_head: "753ce82f9d5dca97214389c3e2258c62f8df5146",
-  source_manifest_sha256: "cab0fe2649c93808b3e378d9ca9acdaef08474d63738a23d37304d561d7d704b",
+  source_head: "e44bc5ce317df401cf307cdb733ae2839c626feb",
+  source_manifest_sha256: "2368f2ddba45b370e738ebbdca3f98533432dde3f7fe311f5f99fccccc93b7cc",
 } as const;
