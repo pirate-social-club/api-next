@@ -417,6 +417,8 @@ suite("first disabled owner accounting checkpoint", () => {
             },
           ),
         );
+        // Ordinary Study needs the genuinely active prepared persona.
+        await confirmWallet(adminRuntime)(accountId, result.persona_id);
         personas.set(accountId, result.persona_id);
         return result.persona_id;
       };
@@ -510,7 +512,7 @@ suite("first disabled owner accounting checkpoint", () => {
         throw new Error("Original two beneficiaries are required");
       const subjectDigest = hash("retained-v2-original-claim-subject");
       await seedVeryRewardEvidence(f.admin, paidAccount, "retained-first", subjectDigest);
-      await confirmWallet(adminRuntime)(paidAccount, person(paidAccount));
+
       const commitment = makeMegapotCommitmentCoordinator({
         store: makeControlPlaneMegapotCommitmentStore(adminRuntime),
         authority: { ensure: () => Effect.void },
