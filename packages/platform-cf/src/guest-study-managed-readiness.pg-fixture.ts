@@ -86,9 +86,10 @@ export async function readinessFixture(
       // including every prior ledger row, through the SAME maintained runner.
       // No review SQL supplement, phase substitution or recreated helper exists.
       // 0264 additively closes proven-terminal legacy Karaoke uploads and
-      // returns the unresolved-producer state from deletion preparation.
-      if (pgUrl === undefined || candidate.ledger.length !== 264)
-        throw new Error("Actual adopted native264 readiness candidate required");
+      // returns the unresolved-producer state from deletion preparation. 0265
+      // adds the account-bound Karaoke cancellation entry point.
+      if (pgUrl === undefined || candidate.ledger.length !== 265)
+        throw new Error("Actual adopted native265 readiness candidate required");
       const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
       const manifest = decode(
         Schema.Struct({

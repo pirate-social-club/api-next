@@ -1,8 +1,8 @@
-import {
+import type {
   ControlPlaneDb,
-  type ControlPlaneError,
-  type ControlPlaneTransaction,
-  type KaraokeSessionAuthority,
+  ControlPlaneError,
+  ControlPlaneTransaction,
+  KaraokeSessionAuthority,
 } from "@pirate/application";
 import { Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
@@ -83,8 +83,15 @@ export const makeCapturedKaraokeBindings = Effect.fn("makeCapturedKaraokeBinding
         short((tx) =>
           tx.execute<unknown>({
             label: "karaoke.audio.cancel-unclaimed",
-            text: "SELECT close_unclaimed_learner_audio_private_v1($1) AS result",
-            values: [capture.uploadAttemptId],
+            // Account-bound entry point; the generic upload closure stays owner-only.
+            text: "SELECT cancel_unclaimed_account_karaoke_audio_private_v1($1,$2,$3,$4,$5::jsonb) AS result",
+            values: [
+              authority.accountId,
+              authority.sessionId,
+              authority.attemptId,
+              authority.artifactId,
+              JSON.stringify(capture),
+            ],
             readonly: false,
           }),
         ),
