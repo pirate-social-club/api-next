@@ -106,8 +106,11 @@ export function makeControlPlaneOwnerMegapotSettlementStore(runtime: Runtime): O
     return yield* query("owner-settlement.allocation.credit", "SELECT allocate_owner_megapot_winnings_private_v1($1,$2::numeric) AS result",
       [original.poolLegId, original.drawingId], Allocation);
   });
-  return Object.freeze({ freeze: (input, ceilings) => own(freeze(input, ceilings)), readCommitment: input => own(readCommitment(input)),
-    prepareCommitment: input => own(prepare(input)), confirmPublished: input => own(confirm(input)), allocate: input => own(allocate(input)) });
+  const store: OwnerMegapotSettlementStore = {
+    freeze: (input, ceilings) => own(freeze(input, ceilings)), readCommitment: input => own(readCommitment(input)),
+    prepareCommitment: input => own(prepare(input)), confirmPublished: input => own(confirm(input)), allocate: input => own(allocate(input)),
+  };
+  return Object.freeze(store);
   // Every native/driver failure, including sent-COMMIT outcome uncertainty,
   // propagates unchanged. Reconciliation uses this original drawing key; no
   // absence/refusal/success is synthesized and no replacement draw is selected.

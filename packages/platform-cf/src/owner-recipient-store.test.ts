@@ -12,7 +12,7 @@ const credit=Schema.decodeUnknownSync(OwnerRewardCreditV1)({
  amount_atomic:'5',available_atomic:'5',reserved_atomic:'0',paid_atomic:'0',source_kind:'megapot_allocation',state:'credited',created_at:'2026-10-13T00:00:00.000Z',updated_at:'2026-10-13T00:00:00.000Z',settled_at:null,claim:{status:'accepted',payout_status:'pending'},send:null,
  recipient:{kind:'account_owner',original_persona_id:'persona-1',selection:null,binding:{persona_id:'persona-1',bound_at:'2026-10-13T00:00:00.000Z',selection_revision:null}},
 });
-const completed={state:'completed',operation,outcomeId:'command-1',result:{outcome:'accepted',credit}};
+const completed={state:'completed',operation,outcomeId:'command-1',result:{outcome:'accepted',credit}} as const;
 function fixture(reply:unknown=completed,commitLoss=false,sqlState:string|null=null){
  const queries:PostgresQueryConfig[]=[];const logs:unknown[]=[];let commitAcknowledged=false;
  const client:PostgresClientLike={connect:async()=>{},end:async()=>{},query:async q=>{

@@ -23,7 +23,7 @@ function failure(exit:Awaited<ReturnType<typeof Effect.runPromiseExit>>) {
  const error=Cause.findErrorOption(exit.cause);if(!Option.isSome(error))throw Error('expected typed refusal');return error.value;
 }
 test('account-only reader sends canonical authenticated actor and bounded cursor, original credit has NULL persona ledger identity',async()=>{
- const reply={object:'owner_reward_credit_list_v1',items:[credit],next_cursor:null};const f=fixture(reply);
+ const reply={object:'owner_reward_credit_list_v1',items:[credit],next_cursor:null} as const;const f=fixture(reply);
  expect(await Effect.runPromise(f.store.list({accountId:'authenticated-B',cursor:null,limit:25}))).toEqual(reply);
  expect(f.queries.some(q=>q.text==='SELECT list_owned_reward_credits_v1($1,$2,$3) AS result'&&JSON.stringify(q.values)===JSON.stringify(['authenticated-B',null,25]))).toBe(true);
 });
