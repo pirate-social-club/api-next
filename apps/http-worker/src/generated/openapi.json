@@ -970,7 +970,6 @@
             "kind": "public"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -1724,7 +1723,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -2463,7 +2461,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -3211,7 +3208,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -3950,7 +3946,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -4704,7 +4699,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -5461,7 +5455,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -6278,7 +6271,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -8182,7 +8174,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -10002,7 +9993,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -11763,7 +11753,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -14363,7 +14352,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -15155,7 +15143,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -15768,7 +15755,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -16571,7 +16557,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
@@ -17199,7 +17184,6 @@
             "kind": "browserParticipation"
           }
         },
-        "x-implementation": "disabled",
         "x-cache-control": "private, no-store",
         "x-errors": [
           "GuestAuthError",
