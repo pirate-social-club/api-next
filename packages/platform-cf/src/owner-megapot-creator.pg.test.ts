@@ -267,7 +267,9 @@ pgTest(
           // Existing EXCLUSIVE identity/topology namespace, not a custom test lock.
           await mutation.query("SELECT pg_advisory_xact_lock(83000003,1)");
           const before = await actorFacts(f, prepared.offerId);
-          const running = observed(withClock(prepared.service.addMegapotPoolLeg(prepared.legInput)));
+          const running = observed(
+            withClock(prepared.service.addMegapotPoolLeg(prepared.legInput)),
+          );
           operation = running;
           await waitForRoleLock(f, f.ordinaryRole);
           // Owned lifecycle fault, not a fabricated positive financial/source row.

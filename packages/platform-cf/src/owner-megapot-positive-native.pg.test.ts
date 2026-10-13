@@ -63,6 +63,11 @@ const withClock = <A, E>(e: Effect.Effect<A, E, Clock | IdGen>) =>
     ),
   );
 
+// Reviewed owned positive schedule: two complete native lessons on ONE original
+// drawing per case, then its actual cutoff. These are test-only initial values.
+const positiveDrawingWindowMilliseconds = 150000;
+const positiveCaseTimeoutMilliseconds = 300000;
+
 async function setupPool(
   f: RewardedFixture,
   suffix: string,
@@ -508,9 +513,13 @@ async function setupRetainedSongPool(
   return { legId: created.leg.legId, postId };
 }
 
-async function freezeAndCommit(f: RewardedFixture, pool: Awaited<ReturnType<typeof setupPool>>) {
+async function freezeAndCommit(
+  f: RewardedFixture,
+  pool: Awaited<ReturnType<typeof setupPool>>,
+  maximumCutoffWaitMilliseconds = 60000,
+) {
   // Actual clock schedule, bounded. No fake clock or source cutoff/expiry UPDATE.
-  const deadline = Date.now() + 60000;
+  const deadline = Date.now() + maximumCutoffWaitMilliseconds;
   for (;;) {
     const actual = (
       await f.admin.query("SELECT clock_timestamp() >= $1::timestamptz AS reached", [
@@ -750,100 +759,113 @@ async function purchaseAndSweep(
 
 suite("actual rewarded Guest producer into private v3 settlement", () => {
   for (const net of [1n, 0n])
-    test(`real original CP/admission produces conserved ${net === 0n ? "all-zero sweep" : "positive and zero"} allocations and private public commitment`, async () => {
-      await rewardedFixture(
-        async (f) => {
-          const pool = await setupPool(f, `native-${net}`);
-          const beforeCalls = f.providerCalls();
-          const first = await f.completeGuest(Number(net) + 9001, `first-${net}`),
-            second = await f.completeGuest(Number(net) + 9101, `second-${net}`);
-          expect(f.providerCalls() - beforeCalls).toBe(8);
-          expect(f.putCalls()).toBe(8);
-          expect(first.session.reward_terms?.pool_leg_id).toBe(pool.original.poolLegId);
-          expect(second.session.reward_terms?.original_drawing_id).toBe(pool.original.drawingId);
-          const snapshot = await freezeAndCommit(f, pool);
-          await purchaseAndSweep(f, pool, net);
-          const allocated = await run(snapshot.store.allocate(pool.original));
-          expect(await run(snapshot.store.allocate(pool.original))).toEqual(allocated);
-          const rows = (
-            await f.admin.query(
-              `SELECT allocation.owner_id,allocation.amount_atomic::text,allocation.credit_id,allocation.allocation_kind,
+    test(
+      `real original CP/admission produces conserved ${net === 0n ? "all-zero sweep" : "positive and zero"} allocations and private public commitment`,
+      async () => {
+        await rewardedFixture(
+          async (f) => {
+            const pool = await setupPool(f, `native-${net}`, positiveDrawingWindowMilliseconds);
+            const beforeCalls = f.providerCalls();
+            const first = await f.completeGuest(Number(net) + 9001, `first-${net}`),
+              second = await f.completeGuest(Number(net) + 9101, `second-${net}`);
+            expect(f.providerCalls() - beforeCalls).toBe(8);
+            expect(f.putCalls()).toBe(8);
+            expect(first.session.reward_terms?.pool_leg_id).toBe(pool.original.poolLegId);
+            expect(second.session.reward_terms?.original_drawing_id).toBe(pool.original.drawingId);
+            const snapshot = await freezeAndCommit(
+              f,
+              pool,
+              positiveDrawingWindowMilliseconds + 10000,
+            );
+            await purchaseAndSweep(f, pool, net);
+            const allocated = await run(snapshot.store.allocate(pool.original));
+            expect(await run(snapshot.store.allocate(pool.original))).toEqual(allocated);
+            const rows = (
+              await f.admin.query(
+                `SELECT allocation.owner_id,allocation.amount_atomic::text,allocation.credit_id,allocation.allocation_kind,
     credit.identity_version,credit.account_id,credit.payout_persona_id AS persona_id,credit.participation_owner_id
     FROM megapot_owner_allocations allocation LEFT JOIN reward_ledger_credits credit USING(credit_id)
     WHERE allocation.allocation_batch_id=$1 ORDER BY allocation.ordinal`,
-              [allocated.allocationBatchId],
-            )
-          ).rows;
-          expect(rows).toHaveLength(2);
-          expect(rows.reduce((n, row) => n + atomic(row.amount_atomic), 0n)).toBe(net);
-          expect(rows.map((row) => atomic(row.amount_atomic))).toEqual(
-            net === 0n ? [0n, 0n] : [1n, 0n],
-          );
-          const owners = new Set([first.access.ownerId, second.access.ownerId]);
-          for (const row of rows) {
-            expect(owners.has(row.owner_id)).toBe(true);
-            if (atomic(row.amount_atomic) === 0n) {
-              expect(row.credit_id).toBeNull();
-              expect(row.identity_version).toBeNull();
-            } else {
-              expect(row.identity_version).toBe("owner_v1");
-              expect(row.account_id).toBeNull();
-              expect(row.persona_id).toBeNull();
-              expect(row.participation_owner_id).toBe(row.owner_id);
-              await expect(
-                run(makeControlPlaneRewardPayoutStore(f.adminRuntime).loadCandidate(row.credit_id)),
-              ).rejects.toMatchObject({ reason: "credit-not-payable" });
+                [allocated.allocationBatchId],
+              )
+            ).rows;
+            expect(rows).toHaveLength(2);
+            expect(rows.reduce((n, row) => n + atomic(row.amount_atomic), 0n)).toBe(net);
+            expect(rows.map((row) => atomic(row.amount_atomic))).toEqual(
+              net === 0n ? [0n, 0n] : [1n, 0n],
+            );
+            const owners = new Set([first.access.ownerId, second.access.ownerId]);
+            for (const row of rows) {
+              expect(owners.has(row.owner_id)).toBe(true);
+              if (atomic(row.amount_atomic) === 0n) {
+                expect(row.credit_id).toBeNull();
+                expect(row.identity_version).toBeNull();
+              } else {
+                expect(row.identity_version).toBe("owner_v1");
+                expect(row.account_id).toBeNull();
+                expect(row.persona_id).toBeNull();
+                expect(row.participation_owner_id).toBe(row.owner_id);
+                await expect(
+                  run(
+                    makeControlPlaneRewardPayoutStore(f.adminRuntime).loadCandidate(row.credit_id),
+                  ),
+                ).rejects.toMatchObject({ reason: "credit-not-payable" });
+              }
             }
-          }
-          if (net === 0n)
+            if (net === 0n)
+              expect(
+                (
+                  await f.admin.query(
+                    "SELECT count(*)::integer AS n FROM megapot_claim_receipt_evidence",
+                  )
+                ).rows,
+              ).toEqual([{ n: 0 }]);
+            expect(
+              (await f.admin.query("SELECT count(*)::integer AS n FROM reward_payout_effects"))
+                .rows,
+            ).toEqual([{ n: 0 }]);
             expect(
               (
                 await f.admin.query(
-                  "SELECT count(*)::integer AS n FROM megapot_claim_receipt_evidence",
+                  "SELECT count(*)::integer AS n FROM reward_credit_persona_bindings WHERE owner_kind='guest'",
                 )
               ).rows,
             ).toEqual([{ n: 0 }]);
-          expect(
-            (await f.admin.query("SELECT count(*)::integer AS n FROM reward_payout_effects")).rows,
-          ).toEqual([{ n: 0 }]);
-          expect(
-            (
+            const source = (
               await f.admin.query(
-                "SELECT count(*)::integer AS n FROM reward_credit_persona_bindings WHERE owner_kind='guest'",
-              )
-            ).rows,
-          ).toEqual([{ n: 0 }]);
-          const source = (
-            await f.admin.query(
-              "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
-              [pool.original.poolLegId, pool.original.drawingId],
-            )
-          ).rows;
-          const beforeReset = await postgresTestSchemaCatalogFingerprint(f.admin);
-          const originalFinancialRows = async () =>
-            (
-              await f.admin.query(
-                "SELECT jsonb_build_object('credits',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY credit_id),'[]') FROM reward_ledger_credits c),'allocations',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY owner_id,ordinal),'[]') FROM megapot_owner_allocations a),'journals',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY admission_id),'[]') FROM owner_participation_admission_operations o)) AS facts",
+                "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
+                [pool.original.poolLegId, pool.original.drawingId],
               )
             ).rows;
-          const retainedFinancialRows = await originalFinancialRows();
-          await expect(resetPostgresTestBaseline(f.admin)).rejects.toMatchObject({ code: "GP003" });
-          expect(await postgresTestSchemaCatalogFingerprint(f.admin)).toBe(beforeReset);
-          expect(await originalFinancialRows()).toEqual(retainedFinancialRows);
-          await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
-          expect(source).toEqual([
-            {
-              frozen_share_count: 2,
-              reserved_ticket_cost_atomic: "10000",
-              actual_ticket_cost_atomic: "10000",
-            },
-          ]);
-          expect(f.providerCalls() - beforeCalls).toBe(8);
-          expect(f.putCalls()).toBe(8);
-        },
-        { ownedResetNamespace: true },
-      );
-    }, 180000);
+            const beforeReset = await postgresTestSchemaCatalogFingerprint(f.admin);
+            const originalFinancialRows = async () =>
+              (
+                await f.admin.query(
+                  "SELECT jsonb_build_object('credits',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY credit_id),'[]') FROM reward_ledger_credits c),'allocations',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY owner_id,ordinal),'[]') FROM megapot_owner_allocations a),'journals',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY admission_id),'[]') FROM owner_participation_admission_operations o)) AS facts",
+                )
+              ).rows;
+            const retainedFinancialRows = await originalFinancialRows();
+            await expect(resetPostgresTestBaseline(f.admin)).rejects.toMatchObject({
+              code: "GP003",
+            });
+            expect(await postgresTestSchemaCatalogFingerprint(f.admin)).toBe(beforeReset);
+            expect(await originalFinancialRows()).toEqual(retainedFinancialRows);
+            await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
+            expect(source).toEqual([
+              {
+                frozen_share_count: 2,
+                reserved_ticket_cost_atomic: "10000",
+                actual_ticket_cost_atomic: "10000",
+              },
+            ]);
+            expect(f.providerCalls() - beforeCalls).toBe(8);
+            expect(f.putCalls()).toBe(8);
+          },
+          { ownedResetNamespace: true },
+        );
+      },
+      positiveCaseTimeoutMilliseconds,
+    );
 });
 
 // Actual driver faults only. A delivered successful COMMIT is distinguished
@@ -1256,7 +1278,9 @@ suite("actual original Guest owning COMMIT and source recovery", () => {
         expect(await run(store.freeze(pool.original, ceilings))).toEqual(frozen);
         await expect(
           run(
-            makeControlPlaneMegapotPurchaseStore(f.adminRuntime, { purchaseSafetyMarginSeconds: 300 }).loadCandidate({
+            makeControlPlaneMegapotPurchaseStore(f.adminRuntime, {
+              purchaseSafetyMarginSeconds: 300,
+            }).loadCandidate({
               poolLegId: pool.original.poolLegId,
               drawingId: BigInt(pool.original.drawingId),
             }),

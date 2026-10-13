@@ -197,7 +197,9 @@ export async function creatorFixture(
         },
       ]);
       const role = `creator_login_${crypto.randomUUID().replaceAll("-", "")}`,
-        password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join(
+          "",
+        );
       const url = new URL(f.guestUrl);
       url.username = role;
       url.password = password;
