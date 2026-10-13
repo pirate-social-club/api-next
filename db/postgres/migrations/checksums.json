@@ -267,6 +267,6 @@
     "0264_legacy_learner_audio_producer_disposition.sql": "04a395bef0a06e3a405387123ec85ccdd3f4503b202cb365154375e6d7186097",
     "0265_account_karaoke_unclaimed_cancellation.sql": "337b5469bdf01595413349517f1c0750530280a4a38ac8fd007a2d2e3c4e106f",
     "0266_disabled_owner_financial_history.sql": "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77",
-    "0267_complete_owner_financial_source.sql": "4ea436d536e0259a3b727708452312245e2f36b6a1facbb8b303f26e34f9b3e0"
+    "0267_complete_owner_financial_source.sql": "b9c081ff659f2c2cf6be00a9dcc1d628cacb2cbc8dabac6c14fac9b7f9e841ca"
   }
 }
