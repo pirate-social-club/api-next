@@ -148,7 +148,7 @@ async function fingerprint(f: Fixture) {
 function accountStudy(f: Fixture, accountId: string, personaId: string) {
   // Actual default driver, genuine controlled Account reserve/capture/provider
   // checkpoint/archive/finalizer; no direct qualification or archive row seed.
-  const runtime = makeDirectPostgresControlPlaneLayer(f.runtimeUrl, { closeTimeoutMs: 2000 });
+  const runtime = f.runtime({ closeTimeoutMs: 2000 });
   const store = makeControlledAccountStudyV2Store(runtime);
   const tasks: Promise<unknown>[] = [];
   f.registerDrain(() => Promise.all(tasks));
