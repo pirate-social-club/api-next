@@ -51,6 +51,14 @@ function exactHttpsOrigin(value: string): string {
   return value;
 }
 
+function containsAsciiControl(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 /** Ordinary cookie values alone. Malformed/duplicate ambient cookies supply no account. */
 function ordinaryCookie(headers: Headers, target: string): string | null {
   const raw = headers.get("cookie") ?? "";
@@ -68,7 +76,7 @@ function ordinaryCookie(headers: Headers, target: string): string | null {
       if (
         value.length === 0 ||
         new TextEncoder().encode(value).byteLength > MAX_BYTES ||
-        /[\u0000-\u001f\u007f]/u.test(value)
+        containsAsciiControl(value)
       )
         return null;
       found = value;
