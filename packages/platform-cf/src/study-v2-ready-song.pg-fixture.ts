@@ -212,7 +212,13 @@ export async function insertStudySongFixture(
         // The slot is a closed enum; only its globally unique fixture IDs differ.
         await query(
           `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$3,$4,$5,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
-          [slot, "b".repeat(64), `${tag}-stem-${slot}`, `${tag}-sealed-ref-${slot}`, `${tag}-sealed-destination-${slot}`],
+          [
+            slot,
+            "b".repeat(64),
+            `${tag}-stem-${slot}`,
+            `${tag}-sealed-ref-${slot}`,
+            `${tag}-sealed-destination-${slot}`,
+          ],
         );
       }
     }

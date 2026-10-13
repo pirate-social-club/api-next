@@ -7,21 +7,15 @@ import {
   makeSongRewardOfferService,
   prepareActivityPersona,
 } from "@pirate/application";
-import {
-  resetPostgresTestBaseline,
-  postgresTestSchemaCatalogFingerprint,
-} from "@pirate/testing/postgres";
 import { GuestStudySessionV1 } from "@pirate/contracts";
+import {
+  postgresTestSchemaCatalogFingerprint,
+  resetPostgresTestBaseline,
+} from "@pirate/testing/postgres";
 import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import {
-  insertStudySongFixture,
-  insertTelegramPracticeReadinessFixture,
-} from "./study-v2-ready-song.pg-fixture.ts";
-import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
-import type { PostgresClientFactory } from "./postgres.ts";
 import { confirmWallet } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
 import { makeR2MegapotCommitmentPublisher } from "./megapot-commitment-r2.ts";
@@ -29,6 +23,7 @@ import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawin
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { makeBaseSepoliaMegapotCommitmentSigner } from "./megapot-v2-signer.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { openOwnerDrawingsForObservation } from "./owner-drawing-opener.ts";
 import { makeOwnerMegapotCommitmentCoordinator } from "./owner-megapot-commitment-coordinator.ts";
 import {
@@ -41,6 +36,7 @@ import {
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletStore,
 } from "./persona-repository.ts";
+import type { PostgresClientFactory } from "./postgres.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardRunAuthority } from "./reward-operations-control.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
@@ -48,6 +44,10 @@ import {
   makeControlPlaneOwnerMegapotPoolLegCreator,
   makeControlPlaneSongRewardOfferStore,
 } from "./song-reward-offer-repository.ts";
+import {
+  insertStudySongFixture,
+  insertTelegramPracticeReadinessFixture,
+} from "./study-v2-ready-song.pg-fixture.ts";
 
 const suite = pgUrl ? describe : describe.skip;
 const address = (c: string) => `0x${c.repeat(40)}`;

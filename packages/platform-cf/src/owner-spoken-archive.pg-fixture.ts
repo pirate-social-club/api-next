@@ -1,4 +1,3 @@
-import type { PreparedSongFixtureOptions } from "./owner-study-starter.pg-fixture.ts";
 // Actual maintained inventory through257, expected256; no SQL supplement or
 // fixture creator. All producer rows come from accepted original CP utility.
 import { expect } from "bun:test";
@@ -6,6 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { Schema } from "effect";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { type CheckpointFixture, checkpointFixture } from "./owner-spoken-checkpoint.pg-fixture.ts";
+import type { PreparedSongFixtureOptions } from "./owner-study-starter.pg-fixture.ts";
 import { hash, pgUrl, q } from "./owner-study-starter.pg-fixture.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
 export type ArchiveFixture = CheckpointFixture;
@@ -54,7 +54,10 @@ async function all257(): Promise<readonly PostgresMigration[]> {
   }
   return all;
 }
-export const archiveFixture = (use: (f: ArchiveFixture) => Promise<void>, options?: PreparedSongFixtureOptions) =>
+export const archiveFixture = (
+  use: (f: ArchiveFixture) => Promise<void>,
+  options?: PreparedSongFixtureOptions,
+) =>
   checkpointFixture(async (f) => {
     if (!pgUrl) throw new Error("Owned loopback PostgreSQL required");
     const all = await all257(),
