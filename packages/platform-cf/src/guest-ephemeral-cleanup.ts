@@ -50,9 +50,10 @@ function one<S extends Schema.ConstraintDecoder<unknown>>(
       Effect.try({
         try: () => {
           if (rows.rows.length !== 1) throw new Error();
-          return Schema.decodeUnknownSync(Schema.Struct({ result: schema }), {
+          const row = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }), {
             onExcessProperty: "error",
-          })(rows.rows[0]).result;
+          })(rows.rows[0]);
+          return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(row.result);
         },
         catch: () => invalid(`${label}.decode`),
       }),
