@@ -4,7 +4,7 @@ import {
   type GuestStudyManagedControlPlaneBindings,
   makeGuestStudyManagedControlPlanes,
 } from "@pirate/platform-cf/guest-study-managed-control-planes";
-import { makeHyperdriveControlPlaneLayer, type HyperdriveConnection } from "@pirate/platform-cf/postgres";
+import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Schema } from "effect";
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect } from "effect";
@@ -19,7 +19,7 @@ export interface GuestStudyManagedBindings extends GuestStudyManagedControlPlane
   readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
   /** Nonsecret future release selector; absent/false retains canonical practice16. */
   readonly GUEST_STUDY_REWARDS_ENABLED?: string;
-  readonly CONTROL_PLANE?:HyperdriveConnection;
+  readonly CONTROL_PLANE?:unknown;
   /** Existing trusted server policy also used by jobs. Never body/client config. */
   readonly MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS?: string;
   /** One reviewed exact ordinary product origin. Not CORS lists or request Host. */

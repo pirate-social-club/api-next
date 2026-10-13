@@ -22,7 +22,7 @@ describe("Financial Guest selector retains inert and practice authority",()=>{
  });
  test("actual practice availability and disclosure surviveV2 without a reward/hash; nonnull rewards and private extras refuse",()=>{
   const actual={object:"guest_study_prepared_content_v1",availability:{state:"ready",available_exercise_types:["say_it_back"],
-   learning_language:"en",target_languages:["es"],learner_bands:["A1"]},disclosure:{version:"disclosure-v1",text:"Actual microphone disclosure"},reward_preview:null};
+   learning_language:"en",target_languages:["es"],learner_bands:["A1"]},disclosure:{version:"disclosure-v1",text:"Actual microphone disclosure"},reward_preview:null} as const;
   const projected=projectPracticePreparedGuestStudyContentV2(actual);
   expect(projected.availability).toEqual(actual.availability);expect(projected.disclosure).toEqual(actual.disclosure);
   expect(projected.reward_preview).toBeNull();expect(projected.reward_preview_terms_hash).toBeNull();

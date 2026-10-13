@@ -26,6 +26,7 @@ import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-s
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import { Effect, Schema, type Layer } from "effect";
+import { withEndpointResult } from "./transport.ts";
 import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-prepared-v2.ts";
 import {
   guestLearningNames,
@@ -220,8 +221,8 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
         const query=Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.query,{onExcessProperty:"error"})(locations.query);
         const actual=await Effect.runPromise(prepared.get({communityId:path.communityId,postId:path.postId,
             targetLanguage:query.target_language??null,learnerBand:query.learner_band??null}));
-        return {body:projectPracticePreparedGuestStudyContentV2(actual),
-          responseHeaders:{"Cache-Control":"private, no-store"}};
+        return withEndpointResult(projectPracticePreparedGuestStudyContentV2(actual), 200,
+          {"Cache-Control":"private, no-store"});
       }
       return isAuthorityName(input.name)
         ? authority.handleAuthorityOperation({ ...input, name: input.name })
