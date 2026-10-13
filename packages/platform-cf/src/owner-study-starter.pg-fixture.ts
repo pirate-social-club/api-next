@@ -277,7 +277,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     );
     createdRole = true;
     await admin.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${q(schema)} FROM PUBLIC,${q(role)};
-      REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(schema)} FROM PUBLIC,${q(role)};GRANT USAGE ON SCHEMA ${q(schema)} TO ${q(role)}`);
+      REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(schema)} FROM ${q(role)};GRANT USAGE ON SCHEMA ${q(schema)} TO ${q(role)}`);
     await admin.query("SELECT require_guest_learning_runtime_role_v1($1::regrole)", [role]);
     for (const signature of [
       "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)",
