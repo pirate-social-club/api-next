@@ -79,9 +79,9 @@ const financialTables = [
   "owner_accounting_native_source_inventory_v1",
 ] as const;
 const source = { communityId: "study-community", postId: "study-post" } as const;
-export const safetyMarginSeconds = 120;
+const safetyMarginSeconds = 120;
 
-export async function within<A>(p: Promise<A>, label: string, ms = 5000): Promise<A> {
+async function within<A>(p: Promise<A>, label: string, ms = 5000): Promise<A> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
