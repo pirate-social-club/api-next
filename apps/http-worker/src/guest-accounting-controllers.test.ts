@@ -9,6 +9,11 @@ import { Effect, Schema } from "effect";
 import { makeGuestAccountingControllers, type GuestAccountingControllerServices } from "./guest-accounting-controllers.ts";
 import type { DecodedRequest } from "./transport.ts";
 
+function responseHeaders(value: unknown): Headers {
+  if (!(value instanceof Headers)) throw new TypeError("Expected actual response Headers");
+  return value;
+}
+
 const origin = "https://community.example";
 const owner = "owner_00000000-0000-0000-0000-000000000001";
 const credentialId = "A".repeat(22);
@@ -67,9 +72,9 @@ const headers = () => new Headers({ cookie: `__Host-pirate_guest_${credentialId}
 test("completed confirm correlates original intent/account/owner before host-only cookie expiry", async () => {
   const f = fixture(); const plan = await f.controllers.dispatch("ConfirmGuestAttachmentTargetV1", confirmInput());
   const result = plan.finalize(headers());
-  expect(result.body).toEqual(binding); expect(result.responseHeaders?.get("cache-control")).toBe("private, no-store");
-  expect(result.responseHeaders?.get("set-cookie")).toContain(`__Host-pirate_guest_${credentialId}=`);
-  expect(result.responseHeaders?.get("set-cookie")).toContain("Max-Age=0");
+  expect(result.body).toEqual(binding); expect(responseHeaders(result.responseHeaders).get("cache-control")).toBe("private, no-store");
+  expect(responseHeaders(result.responseHeaders).get("set-cookie")).toContain(`__Host-pirate_guest_${credentialId}=`);
+  expect(responseHeaders(result.responseHeaders).get("set-cookie")).toContain("Max-Age=0");
   expect(JSON.stringify(result.body)).not.toContain(account.sessionBinding);
 });
 test("foreign confirm body/intent/binding and unproved expire effects yield no response plan/cookies", async () => {

@@ -8,6 +8,11 @@ import { Effect } from "effect";
 import { makeGuestAccountingComposition } from "./guest-accounting-controller-composition.ts";
 import { makeGuestAuthorityComposition } from "./guest-authority-controller-composition.ts";
 
+function responseHeaders(value: unknown): Headers {
+  if (!(value instanceof Headers)) throw new TypeError("Expected actual response Headers");
+  return value;
+}
+
 const origin = "https://community.example";
 const ingress = "https://hns-ingress.example";
 const ordinaryScope = "pirate-browser-session-v1";
@@ -37,7 +42,7 @@ function fixture(options: { tokenFailure?: boolean; originalBindingAccountId?: s
   const decodeRequestLocations = async () => { decodedCalls++; return { body: {}, params: { id: attachmentId }, query: {}, headers: {} }; };
   return { authority, accounting, queries, decodeRequestLocations, counts: () => ({ accountCalls, decodedCalls }) };
 }
-function request(path: string, token = "ordinary", more: HeadersInit = {}, method = "GET") {
+function request(path: string, token = "ordinary", more: Record<string, string> = {}, method = "GET") {
   const headers = new Headers(more); headers.set("cookie", `__Host-pirate_session=${token}; ${headers.get("cookie") ?? ""}`);
   return new Request(`${origin}${path}`, { method, headers, ...(method === "POST" ? { body: "unread-invalid-json" } : {}) });
 }
@@ -47,8 +52,8 @@ test("successful original attachment recovery verifies Account only before decod
   const response = await f.accounting.handleAccountingOperation({ name: "GetMySuccessfulGuestAttachmentV1",
     request: request(`/users/me/guest-attachments/${attachmentId}`, "ordinary", { cookie: "__Host-pirate_guest_broken=broken; __Host-pirate_guest_csrf=bad" }),
     decodeRequestLocations: f.decodeRequestLocations });
-  expect(response.body).toEqual(binding); expect(response.responseHeaders?.get("cache-control")).toBe("private, no-store");
-  expect(response.responseHeaders?.has("set-cookie")).toBe(false);
+  expect(response.body).toEqual(binding); expect(responseHeaders(response.responseHeaders).get("cache-control")).toBe("private, no-store");
+  expect(responseHeaders(response.responseHeaders).has("set-cookie")).toBe(false);
   expect(f.counts()).toEqual({ accountCalls: 1, decodedCalls: 1 });
   expect(f.queries.some(q => /guest_proof|guest_credential|lease/i.test(q.text))).toBe(false);
   expect(f.queries.filter(q => q.text.startsWith("SELECT find_bound_guest_attachment_v1"))).toHaveLength(1);
@@ -117,5 +122,5 @@ test("canonically authorized successful read preserves original Account A target
   const read = f.queries.find(q => q.text.startsWith("SELECT find_bound_guest_attachment_v1"));
   expect(read?.values?.[0]).toBe("canonical-account");
   expect(read?.values?.[1]).toBe(attachmentId);
-  expect(response.responseHeaders?.has("set-cookie")).toBe(false);
+  expect(responseHeaders(response.responseHeaders).has("set-cookie")).toBe(false);
 });
