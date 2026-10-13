@@ -141,7 +141,11 @@ export type RewardedFixture = ArchiveFixture & {
 
 export async function rewardedFixture(
   use: (f: RewardedFixture) => Promise<void>,
-  options: Readonly<{ ownedResetNamespace?: true; purchaseSafetyMarginSeconds?: number }> = {},
+  options: Readonly<{
+    ownedResetNamespace?: true;
+    canonicalManagedSchema?: true;
+    purchaseSafetyMarginSeconds?: number;
+  }> = {},
 ) {
   const safetyMarginSeconds = options.purchaseSafetyMarginSeconds ?? defaultSafetyMarginSeconds;
   await archiveFixture(

@@ -154,6 +154,7 @@ export async function editFixture(admin: Client, sql: string, values: readonly u
 export type PreparedSongFixtureOptions = Readonly<{
   initializeOwnerPolicy?: true;
   ownedResetNamespace?: true;
+  canonicalManagedSchema?: true;
 }>;
 export async function fixture(
   use: (f: Fixture) => Promise<void>,
@@ -165,9 +166,11 @@ export async function fixture(
   const packet = await migrations();
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema =
-      options?.ownedResetNamespace === true
-        ? `api_next_hns_observer_${suffix}`
-        : `gs_capture_${suffix}`,
+      options?.canonicalManagedSchema === true
+        ? "api_next"
+        : options?.ownedResetNamespace === true
+          ? `api_next_hns_observer_${suffix}`
+          : `gs_capture_${suffix}`,
     role = `gs_capture_login_${suffix}`;
   const password = bytesHex(randomBytes(32));
   const admin = new Client({
