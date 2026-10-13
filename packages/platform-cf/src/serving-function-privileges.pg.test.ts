@@ -171,6 +171,8 @@ suite("Ordinary serving-role function grants", () => {
     const serving = new Client({ connectionString: scoped(role) });
     await admin.connect();
     let roleCreated = false;
+    const bridge = `serving_bridge_${suffix}`;
+    let bridgeCreated = false;
     try {
       // Staging's order: the serving role was provisioned before 0247, then
       // 0247-0265 revoked their functions from it, then the ceremony applies
@@ -283,6 +285,50 @@ suite("Ordinary serving-role function grants", () => {
       await admin.query(block.replaceAll("api_next_app", role));
       expect(assertServingFunctionPrivileges(await facts())).toBe(role);
 
+      // Owner membership the role cannot inherit still lets it SET ROLE to the
+      // owner and run every denial: refuse it directly and through another role.
+      const owner = (
+        await admin.query<{ owner: string }>(
+          "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid=$1::regclass",
+          [`${schema}.participation_owners`],
+        )
+      ).rows[0]?.owner;
+      if (!owner) throw new Error("schema owner missing");
+      const ownerRole = `"${owner.replaceAll('"', '""')}"`;
+      await admin.query(`CREATE ROLE ${bridge} NOLOGIN NOINHERIT`);
+      bridgeCreated = true;
+      for (const [grant, revoke] of [
+        [
+          `GRANT ${ownerRole} TO ${role} WITH INHERIT FALSE, SET TRUE`,
+          `REVOKE ${ownerRole} FROM ${role}`,
+        ],
+        [
+          `GRANT ${ownerRole} TO ${bridge} WITH INHERIT FALSE, SET TRUE; GRANT ${bridge} TO ${role} WITH INHERIT FALSE, SET TRUE`,
+          `REVOKE ${bridge} FROM ${role}; REVOKE ${ownerRole} FROM ${bridge}`,
+        ],
+      ] as const) {
+        await admin.query(grant);
+        const rows = await facts();
+        // Immediate access is unchanged, so only membership reveals the escalation.
+        expect(rows.every((row) => row.can_execute === row.expected_execute)).toBe(true);
+        expect(() => assertServingFunctionPrivileges(rows)).toThrow(
+          ServingFunctionPrivilegesRefused,
+        );
+        await admin.query(revoke);
+      }
+      await admin.query(`GRANT ${ownerRole} TO ${role} WITH INHERIT FALSE, SET TRUE`);
+      await serving.query(`SET ROLE ${ownerRole}`);
+      expect(
+        (
+          await serving.query(
+            "SELECT has_function_privilege(current_user,'close_unclaimed_learner_audio_private_v1(text)','EXECUTE') AS allowed",
+          )
+        ).rows,
+      ).toEqual([{ allowed: true }]);
+      await serving.query(`SET ROLE ${role}`);
+      await admin.query(`REVOKE ${ownerRole} FROM ${role}`);
+      expect(assertServingFunctionPrivileges(await facts())).toBe(role);
+
       // The generic upload closure stays owner-only.
       await expect(
         serving.query("SELECT close_unclaimed_learner_audio_private_v1('lau_any')"),
@@ -385,6 +431,7 @@ suite("Ordinary serving-role function grants", () => {
       await admin.query("ROLLBACK").catch(() => undefined);
       await serving.end().catch(() => undefined);
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined);
+      if (bridgeCreated) await admin.query(`DROP ROLE IF EXISTS ${bridge}`).catch(() => undefined);
       if (roleCreated) {
         await admin.query(`DROP OWNED BY ${role}`).catch(() => undefined);
         await admin.query(`DROP ROLE IF EXISTS ${role}`).catch(() => undefined);

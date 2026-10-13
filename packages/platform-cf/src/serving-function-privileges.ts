@@ -262,7 +262,9 @@ export const SERVING_FUNCTION_PRIVILEGES_SQL = `SELECT
   COALESCE(p.pronamespace = anchor.relnamespace AND p.proowner = anchor.relowner, FALSE) AS anchored_owner,
   COALESCE(p.prosecdef, FALSE) AS security_definer,
   COALESCE(p.proconfig = ARRAY['search_path=pg_catalog, ' || quote_ident(n.nspname) || ', pg_temp'], FALSE) AS pinned_search_path,
-  COALESCE(pg_has_role(current_user, p.proowner, 'USAGE'), FALSE) AS owner_equivalent,
+  -- MEMBER covers direct and indirect membership whatever its INHERIT or SET
+  -- option: a role that can SET ROLE to the owner executes every denial.
+  COALESCE(pg_has_role(current_user, p.proowner, 'MEMBER'), FALSE) AS owner_equivalent,
   COALESCE(has_function_privilege(current_user, p.oid, 'EXECUTE'), FALSE) AS can_execute
 FROM unnest($2::text[], $3::boolean[]) AS required(signature, expected_execute)
 LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = $1
