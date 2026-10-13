@@ -182,6 +182,7 @@ export const noBaselinePostgresTestSuites = [
   "packages/platform-cf/src/reward-run-lease.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-privileges.pg.test.ts",
   "packages/platform-cf/src/song-owner-policy-head-lock-grant.pg.test.ts",
+  "packages/platform-cf/src/serving-function-privileges.pg.test.ts",
   "scripts/staging-karaoke-release-database.pg.test.ts",
   "scripts/staging-persona-prepare-reset.pg.test.ts",
   "scripts/staging-persona-reset-denied-grants.pg.test.ts",
@@ -820,6 +821,10 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   "packages/platform-cf/src/study-v2-lifecycle.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 10070,
+  },
+  "packages/platform-cf/src/serving-function-privileges.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 6080,
   },
   "packages/platform-cf/src/study-v2-spoken-retry.pg.test.ts": {
     sourceCallCount: 8,

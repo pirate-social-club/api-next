@@ -6,6 +6,7 @@ import {
   verifyHnsStagingGatewayManifest,
 } from "./hns-staging-gateway-preflight.ts";
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
 import {
   type PrepareStagingBindingGuard,
   prepareStagingBindingGuard,
@@ -320,6 +321,7 @@ export async function deployWorkerWithProvenance(
   rewardDeploymentGuard: typeof withRewardsBindingDeployment = withRewardsBindingDeployment,
   stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
   telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
+  servingFunctionGuard: typeof withServingFunctionPrivilegesDeployment = withServingFunctionPrivilegesDeployment,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
@@ -357,48 +359,50 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
-  const deployed = await telegramDeploymentGuard(
-    repositoryRoot,
-    configPath,
-    input.environment,
-    () =>
-      rewardDeploymentGuard(repositoryRoot, configPath, input.environment, async (signal) => {
-        if (bindingGuard !== null) {
-          await bindingGuard.recheck();
-          const current = await verifyDeploymentSource(repositoryRoot, input, runner);
-          if (current.sourceSha !== sourceSha)
-            throw Error("deployment source changed before upload");
-        }
-        if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
-        return runner(
-          [
-            "bunx",
-            "wrangler",
-            "deploy",
-            "--env",
-            input.environment,
-            "--config",
-            configPath,
-            "--message",
-            message,
-            ...(bindingGuard?.telegramConfig === undefined
-              ? []
-              : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
-          ],
+  const deployed = await servingFunctionGuard(repositoryRoot, configPath, () =>
+    telegramDeploymentGuard(
+      repositoryRoot,
+      configPath,
+      input.environment,
+      () =>
+        rewardDeploymentGuard(repositoryRoot, configPath, input.environment, async (signal) => {
+          if (bindingGuard !== null) {
+            await bindingGuard.recheck();
+            const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+            if (current.sourceSha !== sourceSha)
+              throw Error("deployment source changed before upload");
+          }
+          if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
+          return runner(
+            [
+              "bunx",
+              "wrangler",
+              "deploy",
+              "--env",
+              input.environment,
+              "--config",
+              configPath,
+              "--message",
+              message,
+              ...(bindingGuard?.telegramConfig === undefined
+                ? []
+                : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
+            ],
+            repositoryRoot,
+            signal,
+          );
+        }),
+      bindingGuard?.telegramConfig,
+      async () => {
+        // Run schema admission from the exact deployment source, including older accepted releases.
+        const result = await runner(
+          ["bun", "scripts/telegram-activation-preflight.ts"],
           repositoryRoot,
-          signal,
+          AbortSignal.timeout(30_000),
         );
-      }),
-    bindingGuard?.telegramConfig,
-    async () => {
-      // Run schema admission from the exact deployment source, including older accepted releases.
-      const result = await runner(
-        ["bun", "scripts/telegram-activation-preflight.ts"],
-        repositoryRoot,
-        AbortSignal.timeout(30_000),
-      );
-      if (result.exitCode !== 0) throw Error("Telegram serving-role admission refused");
-    },
+        if (result.exitCode !== 0) throw Error("Telegram serving-role admission refused");
+      },
+    ),
   );
   if (deployed.stdout.length > 0) writeDiagnostic(deployed.stdout);
   if (deployed.stderr.length > 0) writeDiagnostic(deployed.stderr);

@@ -164,8 +164,14 @@ export function installKaraokeAttemptCaptureFixture(
           rowCount: 1,
         };
       }
-      if (text.includes("close_unclaimed_learner_audio_private_v1")) {
-        expect(values).toEqual([capture.uploadAttemptId]);
+      if (text.includes("cancel_unclaimed_account_karaoke_audio_private_v1")) {
+        expect(values).toEqual([
+          authority.accountId,
+          authority.sessionId,
+          authority.attemptId,
+          authority.artifactId,
+          JSON.stringify(capture),
+        ]);
         const closed = staged.ioState === "registered" && staged.multipartId === null;
         if (closed) {
           staged.ioState = "closed";

@@ -195,6 +195,63 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
   TEXT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN
 ) TO api_next_app;
 
+-- Migrations 0247-0265 make every function they define owner-only and infer no
+-- role grant. Ordinary account code calls these entry points directly. Apply
+-- only this incremental block, in the approved schema ceremony, to the serving
+-- login observed on the HTTP and jobs CONTROL_PLANE bindings: after migrating
+-- through 0265 and before deploying a Worker built from that source. It adds no
+-- table, role-membership or guest-study grant. Every other function those
+-- migrations define, including the generic upload closure, operator and legacy
+-- settlement and all guest authority, stays private to the schema owner.
+-- packages/platform-cf/src/serving-function-privileges.ts lists the same set,
+-- and `bun run db:preflight:serving-functions` reads it back through the
+-- serving connection.
+-- Ordinary account function grants begin
+GRANT EXECUTE ON FUNCTION provision_account_participation_owner_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION lock_original_account_audio_source_private_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION capture_account_study_audio_private_v1(
+  TEXT, TEXT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION require_account_spoken_success_private_v1(TEXT, JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION require_account_spoken_archive_private_v1(
+  TEXT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION find_account_spoken_success_private_v1(
+  TEXT, TEXT, TEXT, INTEGER, TEXT, TEXT, TEXT, BIGINT, INTEGER
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION begin_account_spoken_provider_private_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION mark_account_spoken_provider_unknown_private_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION persist_account_spoken_success_private_v1(TEXT, JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION load_account_spoken_success_private_v1(TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION list_closed_account_spoken_checkpoints_private_v1(
+  INTEGER
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION claim_captured_learner_audio_private_v1(JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION require_captured_learner_audio_private_v1(JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION settle_learner_audio_terminal_fact_private_v1(
+  TEXT, TEXT, BOOLEAN, TEXT, JSONB
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION continue_captured_learner_audio_private_v1(JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION note_learner_audio_multipart_id_private_v1(TEXT, TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION prepare_account_audio_delete_private_v1(TEXT, INTEGER) TO api_next_app;
+GRANT EXECUTE ON FUNCTION fail_account_audio_delete_private_v1(TEXT, BIGINT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION confirm_account_audio_delete_private_v1(
+  TEXT, BIGINT, TIMESTAMPTZ
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION capture_account_karaoke_audio_private_v1(
+  TEXT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION require_captured_karaoke_recording_result_private_v1(
+  TEXT, TEXT, TEXT, TEXT, JSONB
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION read_account_karaoke_audio_capture_private_v1(
+  TEXT, TEXT, TEXT, TEXT
+) TO api_next_app;
+GRANT EXECUTE ON FUNCTION cancel_unclaimed_account_karaoke_audio_private_v1(
+  TEXT, TEXT, TEXT, TEXT, JSONB
+) TO api_next_app;
+-- Ordinary account function grants end
+
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions
 -- are deliberately not granted to the runtime: a compromise of the serving
