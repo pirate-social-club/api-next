@@ -26,7 +26,7 @@ BEGIN
   OR command.state IS DISTINCT FROM 'reserved'
   OR artifact.platform_retention NOT IN('private_learning','ephemeral')
   OR artifact.expires_at IS DISTINCT FROM command.reserved_at+
-    CASE WHEN artifact.platform_retention='ephemeral' THEN INTERVAL '24 hours' ELSE INTERVAL '24 months' END
+    (CASE WHEN artifact.platform_retention='ephemeral' THEN INTERVAL '24 hours' ELSE INTERVAL '24 months' END)
   OR (NEW.captured_platform_retention IS NOT NULL AND NEW.captured_platform_retention IS DISTINCT FROM artifact.platform_retention)
   OR (NEW.captured_retention_expires_at IS NOT NULL AND NEW.captured_retention_expires_at IS DISTINCT FROM artifact.expires_at) THEN
   RAISE EXCEPTION 'actual future Guest retention capture required'; END IF;
