@@ -6,6 +6,7 @@ import {
   resetPostgresTestBaseline,
 } from "@pirate/testing/postgres";
 import { Client } from "pg";
+import { emitPostgresCiFixturePhase } from "./postgres-ci-wait-diagnostic.ts";
 
 const reusableSchemaNames = new Set<string>();
 
@@ -127,6 +128,7 @@ async function cleanupReusableSchema(state: ReusableSchemaState): Promise<void> 
   }
   const admin = new Client({ connectionString: state.baseConnectionString });
   await admin.connect();
+  emitPostgresCiFixturePhase("cleanup_started", state.schema, admin);
   let failure: unknown;
   try {
     await admin.query(`SET search_path TO ${quoteIdentifier(state.schema)}`);
@@ -147,6 +149,7 @@ async function cleanupReusableSchema(state: ReusableSchemaState): Promise<void> 
       .catch(() => undefined);
     await admin.end();
     state.initialized = false;
+    emitPostgresCiFixturePhase("cleanup_finished", state.schema, admin);
   }
   if (failure !== undefined) throw failure;
 }
@@ -166,25 +169,30 @@ export async function withReusablePostgresTestSchema<A>(options: {
   state.queue = new Promise<void>((resolve) => {
     releaseFixture = resolve;
   });
+  emitPostgresCiFixturePhase("queued", state.schema);
   await precedingFixture;
   state.active = true;
   const admin = new Client({ connectionString: state.baseConnectionString });
   try {
     await admin.connect();
+    emitPostgresCiFixturePhase("connected", state.schema, admin);
     try {
+      emitPostgresCiFixturePhase("prepare_started", state.schema, admin);
       await prepareReusableSchema(state, admin);
-      return await options.use({
-        admin,
-        connectionString: state.scopedConnectionString,
-        schema: state.schema,
-      });
+      emitPostgresCiFixturePhase("prepare_finished", state.schema, admin);
+      emitPostgresCiFixturePhase("use_started", state.schema, admin);
+      try { return await options.use({ admin, connectionString: state.scopedConnectionString, schema: state.schema }); }
+      finally { emitPostgresCiFixturePhase("use_finished", state.schema, admin); }
     } finally {
+      emitPostgresCiFixturePhase("rollback_started", state.schema, admin);
       await admin.query("ROLLBACK").catch(() => undefined);
       await admin.query("SET search_path TO public").catch(() => undefined);
       await admin.end().catch(() => undefined);
+      emitPostgresCiFixturePhase("disconnected", state.schema, admin);
     }
   } finally {
     state.active = false;
     releaseFixture();
+    emitPostgresCiFixturePhase("released", state.schema, admin);
   }
 }
