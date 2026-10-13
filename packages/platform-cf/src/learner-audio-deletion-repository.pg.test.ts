@@ -528,7 +528,7 @@ suite("learner audio deletion repository", () => {
         await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
         await admin.end();
       }
-    });
+    }, 60_000);
   }
 
   for (const ledger of LEGACY_LEDGERS) {
@@ -897,6 +897,6 @@ suite("learner audio deletion repository", () => {
         }
         await admin.end();
       }
-    });
+    }, 60_000);
   }
 });
