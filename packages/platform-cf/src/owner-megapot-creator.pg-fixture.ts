@@ -321,7 +321,7 @@ export async function creatorFixture(
                FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN actor_role
                WHERE n.nspname=$1 AND has_function_privilege(current_user,p.oid,'EXECUTE')
                  IS DISTINCT FROM (p.oid IN(SELECT function_oid FROM expected))
-               ORDER BY p.proname COLLATE "C",oidvectortypes(p.proargtypes) COLLATE "C" LIMIT 129`,
+               ORDER BY p.proname COLLATE "C",oidvectortypes(p.proargtypes) COLLATE "C" LIMIT 1025`,
               [f.schema, effectiveFunctions, profile.functions, inherited],
             );
             console.error(
@@ -330,9 +330,9 @@ export async function creatorFixture(
                 expectedPurposeCount: 123,
                 expectedInheritedCount: 37,
                 expectedEffectiveCount: 153,
-                diagnosticLimit: 128,
-                truncated: difference.rows.length > 128,
-                difference: difference.rows.slice(0, 128),
+                diagnosticLimit: 1024,
+                truncated: difference.rows.length > 1024,
+                difference: difference.rows.slice(0, 1024),
               }),
             );
           } catch {
