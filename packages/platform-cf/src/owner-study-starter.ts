@@ -556,7 +556,7 @@ export const makeControlPlaneOwnerStudyStarter = (
             prepared.sessionId,
           );
         }
-        return outcome(committed, input);
+        return outcome(committed, { ...input, rewardTerms: acceptedTerms });
       },
       catch: () => invalid("guest-study.start.outcome"),
     });
