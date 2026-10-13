@@ -6,14 +6,14 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { AUTHOR_ID } from "./activity-participation-composed.pg-fixture.ts";
 import type { Runtime } from "./activity-participation-composed-drivers.pg-fixture.ts";
 import {
   confirmWallet,
   prepareIdentity,
 } from "./activity-participation-composed-identity.pg-fixture.ts";
-import { AUTHOR_ID } from "./activity-participation-composed.pg-fixture.ts";
-import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 export const policy1 = "karaoke_qualification_v2@1";

@@ -815,7 +815,10 @@ async function withSchema(
     cleanupFailures.push(error);
   }
   if (failed && cleanupFailures.length > 0)
-    throw new AggregateError([primaryFailure, ...cleanupFailures], "Study fixture and cleanup failed");
+    throw new AggregateError(
+      [primaryFailure, ...cleanupFailures],
+      "Study fixture and cleanup failed",
+    );
   if (failed) throw primaryFailure;
   if (cleanupFailures.length > 0)
     throw new AggregateError(cleanupFailures, "Study fixture cleanup failed");
