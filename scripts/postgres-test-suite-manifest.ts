@@ -145,6 +145,10 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  // Genuine native prefix/LOGIN fixtures, matching the existing financial native
+  // and four-principal Worker groups; neither uses the reusable rendered baseline.
+  "packages/platform-cf/src/owner-megapot-creator.pg.test.ts",
+  "apps/http-worker/src/owner-financial-default-worker.pg.test.ts",
   "packages/platform-cf/src/owner-megapot-positive-native.pg.test.ts",
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/owner-megapot-snapshot-codec.pg.test.ts",
