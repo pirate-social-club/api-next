@@ -1,3 +1,4 @@
+import { makeGuestStudyServingComposition, type GuestStudyManagedRuntime } from "./guest-study-serving-composition.ts";
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
@@ -333,6 +334,9 @@ export interface HttpWorkerBindings
     SpacesRuntimeBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
+  /** Reviewed nonproduction release only; absent keeps all Guest serving disabled. */
+  readonly GUEST_STUDY_SERVING_ENABLED?: string;
+  readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
   readonly STUDY_GENERATION_ENABLED?: string;
   readonly STUDY_PROFILE_COVERAGE_ENABLED?: string;
   readonly STUDY_SPOKEN_RERECORD_ENABLED?: string;
@@ -493,6 +497,9 @@ export interface HttpWorkerBindings
 }
 
 export interface HttpWorkerCompositionDependencies {
+  /** Process-owned managed role/storage admission; no request-selected override.
+   * Unavailable by default. Production is refused by the guest serving constructor. */
+  readonly guest_study_managed_runtime?: GuestStudyManagedRuntime;
   /** Separate development test build only; never selected by a runtime binding. */
   readonly verification_registry?: VerificationProviderRegistryService;
   readonly hns_ownership?: Readonly<{
@@ -1812,7 +1819,17 @@ export async function createProductionHttpWorker(
     avatarBindings ? makeAvatarStorage(avatarBindings) : null,
     avatarAuthoring,
   );
+  const guestStudy = await makeGuestStudyServingComposition({
+    environment: config.API_NEXT_ENV,
+    ...(bindings.GUEST_STUDY_SERVING_ENABLED === undefined ? {} : { enabledBinding: bindings.GUEST_STUDY_SERVING_ENABLED }),
+    ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined ? {} : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),
+    ...(dependencies.guest_study_managed_runtime === undefined ? {} : { managed: dependencies.guest_study_managed_runtime }),
+    accountVerifier: tokenVerifier,
+    ordinarySessionScope: sessionCrypto.defaultScope,
+    ...(config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN === "" ? {} : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
+  });
   const worker = createHttpWorker({
+    ...(guestStudy === null ? {} : { guestStudy }),
     ...spacesRuntime,
     config: {
       corsOrigin: config.CORS_ORIGIN,

@@ -204,7 +204,7 @@ SELECT public_resource.accessible,
                    FROM catalogue), '[]'::jsonb) AS prepared_rows
   FROM public_resource`;
 
-export const makeControlPlanePreparedGuestStudyContentRepository = (disclosure: Disclosure) => ({
+export const makeControlPlanePreparedGuestStudyContentRepository = (disclosure: Disclosure | null) => ({
   get: Effect.fn("PreparedGuestStudyContentStore.get")(function* (raw: Input) {
     const configured = yield* Effect.try({
       try: () => ({
@@ -263,7 +263,7 @@ export const makeControlPlanePreparedGuestStudyContentRepository = (disclosure: 
 
 export const makeControlPlanePreparedGuestStudyContentStore = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
-  disclosure: Disclosure,
+  disclosure: Disclosure | null,
 ): PreparedGuestStudyContentStore => {
   const repository = makeControlPlanePreparedGuestStudyContentRepository(disclosure);
   return { get: (input) => repository.get(input).pipe(Effect.provide(runtime)) };

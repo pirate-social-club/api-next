@@ -1,3 +1,4 @@
+import { isGuestStudyServingName, type GuestStudyServingComposition } from "./guest-study-serving-composition.ts";
 import {
   HNS_FORWARDER_HOST_HEADER,
   isCanonicalHnsForwarderHost,
@@ -158,6 +159,8 @@ export interface HttpWorkerConfig {
 }
 
 export interface HttpWorkerOptions {
+  /** Managed admitted sixteen-operation graph; absent means unavailable. */
+  readonly guestStudy?: GuestStudyServingComposition;
   /** Frozen adapter port only. Interface-only endpoints remain disabled even when supplied. */
   readonly browserParticipation?: GuestBrowserAuthenticationAdapter;
   /** Private source factory; adding it never enables a disabled definition. */
@@ -818,6 +821,9 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  if (options.guestStudy !== undefined && options.browserParticipationRequest !== undefined &&
+      options.guestStudy.requestAuthentication !== options.browserParticipationRequest)
+    throw new Error("Guest request authentication composition differs");
   const hnsEdgeStatus = options.hnsEdgeStatus ?? disabledProductionHnsEdgeStatusComposition;
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
@@ -977,7 +983,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       let beforeGuestBodyRead: (() => Promise<void>) | undefined;
       if (guest !== undefined) {
         // Disabled definitions refuse before HNS clones/hashes any body.
-        if (guest.endpoint.implementation === "disabled")
+        if (guest.endpoint.implementation === "disabled" ||
+            !isGuestStudyServingName(guest.name) || options.guestStudy === undefined)
           throw new NotFound({ message: "Endpoint not found" });
         const policy = guest.endpoint.auth.policy;
         if (policy.kind !== "browserParticipation")
@@ -992,7 +999,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           requestHeaders: context.req.raw.headers,
           trustedProductOrigin: `https://${claimedHost}`,
         });
-        const guestRequest = options.browserParticipationRequest;
+        const guestRequest = options.guestStudy?.requestAuthentication ?? options.browserParticipationRequest;
         if (guestRequest === undefined)
           throw new InternalError({ message: "Guest browser composition unavailable" });
         beforeGuestBodyRead = () =>
@@ -1039,7 +1046,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
         if (
           binding.endpoint.implementation === "disabled" ||
-          binding.endpoint.auth.policy.kind === "browserParticipation"
+          (binding.endpoint.auth.policy.kind === "browserParticipation" &&
+            (!isGuestStudyServingName(binding.name) || options.guestStudy === undefined))
         ) {
           throw new NotFound({ message: "Endpoint not found" });
         }
@@ -1055,7 +1063,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             : undefined) ??
           (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
           (binding.name === "GetMyProfile" ? options.profile : undefined);
-        if (handler === undefined) {
+        if (handler === undefined &&
+            !(options.guestStudy !== undefined && isGuestStudyServingName(binding.name))) {
           if (binding.name === "Health") {
             return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
           }
@@ -1063,6 +1072,27 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         }
 
         try {
+          if (options.guestStudy !== undefined && isGuestStudyServingName(binding.name)) {
+            const verifiedHns = context.get("hnsCommunityAppApiAuthority");
+            const result = await options.guestStudy.handle({
+              name: binding.name,
+              request: context.req.raw,
+              ...(verifiedHns === undefined ? {} : { verifiedHns }),
+              decodeRequestLocations: async () => {
+                const decoded = await decodeInput(binding.endpoint, context, null);
+                const { principal: _principal, browserParticipation: _guest, ...locations } = decoded;
+                const edgeClientIp = context.req.header("CF-Connecting-IP");
+                return { ...locations, signal: context.req.raw.signal,
+                  ...(edgeClientIp === undefined ? {} : { edgeClientIp }) };
+              },
+            });
+            const status = result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200;
+            validateHandlerStatus(binding.endpoint, status);
+            const headers = new Headers(result.responseHeaders);
+            headers.set("cache-control", "private, no-store");
+            return json(context, decodeResponse(binding.endpoint, result.body), status, true, headers);
+          }
+          if (handler === undefined) throw new NotFound({ message: "Endpoint not found" });
           const authorization = context.req.header("authorization");
           const hasAuthorizationHeader = authorization !== undefined;
           const hasCredentials = authorization !== undefined && authorization.trim() !== "";
