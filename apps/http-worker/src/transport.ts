@@ -39,6 +39,7 @@ import { routeTable } from "./generated/route-table.ts";
 import { assertGuestBrowserRequestBoundary } from "./guest-browser-authentication.ts";
 import type { GuestBrowserAuthenticationAdapter } from "./guest-browser-cookie-policy.ts";
 import type { makeGuestBrowserRequestAuthenticator } from "./guest-browser-request-authentication.ts";
+import { type OwnerRewardGuestStudyServingComposition, isOwnerRewardGuestStudyServingName } from "./owner-reward-guest-study-serving-composition.ts";
 import {
   type GuestStudyServingComposition,
   isGuestStudyServingName,
@@ -163,7 +164,7 @@ export interface HttpWorkerConfig {
 
 export interface HttpWorkerOptions {
   /** Managed admitted sixteen-operation graph; absent means unavailable. */
-  readonly guestStudy?: GuestStudyServingComposition;
+  readonly guestStudy?: GuestStudyServingComposition | OwnerRewardGuestStudyServingComposition;
   /** Frozen adapter port only. Interface-only endpoints remain disabled even when supplied. */
   readonly browserParticipation?: GuestBrowserAuthenticationAdapter;
   /** Private source factory; adding it never enables a disabled definition. */
@@ -823,6 +824,18 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
   }
 };
 
+const OWNER_ACCOUNT_STUDY_FINANCIAL_NAMES=new Set([
+ "GetAccountStudyRewardPreviewV1","StartOwnerAccountStudySessionV1","GetOwnerAccountStudySessionV1",
+ "GetOwnerAccountStudyStartOperationV1","SubmitOwnerAccountStudyAnswerV1",
+ "ListMyOwnerRewardCreditsV1","GetMyOwnerRewardCreditV1","ListMyOwnerParticipationsV1","GetMyOwnerParticipationV1",
+]);
+const OWNER_ACCOUNT_AUTH_NAMES=new Set([...OWNER_ACCOUNT_STUDY_FINANCIAL_NAMES,
+ "GetMySuccessfulGuestAttachmentV1","SelectOwnerRewardCreditRecipientV1","ClaimOwnerRewardCreditV1"]);
+const OWNER_ACCOUNT_AUTH_ROUTES=routeTable.filter(({name})=>OWNER_ACCOUNT_AUTH_NAMES.has(name)).map(binding=>({binding,
+ path:new RegExp("^(?:/api)?"+binding.path.split("/").map(segment=>segment.startsWith(":")?"[^/]+":segment.replace(/[.*+?^${}()|[\]\\]/gu,"\\$&")).join("/")+"$")}));
+const supportsGuestStudyName=(graph:HttpWorkerOptions["guestStudy"],name:string)=>
+ graph!==undefined && (graph.mode==="owner_financial"?isOwnerRewardGuestStudyServingName(name):isGuestStudyServingName(name));
+
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
   if (
     options.guestStudy !== undefined &&
@@ -986,13 +999,22 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       const guest = BROWSER_PARTICIPATION_ROUTES.find(
         ({ binding, path }) => binding.method === context.req.method && path.test(pathname),
       )?.binding;
+      const financialAccount=OWNER_ACCOUNT_AUTH_ROUTES.find(
+        ({binding,path})=>binding.method===context.req.method&&path.test(pathname))?.binding;
       let beforeGuestBodyRead: (() => Promise<void>) | undefined;
+      if(financialAccount!==undefined) {
+        const graph=options.guestStudy;
+        if(financialAccount.endpoint.implementation==="disabled"||graph?.mode!=="owner_financial")
+          throw new NotFound({message:"Endpoint not found"});
+        const purpose=financialAccount.name==="GetMySuccessfulGuestAttachmentV1"?"successful_attachment":"ordinary_account";
+        beforeGuestBodyRead=()=>graph.requestAuthentication.precheckOrdinaryAccountHnsBeforeBody({
+          request:context.req.raw,purpose,unsafe:UNSAFE_METHODS.has(context.req.method)});
+      }
       if (guest !== undefined) {
         // Disabled definitions refuse before HNS clones/hashes any body.
         if (
           guest.endpoint.implementation === "disabled" ||
-          !isGuestStudyServingName(guest.name) ||
-          options.guestStudy === undefined
+          !supportsGuestStudyName(options.guestStudy,guest.name)
         )
           throw new NotFound({ message: "Endpoint not found" });
         const policy = guest.endpoint.auth.policy;
@@ -1056,9 +1078,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
         if (
           binding.endpoint.implementation === "disabled" ||
-          (isGuestStudyServingName(binding.name) && options.guestStudy === undefined) ||
+          ((isGuestStudyServingName(binding.name)||isOwnerRewardGuestStudyServingName(binding.name)) && !supportsGuestStudyName(options.guestStudy,binding.name)) ||
+          (OWNER_ACCOUNT_STUDY_FINANCIAL_NAMES.has(binding.name) && options.guestStudy?.mode!=="owner_financial") ||
           (binding.endpoint.auth.policy.kind === "browserParticipation" &&
-            (!isGuestStudyServingName(binding.name) || options.guestStudy === undefined))
+            !supportsGuestStudyName(options.guestStudy,binding.name))
         ) {
           throw new NotFound({ message: "Endpoint not found" });
         }
@@ -1076,7 +1099,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           (binding.name === "GetMyProfile" ? options.profile : undefined);
         if (
           handler === undefined &&
-          !(options.guestStudy !== undefined && isGuestStudyServingName(binding.name))
+          !supportsGuestStudyName(options.guestStudy,binding.name)
         ) {
           if (binding.name === "Health") {
             return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
@@ -1085,10 +1108,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         }
 
         try {
-          if (options.guestStudy !== undefined && isGuestStudyServingName(binding.name)) {
+          const selectedGuest=options.guestStudy;
+          if (supportsGuestStudyName(selectedGuest,binding.name)) {
+            if(selectedGuest===undefined) throw new InternalError({message:"Guest graph unavailable"});
             const verifiedHns = context.get("hnsCommunityAppApiAuthority");
-            const result = await options.guestStudy.handle({
-              name: binding.name,
+            const locations={
               request: context.req.raw,
               ...(verifiedHns === undefined ? {} : { verifiedHns }),
               decodeRequestLocations: async () => {
@@ -1105,7 +1129,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
                   ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
                 };
               },
-            });
+            };
+            const name=binding.name;
+            let result:EndpointHandlerResult;
+            if(selectedGuest.mode==="owner_financial" && isOwnerRewardGuestStudyServingName(name))
+              result=await selectedGuest.handle({...locations,name});
+            else if(selectedGuest.mode==="practice" && isGuestStudyServingName(name))
+              result=await selectedGuest.handle({...locations,name});
+            else throw new NotFound({message:"Endpoint not found"});
             const status = result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200;
             validateHandlerStatus(binding.endpoint, status);
             const headers = new Headers(result.responseHeaders);

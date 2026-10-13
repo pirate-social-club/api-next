@@ -87,6 +87,7 @@ import {
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
 import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
+import { makeDefaultGuestStudyRecoveryComposition, type GuestStudyRecoveryManagedBindings } from "./guest-study-recovery-managed-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 
@@ -146,7 +147,8 @@ export interface JobsWorkerEnv
     HnsActiveLeaseRenewalBindings,
     MediaJobsBindings,
     TelegramBindings,
-    SpacesReconciliationBindings {
+    SpacesReconciliationBindings,
+    GuestStudyRecoveryManagedBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
@@ -856,6 +858,7 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
+    const guestStudyRecovery=await makeDefaultGuestStudyRecoveryComposition(env,config.API_NEXT_ENV);
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -874,6 +877,7 @@ export default {
           })()
         : undefined,
       spacesReconciliation,
+      guestStudyRecovery,
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);

@@ -4,17 +4,24 @@ import {
   type GuestStudyManagedControlPlaneBindings,
   makeGuestStudyManagedControlPlanes,
 } from "@pirate/platform-cf/guest-study-managed-control-planes";
+import { makeHyperdriveControlPlaneLayer, type HyperdriveConnection } from "@pirate/platform-cf/postgres";
+import { Schema } from "effect";
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect } from "effect";
 import {
-  guestAccountingNames,
   guestLearningNames,
 } from "./guest-authority-controller-composition.ts";
 import type { GuestStudyManagedRuntime } from "./guest-study-serving-composition.ts";
+import type { OwnerRewardGuestStudyManagedRuntime } from "./owner-reward-guest-study-serving-composition.ts";
 
 export interface GuestStudyManagedBindings extends GuestStudyManagedControlPlaneBindings {
   readonly GUEST_STUDY_SERVING_ENABLED?: string;
   readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
+  /** Nonsecret future release selector; absent/false retains canonical practice16. */
+  readonly GUEST_STUDY_REWARDS_ENABLED?: string;
+  readonly CONTROL_PLANE?:HyperdriveConnection;
+  /** Existing trusted server policy also used by jobs. Never body/client config. */
+  readonly MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS?: string;
   /** One reviewed exact ordinary product origin. Not CORS lists or request Host. */
   readonly GUEST_STUDY_PRODUCT_ORIGIN?: string;
   /** Existing provider/storage bindings only; no new secret is introduced. */
@@ -51,9 +58,8 @@ export function makeDefaultGuestStudyManagedRuntime(
   for (const name of guestLearningNames)
     if (guestParticipationRegistry[name].implementation === "disabled")
       throw new Error("Guest Study implementation declarations remain disabled");
-  for (const name of guestAccountingNames)
-    if (guestParticipationRegistry[name].implementation !== "disabled")
-      throw new Error("Guest accounting declarations must remain disabled");
+  // Practice transport still excludes accounting names and native profile
+  // verification rejects every unexpected effective financial privilege.
   const ordinaryProductOrigin = productOrigin(bindings.GUEST_STUDY_PRODUCT_ORIGIN);
   const bucket = bindings.LEARNER_AUDIO;
   if (
@@ -87,4 +93,33 @@ export function makeDefaultGuestStudyManagedRuntime(
       workerBackground.defer(() => task);
     },
   });
+}
+
+export function ownerFinancialGuestStudySelected(bindings:GuestStudyManagedBindings,environment:string):boolean {
+ const enabled=bindings.GUEST_STUDY_REWARDS_ENABLED;
+ if(enabled===undefined || enabled==="false") return false;
+ if(enabled!=="true" || !["development","staging","test"].includes(environment))
+  throw new Error("Guest financial serving requires explicit nonproduction admission");
+ if(bindings.GUEST_STUDY_SERVING_ENABLED!=="true")
+  throw new Error("Financial Guest Study requires explicitly enabled learning composition");
+ return true;
+}
+export function makeDefaultOwnerRewardGuestStudyManagedRuntime(bindings:GuestStudyManagedBindings,
+ environment:string):OwnerRewardGuestStudyManagedRuntime|null {
+ if(!ownerFinancialGuestStudySelected(bindings,environment)) return null;
+ const actual=makeDefaultGuestStudyManagedRuntime(bindings,environment);
+ if(actual===null) throw new Error("Financial Guest Study managed bindings unavailable");
+ const raw=bindings.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS;
+ // Missing/malformed policy has no NEW financial quote; original recovery does
+ // not require it. This is not a server default or client-provided number.
+ const purchaseSafetyMarginSeconds=raw!==undefined && /^[1-9][0-9]{0,3}$/u.test(raw)
+  && Number(raw)<=3600?Number(raw):null;
+ const core=Schema.decodeUnknownSync(Schema.Struct({connectionString:Schema.NonEmptyString}))(bindings.CONTROL_PLANE);
+ if(core.connectionString.trim()!==core.connectionString) throw new Error("Ordinary Account database binding unavailable");
+ const distinct=[core.connectionString,bindings.GUEST_STUDY_PUBLIC_READ?.connectionString,
+  bindings.GUEST_STUDY_CONTROLLED_LEARNING?.connectionString,bindings.GUEST_STUDY_CRON?.connectionString,
+  bindings.GUEST_STUDY_READINESS_OBSERVER?.connectionString];
+ if(new Set(distinct).size!==5) throw new Error("Financial principals must use five distinct bindings");
+ const ordinaryAccount=makeHyperdriveControlPlaneLayer(core,{connectTimeoutMs:3000,statementTimeoutMs:2000,closeTimeoutMs:2000});
+ return Object.freeze({...actual,purchaseSafetyMarginSeconds,ordinaryAccount});
 }

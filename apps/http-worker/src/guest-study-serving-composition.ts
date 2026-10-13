@@ -7,7 +7,7 @@ import {
   makeOwnerGuestStudyService,
   makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application/use-cases/guest-learning";
-import { guestParticipationRegistry } from "@pirate/contracts";
+import { GetPublicGuestStudyPreparedContentV2, guestParticipationRegistry } from "@pirate/contracts";
 import { makeControlPlaneGuestPracticeParticipationReadStore } from "@pirate/platform-cf/guest-practice-participation-read-store";
 import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";
 import { makeGuestRecoveryAudioDeletionStores } from "@pirate/platform-cf/guest-recovery-deletion-store";
@@ -25,9 +25,9 @@ import { makeControlPlaneOwnerStudyStarter } from "@pirate/platform-cf/owner-stu
 import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-store-composition";
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
-import type { Layer } from "effect";
+import { Effect, Schema, type Layer } from "effect";
+import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-prepared-v2.ts";
 import {
-  guestAccountingNames,
   guestLearningNames,
   makeGuestAuthorityComposition,
 } from "./guest-authority-controller-composition.ts";
@@ -36,7 +36,7 @@ import { makeGuestLearningComposition } from "./guest-learning-controller-compos
 import type { GuestLearningControllerName } from "./guest-learning-controllers.ts";
 import { readGuestStudyRuntimeConfiguration } from "./guest-study-runtime-configuration.ts";
 
-export type GuestStudyServingName = GuestAuthorityControllerName | GuestLearningControllerName;
+export type GuestStudyServingName = GuestAuthorityControllerName | GuestLearningControllerName | "GetPublicGuestStudyPreparedContentV2";
 const authorityNames: readonly string[] = [
   "GetGuestAuthorityV1",
   "IssueGuestBootstrapV1",
@@ -48,7 +48,7 @@ const authorityNames: readonly string[] = [
   "CreateGuestAttachmentIntentV1",
 ];
 export function isGuestStudyServingName(name: string): name is GuestStudyServingName {
-  return (guestLearningNames as readonly string[]).includes(name);
+  return name === "GetPublicGuestStudyPreparedContentV2" || (guestLearningNames as readonly string[]).includes(name);
 }
 function isAuthorityName(name: GuestStudyServingName): name is GuestAuthorityControllerName {
   return authorityNames.includes(name);
@@ -106,9 +106,9 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
   for (const name of guestLearningNames)
     if (guestParticipationRegistry[name].implementation === "disabled")
       throw new Error("Guest Study implementation declarations remain disabled");
-  for (const name of guestAccountingNames)
-    if (guestParticipationRegistry[name].implementation !== "disabled")
-      throw new Error("Guest accounting declarations must remain disabled");
+  // This graph never dispatches the five accounting operations. Their accepted
+  // declaration metadata does not grant this practice role financial capability;
+  // actual exact native ACL/profile verification below still refuses excess rights.
   const m = input.managed;
   const readiness = makeGuestStudyManagedReadiness({
     learning: m.learning,
@@ -204,6 +204,7 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
     },
   });
   return Object.freeze({
+    mode: "practice" as const,
     requestAuthentication: checkedAuthentication,
     // Cron remains a distinct role/graph owned by cron composition. No browser
     // handler receives its runtime or controlled closed-checkpoint leaves.
@@ -213,6 +214,15 @@ export async function makeGuestStudyServingComposition(input: GuestStudyServingI
       },
     ) {
       await readiness.verify();
+      if(input.name==="GetPublicGuestStudyPreparedContentV2") {
+        const locations=await input.decodeRequestLocations();
+        const path=Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.path,{onExcessProperty:"error"})(locations.params);
+        const query=Schema.decodeUnknownSync(GetPublicGuestStudyPreparedContentV2.request.query,{onExcessProperty:"error"})(locations.query);
+        const actual=await Effect.runPromise(prepared.get({communityId:path.communityId,postId:path.postId,
+            targetLanguage:query.target_language??null,learnerBand:query.learner_band??null}));
+        return {body:projectPracticePreparedGuestStudyContentV2(actual),
+          responseHeaders:{"Cache-Control":"private, no-store"}};
+      }
       return isAuthorityName(input.name)
         ? authority.handleAuthorityOperation({ ...input, name: input.name })
         : learning.handleLearningOperation({ ...input, name: input.name });

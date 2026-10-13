@@ -272,8 +272,11 @@ import { makeProductionDanceReferenceServices } from "./dance-reference-producti
 import {
   type GuestStudyManagedBindings,
   makeDefaultGuestStudyManagedRuntime,
+  makeDefaultOwnerRewardGuestStudyManagedRuntime,
+  ownerFinancialGuestStudySelected,
 } from "./guest-study-managed-bindings.ts";
 import { makeGuestStudyServingComposition } from "./guest-study-serving-composition.ts";
+import { makeOwnerRewardGuestStudyServingComposition } from "./owner-reward-guest-study-serving-composition.ts";
 import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
@@ -1833,8 +1836,8 @@ export async function createProductionHttpWorker(
     avatarBindings ? makeAvatarStorage(avatarBindings) : null,
     avatarAuthoring,
   );
-  const managedGuestStudy = makeDefaultGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
-  const guestStudy = await makeGuestStudyServingComposition({
+  const guestStudy = await (async () => {
+    const inputs={
     ...(bindings.LEARNER_AUDIO === undefined
       ? {}
       : { workerLearnerAudioBinding: bindings.LEARNER_AUDIO }),
@@ -1845,13 +1848,19 @@ export async function createProductionHttpWorker(
     ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined
       ? {}
       : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),
-    ...(managedGuestStudy === null ? {} : { managed: managedGuestStudy }),
     accountVerifier: tokenVerifier,
     ordinarySessionScope: sessionCrypto.defaultScope,
     ...(config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN === ""
       ? {}
       : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
-  });
+    };
+    if(ownerFinancialGuestStudySelected(bindings,config.API_NEXT_ENV)) {
+      const managed=makeDefaultOwnerRewardGuestStudyManagedRuntime(bindings,config.API_NEXT_ENV);
+      return makeOwnerRewardGuestStudyServingComposition({...inputs,...(managed===null?{}:{managed})});
+    }
+    const managed=makeDefaultGuestStudyManagedRuntime(bindings,config.API_NEXT_ENV);
+    return makeGuestStudyServingComposition({...inputs,...(managed===null?{}:{managed})});
+  })();
   const worker = createHttpWorker({
     ...(guestStudy === null ? {} : { guestStudy }),
     ...spacesRuntime,

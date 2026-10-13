@@ -82,6 +82,11 @@ const READS = [
   "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_READS = [
+  // Actual bounded captured-choice source and original hold owning continuation.
+  "postgres:owner_captured_guest_choice_commands",
+  "postgres:megapot_drawing_observations",
+  "postgres:megapot_deployment_attestations",
+  "postgres:platform_sponsorship_budgets",
   "postgres:guest_study_spoken_captures",
   "postgres:guest_study_spoken_checkpoints",
   "postgres:guest_participation_operations",
@@ -130,6 +135,7 @@ export const STUDY_SPOKEN_ANSWER_RECOVERY_WRITES = [
   "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_WRITES = [
+  "postgres:owner_captured_guest_choice_commands",
   "postgres:guest_participation_operations",
   "postgres:guest_resource_edge_locks",
   "postgres:guest_resource_session_reservations",
