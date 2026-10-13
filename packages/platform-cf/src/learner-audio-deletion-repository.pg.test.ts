@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -18,8 +21,53 @@ const connectionForSchema = (raw: string, schema: string): string => {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
 
+// Staging's ledger ends at 0247. Seed account audio in the shapes that ledger
+// produced, then let every learning successor import it as an upgrade would.
+const LEGACY_LEDGER = 247;
+const migrateLegacy = async (scoped: string) => {
+  const all = await loadPostgresMigrations();
+  await runPostgresMigrations({
+    connectionString: scoped,
+    migrations: all.slice(0, LEGACY_LEDGER),
+  });
+};
+const upgrade = async (scoped: string) => {
+  const all = await loadPostgresMigrations();
+  await runPostgresMigrations({
+    connectionString: scoped,
+    migrations: all,
+    expectedLedger: all.slice(0, LEGACY_LEDGER),
+  });
+};
+const legacyUpload = (session: string, attempt: string, artifact: string) =>
+  `lau_legacy_${new Bun.CryptoHasher("sha256")
+    .update(JSON.stringify([session, attempt, artifact]).replaceAll(",", ", "))
+    .digest("hex")}`;
+
+const karaokeSession = (
+  admin: Client,
+  input: Readonly<{ session: string; attempt: string; account: string; completed: boolean }>,
+) =>
+  admin.query(
+    `INSERT INTO karaoke_sessions (
+       session_id, attempt_id, account_id, persona_id, community_id, post_id,
+       audio_revision, karaoke_revision_id, qualification_policy_version_id,
+       idempotency_key, request_hash, timezone, status, expires_at, completed_at,
+       lyrics_revision, line_snapshot
+     ) VALUES ($1, $2, $3, 'persona-' || $3, 'community-1', 'post-1', 1, 'revision-1',
+       'policy-1', 'idem-' || $1, $4, 'UTC', $5, clock_timestamp() + interval '1 hour',
+       CASE WHEN $5 = 'completed' THEN clock_timestamp() END, 1, '[{}]'::jsonb)`,
+    [
+      input.session,
+      input.attempt,
+      input.account,
+      "f".repeat(64),
+      input.completed ? "completed" : "active",
+    ],
+  );
+
 suite("learner audio deletion repository", () => {
-  test("deletes bytes first, tombstones both producers, and is account scoped", async () => {
+  test("upgrades stored Study and Karaoke audio and deletes exact objects batch by batch", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = `api_next_audio_delete_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const admin = new Client({ connectionString });
@@ -27,14 +75,23 @@ suite("learner audio deletion repository", () => {
     await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     const scopedConnection = connectionForSchema(connectionString, schema);
+    const karaokeKey = "karaoke/account-1/karaoke-attempt.pcm";
 
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+      await migrateLegacy(scopedConnection);
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
-          "INSERT INTO users (user_id) VALUES ('account-1'), ('account-2'), ('account-3'), ('account-4'), ('account-5')",
+          "INSERT INTO users (user_id) VALUES ('account-1'), ('account-2'), ('account-5')",
         );
+        // The legacy attempt host completed its single multipart upload, read the
+        // object back and recorded its digest; the common artifact agrees.
+        await karaokeSession(admin, {
+          session: "karaoke-session",
+          attempt: "karaoke-attempt",
+          account: "account-1",
+          completed: true,
+        });
         await admin.query(
           `INSERT INTO learner_audio_artifacts (
              learner_audio_artifact_id, account_id, source_kind, attempt_ref,
@@ -46,26 +103,46 @@ suite("learner audio deletion repository", () => {
               'study/object', 'study/object', $1, 'audio/ogg', 100, 1000,
               'private_learning', 'not_stored', 'stored', clock_timestamp() + interval '24 months'),
              ('karaoke-artifact', 'account-1', 'karaoke', 'karaoke-attempt',
-              'karaoke/object', 'karaoke/object', $2, 'audio/L16;rate=16000;channels=1',
+              $4, $4, $2, 'audio/L16;rate=16000;channels=1',
               1000, 2000, 'private_learning', 'not_stored', 'stored',
               clock_timestamp() + interval '24 months'),
              ('other-artifact', 'account-2', 'study', 'other-attempt',
               'other/object', 'other/object', $3, 'audio/ogg', 100, 1000,
               'private_learning', 'not_stored', 'stored', clock_timestamp() + interval '24 months')`,
-          ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+          ["a".repeat(64), "b".repeat(64), "c".repeat(64), karaokeKey],
         );
         await admin.query(
           `INSERT INTO karaoke_recordings (
              session_id, attempt_id, account_id, artifact_id, state, object_ref,
              content_sha256, byte_size, duration_ms, reconciled_at
            ) VALUES ('karaoke-session', 'karaoke-attempt', 'account-1',
-             'karaoke-artifact', 'stored', 'karaoke/object', $1, 1000, 2000,
-             clock_timestamp())`,
-          ["b".repeat(64)],
+             'karaoke-artifact', 'stored', $2, $1, 1000, 2000, clock_timestamp())`,
+          ["b".repeat(64), karaokeKey],
+        );
+        await admin.query(
+          `INSERT INTO learner_audio_artifacts (
+             learner_audio_artifact_id, account_id, source_kind, attempt_ref,
+             expected_object_ref, object_ref, content_digest, content_type,
+             byte_size, duration_ms, platform_retention, provider_retention,
+             recording_state, expires_at
+           ) SELECT 'bulk-' || lpad(value::text, 4, '0'), 'account-5', 'study',
+               'bulk-attempt-' || value, 'bulk/object/' || value, 'bulk/object/' || value,
+               repeat('9', 64), 'audio/ogg', 100, 1000, 'private_learning', 'not_stored',
+               'stored', clock_timestamp() + interval '24 months'
+             FROM generate_series(1, 1001) AS value`,
         );
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
+      await upgrade(scopedConnection);
+      expect(
+        (
+          await admin.query(
+            "SELECT io_state, storage_disposition FROM learner_audio_upload_attempts WHERE upload_attempt_id=$1",
+            [legacyUpload("karaoke-session", "karaoke-attempt", "karaoke-artifact")],
+          )
+        ).rows,
+      ).toEqual([{ io_state: "closed", storage_disposition: "stored" }]);
 
       let failStorage = true;
       const deletedKeys: string[][] = [];
@@ -92,14 +169,18 @@ suite("learner audio deletion repository", () => {
           )
         ).rows,
       ).toEqual([
-        { recording_state: "stored", object_ref: "karaoke/object" },
+        { recording_state: "stored", object_ref: karaokeKey },
         { recording_state: "stored", object_ref: "study/object" },
       ]);
 
       failStorage = false;
       const deleted = await run("account-1", "2026-08-29T09:01:00.000Z");
       expect(deleted).toMatchObject({ deleted_count: 2, remaining_count: 0 });
-      expect(deletedKeys.at(-1)?.sort()).toEqual(["karaoke/object", "study/object"]);
+      // The retry deletes the same exact keys the failed attempt prepared.
+      expect(deletedKeys.map((keys) => [...keys].sort())).toEqual([
+        [karaokeKey, "study/object"],
+        [karaokeKey, "study/object"],
+      ]);
       expect(
         (
           await admin.query(
@@ -137,38 +218,24 @@ suite("learner audio deletion repository", () => {
       ).toEqual([{ recording_state: "stored", object_ref: "other/object" }]);
 
       const replay = await run("account-1", "2026-08-29T09:02:00.000Z");
-      expect(replay).toMatchObject({
-        deleted_count: 0,
-        remaining_count: 0,
-        last_deleted_at: "2026-08-29T09:01:00.000Z",
-      });
-      expect(deletedKeys).toHaveLength(2);
+      expect(replay).toMatchObject({ deleted_count: 0, remaining_count: 0 });
+      expect(deletedKeys.slice(2).flat()).toEqual([]);
 
-      await admin.query(
-        `INSERT INTO learner_audio_artifacts (
-           learner_audio_artifact_id, account_id, source_kind, attempt_ref,
-           expected_object_ref, object_ref, content_digest, content_type,
-           byte_size, duration_ms, platform_retention, provider_retention,
-           recording_state, expires_at
-         ) SELECT 'bulk-' || lpad(value::text, 4, '0'), 'account-5', 'study',
-             'bulk-attempt-' || value, 'bulk/object/' || value, 'bulk/object/' || value,
-             repeat('9', 64), 'audio/ogg', 100, 1000, 'private_learning', 'not_stored',
-             'stored', clock_timestamp() + interval '24 months'
-           FROM generate_series(1, 1001) AS value`,
-      );
+      const before = deletedKeys.length;
       const firstBatch = await run("account-5", "2026-08-29T09:03:00.000Z");
       expect(firstBatch).toMatchObject({ deleted_count: 1000, remaining_count: 1 });
       expect(deletedKeys.at(-1)).toHaveLength(1000);
       const secondBatch = await run("account-5", "2026-08-29T09:04:00.000Z");
       expect(secondBatch).toMatchObject({ deleted_count: 1, remaining_count: 0 });
       expect(deletedKeys.at(-1)).toHaveLength(1);
+      expect(new Set(deletedKeys.slice(before).flat()).size).toBe(1001);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
   });
 
-  test("blocks live producers but ignores an expired Study lease", async () => {
+  test("keeps unresolved producers in flight past lease expiry until authoritative settlement", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = `api_next_audio_lock_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const admin = new Client({ connectionString });
@@ -178,10 +245,41 @@ suite("learner audio deletion repository", () => {
     const scopedConnection = connectionForSchema(connectionString, schema);
 
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+      await migrateLegacy(scopedConnection);
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query("INSERT INTO users (user_id) VALUES ('account-3'), ('account-4')");
+        await admin.query(
+          "INSERT INTO users (user_id) VALUES ('account-3'), ('account-4'), ('account-6')",
+        );
+        // A legacy Study answer reserved its audio but never resolved it.
+        await admin.query(
+          `INSERT INTO study_review_items (
+             review_item_id, account_id, exercise_review_key, current_exercise_version_id,
+             scheduler_policy_revision, scheduler_state, community_id, post_id,
+             study_unit_id, exercise_kind, learning_language, target_language, learner_band
+           ) VALUES ('review-3', 'account-3', 'review-key-3', 'exercise-3',
+             'study_review_schedule_v1', '{}'::jsonb, 'community-1', 'post-1',
+             'unit-1', 'say_it_back', 'en', NULL, NULL)`,
+        );
+        await admin.query(
+          `INSERT INTO study_sessions_v2 (
+             session_id, account_id, persona_id, community_id, post_id,
+             audio_revision, lyrics_revision, learning_language, target_language,
+             learner_band, study_profile_revision, source_set_revision,
+             selection_policy_revision, qualification_policy_revision, timezone,
+             idempotency_key, request_hash, status, completed_at, completion_reason
+           ) VALUES ('session-3', 'account-3', 'persona-3', 'community-1', 'post-1',
+             1, 1, 'en', NULL, NULL, 1, 1, 'selection-v1', 'qualification-v1', 'UTC',
+             'session-command-3', $1, 'completed', clock_timestamp(), 'all_resolved')`,
+          ["d".repeat(64)],
+        );
+        await admin.query(
+          `INSERT INTO study_session_items_v2 (
+             session_item_id, session_id, ordinal, exercise_review_key,
+             exercise_version_id, review_item_id, item_snapshot, maximum_attempts, account_id
+           ) VALUES ('item-3', 'session-3', 0, 'review-key-3',
+             'exercise-3', 'review-3', '{}'::jsonb, 3, 'account-3')`,
+        );
         await admin.query(
           `INSERT INTO learner_audio_artifacts (
              learner_audio_artifact_id, account_id, source_kind, attempt_ref,
@@ -204,56 +302,102 @@ suite("learner audio deletion repository", () => {
              clock_timestamp() + interval '1 hour', 'reserved')`,
           ["e".repeat(64), "d".repeat(64)],
         );
-        await admin.query(
-          `INSERT INTO karaoke_sessions (
-             session_id, attempt_id, account_id, persona_id, community_id, post_id,
-             audio_revision, karaoke_revision_id, qualification_policy_version_id,
-             idempotency_key, request_hash, timezone, status, expires_at,
-             lyrics_revision, line_snapshot
-           ) VALUES ('session-4', 'attempt-4', 'account-4', 'persona-4', 'community-4',
-             'post-4', 1, 'revision-4', 'policy-4', 'idem-4', $1, 'UTC', 'active',
-             clock_timestamp() + interval '1 hour', 1, '[{}]'::jsonb)`,
-          ["f".repeat(64)],
-        );
+        // Legacy Karaoke attempts whose hosts never reported a terminal result.
+        for (const [account, session, attempt] of [
+          ["account-4", "session-4", "attempt-4"],
+          ["account-6", "session-6", "attempt-6"],
+        ] as const) {
+          await karaokeSession(admin, { session, attempt, account, completed: false });
+          await admin.query(
+            `INSERT INTO karaoke_recordings (session_id, attempt_id, account_id, artifact_id)
+             VALUES ($1, $2, $3, 'artifact-' || $2)`,
+            [session, attempt, account],
+          );
+        }
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
+      await upgrade(scopedConnection);
 
+      const deletedKeys: string[][] = [];
       const store = makeControlPlaneLearnerAudioDeletionStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
-        { delete: async () => {} },
+        {
+          delete: async (keys) => {
+            deletedKeys.push(typeof keys === "string" ? [keys] : [...keys]);
+          },
+        },
       );
       const run = (accountId: string) =>
         Effect.runPromise(store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }));
+      const settle = (client: Client, upload: string, disposition: "stored" | "absent") =>
+        client.query("SELECT settle_learner_audio_upload_private_v1($1,$2,TRUE,NULL)", [
+          upload,
+          disposition,
+        ]);
+      const expireProducers = async () => {
+        await admin.query("SET session_replication_role = replica");
+        await admin.query(
+          "UPDATE study_spoken_answer_commands SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE command_id='command-3'",
+        );
+        await admin.query(
+          "UPDATE karaoke_sessions SET expires_at=created_at + interval '1 millisecond' WHERE session_id IN ('session-4','session-6')",
+        );
+        await admin.query("SET session_replication_role = origin");
+      };
+
       await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
       await expect(run("account-4")).rejects.toMatchObject({ reason: "in-flight" });
+      await expect(run("account-6")).rejects.toMatchObject({ reason: "in-flight" });
+      // Lease and session expiry are not facts about storage I/O.
+      await expireProducers();
+      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
+      await expect(run("account-4")).rejects.toMatchObject({ reason: "in-flight" });
+      await expect(run("account-6")).rejects.toMatchObject({ reason: "in-flight" });
 
-      await admin.query("SET session_replication_role = replica");
-      await admin.query(
-        "UPDATE study_spoken_answer_commands SET lease_expires_at=clock_timestamp() - interval '1 second' WHERE command_id='command-3'",
-      );
-      await admin.query("SET session_replication_role = origin");
-      await expect(run("account-3")).resolves.toMatchObject({
-        deleted_count: 0,
-        remaining_count: 0,
-      });
+      // An authoritative absent settlement lets deletion finish.
+      await settle(admin, legacyUpload("session-6", "attempt-6", "artifact-attempt-6"), "absent");
+      await expect(run("account-6")).resolves.toMatchObject({ remaining_count: 0 });
+      expect(
+        (await admin.query("SELECT state FROM karaoke_recordings WHERE session_id='session-6'"))
+          .rows,
+      ).toEqual([{ state: "deleted" }]);
 
-      const locker = new Client({ connectionString: scopedConnection });
-      await locker.connect();
-      await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))", [
-        "account-3",
-        83_000_001,
-      ]);
-      let settled = false;
-      const blocked = run("account-3").finally(() => {
-        settled = true;
-      });
-      await Bun.sleep(50);
-      expect(settled).toBe(false);
-      await locker.query("COMMIT");
-      await locker.end();
-      await expect(blocked).resolves.toMatchObject({ deleted_count: 0 });
+      // Late write: the legacy host publishes after deletion already removed the
+      // key. Deletion serializes behind the writer, then removes the object again.
+      const key4 = "karaoke/account-4/attempt-4.pcm";
+      const deletesBefore = deletedKeys.filter((keys) => keys.includes(key4)).length;
+      expect(deletesBefore).toBeGreaterThan(0);
+      const writer = new Client({ connectionString: scopedConnection });
+      await writer.connect();
+      try {
+        await writer.query("BEGIN");
+        await writer.query("SELECT lock_original_account_audio_source_private_v1('account-4')");
+        let finished = false;
+        const blocked = run("account-4").finally(() => {
+          finished = true;
+        });
+        await Bun.sleep(100);
+        expect(finished).toBe(false);
+        await settle(
+          writer,
+          legacyUpload("session-4", "attempt-4", "artifact-attempt-4"),
+          "stored",
+        );
+        await writer.query("COMMIT");
+        await expect(blocked).resolves.toMatchObject({ remaining_count: 0 });
+      } finally {
+        await writer.end();
+      }
+      expect(deletedKeys.filter((keys) => keys.includes(key4)).length).toBe(deletesBefore + 1);
+      expect(
+        (await admin.query("SELECT state FROM karaoke_recordings WHERE session_id='session-4'"))
+          .rows,
+      ).toEqual([{ state: "deleted" }]);
+
+      // The untracked legacy Study reservation has no producer record to settle,
+      // so it stays in flight rather than being guessed finished.
+      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
