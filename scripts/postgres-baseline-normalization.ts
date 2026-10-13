@@ -1,3 +1,14 @@
+// Migration0264 positively requires these exact private helper ACLs after baseline replay.
+// Preserve ordinary baseline privilege behavior for every unrelated routine.
+const ownerFinancialPrivateFunctions = new Set([
+  "reject_disabled_owner_financial_dml_v1",
+  "guard_disabled_beneficiary_dispatch_v1",
+  "guard_disabled_owner_credit_dispatch_v1",
+  "require_megapot_beneficiary_version_private_v1",
+  "guest_financial_component_has_history_private_v1",
+  "require_disabled_owner_financial_inventory_private_v1",
+]);
+
 export function normalizePostgresBaselineDump(dump: string): string {
   const lines = dump.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const normalized: string[] = [];
@@ -19,17 +30,30 @@ export function normalizePostgresBaselineDump(dump: string): string {
     let delimiter = "$baseline_function_path$";
     while (name.includes(delimiter) || argumentsLiteral.includes(delimiter))
       delimiter = delimiter.replace("$", "$_");
+    const privateFinancialHelper = ownerFinancialPrivateFunctions.has(declaration.name);
     return [
       `DO ${delimiter}`,
-      "DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;",
+      `DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;${privateFinancialHelper ? " grantee_role TEXT;" : ""}`,
       "BEGIN",
-      "  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments",
+      `  SELECT p.proname, ${privateFinancialHelper ? "p.oid, " : ""}pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments`,
       "    INTO STRICT target_function",
       "    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace",
       `    WHERE n.nspname=target_schema AND p.proname=${name}`,
       `      AND pg_catalog.pg_get_function_arguments(p.oid)=${argumentsLiteral};`,
       "  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',",
       "    target_schema,target_function.proname,target_function.identity_arguments,target_schema);",
+      ...(privateFinancialHelper
+        ? [
+            "  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',",
+            "    target_schema,target_function.proname,target_function.identity_arguments);",
+            "  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)",
+            "    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a",
+            "    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP",
+            "    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',",
+            "      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);",
+            "  END LOOP;",
+          ]
+        : []),
       "END",
       `${delimiter};`,
     ].join("\n");
