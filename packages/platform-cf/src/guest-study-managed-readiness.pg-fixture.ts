@@ -85,8 +85,10 @@ export async function readinessFixture(
       // producer creation. Extend with the actual FULL declared263 inventory,
       // including every prior ledger row, through the SAME maintained runner.
       // No review SQL supplement, phase substitution or recreated helper exists.
-      if (pgUrl === undefined || candidate.ledger.length !== 263)
-        throw new Error("Actual adopted native263 readiness candidate required");
+      // 0264 additively closes proven-terminal legacy Karaoke uploads and
+      // returns the unresolved-producer state from deletion preparation.
+      if (pgUrl === undefined || candidate.ledger.length !== 264)
+        throw new Error("Actual adopted native264 readiness candidate required");
       const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
       const manifest = decode(
         Schema.Struct({
@@ -106,7 +108,7 @@ export async function readinessFixture(
         all.push({ version: expected.version, checksum, sql });
       }
       expect(all.map((x) => Number(x.version.slice(0, 4)))).toEqual(
-        Array.from({ length: 263 }, (_, i) => i + 1),
+        Array.from({ length: candidate.ledger.length }, (_, i) => i + 1),
       );
       expect(
         decode(
