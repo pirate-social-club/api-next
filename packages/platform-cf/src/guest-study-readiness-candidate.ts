@@ -1054,7 +1054,7 @@ export const guestStudyReadinessCandidate = {
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
-      checksum: "a2cddb125a5b90c8c74ec2738c1a9a5afaa0aaa394cef3f53e983ee18dc2fde4",
+      checksum: "04a395bef0a06e3a405387123ec85ccdd3f4503b202cb365154375e6d7186097",
       version: "0264_legacy_learner_audio_producer_disposition.sql",
     },
   ],
@@ -2340,15 +2340,15 @@ export const guestStudyReadinessCandidate = {
       source_file: "0262_ordinary_audio_producer_capture.sql",
     },
     {
-      body_sha256: "433e06b478fe9b2f33b22799cbd63ae54b0bfb985d201c2f4ce2c8a6facb1ddd",
+      body_sha256: "1fa18c681468bba57c298e8d802b192eef33e02f55ba4476dd484770df4b18e0",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "settle_learner_audio_upload_private_v1",
-      source_file: "0253_learner_audio_deletion_fence.sql",
+      source_file: "0264_legacy_learner_audio_producer_disposition.sql",
     },
     {
-      body_sha256: "b3a3a453279eb839634bd4753db3303045d5591b59f5d03c348c9a9a99db483c",
+      body_sha256: "ae1378bce1a883174ce2299c5db90230d94c1af878fe6193e8659905a21f6128",
       configuration: "pinned",
       definer: true,
       kind: "f",

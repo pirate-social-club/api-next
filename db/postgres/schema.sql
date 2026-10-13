@@ -28254,6 +28254,11 @@ BEGIN
      WHERE upload_attempt_id=expected_upload;
    RETURN FALSE; END IF;
  IF disposition IS NULL OR disposition NOT IN('stored','absent','failed') THEN RAISE EXCEPTION 'invalid terminal IO fact'; END IF;
+ IF upload.upload_attempt_id LIKE 'lau\_legacy\_%' AND NOT EXISTS(
+   SELECT 1 FROM learner_audio_legacy_settlements legacy
+    WHERE legacy.upload_attempt_id=upload.upload_attempt_id AND legacy.owner_id=upload.owner_id
+      AND legacy.disposition=settle_learner_audio_upload_private_v1.disposition) THEN
+   RAISE EXCEPTION 'imported legacy producer requires recorded settlement evidence'; END IF;
  publish_allowed:=disposition='stored' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
  UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition=disposition,
    closed_at=clock_timestamp(),multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
@@ -28283,9 +28288,15 @@ CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload text, p_d
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $_$
-DECLARE upload learner_audio_upload_attempts%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE;
- prior learner_audio_legacy_settlements%ROWTYPE; owner_kind TEXT; digest TEXT;
- observed_at TIMESTAMPTZ; cutover_at TIMESTAMPTZ; keys TEXT[]; receipt_keys TEXT[]; version JSONB;
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; prior learner_audio_legacy_settlements%ROWTYPE;
+ owner_kind TEXT; digest TEXT; observed_at TIMESTAMPTZ; shutdown_at TIMESTAMPTZ;
+ shutdown JSONB; host_state JSONB; observation JSONB; version JSONB;
+ evidence_keys TEXT[]:=ARRAY['objectRef','headStatus','openMultipartUploads','abortedMultipartUploadIds',
+  'servingVersions','producerShutdown','shutdownAt','observedAt','receipts'];
+ receipt_keys TEXT[]:=ARRAY['reset','abort','listing','head'];
+ shutdown_keys TEXT[]:=ARRAY['namespaceId','objectId','generation','inventoryDigest','state','initial',
+  'current','cancellationSucceeded','quiescenceEstablished'];
+ observation_keys TEXT[]:=ARRAY['alarm','sockets','scoreState','recordingState','archiveKey','uploadId'];
 BEGIN
  IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object' THEN
   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
@@ -28303,14 +28314,9 @@ BEGIN
   OR upload.io_state<>'unknown' OR owner_kind<>'account'
   OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
   RAISE EXCEPTION 'only an unknown imported legacy producer of this key can be settled'; END IF;
- keys:=ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt',
-  'servingVersions','receipts'];
- receipt_keys:=ARRAY['servingReadback','head','listing'];
- IF upload.source_kind='karaoke' THEN
-  keys:=array_append(keys,'abortedMultipartUploadIds');
-  receipt_keys:=array_append(receipt_keys,'abort');
- ELSE keys:=array_append(keys,'contentSha256'); END IF;
- IF NOT p_evidence ?& keys OR p_evidence-keys<>'{}'::JSONB
+ IF upload.source_kind<>'karaoke' THEN
+  RAISE EXCEPTION 'a legacy Study write cannot be proven terminal'; END IF;
+ IF NOT p_evidence ?& evidence_keys OR p_evidence-evidence_keys<>'{}'::JSONB
   OR jsonb_typeof(p_evidence->'receipts')<>'object'
   OR NOT (p_evidence->'receipts') ?& receipt_keys OR (p_evidence->'receipts')-receipt_keys<>'{}'::JSONB
   OR EXISTS(SELECT 1 FROM jsonb_each(p_evidence->'receipts') r
@@ -28319,7 +28325,11 @@ BEGIN
   OR jsonb_array_length(p_evidence->'servingVersions') NOT BETWEEN 1 AND 16
   OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
   OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
-  OR jsonb_typeof(p_evidence->'servingCutoverAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string' THEN
+  OR jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
+    WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048)
+  OR jsonb_typeof(p_evidence->'shutdownAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string'
+  OR jsonb_typeof(p_evidence->'producerShutdown')<>'object' THEN
   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
  FOR version IN SELECT value FROM jsonb_array_elements(p_evidence->'servingVersions') LOOP
   IF jsonb_typeof(version)<>'object' OR NOT version ?& ARRAY['script','versionId','sourceCommit','artifactSha256']
@@ -28330,27 +28340,31 @@ BEGIN
    OR jsonb_typeof(version->'artifactSha256')<>'string' OR version->>'artifactSha256' !~ '^[0-9a-f]{64}$' THEN
    RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
  END LOOP;
+ -- The attempt host's own reset receipt, exactly as it returned it.
+ shutdown:=p_evidence->'producerShutdown';
+ IF NOT shutdown ?& shutdown_keys OR shutdown-shutdown_keys<>'{}'::JSONB
+  OR EXISTS(SELECT 1 FROM unnest(ARRAY['namespaceId','objectId','generation','inventoryDigest']) k
+    WHERE jsonb_typeof(shutdown->k)<>'string' OR char_length(shutdown->>k) NOT BETWEEN 1 AND 128) THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ FOR observation IN SELECT shutdown->k FROM unnest(ARRAY['initial','current']) k LOOP
+  IF jsonb_typeof(observation)<>'object' OR NOT observation ?& observation_keys
+   OR observation-observation_keys<>'{}'::JSONB THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ END LOOP;
+ host_state:=shutdown->'current';
+ IF shutdown->'state' IS DISTINCT FROM '"active"'::JSONB
+  OR shutdown->'quiescenceEstablished' IS DISTINCT FROM 'true'::JSONB
+  OR shutdown->'cancellationSucceeded' IS DISTINCT FROM 'true'::JSONB
+  OR host_state->'alarm' IS DISTINCT FROM 'null'::JSONB
+  OR host_state->'sockets' IS DISTINCT FROM '0'::JSONB
+  OR host_state->'archiveKey' IS DISTINCT FROM to_jsonb(upload.object_ref) THEN
+  RAISE EXCEPTION 'legacy Karaoke attempt host has not proven producer shutdown'; END IF;
+ shutdown_at:=(p_evidence->>'shutdownAt')::TIMESTAMPTZ;
  observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
- cutover_at:=(p_evidence->>'servingCutoverAt')::TIMESTAMPTZ;
- IF observed_at<=cutover_at OR observed_at>clock_timestamp() THEN
-  RAISE EXCEPTION 'legacy producer must be observed after serving cutover'; END IF;
+ IF observed_at<=shutdown_at OR observed_at>clock_timestamp() THEN
+  RAISE EXCEPTION 'legacy producer must be observed after its host shut down'; END IF;
  IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
   RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
- IF upload.source_kind='karaoke' THEN
-  IF jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
-   OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
-     WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048) THEN
-   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
- ELSE
-  SELECT * INTO STRICT artifact FROM learner_audio_artifacts
-   WHERE learner_audio_artifact_id=upload.artifact_id AND participation_owner_id=upload.owner_id;
-  IF p_disposition<>'stored' THEN
-   RAISE EXCEPTION 'an absent legacy Study object does not prove its write ended'; END IF;
-  IF jsonb_typeof(p_evidence->'contentSha256')<>'string'
-   OR p_evidence->>'contentSha256' IS DISTINCT FROM artifact.content_digest
-   OR upload.object_ref IS DISTINCT FROM 'learner-audio/study/'||upload.attempt_ref||'/'||artifact.content_digest THEN
-   RAISE EXCEPTION 'legacy Study object differs from its reserved content'; END IF;
- END IF;
  INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,owner_id,disposition,evidence,evidence_sha256,settled_at)
   VALUES(p_upload,upload.owner_id,p_disposition,p_evidence,digest,clock_timestamp());
  RETURN settle_learner_audio_upload_private_v1(p_upload,p_disposition,TRUE,NULL);

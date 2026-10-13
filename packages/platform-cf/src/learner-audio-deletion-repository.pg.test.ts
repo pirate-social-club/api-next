@@ -10,6 +10,7 @@ import {
   beginHistoricalAudioDeletionFixture,
   beginOwnedHistoricalApiNextWriter,
   closeOwnedHistoricalApiNextWriter,
+  legacyKaraokeSettlementEvidence as evidence,
   finishHistoricalAudioDeletionFixture,
 } from "./learner-audio-deletion-history.pg-fixture.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
@@ -527,7 +528,7 @@ suite("learner audio deletion repository", () => {
     }
   });
 
-  test("keeps unresolved producers in flight past lease expiry until authoritative settlement", async () => {
+  test("keeps unresolved producers in flight until their own host proves shutdown", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const schema = `api_next_audio_lock_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const admin = new Client({ connectionString });
@@ -688,53 +689,19 @@ suite("learner audio deletion repository", () => {
       ).rejects.toThrow("prior object write or cleanup is unresolved");
 
       const deletedKeys: string[][] = [];
+      const storage = new Set<string>();
       const store = makeControlPlaneLearnerAudioDeletionStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
         {
           delete: async (keys) => {
-            deletedKeys.push(typeof keys === "string" ? [keys] : [...keys]);
+            const batch = typeof keys === "string" ? [keys] : [...keys];
+            deletedKeys.push(batch);
+            for (const key of batch) storage.delete(key);
           },
         },
       );
       const run = (accountId: string) =>
         Effect.runPromise(store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }));
-      // The reviewed operator closure records storage evidence observed after only
-      // capture-era serving versions remain, bound to sanitized receipt digests.
-      // These fixture values test the database's validation, not quiescence.
-      const observation = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
-        objectRef: key,
-        headStatus: head,
-        openMultipartUploads: 0,
-        servingCutoverAt: new Date(Date.now() - 10 * 60_000).toISOString(),
-        observedAt: new Date(Date.now() - observedMinutesAgo * 60_000).toISOString(),
-        servingVersions: [
-          {
-            script: "pirate-jobs-worker-staging",
-            versionId: "fixture-capture-version",
-            sourceCommit: "a".repeat(40),
-            artifactSha256: receipt("artifact"),
-          },
-        ],
-      });
-      const evidence = (key: string, head: "present" | "absent", observedMinutesAgo = 1) => ({
-        ...observation(key, head, observedMinutesAgo),
-        abortedMultipartUploadIds: [],
-        receipts: {
-          servingReadback: receipt("readback"),
-          head: receipt("head"),
-          listing: receipt("listing"),
-          abort: receipt("abort"),
-        },
-      });
-      const studyEvidence = (key: string, contentSha256: string) => ({
-        ...observation(key, "present"),
-        contentSha256,
-        receipts: {
-          servingReadback: receipt("readback"),
-          head: receipt("head"),
-          listing: receipt("listing"),
-        },
-      });
       const settle = (
         client: Client,
         upload: string,
@@ -756,8 +723,10 @@ suite("learner audio deletion repository", () => {
         await admin.query("SET session_replication_role = origin");
       };
 
-      // A Study-only owner settles straight after the upgrade, before any capture
-      // or deletion created state for it: the import established its fence.
+      // A Study-only owner has its fence straight after the upgrade, before any
+      // capture or deletion created state for it, but no evidence closes its
+      // legacy write: even a present object with the reserved digest only shows
+      // that one PUT completed.
       const upload7 = (
         await admin.query<{ upload_attempt_id: string }>(
           "SELECT upload_attempt_id FROM learner_audio_upload_attempts WHERE command_ref='command-7'",
@@ -772,16 +741,19 @@ suite("learner audio deletion repository", () => {
           )
         ).rows,
       ).toEqual([{ revision: "0", active_delete_command_id: null }]);
+      for (const head of ["present", "absent"] as const) {
+        await expect(
+          settle(admin, upload7, head === "present" ? "stored" : "absent", {
+            ...evidence(studyKey("7"), head),
+          }),
+        ).rejects.toThrow("a legacy Study write cannot be proven terminal");
+      }
       await expect(
-        settle(admin, upload7, "stored", studyEvidence(studyKey("7"), "c".repeat(64))),
-      ).rejects.toThrow("legacy Study object differs from its reserved content");
-      expect(
-        (await settle(admin, upload7, "stored", studyEvidence(studyKey("7"), studyDigest))).rows,
-      ).toEqual([{ settled: true }]);
-      await expect(run("account-7")).resolves.toMatchObject({
-        deleted_count: 1,
-        remaining_count: 0,
-      });
+        admin.query("SELECT settle_learner_audio_upload_private_v1($1,'stored',TRUE,NULL)", [
+          upload7,
+        ]),
+      ).rejects.toThrow("imported legacy producer requires recorded settlement evidence");
+      await expect(run("account-7")).rejects.toMatchObject({ reason: "in-flight" });
 
       await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
       await expect(run("account-4")).rejects.toMatchObject({ reason: "in-flight" });
@@ -801,11 +773,42 @@ suite("learner audio deletion repository", () => {
       await expect(settle(admin, upload6, "stored", evidence(key6, "absent"))).rejects.toThrow(
         "legacy settlement disposition differs from the observed object",
       );
-      await expect(settle(admin, upload6, "absent", evidence(key6, "absent", 20))).rejects.toThrow(
-        "legacy producer must be observed after serving cutover",
-      );
+      await expect(
+        settle(admin, upload6, "absent", evidence(key6, "absent", { observedMinutesAgo: 20 })),
+      ).rejects.toThrow("legacy producer must be observed after its host shut down");
+      // A drain that did not finish, or a receipt for another key, is no proof.
+      await expect(
+        settle(
+          admin,
+          upload6,
+          "absent",
+          evidence(key6, "absent", { quiescenceEstablished: false }),
+        ),
+      ).rejects.toThrow("legacy Karaoke attempt host has not proven producer shutdown");
+      await expect(
+        settle(
+          admin,
+          upload6,
+          "absent",
+          evidence(key6, "absent", { archiveKey: "karaoke/other.pcm" }),
+        ),
+      ).rejects.toThrow("legacy Karaoke attempt host has not proven producer shutdown");
+      // The bare shared closure cannot bypass the recorded evidence.
+      await expect(
+        admin.query("SELECT settle_learner_audio_upload_private_v1($1,'absent',TRUE,NULL)", [
+          upload6,
+        ]),
+      ).rejects.toThrow("imported legacy producer requires recorded settlement evidence");
       const proof6 = evidence(key6, "absent");
       await settle(admin, upload6, "absent", proof6);
+      expect(
+        (
+          await admin.query(
+            "SELECT io_state, storage_disposition FROM learner_audio_upload_attempts WHERE upload_attempt_id=$1",
+            [upload6],
+          )
+        ).rows,
+      ).toEqual([{ io_state: "closed", storage_disposition: "absent" }]);
       expect((await settle(admin, upload6, "absent", proof6)).rows).toEqual([{ settled: false }]);
       await expect(
         settle(admin, upload6, "absent", {
@@ -852,23 +855,34 @@ suite("learner audio deletion repository", () => {
           .rows,
       ).toEqual([{ state: "deleted" }]);
 
-      // Evidence-bound settlement of the legacy Study write lets deletion finish.
+      // Two lease generations of one legacy Study answer write identical bytes to
+      // one key. The reclaimed generation's PUT lands and reads back with the
+      // reserved digest; the first generation's PUT is still delayed. Settlement
+      // stays refused, so every deletion run removes the exact key again and
+      // reports in flight: the delayed identical PUT can never resurrect audio
+      // behind a deletion reported complete.
       const studyUpload = study.rows[0]?.upload_attempt_id ?? "";
+      storage.add(studyKey("3"));
       await expect(
-        settle(admin, studyUpload, "absent", {
-          ...studyEvidence(studyKey("3"), studyDigest),
-          headStatus: "absent",
-        }),
-      ).rejects.toThrow("an absent legacy Study object does not prove its write ended");
-      await settle(admin, studyUpload, "stored", studyEvidence(studyKey("3"), studyDigest));
-      await expect(run("account-3")).resolves.toMatchObject({ remaining_count: 0 });
+        settle(admin, studyUpload, "stored", evidence(studyKey("3"), "present")),
+      ).rejects.toThrow("a legacy Study write cannot be proven terminal");
+      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
+      expect(storage.has(studyKey("3"))).toBe(false);
+      // The first generation's delayed identical PUT lands afterwards.
+      storage.add(studyKey("3"));
+      await expect(run("account-3")).rejects.toMatchObject({ reason: "in-flight" });
+      expect(storage.has(studyKey("3"))).toBe(false);
       expect(
         (
           await admin.query(
-            "SELECT recording_state FROM learner_audio_artifacts WHERE learner_audio_artifact_id='study-artifact-3'",
+            `SELECT a.recording_state, u.io_state,
+                    (SELECT count(*)::int FROM learner_audio_legacy_settlements) AS settlements
+               FROM learner_audio_artifacts a JOIN learner_audio_upload_attempts u
+                 ON u.artifact_id=a.learner_audio_artifact_id
+              WHERE a.learner_audio_artifact_id='study-artifact-3'`,
           )
         ).rows,
-      ).toEqual([{ recording_state: "deleted" }]);
+      ).toEqual([{ recording_state: "pending", io_state: "unknown", settlements: 2 }]);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       if (hostileRole !== undefined) {

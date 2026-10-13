@@ -5,7 +5,9 @@
 -- identity:
 --  1. closes legacy Karaoke uploads whose own protocol proved completed I/O;
 --  2. records unresolved legacy Study reservations as unknown producers;
---  3. adds the evidence-bound closure for the remaining legacy producers;
+--  3. adds the evidence-bound closure for legacy Karaoke producers whose
+--     attempt host proved its own shutdown, and refuses every other closure
+--     of an imported legacy producer;
 --  4. answers an untracked legacy producer as in flight.
 
 -- 0253 imported every non-deleted legacy Karaoke recording as an unknown
@@ -46,12 +48,14 @@ UPDATE learner_audio_upload_attempts u
    AND a.duration_ms=r.duration_ms;
 
 -- A legacy Study answer wrote its audio with one PUT to the artifact's exact
--- expected key while it held the reservation lease. 0253 left reservations that
--- never resolved without a producer record, so nothing could ever settle them
--- and a reclaim could open a new generation while the legacy PUT might still
--- land. Record each one as an unknown producer of that exact key, identified by
--- its own reservation generation. Registration already refuses another write to
--- an unresolved key, and deletion waits for its closure.
+-- expected key while it held the reservation lease. A reclaim after lease
+-- expiry kept the attempt and key and replaced only the lease, so every earlier
+-- lease generation may still have an issued PUT of the same bytes in flight.
+-- 0253 left reservations that never resolved without a producer record, so a
+-- reclaim could open a new generation while such a PUT might still land. Record
+-- each one as an unknown producer of that exact key. Registration already
+-- refuses another write to an unresolved key, and deletion stays in flight for
+-- it: no evidence admitted below can show that every earlier generation ended.
 INSERT INTO learner_audio_upload_attempts(upload_attempt_id,owner_id,artifact_id,object_ref,
   source_kind,attempt_ref,command_ref,reservation_ref,captured_revision,io_state,created_at)
 SELECT 'lau_legacy_'||encode(sha256(convert_to(
@@ -73,18 +77,19 @@ INSERT INTO learner_audio_owner_fences(owner_id)
   WHERE upload_attempt_id LIKE 'lau\_legacy\_%' AND source_kind='study'
  ON CONFLICT DO NOTHING;
 
--- The authoritative closure for an imported legacy producer. No database fact
--- proves that a retired version or attempt host stopped writing, so the
--- operator ceremony in docs/runbooks/legacy-learner-audio-settlement.md
--- supplies storage-level evidence bound to sanitized receipts and to the exact
--- serving artifacts, and only where that evidence is terminal for the producer:
---  * Karaoke attempt hosts wrote through one multipart upload. After capture-era
---    versions alone serve, every open upload for the key is aborted and an
---    exhausted listing shows none; no completion can then create the object,
---    so the observed HEAD (present or absent) is final.
---  * A Study answer wrote with one PUT. Only an object present with the exact
---    digest named by its key proves that PUT completed; an absent object never
---    proves an issued PUT will not still land, so it stays unknown.
+-- The authoritative closure for an imported legacy producer. No database fact,
+-- traffic readback, elapsed lease or matching digest proves that a retired
+-- writer and every storage operation it issued have ended. The operator ceremony
+-- in docs/runbooks/legacy-learner-audio-settlement.md admits one producer class
+-- whose own code supplies that proof:
+--  * A legacy Karaoke attempt host wrote its key through one multipart upload
+--    and admitted every producer path through a drained barrier. Its reset
+--    receipt shows the durable marker that fences every later instance, the
+--    closed alarm and sockets, and a completed drain of every issued storage
+--    operation. After it, every open upload for the key is aborted and an
+--    exhausted listing shows none, so the observed HEAD is final.
+--  * A legacy Study answer has no such proof: any earlier lease generation may
+--    still deliver an identical PUT, even after deletion. It is never settled.
 -- Everything else keeps the producer unknown and deletion in flight.
 
 -- Admit the evidence relation to the practice-only owner history explicitly.
@@ -122,9 +127,15 @@ CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE UPDATE OR DELET
 
 CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload TEXT,p_disposition TEXT,p_evidence JSONB)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE upload learner_audio_upload_attempts%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE;
- prior learner_audio_legacy_settlements%ROWTYPE; owner_kind TEXT; digest TEXT;
- observed_at TIMESTAMPTZ; cutover_at TIMESTAMPTZ; keys TEXT[]; receipt_keys TEXT[]; version JSONB;
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; prior learner_audio_legacy_settlements%ROWTYPE;
+ owner_kind TEXT; digest TEXT; observed_at TIMESTAMPTZ; shutdown_at TIMESTAMPTZ;
+ shutdown JSONB; host_state JSONB; observation JSONB; version JSONB;
+ evidence_keys TEXT[]:=ARRAY['objectRef','headStatus','openMultipartUploads','abortedMultipartUploadIds',
+  'servingVersions','producerShutdown','shutdownAt','observedAt','receipts'];
+ receipt_keys TEXT[]:=ARRAY['reset','abort','listing','head'];
+ shutdown_keys TEXT[]:=ARRAY['namespaceId','objectId','generation','inventoryDigest','state','initial',
+  'current','cancellationSucceeded','quiescenceEstablished'];
+ observation_keys TEXT[]:=ARRAY['alarm','sockets','scoreState','recordingState','archiveKey','uploadId'];
 BEGIN
  IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object' THEN
   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
@@ -142,14 +153,9 @@ BEGIN
   OR upload.io_state<>'unknown' OR owner_kind<>'account'
   OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
   RAISE EXCEPTION 'only an unknown imported legacy producer of this key can be settled'; END IF;
- keys:=ARRAY['objectRef','headStatus','openMultipartUploads','servingCutoverAt','observedAt',
-  'servingVersions','receipts'];
- receipt_keys:=ARRAY['servingReadback','head','listing'];
- IF upload.source_kind='karaoke' THEN
-  keys:=array_append(keys,'abortedMultipartUploadIds');
-  receipt_keys:=array_append(receipt_keys,'abort');
- ELSE keys:=array_append(keys,'contentSha256'); END IF;
- IF NOT p_evidence ?& keys OR p_evidence-keys<>'{}'::JSONB
+ IF upload.source_kind<>'karaoke' THEN
+  RAISE EXCEPTION 'a legacy Study write cannot be proven terminal'; END IF;
+ IF NOT p_evidence ?& evidence_keys OR p_evidence-evidence_keys<>'{}'::JSONB
   OR jsonb_typeof(p_evidence->'receipts')<>'object'
   OR NOT (p_evidence->'receipts') ?& receipt_keys OR (p_evidence->'receipts')-receipt_keys<>'{}'::JSONB
   OR EXISTS(SELECT 1 FROM jsonb_each(p_evidence->'receipts') r
@@ -158,7 +164,11 @@ BEGIN
   OR jsonb_array_length(p_evidence->'servingVersions') NOT BETWEEN 1 AND 16
   OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
   OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
-  OR jsonb_typeof(p_evidence->'servingCutoverAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string' THEN
+  OR jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
+    WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048)
+  OR jsonb_typeof(p_evidence->'shutdownAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string'
+  OR jsonb_typeof(p_evidence->'producerShutdown')<>'object' THEN
   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
  FOR version IN SELECT value FROM jsonb_array_elements(p_evidence->'servingVersions') LOOP
   IF jsonb_typeof(version)<>'object' OR NOT version ?& ARRAY['script','versionId','sourceCommit','artifactSha256']
@@ -169,30 +179,76 @@ BEGIN
    OR jsonb_typeof(version->'artifactSha256')<>'string' OR version->>'artifactSha256' !~ '^[0-9a-f]{64}$' THEN
    RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
  END LOOP;
+ -- The attempt host's own reset receipt, exactly as it returned it.
+ shutdown:=p_evidence->'producerShutdown';
+ IF NOT shutdown ?& shutdown_keys OR shutdown-shutdown_keys<>'{}'::JSONB
+  OR EXISTS(SELECT 1 FROM unnest(ARRAY['namespaceId','objectId','generation','inventoryDigest']) k
+    WHERE jsonb_typeof(shutdown->k)<>'string' OR char_length(shutdown->>k) NOT BETWEEN 1 AND 128) THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ FOR observation IN SELECT shutdown->k FROM unnest(ARRAY['initial','current']) k LOOP
+  IF jsonb_typeof(observation)<>'object' OR NOT observation ?& observation_keys
+   OR observation-observation_keys<>'{}'::JSONB THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ END LOOP;
+ host_state:=shutdown->'current';
+ IF shutdown->'state' IS DISTINCT FROM '"active"'::JSONB
+  OR shutdown->'quiescenceEstablished' IS DISTINCT FROM 'true'::JSONB
+  OR shutdown->'cancellationSucceeded' IS DISTINCT FROM 'true'::JSONB
+  OR host_state->'alarm' IS DISTINCT FROM 'null'::JSONB
+  OR host_state->'sockets' IS DISTINCT FROM '0'::JSONB
+  OR host_state->'archiveKey' IS DISTINCT FROM to_jsonb(upload.object_ref) THEN
+  RAISE EXCEPTION 'legacy Karaoke attempt host has not proven producer shutdown'; END IF;
+ shutdown_at:=(p_evidence->>'shutdownAt')::TIMESTAMPTZ;
  observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
- cutover_at:=(p_evidence->>'servingCutoverAt')::TIMESTAMPTZ;
- IF observed_at<=cutover_at OR observed_at>clock_timestamp() THEN
-  RAISE EXCEPTION 'legacy producer must be observed after serving cutover'; END IF;
+ IF observed_at<=shutdown_at OR observed_at>clock_timestamp() THEN
+  RAISE EXCEPTION 'legacy producer must be observed after its host shut down'; END IF;
  IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
   RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
- IF upload.source_kind='karaoke' THEN
-  IF jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
-   OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
-     WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048) THEN
-   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
- ELSE
-  SELECT * INTO STRICT artifact FROM learner_audio_artifacts
-   WHERE learner_audio_artifact_id=upload.artifact_id AND participation_owner_id=upload.owner_id;
-  IF p_disposition<>'stored' THEN
-   RAISE EXCEPTION 'an absent legacy Study object does not prove its write ended'; END IF;
-  IF jsonb_typeof(p_evidence->'contentSha256')<>'string'
-   OR p_evidence->>'contentSha256' IS DISTINCT FROM artifact.content_digest
-   OR upload.object_ref IS DISTINCT FROM 'learner-audio/study/'||upload.attempt_ref||'/'||artifact.content_digest THEN
-   RAISE EXCEPTION 'legacy Study object differs from its reserved content'; END IF;
- END IF;
  INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,owner_id,disposition,evidence,evidence_sha256,settled_at)
   VALUES(p_upload,upload.owner_id,p_disposition,p_evidence,digest,clock_timestamp());
  RETURN settle_learner_audio_upload_private_v1(p_upload,p_disposition,TRUE,NULL);
+END $$;
+
+-- The shared closure keeps every captured-producer caller and closed replay
+-- unchanged. An imported legacy producer closes only through the settlement
+-- above, whose evidence row is recorded first in the same transaction; a bare
+-- known-no-more-I/O call cannot close it.
+CREATE OR REPLACE FUNCTION settle_learner_audio_upload_private_v1(
+ expected_upload TEXT,disposition TEXT,known_no_more_io BOOLEAN,multipart_id TEXT
+) RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE; publish_allowed BOOLEAN;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=upload.owner_id FOR UPDATE;
+ IF upload.io_state='closed' THEN
+   IF upload.storage_disposition<>disposition THEN RAISE EXCEPTION 'terminal upload result conflict'; END IF;
+   RETURN disposition='stored' AND NOT upload.cleanup_required
+     AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
+ END IF;
+ IF known_no_more_io IS DISTINCT FROM TRUE THEN
+   UPDATE learner_audio_upload_attempts SET io_state='unknown',multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
+     cleanup_required=cleanup_required OR fence.revision<>captured_revision OR fence.active_delete_command_id IS NOT NULL
+     WHERE upload_attempt_id=expected_upload;
+   RETURN FALSE; END IF;
+ IF disposition IS NULL OR disposition NOT IN('stored','absent','failed') THEN RAISE EXCEPTION 'invalid terminal IO fact'; END IF;
+ IF upload.upload_attempt_id LIKE 'lau\_legacy\_%' AND NOT EXISTS(
+   SELECT 1 FROM learner_audio_legacy_settlements legacy
+    WHERE legacy.upload_attempt_id=upload.upload_attempt_id AND legacy.owner_id=upload.owner_id
+      AND legacy.disposition=settle_learner_audio_upload_private_v1.disposition) THEN
+   RAISE EXCEPTION 'imported legacy producer requires recorded settlement evidence'; END IF;
+ publish_allowed:=disposition='stored' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
+ UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition=disposition,
+   closed_at=clock_timestamp(),multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
+   cleanup_required=CASE WHEN disposition='absent' AND EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=upload.object_ref) THEN FALSE ELSE cleanup_required OR NOT publish_allowed END
+   WHERE upload_attempt_id=expected_upload;
+ -- A later stored object invalidates earlier absence/deletion evidence for the
+ -- same key. Its old command stays pending until another exact deletion.
+ IF disposition<>'absent' AND NOT publish_allowed THEN
+   DELETE FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref;
+ END IF;
+ RETURN publish_allowed;
 END $$;
 
 CREATE OR REPLACE FUNCTION require_guest_practice_only_schema_phase_v1()
@@ -407,7 +463,8 @@ BEGIN
  FOREACH signature IN ARRAY ARRAY[
   'prepare_learner_audio_delete_private_v1(text,text,text,text,text[],text,integer,text)',
   'settle_legacy_learner_audio_upload_private_v1(text,text,jsonb)',
-  'guard_learner_audio_legacy_settlement_private_v1()'] LOOP
+  'guard_learner_audio_legacy_settlement_private_v1()',
+  'settle_learner_audio_upload_private_v1(text,text,boolean,text)'] LOOP
   IF NOT EXISTS(SELECT 1 FROM pg_proc f WHERE f.oid=signature::regprocedure
    AND f.pronamespace=trusted_namespace AND f.proowner=trusted_owner) THEN
    RAISE EXCEPTION 'audio deletion routine custody differs'; END IF;
