@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { ProviderUnavailable } from "./errors.ts";
-import { guestBrowserErrorsV1, guestInterfaceEndpoint } from "./guest-browser-authority.ts";
+import { guestBrowserErrorsV1, guestLearningEndpoint } from "./guest-browser-authority.ts";
 import {
   GuestDrawingIdV1,
   GuestIdentifierV1,
@@ -138,7 +138,7 @@ export const GuestStudyPreparedContentV1 = Schema.Struct({
   reward_preview: Schema.NullOr(GuestRewardTermsV1),
 });
 export type GuestStudyPreparedContentV1 = Schema.Schema.Type<typeof GuestStudyPreparedContentV1>;
-export const GetPublicStudyPreparedContentV1 = guestInterfaceEndpoint({
+export const GetPublicStudyPreparedContentV1 = guestLearningEndpoint({
   method: "GET",
   path: "/communities/:communityId/posts/:postId/study/public",
   auth: Auth.public(),
@@ -152,7 +152,7 @@ export const GetPublicStudyPreparedContentV1 = guestInterfaceEndpoint({
   response: GuestStudyPreparedContentV1,
   errors: guestBrowserErrorsV1,
 });
-export const StartGuestStudySessionV1 = guestInterfaceEndpoint({
+export const StartGuestStudySessionV1 = guestLearningEndpoint({
   method: "POST",
   path: "/communities/:communityId/posts/:postId/study/guest/v1/sessions",
   auth: Auth.browserParticipation({ authority: "learning", operation: "start" }),
@@ -182,7 +182,7 @@ export const StartGuestStudySessionV1 = guestInterfaceEndpoint({
   successStatus: 201,
   errors: guestBrowserErrorsV1,
 });
-export const GetGuestStudyStartOperationV1 = guestInterfaceEndpoint({
+export const GetGuestStudyStartOperationV1 = guestLearningEndpoint({
   method: "GET",
   path: "/communities/:communityId/posts/:postId/study/guest/v1/session-operations/:idempotencyKey",
   auth: Auth.browserParticipation({ authority: "learning", operation: "operation_result" }),
@@ -197,7 +197,7 @@ export const GetGuestStudyStartOperationV1 = guestInterfaceEndpoint({
   response: GuestStudyStartOperationV1,
   errors: guestBrowserErrorsV1,
 });
-export const GetGuestStudySessionV1 = guestInterfaceEndpoint({
+export const GetGuestStudySessionV1 = guestLearningEndpoint({
   method: "GET",
   path: "/communities/:communityId/study/guest/v1/sessions/:sessionId",
   auth: Auth.browserParticipation({ authority: "learning", operation: "read" }),
@@ -208,7 +208,7 @@ export const GetGuestStudySessionV1 = guestInterfaceEndpoint({
   response: GuestStudySessionV1,
   errors: guestBrowserErrorsV1,
 });
-export const SubmitGuestStudyAnswerV1 = guestInterfaceEndpoint({
+export const SubmitGuestStudyAnswerV1 = guestLearningEndpoint({
   method: "POST",
   path: "/communities/:communityId/study/guest/v1/sessions/:sessionId/items/:sessionItemId/answers",
   auth: Auth.browserParticipation({ authority: "learning", operation: "answer" }),

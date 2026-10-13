@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { guestParticipationRegistry } from "@pirate/contracts";
 import {
+  guestAccountingNames,
+  guestLearningNames,
+} from "./guest-authority-controller-composition.ts";
+import {
   type GuestStudyManagedBindings,
   makeDefaultGuestStudyManagedRuntime,
 } from "./guest-study-managed-bindings.ts";
@@ -49,14 +53,21 @@ describe("Default managed Guest Study binding selection", () => {
       makeDefaultGuestStudyManagedRuntime({ GUEST_STUDY_SERVING_ENABLED: "TRUE" }, "staging"),
     ).toThrow("nonproduction");
   });
-  test("actual disabled declarations refuse instead of synthesizing a managed graph", () => {
-    expect(
-      Object.values(guestParticipationRegistry).every(
-        (definition) => definition.implementation === "disabled",
-      ),
-    ).toBe(true);
+  test("admitted learning metadata leaves accounting disabled and cannot replace storage admission", () => {
+    expect(guestLearningNames).toHaveLength(16);
+    expect(guestAccountingNames).toHaveLength(5);
+    for (const name of guestLearningNames)
+      expect(guestParticipationRegistry[name].implementation).toBeUndefined();
+    for (const name of guestAccountingNames)
+      expect(guestParticipationRegistry[name].implementation).toBe("disabled");
     expect(() =>
-      makeDefaultGuestStudyManagedRuntime({ GUEST_STUDY_SERVING_ENABLED: "true" }, "staging"),
-    ).toThrow("declarations remain disabled");
+      makeDefaultGuestStudyManagedRuntime(
+        {
+          GUEST_STUDY_SERVING_ENABLED: "true",
+          GUEST_STUDY_PRODUCT_ORIGIN: "https://community.example",
+        },
+        "staging",
+      ),
+    ).toThrow("learner audio binding unavailable");
   });
 });

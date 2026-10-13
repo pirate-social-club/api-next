@@ -27,6 +27,10 @@ import {
 } from "../../../packages/platform-cf/src/postgres.ts";
 import type { PostgresMigration } from "../../../packages/platform-cf/src/postgres-migrations.ts";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import {
+  guestAccountingNames,
+  guestLearningNames,
+} from "./guest-authority-controller-composition.ts";
 import type { GuestAuthorityControllerName } from "./guest-authority-controllers.ts";
 import { makeGuestAuthorityPrivateComposition } from "./guest-authority-private-composition.ts";
 import { decodeInput, type EndpointHandlerResult } from "./transport.ts";
@@ -295,11 +299,15 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
       });
     };
     const c = composition();
-    expect(Object.values(c.disabledLearningDefinitions)).toEqual(Array(16).fill("disabled"));
-    expect(Object.values(c.disabledAccountDefinitions)).toEqual(Array(5).fill("disabled"));
-    expect(
-      Object.values(guestParticipationRegistry).every((d) => d.implementation === "disabled"),
-    ).toBe(true);
+    expect(c.controllers).toBeDefined();
+    expect(guestLearningNames).toHaveLength(16);
+    expect(guestAccountingNames).toHaveLength(5);
+    for (const name of guestLearningNames) {
+      expect(guestParticipationRegistry[name].implementation).toBeUndefined();
+      expect(guestParticipationRegistry[name].cacheControl).toBe("private, no-store");
+    }
+    for (const name of guestAccountingNames)
+      expect(guestParticipationRegistry[name].implementation).toBe("disabled");
     process.stdout.write(
       `${JSON.stringify({
         fixture: "guest-http-private-genuine255",

@@ -134,7 +134,7 @@ const credit = () => ({
   recipient: { kind: "guest_owner", selection: null, binding: null },
 });
 
-describe("disabled guest interface checkpoint", () => {
+describe("Guest learning contracts with accounting held", () => {
   test("the single correlated vocabulary rejects impossible policies", () => {
     for (const [authority, operations] of Object.entries(browserParticipationOperations)) {
       for (const operation of operations)
@@ -535,10 +535,10 @@ describe("disabled guest interface checkpoint", () => {
       code: "auth_error",
       status: 401,
     });
+    const openApi = generateOpenApi(guestParticipationRegistry);
+    expect(openApi.paths["/guest/authority"]?.get?.["x-implementation"]).toBeUndefined();
     expect(
-      generateOpenApi(guestParticipationRegistry).paths["/guest/authority"]?.get?.[
-        "x-implementation"
-      ],
+      openApi.paths["/guest/attachment-intents/{id}/prepare"]?.post?.["x-implementation"],
     ).toBe("disabled");
     expect(() =>
       decode(GuestAuthorityV1, {

@@ -543,7 +543,8 @@ export async function journeyFixture(use: (f: JourneyFixture) => Promise<void>) 
         let decoded = 0;
         for (const name of [...coreNames, ...studyNames]) {
           const definition = guestParticipationRegistry[name];
-          expect(definition.implementation).toBe("disabled");
+          expect(definition.implementation).toBeUndefined();
+          expect(definition.cacheControl).toBe("private, no-store");
           app.on(definition.method, definition.path, async (context) => {
             try {
               const decode = async () => {

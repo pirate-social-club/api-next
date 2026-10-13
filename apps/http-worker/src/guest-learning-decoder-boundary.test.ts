@@ -65,5 +65,6 @@ test("maintained frozen117 answer decoder applies genuine audio524288/JSON4096/d
     ).status,
   ).toBe(400);
   expect(decoded).toBe(2);
-  expect(SubmitGuestStudyAnswerV1.implementation).toBe("disabled");
+  expect(SubmitGuestStudyAnswerV1.implementation).toBeUndefined();
+  expect(SubmitGuestStudyAnswerV1.cacheControl).toBe("private, no-store");
 });

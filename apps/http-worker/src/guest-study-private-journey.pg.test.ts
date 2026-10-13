@@ -14,6 +14,10 @@ import {
 } from "@pirate/contracts";
 import { Schema } from "effect";
 import {
+  guestAccountingNames,
+  guestLearningNames,
+} from "./guest-authority-controller-composition.ts";
+import {
   Browser,
   financialFingerprint,
   type HttpHarness,
@@ -290,7 +294,14 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
         expect(after[field]).toBe(baseline[field]);
       expect(await financialFingerprint(f)).toEqual(finance);
       expect(
-        Object.values(guestParticipationRegistry).every((e) => e.implementation === "disabled"),
+        guestLearningNames.every(
+          (name) => guestParticipationRegistry[name].implementation === undefined,
+        ),
+      ).toBe(true);
+      expect(
+        guestAccountingNames.every(
+          (name) => guestParticipationRegistry[name].implementation === "disabled",
+        ),
       ).toBe(true);
     });
   }, 120000);

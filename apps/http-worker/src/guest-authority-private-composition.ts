@@ -1,26 +1,21 @@
-// Private accepted integration seam: definitions remain disabled.
+// Test-owned private controller harness. It installs no production route or runtime.
 import { guestParticipationRegistry } from "@pirate/contracts";
 import {
   type GuestAuthorityCompositionDependencies,
   guestAccountingNames,
-  guestLearningNames,
   makeGuestAuthorityComposition,
 } from "./guest-authority-controller-composition.ts";
 export type GuestAuthorityPrivateCompositionDependencies = GuestAuthorityCompositionDependencies;
 export function makeGuestAuthorityPrivateComposition(
   dependencies: GuestAuthorityPrivateCompositionDependencies,
 ) {
-  for (const name of [...guestLearningNames, ...guestAccountingNames])
+  // Actual canonical metadata is consumed directly. Accounting remains held;
+  // this helper neither clones nor rewrites learning declarations.
+  for (const name of guestAccountingNames)
     if (guestParticipationRegistry[name].implementation !== "disabled")
-      throw new Error("Private authority composition requires disabled declarations");
+      throw new Error("Private authority composition requires disabled accounting declarations");
   return Object.freeze({
     ...makeGuestAuthorityComposition(dependencies),
-    disabledLearningDefinitions: Object.freeze(
-      Object.fromEntries(guestLearningNames.map((name) => [name, "disabled" as const])),
-    ),
-    disabledAccountDefinitions: Object.freeze(
-      Object.fromEntries(guestAccountingNames.map((name) => [name, "disabled" as const])),
-    ),
     pendingLearningInputs: Object.freeze({
       currentResourcePolicy:
         dependencies.currentResourcePolicy === null
