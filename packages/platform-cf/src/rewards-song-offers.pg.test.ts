@@ -1956,6 +1956,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
 
       const store = makeControlPlaneMegapotPurchaseStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
+        { purchaseSafetyMarginSeconds: 60 },
       );
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
@@ -2608,7 +2609,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         legId,
       ]);
       const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
-      const store = makeControlPlaneMegapotPurchaseStore(layer);
+      const store = makeControlPlaneMegapotPurchaseStore(layer, { purchaseSafetyMarginSeconds: 60 });
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
       );

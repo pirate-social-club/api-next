@@ -158,6 +158,9 @@ function harness(
     lease?: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
     /** Makes the record of a submission fail, as a lost database write would. */
     record?: { fail: boolean };
+    originalWindow?: { open: boolean; lapseAfter?: "reserve" | "prepare" };
+    reserveFailure?: "constraint" | "outcome-unknown";
+    pendingAdmission?: boolean;
   }> = {},
 ) {
   let progress: MegapotPurchaseProgress | null = null;
@@ -174,6 +177,11 @@ function harness(
     },
     reserveNonce: (request) => {
       events.push("reserve");
+      if (input.originalWindow?.lapseAfter === "reserve") input.originalWindow.open = false;
+      if (input.reserveFailure !== undefined) {
+        if (input.originalWindow !== undefined) input.originalWindow.open = false;
+        return Effect.fail(new MegapotPurchaseStorageFailed({ reason: input.reserveFailure }));
+      }
       if (input.lease?.lapseAfter === "reserve") input.lease.live = false;
 
       const reservation = {
@@ -188,6 +196,7 @@ function harness(
     },
     prepare: (request) => {
       events.push("prepare");
+      if (input.originalWindow?.lapseAfter === "prepare") input.originalWindow.open = false;
       if (input.lease?.lapseAfter === "prepare") input.lease.live = false;
 
       prepared = {
@@ -322,6 +331,9 @@ function harness(
         ),
     },
     store,
+    isOriginalWindowOpen: () => Effect.suspend(() => input.pendingAdmission
+      ? Effect.fail(new MegapotPurchaseStorageFailed({ reason: "constraint" }))
+      : Effect.succeed(input.originalWindow?.open ?? true)),
     rpc,
     signer,
     options: {
@@ -495,5 +507,84 @@ describe("Megapot purchase under a run lease", () => {
     expect(fixture.events.filter((event) => event.startsWith("submission:"))).toEqual([
       "submission:accepted",
     ]);
+  });
+});
+
+
+describe("original drawing purchase window", () => {
+  const command = { poolLegId: candidate.poolLegId, drawingId: 101n };
+  const attempt = (fixture: ReturnType<typeof harness>) => Effect.runPromise(
+    fixture.coordinator.purchase(command).pipe(
+      Effect.map((value) => value.kind as string),
+      Effect.catch((error) => Effect.succeed(`failed:${error._tag}`)),
+    ),
+  );
+
+  test("a resolved original deadline closes only the original proven-unsent drawing", async () => {
+    const fixture = harness({ originalWindow: { open: false } });
+    expect(await attempt(fixture)).toBe("closed");
+    expect(fixture.events).toEqual(["close:cutoff_safety_margin"]);
+    expect(fixture.getProgress()).toBeNull();
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("an unresolved admission holds both purchase and no-purchase closure", async () => {
+    const fixture = harness({ originalWindow: { open: false }, pendingAdmission: true });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    await expect(Effect.runPromise(fixture.coordinator.closeUnavailable(command))).rejects.toThrow();
+    expect(fixture.events).toEqual([]);
+    expect(fixture.getProgress()).toBeNull();
+  });
+
+  test("a deadline crossed during nonce locking closes after definite rollback only", async () => {
+    const fixture = harness({ originalWindow: { open: true }, reserveFailure: "constraint" });
+    expect(await attempt(fixture)).toBe("closed");
+    expect(fixture.events).toEqual(["reserve", "close:cutoff_safety_margin"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("unknown reserve COMMIT never closes or releases an original drawing", async () => {
+    const fixture = harness({ originalWindow: { open: true }, reserveFailure: "outcome-unknown" });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    expect(fixture.events).toEqual(["reserve"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("a retained nonce reservation cannot be signed after its original deadline", async () => {
+    const fixture = harness({ originalWindow: { open: true, lapseAfter: "reserve" } });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getProgress()?.state).toBe("nonce_reserved");
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.events).toEqual(["reserve"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("a retained signature cannot be sent after its original deadline", async () => {
+    const fixture = harness({ originalWindow: { open: true, lapseAfter: "prepare" } });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(0);
+    expect(fixture.events).toEqual(["reserve", "prepare"]);
+  });
+
+  test("original landed transaction recovery bypasses later window/config rejection", async () => {
+    const originalWindow = { open: true };
+    const record = { fail: true };
+    const fixture = harness({ originalWindow, record });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    expect(fixture.getSendCalls()).toBe(1);
+    record.fail = false;
+    originalWindow.open = false;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(1);
+    expect(fixture.events).not.toContain("close:cutoff_safety_margin");
   });
 });

@@ -144,8 +144,12 @@ export function makeMegapotAttestationRuntime(input: {
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
+    const purchaseStore = makeControlPlaneMegapotPurchaseStore(controlPlane, {
+      purchaseSafetyMarginSeconds: options.purchaseSafetyMarginSeconds,
+    });
     const purchase = makeMegapotPurchaseCoordinator({
-      store: makeControlPlaneMegapotPurchaseStore(controlPlane),
+      store: purchaseStore,
+      isOriginalWindowOpen: purchaseStore.isOriginalWindowOpen,
       rpc,
       signer: transactionSigner,
       authority,

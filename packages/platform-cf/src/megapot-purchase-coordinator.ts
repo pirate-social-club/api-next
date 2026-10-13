@@ -196,6 +196,7 @@ function preparedFrom(
 
 export function makeMegapotPurchaseCoordinator(input: {
   readonly store: MegapotPurchaseStore;
+  readonly isOriginalWindowOpen: (candidate: MegapotPurchaseCandidate) => Effect.Effect<boolean, MegapotPurchaseFailure>;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
   readonly authority: RewardRunAuthority;
@@ -241,6 +242,8 @@ export function makeMegapotPurchaseCoordinator(input: {
       return yield* failed("drawing_rolled_over", "preflight");
     }
     if (live.state.jackpotLock) return yield* failed("drawing_locked", "preflight");
+    if (!(yield* input.isOriginalWindowOpen(candidate)))
+      return yield* failed("cutoff_safety_margin", "preflight");
     const nowSeconds = BigInt(Math.floor(now() / 1_000));
     if (live.state.drawingTime <= nowSeconds + BigInt(options.purchaseSafetyMarginSeconds)) {
       return yield* failed("cutoff_safety_margin", "preflight");
@@ -411,6 +414,8 @@ export function makeMegapotPurchaseCoordinator(input: {
     // Sending needs authority. It is asked outside the handling below, so a refusal
     // is never taken for a broadcast of unknown outcome.
     yield* input.authority.ensure();
+    if (!(yield* input.isOriginalWindowOpen(purchase)))
+      return yield* failed("cutoff_safety_margin", "preflight");
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       rpc.sendRawTransaction(purchase.signedTransaction as Hex),
     ).pipe(
@@ -459,6 +464,8 @@ export function makeMegapotPurchaseCoordinator(input: {
   ) {
     // Signing needs authority, on a resumed reservation as much as a new one.
     yield* input.authority.ensure();
+    if (!(yield* input.isOriginalWindowOpen(reservation)))
+      return yield* failed("cutoff_safety_margin", "preflight");
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       signer.sign({
         chainId: reservation.chainId,
@@ -651,7 +658,7 @@ export function makeMegapotPurchaseCoordinator(input: {
     if (nativeBalance < requiredNative) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
-    const reservation = yield* store.reserveNonce({
+    const reserved = yield* store.reserveNonce({
       candidate,
       effectId,
       ticket,
@@ -659,9 +666,20 @@ export function makeMegapotPurchaseCoordinator(input: {
       observedBlockNumber: feeQuote.observedBlockNumber,
       observedBlockHash: feeQuote.observedBlockHash,
       observedAt: new Date(now()).toISOString(),
-    });
+    }).pipe(
+      Effect.map((reservation) => ({ kind: "reserved" as const, reservation })),
+      Effect.catchTag("MegapotPurchaseStorageFailed", (error) => Effect.gen(function* () {
+        // An unknown COMMIT is NEVER a no-effect witness or permission to close.
+        if (error.reason !== "constraint") return yield* error;
+        if ((yield* store.findProgress(effectId)) !== null) return yield* error;
+        const closed = yield* checkPreBroadcastWindow(candidate);
+        if (closed === null) return yield* error;
+        return closed;
+      })),
+    );
+    if (reserved.kind === "closed") return reserved;
     return yield* signReserved(
-      reservation,
+      reserved.reservation,
       calldata,
       gas,
       feeQuote.maxFeePerGas,

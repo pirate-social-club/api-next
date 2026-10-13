@@ -97,6 +97,8 @@ const MEGAPOT_REWARDS_READS = [
   "postgres:reward_credit_recipient_selections",
   "postgres:guest_owner_associations",
   "postgres:megapot_participant_claims",
+  "postgres:account_owner_reward_sources",
+  "postgres:study_sessions_v2",
   "postgres:owner_participation_admission_operations",
   "postgres:owner_participation_admission_attempts",
   "postgres:megapot_pool_commitment_effects",
@@ -149,6 +151,8 @@ const MEGAPOT_REWARDS_WRITES = MEGAPOT_REWARDS_READS.filter(
     table !== "postgres:reward_credit_recipient_selections" &&
     table !== "postgres:guest_owner_associations" &&
     table !== "postgres:megapot_participant_claims" &&
+    table !== "postgres:account_owner_reward_sources" &&
+    table !== "postgres:study_sessions_v2" &&
     table !== "postgres:owner_participation_admission_operations" &&
     table !== "postgres:owner_participation_admission_attempts",
 ) satisfies readonly TableKey[];
