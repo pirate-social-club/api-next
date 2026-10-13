@@ -62,6 +62,42 @@ must also meet each of these:
   or history mutation.
 - A provider path that replaces native OIDC must say how it replaces OIDC's
   nonce, state and PKCE protections. It must not drop them silently.
+- "Commits nothing" and "no mutation" mean no Pirate-side mutation. A provider
+  login may itself create or update an identity at the provider, outside
+  Pirate. The selected provider's successor must name exactly which provider
+  objects its login can create, and the confirmation page must not imply they
+  were avoided. Cancellation leaves no Pirate credential binding, association,
+  relation, grant, session, account, persona or history change.
+
+## External provider mutations
+
+A completed provider-side change, such as linking a credential to a provider
+user, cannot be rolled back by a PostgreSQL transaction. This contract does
+not promise cross-system atomicity. Every flow that changes the provider does
+it this way:
+
+1. After explicit confirmation, the server records a durable `pending` intent
+   that names the exact target: Pirate account, provider user, numeric
+   Telegram ID and provider subject. It does this under the uniqueness lock,
+   before calling the provider.
+2. It performs only the consented provider mutation for that target. It never
+   moves a credential from another provider user and never authenticates
+   Telegram into a different provider user.
+3. A confirmed provider result moves the intent to `committed` and, in the
+   same Pirate transaction, writes the association and relation. A definite
+   refusal moves it to `refused`, with no Pirate effect. A timeout or an
+   ambiguous answer moves it to `uncertain`.
+4. `uncertain` and stale `pending` intents are reconciled only against the
+   same target, by a provider read. If the provider shows the consented link,
+   the intent commits. If it shows no link, the intent is refused. If it shows
+   the subject on a different provider user or Pirate account, the intent
+   refuses as a conflict and nothing is reassigned.
+5. While an intent is `pending` or `uncertain`, new attempts for that Telegram
+   ID or subject refuse, and the learner sees an honest "still finishing"
+   status, not success.
+
+The provider-specific successor defines the provider read, the retry bound and
+the operator view for unresolved intents.
 
 **Provider: open pending evidence.** Native Telegram OIDC (Spec 026) is the
 accepted contract, but its staging login has not completed: the October 6
@@ -93,10 +129,13 @@ native OIDC is investigated under the same standard.
    single-use. The server locks the reservation, rechecks that it is the
    promotable one (`local_bot_id IS NULL`) and checks that no other association
    holds this Telegram ID or provider subject.
-5. Only then does the server attach the provider credential to the existing
-   restricted account and record the association, atomically. A provider
-   subject already mapped to another account takes the Connect path, never
-   reassignment. Leaving or cancelling the confirmation page commits nothing.
+5. Only then does the server bind the provider credential to the existing
+   restricted account and record the association, following External provider
+   mutations. Leaving or cancelling the confirmation page commits nothing.
+   If the provider subject is already mapped to another Pirate account,
+   Recover refuses. Showing the Connect option is not proof of that account:
+   Connect still requires independent sign-in to the target account and
+   explicit confirmation of the target.
 6. The browser receives a session for that same account. **Owner decision R1**
    chooses the scope:
    - **(a) recommended**: a limited practice session, defined in Limited
@@ -117,8 +156,17 @@ native OIDC is investigated under the same standard.
 
 ## Limited practice session (R1, option a)
 
-It is a distinct, marked session kind. The ordinary full-session exchange and
-its readiness gate are unchanged, and a limited session can never pass them.
+It is a distinct principal kind with its own declared capability, for example
+`restricted_practice_learner`, in the generated authorization policy. It is
+not a full-user session with a route allowlist beside it. Ordinary user
+authority checks never accept this principal, so an endpoint that is not
+declared for the capability refuses by default. The ordinary full-session
+exchange and its readiness gate are unchanged, and a limited session can never
+pass them.
+
+The operation classes below are the semantic boundary. The generated policy
+enforces them, and a policy test fails if any endpoint accepts the capability
+without being on the allowed list.
 
 Allowed, for its own recovered account and that account's restricted practice
 personas only:
@@ -157,25 +205,30 @@ Bounds:
    nothing and creates nothing.
 3. Pirate's confirmation page, minimal and no-store, shows the signed-in
    account, the proven Telegram identity, the exact community and bot, and
-   what connecting does and does not grant (see step 5).
+   each effect separately:
+   - the history relation in step 5, which Connect always creates;
+   - adding Telegram as a future sign-in method for the existing account. This
+     is a separate effect with its own consent, and it is off unless the
+     learner turns it on.
+   If the selected provider can only produce proof by linking Telegram to the
+   provider user, the page says so before the provider step, and the learner
+   consents to that before it runs.
 4. Only an explicit protected confirmation commits, with the same transaction,
-   browser and account binding as Recover. Under one lock the server rechecks
-   uniqueness: the Telegram ID must not be associated with another account.
-   It then attaches the credential to the existing account's provider user
-   (for Privy, link to that user; never authenticate Telegram into a different
-   provider user) and records the relation in step 5, atomically. Cancelling
-   commits nothing.
+   browser and account binding as Recover. Under the uniqueness lock the
+   server rechecks that the Telegram ID and provider subject are not
+   associated with another account, then follows External provider mutations
+   for any consented provider link. Cancelling commits nothing on Pirate.
 5. The server records a **private connection relation** between the existing
    account and the restricted practice owner, or the bot-local owner. The
    practice account, its personas and its sessions stay where they are;
    original attribution is unchanged.
-6. **Owner decision C1** (recommended): the relation authorizes a unified,
-   read-only practice-history projection on the existing account's website.
-   New bot lessons keep continuing the same practice profile until a
-   separately reviewed routing transition. Nothing swaps personas because a
-   login exists. The relation grants no ownership of the practice account's
-   personas, wallet or website routes, and the existing account gains no new
-   authority from it.
+6. **Owner decision C1** (recommended): the relation grants exactly one
+   capability: the reviewed read-only practice-history projection on the
+   existing account's website. It grants nothing else: no ownership of the
+   practice account, its personas, wallet or routes, no Study writes on its
+   behalf, and no reward or credit effect. New bot lessons keep continuing the
+   same practice profile until a separately reviewed routing transition.
+   Nothing swaps personas because a login exists.
 7. For a bot-local isolated owner, the relation is scoped to that bot's local
    practice only, with no sibling-bot access.
 
@@ -198,8 +251,10 @@ Bounds:
 | Case | Required evidence |
 | --- | --- |
 | Recover | Same `user_id`, persona and session IDs; no second account; nothing committed before explicit confirmation; session scope per R1; practice-only per R2. |
-| Limited session | Every refused class answers as refused; the full-session exchange refuses it. |
-| Connect | Verified target account plus a matching Telegram ID; nothing committed before explicit confirmation; historic attribution unchanged; projection and routing per C1. |
+| Limited session | Every refused class answers as refused; the full-session exchange refuses it; the generated policy test shows no undeclared endpoint accepts the capability. |
+| Connect | Independently signed-in target account plus a matching Telegram ID; nothing committed before explicit confirmation; the sign-in method is added only with its own consent; historic attribution unchanged; projection and routing per C1. |
+| Provider uncertainty | A timeout after the provider call leaves an `uncertain` intent; reconciliation against the same target commits or refuses it; a conflicting subject refuses without reassignment; no success is shown before commit. |
+| Mapped subject | A subject mapped to another account refuses Recover and needs independent sign-in plus target confirmation for Connect. |
 | Wrong identity or copied entry | Refused; no credential, association, grant, account or history mutation. |
 | Cancel, replay, expiry or browser switch | Safe refusal or a fresh restart in the destination browser; no state transfer; no automatic registration. |
 | Return to bot | Prompt or ending resumes; the third action is gone once connected; stale buttons inert. |
@@ -212,7 +267,8 @@ history, association, relation and button behavior.
 1. The probe phone run and its managed lookup decide the provider section.
 2. Review and accept this successor and decisions R1, R2, C1 and E1.
    Integrate into Specs 014 and 026 in the control plane.
-3. API: recovery and connection transactions, association and relation,
+3. API: recovery and connection transactions, provider intents and their
+   reconciliation, association and relation,
    session scope, plus adversarial PostgreSQL tests (concurrency, conflicts,
    replay, wrong identity, bot-local owner).
 4. Solid: entry, confirmation and return, with the intercept before generic
