@@ -83,7 +83,9 @@ export function makeControlPlaneOwnerRecipientStores(runtime:Layer.Layer<Control
      });
    },
    findBoundAttachment:input=>call('guest-attachment.bound.read','SELECT find_bound_guest_attachment_v1($1,$2) AS result',[input.account.accountId,input.attachmentId],Schema.NullOr(GuestAttachmentBindingV1),reply=>{
-    if(reply!==null&&(reply.attachment_id!==input.attachmentId||reply.account_id!==input.account.accountId)) throw new Error();
+    // Native bound-only canonical access authorizes current B; immutable returned
+    // binding.account_id remains original A. The exact original locator must match.
+    if(reply!==null&&reply.attachment_id!==input.attachmentId) throw new Error();
    }),
   },
   credits:{resolveAuthority:input=>{
