@@ -7,7 +7,10 @@ import {
   makeSongRewardOfferService,
   prepareActivityPersona,
 } from "@pirate/application";
-import { resetPostgresTestBaseline, postgresTestSchemaCatalogFingerprint } from "@pirate/testing/postgres";
+import {
+  resetPostgresTestBaseline,
+  postgresTestSchemaCatalogFingerprint,
+} from "@pirate/testing/postgres";
 import { Effect, Schema } from "effect";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -272,44 +275,92 @@ async function setupPool(f: RewardedFixture, suffix: string) {
   // A NEW leg starts AFTER the observation current at its creation. Original101
   // is genuinely ineligible; never rewrite the captured prospective start floor.
   expect(created.leg.participationStartsDrawingId).toBe(102n);
-  expect(await run(openOwnerDrawingsForObservation(`observation-${suffix}`).pipe(
-    Effect.provide(f.adminRuntime)))).toEqual([]);
-  expect((await f.admin.query(`SELECT leg.status,leg.beneficiary_version,leg.funded_atomic::text,
+  expect(
+    await run(
+      openOwnerDrawingsForObservation(`observation-${suffix}`).pipe(Effect.provide(f.adminRuntime)),
+    ),
+  ).toEqual([]);
+  expect(
+    (
+      await f.admin.query(
+        `SELECT leg.status,leg.beneficiary_version,leg.funded_atomic::text,
     leg.participation_starts_drawing_id::text,offer.status AS offer_status,
     funding.state AS funding_state,funding.confirmed_amount_atomic::text,
     (SELECT count(*)::integer FROM megapot_pool_drawings WHERE pool_leg_id=leg.leg_id) AS prior_draws
     FROM song_reward_offer_legs leg JOIN song_reward_offers offer USING(offer_id)
     JOIN song_reward_leg_funding_effects funding ON funding.leg_id=leg.leg_id
     WHERE leg.leg_id=$1 AND funding.funding_effect_id=$2`,
-    [created.leg.legId,created.funding.intent.fundingEffectId])).rows).toEqual([{status:"active",
-      beneficiary_version:3,funded_atomic:"100000",participation_starts_drawing_id:"102",
-      offer_status:"active",funding_state:"confirmed",confirmed_amount_atomic:"100000",prior_draws:0}]);
+        [created.leg.legId, created.funding.intent.fundingEffectId],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      status: "active",
+      beneficiary_version: 3,
+      funded_atomic: "100000",
+      participation_starts_drawing_id: "102",
+      offer_status: "active",
+      funding_state: "confirmed",
+      confirmed_amount_atomic: "100000",
+      prior_draws: 0,
+    },
+  ]);
   const originalDrawingId = created.leg.participationStartsDrawingId;
-  const nextClock = new Date(),cutoffAt = new Date(nextClock.getTime() + 45000);
+  const nextClock = new Date(),
+    cutoffAt = new Date(nextClock.getTime() + 45000);
   const nextObservationId = `observation-next-${suffix}`;
   // New deterministic observation AT the actual repository boundary after
   // source-owned funding. This is neither a draw insert nor a live RPC claim.
-  const next = await run(observation.recordAndOpen({
-    observationId:nextObservationId,attestationId:"megapot-base-sepolia-v2",chainId:84532,
-    drawingId:originalDrawingId,grossPrizePoolAtomic:100000n,globalTicketsBought:10n,
-    ticketPriceAtomic:10000n,drawingTime:new Date(cutoffAt.getTime()+300000).toISOString(),
-    ballMax:25,bonusballMax:13,drawingLocked:false,
-    referralFeeWei:100000000000000000n,referralWinShareWei:100000000000000000n,
-    blockNumber:103n,blockHash:hex(nextObservationId),blockTimestamp:nextClock.toISOString(),
-    confirmations:3,observedAt:nextClock.toISOString(),expiresAt:new Date(nextClock.getTime()+3600000).toISOString(),
-    rawStateHash:hash(`state-next-${suffix}`),legacyRawStateHash:hash(`legacy-next-${suffix}`),
-  }));
+  const next = await run(
+    observation.recordAndOpen({
+      observationId: nextObservationId,
+      attestationId: "megapot-base-sepolia-v2",
+      chainId: 84532,
+      drawingId: originalDrawingId,
+      grossPrizePoolAtomic: 100000n,
+      globalTicketsBought: 10n,
+      ticketPriceAtomic: 10000n,
+      drawingTime: new Date(cutoffAt.getTime() + 300000).toISOString(),
+      ballMax: 25,
+      bonusballMax: 13,
+      drawingLocked: false,
+      referralFeeWei: 100000000000000000n,
+      referralWinShareWei: 100000000000000000n,
+      blockNumber: 103n,
+      blockHash: hex(nextObservationId),
+      blockTimestamp: nextClock.toISOString(),
+      confirmations: 3,
+      observedAt: nextClock.toISOString(),
+      expiresAt: new Date(nextClock.getTime() + 3600000).toISOString(),
+      rawStateHash: hash(`state-next-${suffix}`),
+      legacyRawStateHash: hash(`legacy-next-${suffix}`),
+    }),
+  );
   expect(next.drawingId).toBe(originalDrawingId);
   expect(next.openedPoolLegIds).toEqual([]); // Retained ordinary observer opens only version2.
-  const openedLegs = await run(openOwnerDrawingsForObservation(nextObservationId).pipe(
-    Effect.provide(f.adminRuntime)));
+  const openedLegs = await run(
+    openOwnerDrawingsForObservation(nextObservationId).pipe(Effect.provide(f.adminRuntime)),
+  );
   expect(openedLegs).toEqual([created.leg.legId]);
-  expect((await f.admin.query(`SELECT drawing_id::text,observation_id,beneficiary_version,status,
+  expect(
+    (
+      await f.admin.query(
+        `SELECT drawing_id::text,observation_id,beneficiary_version,status,
     octet_length(owner_fallback_leaf_salt) AS salt_bytes,entry_cutoff_at=$3::timestamptz AS exact_cutoff
     FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric`,
-    [created.leg.legId,originalDrawingId.toString(),cutoffAt.toISOString()])).rows).toEqual([{
-      drawing_id:originalDrawingId.toString(),observation_id:nextObservationId,beneficiary_version:3,
-      status:"entry_open",salt_bytes:32,exact_cutoff:true}]);
+        [created.leg.legId, originalDrawingId.toString(), cutoffAt.toISOString()],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      drawing_id: originalDrawingId.toString(),
+      observation_id: nextObservationId,
+      beneficiary_version: 3,
+      status: "entry_open",
+      salt_bytes: 32,
+      exact_cutoff: true,
+    },
+  ]);
   const original = { poolLegId: created.leg.legId, drawingId: originalDrawingId.toString() };
   return { key, custody, original, cutoffAt };
 }
@@ -557,91 +608,97 @@ async function purchaseAndSweep(
 suite("actual rewarded Guest producer into private v3 settlement", () => {
   for (const net of [1n, 0n])
     test(`real original CP/admission produces conserved ${net === 0n ? "all-zero sweep" : "positive and zero"} allocations and private public commitment`, async () => {
-      await rewardedFixture(async (f) => {
-        const pool = await setupPool(f, `native-${net}`);
-        const beforeCalls = f.providerCalls();
-        const first = await f.completeGuest(Number(net) + 9001, `first-${net}`),
-          second = await f.completeGuest(Number(net) + 9101, `second-${net}`);
-        expect(f.providerCalls() - beforeCalls).toBe(8);
-        expect(f.putCalls()).toBe(8);
-        expect(first.session.reward_terms?.pool_leg_id).toBe(pool.original.poolLegId);
-        expect(second.session.reward_terms?.original_drawing_id).toBe(pool.original.drawingId);
-        const snapshot = await freezeAndCommit(f, pool);
-        await purchaseAndSweep(f, pool, net);
-        const allocated = await run(snapshot.store.allocate(pool.original));
-        expect(await run(snapshot.store.allocate(pool.original))).toEqual(allocated);
-        const rows = (
-          await f.admin.query(
-            `SELECT allocation.owner_id,allocation.amount_atomic::text,allocation.credit_id,allocation.allocation_kind,
+      await rewardedFixture(
+        async (f) => {
+          const pool = await setupPool(f, `native-${net}`);
+          const beforeCalls = f.providerCalls();
+          const first = await f.completeGuest(Number(net) + 9001, `first-${net}`),
+            second = await f.completeGuest(Number(net) + 9101, `second-${net}`);
+          expect(f.providerCalls() - beforeCalls).toBe(8);
+          expect(f.putCalls()).toBe(8);
+          expect(first.session.reward_terms?.pool_leg_id).toBe(pool.original.poolLegId);
+          expect(second.session.reward_terms?.original_drawing_id).toBe(pool.original.drawingId);
+          const snapshot = await freezeAndCommit(f, pool);
+          await purchaseAndSweep(f, pool, net);
+          const allocated = await run(snapshot.store.allocate(pool.original));
+          expect(await run(snapshot.store.allocate(pool.original))).toEqual(allocated);
+          const rows = (
+            await f.admin.query(
+              `SELECT allocation.owner_id,allocation.amount_atomic::text,allocation.credit_id,allocation.allocation_kind,
     credit.identity_version,credit.account_id,credit.payout_persona_id AS persona_id,credit.participation_owner_id
     FROM megapot_owner_allocations allocation LEFT JOIN reward_ledger_credits credit USING(credit_id)
     WHERE allocation.allocation_batch_id=$1 ORDER BY allocation.ordinal`,
-            [allocated.allocationBatchId],
-          )
-        ).rows;
-        expect(rows).toHaveLength(2);
-        expect(rows.reduce((n, row) => n + atomic(row.amount_atomic), 0n)).toBe(net);
-        expect(rows.map((row) => atomic(row.amount_atomic))).toEqual(
-          net === 0n ? [0n, 0n] : [1n, 0n],
-        );
-        const owners = new Set([first.access.ownerId, second.access.ownerId]);
-        for (const row of rows) {
-          expect(owners.has(row.owner_id)).toBe(true);
-          if (atomic(row.amount_atomic) === 0n) {
-            expect(row.credit_id).toBeNull();
-            expect(row.identity_version).toBeNull();
-          } else {
-            expect(row.identity_version).toBe("owner_v1");
-            expect(row.account_id).toBeNull();
-            expect(row.persona_id).toBeNull();
-            expect(row.participation_owner_id).toBe(row.owner_id);
-            await expect(
-              run(makeControlPlaneRewardPayoutStore(f.adminRuntime).loadCandidate(row.credit_id)),
-            ).rejects.toMatchObject({ reason: "credit-not-payable" });
+              [allocated.allocationBatchId],
+            )
+          ).rows;
+          expect(rows).toHaveLength(2);
+          expect(rows.reduce((n, row) => n + atomic(row.amount_atomic), 0n)).toBe(net);
+          expect(rows.map((row) => atomic(row.amount_atomic))).toEqual(
+            net === 0n ? [0n, 0n] : [1n, 0n],
+          );
+          const owners = new Set([first.access.ownerId, second.access.ownerId]);
+          for (const row of rows) {
+            expect(owners.has(row.owner_id)).toBe(true);
+            if (atomic(row.amount_atomic) === 0n) {
+              expect(row.credit_id).toBeNull();
+              expect(row.identity_version).toBeNull();
+            } else {
+              expect(row.identity_version).toBe("owner_v1");
+              expect(row.account_id).toBeNull();
+              expect(row.persona_id).toBeNull();
+              expect(row.participation_owner_id).toBe(row.owner_id);
+              await expect(
+                run(makeControlPlaneRewardPayoutStore(f.adminRuntime).loadCandidate(row.credit_id)),
+              ).rejects.toMatchObject({ reason: "credit-not-payable" });
+            }
           }
-        }
-        if (net === 0n)
+          if (net === 0n)
+            expect(
+              (
+                await f.admin.query(
+                  "SELECT count(*)::integer AS n FROM megapot_claim_receipt_evidence",
+                )
+              ).rows,
+            ).toEqual([{ n: 0 }]);
+          expect(
+            (await f.admin.query("SELECT count(*)::integer AS n FROM reward_payout_effects")).rows,
+          ).toEqual([{ n: 0 }]);
           expect(
             (
               await f.admin.query(
-                "SELECT count(*)::integer AS n FROM megapot_claim_receipt_evidence",
+                "SELECT count(*)::integer AS n FROM reward_credit_persona_bindings WHERE owner_kind='guest'",
               )
             ).rows,
           ).toEqual([{ n: 0 }]);
-        expect(
-          (await f.admin.query("SELECT count(*)::integer AS n FROM reward_payout_effects")).rows,
-        ).toEqual([{ n: 0 }]);
-        expect(
-          (
+          const source = (
             await f.admin.query(
-              "SELECT count(*)::integer AS n FROM reward_credit_persona_bindings WHERE owner_kind='guest'",
+              "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
+              [pool.original.poolLegId, pool.original.drawingId],
             )
-          ).rows,
-        ).toEqual([{ n: 0 }]);
-        const source = (
-          await f.admin.query(
-            "SELECT frozen_share_count,reserved_ticket_cost_atomic::text,actual_ticket_cost_atomic::text FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
-            [pool.original.poolLegId,pool.original.drawingId],
-          )
-        ).rows;
-        const beforeReset = await postgresTestSchemaCatalogFingerprint(f.admin);
-        const originalFinancialRows = async () => (await f.admin.query(
-          "SELECT jsonb_build_object('credits',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY credit_id),'[]') FROM reward_ledger_credits c),'allocations',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY owner_id,ordinal),'[]') FROM megapot_owner_allocations a),'journals',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY admission_id),'[]') FROM owner_participation_admission_operations o)) AS facts",
-        )).rows;
-        const retainedFinancialRows = await originalFinancialRows();
-        await expect(resetPostgresTestBaseline(f.admin)).rejects.toMatchObject({ code: "GP003" });
-        expect(await postgresTestSchemaCatalogFingerprint(f.admin)).toBe(beforeReset);
-        expect(await originalFinancialRows()).toEqual(retainedFinancialRows);
-        await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
-        expect(source).toEqual([
-          {
-            frozen_share_count: 2,
-            reserved_ticket_cost_atomic: "10000",
-            actual_ticket_cost_atomic: "10000",
-          },
-        ]);
-        expect(f.providerCalls() - beforeCalls).toBe(8);
-        expect(f.putCalls()).toBe(8);
-      }, { ownedResetNamespace: true });
+          ).rows;
+          const beforeReset = await postgresTestSchemaCatalogFingerprint(f.admin);
+          const originalFinancialRows = async () =>
+            (
+              await f.admin.query(
+                "SELECT jsonb_build_object('credits',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY credit_id),'[]') FROM reward_ledger_credits c),'allocations',(SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY owner_id,ordinal),'[]') FROM megapot_owner_allocations a),'journals',(SELECT coalesce(jsonb_agg(to_jsonb(o) ORDER BY admission_id),'[]') FROM owner_participation_admission_operations o)) AS facts",
+              )
+            ).rows;
+          const retainedFinancialRows = await originalFinancialRows();
+          await expect(resetPostgresTestBaseline(f.admin)).rejects.toMatchObject({ code: "GP003" });
+          expect(await postgresTestSchemaCatalogFingerprint(f.admin)).toBe(beforeReset);
+          expect(await originalFinancialRows()).toEqual(retainedFinancialRows);
+          await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
+          expect(source).toEqual([
+            {
+              frozen_share_count: 2,
+              reserved_ticket_cost_atomic: "10000",
+              actual_ticket_cost_atomic: "10000",
+            },
+          ]);
+          expect(f.providerCalls() - beforeCalls).toBe(8);
+          expect(f.putCalls()).toBe(8);
+        },
+        { ownedResetNamespace: true },
+      );
     }, 180000);
 });

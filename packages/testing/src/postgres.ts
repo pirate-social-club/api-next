@@ -301,8 +301,12 @@ export function preparePostgresTestBaselineReset(
     }
     return name;
   });
-  if (resetTargets.includes("owner_accounting_native_source_inventory_v1") ||
-    /\bINSERT\s+INTO\s+(?:(?:"[a-z_][a-z0-9_]*"|[a-z_][a-z0-9_]*)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1)\s/u.test(sql)) {
+  if (
+    resetTargets.includes("owner_accounting_native_source_inventory_v1") ||
+    /\bINSERT\s+INTO\s+(?:(?:"[a-z_][a-z0-9_]*"|[a-z_][a-z0-9_]*)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1)\s/u.test(
+      sql,
+    )
+  ) {
     throw new Error("PostgreSQL test reset must preserve immutable source metadata");
   }
   if (new Set(resetTargets).size !== resetTargets.length) {

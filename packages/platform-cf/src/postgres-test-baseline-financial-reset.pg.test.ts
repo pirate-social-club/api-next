@@ -158,8 +158,9 @@ async function enabledGuardCount(admin: Client): Promise<number> {
 }
 
 async function exactSourceResetGuardCount(admin: Client): Promise<number> {
-  const row = (await admin.query<{ count: number }>(
-    `SELECT count(*)::INTEGER AS count
+  const row = (
+    await admin.query<{ count: number }>(
+      `SELECT count(*)::INTEGER AS count
      FROM owner_accounting_native_source_inventory_v1 source
      CROSS JOIN LATERAL jsonb_to_recordset(source.manifest->'triggers')
        AS expected(relation TEXT,name TEXT,type INTEGER,enabled TEXT)
@@ -167,7 +168,8 @@ async function exactSourceResetGuardCount(admin: Client): Promise<number> {
        AND actual.tgname=expected.name AND actual.tgtype=expected.type AND actual.tgenabled=expected.enabled::"char"
      WHERE source.singleton AND (expected.type & 32)<>0
        AND expected.relation<>'owner_accounting_native_source_inventory_v1'`,
-  )).rows[0];
+    )
+  ).rows[0];
   if (row === undefined) throw new Error("Actual source reset guard inventory unavailable");
   return row.count;
 }
@@ -195,31 +197,51 @@ async function observeLockWait(
 suite("owned empty financial baseline reset", () => {
   test("preserves all source-declared privileges and immutable metadata on baseline replay", async () => {
     await withOwnedBaseline(async (admin, reader, schema) => {
-      const source = (await admin.query<{ source_version: string; manifest_sha256: string }>(
-        "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
-      )).rows;
-      expect(source).toEqual([{
-        source_version: "owner_accounting_native_source_v1",
-        manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
-      }]);
-      const functions = (await admin.query<{ signature: string; acl_class: string }>(
-        "SELECT f.signature,f.acl_class FROM owner_accounting_native_source_inventory_v1 m CROSS JOIN LATERAL jsonb_to_recordset(m.manifest->'functions') AS f(signature TEXT,acl_class TEXT) WHERE m.singleton ORDER BY f.signature COLLATE \"C\"",
-      )).rows;
+      const source = (
+        await admin.query<{ source_version: string; manifest_sha256: string }>(
+          "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
+        )
+      ).rows;
+      expect(source).toEqual([
+        {
+          source_version: "owner_accounting_native_source_v1",
+          manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
+        },
+      ]);
+      const functions = (
+        await admin.query<{ signature: string; acl_class: string }>(
+          "SELECT f.signature,f.acl_class FROM owner_accounting_native_source_inventory_v1 m CROSS JOIN LATERAL jsonb_to_recordset(m.manifest->'functions') AS f(signature TEXT,acl_class TEXT) WHERE m.singleton ORDER BY f.signature COLLATE \"C\"",
+        )
+      ).rows;
       expect(functions).toHaveLength(370);
       expect(functions.filter((f) => f.acl_class === "private_source_only")).toHaveLength(193);
       expect(functions.filter((f) => f.acl_class === "controlled_financial")).toHaveLength(140);
       expect(functions.filter((f) => f.acl_class === "legacy_source_default")).toHaveLength(37);
-      const privileges = (await reader.query<{ signature: string; allowed: boolean }>(
-        "SELECT signature,has_function_privilege(current_user,to_regprocedure(format('%I.%s',$1::TEXT,signature)),'EXECUTE') AS allowed FROM unnest($2::TEXT[]) signature ORDER BY signature COLLATE \"C\"",
-        [schema,functions.map((f) => f.signature)],
-      )).rows;
-      expect(privileges).toEqual(functions.map((f) => ({
-        signature: f.signature,
-        allowed: f.acl_class === "legacy_source_default",
-      })));
-      await expect(reader.query("SELECT * FROM owner_accounting_native_source_inventory_v1")).rejects.toMatchObject({ code: "42501" });
-      await expect(admin.query("TRUNCATE owner_accounting_native_source_inventory_v1")).rejects.toMatchObject({ code: "GP003" });
-      expect((await admin.query("SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton")).rows).toEqual(source);
+      const privileges = (
+        await reader.query<{ signature: string; allowed: boolean }>(
+          "SELECT signature,has_function_privilege(current_user,to_regprocedure(format('%I.%s',$1::TEXT,signature)),'EXECUTE') AS allowed FROM unnest($2::TEXT[]) signature ORDER BY signature COLLATE \"C\"",
+          [schema, functions.map((f) => f.signature)],
+        )
+      ).rows;
+      expect(privileges).toEqual(
+        functions.map((f) => ({
+          signature: f.signature,
+          allowed: f.acl_class === "legacy_source_default",
+        })),
+      );
+      await expect(
+        reader.query("SELECT * FROM owner_accounting_native_source_inventory_v1"),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        admin.query("TRUNCATE owner_accounting_native_source_inventory_v1"),
+      ).rejects.toMatchObject({ code: "GP003" });
+      expect(
+        (
+          await admin.query(
+            "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
+          )
+        ).rows,
+      ).toEqual(source);
       await admin.query("BEGIN READ ONLY");
       await admin.query("SELECT require_owner_accounting_ready_private_v1()");
       await admin.query("COMMIT");
@@ -255,13 +277,17 @@ suite("owned empty financial baseline reset", () => {
           }),
         );
       const originalSeeds = await seedCounts();
-      const originalSourceMetadata = (await admin.query(
-        "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
-      )).rows;
-      expect(originalSourceMetadata).toEqual([{
-        source_version: "owner_accounting_native_source_v1",
-        manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
-      }]);
+      const originalSourceMetadata = (
+        await admin.query(
+          "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
+        )
+      ).rows;
+      expect(originalSourceMetadata).toEqual([
+        {
+          source_version: "owner_accounting_native_source_v1",
+          manifest_sha256: "701b4b19e8b39caee8d6ca1944aded36549cd837142989c999e7e813eedb7eb3",
+        },
+      ]);
       expect(originalSeeds.reduce((sum, row) => sum + Number(row[1]), 0)).toBe(45);
       for (const table of privateRelations) {
         await expect(reader.query(`SELECT * FROM ${quote(table)}`)).rejects.toMatchObject({
@@ -291,7 +317,13 @@ suite("owned empty financial baseline reset", () => {
       expect(await enabledGuardCount(admin)).toBe(7);
       expect(await exactSourceResetGuardCount(admin)).toBe(19);
       expect(await seedCounts()).toEqual(originalSeeds);
-      expect((await admin.query("SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton")).rows).toEqual(originalSourceMetadata);
+      expect(
+        (
+          await admin.query(
+            "SELECT source_version,encode(sha256(convert_to(manifest::TEXT,'UTF8')),'hex') AS manifest_sha256 FROM owner_accounting_native_source_inventory_v1 WHERE singleton",
+          )
+        ).rows,
+      ).toEqual(originalSourceMetadata);
       await admin.query(
         "SELECT require_guest_practice_only_schema_phase_v1(); SELECT require_disabled_owner_financial_inventory_private_v1()",
       );
@@ -415,7 +447,9 @@ suite("owned empty financial baseline reset", () => {
           (await admin.query(`SELECT * FROM ${quote(other)}.late_external_reset_child`)).rows,
         ).toEqual([{ id: "foreign", phase: true }]);
         expect(await enabledGuardCount(admin)).toBe(7);
-        await admin.query(`ALTER TABLE ${quote(other)}.late_external_reset_child DROP CONSTRAINT late_foreign_phase_fk`);
+        await admin.query(
+          `ALTER TABLE ${quote(other)}.late_external_reset_child DROP CONSTRAINT late_foreign_phase_fk`,
+        );
         await admin.query("SELECT require_disabled_owner_financial_inventory_private_v1()");
       } catch (error) {
         primary = error;
@@ -458,18 +492,25 @@ CREATE FUNCTION fixture_refuse_reset() RETURNS TRIGGER LANGUAGE plpgsql AS $fixt
 BEGIN RAISE EXCEPTION 'controlled owned TRUNCATE fault' USING ERRCODE='P0001'; END $fixture$;
 CREATE TRIGGER fixture_refuse_reset BEFORE TRUNCATE ON guest_learning_schema_phase FOR EACH STATEMENT EXECUTE FUNCTION fixture_refuse_reset();
 `;
-            return await admin.query(text.slice(0,boundary)+fault+text.slice(boundary));
+            return await admin.query(text.slice(0, boundary) + fault + text.slice(boundary));
           }
           return await admin.query(text);
         },
       };
-      await expect(resetPostgresTestBaseline(actualDriver)).rejects.toMatchObject({ code: "P0001" });
+      await expect(resetPostgresTestBaseline(actualDriver)).rejects.toMatchObject({
+        code: "P0001",
+      });
       expect(injected).toBe(true);
       expect(await enabledGuardCount(admin)).toBe(7);
       expect(await exactSourceResetGuardCount(admin)).toBe(19);
       expect(await postgresTestSchemaCatalogFingerprint(admin)).toBe(before);
-      expect((await admin.query("SELECT * FROM guest_learning_schema_phase")).rows).toEqual(originalPhase);
-      expect((await admin.query("SELECT to_regprocedure('fixture_refuse_reset()') IS NULL AS removed")).rows).toEqual([{ removed: true }]);
+      expect((await admin.query("SELECT * FROM guest_learning_schema_phase")).rows).toEqual(
+        originalPhase,
+      );
+      expect(
+        (await admin.query("SELECT to_regprocedure('fixture_refuse_reset()') IS NULL AS removed"))
+          .rows,
+      ).toEqual([{ removed: true }]);
       await admin.query("SELECT require_owner_accounting_ready_private_v1()");
     });
   }, 180000);

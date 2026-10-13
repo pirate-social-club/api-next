@@ -185,14 +185,22 @@ CREATE TABLE public.owner_accounting_native_source_inventory_v1 (
 INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{}');
 CREATE TRIGGER original_accounting_source_inventory_immutable BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.owner_accounting_native_source_inventory_v1 FOR EACH STATEMENT EXECUTE FUNCTION public.reject_owner_accounting_source_inventory_mutation_v1();
 `);
-    const protectedRow = normalized.indexOf("INSERT INTO owner_accounting_native_source_inventory_v1");
-    const immutableGuard = normalized.indexOf("CREATE TRIGGER original_accounting_source_inventory_immutable");
+    const protectedRow = normalized.indexOf(
+      "INSERT INTO owner_accounting_native_source_inventory_v1",
+    );
+    const immutableGuard = normalized.indexOf(
+      "CREATE TRIGGER original_accounting_source_inventory_immutable",
+    );
     const sourceBinder = normalized.indexOf("DO $baseline_owner_source_privileges$");
     expect(protectedRow).toBeGreaterThan(0);
     expect(immutableGuard).toBeGreaterThan(protectedRow);
     expect(sourceBinder).toBeGreaterThan(immutableGuard);
-    expect(normalized.lastIndexOf("SET check_function_bodies = true;")).toBeGreaterThan(sourceBinder);
-    expect(normalized).toContain("pg_catalog.to_regprocedure(pg_catalog.format('%I.%s',target_schema,expected.signature))");
+    expect(normalized.lastIndexOf("SET check_function_bodies = true;")).toBeGreaterThan(
+      sourceBinder,
+    );
+    expect(normalized).toContain(
+      "pg_catalog.to_regprocedure(pg_catalog.format('%I.%s',target_schema,expected.signature))",
+    );
     expect(normalized).toContain("baseline raw function source differs");
     expect(normalized).toContain("actual_acl IS DISTINCT FROM expected.source_acl");
     expect(normalized).toContain("private baseline relation custody differs");

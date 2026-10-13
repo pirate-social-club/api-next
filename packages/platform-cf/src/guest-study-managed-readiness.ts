@@ -328,20 +328,24 @@ export function makeGuestStudyManagedReadiness(
                   observed = actual[i];
                 const configuration = expected?.configuration ?? "pinned";
                 const retainedPin =
-                  options.roleProfile === "owner_financial" && expected !== undefined &&
-                  candidate.retained_schema_pinned_signatures?.includes(expected.signature) === true;
+                  options.roleProfile === "owner_financial" &&
+                  expected !== undefined &&
+                  candidate.retained_schema_pinned_signatures?.includes(expected.signature) ===
+                    true;
                 assert(
                   expected !== undefined &&
                     observed !== undefined &&
                     expected.signature === observed.signature &&
                     expected.definer === observed.definer &&
                     expected.body_sha256 === observed.body_sha256 &&
-                    (configuration === "none" || configuration === "pinned" ||
+                    (configuration === "none" ||
+                      configuration === "pinned" ||
                       configuration === "schema_pinned") &&
                     observed.configuration === configuration &&
                     observed.pinned === (configuration === "pinned") &&
                     (configuration !== "schema_pinned" || retainedPin) &&
-                    (!expected.definer || configuration === "pinned" ||
+                    (!expected.definer ||
+                      configuration === "pinned" ||
                       (configuration === "schema_pinned" && retainedPin)),
                 );
               }
@@ -369,10 +373,14 @@ export function makeGuestStudyManagedReadiness(
                     expected.configuration === observed.configuration &&
                     (expected.configuration !== "schema_pinned" ||
                       (options.roleProfile === "owner_financial" &&
-                        candidate.required_frames.some((frame) =>
-                          frame.signature.startsWith(`${expected.name}(`) &&
-                          frame.configuration === "schema_pinned" &&
-                          candidate.retained_schema_pinned_signatures?.includes(frame.signature) === true))),
+                        candidate.required_frames.some(
+                          (frame) =>
+                            frame.signature.startsWith(`${expected.name}(`) &&
+                            frame.configuration === "schema_pinned" &&
+                            candidate.retained_schema_pinned_signatures?.includes(
+                              frame.signature,
+                            ) === true,
+                        ))),
                 );
               }
             },

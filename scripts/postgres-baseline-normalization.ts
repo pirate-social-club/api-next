@@ -1,4 +1,5 @@
-const sourceInventorySeedLine = /^\s*INSERT INTO (?:(?:"public"|public)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1) VALUES\b/u;
+const sourceInventorySeedLine =
+  /^\s*INSERT INTO (?:(?:"public"|public)\.)?(?:"owner_accounting_native_source_inventory_v1"|owner_accounting_native_source_inventory_v1) VALUES\b/u;
 
 const ownerFinancialSourcePrivilegesSql = String.raw`
 -- Baseline replay only: exact private source attestation, no serving grants.
@@ -171,13 +172,16 @@ export function normalizePostgresBaselineDump(dump: string): string {
     if (topLevel && sourceInventorySeedLine.test(line)) {
       // This is the committed native JSONB literal, not a schema expression.
       // Only its leading table qualifier is portable; its contents stay exact.
-      if (!trimmed.endsWith(";")) throw new Error("Complete source metadata seed statement required");
+      if (!trimmed.endsWith(";"))
+        throw new Error("Complete source metadata seed statement required");
       normalized.push(line.replace(/^(\s*INSERT INTO )(?:(?:"public"|public)\.)/u, "$1"));
       continue;
     }
     if (
       topLevel &&
-      /^CREATE TABLE (?:public\.|"public"\.)?owner_accounting_native_source_inventory_v1 \(/u.test(trimmed)
+      /^CREATE TABLE (?:public\.|"public"\.)?owner_accounting_native_source_inventory_v1 \(/u.test(
+        trimmed,
+      )
     )
       completeOwnerFinancialSource = true;
     if (topLevel && /^CREATE (?:OR REPLACE )?FUNCTION\b/iu.test(trimmed)) {
@@ -335,7 +339,8 @@ export function normalizePostgresBaselineResetDump(
     .filter((line) => {
       const trimmed = line.trim();
       if (sourceInventorySeedLine.test(line)) {
-        if (!trimmed.endsWith(";")) throw new Error("Complete source metadata seed statement required");
+        if (!trimmed.endsWith(";"))
+          throw new Error("Complete source metadata seed statement required");
         return false;
       }
       return !(

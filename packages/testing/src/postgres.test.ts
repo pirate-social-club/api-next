@@ -124,12 +124,16 @@ describe("PostgreSQL test baseline", () => {
     expect(wrapped).toContain("require_owner_accounting_ready_private_v1");
     expect(wrapped).not.toContain("DISABLE TRIGGER ALL");
     expect(wrapped).not.toContain("session_replication_role");
-    expect(() => preparePostgresTestBaselineReset(
-      "TRUNCATE TABLE owner_accounting_native_source_inventory_v1 RESTART IDENTITY CASCADE;",
-    )).toThrow("preserve immutable source metadata");
-    expect(() => preparePostgresTestBaselineReset(
-      "TRUNCATE TABLE fixture RESTART IDENTITY CASCADE; INSERT INTO owner_accounting_native_source_inventory_v1 VALUES(true,'source','{}');",
-    )).toThrow("preserve immutable source metadata");
+    expect(() =>
+      preparePostgresTestBaselineReset(
+        "TRUNCATE TABLE owner_accounting_native_source_inventory_v1 RESTART IDENTITY CASCADE;",
+      ),
+    ).toThrow("preserve immutable source metadata");
+    expect(() =>
+      preparePostgresTestBaselineReset(
+        "TRUNCATE TABLE fixture RESTART IDENTITY CASCADE; INSERT INTO owner_accounting_native_source_inventory_v1 VALUES(true,'source','{}');",
+      ),
+    ).toThrow("preserve immutable source metadata");
   });
 
   test("refuses a missing or repeated reset boundary", () => {
