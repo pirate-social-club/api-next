@@ -144,7 +144,7 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
         (
           await f.admin.query(
             `SELECT p.proowner=o.relowner AS owner,p.pronamespace=o.relnamespace AS namespace,
- p.prosecdef AS definer,p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)] AS pinned,
+ p.prosecdef AS definer,p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1::text)] AS pinned,
  NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
  WHERE a.grantee<>p.proowner AND a.privilege_type='EXECUTE') AS private
  FROM pg_proc p CROSS JOIN pg_class o WHERE p.oid=$2::regprocedure AND o.oid=$3::regclass`,
@@ -180,7 +180,7 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
             `SELECT p.proname AS name,p.proowner=o.relowner AS owner,
  p.pronamespace=o.relnamespace AS namespace,p.prokind::text AS kind,p.prosecdef AS definer,
  CASE WHEN p.proconfig IS NULL THEN 'none'
-  WHEN p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)] THEN 'pinned'
+  WHEN p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1::text)] THEN 'pinned'
   ELSE 'unreviewed' END AS configuration,encode(sha256(convert_to(p.prosrc,'UTF8')),'hex') AS body_sha256
  FROM pg_catalog.pg_proc p CROSS JOIN pg_catalog.pg_class o
  WHERE o.oid=$2::regclass AND p.pronamespace=o.relnamespace AND p.proname=ANY($3::text[])
