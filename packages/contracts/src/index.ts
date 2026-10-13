@@ -43,6 +43,7 @@ export * from "./provider-presentation.ts";
 export * from "./public-post-routes.ts";
 export * from "./registry.ts";
 export * from "./rewards-owner-claims.ts";
+export * from "./rewards-owner-credit-reads.ts";
 export * from "./rewards-qualification.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./song-library.ts";

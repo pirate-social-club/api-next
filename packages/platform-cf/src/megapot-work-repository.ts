@@ -202,6 +202,7 @@ export function makeControlPlaneMegapotWorkRepository() {
                      JOIN megapot_drawing_observations observation
                        ON observation.observation_id=drawing.observation_id
                     WHERE drawing.status=ANY($1::text[])
+                      AND NOT(drawing.beneficiary_version=3 AND drawing.status='winnings_detected' AND drawing.net_winnings_atomic=0)
                     ORDER BY drawing.updated_at,drawing.pool_leg_id,drawing.drawing_id
                     LIMIT $2`,
             values: [input.statuses, input.limit],
@@ -225,6 +226,7 @@ export function makeControlPlaneMegapotWorkRepository() {
             // (Spec 015 §5.2a); fallback and bonus credits are unchanged.
             text: `SELECT credit.credit_id FROM reward_ledger_credits credit
                     WHERE credit.state='credited'
+                      AND owner_credit_payable_v1(credit.credit_id) IS TRUE
                       AND (credit.source_kind <> 'megapot_allocation' OR EXISTS (
                      SELECT 1 FROM megapot_participant_claims claim
                       WHERE claim.credit_id=credit.credit_id AND claim.status='accepted'))
@@ -447,6 +449,8 @@ export function makeControlPlaneMegapotWorkRepository() {
                      )
                        AND credit.updated_at <= parameters.observed_at-parameters.threshold
                        -- Unclaimed participant credits are held by design (§5.2a).
+                       AND NOT (credit.state='credited' AND credit.identity_version='owner_v1'
+                         AND owner_credit_payable_v1(credit.credit_id) IS DISTINCT FROM TRUE)
                        AND NOT (credit.state='credited' AND credit.source_kind='megapot_allocation'
                          AND NOT EXISTS (SELECT 1 FROM megapot_participant_claims claim
                                           WHERE claim.credit_id=credit.credit_id

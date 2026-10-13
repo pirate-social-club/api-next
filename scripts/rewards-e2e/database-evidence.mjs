@@ -123,12 +123,20 @@ export async function readRunInventory(db, legId) {
       "SELECT share.account_id,share.persona_id,share.qualification_id,qualification.activity_key,qualification.score_bps FROM megapot_pool_shares share JOIN activity_qualifications qualification USING(qualification_id) WHERE pool_leg_id=$1 ORDER BY account_id",
       [legId],
     ),
+    ownerShares: await db.read(
+      "SELECT share.owner_id,qualification.account_id AS original_account_id,qualification.persona_id AS original_persona_id,share.qualification_id,qualification.activity_key,qualification.score_bps FROM megapot_owner_shares share JOIN activity_qualifications qualification ON qualification.qualification_id=share.qualification_id WHERE share.pool_leg_id=$1 ORDER BY share.owner_id",
+      [legId],
+    ),
+    ownerAllocations: await db.read(
+      "SELECT allocation.owner_id,allocation.ordinal,allocation.allocation_kind,allocation.credit_id,allocation.amount_atomic::text FROM megapot_owner_allocations allocation JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 ORDER BY allocation.ordinal",
+      [legId],
+    ),
     purchases: await db.read(
       "SELECT effect.effect_id,effect.state,effect.transaction_hash,effect.receipt_block_number::text,effect.receipt_block_hash,ticket.ticket_id::text,ticket.drawing_id::text,ticket.status AS ticket_status FROM megapot_ticket_purchase_effects purchase JOIN reward_chain_effects effect ON effect.effect_id=purchase.purchase_effect_id LEFT JOIN megapot_ticket_inventory ticket USING(purchase_effect_id) WHERE purchase.pool_leg_id=$1",
       [legId],
     ),
     credits: await db.read(
-      "SELECT credit.credit_id,credit.account_id,credit.payout_persona_id,credit.state,credit.amount_atomic::text,credit.paid_atomic::text,credit.reserved_atomic::text FROM megapot_allocations allocation JOIN reward_ledger_credits credit USING(credit_id) JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 ORDER BY credit.account_id",
+      "SELECT credit.credit_id,credit.account_id,credit.payout_persona_id,credit.state,credit.amount_atomic::text,credit.paid_atomic::text,credit.reserved_atomic::text,credit.identity_version,credit.participation_owner_id,identity.effective_account_id AS recipient_account_id,identity.effective_persona_id AS recipient_persona_id FROM reward_ledger_credits credit LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(credit.credit_id) identity ON TRUE WHERE credit.credit_id IN (SELECT allocation.credit_id FROM megapot_allocations allocation JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 UNION SELECT allocation.credit_id FROM megapot_owner_allocations allocation JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 AND allocation.credit_id IS NOT NULL) ORDER BY credit.credit_id",
       [legId],
     ),
     refunds: await db.read(

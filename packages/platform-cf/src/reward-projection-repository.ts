@@ -716,62 +716,7 @@ export function makeControlPlaneRewardProjectionRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-projection.standing.read",
-            text: `SELECT leg.leg_id, drawing.drawing_id, drawing.status AS drawing_status,
-                          CASE
-                            WHEN drawing.status='entry_open' THEN live_share.account_id IS NOT NULL
-                            WHEN coalesce(drawing.fallback_beneficiary,false) THEN false
-                            ELSE frozen_share.account_id IS NOT NULL
-                          END AS share_held,
-                          allocation.amount_atomic AS allocation_amount_atomic,
-                          allocation.credit_id, credit.state AS credit_state,
-                          CASE
-                            WHEN drawing.drawing_id IS NULL THEN 0
-                            WHEN drawing.status='entry_open' THEN share_count.value
-                            WHEN drawing.fallback_beneficiary THEN 0
-                            ELSE coalesce(drawing.frozen_share_count,0)
-                          END AS beneficiary_count,
-                          drawing.fallback_beneficiary,
-                          (leg.empty_pool_policy='funder_fallback'
-                            AND leg.funding_source='leg_budget'
-                            AND leg.funder_account_id=$1) AS fallback_sponsor
-                     FROM song_reward_offer_legs leg
-                     JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
-                     LEFT JOIN LATERAL (
-                       SELECT candidate.* FROM megapot_pool_drawings candidate
-                        WHERE candidate.pool_leg_id=leg.leg_id
-                        ORDER BY candidate.drawing_id DESC LIMIT 1
-                     ) drawing ON true
-                     LEFT JOIN megapot_pool_shares live_share
-                       ON live_share.pool_leg_id=leg.leg_id
-                      AND live_share.drawing_id=drawing.drawing_id
-                      AND live_share.account_id=$1
-                     LEFT JOIN megapot_pool_snapshot_private_leaves frozen_share
-                       ON frozen_share.snapshot_id=drawing.snapshot_id
-                      AND frozen_share.account_id=$1
-                     LEFT JOIN LATERAL (
-                       SELECT count(*)::integer AS value FROM megapot_pool_shares candidate
-                        WHERE candidate.pool_leg_id=leg.leg_id
-                          AND candidate.drawing_id=drawing.drawing_id
-                     ) share_count ON true
-                     LEFT JOIN megapot_allocations allocation
-                       ON allocation.allocation_batch_id=drawing.allocation_batch_id
-                      AND allocation.account_id=$1
-                     LEFT JOIN reward_ledger_credits credit
-                       ON credit.credit_id=allocation.credit_id AND credit.account_id=$1
-                    WHERE leg.leg_id=$2 AND leg.kind='megapot_pool'
-                      AND (
-                        leg.funder_account_id=$1
-                        OR EXISTS (
-                          SELECT 1 FROM community_memberships membership
-                           WHERE membership.community_id=offer.community_id
-                             AND membership.user_id=$1 AND membership.status='member'
-                        )
-                        OR EXISTS (
-                          SELECT 1 FROM megapot_pool_shares historical_share
-                           WHERE historical_share.pool_leg_id=leg.leg_id
-                             AND historical_share.account_id=$1
-                        )
-                      )`,
+            text: `SELECT * FROM read_account_megapot_standing_v1($1,$2)`,
             values: [input.accountId, input.legId],
             readonly: true,
           });

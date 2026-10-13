@@ -243,7 +243,10 @@
     "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts",
     "./owner-megapot-settlement-store": "./src/owner-megapot-settlement-store.ts",
     "./owner-megapot-commitment-coordinator": "./src/owner-megapot-commitment-coordinator.ts",
-    "./versioned-megapot-coordinators": "./src/versioned-megapot-coordinators.ts"
+    "./versioned-megapot-coordinators": "./src/versioned-megapot-coordinators.ts",
+    "./owner-reward-credit-read-store": "./src/owner-reward-credit-read-store.ts",
+    "./owner-credit-erasure-admission-store": "./src/owner-credit-erasure-admission-store.ts",
+    "./owner-recipient-store": "./src/owner-recipient-store.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

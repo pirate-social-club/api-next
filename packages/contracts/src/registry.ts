@@ -119,6 +119,7 @@ import {
   RequestRewardGasTopup,
 } from "./rewards-song-offers.ts";
 import { GetTrendingSongs, ListPersonaSongs } from "./song-library.ts";
+import { GetMyOwnerRewardCreditV1, ListMyOwnerRewardCreditsV1 } from "./rewards-owner-credit-reads.ts";
 import {
   GetPublicSongOwnerPolicy,
   GetSongOwnerPolicy,
@@ -274,6 +275,8 @@ export const registry = {
   GetMegapotPoolStanding,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
+  ListMyOwnerRewardCreditsV1,
+  GetMyOwnerRewardCreditV1,
   ClaimRewardCredit,
   IssueRewardClaimVerificationIntent,
   RequestRewardGasTopup,

@@ -20,7 +20,7 @@ export async function submitPaidCredit(page, role, credit, run, driver, check) {
   const fixture = fixtureAccounts[role];
   if (
     !fixture ||
-    credit.account_id !== fixture.accountId ||
+    (credit.identity_version === "owner_v1" ? credit.recipient_account_id : credit.account_id) !== fixture.accountId ||
     credit.state !== "sent" ||
     credit.paid_atomic !== credit.amount_atomic
   )
@@ -79,7 +79,7 @@ export async function submitPaidCredit(page, role, credit, run, driver, check) {
   if (account.status !== 200 || account.accountId !== fixture.accountId)
     throw Error("Winner browser account differs");
   const { personas } = await browserApi(page, "/api/personas");
-  const persona = personas.find((item) => item.persona_id === credit.payout_persona_id);
+  const persona = personas.find((item) => item.persona_id === (credit.identity_version === "owner_v1" ? credit.recipient_persona_id : credit.payout_persona_id));
   const wallet = persona?.wallet_set?.evm;
   if (
     persona?.status !== "active" ||

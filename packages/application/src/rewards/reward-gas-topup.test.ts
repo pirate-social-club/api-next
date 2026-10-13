@@ -20,6 +20,7 @@ function fixture(balance: bigint, existing: RewardGasTopupView | null = null) {
     loadRequestContext: ({ accountId, creditId }) =>
       Effect.succeed({
         creditId,
+        authenticatedAccountId: accountId,
         accountId,
         personaId: "persona-1",
         walletAssignmentId: "assignment-1",

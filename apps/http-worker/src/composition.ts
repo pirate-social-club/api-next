@@ -1,3 +1,5 @@
+import { makeControlPlaneOwnerRewardCreditReads } from "@pirate/platform-cf/owner-reward-credit-read-store";
+import { makeOwnerRewardCreditReadHandlers } from "./owner-reward-credit-read-handlers.ts";
 import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
@@ -1889,6 +1891,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...makeOwnerRewardCreditReadHandlers(makeControlPlaneOwnerRewardCreditReads(controlPlane)),
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),

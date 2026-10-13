@@ -170,7 +170,7 @@ if (process.argv.includes("--complete-win-sends")) {
     readLegCredits: async () => (await readRunInventory(db, legId)).credits,
     readLegSends: () =>
       db.read(
-        "SELECT send.send_id, send.credit_id, send.status FROM reward_winner_sends send JOIN megapot_allocations allocation USING(credit_id) JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1",
+        "SELECT send.send_id,send.credit_id,send.status FROM reward_winner_sends send WHERE send.credit_id IN (SELECT allocation.credit_id FROM megapot_allocations allocation JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 UNION SELECT allocation.credit_id FROM megapot_owner_allocations allocation JOIN megapot_allocation_batches batch USING(allocation_batch_id) WHERE batch.pool_leg_id=$1 AND allocation.credit_id IS NOT NULL)",
         [legId],
       ),
     openHost: async (check) => {
@@ -195,7 +195,7 @@ if (process.argv.includes("--complete-win-sends")) {
     },
     // The run's own identity, so the app returns the send it already reserved.
     sendFor: (host, credit, { deadline }, check) => {
-      const role = credit.account_id === fixtureAccounts.study.accountId ? "study" : "karaoke";
+      const role = fixtureRoleForCredit(credit);
       return submitPaidCredit(
         host.pages[role],
         role,
@@ -213,7 +213,7 @@ if (process.argv.includes("--complete-win-sends")) {
       );
     },
     observeFor: (host, credit, submission) => {
-      const role = credit.account_id === fixtureAccounts.study.accountId ? "study" : "karaoke";
+      const role = fixtureRoleForCredit(credit);
       return observePaidCredit(host.pages[role], credit, submission);
     },
     checkServing: () => assertIsolatedServingSource(held.apiSource),
@@ -446,4 +446,13 @@ if (process.argv.includes("--execute")) {
     );
     process.exitCode = 1;
   }
+}
+
+/** Isolated browser rehearsal owns exactly these two real actors. An unbound
+ * owner credit or a foreign recipient is a held obligation, never inferred Karaoke. */
+function fixtureRoleForCredit(credit) {
+  const account = credit.recipient_account_id ?? credit.account_id;
+  if (account === fixtureAccounts.study.accountId) return "study";
+  if (account === fixtureAccounts.karaoke.accountId) return "karaoke";
+  throw Error("Credit recipient is outside the owned browser fixture");
 }
