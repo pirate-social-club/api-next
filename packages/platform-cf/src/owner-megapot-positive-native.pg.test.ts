@@ -11,9 +11,17 @@ import {
   resetPostgresTestBaseline,
   postgresTestSchemaCatalogFingerprint,
 } from "@pirate/testing/postgres";
+import { GuestStudySessionV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
+import { Client } from "pg";
 import { keccak256, sha256, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import {
+  insertStudySongFixture,
+  insertTelegramPracticeReadinessFixture,
+} from "./study-v2-ready-song.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
+import type { PostgresClientFactory } from "./postgres.ts";
 import { confirmWallet } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
 import { makeR2MegapotCommitmentPublisher } from "./megapot-commitment-r2.ts";
@@ -28,7 +36,7 @@ import {
   rewardedFixture,
 } from "./owner-megapot-rewarded-journey.pg-fixture.ts";
 import { makeControlPlaneOwnerMegapotSettlementStore } from "./owner-megapot-settlement-store.ts";
-import { hash, pgUrl, run } from "./owner-study-starter.pg-fixture.ts";
+import { hash, origin, pgUrl, run } from "./owner-study-starter.pg-fixture.ts";
 import {
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletStore,
@@ -55,7 +63,12 @@ const withClock = <A, E>(e: Effect.Effect<A, E, Clock | IdGen>) =>
     ),
   );
 
-async function setupPool(f: RewardedFixture, suffix: string) {
+async function setupPool(
+  f: RewardedFixture,
+  suffix: string,
+  cutoffMilliseconds = 45000,
+  includeRetainedV2 = false,
+) {
   const key = generatePrivateKey(),
     custody = privateKeyToAccount(key).address.toLowerCase();
   // Genuine source-owned operator setup ONLY inside this uniquely owned schema.
@@ -272,6 +285,9 @@ async function setupPool(f: RewardedFixture, suffix: string) {
       createdAt: new Date().toISOString(),
     }),
   );
+  const retained = includeRetainedV2
+    ? await setupRetainedSongPool(f, suffix, sponsorPersonaId, wallet.address)
+    : null;
   // A NEW leg starts AFTER the observation current at its creation. Original101
   // is genuinely ineligible; never rewrite the captured prospective start floor.
   expect(created.leg.participationStartsDrawingId).toBe(102n);
@@ -307,7 +323,7 @@ async function setupPool(f: RewardedFixture, suffix: string) {
   ]);
   const originalDrawingId = created.leg.participationStartsDrawingId;
   const nextClock = new Date(),
-    cutoffAt = new Date(nextClock.getTime() + 45000);
+    cutoffAt = new Date(nextClock.getTime() + cutoffMilliseconds);
   const nextObservationId = `observation-next-${suffix}`;
   // New deterministic observation AT the actual repository boundary after
   // source-owned funding. This is neither a draw insert nor a live RPC claim.
@@ -337,7 +353,7 @@ async function setupPool(f: RewardedFixture, suffix: string) {
     }),
   );
   expect(next.drawingId).toBe(originalDrawingId);
-  expect(next.openedPoolLegIds).toEqual([]); // Retained ordinary observer opens only version2.
+  expect(next.openedPoolLegIds).toEqual(retained === null ? [] : [retained.legId]); // Ordinary observer opens ONLY version2.
   const openedLegs = await run(
     openOwnerDrawingsForObservation(nextObservationId).pipe(Effect.provide(f.adminRuntime)),
   );
@@ -362,7 +378,134 @@ async function setupPool(f: RewardedFixture, suffix: string) {
     },
   ]);
   const original = { poolLegId: created.leg.legId, drawingId: originalDrawingId.toString() };
-  return { key, custody, original, cutoffAt };
+  return { key, custody, original, cutoffAt, sponsorPersonaId, retained };
+}
+
+// A second SONG keeps0053 one-open-pool-leg-per-offer intact. Only trusted
+// prepared media IDs are changed; no learning/money source is copied or seeded.
+async function setupRetainedSongPool(
+  f: RewardedFixture,
+  suffix: string,
+  personaId: string,
+  senderAddress: string,
+) {
+  const additionalSourceTag = "retained",
+    postId = "retained-post";
+  await insertStudySongFixture(f.admin, {
+    accountAlreadyBorn: true,
+    initializeOwnerPolicy: true,
+    additionalSourceTag,
+  });
+  await insertTelegramPracticeReadinessFixture(f.admin, { additionalSourceTag });
+  expect(
+    (
+      await f.admin.query(
+        `SELECT owner_account_id,audio_revision::text,current_policy_revision::text
+    FROM song_owner_policies WHERE community_id='study-community' AND post_id=$1`,
+        [postId],
+      )
+    ).rows,
+  ).toEqual([
+    { owner_account_id: "study-account", audio_revision: "1", current_policy_revision: "1" },
+  ]);
+  const ordinary = makeControlPlaneSongRewardOfferStore(f.adminRuntime),
+    funding = makeControlPlaneRewardFundingStore(f.adminRuntime);
+  const service = makeSongRewardOfferService({
+    store: ordinary,
+    funding: {
+      plan: (input) =>
+        funding
+          .plan({
+            fundingEffectId: `retained-funding-${suffix}`,
+            legId: input.legId,
+            funderAccountId: input.funderAccountId,
+            senderAddress: input.senderAddress,
+            expectedAmountAtomic: input.expectedAmountAtomic,
+            requiredConfirmations: input.requiredConfirmations,
+          })
+          .pipe(
+            Effect.flatMap((intent) =>
+              intent.state === "planned"
+                ? Effect.succeed({ kind: "planned" as const, intent })
+                : Effect.fail(new Error("Actual NEW retained funding plan required")),
+            ),
+          ),
+      observe: () => Effect.die(new Error("Unobserved funding cannot be accepted")),
+    },
+    requiredConfirmations: 3,
+    externalFallbackPolicy: null,
+  });
+  const opened = await withClock(
+    service.openOffer({
+      accountId: "study-account",
+      personaId,
+      communityId: "study-community",
+      postId,
+      idempotencyKey: `retained-offer-${suffix}`,
+      startsAt: new Date(Date.now() - 1000).toISOString(),
+      endsAt: new Date(Date.now() + 3600000).toISOString(),
+    }),
+  );
+  const created = await withClock(
+    service.addMegapotPoolLeg({
+      accountId: "study-account",
+      personaId,
+      offerId: opened.offer.offerId,
+      idempotencyKey: `retained-leg-${suffix}`,
+      senderAddress,
+      fundingAmountAtomic: 100000n,
+      maxTicketPriceAtomic: 10000n,
+      entryCutoffSeconds: 300,
+      eligibleActivities: ["study"],
+      expectedQualificationPolicyVersions: { study: "study_session_first_pass_v2@1" },
+      minScoreBps: 7000,
+      emptyPoolPolicy: "no_purchase",
+      fallbackPayoutPersonaId: null,
+      fallbackDisclosureAcknowledged: false,
+    }),
+  );
+  expect(created.leg.participationStartsDrawingId).toBe(102n);
+  const transactionHash = hex(`retained-funding-${suffix}`);
+  await run(
+    funding.bindTransaction({
+      fundingEffectId: created.funding.intent.fundingEffectId,
+      transactionHash,
+    }),
+  );
+  await run(
+    funding.confirm({
+      fundingEffectId: created.funding.intent.fundingEffectId,
+      transactionHash,
+      transferLogIndex: 0,
+      amountAtomic: 100000n,
+      blockNumber: 102n,
+      blockHash: hex(`retained-funded-block-${suffix}`),
+      observationHash: hash(`retained-funding-evidence-${suffix}`),
+      confirmedAt: new Date().toISOString(),
+    }),
+  );
+  await withClock(
+    ordinary.recordFundingObservation({
+      actionId: `retained-funded-action-${suffix}`,
+      accountId: "study-account",
+      personaId,
+      legId: created.leg.legId,
+      legKind: "megapot_pool",
+      fundingEffectId: created.funding.intent.fundingEffectId,
+      idempotencyKey: `retained-observed-${suffix}`,
+      requestHash: hash(`retained-observed-${suffix}`),
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  expect(
+    (
+      await f.admin.query(
+        "SELECT beneficiary_version,status,funded_atomic::text FROM song_reward_offer_legs WHERE leg_id=$1",
+        [created.leg.legId],
+      )
+    ).rows,
+  ).toEqual([{ beneficiary_version: 2, status: "active", funded_atomic: "100000" }]);
+  return { legId: created.leg.legId, postId };
 }
 
 async function freezeAndCommit(f: RewardedFixture, pool: Awaited<ReturnType<typeof setupPool>>) {
@@ -701,4 +844,620 @@ suite("actual rewarded Guest producer into private v3 settlement", () => {
         { ownedResetNamespace: true },
       );
     }, 180000);
+});
+
+// Actual driver faults only. A delivered successful COMMIT is distinguished
+// from an error injected before sending COMMIT. Neither unknown reply itself
+// authorizes no-effect/abort; the original separately committed hold is retained.
+function owningCommitFault(mode: "successful_ack_lost" | "before_send_unknown") {
+  let observed = false;
+  const clientFactory: PostgresClientFactory = (_url, config) => {
+    const client = new Client(config);
+    let ownsFinalizer = false;
+    return {
+      connection: client.connection,
+      connect: () => client.connect(),
+      end: () => client.end(),
+      query: async ({ text, values }) => {
+        if (text === "COMMIT" && ownsFinalizer && !observed && mode === "before_send_unknown") {
+          observed = true;
+          // This deliberate driver simulation DOES NOT prove a real wire
+          // COMMIT was delivered or rejected. Native locked reconciliation does.
+          throw new Error("Owned original COMMIT delivery outcome unknown");
+        }
+        const result = await client.query({
+          text,
+          values: values === undefined ? [] : [...values],
+        });
+        if (text.includes("SELECT finish_owner_guest_reward_spoken_v1")) ownsFinalizer = true;
+        if (text === "COMMIT" && ownsFinalizer && !observed && mode === "successful_ack_lost") {
+          observed = true;
+          throw new Error("Owned actual successful owning COMMIT acknowledgment lost");
+        }
+        return result;
+      },
+    };
+  };
+  return { clientFactory, observed: () => observed };
+}
+async function prepareFinalAnswer(f: RewardedFixture, serial: number, key: string) {
+  const guest = await f.startGuest(serial, key);
+  let session = guest.session;
+  const inputFor = (currentSession: GuestStudySessionV1, index: number) => {
+    const current = currentSession.lesson.current;
+    const item = currentSession.items.find(
+      (item) => item.session_item_id === current?.session_item_id,
+    );
+    if (current === null || item?.presentation.kind !== "say_it_back")
+      throw new Error("Actual original spoken presentation required");
+    return {
+      access: guest.access,
+      communityId: session.community_id,
+      sessionId: session.session_id,
+      sessionItemId: item.session_item_id,
+      attemptNumber: current.presentation_number,
+      idempotencyKey: `${key}:answer:${index}`,
+      audio: new TextEncoder().encode(item.presentation.reference_text),
+      audioContentType: "audio/webm" as const,
+      audioDurationMs: 1000,
+    };
+  };
+  expect(session.items).toHaveLength(4);
+  for (let index = 0; index < 3; index++) {
+    const result = await withClock(f.study.submitSpokenAnswer(inputFor(session, index)));
+    if (result.state !== "completed") throw new Error("Actual acknowledged prefix required");
+    expect(result.result.answer.outcome).toBe("correct");
+    session = Schema.decodeUnknownSync(GuestStudySessionV1, { onExcessProperty: "error" })(
+      result.result.answer.session,
+    );
+  }
+  return { guest, session, input: inputFor(session, 3) };
+}
+async function heldOriginal(
+  f: RewardedFixture,
+  source: Awaited<ReturnType<typeof prepareFinalAnswer>>,
+) {
+  return (
+    await f.admin.query(
+      `SELECT hold.source_owner_id,hold.session_id,hold.pool_leg_id,
+    hold.drawing_id::text,hold.state,hold.current_attempt_number,
+    attempt.state AS attempt_state,attempt.started_at IS NOT NULL AS attempt_started,
+    encode(sha256(convert_to(to_jsonb(hold)::text,'UTF8')),'hex') AS exact_retained_hash,
+    clock_timestamp()<hold.entry_cutoff_at AS before_cutoff,
+    clock_timestamp()<hold.purchase_safety_deadline_at AS before_safety,
+    (SELECT count(*)::integer FROM megapot_owner_shares share WHERE share.owner_id=hold.source_owner_id
+      AND share.pool_leg_id=hold.pool_leg_id AND share.drawing_id=hold.drawing_id) AS original_shares
+    FROM owner_participation_admission_operations hold
+    JOIN owner_participation_admission_attempts attempt ON attempt.admission_id=hold.admission_id
+      AND attempt.attempt_fence=hold.current_attempt_fence
+    WHERE hold.source_owner_id=$1 AND hold.session_id=$2 AND hold.idempotency_key=$3`,
+      [source.guest.access.ownerId, source.session.session_id, source.input.idempotencyKey],
+    )
+  ).rows;
+}
+async function actualLearningAndCharges(f: RewardedFixture, sessionId: string) {
+  return (
+    await f.admin.query(
+      `SELECT
+    (SELECT count(*)::integer FROM guest_resource_provider_calls WHERE session_id=$1) AS calls,
+    (SELECT count(*)::integer FROM guest_resource_provider_calls WHERE session_id=$1 AND disposition='completed') AS completed_calls,
+    (SELECT count(*)::integer FROM guest_study_spoken_captures WHERE session_id=$1) AS captures,
+    (SELECT count(*)::integer FROM guest_study_spoken_checkpoints cp JOIN guest_study_spoken_captures cap USING(capture_id)
+      WHERE cap.session_id=$1) AS checkpoints,
+    (SELECT bool_and(cp.charged_cost_micros=call.actual_cost_micros AND call.actual_cost_micros=call.maximum_provider_cost_micros
+      AND cp.charge_basis='reserved_ceiling_v1') FROM guest_study_spoken_checkpoints cp
+      JOIN guest_study_spoken_captures cap USING(capture_id) JOIN guest_resource_provider_calls call
+      ON call.call_id=cp.provider_call_id WHERE cap.session_id=$1) AS exact_original_charges,
+    (SELECT count(*)::integer FROM study_attempts_v2 attempt JOIN study_session_items_v2 item USING(session_item_id)
+      WHERE item.session_id=$1) AS attempts`,
+      [sessionId],
+    )
+  ).rows;
+}
+async function waitActualClock(f: RewardedFixture, instant: Date, maximumMs: number) {
+  const stop = Date.now() + maximumMs;
+  for (;;) {
+    const rows = (
+      await f.admin.query("SELECT clock_timestamp()>=$1::timestamptz AS reached", [
+        instant.toISOString(),
+      ])
+    ).rows;
+    expect(rows).toHaveLength(1);
+    if (rows[0]?.reached === true) return;
+    if (Date.now() >= stop) throw new Error("Owned actual clock deadline not reached");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+}
+async function rotateOriginalProof(
+  f: RewardedFixture,
+  access: Awaited<ReturnType<typeof prepareFinalAnswer>>["guest"]["access"],
+) {
+  const suffix = crypto.randomUUID(),
+    successor = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/u, "");
+  await f.admin.query("SELECT issue_guest_rotation_v1($1,$2::text[],$3,$4,$5,$6,$7,$8,$9)", [
+    origin,
+    [access.credentialId],
+    access.credentialId,
+    access.ownerId,
+    `rotate-${suffix}`,
+    hash(suffix),
+    `rotation-operation-${suffix}`,
+    successor,
+    hash(`synthetic-secret-${suffix}`),
+  ]);
+  await f.admin.query("SELECT acknowledge_guest_rotation_v1($1,$2::text[],$3,$4,$5)", [
+    origin,
+    [successor],
+    access.credentialId,
+    successor,
+    access.ownerId,
+  ]);
+  return successor;
+}
+async function genuineSignup(f: RewardedFixture) {
+  // Existing genuine signup helper owns strict AccountDocument/handle rules
+  // and its normal verified-provider input boundary; no copied identity model.
+  const userId = `signup-${crypto.randomUUID()}`;
+  await makeOwnedOrdinaryAccountBirthFixture(f.adminRuntime)(userId);
+  expect(
+    (
+      await f.admin.query("SELECT kind,account_id FROM participation_owners WHERE account_id=$1", [
+        userId,
+      ])
+    ).rows,
+  ).toEqual([{ kind: "account", account_id: userId }]);
+  return userId;
+}
+
+suite("actual original Guest owning COMMIT and source recovery", () => {
+  test("successful original owning COMMIT with lost acknowledgment stays admitted; original recovery never redispatches provider or archive", async () => {
+    await rewardedFixture(async (f) => {
+      const pool = await setupPool(f, "acklost", 120000);
+      const source = await prepareFinalAnswer(f, 9301, "actual-owning-acklost"),
+        fault = owningCommitFault("successful_ack_lost");
+      const calls = f.providerCalls(),
+        puts = f.putCalls();
+      const uncertain = await withClock(
+        f.servicesFor(fault.clientFactory).study.submitSpokenAnswer(source.input),
+      );
+      expect(fault.observed()).toBe(true);
+      expect(uncertain.state).toBe("pending_confirmation");
+      expect(f.providerCalls()).toBe(calls + 1);
+      expect(f.putCalls()).toBe(puts + 1);
+      const retained = await heldOriginal(f, source);
+      expect(retained).toHaveLength(1);
+      const originalCharges = await actualLearningAndCharges(f, source.session.session_id);
+      expect(originalCharges).toEqual([
+        {
+          calls: 4,
+          completed_calls: 4,
+          captures: 4,
+          checkpoints: 4,
+          exact_original_charges: true,
+          attempts: 4,
+        },
+      ]);
+      expect(retained[0]).toMatchObject({
+        source_owner_id: source.guest.access.ownerId,
+        pool_leg_id: pool.original.poolLegId,
+        drawing_id: pool.original.drawingId,
+        state: "admitted",
+        current_attempt_number: 1,
+        attempt_state: "admitted",
+        attempt_started: true,
+        original_shares: 1,
+      });
+      const replay = await withClock(f.study.submitSpokenAnswer(source.input));
+      if (replay.state !== "completed")
+        throw new Error("Actual committed original outcome required");
+      expect(replay.result.answer.session.status).toBe("completed");
+      expect(replay.result.participation).toMatchObject({
+        state: "admitted",
+        pool_leg_id: pool.original.poolLegId,
+        original_drawing_id: pool.original.drawingId,
+      });
+      expect(f.providerCalls()).toBe(calls + 1);
+      expect(f.putCalls()).toBe(puts + 1);
+      expect(await heldOriginal(f, source)).toEqual(retained);
+      expect(await actualLearningAndCharges(f, source.session.session_id)).toEqual(originalCharges);
+      expect(
+        (
+          await f.admin.query(
+            `SELECT count(*)::integer AS n FROM activity_qualifications
+        WHERE participation_owner_id=$1 AND study_session_id=$2`,
+            [source.guest.access.ownerId, source.session.session_id],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
+    });
+  }, 180000);
+  test("uncertain original owning attempt holds before and after its deadline and after proof rotation/signup; native original reconciliation admits no late share or purchase", async () => {
+    // This accepted stricter trusted margin captures safety at the actual entry
+    // cutoff; a later consumer120s margin cannot erase that original deadline.
+    await rewardedFixture(
+      async (f) => {
+        const pool = await setupPool(f, "held", 120000);
+        const source = await prepareFinalAnswer(f, 9401, "actual-owning-held"),
+          fault = owningCommitFault("before_send_unknown");
+        const calls = f.providerCalls(),
+          puts = f.putCalls();
+        const uncertain = await withClock(
+          f.servicesFor(fault.clientFactory).study.submitSpokenAnswer(source.input),
+        );
+        expect(fault.observed()).toBe(true);
+        expect(uncertain.state).toBe("pending_confirmation");
+        expect(await actualLearningAndCharges(f, source.session.session_id)).toEqual([
+          {
+            calls: 4,
+            completed_calls: 4,
+            captures: 4,
+            checkpoints: 4,
+            exact_original_charges: true,
+            attempts: 3,
+          },
+        ]);
+        const retained = await heldOriginal(f, source);
+        expect(retained).toHaveLength(1);
+        expect(retained[0]).toMatchObject({
+          source_owner_id: source.guest.access.ownerId,
+          pool_leg_id: pool.original.poolLegId,
+          drawing_id: pool.original.drawingId,
+          state: "pending",
+          current_attempt_number: 1,
+          attempt_state: "pending",
+          attempt_started: true,
+          original_shares: 0,
+          before_cutoff: true,
+          before_safety: true,
+        });
+        await expect(
+          f.guest.query("SELECT prepare_captured_original_owning_attempt_private_v1($1,$2,$3)", [
+            source.guest.access.ownerId,
+            "untrusted-operation",
+            "a".repeat(64),
+          ]),
+        ).rejects.toMatchObject({ code: "42501" });
+        const store = makeControlPlaneOwnerMegapotSettlementStore(f.adminRuntime),
+          ceilings = {
+            externalTickets: 100,
+            externalSpendAtomic: "100000000",
+            sharedTickets: 100,
+            sharedSpendAtomic: "100000000",
+          };
+        for (const phase of ["before_deadline", "after_deadline"] as const) {
+          if (phase === "after_deadline") await waitActualClock(f, pool.cutoffAt, 130000);
+          const refused = await run(Effect.result(store.freeze(pool.original, ceilings)));
+          expect(refused._tag).toBe("Failure");
+          if (refused._tag === "Failure")
+            expect(refused.failure).toMatchObject({ sqlState: "GP003" });
+          expect((await heldOriginal(f, source))[0]).toMatchObject({
+            state: "pending",
+            exact_retained_hash: retained[0]?.exact_retained_hash,
+            original_shares: 0,
+          });
+        }
+        const successor = await rotateOriginalProof(f, source.guest.access);
+        const signup = await genuineSignup(f);
+        expect((await heldOriginal(f, source))[0]).toMatchObject({
+          state: "pending",
+          exact_retained_hash: retained[0]?.exact_retained_hash,
+          original_shares: 0,
+          before_safety: false,
+          before_cutoff: false,
+        });
+        const browser = f.servicesFor().browser;
+        const read = {
+          access: source.guest.access,
+          communityId: source.input.communityId,
+          sessionId: source.input.sessionId,
+          sessionItemId: source.input.sessionItemId,
+          idempotencyKey: source.input.idempotencyKey,
+          attemptNumber: source.input.attemptNumber,
+          audioDigest: hash(source.input.audio),
+          audioByteSize: source.input.audio.byteLength,
+          audioContentType: source.input.audioContentType,
+          audioDurationMs: source.input.audioDurationMs,
+        };
+        const revoked = await run(Effect.result(browser.findForAudio(read)));
+        expect(revoked._tag).toBe("Failure");
+        if (revoked._tag === "Failure")
+          expect(revoked.failure).toMatchObject({ reason: "proof-revoked" });
+        expect(
+          await run(
+            browser.findForAudio({ ...read, access: { ...read.access, credentialId: successor } }),
+          ),
+        ).not.toBeNull();
+        // Private closed original CP continuation uses no fabricated access, fresh
+        // proof/config/learning lease, no regrade/provider/R2, and native lock/fence
+        // reconciliation before it can resolve the original monetary uncertainty.
+        const recovered = await run(f.servicesFor().closedRecovery.run(10));
+        expect(recovered).toMatchObject({ completed: 1, pending: 0 });
+        const resolved = await heldOriginal(f, source);
+        expect(resolved).toHaveLength(1);
+        expect(await actualLearningAndCharges(f, source.session.session_id)).toEqual([
+          {
+            calls: 4,
+            completed_calls: 4,
+            captures: 4,
+            checkpoints: 4,
+            exact_original_charges: true,
+            attempts: 4,
+          },
+        ]);
+        expect(resolved[0]).toMatchObject({
+          state: "reconciled_no_commit",
+          attempt_state: "authoritative_no_commit",
+          current_attempt_number: 1,
+          original_shares: 0,
+          before_safety: false,
+          before_cutoff: false,
+        });
+        expect(
+          (
+            await f.admin.query(
+              `SELECT account_id,persona_id,participation_owner_id,status,guest_reward_mode
+        FROM study_sessions_v2 WHERE session_id=$1`,
+              [source.session.session_id],
+            )
+          ).rows,
+        ).toEqual([
+          {
+            account_id: null,
+            persona_id: null,
+            participation_owner_id: source.guest.access.ownerId,
+            status: "completed",
+            guest_reward_mode: "megapot_guest_v1",
+          },
+        ]);
+        expect(
+          (
+            await f.admin.query(
+              `SELECT account_id,persona_id,participation_owner_id,participation_owner_kind
+        FROM activity_qualifications WHERE study_session_id=$1`,
+              [source.session.session_id],
+            )
+          ).rows,
+        ).toEqual([
+          {
+            account_id: null,
+            persona_id: null,
+            participation_owner_id: source.guest.access.ownerId,
+            participation_owner_kind: "guest",
+          },
+        ]);
+        expect(
+          (
+            await f.admin.query(
+              "SELECT count(*)::integer AS n FROM guest_owner_associations WHERE guest_owner_id=$1",
+              [source.guest.access.ownerId],
+            )
+          ).rows,
+        ).toEqual([{ n: 0 }]);
+        expect(
+          (
+            await f.admin.query(
+              "SELECT count(*)::integer AS n FROM reward_credit_persona_bindings WHERE account_id=$1",
+              [signup],
+            )
+          ).rows,
+        ).toEqual([{ n: 0 }]);
+        const frozen = await run(store.freeze(pool.original, ceilings));
+        expect(frozen).toMatchObject({
+          status: "closed_no_entries",
+          frozenShareCount: 0,
+          snapshotId: null,
+          snapshotHash: null,
+          reservedTicketCostAtomic: "0",
+          fallback: false,
+        });
+        expect(await run(store.freeze(pool.original, ceilings))).toEqual(frozen);
+        await expect(
+          run(
+            makeControlPlaneMegapotPurchaseStore(f.adminRuntime).loadCandidate({
+              poolLegId: pool.original.poolLegId,
+              drawingId: BigInt(pool.original.drawingId),
+            }),
+          ),
+        ).rejects.toMatchObject({ reason: "drawing-not-committed" });
+        expect(
+          (
+            await f.admin.query(`SELECT (SELECT count(*) FROM megapot_ticket_purchase_effects)::integer AS purchases,
+        (SELECT count(*) FROM reward_ledger_credits WHERE identity_version='owner_v1')::integer AS owner_credits,
+        (SELECT count(*) FROM megapot_owner_shares)::integer AS shares,
+        (SELECT count(*) FROM megapot_owner_allocations)::integer AS allocations`)
+          ).rows,
+        ).toEqual([{ purchases: 0, owner_credits: 0, shares: 0, allocations: 0 }]);
+        expect(f.providerCalls()).toBe(calls + 1);
+        expect(f.putCalls()).toBe(puts + 1);
+      },
+      { purchaseSafetyMarginSeconds: 300 },
+    );
+  }, 180000);
+});
+
+async function retainedV2Rows(f: RewardedFixture, legId: string, sessionId: string) {
+  const captured: Record<string, { n: number; hash: string }[]> = {};
+  for (const table of [
+    "song_reward_offer_legs",
+    "megapot_pool_drawings",
+    "megapot_pool_shares",
+    "reward_eligibility_decisions",
+  ] as const) {
+    const column =
+      table === "song_reward_offer_legs" || table === "reward_eligibility_decisions"
+        ? "leg_id"
+        : "pool_leg_id";
+    captured[table] = (
+      await f.admin.query(
+        `SELECT count(*)::integer AS n,
+      encode(sha256(convert_to(coalesce(jsonb_agg(to_jsonb(source_row) ORDER BY to_jsonb(source_row)::text),'[]'::jsonb)::text,'UTF8')),'hex') AS hash
+      FROM ${table} source_row WHERE ${column}=$1`,
+        [legId],
+      )
+    ).rows;
+  }
+  for (const table of ["study_sessions_v2", "activity_qualifications"] as const) {
+    const column = table === "study_sessions_v2" ? "session_id" : "study_session_id";
+    captured[table] = (
+      await f.admin.query(
+        `SELECT count(*)::integer AS n,
+      encode(sha256(convert_to(coalesce(jsonb_agg(to_jsonb(source_row) ORDER BY to_jsonb(source_row)::text),'[]'::jsonb)::text,'UTF8')),'hex') AS hash
+      FROM ${table} source_row WHERE ${column}=$1`,
+        [sessionId],
+      )
+    ).rows;
+  }
+  return captured;
+}
+
+suite("genuine retained-v2 Account and v3 Account/Guest mixture", () => {
+  test("retained ordinary source stays2; original Account3 and Guest3 share one real drawing and retain exact positive bindings without old-row mutation", async () => {
+    await rewardedFixture(async (f) => {
+      const pool = await setupPool(f, "mixed", 90000, true);
+      if (pool.retained === null) throw new Error("Actual separate retained song leg required");
+      expect(
+        (
+          await f.admin.query(
+            "SELECT beneficiary_version,observation_id,status FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=$2::numeric",
+            [pool.retained.legId, pool.original.drawingId],
+          )
+        ).rows,
+      ).toEqual([
+        { beneficiary_version: 2, observation_id: "observation-next-mixed", status: "entry_open" },
+      ]);
+      const ordinary = await f.completeAccount({
+        personaId: pool.sponsorPersonaId,
+        postId: pool.retained.postId,
+        sessionId: "actual-retained-account-session",
+        rewarded: false,
+      });
+      expect(ordinary).toMatchObject({ providerCalls: 4, putCalls: 4 });
+      expect(
+        (
+          await f.admin.query(
+            `SELECT share.beneficiary_version,share.account_id,qualification.persona_id,
+        qualification.account_main_operation_id FROM megapot_pool_shares share
+        JOIN activity_qualifications qualification USING(qualification_id)
+        WHERE share.pool_leg_id=$1 AND share.drawing_id=$2::numeric`,
+            [pool.retained.legId, pool.original.drawingId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          beneficiary_version: 2,
+          account_id: "study-account",
+          persona_id: pool.sponsorPersonaId,
+          account_main_operation_id: null,
+        },
+      ]);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT count(*)::integer AS n FROM account_owner_reward_sources WHERE session_id=$1",
+            [ordinary.sessionId],
+          )
+        ).rows,
+      ).toEqual([{ n: 0 }]);
+      const preserved = await retainedV2Rows(f, pool.retained.legId, ordinary.sessionId);
+      for (const rows of Object.values(preserved)) expect(rows[0]?.n).toBeGreaterThan(0);
+      const paid = await f.completeAccount({
+        personaId: pool.sponsorPersonaId,
+        postId: "study-post",
+        sessionId: "actual-owner-account-session",
+        rewarded: true,
+      });
+      expect(paid).toMatchObject({ providerCalls: 4, putCalls: 4 });
+      const guest = await f.completeGuest(9501, "actual-mixed-guest-session");
+      expect(guest.session.participation).toMatchObject({
+        state: "admitted",
+        pool_leg_id: pool.original.poolLegId,
+        original_drawing_id: pool.original.drawingId,
+      });
+      expect(
+        (
+          await f.admin.query(
+            `SELECT owner.kind,qualification.account_id,qualification.persona_id,
+        qualification.account_main_operation_id IS NOT NULL AS actual_account_operation,share.beneficiary_version
+        FROM megapot_owner_shares share JOIN activity_qualifications qualification USING(qualification_id)
+        JOIN participation_owners owner ON owner.owner_id=share.owner_id
+        WHERE share.pool_leg_id=$1 AND share.drawing_id=$2::numeric ORDER BY owner.kind`,
+            [pool.original.poolLegId, pool.original.drawingId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          kind: "account",
+          account_id: "study-account",
+          persona_id: pool.sponsorPersonaId,
+          actual_account_operation: true,
+          beneficiary_version: 3,
+        },
+        {
+          kind: "guest",
+          account_id: null,
+          persona_id: null,
+          actual_account_operation: false,
+          beneficiary_version: 3,
+        },
+      ]);
+      expect(await retainedV2Rows(f, pool.retained.legId, ordinary.sessionId)).toEqual(preserved);
+      await waitActualClock(f, pool.cutoffAt, 100000);
+      const snapshot = await freezeAndCommit(f, pool);
+      await purchaseAndSweep(f, pool, 2n);
+      const allocation = await run(snapshot.store.allocate(pool.original));
+      expect(await run(snapshot.store.allocate(pool.original))).toEqual(allocation);
+      expect(
+        (
+          await f.admin.query(
+            `SELECT leaf.owner_kind,leaf.original_account_id,leaf.original_persona_id,allocation.amount_atomic::text,credit.identity_version,
+        credit.account_id,credit.payout_persona_id,credit.participation_owner_id=leaf.owner_id AS exact_owner,
+        binding.binding_source,binding.account_id AS binding_account,binding.persona_id AS binding_persona,
+        binding.selection_revision
+        FROM megapot_owner_allocations allocation JOIN megapot_owner_snapshot_leaves leaf
+          ON leaf.snapshot_id=allocation.snapshot_id AND leaf.ordinal=allocation.ordinal
+        JOIN reward_ledger_credits credit USING(credit_id)
+        LEFT JOIN reward_credit_persona_bindings binding USING(credit_id)
+        WHERE allocation.allocation_batch_id=$1 ORDER BY leaf.owner_kind`,
+            [allocation.allocationBatchId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          owner_kind: "account",
+          original_account_id: "study-account",
+          original_persona_id: pool.sponsorPersonaId,
+          amount_atomic: "1",
+          identity_version: "owner_v1",
+          account_id: null,
+          payout_persona_id: null,
+          exact_owner: true,
+          binding_source: "account_original",
+          binding_account: "study-account",
+          binding_persona: pool.sponsorPersonaId,
+          selection_revision: null,
+        },
+        {
+          owner_kind: "guest",
+          original_account_id: null,
+          original_persona_id: null,
+          amount_atomic: "1",
+          identity_version: "owner_v1",
+          account_id: null,
+          payout_persona_id: null,
+          exact_owner: true,
+          binding_source: null,
+          binding_account: null,
+          binding_persona: null,
+          selection_revision: null,
+        },
+      ]);
+      expect(
+        (await f.admin.query("SELECT count(*)::integer AS n FROM reward_payout_effects")).rows,
+      ).toEqual([{ n: 0 }]);
+      expect(await retainedV2Rows(f, pool.retained.legId, ordinary.sessionId)).toEqual(preserved);
+    });
+  }, 180000);
 });

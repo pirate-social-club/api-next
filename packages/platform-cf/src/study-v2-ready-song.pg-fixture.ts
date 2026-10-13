@@ -6,14 +6,43 @@ const digest = async (value: string): Promise<string> =>
     "hex",
   );
 
+// TEST ONLY: the existing trusted prepared-source loader can add a second song
+// to its already-created actor/community. This remaps only closed fixture source
+// IDs in actual SQL and bound values, never query results or learning/money rows.
+const preparedSourceQuery = (admin: Pick<Client, "query">, tag?: string) => {
+  if (tag !== undefined && !/^[a-z][a-z0-9-]{0,24}$/u.test(tag))
+    throw new Error("Bounded trusted prepared source tag required");
+  const mapped = (value: string): string =>
+    tag === undefined
+      ? value
+      : value
+          .replaceAll("study-post", `${tag}-post`)
+          .replaceAll("study-submission", `${tag}-submission`)
+          .replaceAll("study-operation", `${tag}-operation`)
+          .replaceAll("study-run-", `${tag}-run-`)
+          .replace(/\bexercise-([1-4])\b/gu, `${tag}-exercise-$1`);
+  return (text: string, values?: readonly unknown[]) =>
+    admin.query(
+      mapped(text),
+      values === undefined
+        ? undefined
+        : values.map((value) => (typeof value === "string" ? mapped(value) : value)),
+    );
+};
+
 /**
  * One published general-rated English song in `study-community` with four accepted
  * say-it-back exercises, owned by `study-account` / `study-persona`.
  */
 export async function insertStudySongFixture(
   admin: Pick<Client, "query">,
-  options?: { readonly accountAlreadyBorn?: true; readonly initializeOwnerPolicy?: true },
+  options?: {
+    readonly accountAlreadyBorn?: true;
+    readonly initializeOwnerPolicy?: true;
+    readonly additionalSourceTag?: string;
+  },
 ) {
+  const query = preparedSourceQuery(admin, options?.additionalSourceTag);
   const lines = [
     "I can love you",
     "We keep moving forward",
@@ -26,43 +55,47 @@ export async function insertStudySongFixture(
   // TEST ONLY: trusted prepared-media fixture; the production policy producer
   // must run on its INITIAL publication insert, not on a fabricated head.
   let policyTriggerArmed = false;
-  await admin.query("SET session_replication_role = replica");
+  await query("SET session_replication_role = replica");
   try {
     // Normal identity birth owns its first-persona reservation and immutable owner.
     // This fixture adds its explicit non-first activity persona without replacing either.
-    if (options?.accountAlreadyBorn !== true)
-      await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
-    await admin.query(
-      `INSERT INTO communities (
-           community_id, display_name, status, created_by_user_id, created_at, updated_at
-         ) VALUES ('study-community','Study community','active','study-account',
-         clock_timestamp(),clock_timestamp())`,
-    );
-    await insertActiveCommunityMembershipFixture(admin, {
-      communityId: "study-community",
-      membershipId: "study-membership",
-      userId: "study-account",
-    });
-    await admin.query(
-      `INSERT INTO personas (
-         persona_id, account_id, status, created_at
-       ) VALUES ('study-persona', 'study-account', 'active', clock_timestamp())`,
-    );
-    await admin.query(
-      `INSERT INTO persona_community_bindings (
-           persona_id, account_id, community_id, binding_source
-         ) VALUES ('study-persona', 'study-account', 'study-community', 'first_membership')`,
-    );
-    await admin.query(
+    if (options?.additionalSourceTag === undefined) {
+      if (options?.accountAlreadyBorn !== true)
+        await query("INSERT INTO users (user_id) VALUES ('study-account')");
+      await query(
+        `INSERT INTO communities (
+             community_id, display_name, status, created_by_user_id, created_at, updated_at
+           ) VALUES ('study-community','Study community','active','study-account',
+           clock_timestamp(),clock_timestamp())`,
+      );
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "study-community",
+        membershipId: "study-membership",
+        userId: "study-account",
+      });
+      await query(
+        `INSERT INTO personas (
+           persona_id, account_id, status, created_at
+         ) VALUES ('study-persona', 'study-account', 'active', clock_timestamp())`,
+      );
+      await query(
+        `INSERT INTO persona_community_bindings (
+             persona_id, account_id, community_id, binding_source
+           ) VALUES ('study-persona', 'study-account', 'study-community', 'first_membership')`,
+      );
+    }
+    await query(
       `INSERT INTO posts (
            community_id, post_id, post_type, status, visibility, created_at, updated_at
          ) VALUES ('study-community', 'study-post', 'song', 'published', 'public',
            clock_timestamp(), clock_timestamp())`,
     );
-    await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='study-post'");
+    await query("UPDATE posts SET content_rating='general' WHERE post_id='study-post'");
     if (options?.initializeOwnerPolicy === true)
-      await admin.query("UPDATE posts SET author_user_id='study-account',author_persona_id='study-persona' WHERE community_id='study-community' AND post_id='study-post'");
-    await admin.query(
+      await query(
+        "UPDATE posts SET author_user_id='study-account',author_persona_id='study-persona' WHERE community_id='study-community' AND post_id='study-post'",
+      );
+    await query(
       `INSERT INTO media_post_submissions (
          submission_id, community_id, actor_user_id, operation_id, idempotency_key,
          request_hash, title, song_type, start_input, audio_reservation_id,
@@ -74,10 +107,14 @@ export async function insertStudySongFixture(
          'study-idempotency',$1,'Study song','original','{}'::jsonb,'study-reservation',
          $3::bigint,1,1,1,'audio-ref','published',NULL,'study-post',convert_to('snapshot','UTF8'),$2,
          'study-persona',1,1,$4::bigint)`,
-      ["1".repeat(64), await digest("snapshot"), creationRevision,
-        options?.initializeOwnerPolicy === true ? 2 : null],
+      [
+        "1".repeat(64),
+        await digest("snapshot"),
+        creationRevision,
+        options?.initializeOwnerPolicy === true ? 2 : null,
+      ],
     );
-    await admin.query(
+    await query(
       `INSERT INTO media_analysis_evidence (
           submission_id,community_id,actor_user_id,operation_id,analysis_version,
           audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,
@@ -103,7 +140,7 @@ export async function insertStudySongFixture(
     if (options?.initializeOwnerPolicy === true) {
       // Explicit licensed prepared input for the actual 0107 initializer.
       // This supplies no policy row/hash: the native producer derives both.
-      await admin.query(`INSERT INTO media_submission_terms (
+      await query(`INSERT INTO media_submission_terms (
         submission_id,community_id,actor_user_id,author_persona_id,operation_id,
         creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,
         access_mode,terms_snapshot
@@ -113,10 +150,12 @@ export async function insertStudySongFixture(
       // Existing fixture inputs are inserted in replica mode. Make ONLY the
       // actual policy initializer run there, then restore its exact O state.
       // No production migration/body/grant or financial guard changes.
-      await admin.query("ALTER TABLE media_publication_projections ENABLE ALWAYS TRIGGER media_publication_song_owner_policy_initialize");
+      await query(
+        "ALTER TABLE media_publication_projections ENABLE ALWAYS TRIGGER media_publication_song_owner_policy_initialize",
+      );
       policyTriggerArmed = true;
     }
-    await admin.query(
+    await query(
       `INSERT INTO media_publication_projections (
          submission_id, community_id, actor_user_id, operation_id, post_id,
          creation_revision, audio_revision, analysis_revision, decision_revision,
@@ -130,7 +169,8 @@ export async function insertStudySongFixture(
       ["2".repeat(64), lyrics, creationRevision],
     );
     if (policyTriggerArmed) {
-      const state = (await admin.query(`SELECT publication.creation_revision::text AS publication_creation,
+      const state = (
+        await query(`SELECT publication.creation_revision::text AS publication_creation,
         terms.creation_revision::text AS terms_creation,submission.creation_revision::text AS submission_creation,
         submission.current_terms_revision::text AS current_terms,publication.audio_revision::text AS audio_revision,
         publication.lyrics_revision::text AS lyrics_revision,publication.operation_id=terms.operation_id
@@ -139,37 +179,47 @@ export async function insertStudySongFixture(
         FROM media_publication_projections publication JOIN media_submission_terms terms
           ON terms.submission_id=publication.submission_id AND terms.creation_revision=publication.creation_revision
         JOIN media_post_submissions submission ON submission.submission_id=publication.submission_id
-        WHERE publication.community_id='study-community' AND publication.post_id='study-post'`)).rows;
-      if (state.length !== 1 || state[0]?.publication_creation !== "2" || state[0]?.terms_creation !== "2" ||
-          state[0]?.submission_creation !== "2" || state[0]?.current_terms !== "2" ||
-          state[0]?.audio_revision !== "1" || state[0]?.lyrics_revision !== "1" ||
-          state[0]?.same_operation !== true || state[0]?.same_actor !== true)
+        WHERE publication.community_id='study-community' AND publication.post_id='study-post'`)
+      ).rows;
+      if (
+        state.length !== 1 ||
+        state[0]?.publication_creation !== "2" ||
+        state[0]?.terms_creation !== "2" ||
+        state[0]?.submission_creation !== "2" ||
+        state[0]?.current_terms !== "2" ||
+        state[0]?.audio_revision !== "1" ||
+        state[0]?.lyrics_revision !== "1" ||
+        state[0]?.same_operation !== true ||
+        state[0]?.same_actor !== true
+      )
         throw new Error("Prepared initial licensed publication revision/source tuple differs");
-      await admin.query("ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize");
+      await query(
+        "ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize",
+      );
       policyTriggerArmed = false;
     }
 
     for (const slot of ["instrumental_audio", "vocal_audio"])
-      await admin.query(
+      await query(
         `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
         [slot, "b".repeat(64)],
       );
     for (const [index, line] of lines.entries()) {
       const ordinal = index + 1;
-      await admin.query(
+      await query(
         `INSERT INTO localization_lyric_line_occurrences (
              community_id, post_id, lyric_line_id
            ) VALUES ('study-community','study-post',$1)`,
         [`line-${ordinal}`],
       );
-      await admin.query(
+      await query(
         `INSERT INTO localization_lyric_line_versions (
              community_id, post_id, lyric_line_id, line_version, canonical_text,
              source_language, source_hash
            ) VALUES ('study-community','study-post',$1,1,$2,'en',$3)`,
         [`line-${ordinal}`, line, lineHashes[index]],
       );
-      await admin.query(
+      await query(
         `INSERT INTO localization_study_units (
              community_id, post_id, study_unit_id, identity_normalization_revision,
              normalized_source_hash
@@ -177,13 +227,13 @@ export async function insertStudySongFixture(
              'lyric_line_identity_normalization_v1',$2)`,
         [`unit-${ordinal}`, lineHashes[index]],
       );
-      await admin.query(
+      await query(
         `INSERT INTO localization_lyric_line_study_units (
              community_id, post_id, lyric_line_id, line_version, study_unit_id
            ) VALUES ('study-community','study-post',$1,1,$2)`,
         [`line-${ordinal}`, `unit-${ordinal}`],
       );
-      await admin.query(
+      await query(
         `INSERT INTO localization_lyrics_revision_lines (
              community_id, actor_user_id, post_id, submission_id, lyrics_revision,
              ordinal, lyric_line_id, line_version, source_hash
@@ -191,7 +241,7 @@ export async function insertStudySongFixture(
              $1,$2,1,$3)`,
         [ordinal, `line-${ordinal}`, lineHashes[index]],
       );
-      await admin.query(
+      await query(
         `INSERT INTO study_exercise_versions (
            exercise_version_id, community_id, post_id, audio_revision, lyrics_revision,
            lyric_line_id, line_version, line_source_hash, exercise_review_key,
@@ -234,28 +284,34 @@ export async function insertStudySongFixture(
   } finally {
     try {
       if (policyTriggerArmed)
-        await admin.query("ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize");
+        await query(
+          "ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize",
+        );
     } finally {
-      await admin.query("SET session_replication_role = origin");
+      await query("SET session_replication_role = origin");
     }
   }
   return { lines };
 }
 
 /** Language profile that admits the fixture song to Telegram read-aloud practice. */
-export async function insertTelegramPracticeReadinessFixture(admin: Pick<Client, "query">) {
-  await admin.query("SET session_replication_role=replica");
+export async function insertTelegramPracticeReadinessFixture(
+  admin: Pick<Client, "query">,
+  options?: Readonly<{ additionalSourceTag?: string }>,
+) {
+  const query = preparedSourceQuery(admin, options?.additionalSourceTag);
+  await query("SET session_replication_role=replica");
   try {
-    await admin.query(
+    await query(
       `INSERT INTO study_language_profiles(community_id,post_id,lyrics_revision,language_profile_revision,source_hash,provider_id,provider_model,prompt_revision,validator_revision,request_hash,accepted_at) VALUES('study-community','study-post',1,1,$1,'fixture','fixture','fixture','fixture',$1,clock_timestamp())`,
       ["a".repeat(64)],
     );
     for (let ordinal = 1; ordinal <= 4; ordinal++)
-      await admin.query(
+      await query(
         `INSERT INTO study_language_profile_units(community_id,post_id,lyrics_revision,language_profile_revision,study_unit_id,detected_languages,dominant_language,mixed,vocable_only,proper_name_only,confidence) VALUES('study-community','study-post',1,1,$1,'["en"]'::jsonb,'en',FALSE,FALSE,FALSE,0.99)`,
         [`unit-${ordinal}`],
       );
   } finally {
-    await admin.query("SET session_replication_role=origin");
+    await query("SET session_replication_role=origin");
   }
 }

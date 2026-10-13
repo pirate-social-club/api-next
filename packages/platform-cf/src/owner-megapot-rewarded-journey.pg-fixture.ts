@@ -2,13 +2,14 @@
  * inserted positive Guest session/attempt/qualification/share/credit row. */
 import { expect } from "bun:test";
 import { readFile } from "node:fs/promises";
-import type { GuestLearningAccess } from "@pirate/application";
+import type { GuestLearningAccess, StudyBatchTranscriber } from "@pirate/application";
 import {
   Clock,
   IdGen,
   makeOwnerGuestStudyService,
   makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application";
+import { makeOwnerGuestSpokenClosedRecovery } from "@pirate/application/owner-guest-spoken-closed-recovery";
 import type { OwnerStudyInvokingTranscriber } from "@pirate/application/owner-guest-study-service";
 import { GuestRewardTermsV1, GuestSha256V1, GuestStudySessionV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
@@ -16,6 +17,8 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneAccountOwnerRewardHooks } from "./account-owner-reward-hooks.ts";
+import { makeControlledAccountSpokenComposition } from "./controlled-account-spoken-composition.ts";
 import { makeControlPlanePreparedGuestStudyContentStore } from "./guest-prepared-study-content-store.ts";
 import { makeControlPlanePreparedGuestRewardContentStore } from "./guest-reward-prepared-content-store.ts";
 import { makeOriginalAccountStudySourceControl } from "./owner-account-source-control.ts";
@@ -23,6 +26,7 @@ import { makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores } from "./owne
 import { makeOwnerGuestSpokenDispatchContextStore } from "./owner-guest-spoken-dispatch-context.ts";
 import { makeOwnerGuestStudyPublicVisibilityStore } from "./owner-guest-study-public-visibility.ts";
 import {
+  composeGuestRewardCapturedContinuation,
   composeGuestRewardStudyMutationMethods,
   makeControlPlaneGuestRewardStudyContinuations,
 } from "./owner-reward-study-continuation.ts";
@@ -33,10 +37,18 @@ import {
   makeControlPlaneOwnerSpokenCapturedContinuationStore,
   makeControlPlaneOwnerStudyMutations,
 } from "./owner-study-mutations.ts";
-import { disclosure, pgUrl, policy, q, run, seedGuest } from "./owner-study-starter.pg-fixture.ts";
+import {
+  disclosure,
+  hash,
+  pgUrl,
+  policy,
+  q,
+  run,
+  seedGuest,
+} from "./owner-study-starter.pg-fixture.ts";
 import { makeControlPlaneOwnerStudyStarter } from "./owner-study-starter.ts";
 import { composeOwnerAwareStudyV2Store } from "./owner-study-store-composition.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeDirectPostgresControlPlaneLayer, type PostgresClientFactory } from "./postgres.ts";
 import { makeControlPlaneStudyV2Store } from "./study-v2-repository.ts";
 
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(s: S, v: unknown): S["Type"] =>
@@ -59,6 +71,8 @@ const controlled = [
   "resolve_guest_audio_io_capture_private_v1(jsonb,jsonb,text,text,bigint,text)",
   "claim_guest_audio_io_private_v1(jsonb)",
   "settle_guest_audio_io_private_v1(jsonb,text,boolean)",
+  "list_guest_spoken_closed_recovery_v1(integer)",
+  "read_guest_spoken_closed_recovery_v1(text)",
   "find_owner_guest_spoken_success_for_audio_v1(jsonb,text,text,text,text,integer,text,text,integer,integer)",
   "prepare_owner_guest_reward_spoken_v1(jsonb,jsonb,text,text)",
   "apply_owner_guest_reward_spoken_v1(jsonb,jsonb,text,jsonb,jsonb,jsonb,jsonb,jsonb,text)",
@@ -78,7 +92,7 @@ const financialTables = [
   "owner_accounting_native_source_inventory_v1",
 ] as const;
 const source = { communityId: "study-community", postId: "study-post" } as const;
-const safetyMarginSeconds = 120;
+const defaultSafetyMarginSeconds = 120;
 
 async function within<A>(p: Promise<A>, label: string, ms = 5000): Promise<A> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -103,6 +117,22 @@ export type RewardedFixture = ArchiveFixture & {
   providerCalls: () => number;
   putCalls: () => number;
   objects: Map<string, Uint8Array>;
+  servicesFor: (clientFactory?: PostgresClientFactory) => {
+    study: Service;
+    closedRecovery: ReturnType<typeof makeOwnerGuestSpokenClosedRecovery>;
+    browser: ReturnType<typeof makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores>["browser"];
+  };
+  startGuest: (
+    serial: number,
+    key: string,
+  ) => Promise<{ access: GuestLearningAccess; session: GuestStudySessionV1 }>;
+  completeAccount: (
+    input: Readonly<{ personaId: string; postId: string; sessionId: string; rewarded: boolean }>,
+  ) => Promise<{
+    sessionId: string;
+    providerCalls: number;
+    putCalls: number;
+  }>;
   completeGuest: (
     serial: number,
     key: string,
@@ -111,8 +141,9 @@ export type RewardedFixture = ArchiveFixture & {
 
 export async function rewardedFixture(
   use: (f: RewardedFixture) => Promise<void>,
-  options?: Readonly<{ ownedResetNamespace?: true }>,
+  options: Readonly<{ ownedResetNamespace?: true; purchaseSafetyMarginSeconds?: number }> = {},
 ) {
+  const safetyMarginSeconds = options.purchaseSafetyMarginSeconds ?? defaultSafetyMarginSeconds;
   await archiveFixture(
     async (f) => {
       // Preserve every financial source/owed ledger row until Root physically
@@ -269,34 +300,6 @@ export async function rewardedFixture(
       let providerCalls = 0,
         putCalls = 0;
       const objects = new Map<string, Uint8Array>();
-      const base = makeControlPlaneOwnerStudyMutations(guestRuntime, {
-        rawPolicy: policy,
-        disclosureVersion: disclosure.version,
-        rerecordEnabled: true,
-        providerRetention: "not_stored",
-      });
-      const accepted = makeControlPlaneOwnerSpokenCapturedContinuationStore(guestRuntime);
-      const rewards = makeControlPlaneGuestRewardStudyContinuations(guestRuntime, {
-        ...accepted,
-        submitAnswer: base.submitAnswer,
-      });
-      const mutations = composeGuestRewardStudyMutationMethods(base, rewards);
-      const starter = makeControlPlaneOwnerStudyStarter(
-        guestRuntime,
-        disclosure,
-        policy,
-        undefined,
-        safetyMarginSeconds,
-      );
-      const prepared = makeControlPlanePreparedGuestStudyContentStore(adminRuntime, disclosure);
-      const store = composeOwnerAwareStudyV2Store({
-        starter,
-        mutations,
-        prepared,
-        ordinary: makeControlPlaneStudyV2Store(adminRuntime),
-        originalAccountSources: makeOriginalAccountStudySourceControl(adminRuntime),
-        verifiedOrdinaryAccount: null,
-      });
       const outsideSql = async () =>
         expect(
           (
@@ -340,22 +343,68 @@ export async function rewardedFixture(
           };
         }),
       };
-      const study = makeOwnerGuestStudyService({
-        store,
-        prepared,
-        atomicStarter: starter,
-        dispatchContext: makeOwnerGuestSpokenDispatchContextStore(guestRuntime),
-        resourcePolicy: policy,
-        transcriber,
-        success: makeOwnerSpokenSuccessProtocol(
-          makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(guestRuntime),
+      // Driver faults use the real restricted LOGIN and exact production
+      // composition. They never replace native producer/grade/hold authority.
+      const servicesFor = (clientFactory?: PostgresClientFactory) => {
+        const runtime = makeDirectPostgresControlPlaneLayer(f.guestUrl, {
+          closeTimeoutMs: 2000,
+          ...(clientFactory === undefined ? {} : { clientFactory }),
+        });
+        const base = makeControlPlaneOwnerStudyMutations(runtime, {
+          rawPolicy: policy,
+          disclosureVersion: disclosure.version,
+          rerecordEnabled: true,
+          providerRetention: "not_stored",
+        });
+        const accepted = makeControlPlaneOwnerSpokenCapturedContinuationStore(runtime);
+        const rewards = makeControlPlaneGuestRewardStudyContinuations(runtime, {
+          ...accepted,
+          submitAnswer: base.submitAnswer,
+        });
+        const mutations = composeGuestRewardStudyMutationMethods(base, rewards);
+        const starter = makeControlPlaneOwnerStudyStarter(
+          runtime,
+          disclosure,
+          policy,
+          undefined,
+          safetyMarginSeconds,
+        );
+        const prepared = makeControlPlanePreparedGuestStudyContentStore(adminRuntime, disclosure);
+        const store = composeOwnerAwareStudyV2Store({
+          starter,
+          mutations,
+          prepared,
+          ordinary: makeControlPlaneStudyV2Store(adminRuntime),
+          originalAccountSources: makeOriginalAccountStudySourceControl(adminRuntime),
+          verifiedOrdinaryAccount: null,
+        });
+        const study = makeOwnerGuestStudyService({
           store,
-          makeOwnerSpokenFencedArchiveStage(guestRuntime, bucket, retain),
-        ),
-        recovery: makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(guestRuntime).browser,
-        visibility: makeOwnerGuestStudyPublicVisibilityStore(adminRuntime),
-        rerecordEnabled: true,
-      });
+          prepared,
+          atomicStarter: starter,
+          dispatchContext: makeOwnerGuestSpokenDispatchContextStore(runtime),
+          resourcePolicy: policy,
+          transcriber,
+          success: makeOwnerSpokenSuccessProtocol(
+            makeControlPlaneOwnerSpokenPreArchiveCheckpointStore(runtime),
+            store,
+            makeOwnerSpokenFencedArchiveStage(runtime, bucket, retain),
+          ),
+          recovery: makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(runtime).browser,
+          visibility: makeOwnerGuestStudyPublicVisibilityStore(adminRuntime),
+          rerecordEnabled: true,
+        });
+        const recovered = makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores(runtime);
+        return {
+          study,
+          browser: recovered.browser,
+          closedRecovery: makeOwnerGuestSpokenClosedRecovery(
+            recovered.closed,
+            composeGuestRewardCapturedContinuation(accepted, rewards),
+          ),
+        };
+      };
+      const { study } = servicesFor();
       const withClock = <A, E>(e: Effect.Effect<A, E, Clock | IdGen>) =>
         run(
           e.pipe(
@@ -368,6 +417,185 @@ export async function rewardedFixture(
         disclosure,
         safetyMarginSeconds,
       );
+      const startGuest = async (serial: number, key: string) => {
+        const actual = await seedGuest(f, serial);
+        const quote = await run(
+          preview.get({ ...source, targetLanguage: null, learnerBand: null }),
+        );
+        if (
+          quote.availability.state !== "ready" ||
+          quote.reward_preview === null ||
+          quote.reward_preview_terms_hash === null
+        )
+          throw new Error("Actual ready original reward preview required");
+        const started = await withClock(
+          study.startSession({
+            access: actual.access,
+            ...source,
+            trustedEdge: { kind: "trusted_edge", fingerprint: `causal-owned-${serial}` },
+            body: {
+              expected_owner_id: actual.ownerId,
+              idempotency_key: key,
+              reward_mode: "megapot_guest_v1",
+              reward_preview_terms_hash: quote.reward_preview_terms_hash,
+              target_language: null,
+              learner_band: null,
+              timezone: "UTC",
+              disclosure: { version: disclosure.version, accepted: true },
+            },
+          }),
+        );
+        if (started.kind !== "start" || started.outcome.state !== "completed")
+          throw new Error("Actual completed rewarded source required");
+        const session = decode(GuestStudySessionV1, started.outcome.result.session);
+        expect(session.reward_terms).toEqual(quote.reward_preview);
+        expect(
+          (
+            await f.admin.query(
+              "SELECT account_id,persona_id,participation_owner_id FROM study_sessions_v2 WHERE session_id=$1",
+              [session.session_id],
+            )
+          ).rows,
+        ).toEqual([{ account_id: null, persona_id: null, participation_owner_id: actual.ownerId }]);
+        return { access: actual.access, session };
+      };
+      const completeAccount = async (
+        input: Readonly<{
+          personaId: string;
+          postId: string;
+          sessionId: string;
+          rewarded: boolean;
+        }>,
+      ) => {
+        // Ordinary Account source stays in its separate native Account producer.
+        // This owned source-owner runtime is functional producer evidence; the
+        // restricted Guest LOGIN is never given Account raw-row permissions.
+        const reader = makeControlPlaneAccountOwnerRewardHooks(adminRuntime, null);
+        const quote = input.rewarded
+          ? await run(
+              reader.preview({
+                accountId: "study-account",
+                personaId: input.personaId,
+                communityId: source.communityId,
+                postId: input.postId,
+                audioRevision: 1,
+                lyricsRevision: 1,
+                qualificationPolicyRevision: "study_session_first_pass_v2@1",
+                disclosureVersion: disclosure.version,
+                purchaseSafetyMarginSeconds: safetyMarginSeconds,
+              }),
+            )
+          : null;
+        if (input.rewarded && quote === null)
+          throw new Error("Actual original Account preview required");
+        const hooks =
+          quote === null
+            ? undefined
+            : makeControlPlaneAccountOwnerRewardHooks(adminRuntime, {
+                rewardPreviewTermsHash: quote.reward_preview_terms_hash,
+                disclosureVersion: disclosure.version,
+                disclosureAccepted: true,
+                purchaseSafetyMarginSeconds: safetyMarginSeconds,
+              });
+        let calls = 0,
+          puts = 0;
+        const accountProvider: StudyBatchTranscriber = {
+          providerRetention: "not_stored",
+          transcribe: Effect.fn("mixedNative.accountProvider")(function* (request) {
+            yield* Effect.promise(async () => {
+              expect(
+                (
+                  await f.admin.query(
+                    `SELECT count(*)::integer AS n FROM learner_audio_account_provider_calls provider
+              JOIN learner_audio_account_producer_captures capture USING(upload_attempt_id)
+              WHERE capture.account_id='study-account' AND capture.content_digest=$1 AND provider.state='started'`,
+                    [hash(request.audio)],
+                  )
+                ).rows,
+              ).toEqual([{ n: 1 }]);
+            });
+            calls++;
+            return {
+              transcript: new TextDecoder().decode(request.audio),
+              detectedLanguage: "en",
+              detectedLanguageConfidence: 0.99,
+            };
+          }),
+        };
+        const account = makeControlledAccountSpokenComposition(
+          adminRuntime,
+          {
+            put: async (key, bytes) => {
+              expect(
+                (
+                  await f.admin.query(
+                    `SELECT count(*)::integer AS n FROM learner_audio_account_spoken_checkpoints cp
+            JOIN learner_audio_account_producer_captures capture USING(upload_attempt_id)
+            WHERE capture.account_id='study-account' AND capture.expected_object_ref=$1`,
+                    [key],
+                  )
+                ).rows,
+              ).toEqual([{ n: 1 }]);
+              puts++;
+              objects.set(key, new Uint8Array(bytes));
+              return { size: bytes.byteLength };
+            },
+          },
+          accountProvider,
+          false,
+          retain,
+          undefined,
+          hooks,
+        );
+        let session = await run(
+          account.store.startSession({
+            accountId: "study-account",
+            personaId: input.personaId,
+            communityId: source.communityId,
+            postId: input.postId,
+            sessionId: input.sessionId,
+            idempotencyKey: `start:${input.sessionId}`,
+            requestHash: hash(`start:${input.sessionId}`),
+            createdAt: new Date().toISOString(),
+            targetLanguage: null,
+            learnerBand: null,
+            timezone: "UTC",
+          }),
+        );
+        expect(session.items).toHaveLength(4);
+        for (let index = 0; index < 4; index++) {
+          const current = session.lesson.current;
+          if (current === null) throw new Error("Original Account current card required");
+          const route = {
+            accountId: "study-account",
+            communityId: source.communityId,
+            sessionId: session.session_id,
+            sessionItemId: current.session_item_id,
+            idempotencyKey: `${input.sessionId}:answer:${index}`,
+          };
+          const context = await run(account.store.loadSpokenAnswerContext(route));
+          const original = {
+            ...route,
+            attemptNumber: current.presentation_number,
+            audio: new TextEncoder().encode(context.referenceText),
+            audioContentType: "audio/webm",
+            audioDurationMs: 1000,
+          };
+          const answered = await withClock(account.spoken.submitSpokenAnswer(original));
+          expect(answered.outcome).toBe("correct");
+          session = answered.session;
+          expect(await withClock(account.spoken.submitSpokenAnswer(original))).toEqual(answered);
+          expect(calls).toBe(index + 1);
+          expect(puts).toBe(index + 1);
+        }
+        expect(session.status).toBe("completed");
+        if (hooks !== undefined)
+          expect(
+            (await run(hooks.project("study-account", source.communityId, session.session_id)))
+              .participation,
+          ).toMatchObject({ state: "admitted" });
+        return { sessionId: session.session_id, providerCalls: calls, putCalls: puts };
+      };
       const completeGuest = async (serial: number, key: string) => {
         const actual = await seedGuest(f, serial);
         const quote = await run(
@@ -485,6 +713,9 @@ export async function rewardedFixture(
           putCalls: () => putCalls,
           objects,
           completeGuest,
+          completeAccount,
+          startGuest,
+          servicesFor,
         });
       } catch (e) {
         failed = true;
