@@ -620,6 +620,34 @@ test("revoked or changed persona grants cannot continue grading; expired session
   await g.send("expired", "/resume");
   expect(g.replies.at(-1)?.text).toContain("expired");
 });
+test("a line Telegram would truncate is never shown or graded; one that fits is sent whole", async () => {
+  const withLine = (line: string): StudySessionV2 => ({
+    ...session,
+    items: session.items.map((entry, index) =>
+      index === 0
+        ? { ...entry, presentation: { ...entry.presentation, reference_text: line } }
+        : entry,
+    ),
+  });
+  // "Say this back:\n" is fifteen characters, so 4081 more fill the 4096 limit exactly.
+  const fits = "a".repeat(4081);
+  const f = fixture();
+  f.grant(null);
+  f.session(withLine(fits));
+  await f.begin();
+  expect(f.replies.at(-1)?.text).toBe(`Say this back:\n${fits}`);
+  expect(f.state().turn?.promptText).toBe(`Say this back:\n${fits}`);
+
+  const over = fixture();
+  over.grant(null);
+  over.session(withLine(`${fits}a`));
+  await over.send("picker", "/study");
+  await expect(over.press("choose")).rejects.toMatchObject({ reason: "unavailable" });
+  // Only the song list was sent: no truncated prompt, no turn and no attempt.
+  expect(over.replies).toHaveLength(1);
+  expect(over.state().turn).toBeNull();
+  expect(over.counts().answers).toBe(0);
+});
 test("busy conversation retries instead of acknowledging lost work", async () => {
   const f = fixture();
   f.busy();

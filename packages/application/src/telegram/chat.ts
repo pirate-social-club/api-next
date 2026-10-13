@@ -471,15 +471,23 @@ async function handle(services: TelegramServices, item: InboxRecord, record: Int
   }
 }
 
-export async function processTelegramInbox(services: TelegramServices, id: string) {
+/** What happened to the update: finished, left for a retry, or held by another worker. */
+export type TelegramInboxOutcome = "completed" | "retry" | "not_claimed";
+
+export async function processTelegramInbox(
+  services: TelegramServices,
+  id: string,
+): Promise<TelegramInboxOutcome> {
   const item = await services.store.claimInbox(id);
-  if (!item) return;
+  if (!item) return "not_claimed";
   try {
     const record = await services.store.integration(item.communityId);
     if (record.botEpoch === item.botEpoch && record.status === "ready")
       await handle(services, item, record);
     await services.store.finishInbox(item, null);
+    return "completed";
   } catch {
     await services.store.finishInbox(item, "processing_failed");
+    return "retry";
   }
 }

@@ -39,6 +39,17 @@ function view(record: DeliveryRecord): TelegramDelivery {
   };
 }
 
+/**
+ * A predecessor that can still be sent: pending or failed with attempts left, or
+ * being sent under a live lease. Waiting for it spends no attempt. Shared by the
+ * claim and the scanner so both agree on which followers may move.
+ */
+export function deliveryPredecessorWaiting(alias: string): string {
+  return `((${alias}.state='pending' AND ${alias}.attempt_count<10)
+    OR (${alias}.state='sending' AND ${alias}.lease_expires_at>=clock_timestamp())
+    OR (${alias}.state='failed' AND ${alias}.next_attempt_at<>'infinity' AND ${alias}.attempt_count<10))`;
+}
+
 export function makeTelegramDeliveryStore(
   db: TelegramDatabase,
 ): Pick<
@@ -91,15 +102,13 @@ export function makeTelegramDeliveryStore(
         }
         if (record.state !== "pending" && record.state !== "failed") return null;
         // A message ordered after another is sent only once its predecessor has been
-        // delivered, or can never be sent. It waits while the predecessor is pending, being
-        // sent or awaiting a retry, and waiting spends no attempt.
+        // delivered, or can never be sent. It waits while the predecessor can still be
+        // sent, and waiting spends no attempt.
         if (record.desired?.after !== undefined) {
           const prior = await query(
-            `SELECT state,
-              (state IN ('pending','sending') AND (state<>'sending' OR lease_expires_at>=clock_timestamp()))
-                OR (state='failed' AND next_attempt_at<>'infinity' AND attempt_count<10) AS waiting,
-              state IN ('failed','uncertain','sending') AS abandoned
-            FROM community_telegram_deliveries WHERE delivery_id=$1 FOR UPDATE`,
+            `SELECT ${deliveryPredecessorWaiting("prior")} AS waiting,
+              NOT ${deliveryPredecessorWaiting("prior")} AND prior.state IN ('pending','failed','uncertain','sending') AS abandoned
+            FROM community_telegram_deliveries prior WHERE prior.delivery_id=$1 FOR UPDATE`,
             [record.desired.after],
           );
           if (prior[0]?.waiting === true) return null;

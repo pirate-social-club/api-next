@@ -83,6 +83,33 @@ suite("Study v2 spoken lifecycle", () => {
           } finally {
             await admin.query("SET session_replication_role=origin");
           }
+          expect(await catalogue.ready("study-community", "study-post")).toBe(true);
+          // A line Telegram would have to truncate keeps the whole song out of Telegram practice.
+          const original = (
+            await admin.query<{ id: string; line: string }>(
+              `SELECT exercise_version_id AS id,presentation->>'reference_text' AS line FROM study_exercise_versions
+                WHERE community_id='study-community' AND post_id='study-post' AND exercise_type='say_it_back'
+                ORDER BY exercise_version_id LIMIT 1`,
+            )
+          ).rows[0];
+          if (original === undefined) throw new Error("Missing practice line");
+          const setLine = async (line: string) => {
+            await admin.query("SET session_replication_role=replica");
+            try {
+              await admin.query(
+                `UPDATE study_exercise_versions SET presentation=jsonb_set(presentation,'{reference_text}',to_jsonb($2::text))
+                  WHERE exercise_version_id=$1`,
+                [original.id, line],
+              );
+            } finally {
+              await admin.query("SET session_replication_role=origin");
+            }
+          };
+          await setLine("a".repeat(2001));
+          expect(await catalogue.ready("study-community", "study-post")).toBe(false);
+          await setLine("a".repeat(2000));
+          expect(await catalogue.ready("study-community", "study-post")).toBe(true);
+          await setLine(original.line);
           const record = {
             ...emptyTelegramIntegration("study-community"),
             botEpoch: "epoch",
