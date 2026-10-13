@@ -6,12 +6,14 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { AUTHOR_ID } from "./activity-participation-composed.pg-fixture.ts";
 import type { Runtime } from "./activity-participation-composed-drivers.pg-fixture.ts";
 import {
   confirmWallet,
   prepareIdentity,
 } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 export const policy1 = "karaoke_qualification_v2@1";
@@ -44,21 +46,32 @@ export async function withPolicyDatabase(
     } else {
       await applyPostgresTestBaselineConnection({ connectionString: scoped, rewardsRunning: true });
     }
+    const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+    // The pre-0247 fixture preserves its genuine historical schema and raw birth.
+    // Current runtime compatibility with that schema is a separate open prerequisite.
+    if (!predecessor) await makeOwnedOrdinaryAccountBirthFixture(runtime)(AUTHOR_ID);
     await admin.query("SET session_replication_role=replica");
     try {
-      await seedActivitySong(admin);
+      await seedActivitySong(admin, { accountAlreadyBorn: !predecessor });
     } finally {
       await admin.query("SET session_replication_role=origin");
     }
-    await run({ admin, scoped, runtime: makeDirectPostgresControlPlaneLayer(scoped) });
+    await run({ admin, scoped, runtime });
   } finally {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     await admin.end();
   }
 }
 
-export async function prepareSinger(admin: Client, runtime: Runtime, accountId: string) {
-  await admin.query("INSERT INTO users(user_id) VALUES ($1)", [accountId]);
+export async function prepareSinger(
+  admin: Client,
+  runtime: Runtime,
+  accountId: string,
+  options?: { readonly historicalPre0247?: true },
+) {
+  if (options?.historicalPre0247 === true)
+    await admin.query("INSERT INTO users(user_id) VALUES ($1)", [accountId]);
+  else await makeOwnedOrdinaryAccountBirthFixture(runtime)(accountId);
   const prepared = await prepareIdentity(runtime)(accountId, `prepare-${accountId}`);
   await confirmWallet(runtime)(accountId, prepared.persona_id);
   return prepared.persona_id;

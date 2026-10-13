@@ -9,6 +9,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
@@ -36,7 +37,8 @@ const digest = async (value: string): Promise<string> =>
  * persona, one published song and four say-it-back exercises. Copied from the
  * lifecycle suite so both review the same database shape.
  */
-async function seedRetryFixture(admin: Client): Promise<void> {
+async function seedRetryFixture(admin: Client, runtime: Runtime): Promise<void> {
+  await makeOwnedOrdinaryAccountBirthFixture(runtime)("study-account");
   const lines = [
     "I can love you",
     "We keep moving forward",
@@ -47,7 +49,6 @@ async function seedRetryFixture(admin: Client): Promise<void> {
   const lineHashes = await Promise.all(lines.map(digest));
   await admin.query("SET session_replication_role = replica");
   try {
-    await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
     await admin.query(
       `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -294,7 +295,12 @@ suite("Study v2 ungraded spoken receipt", () => {
         },
         session: { lesson: { presentation_count: 0 } },
       });
-      expect(receipt.session.lesson.current?.session_item_id).toBe(sessionItemId);
+      expect(receipt.session.lesson.current).toEqual(session.lesson.current);
+      expect(receipt.session.progress).toMatchObject({
+        answered_exercise_count: 0,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
       expect(await attemptRows(admin, sessionItemId)).toHaveLength(0);
       const presentationsBefore = await admin.query(
         "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
@@ -363,6 +369,21 @@ suite("Study v2 ungraded spoken receipt", () => {
         session: { lesson: { presentation_count: 1 } },
       });
       expect(await attemptRows(admin, sessionItemId)).toHaveLength(1);
+      expect(graded.session.lesson.current?.session_item_id).not.toBe(sessionItemId);
+      expect(graded.session.lesson.current?.presented_at).toBe("2026-09-12T12:02:00.000Z");
+      expect(graded.session.progress).toMatchObject({
+        answered_exercise_count: 1,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
+            [sessionItemId],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
       const commands = await admin.query(
         `SELECT result_kind, count(*)::int AS n FROM study_spoken_answer_commands
           WHERE session_item_id=$1 GROUP BY result_kind ORDER BY result_kind`,
@@ -770,16 +791,37 @@ async function withSchema(
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+  let primaryFailure: unknown;
+  let failed = false;
   try {
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
-    await seedRetryFixture(admin);
     const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+    await seedRetryFixture(admin, runtime);
     const study = makeControlPlaneStudyV2Repository();
     await body({ admin, driver: makeDriver(runtime, study), scoped });
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
+  } catch (error) {
+    failed = true;
+    primaryFailure = error;
   }
+  const cleanupFailures: unknown[] = [];
+  try {
+    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  try {
+    await admin.end();
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  if (failed && cleanupFailures.length > 0)
+    throw new AggregateError(
+      [primaryFailure, ...cleanupFailures],
+      "Study fixture and cleanup failed",
+    );
+  if (failed) throw primaryFailure;
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(cleanupFailures, "Study fixture cleanup failed");
 }
 
 suite("Study v2 spoken reservation reclaim", () => {
@@ -1114,10 +1156,22 @@ suite("Study v2 session start concurrency", () => {
         idempotencyKey: "session-race-identical",
         requestHash: hex("session-race-identical"),
       };
-      const [first, second] = await Promise.all([
+      // Own both starts through settlement before the enclosing schema can be dropped.
+      // Promise.all would reject early while its peer still holds relation locks.
+      const starts = await Promise.allSettled([
         driver.startRaw({ ...identical, sessionId: "study-session-race-a" }),
         driver.startRaw({ ...identical, sessionId: "study-session-race-b" }),
       ]);
+      const failures = starts.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Concurrent Study starts failed");
+      const [firstResult, secondResult] = starts;
+      if (firstResult.status !== "fulfilled" || secondResult.status !== "fulfilled")
+        throw new Error("Concurrent Study starts did not settle successfully");
+      const first = firstResult.value;
+      const second = secondResult.value;
       expect(first.session_id).toBe(second.session_id);
       const stored = await admin.query(
         `SELECT count(*)::int AS n, min(session_id) AS session_id FROM study_sessions_v2

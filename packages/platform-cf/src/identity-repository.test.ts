@@ -127,9 +127,13 @@ describe("returning Privy session credential resolution", () => {
 });
 
 function fakeDb() {
-  const statements: Array<{ readonly label: string; readonly values: readonly unknown[] }> = [];
+  const statements: Array<{
+    readonly label: string;
+    readonly text: string;
+    readonly values: readonly unknown[];
+  }> = [];
   const execute: ControlPlaneDb["Service"]["execute"] = (statement) => {
-    statements.push({ label: statement.label, values: statement.values });
+    statements.push({ label: statement.label, text: statement.text, values: statement.values });
     return Effect.succeed({
       rows: [],
       rowCount: statement.label === "identity.public-handles.assert-current" ? 1 : 0,
@@ -143,17 +147,12 @@ function fakeDb() {
 }
 
 function registrationDb(
-  respond: (
-    label: string,
-    call: number,
-  ) => { readonly rows: readonly unknown[]; readonly rowCount: number },
+  respond: (label: string) => { readonly rows: readonly unknown[]; readonly rowCount: number },
 ) {
   const labels: string[] = [];
-  let call = 0;
   const execute: ControlPlaneDb["Service"]["execute"] = (statement) => {
     labels.push(statement.label);
-    const result = respond(statement.label, call);
-    call += 1;
+    const result = respond(statement.label);
     return Effect.succeed(result as { readonly rows: readonly never[]; readonly rowCount: number });
   };
   const db: ControlPlaneDb["Service"] = {
@@ -321,16 +320,21 @@ describe("identity public-handle maintenance", () => {
         .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
     );
     expect(fake.statements.map(({ label }) => label)).toEqual([
+      "identity.account-source.lock-topology",
       "identity.users.upsert-account",
+      "identity.account-source.provision",
       "identity.personas.sync-first-profile",
       "identity.public-handles.assert-current",
     ]);
-    expect(fake.statements[2]?.values).toEqual([
-      "handle_new",
-      "captainnew",
-      "captainnew.pirate",
-      "usr_captain",
-    ]);
+    expect(fake.statements[0]?.text).toBe("SELECT pg_advisory_xact_lock(83000003,1)");
+    expect(fake.statements[0]?.values).toEqual([]);
+    expect(
+      fake.statements.find(({ label }) => label === "identity.account-source.provision")?.values,
+    ).toEqual(["usr_captain"]);
+    expect(
+      fake.statements.find(({ label }) => label === "identity.public-handles.assert-current")
+        ?.values,
+    ).toEqual(["handle_new", "captainnew", "captainnew.pirate", "usr_captain"]);
   });
 
   test("rejects malformed or non-canonical account documents before writing", async () => {
@@ -374,17 +378,22 @@ describe("identity credential registration", () => {
       account: input.account,
     });
     expect(fake.labels).toEqual([
+      "identity.account-source.lock-topology",
       "identity.registration.lock-credential",
       "identity.registration.check-handle",
       "identity.registration.insert-user",
+      "identity.account-source.provision",
       "identity.registration.insert-credential",
     ]);
     expect(fake.labels.some((label) => label.includes("delete"))).toBe(false);
   });
 
   test("returns a tombstone without attempting account mutation", async () => {
-    const fake = registrationDb(() => ({
-      rows: [{ canonical_user_id: "user-old", status: "tombstoned", user_status: "deleted" }],
+    const fake = registrationDb((label) => ({
+      rows:
+        label === "identity.registration.lock-credential"
+          ? [{ canonical_user_id: "user-old", status: "tombstoned", user_status: "deleted" }]
+          : [],
       rowCount: 1,
     }));
     const result = await Effect.runPromise(
@@ -393,19 +402,25 @@ describe("identity credential registration", () => {
         .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
     );
     expect(result).toEqual({ kind: "tombstoned" });
-    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
+    expect(fake.labels).toEqual([
+      "identity.account-source.lock-topology",
+      "identity.registration.lock-credential",
+    ]);
   });
 
   test("returns the persisted account for an active existing credential", async () => {
-    const fake = registrationDb(() => ({
-      rows: [
-        {
-          canonical_user_id: "user-new",
-          status: "active",
-          user_status: "active",
-          account: input.account,
-        },
-      ],
+    const fake = registrationDb((label) => ({
+      rows:
+        label === "identity.registration.lock-credential"
+          ? [
+              {
+                canonical_user_id: "user-new",
+                status: "active",
+                user_status: "active",
+                account: input.account,
+              },
+            ]
+          : [],
       rowCount: 1,
     }));
     const result = await Effect.runPromise(
@@ -418,13 +433,21 @@ describe("identity credential registration", () => {
       canonicalUserId: "user-new",
       account: input.account,
     });
-    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
+    expect(fake.labels).toEqual([
+      "identity.account-source.lock-topology",
+      "identity.registration.lock-credential",
+    ]);
   });
 
   test("classifies an unrelated credential-id conflict for bounded regeneration", async () => {
-    const fake = registrationDb((label, call) => ({
+    const fake = registrationDb((label) => ({
       rows: [],
-      rowCount: label === "identity.registration.insert-credential" || call === 0 ? 0 : 1,
+      rowCount:
+        label === "identity.registration.insert-credential" ||
+        label === "identity.registration.lock-credential" ||
+        label === "identity.credentials.read"
+          ? 0
+          : 1,
     }));
     const result = await Effect.runPromise(
       makeControlPlaneIdentityRepository()
@@ -436,8 +459,11 @@ describe("identity credential registration", () => {
   });
 
   test("maps inconsistent persisted identity state to a closed identity-conflict failure", async () => {
-    const fake = registrationDb(() => ({
-      rows: [{ canonical_user_id: "user-old", status: "active", user_status: "deleted" }],
+    const fake = registrationDb((label) => ({
+      rows:
+        label === "identity.registration.lock-credential"
+          ? [{ canonical_user_id: "user-old", status: "active", user_status: "deleted" }]
+          : [],
       rowCount: 1,
     }));
     const failure = await Effect.runPromise(
@@ -451,6 +477,9 @@ describe("identity credential registration", () => {
       _tag: "IdentityRegistrationStoreFailure",
       reason: "identity-conflict",
     });
-    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
+    expect(fake.labels).toEqual([
+      "identity.account-source.lock-topology",
+      "identity.registration.lock-credential",
+    ]);
   });
 });

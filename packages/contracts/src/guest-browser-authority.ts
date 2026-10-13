@@ -41,6 +41,17 @@ export function guestInterfaceEndpoint<const E extends EndpointDefinition>(defin
     cacheControl: "private, no-store",
   } as const);
 }
+/** Source-admitted learning declaration. Managed serving and native readiness
+ * remain mandatory at transport; metadata alone creates no runtime authority.
+ * Accounting keeps guestInterfaceEndpoint's disabled default.
+ */
+export function guestLearningEndpoint<const E extends EndpointDefinition>(
+  definition: E,
+): E & Readonly<{ implementation?: "disabled"; cacheControl: "private, no-store" }> {
+  if (definition.implementation !== undefined)
+    throw new Error("Learning declarations must not override implementation metadata");
+  return endpoint({ ...definition, cacheControl: "private, no-store" } as const);
+}
 const command = { idempotency_key: GuestIdentifierV1 };
 const owner = { expected_owner_id: GuestIdentifierV1 };
 const selected = { headers: GuestProofLocatorHeadersV1 };
@@ -58,7 +69,7 @@ const distinctIntents = Schema.Array(GuestAttachmentIntentIdV1).check(
 );
 const control = { bodyEncoding: "json", maxBodyBytes: 4_096 } as const;
 
-export const GetGuestAuthorityV1 = guestInterfaceEndpoint({
+export const GetGuestAuthorityV1 = guestLearningEndpoint({
   method: "GET",
   path: "/guest/authority",
   auth: Auth.browserParticipation({ authority: "bootstrap", operation: "discover" }),
@@ -72,7 +83,7 @@ export const GetGuestAuthorityV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const IssueGuestBootstrapV1 = guestInterfaceEndpoint({
+export const IssueGuestBootstrapV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/bootstrap",
   auth: Auth.browserParticipation({ authority: "bootstrap", operation: "issue" }),
@@ -80,7 +91,7 @@ export const IssueGuestBootstrapV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const ConfirmGuestBootstrapV1 = guestInterfaceEndpoint({
+export const ConfirmGuestBootstrapV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/bootstrap/confirm",
   auth: Auth.browserParticipation({ authority: "bootstrap", operation: "confirm" }),
@@ -92,7 +103,7 @@ export const ConfirmGuestBootstrapV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const RenewGuestAuthorityV1 = guestInterfaceEndpoint({
+export const RenewGuestAuthorityV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/authority/renew",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "renew" }),
@@ -100,7 +111,7 @@ export const RenewGuestAuthorityV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const RotateGuestCredentialV1 = guestInterfaceEndpoint({
+export const RotateGuestCredentialV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/credentials/rotate",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "rotate" }),
@@ -108,7 +119,7 @@ export const RotateGuestCredentialV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const AcknowledgeGuestCredentialV1 = guestInterfaceEndpoint({
+export const AcknowledgeGuestCredentialV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/credentials/acknowledge",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "acknowledge" }),
@@ -124,7 +135,7 @@ export const AcknowledgeGuestCredentialV1 = guestInterfaceEndpoint({
   response: GuestAuthorityV1,
   errors: guestBrowserErrorsV1,
 });
-export const CleanupGuestBrowserProofV1 = guestInterfaceEndpoint({
+export const CleanupGuestBrowserProofV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/credentials/cleanup",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "cleanup" }),
@@ -144,7 +155,7 @@ export const CleanupGuestBrowserProofV1 = guestInterfaceEndpoint({
   }),
   errors: guestBrowserErrorsV1,
 });
-export const ListGuestParticipationsV1 = guestInterfaceEndpoint({
+export const ListGuestParticipationsV1 = guestLearningEndpoint({
   method: "GET",
   path: "/guest/participations",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "participations" }),
@@ -166,7 +177,7 @@ export const GuestLearningRetentionV1 = Schema.Struct({
   effective_at: GuestInstantV1,
 });
 export type GuestLearningRetentionV1 = Schema.Schema.Type<typeof GuestLearningRetentionV1>;
-export const SetGuestLearningRetentionV1 = guestInterfaceEndpoint({
+export const SetGuestLearningRetentionV1 = guestLearningEndpoint({
   method: "PUT",
   path: "/guest/learning-retention",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "retention" }),
@@ -192,7 +203,7 @@ export const GuestLearnerAudioDeletionV1 = Schema.Struct({
   ]),
 });
 export type GuestLearnerAudioDeletionV1 = Schema.Schema.Type<typeof GuestLearnerAudioDeletionV1>;
-export const DeleteGuestLearnerAudioV1 = guestInterfaceEndpoint({
+export const DeleteGuestLearnerAudioV1 = guestLearningEndpoint({
   method: "DELETE",
   path: "/guest/learner-audio",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "delete_audio" }),
@@ -232,7 +243,7 @@ export const GuestAttachmentPreparedV1 = Schema.Struct({
 });
 export type GuestAttachmentPreparedV1 = Schema.Schema.Type<typeof GuestAttachmentPreparedV1>;
 const intentPath = Schema.Struct({ id: GuestAttachmentIntentIdV1 });
-export const CreateGuestAttachmentIntentV1 = guestInterfaceEndpoint({
+export const CreateGuestAttachmentIntentV1 = guestLearningEndpoint({
   method: "POST",
   path: "/guest/attachment-intents",
   auth: Auth.browserParticipation({ authority: "recovery", operation: "create_attachment_intent" }),

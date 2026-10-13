@@ -1,202 +1,21 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
-const alias = {
-  "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
-    "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
+// Preserve the existing explicitly admitted private source overrides. Public
+// exact subpaths come from the same maintained manifests as the other pools.
+const privateAliases: Record<string, string> = {};
+for (const subpath of [
+  "media-processing-cloudflare",
+  "media-processing-store",
+  "namespace-ownership/hns-owner-service-binding",
+])
+  privateAliases[`@pirate/platform-cf/${subpath}`] = new URL(
+    `../../packages/platform-cf/src/${subpath}.ts`,
     import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/spaces-community-route-attachment-repository": new URL(
-    "../../packages/platform-cf/src/spaces-community-route-attachment-repository.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/spaces-operator-assignment-repository": new URL(
-    "../../packages/platform-cf/src/spaces-operator-assignment-repository.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/age-verification": new URL(
-    "../../packages/application/src/use-cases/age-verification.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/account-age-verification": new URL(
-    "../../packages/platform-cf/src/account-age-verification.ts",
-    import.meta.url,
-  ).pathname,
-
-  "@pirate/application/telegram-study": new URL(
-    "../../packages/application/src/telegram-study.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/telegram-linking": new URL(
-    "../../packages/application/src/telegram-linking.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/telegram": new URL(
-    "../../packages/application/src/telegram/index.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/telegram-oidc": new URL(
-    "../../packages/application/src/telegram-oidc.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/domain/telegram": new URL("../../packages/domain/src/telegram.ts", import.meta.url)
-    .pathname,
-  "@pirate/application/video/playback-access": new URL(
-    "../../packages/application/src/video/playback-access.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/video/poster-access": new URL(
-    "../../packages/application/src/video/poster-access.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/video-poster-stream": new URL(
-    "../../packages/platform-cf/src/video-poster-stream.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/hns-authority-diagnostics": new URL(
-    "../../packages/platform-cf/src/hns-authority-diagnostics.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/video/stage-facts": new URL(
-    "../../packages/application/src/video/stage-facts.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/post-slug": new URL(
-    "../../packages/application/src/post-slug.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/hns-edge-alerts": new URL(
-    "../../packages/application/src/use-cases/hns-edge-alerts.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/hns-edge-status": new URL(
-    "../../packages/application/src/use-cases/hns-edge-status.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/content/community-moderation-runtime": new URL(
-    "../../packages/application/src/use-cases/content/community-moderation-runtime.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-community-app-api": new URL(
-    "../../packages/application/src/hns-community-app-api.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-forwarder-v3": new URL(
-    "../../packages/application/src/hns-forwarder-v3.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-community-handle-gateway": new URL(
-    "../../packages/application/src/hns-community-handle-gateway.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-handle-host-api": new URL(
-    "../../packages/application/src/hns-handle-host-api.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-static-platform-app-gateway": new URL(
-    "../../packages/application/src/hns-static-platform-app-gateway.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/hns-host-serving": new URL(
-    "../../packages/application/src/hns-host-serving.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/namespace-ownership": new URL(
-    "../../packages/application/src/namespace-ownership/index.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/route-revalidation": new URL(
-    "../../packages/application/src/route-revalidation/index.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/verification": new URL(
-    "../../packages/application/src/verification/index.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/identity-account": new URL(
-    "../../packages/application/src/use-cases/identity-account.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/current-user": new URL(
-    "../../packages/application/src/use-cases/current-user.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/profile": new URL(
-    "../../packages/application/src/use-cases/profile.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/handles/sales": new URL(
-    "../../packages/application/src/use-cases/handles/sales.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/handles/spaces-sale-namespaces": new URL(
-    "../../packages/application/src/use-cases/handles/spaces-sale-namespaces.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/handles/spaces-registry": new URL(
-    "../../packages/application/src/use-cases/handles/spaces-registry.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/handles/platform-pirate-rename": new URL(
-    "../../packages/application/src/use-cases/handles/platform-pirate-rename.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/community/get-canonical-community-route": new URL(
-    "../../packages/application/src/use-cases/community/get-canonical-community-route.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/session-authentication": new URL(
-    "../../packages/application/src/use-cases/session-authentication.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/session-exchange": new URL(
-    "../../packages/application/src/use-cases/session-exchange.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/identity-registration-handler": new URL(
-    "../../packages/application/src/use-cases/identity-registration-handler.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
-    .pathname,
-  "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
-  "@pirate/domain/verification": new URL(
-    "../../packages/domain/src/verification/index.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
-  "@pirate/platform-cf/namespace-ownership-provider-registry": new URL(
-    "../../packages/platform-cf/src/namespace-ownership/provider-registry.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/hns-forwarder-v3": new URL(
-    "../../packages/platform-cf/src/hns-forwarder-v3.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/hns-forwarder-replay-store": new URL(
-    "../../packages/platform-cf/src/hns-forwarder-replay-store.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/cloudflare-access-jwt": new URL(
-    "../../packages/platform-cf/src/cloudflare-access-jwt.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/hns-community-app-api": new URL(
-    "../../packages/platform-cf/src/hns-community-app-api.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf/hns-handle-host-api": new URL(
-    "../../packages/platform-cf/src/hns-handle-host-api.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
-    .pathname,
-  "@pirate/platform-cf/registration-rate-limiter": new URL(
-    "../../packages/platform-cf/src/registration-rate-limiter.ts",
-    import.meta.url,
-  ).pathname,
-};
+  ).pathname;
+const alias = withWorkspacePublicAliases(privateAliases);
 
 export default defineConfig({
   plugins: [

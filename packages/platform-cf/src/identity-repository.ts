@@ -398,12 +398,24 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         .withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* transaction.execute({
+              label: "identity.account-source.lock-topology",
+              text: "SELECT pg_advisory_xact_lock(83000003,1)",
+              values: [],
+              readonly: false,
+            });
+            yield* transaction.execute({
               label: "identity.users.upsert-account",
               text: `INSERT INTO users (user_id, status, account, created_at)
                    VALUES ($1, 'active', $2::jsonb, $3::timestamptz)
                    ON CONFLICT (user_id) DO UPDATE
                      SET status = 'active', account = EXCLUDED.account`,
               values: [userId, encodedAccount, document.user.created_at],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "identity.account-source.provision",
+              text: "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+              values: [userId],
               readonly: false,
             });
             yield* transaction.execute({
@@ -526,6 +538,12 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       ControlPlaneError | IdentityRegistrationRace | IdentityRepositoryError
     > = db.withTransaction((transaction) =>
       Effect.gen(function* () {
+        yield* transaction.execute({
+          label: "identity.account-source.lock-topology",
+          text: "SELECT pg_advisory_xact_lock(83000003,1)",
+          values: [],
+          readonly: false,
+        });
         const existing = yield* transaction.execute<CredentialRow>({
           label: "identity.registration.lock-credential",
           text: `SELECT credential.canonical_user_id, credential.status,
@@ -569,6 +587,12 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
           return yield* Effect.fail(new IdentityRegistrationRace({ reason: "user_id" }));
         }
 
+        yield* transaction.execute({
+          label: "identity.account-source.provision",
+          text: "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+          values: [input.userId],
+          readonly: false,
+        });
         const insertedCredential = yield* transaction.execute({
           label: "identity.registration.insert-credential",
           text: `INSERT INTO identity_credentials (

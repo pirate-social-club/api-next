@@ -10,7 +10,10 @@ const digest = async (value: string): Promise<string> =>
  * One published general-rated English song in `study-community` with four accepted
  * say-it-back exercises, owned by `study-account` / `study-persona`.
  */
-export async function insertStudySongFixture(admin: Pick<Client, "query">) {
+export async function insertStudySongFixture(
+  admin: Pick<Client, "query">,
+  options?: { readonly accountAlreadyBorn?: true },
+) {
   const lines = [
     "I can love you",
     "We keep moving forward",
@@ -21,7 +24,10 @@ export async function insertStudySongFixture(admin: Pick<Client, "query">) {
   const lineHashes = await Promise.all(lines.map(digest));
   await admin.query("SET session_replication_role = replica");
   try {
-    await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
+    // Normal identity birth owns its first-persona reservation and immutable owner.
+    // This fixture adds its explicit non-first activity persona without replacing either.
+    if (options?.accountAlreadyBorn !== true)
+      await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
     await admin.query(
       `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id, created_at, updated_at

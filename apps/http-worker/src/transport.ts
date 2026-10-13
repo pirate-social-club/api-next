@@ -1,5 +1,9 @@
 import type { BrowserParticipationContext } from "@pirate/application/guest-participation-authority";
 import {
+  HNS_FORWARDER_HOST_HEADER,
+  isCanonicalHnsForwarderHost,
+} from "@pirate/application/use-cases/hns-browser-transport";
+import {
   type IdentityRegistrationHandlerServices,
   makeIdentityRegistrationHandler,
 } from "@pirate/application/use-cases/identity-registration-handler";
@@ -32,7 +36,13 @@ import {
   boundaryFailureDiagnostic,
 } from "./failure-diagnostics.ts";
 import { routeTable } from "./generated/route-table.ts";
+import { assertGuestBrowserRequestBoundary } from "./guest-browser-authentication.ts";
 import type { GuestBrowserAuthenticationAdapter } from "./guest-browser-cookie-policy.ts";
+import type { makeGuestBrowserRequestAuthenticator } from "./guest-browser-request-authentication.ts";
+import {
+  type GuestStudyServingComposition,
+  isGuestStudyServingName,
+} from "./guest-study-serving-composition.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
   type HnsCommunityAppApiComposition,
@@ -41,6 +51,7 @@ import {
   hasReservedHnsCommunityAppHeader,
   resolveHnsSolidHostAuthorityRequest,
   stripHnsCommunityAppPrivateHeaders,
+  type VerifiedHnsCommunityAppApiRequest,
   verifyHnsCommunityAppApiRequest,
 } from "./hns-community-app-api-transport.ts";
 import {
@@ -151,8 +162,12 @@ export interface HttpWorkerConfig {
 }
 
 export interface HttpWorkerOptions {
+  /** Managed admitted sixteen-operation graph; absent means unavailable. */
+  readonly guestStudy?: GuestStudyServingComposition;
   /** Frozen adapter port only. Interface-only endpoints remain disabled even when supplied. */
   readonly browserParticipation?: GuestBrowserAuthenticationAdapter;
+  /** Private source factory; adding it never enables a disabled definition. */
+  readonly browserParticipationRequest?: ReturnType<typeof makeGuestBrowserRequestAuthenticator>;
   readonly config?: HttpWorkerConfig;
   readonly hnsEdgeStatus?: HnsEdgeStatusComposition;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
@@ -191,6 +206,7 @@ type HttpWorkerEnv = {
     requestId: string;
     privateEndpointCacheControl?: boolean;
     hnsCommunityAppApiVerified?: boolean;
+    hnsCommunityAppApiAuthority?: VerifiedHnsCommunityAppApiRequest;
     hnsDynamicCorsOrigin?: string;
   };
 };
@@ -743,6 +759,24 @@ const PRIVATE_CACHE_ROUTES = routeTable
       ),
   );
 
+// Generated declarative policy matching is used only for the early refusal
+// boundary, never to turn an untrusted forwarder host into product authority.
+const BROWSER_PARTICIPATION_ROUTES = routeTable
+  .filter(({ endpoint }) => endpoint.auth.policy.kind === "browserParticipation")
+  .map((binding) => ({
+    binding,
+    path: new RegExp(
+      "^(?:/api)?" +
+        binding.path
+          .split("/")
+          .map((segment) =>
+            segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+          )
+          .join("/") +
+        "$",
+    ),
+  }));
+
 const json = (
   context: HttpContext,
   body: unknown,
@@ -790,6 +824,12 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  if (
+    options.guestStudy !== undefined &&
+    options.browserParticipationRequest !== undefined &&
+    options.guestStudy.requestAuthentication !== options.browserParticipationRequest
+  )
+    throw new Error("Guest request authentication composition differs");
   const hnsEdgeStatus = options.hnsEdgeStatus ?? disabledProductionHnsEdgeStatusComposition;
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
@@ -863,7 +903,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const pathname = new URL(context.req.raw.url).pathname;
     if (PRIVATE_CACHE_ROUTES.some((route) => route.test(pathname)))
       context.set("privateEndpointCacheControl", true);
-    await next();
+    try {
+      await next();
+    } finally {
+      // Includes successful middleware short-circuits, OPTIONS and path/body
+      // failures before route dispatch. Guest authority metadata is never cached.
+      if (context.get("privateEndpointCacheControl") === true)
+        context.header("cache-control", "private, no-store");
+    }
   });
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.raw.url);
@@ -936,8 +983,45 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     }
 
     if (hnsApiRequest && protectedHnsIngress && hnsCommunityAppApi.enabled) {
-      const verified = await verifyHnsCommunityAppApiRequest(context.req.raw, hnsCommunityAppApi);
+      const guest = BROWSER_PARTICIPATION_ROUTES.find(
+        ({ binding, path }) => binding.method === context.req.method && path.test(pathname),
+      )?.binding;
+      let beforeGuestBodyRead: (() => Promise<void>) | undefined;
+      if (guest !== undefined) {
+        // Disabled definitions refuse before HNS clones/hashes any body.
+        if (
+          guest.endpoint.implementation === "disabled" ||
+          !isGuestStudyServingName(guest.name) ||
+          options.guestStudy === undefined
+        )
+          throw new NotFound({ message: "Endpoint not found" });
+        const policy = guest.endpoint.auth.policy;
+        if (policy.kind !== "browserParticipation")
+          throw new InternalError({ message: "Invalid guest policy" });
+        const claimedHost = context.req.raw.headers.get(HNS_FORWARDER_HOST_HEADER);
+        if (claimedHost === null || !isCanonicalHnsForwarderHost(claimedHost))
+          throw new AuthError({ message: "Authentication failed" });
+        // This precheck can only refuse. Successful precheck mints no context.
+        // Actual MAC below must still authenticate this exact host and body.
+        assertGuestBrowserRequestBoundary({
+          policy,
+          requestHeaders: context.req.raw.headers,
+          trustedProductOrigin: `https://${claimedHost}`,
+        });
+        const guestRequest =
+          options.guestStudy?.requestAuthentication ?? options.browserParticipationRequest;
+        if (guestRequest === undefined)
+          throw new InternalError({ message: "Guest browser composition unavailable" });
+        beforeGuestBodyRead = () =>
+          guestRequest.precheckHnsBeforeBody({ request: context.req.raw, policy });
+      }
+      const verified = await verifyHnsCommunityAppApiRequest(
+        context.req.raw,
+        hnsCommunityAppApi,
+        beforeGuestBodyRead,
+      );
       context.set("hnsCommunityAppApiVerified", true);
+      context.set("hnsCommunityAppApiAuthority", verified);
       context.set("hnsDynamicCorsOrigin", verified.exact_origin);
       await next();
       return;
@@ -972,7 +1056,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
         if (
           binding.endpoint.implementation === "disabled" ||
-          binding.endpoint.auth.policy.kind === "browserParticipation"
+          (isGuestStudyServingName(binding.name) && options.guestStudy === undefined) ||
+          (binding.endpoint.auth.policy.kind === "browserParticipation" &&
+            (!isGuestStudyServingName(binding.name) || options.guestStudy === undefined))
         ) {
           throw new NotFound({ message: "Endpoint not found" });
         }
@@ -988,7 +1074,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             : undefined) ??
           (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
           (binding.name === "GetMyProfile" ? options.profile : undefined);
-        if (handler === undefined) {
+        if (
+          handler === undefined &&
+          !(options.guestStudy !== undefined && isGuestStudyServingName(binding.name))
+        ) {
           if (binding.name === "Health") {
             return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
           }
@@ -996,6 +1085,40 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         }
 
         try {
+          if (options.guestStudy !== undefined && isGuestStudyServingName(binding.name)) {
+            const verifiedHns = context.get("hnsCommunityAppApiAuthority");
+            const result = await options.guestStudy.handle({
+              name: binding.name,
+              request: context.req.raw,
+              ...(verifiedHns === undefined ? {} : { verifiedHns }),
+              decodeRequestLocations: async () => {
+                const decoded = await decodeInput(binding.endpoint, context, null);
+                const {
+                  principal: _principal,
+                  browserParticipation: _guest,
+                  ...locations
+                } = decoded;
+                const edgeClientIp = context.req.header("CF-Connecting-IP");
+                return {
+                  ...locations,
+                  signal: context.req.raw.signal,
+                  ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
+                };
+              },
+            });
+            const status = result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200;
+            validateHandlerStatus(binding.endpoint, status);
+            const headers = new Headers(result.responseHeaders);
+            headers.set("cache-control", "private, no-store");
+            return json(
+              context,
+              decodeResponse(binding.endpoint, result.body),
+              status,
+              true,
+              headers,
+            );
+          }
+          if (handler === undefined) throw new NotFound({ message: "Endpoint not found" });
           const authorization = context.req.header("authorization");
           const hasAuthorizationHeader = authorization !== undefined;
           const hasCredentials = authorization !== undefined && authorization.trim() !== "";

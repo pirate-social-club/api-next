@@ -265,6 +265,12 @@ export const makeControlPlaneKaraokeRepository = () => ({
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* transaction.execute({
+              label: "karaoke.audio.source-lock",
+              text: "SELECT lock_original_account_audio_source_private_v1($1)",
+              values: [input.accountId],
+              readonly: false,
+            });
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             const identity = yield* transaction.execute<Row>({
               label: "karaoke.session.identity",
@@ -372,6 +378,12 @@ export const makeControlPlaneKaraokeRepository = () => ({
                 input.artifactId,
                 input.createdAt,
               ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "karaoke.audio.capture",
+              text: "SELECT capture_account_karaoke_audio_private_v1($1,$2,$3)",
+              values: [input.accountId, input.sessionId, `audio_upload_${crypto.randomUUID()}`],
               readonly: false,
             });
             const inserted = yield* transaction.execute<Row>({
@@ -570,6 +582,24 @@ export const makeControlPlaneKaraokeRepository = () => ({
         const db = yield* ControlPlaneDb;
         yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* transaction.execute({
+              label: "karaoke.audio.source-lock",
+              text: "SELECT lock_original_account_audio_source_private_v1($1)",
+              values: [input.accountId],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "karaoke.audio.require-result",
+              text: "SELECT require_captured_karaoke_recording_result_private_v1($1,$2,$3,$4,$5::jsonb)",
+              values: [
+                input.accountId,
+                input.sessionId,
+                input.attemptId,
+                input.artifactId,
+                JSON.stringify(input.result),
+              ],
+              readonly: false,
+            });
             if (input.result.state === "stored") {
               yield* transaction.execute({
                 label: "karaoke.recording.artifact.insert",

@@ -2,6 +2,7 @@ import { Client } from "pg";
 import {
   freshSchemaPostgresTestSuites,
   noBaselinePostgresTestSuites,
+  postgresGeneralSuiteCostEstimates,
   reusablePostgresTestSuites,
 } from "./postgres-test-suite-manifest.ts";
 
@@ -109,7 +110,7 @@ export const postgresTestTimeoutMilliseconds = {
   general: 900_000,
 } as const;
 
-export const postgresGeneralShardCount = 4;
+export const postgresGeneralShardCount = 5;
 
 // Weight units approximate tenths of a second from the first baseline-reuse benchmark:
 // reusable suites pay once for installation, then once per reset and test; other suites
@@ -121,12 +122,19 @@ const independentTestWeight = 20;
 // Minimums capture suites whose first required-CI timing materially exceeded the category
 // estimate. New and ordinary suites continue to use the fixture-aware model above.
 const measuredMinimumWeights: Readonly<Record<string, number>> = {
+  // Required CI run38353040821/job115149539246 completed these suite groups
+  // before its unchanged900s deadline. Lower bounds are measured group wall
+  // time rounded up in100ms units; they balance files, never accept tests.
+  "packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts": 793,
+  "packages/platform-cf/src/data-registration-repository.pg.test.ts": 751,
+  "packages/platform-cf/src/gates-v2-community.pg.test.ts": 500,
+  "packages/platform-cf/src/guest-study-managed-readiness.pg.test.ts": 902,
   "packages/platform-cf/src/community-route-repository.pg.test.ts": 280,
-  "packages/platform-cf/src/content-repository.pg.test.ts": 510,
+  "packages/platform-cf/src/content-repository.pg.test.ts": 821,
   "packages/platform-cf/src/handle-sales-repository.pg.test.ts": 215,
   "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts": 272,
   "packages/platform-cf/src/postgres.pg.test.ts": 102,
-  "packages/platform-cf/src/text-submission-repository.pg.test.ts": 165,
+  "packages/platform-cf/src/text-submission-repository.pg.test.ts": 520,
   // This wrapper runs 33 workerd video tests. Required CI job 114727649879
   // measured 104.90 seconds, which its one Bun test did not represent.
   "packages/platform-cf/src/video-workflow-composed.pg.test.ts": 1_100,
@@ -227,7 +235,24 @@ export function postgresTestFileWeight(file: string, testCount: number): number 
   } else {
     throw new Error(`PostgreSQL test suite is not classified for shard weighting: ${file}`);
   }
+  const measured = postgresGeneralSuiteCostEstimates[file];
+  if (measured !== undefined) {
+    // A recorded whole-file estimate replaces its old category estimate rather
+    // than accumulating that estimator's unrelated overestimates. New source
+    // calls scale the observation upward; fewer calls retain its setup cost.
+    const sourceGrowth =
+      Math.max(normalizedTestCount, measured.sourceCallCount) / measured.sourceCallCount;
+    return Math.ceil((measured.milliseconds / 100) * sourceGrowth);
+  }
   return Math.max(estimatedWeight, measuredMinimumWeights[file] ?? 0);
+}
+
+/** Source-call estimate only: pgTest aliases select the same required native
+ * test API. Parametric expansions and setup/cleanup remain approximate, so
+ * recorded file costs replace the count model; all future shards still must pass.
+ */
+export function postgresTestSourceCallCount(source: string): number {
+  return source.match(/\b(?:test|pgTest)(?:\.skip)?\s*\(/gu)?.length ?? 0;
 }
 
 async function postgresTestWeights(
@@ -236,7 +261,7 @@ async function postgresTestWeights(
   const entries = await Promise.all(
     files.map(async (file) => {
       const source = await Bun.file(file).text();
-      const testCount = source.match(/\btest(?:\.skip)?\s*\(/gu)?.length ?? 0;
+      const testCount = postgresTestSourceCallCount(source);
       return [file, postgresTestFileWeight(file, testCount)] as const;
     }),
   );

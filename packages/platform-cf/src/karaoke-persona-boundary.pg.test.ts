@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository.ts";
 import { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -252,12 +253,12 @@ suite("Karaoke persona boundary", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const birth = makeOwnedOrdinaryAccountBirthFixture(runtime);
+      for (const accountId of ["karaoke-account", "karaoke-foreign-account", "karaoke-author"])
+        await birth(accountId);
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query(
-          `INSERT INTO users (user_id) VALUES
-             ('karaoke-account'), ('karaoke-foreign-account'), ('karaoke-author')`,
-        );
         await admin.query(
           `INSERT INTO communities (
              community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -284,7 +285,7 @@ suite("Karaoke persona boundary", () => {
                clock_timestamp()),
              ('karaoke-foreign-persona','karaoke-foreign-account','active',false,
                clock_timestamp(),NULL),
-             ('karaoke-author-persona','karaoke-author','active',true,clock_timestamp(),NULL)`,
+             ('karaoke-author-persona','karaoke-author','active',false,clock_timestamp(),NULL)`,
         );
         await admin.query(
           `INSERT INTO persona_community_bindings (
@@ -325,7 +326,6 @@ suite("Karaoke persona boundary", () => {
       }
 
       const repository = makeControlPlaneKaraokeRepository();
-      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
       const base = {
         accountId: "karaoke-account",
         artifactId: "karaoke-artifact-id",
@@ -447,9 +447,9 @@ suite("Karaoke persona boundary", () => {
       // same private practice, completion and replay. Its binding source is
       // the explicit preparation source, and no membership, follow, Post or
       // DATA operation appears.
+      await birth("karaoke-never-joined");
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query("INSERT INTO users (user_id) VALUES ('karaoke-never-joined')");
         await admin.query(
           `INSERT INTO personas (
              persona_id, account_id, status, is_first_persona, created_at, retired_at
@@ -571,9 +571,11 @@ suite("Karaoke persona boundary", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const birth = makeOwnedOrdinaryAccountBirthFixture(runtime);
+      for (const accountId of ["kmark-account", "kmark-author"]) await birth(accountId);
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query("INSERT INTO users (user_id) VALUES ('kmark-account'), ('kmark-author')");
         await admin.query(
           `INSERT INTO communities (
              community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -590,7 +592,7 @@ suite("Karaoke persona boundary", () => {
           `INSERT INTO personas (
              persona_id, account_id, status, is_first_persona, created_at, retired_at
            ) VALUES ('kmark-persona','kmark-account','active',false,clock_timestamp(),NULL),
-             ('kmark-author-persona','kmark-author','active',true,clock_timestamp(),NULL)`,
+             ('kmark-author-persona','kmark-author','active',false,clock_timestamp(),NULL)`,
         );
         await admin.query(
           `INSERT INTO persona_community_bindings (
@@ -628,7 +630,6 @@ suite("Karaoke persona boundary", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
-      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
       const readinessStore = makeControlPlaneKaraokeReadinessStore(runtime);
       const readiness = await readinessStore.get({
         communityId: "kmark-community",

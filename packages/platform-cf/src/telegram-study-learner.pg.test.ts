@@ -7,6 +7,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   insertStudySongFixture,
@@ -38,7 +39,12 @@ suite("restricted Telegram practice identity", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
-      await insertStudySongFixture(admin);
+      // The ordinary website comparison also needs genuine post249 account
+      // birth before its existing replicated content/persona seed.
+      await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scoped))(
+        "study-account",
+      );
+      await insertStudySongFixture(admin, { accountAlreadyBorn: true });
       await insertTelegramPracticeReadinessFixture(admin);
       // Everything below runs as a serving role holding only the documented grants: no
       // UPDATE or DELETE on the two reservation tables. A second role has no access to them.
@@ -116,6 +122,15 @@ suite("restricted Telegram practice identity", () => {
         if (typeof value !== "object" || value === null) throw new Error(`not issued: ${value}`);
         return value as TelegramStudyGrant;
       };
+      // Capture all genuine ordinary-account personas BEFORE any Telegram
+      // enrollment. Account birth's original first reservation is preserved;
+      // this song fixture adds its explicit active activity persona.
+      const websitePersonasBeforeEnrollment = (
+        await admin.query(
+          "SELECT to_jsonb(p) AS persona FROM personas p WHERE account_id='study-account' ORDER BY persona_id",
+        )
+      ).rows;
+      expect(websitePersonasBeforeEnrollment.length).toBeGreaterThan(0);
       await connectBot("study-community", "123");
 
       // Nothing is issued before /start or without the sender's own conversation lease.
@@ -128,7 +143,58 @@ suite("restricted Telegram practice identity", () => {
       expect(await count("telegram_restricted_learners")).toBe(0);
       expect(await count("account_minimum_age_attestations")).toBe(0);
 
+      const birthFunction = "provision_account_participation_owner_v1(text)";
+      // Portable schema exports deliberately omit ACLs, recreating PostgreSQL's
+      // default PUBLIC EXECUTE. Establish this owned fixture's exact denied
+      // capability before its real rollback/serving-only admission assertions.
+      // Native249 separately proves private installation; no live policy changes.
+      await admin.query(
+        `REVOKE EXECUTE ON FUNCTION ${birthFunction} FROM PUBLIC, ${servingRole}, ${websiteRole}`,
+      );
+      for (const role of [servingRole, websiteRole])
+        expect(
+          (
+            await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [
+              role,
+              birthFunction,
+            ])
+          ).rows,
+        ).toEqual([{ allowed: false }]);
+      const originalOwnerCount = await count("participation_owners");
+      // The owned fixture denies the helper before controlled birth admission.
+      // A denied owner provision must roll back user/first persona/learner birth.
+      await expect(first.learners.enroll(first.lease)).rejects.toMatchObject({
+        _tag: "TelegramFailure",
+        reason: "unavailable",
+      });
+      expect(await count("users")).toBe(1);
+      expect(await count("telegram_restricted_learners")).toBe(0);
+      expect(await count("participation_owners")).toBe(originalOwnerCount);
+      // Existing reviewed account-birth EXECUTE only; no owner row seed, raw
+      // guest core grant, PUBLIC grant or website/recovery privilege is added.
+      await admin.query(`GRANT EXECUTE ON FUNCTION ${birthFunction} TO ${servingRole}`);
+      expect(
+        (
+          await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed", [
+            websiteRole,
+            birthFunction,
+          ])
+        ).rows,
+      ).toEqual([{ allowed: false }]);
       const grant = restrictedGrant(await first.learners.enroll(first.lease));
+      const originalOwner = (
+        await admin.query(
+          "SELECT owner_id,kind,account_id,state FROM participation_owners WHERE account_id=$1",
+          [grant.accountId],
+        )
+      ).rows;
+      expect(originalOwner).toHaveLength(1);
+      expect(originalOwner[0]).toMatchObject({
+        kind: "account",
+        account_id: grant.accountId,
+        state: "empty",
+      });
+      expect(await count("participation_owners WHERE kind='guest'")).toBe(0);
       expect(grant).toMatchObject({ revision: 0, restricted: true });
       expect(grant.accountId).toMatch(/^usr_[0-9a-f]{32}$/u);
       expect(grant.accountId).not.toContain("555");
@@ -193,8 +259,19 @@ suite("restricted Telegram practice identity", () => {
       ).toBe(0);
 
       // Retries, later lessons and a reconnected ingress reuse the same identity.
+      // Existing identity replay/read does not require or lazily call birth.
+      await admin.query(`REVOKE EXECUTE ON FUNCTION ${birthFunction} FROM ${servingRole}`);
       expect(await first.learners.enroll(first.lease)).toEqual(grant);
       expect(await first.learners.resolve(first.sender)).toEqual(grant);
+      expect(
+        (
+          await admin.query(
+            "SELECT owner_id,kind,account_id,state FROM participation_owners WHERE account_id=$1",
+            [grant.accountId],
+          )
+        ).rows,
+      ).toEqual(originalOwner);
+      await admin.query(`GRANT EXECUTE ON FUNCTION ${birthFunction} TO ${servingRole}`);
       expect(await first.learners.resolve({ ...first.sender, epoch: "older" })).toBeNull();
       expect(await count("telegram_restricted_study_personas")).toBe(1);
 
@@ -228,7 +305,15 @@ suite("restricted Telegram practice identity", () => {
           )
         ).rows,
       ).toEqual([{ account_id: isolated.accountId, local_bot_id: "123" }]);
-      expect(await count("personas WHERE account_id='study-account'")).toBe(1);
+      // Isolated Telegram enrollment must not change ANY preexisting website
+      // persona ID/field, rather than assuming one historical raw-seeded row.
+      expect(
+        (
+          await admin.query(
+            "SELECT to_jsonb(p) AS persona FROM personas p WHERE account_id='study-account' ORDER BY persona_id",
+          )
+        ).rows,
+      ).toEqual(websitePersonasBeforeEnrollment);
       expect(await count("telegram_bot_grants")).toBe(0);
       // Unlinking later keeps the same local progress owner.
       await admin.query("DELETE FROM telegram_account_associations WHERE telegram_user_id='321'");
@@ -348,6 +433,19 @@ suite("restricted Telegram practice identity", () => {
       );
       const session = await start(study, "restricted-session");
       expect(session.items).toHaveLength(4);
+      // Actual shared Study commits against the SAME immutable original map;
+      // no owner was created from start/replay/recovery and no Guest account exists.
+      expect(
+        (
+          await admin.query(
+            "SELECT participation_owner_id,participation_owner_kind FROM study_sessions_v2 WHERE session_id=$1",
+            [session.session_id],
+          )
+        ).rows,
+      ).toEqual([
+        { participation_owner_id: originalOwner[0]?.owner_id, participation_owner_kind: "account" },
+      ]);
+      expect(await count("participation_owners WHERE account_id=$1", [grant.accountId])).toBe(1);
       expect(
         (
           await admin.query(

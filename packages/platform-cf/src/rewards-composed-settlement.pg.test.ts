@@ -54,6 +54,7 @@ import { makeMegapotCutoffCoordinator } from "./megapot-cutoff-coordinator.ts";
 import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   issueRewardClaimVerificationIntent,
@@ -171,6 +172,7 @@ suite("Composed current-policy Megapot settlement", () => {
       ]);
 
       const layer = makeDirectPostgresControlPlaneLayer(scoped);
+      const birthAccount = makeOwnedOrdinaryAccountBirthFixture(layer);
       const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
       const people = [
         "study",
@@ -185,7 +187,7 @@ suite("Composed current-policy Megapot settlement", () => {
       const personas = new Map<string, string>();
       for (const person of people) {
         const account = `winner-${person}`;
-        await admin.query("INSERT INTO users (user_id) VALUES ($1)", [account]);
+        await birthAccount(account);
         const prepared = await prepareIdentity(layer)(account, `prepare-${person}`);
         await confirmWallet(layer)(account, prepared.persona_id);
         personas.set(person, prepared.persona_id);

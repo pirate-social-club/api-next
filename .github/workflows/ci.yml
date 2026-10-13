@@ -344,7 +344,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     services:
       postgres:
         image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
@@ -444,7 +444,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
           CONTROL_PLANE_POSTGRES_TEST_PARTITION: audited-general-shard
           CONTROL_PLANE_POSTGRES_TEST_SHARD_INDEX: ${{ matrix.shard }}
-          CONTROL_PLANE_POSTGRES_TEST_SHARD_COUNT: "4"
+          CONTROL_PLANE_POSTGRES_TEST_SHARD_COUNT: "5"
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
           CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-media-persistence-suite-complete

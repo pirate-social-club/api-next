@@ -161,6 +161,22 @@ TRUNCATE TABLE
   "data_registration_signing_attempts",
   "decision_records",
   "evidence_receipts",
+  "guest_attachment_intents",
+  "guest_credentials",
+  "guest_empty_owner_aliases",
+  "guest_learning_preferences",
+  "guest_learning_schema_phase",
+  "guest_participation_operations",
+  "guest_resource_cost_policy_snapshots",
+  "guest_resource_edge_locks",
+  "guest_resource_global_lock",
+  "guest_resource_policy_snapshots",
+  "guest_resource_provider_calls",
+  "guest_resource_release_receipts",
+  "guest_resource_session_reservations",
+  "guest_secret_issuance_operations",
+  "guest_study_spoken_captures",
+  "guest_study_spoken_checkpoints",
   "handle_account_directory_bindings",
   "handle_account_offering_grant_counters",
   "handle_claim_actions",
@@ -231,7 +247,21 @@ TRUNCATE TABLE
   "karaoke_attempts",
   "karaoke_recordings",
   "karaoke_sessions",
+  "learner_audio_account_producer_captures",
+  "learner_audio_account_provider_calls",
+  "learner_audio_account_spoken_checkpoints",
   "learner_audio_artifacts",
+  "learner_audio_delete_batch_items",
+  "learner_audio_delete_batches",
+  "learner_audio_delete_commands",
+  "learner_audio_delete_sources",
+  "learner_audio_delete_target_artifacts",
+  "learner_audio_deleted_objects",
+  "learner_audio_object_names",
+  "learner_audio_owner_fences",
+  "learner_audio_upload_attempts",
+  "learner_audio_upload_cleanup_commands",
+  "learner_audio_upload_terminal_facts",
   "localization_lyric_line_lineage",
   "localization_lyric_line_occurrences",
   "localization_lyric_line_study_units",
@@ -336,6 +366,8 @@ TRUNCATE TABLE
   "operator_managed_root_registry_versions",
   "operator_managed_route_activations",
   "operator_managed_route_operations",
+  "participation_owner_clocks",
+  "participation_owners",
   "persona_activity_preparation_actions",
   "persona_activity_presentation_actions",
   "persona_activity_presentations",
@@ -489,6 +521,10 @@ SET LOCAL session_replication_role = replica;
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_audio_producer_history_v5');
+
+INSERT INTO guest_resource_global_lock VALUES (true);
 
 INSERT INTO handle_account_directory_bindings VALUES ('account_directory_v1', '1', 'c81ff980a56025b99dcd24d27979a302ca28f162ca7238dda354686082496d3d', 'active', '2000-01-01 00:00:00+00');
 

@@ -201,7 +201,7 @@ function harness() {
 }
 
 describe("interactive HNS community API transport", () => {
-  test("verified PUT and DELETE guest recovery aliases stay private and disabled, with Origin enforced", async () => {
+  test("disabled PUT and DELETE guest recovery aliases refuse before HNS authority and body work", async () => {
     const { worker, signed } = harness();
     for (const [path, method] of [
       ["/api/guest/learning-retention", "PUT"],
@@ -214,7 +214,9 @@ describe("interactive HNS community API transport", () => {
       expect(response.headers.has("set-cookie")).toBe(false);
       const wrongOrigin = await signed(path, method, "", "https://app.attacker");
       const denied = await worker.request(wrongOrigin.url, wrongOrigin.init);
-      expect(denied.status).toBe(401);
+      // The closed declaration refuses before Access, MAC and Origin checks.
+      expect(denied.status).toBe(404);
+      expect(denied.headers.has("set-cookie")).toBe(false);
       expect(denied.headers.get("cache-control")).toBe("private, no-store");
     }
   });

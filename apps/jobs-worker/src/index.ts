@@ -86,6 +86,7 @@ import {
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
+import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -126,6 +127,7 @@ export {
   type CommunityCatalogIntegrityJobOptions,
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
+export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {
@@ -740,6 +742,7 @@ export function makeJobsWorkerDeclarations(
   hnsRootHealthRenewalEnabled = false,
   avatars?: AvatarCleanupBuckets,
   spacesReconciliation?: SpacesReconciliationComposition,
+  guestStudyRecovery?: GuestStudyRecoveryComposition,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -763,7 +766,7 @@ export function makeJobsWorkerDeclarations(
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
   if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
   if (learnerAudio !== undefined) {
-    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio));
+    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery));
   }
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));

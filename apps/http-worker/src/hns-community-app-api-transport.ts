@@ -125,12 +125,16 @@ export type VerifiedHnsCommunityAppApiRequest = Readonly<{
 export async function verifyHnsCommunityAppApiRequest(
   request: HnsCommunityAppTransportRequest,
   composition: Extract<HnsCommunityAppApiComposition, { readonly enabled: true }>,
+  beforeBodyRead?: () => Promise<void>,
 ): Promise<VerifiedHnsCommunityAppApiRequest> {
   const parsed = new URL(request.url);
   if (!isHnsCommunityAppApiPath(parsed.pathname) || !allowedMethods.has(request.method)) {
     throw invalidRequest();
   }
   await authenticateAccess(request, composition);
+  // Refusal-only transport callback. It mints no HNS/browser authority and must
+  // finish before this verifier clones/allocates/hashes any request body.
+  await beforeBodyRead?.();
   const bodyBytes = await readBoundedRequestBody(
     request.clone(),
     HNS_COMMUNITY_APP_API_MAX_BODY_BYTES,

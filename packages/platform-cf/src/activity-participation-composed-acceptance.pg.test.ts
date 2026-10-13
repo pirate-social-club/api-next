@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { AUTHOR_ID } from "./activity-participation-composed.pg-fixture.ts";
 import {
   makeKaraokeDriver,
   makeStudyDriver,
@@ -23,6 +24,7 @@ import {
 } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
 import { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
 
@@ -73,19 +75,19 @@ suite("Composed never-joined activity and reward acceptance", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
-      await admin.query(
-        "INSERT INTO users (user_id) VALUES ('composed-unverified'),('composed-eligible')",
-      );
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const birth = makeOwnedOrdinaryAccountBirthFixture(runtime);
+      for (const accountId of ["composed-unverified", "composed-eligible", AUTHOR_ID])
+        await birth(accountId);
       await admin.query("SET session_replication_role = replica");
       try {
-        await seedActivitySong(admin);
+        await seedActivitySong(admin, { accountAlreadyBorn: true });
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
       const { offerId } = await seedFundedAssetBonus(admin);
       await seedVeryRewardEvidence(admin, "composed-eligible", "eligible");
 
-      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
       const study = makeControlPlaneStudyV2Repository();
       const prepare = prepareIdentity(runtime);
       const confirm = confirmWallet(runtime);
@@ -257,12 +259,17 @@ suite("Composed never-joined activity and reward acceptance", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
-      await admin.query(
-        "INSERT INTO users (user_id) VALUES ('composed-karaoke-unverified'),('composed-karaoke-eligible')",
-      );
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      const birth = makeOwnedOrdinaryAccountBirthFixture(runtime);
+      for (const accountId of [
+        "composed-karaoke-unverified",
+        "composed-karaoke-eligible",
+        AUTHOR_ID,
+      ])
+        await birth(accountId);
       await admin.query("SET session_replication_role = replica");
       try {
-        await seedActivitySong(admin);
+        await seedActivitySong(admin, { accountAlreadyBorn: true });
       } finally {
         await admin.query("SET session_replication_role = origin");
       }
@@ -277,7 +284,6 @@ suite("Composed never-joined activity and reward acceptance", () => {
       ).toEqual([{ accepts: true }]);
       await seedVeryRewardEvidence(admin, "composed-karaoke-eligible", "karaoke-eligible");
 
-      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
       const repository = makeControlPlaneKaraokeRepository();
       const prepare = prepareIdentity(runtime);
       const confirm = confirmWallet(runtime);

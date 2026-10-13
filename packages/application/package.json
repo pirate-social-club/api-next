@@ -125,6 +125,19 @@
     "./guest-study-ports": "./src/guest-study-ports.ts",
     "./guest-learning-resource-admission": "./src/guest-learning-resource-admission.ts",
     "./owner-learner-audio-deletion": "./src/owner-learner-audio-deletion.ts",
-    "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts"
+    "./owner-reward-credit-ports": "./src/owner-reward-credit-ports.ts",
+    "./guest-proof-verifier": "./src/guest-proof-verifier.ts",
+    "./learner-audio-capture": "./src/learner-audio-capture.ts",
+    "./learner-audio-io-outcome": "./src/learner-audio-io-outcome.ts",
+    "./owner-guest-atomic-start": "./src/owner-guest-atomic-start.ts",
+    "./owner-spoken-captured-continuation": "./src/owner-spoken-captured-continuation.ts",
+    "./owner-guest-spoken-checkpoint-recovery": "./src/owner-guest-spoken-checkpoint-recovery.ts",
+    "./owner-guest-spoken-closed-recovery": "./src/owner-guest-spoken-closed-recovery.ts",
+    "./owner-guest-study-service": "./src/owner-guest-study-service.ts",
+    "./account-study-capture-protocol": "./src/account-study-capture-protocol.ts",
+    "./controlled-account-spoken": "./src/controlled-account-spoken.ts",
+    "./use-cases/guest-learning": "./src/use-cases/guest-learning.ts",
+    "./use-cases/hns-browser-transport": "./src/use-cases/hns-browser-transport.ts",
+    "./use-cases/guest-learning-test-fixture": "./src/use-cases/guest-learning-test-fixture.ts"
   }
 }

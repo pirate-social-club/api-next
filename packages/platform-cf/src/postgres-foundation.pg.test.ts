@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { normalizePostgresBaselineDump } from "../../../scripts/postgres-baseline-normalization.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   readHnsResolverParityBehavior,
@@ -25,7 +26,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 14;
+const foundationTestCount = 15;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -910,6 +911,79 @@ async function expectPostgresFailure(
 }
 
 suite("Postgres 17 product and gates v2 foundation", () => {
+  test("portable function replay preserves actual target namespace, overload defaults, body and independent native frames", async () => {
+    await withSchema(async (admin, _connection, schema) => {
+      await admin.query(`CREATE FUNCTION portable_catalog_example(input_value integer DEFAULT 7)
+        RETURNS integer LANGUAGE sql SECURITY DEFINER
+        SET search_path TO pg_catalog, ${quoteIdentifier(schema)}, pg_temp
+        AS $$ SELECT input_value + 1 $$;
+        CREATE FUNCTION portable_catalog_example(input_value text DEFAULT 'sample'::text)
+        RETURNS text LANGUAGE sql SECURITY DEFINER
+        SET search_path TO pg_catalog, ${quoteIdentifier(schema)}, pg_temp
+        AS $$ SELECT pg_catalog.lower(input_value) $$;
+        CREATE FUNCTION portable_legacy_example() RETURNS integer LANGUAGE sql
+        SET search_path TO ${quoteIdentifier(schema)}, pg_temp AS $$ SELECT 3 $$;`);
+      const definitions = await admin.query<{ definition: string }>(
+        `SELECT pg_get_functiondef(p.oid) AS definition FROM pg_proc p
+          JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1
+          ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)`,
+        [schema],
+      );
+      expect(definitions.rows).toHaveLength(3);
+      const nativeCatalog = await catalogForSchema(admin, schema);
+      const target = schemaIdentifier();
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(target)}`);
+      const footprint = async (namespace: string) =>
+        (
+          await admin.query(
+            `SELECT p.proname,pg_get_function_arguments(p.oid) AS arguments,p.prosrc,p.prosecdef
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1
+          ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)`,
+            [namespace],
+          )
+        ).rows;
+      const originalFootprint = await footprint(schema);
+      try {
+        await admin.query(`SET search_path TO ${quoteIdentifier(target)}`);
+        // pg_get_functiondef splits the declaration before RETURNS; pg_dump
+        // puts that header on one line. Join only that header, leaving body bytes.
+        const dump = definitions.rows
+          .map(
+            ({ definition }) =>
+              definition
+                .replace(/\n[ \t]+RETURNS /u, " RETURNS ")
+                .replaceAll(`${schema}.`, "public.")
+                .trimEnd() + ";",
+          )
+          .join("\n");
+        await admin.query(normalizePostgresBaselineDump(dump));
+        expect(await admin.query("SHOW search_path").then((result) => result.rows)).toEqual([
+          { search_path: `${target}, pg_temp` },
+        ]);
+        expect(await catalogForSchema(admin, target)).toEqual(nativeCatalog);
+        expect(await footprint(target)).toEqual(originalFootprint);
+        expect(
+          (
+            await admin.query(`SELECT portable_catalog_example(7) AS integer_result,
+          portable_catalog_example('MiXeD'::text) AS text_result,portable_legacy_example() AS legacy_result`)
+          ).rows,
+        ).toEqual([{ integer_result: 8, text_result: "mixed", legacy_result: 3 }]);
+        expect(
+          (
+            await admin.query(`SELECT count(*)::int AS count FROM pg_proc p
+          JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pg_catalog'
+          AND p.proname IN ('portable_catalog_example','portable_legacy_example')`)
+          ).rows,
+        ).toEqual([{ count: 0 }]);
+      } finally {
+        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(target)} CASCADE`);
+      }
+    });
+    // Completion is credited only after both owned namespaces have drained.
+    completedTestCount += 1;
+  });
+
   test("matches migration and normalized-baseline catalogs and HNS resolver behavior", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
@@ -1337,6 +1411,22 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "data_registration_signing_attempts",
         "decision_records",
         "evidence_receipts",
+        "guest_attachment_intents",
+        "guest_credentials",
+        "guest_empty_owner_aliases",
+        "guest_learning_preferences",
+        "guest_learning_schema_phase",
+        "guest_participation_operations",
+        "guest_resource_cost_policy_snapshots",
+        "guest_resource_edge_locks",
+        "guest_resource_global_lock",
+        "guest_resource_policy_snapshots",
+        "guest_resource_provider_calls",
+        "guest_resource_release_receipts",
+        "guest_resource_session_reservations",
+        "guest_secret_issuance_operations",
+        "guest_study_spoken_captures",
+        "guest_study_spoken_checkpoints",
         "handle_account_directory_bindings",
         "handle_account_offering_grant_counters",
         "handle_claim_actions",
@@ -1407,7 +1497,21 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "karaoke_attempts",
         "karaoke_recordings",
         "karaoke_sessions",
+        "learner_audio_account_producer_captures",
+        "learner_audio_account_provider_calls",
+        "learner_audio_account_spoken_checkpoints",
         "learner_audio_artifacts",
+        "learner_audio_delete_batch_items",
+        "learner_audio_delete_batches",
+        "learner_audio_delete_commands",
+        "learner_audio_delete_sources",
+        "learner_audio_delete_target_artifacts",
+        "learner_audio_deleted_objects",
+        "learner_audio_object_names",
+        "learner_audio_owner_fences",
+        "learner_audio_upload_attempts",
+        "learner_audio_upload_cleanup_commands",
+        "learner_audio_upload_terminal_facts",
         "localization_lyric_line_lineage",
         "localization_lyric_line_occurrences",
         "localization_lyric_line_study_units",
@@ -1512,6 +1616,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "operator_managed_root_registry_versions",
         "operator_managed_route_activations",
         "operator_managed_route_operations",
+        "participation_owner_clocks",
+        "participation_owners",
         "persona_activity_preparation_actions",
         "persona_activity_presentation_actions",
         "persona_activity_presentations",

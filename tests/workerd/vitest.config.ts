@@ -2,10 +2,11 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import { unstable_readConfig } from "wrangler";
 import { rewardsPlatformAliases } from "../rewards-platform-aliases.ts";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
-const alias = {
+const alias = withWorkspacePublicAliases({
   ...rewardsPlatformAliases,
   "@pirate/platform-cf/hns-active-lease-renewal-repository": new URL(
     "../../packages/platform-cf/src/hns-active-lease-renewal-repository.ts",
@@ -220,7 +221,7 @@ const alias = {
     "../../packages/verifier-response-contract/src/index.ts",
     import.meta.url,
   ).pathname,
-};
+});
 
 const productionJobsConfiguration = unstable_readConfig(
   {

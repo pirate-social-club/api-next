@@ -1,7 +1,8 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 
-const alias = {
+const alias = withWorkspacePublicAliases({
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
@@ -52,7 +53,7 @@ const alias = {
     "../../packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts",
     import.meta.url,
   ).pathname,
-};
+});
 
 export default defineConfig({
   plugins: [

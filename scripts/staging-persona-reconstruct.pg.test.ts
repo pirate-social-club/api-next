@@ -3,7 +3,6 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { aggregateKaraokeSession } from "../packages/application/src/karaoke-runtime/scoring";
 import type { KaraokeSessionAuthority } from "../packages/application/src/karaoke-service";
-import { makeControlPlaneKaraokeRepository } from "../packages/platform-cf/src/karaoke-repository";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres";
 import { runPostgresMigrations } from "./postgres-migrations";
 import {
@@ -17,7 +16,12 @@ import { reconstructStagingInTransaction } from "./staging-persona-reconstruct";
 import { localRecoveryTestUrl } from "./staging-persona-recovery-test-target";
 import { fingerprintRehearsalData } from "./staging-persona-rehearsal-inventory";
 import {
+  HISTORICAL_RESET_KARAOKE_SOURCE,
+  makeHistoricalResetKaraokeRepository119,
+} from "./staging-persona-reset-karaoke-release119.pg-fixture.ts";
+import {
   loadStagingResetArtifacts,
+  STAGING_RESET_RELEASE,
   validateStagingResetArtifacts,
 } from "./staging-persona-reset-plan";
 import { assertInplaceSchemaAuthority } from "./staging-persona-schema-authority";
@@ -119,7 +123,8 @@ suite("composed reset transaction on disposable PostgreSQL 17", () => {
     await fixture(async (admin, url) => {
       await admin.query(artifacts.baseline);
       await admin.query("INSERT INTO users (user_id) VALUES ('reset-karaoke-account')");
-      const repository = makeControlPlaneKaraokeRepository();
+      expect(STAGING_RESET_RELEASE.sourceSha).toBe(HISTORICAL_RESET_KARAOKE_SOURCE);
+      const repository = makeHistoricalResetKaraokeRepository119();
       const layer = makeDirectPostgresControlPlaneLayer(url);
       const authority: KaraokeSessionAuthority = {
         accountId: "reset-karaoke-account",

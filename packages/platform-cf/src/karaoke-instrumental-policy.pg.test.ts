@@ -23,6 +23,7 @@ import {
   qualificationCounts,
   withPolicyDatabase,
 } from "./karaoke-instrumental-policy.pg-fixture.ts";
+import { makeHistoricalInstrumentalKaraokeRepository592 } from "./karaoke-instrumental-policy-pr592.pg-fixture.ts";
 import { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import {
@@ -41,15 +42,19 @@ suite("Prospective instrumental Karaoke qualification", () => {
   test("guards the registry transition and preserves historical policy, session and funded-leg pins", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     await withPolicyDatabase(connectionString, true, async ({ admin, scoped, runtime }) => {
-      const migrations = await loadPostgresMigrations();
+      // This historical transition owns the genuine source prefix through0247.
+      // Later captured-producer migrations have their own current regressions.
+      const migrations = (await loadPostgresMigrations()).filter(
+        ({ version }) => version <= migrationVersion,
+      );
       const migration = migrations.find(({ version }) => version === migrationVersion);
       if (!migration) throw new Error("policy migration missing");
       await assertTransitionGuards(admin, migration.sql);
       const account = "policy-history";
-      const persona = await prepareSinger(admin, runtime, account);
+      const persona = await prepareSinger(admin, runtime, account, { historicalPre0247: true });
       const driver = makeKaraokeDriver(
         runtime,
-        makeControlPlaneKaraokeRepository(),
+        makeHistoricalInstrumentalKaraokeRepository592(),
         makeComposedActivityTimes(Date.now() - 10000).karaoke,
       );
       const historicalInstrumental = await driver.reserve(account, persona, "old-instrumental");

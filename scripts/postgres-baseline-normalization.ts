@@ -3,12 +3,50 @@ export function normalizePostgresBaselineDump(dump: string): string {
   const normalized: string[] = [];
   let dollarDelimiter: string | undefined;
   let functionHeader = false;
+  let functionDeclaration: Readonly<{ name: string; arguments: string }> | undefined;
+  let catalogFirstFunction: Readonly<{ name: string; arguments: string }> | undefined;
+  const sqlLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+  const catalogFirstAlter = (
+    declaration: Readonly<{ name: string; arguments: string }>,
+  ): string => {
+    // pg_dump's declaration arguments are pg_get_function_arguments output,
+    // including defaults. Select that exact overload in the unchanged target
+    // namespace, then ALTER with its actual identity arguments (no defaults).
+    const name = sqlLiteral(declaration.name);
+    const argumentsLiteral = sqlLiteral(
+      declaration.arguments.replaceAll(/"public"\.|\bpublic\./gu, ""),
+    );
+    let delimiter = "$baseline_function_path$";
+    while (name.includes(delimiter) || argumentsLiteral.includes(delimiter))
+      delimiter = delimiter.replace("$", "$_");
+    return [
+      `DO ${delimiter}`,
+      "DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;",
+      "BEGIN",
+      "  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments",
+      "    INTO STRICT target_function",
+      "    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace",
+      `    WHERE n.nspname=target_schema AND p.proname=${name}`,
+      `      AND pg_catalog.pg_get_function_arguments(p.oid)=${argumentsLiteral};`,
+      "  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',",
+      "    target_schema,target_function.proname,target_function.identity_arguments,target_schema);",
+      "END",
+      `${delimiter};`,
+    ].join("\n");
+  };
 
   for (const line of lines) {
     const topLevel = dollarDelimiter === undefined;
     const trimmed = line.trim();
     if (topLevel && /^CREATE (?:OR REPLACE )?FUNCTION\b/iu.test(trimmed)) {
       functionHeader = true;
+      const declaration = trimmed.match(
+        /^CREATE (?:OR REPLACE )?FUNCTION (?:public\.|"public"\.)?([a-z_][a-z0-9_]*)\((.*)\) RETURNS /u,
+      );
+      functionDeclaration =
+        declaration?.[1] === undefined || declaration[2] === undefined
+          ? undefined
+          : { name: declaration[1], arguments: declaration[2] };
     }
     // pg_dump emits function-local configuration before the dollar-quoted
     // body. Preserve configured search paths without baking the generator's
@@ -18,6 +56,17 @@ export function normalizePostgresBaselineDump(dump: string): string {
       topLevel && functionHeader && /^SET search_path (?:TO|=) /u.test(trimmed)
         ? line.replace(trimmed, "SET search_path FROM CURRENT")
         : undefined;
+    if (
+      portableFunctionSearchPath !== undefined &&
+      /^SET search_path (?:TO|=) 'pg_catalog'(?:,|$)/u.test(trimmed)
+    ) {
+      if (
+        functionDeclaration === undefined ||
+        !/^SET search_path (?:TO|=) 'pg_catalog', '[^']+', 'pg_temp'$/u.test(trimmed)
+      )
+        throw new Error("Unsupported catalog-first portable function declaration");
+      catalogFirstFunction = functionDeclaration;
+    }
     if (
       topLevel &&
       (trimmed.startsWith("--") ||
@@ -40,6 +89,10 @@ export function normalizePostgresBaselineDump(dump: string): string {
         .replaceAll(
           /\(\(octet_length\(upstream_session_ref\) >= 1\) AND \(octet_length\(upstream_session_ref\) <= 16384\)\)/g,
           "(octet_length(upstream_session_ref) BETWEEN 1 AND 16384)",
+        )
+        .replaceAll(
+          "(((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20)",
+          "((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer BETWEEN 0 AND 20",
         )
         .replaceAll(
           "CHECK ((((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint)) AND",
@@ -85,7 +138,15 @@ export function normalizePostgresBaselineDump(dump: string): string {
     } else if ((line.split(dollarDelimiter).length - 1) % 2 === 1) {
       dollarDelimiter = undefined;
     }
+    if (delimiter !== undefined && dollarDelimiter === undefined) {
+      if (catalogFirstFunction !== undefined)
+        normalized.push(catalogFirstAlter(catalogFirstFunction));
+      catalogFirstFunction = undefined;
+      functionDeclaration = undefined;
+    }
   }
+  if (catalogFirstFunction !== undefined)
+    throw new Error("Unclosed catalog-first portable function body");
 
   const body = normalized
     .join("\n")

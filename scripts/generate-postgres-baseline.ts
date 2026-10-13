@@ -18,6 +18,8 @@ const localPassword = "postgres";
 const migrationsDirectory = new URL("../db/postgres/migrations/", import.meta.url);
 const baselineSeedTables = [
   "activity_registry",
+  "guest_learning_schema_phase",
+  "guest_resource_global_lock",
   "handle_account_directory_bindings",
   "handle_issuance_driver_revisions",
   "handle_pricing_revisions",

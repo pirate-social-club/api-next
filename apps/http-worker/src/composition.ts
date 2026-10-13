@@ -91,6 +91,8 @@ import {
   parseSponsoredSendConfig,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
+import { makeControlledAccountSpokenComposition } from "@pirate/platform-cf/controlled-account-spoken-composition";
+import { makeControlledAccountStudyV2Store } from "@pirate/platform-cf/controlled-account-study-store";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
@@ -212,7 +214,6 @@ import { makeControlPlaneStudyLanguageProfileStore } from "@pirate/platform-cf/s
 import { makeStudyProfileCoverageStore } from "@pirate/platform-cf/study-profile-coverage-repository";
 import type { StudyAudioBucket, StudyBatchFetch } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyTranslationPolicyResolver } from "@pirate/platform-cf/study-translation-repository";
-import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import {
   makeTelegramLinkServices,
   type TelegramLinkBindings,
@@ -264,6 +265,11 @@ import { makeDanceAttemptHandlers } from "./dance-attempt-handlers.ts";
 import { makeProductionDanceAttemptServices } from "./dance-attempt-production-composition.ts";
 import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
+import {
+  type GuestStudyManagedBindings,
+  makeDefaultGuestStudyManagedRuntime,
+} from "./guest-study-managed-bindings.ts";
+import { makeGuestStudyServingComposition } from "./guest-study-serving-composition.ts";
 import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
@@ -329,9 +335,13 @@ export interface HttpWorkerBindings
     SongPlaybackBindings,
     TelegramBindings,
     TelegramLinkBindings,
-    SpacesRuntimeBindings {
+    SpacesRuntimeBindings,
+    GuestStudyManagedBindings {
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
+  /** Reviewed nonproduction release only; absent keeps all Guest serving disabled. */
+  readonly GUEST_STUDY_SERVING_ENABLED?: string;
+  readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
   readonly STUDY_GENERATION_ENABLED?: string;
   readonly STUDY_PROFILE_COVERAGE_ENABLED?: string;
   readonly STUDY_SPOKEN_RERECORD_ENABLED?: string;
@@ -1478,18 +1488,27 @@ export async function createProductionHttpWorker(
     },
   });
   const studySpokenServices = makeProductionStudySpokenServices(bindings, dependencies);
+  const capturedStudy =
+    studySpokenServices === undefined
+      ? undefined
+      : makeControlledAccountSpokenComposition(
+          controlPlane,
+          studySpokenServices.bucket,
+          studySpokenServices.transcriber,
+          bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
+          (task) => {
+            workerBackground.defer(() => task);
+          },
+        );
+  // Nonspoken ordinary Study also keeps the controlled source preflight even
+  // when no archive binding exists. No plain producer or archive fallback.
+  const controlledStudyStore =
+    capturedStudy?.store ?? makeControlledAccountStudyV2Store(controlPlane).ordinary;
   const studyV2Handlers = makeStudyV2Handlers({
     clock: { now: Effect.sync(() => Date.now()) },
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
-    store: makeControlPlaneStudyV2Store(controlPlane),
-    ...(studySpokenServices === undefined
-      ? {}
-      : {
-          spoken: {
-            ...studySpokenServices,
-            rerecordEnabled: bindings.STUDY_SPOKEN_RERECORD_ENABLED === "true",
-          },
-        }),
+    store: controlledStudyStore,
+    ...(capturedStudy === undefined ? {} : { controlledSpoken: capturedStudy.spoken }),
   });
   const studyGenerationHandlers = (() => {
     const apiKey = bindings.OPENROUTER_API_KEY;
@@ -1810,7 +1829,27 @@ export async function createProductionHttpWorker(
     avatarBindings ? makeAvatarStorage(avatarBindings) : null,
     avatarAuthoring,
   );
+  const managedGuestStudy = makeDefaultGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
+  const guestStudy = await makeGuestStudyServingComposition({
+    ...(bindings.LEARNER_AUDIO === undefined
+      ? {}
+      : { workerLearnerAudioBinding: bindings.LEARNER_AUDIO }),
+    environment: config.API_NEXT_ENV,
+    ...(bindings.GUEST_STUDY_SERVING_ENABLED === undefined
+      ? {}
+      : { enabledBinding: bindings.GUEST_STUDY_SERVING_ENABLED }),
+    ...(bindings.GUEST_STUDY_RUNTIME_CONFIGURATION === undefined
+      ? {}
+      : { configurationBinding: bindings.GUEST_STUDY_RUNTIME_CONFIGURATION }),
+    ...(managedGuestStudy === null ? {} : { managed: managedGuestStudy }),
+    accountVerifier: tokenVerifier,
+    ordinarySessionScope: sessionCrypto.defaultScope,
+    ...(config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN === ""
+      ? {}
+      : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
+  });
   const worker = createHttpWorker({
+    ...(guestStudy === null ? {} : { guestStudy }),
     ...spacesRuntime,
     config: {
       corsOrigin: config.CORS_ORIGIN,

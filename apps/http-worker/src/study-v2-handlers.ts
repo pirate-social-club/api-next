@@ -1,5 +1,6 @@
 import {
   Clock,
+  type ControlledAccountStudySpokenService,
   IdGen,
   makeStudyV2Service,
   type StudyAudioArchive,
@@ -64,6 +65,7 @@ export const makeStudyV2Handlers = (services: {
   readonly clock: Clock["Service"];
   readonly ids: IdGen["Service"];
   readonly store: StudyV2Store;
+  readonly controlledSpoken?: ControlledAccountStudySpokenService;
   readonly spoken?: Readonly<{
     readonly archive: StudyAudioArchive;
     readonly transcriber: StudyBatchTranscriber;
@@ -142,7 +144,7 @@ export const makeStudyV2Handlers = (services: {
           return Promise.reject(new BadRequest({ message: "Study audio duration is required" }));
         }
         return run(
-          study.submitSpokenAnswer({
+          (services.controlledSpoken ?? study).submitSpokenAnswer({
             accountId: accountId(request.principal),
             attemptNumber,
             audio: request.body,

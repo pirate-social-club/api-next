@@ -2,10 +2,18 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  continueStudyLessonMutation,
+  evaluateStudyChoice,
+  evaluateStudySpokenAttempt,
+  projectStudyProgressFacts,
+  projectStudySpokenFeedback,
+  projectStudySpokenResultMetadata,
   StudyV2CommandRejected,
   type StudyV2Store,
   StudyV2StoreFailed,
+  studyPresentationCap,
 } from "@pirate/application";
+import type { LearnerAudioUploadCapture } from "@pirate/application/learner-audio-capture";
 import {
   StudyAnswerResultV2,
   StudyAvailabilityV2,
@@ -13,14 +21,11 @@ import {
   StudySessionV2,
   StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
-import {
-  gradeExactChoiceV2,
-  scheduleStudyReviewV1,
-  studyTranscriptReviewGrade,
-} from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
 import { recordQualificationProjections } from "./activity-qualification-repository.ts";
 import { lockLearnerAudioAccount } from "./learner-audio-account-lock.ts";
+import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
+import { projectStudySessionItemV2 } from "./study-v2-item-projection.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -187,13 +192,11 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
         timezone: text(row, "timezone"),
         status: text(row, "status"),
         items,
-        progress: {
-          qualifying_exercise_count: count,
-          answered_exercise_count: answered,
-          first_pass_correct: correct,
-          required_correct: Math.max(1, Math.ceil((7 * count) / 10)),
-          score_bps: answered === count ? Math.floor((10_000 * correct) / count) : null,
-        },
+        progress: projectStudyProgressFacts({
+          totalCards: count,
+          answeredSpentCards: answered,
+          firstPassCorrectCards: correct,
+        }),
         lesson: {
           current:
             row.current_session_item_id === null
@@ -207,7 +210,7 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
           resolved_card_count: integer(lesson, "resolved_count"),
           total_card_count: count,
           presentation_count: integer(row, "presentation_count"),
-          presentation_cap: Math.min(20, 3 * count),
+          presentation_cap: studyPresentationCap(count),
           completion_reason: nullableText(row, "completion_reason"),
         },
         created_at: iso(row.created_at),
@@ -288,40 +291,6 @@ const exerciseRows = (
       input.accountId,
     ],
     readonly: false,
-  });
-
-const itemFromExercise = (row: Row, sessionId: string, ordinal: number): StudySessionItemV2 =>
-  decode(StudySessionItemV2, {
-    object: "study_session_item_v2",
-    session_item_id: `${sessionId}_item_${ordinal + 1}`,
-    ordinal,
-    exercise_review_key: text(row, "exercise_review_key"),
-    exercise_version_id: text(row, "exercise_version_id"),
-    exercise_type: text(row, "exercise_type"),
-    exercise_variant: text(row, "exercise_variant"),
-    line: {
-      post_id: text(row, "post_id"),
-      audio_revision: integer(row, "audio_revision"),
-      lyrics_revision: integer(row, "lyrics_revision"),
-      lyric_line_id: text(row, "lyric_line_id"),
-      study_unit_id: text(row, "study_unit_id"),
-      line_version: integer(row, "line_version"),
-      line_source_hash: text(row, "line_source_hash"),
-    },
-    languages: {
-      learning_language: text(row, "learning_language"),
-      target_language: nullableText(row, "target_language"),
-    },
-    learner_band: nullableText(row, "learner_band"),
-    language_profile_revision:
-      row.language_profile_revision === null ? null : integer(row, "language_profile_revision"),
-    presentation: json(row.presentation),
-    answer_visibility: text(row, "answer_visibility"),
-    feedback_release: text(row, "feedback_release"),
-    grader_policy_revision: text(row, "grader_policy_revision"),
-    feedback_policy_revision: text(row, "feedback_policy_revision"),
-    quality_policy_revision: text(row, "quality_policy_revision"),
-    maximum_attempts: 3,
   });
 
 const studyAudioObjectRef = (attemptId: string, audioDigest: string): string =>
@@ -430,7 +399,46 @@ export interface StudyV2Admission {
     },
   ) => Effect.Effect<void, StudyV2CommandRejected | ControlPlaneError>;
 }
-export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) => ({
+const capturedAudioPreflight = Effect.fn("studyV2.capturedAudioPreflight")(function* (
+  tx: ControlPlaneTransaction,
+  accountId: string,
+) {
+  yield* tx.execute({
+    label: "study-v2.audio.source-lock",
+    text: "SELECT lock_original_account_audio_source_private_v1($1)",
+    values: [accountId],
+    readonly: false,
+  });
+});
+const captureReservedAudio = Effect.fn("studyV2.captureReservedAudio")(function* (
+  tx: ControlPlaneTransaction,
+  accountId: string,
+  commandId: string,
+  leaseToken: string,
+) {
+  const result = yield* tx.execute<unknown>({
+    label: "study-v2.audio.capture",
+    text: "SELECT capture_account_study_audio_private_v1($1,$2,$3,$4) AS result",
+    values: [accountId, commandId, leaseToken, `audio_upload_${crypto.randomUUID()}`],
+    readonly: false,
+  });
+  return yield* Effect.try({
+    try: () => {
+      if (result.rows.length !== 1) throw new Error();
+      const envelope = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }), {
+        onExcessProperty: "error",
+      })(result.rows[0]);
+      return Schema.decodeUnknownSync(LearnerAudioUploadCaptureSchema, {
+        onExcessProperty: "error",
+      })(envelope.result);
+    },
+    catch: () => failed("invalid-row"),
+  });
+});
+export const makeControlPlaneStudyV2Repository = (
+  admission?: StudyV2Admission,
+  controlledAudio = false,
+) => ({
   getAvailability: (input: Parameters<StudyV2Store["getAvailability"]>[0]) =>
     mapErrors(
       Effect.gen(function* () {
@@ -542,6 +550,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             // Identical concurrent starts serialize here: the loser then finds
             // the winner's committed row in the replay read below and returns
@@ -633,7 +642,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             });
             if (exercises.rows.length < 4) return yield* rejected("insufficient-exercises");
             const items = exercises.rows.map((row, ordinal) =>
-              itemFromExercise(row, input.sessionId, ordinal),
+              projectStudySessionItemV2(row, input.sessionId, ordinal),
             );
             const first = exercises.rows[0] as Row;
             yield* transaction.execute({
@@ -863,6 +872,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             // A committed command replays by exact account, payload and
@@ -962,7 +972,17 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (replayRow !== undefined) {
               const reclaimed = yield* reclaimSpokenAnswer(transaction, replayRow, input);
               if (reclaimed === null) return yield* rejected("command-in-flight");
-              return reclaimed;
+              return controlledAudio
+                ? {
+                    ...reclaimed,
+                    capture: yield* captureReservedAudio(
+                      transaction,
+                      input.accountId,
+                      reclaimed.commandId,
+                      reclaimed.leaseToken,
+                    ),
+                  }
+                : reclaimed;
             }
             const inserted = yield* transaction.execute<Row>({
               label: "study-v2.spoken.reserve-insert",
@@ -1023,6 +1043,16 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                 leaseToken: input.leaseToken,
                 attemptId: input.attemptId,
                 artifactId: input.artifactId,
+                ...(controlledAudio
+                  ? {
+                      capture: yield* captureReservedAudio(
+                        transaction,
+                        input.accountId,
+                        input.commandId,
+                        input.leaseToken,
+                      ),
+                    }
+                  : {}),
               };
             }
             const existing = yield* transaction.execute<Row>({
@@ -1064,7 +1094,17 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             }
             const reclaimed = yield* reclaimSpokenAnswer(transaction, row, input);
             if (reclaimed === null) return yield* rejected("command-in-flight");
-            return reclaimed;
+            return controlledAudio
+              ? {
+                  ...reclaimed,
+                  capture: yield* captureReservedAudio(
+                    transaction,
+                    input.accountId,
+                    reclaimed.commandId,
+                    reclaimed.leaseToken,
+                  ),
+                }
+              : reclaimed;
           }),
         );
       }),
@@ -1073,43 +1113,71 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const updated = yield* db.execute({
-          label: "study-v2.spoken.fail",
-          text: `UPDATE study_spoken_answer_commands
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
+            const updated = yield* transaction.execute({
+              label: "study-v2.spoken.fail",
+              text: `UPDATE study_spoken_answer_commands
                     SET state='retryable_failed', provider_failure_kind=$3,
                         completed_at=$4::timestamptz
                   WHERE command_id=$1 AND account_id=$2 AND lease_token=$5
                     AND state='reserved' AND lease_expires_at > clock_timestamp()`,
-          values: [
-            input.commandId,
-            input.accountId,
-            input.providerFailureKind,
-            input.failedAt,
-            input.leaseToken,
-          ],
-          readonly: false,
-        });
-        if (updated.rowCount !== 1) return yield* rejected("command-in-flight");
-        yield* db.execute({
-          label: "study-v2.spoken.fail-artifact",
-          text: `UPDATE learner_audio_artifacts artifact
+              values: [
+                input.commandId,
+                input.accountId,
+                input.providerFailureKind,
+                input.failedAt,
+                input.leaseToken,
+              ],
+              readonly: false,
+            });
+            if (updated.rowCount !== 1) return yield* rejected("command-in-flight");
+            yield* transaction.execute({
+              label: "study-v2.spoken.fail-artifact",
+              text: `UPDATE learner_audio_artifacts artifact
                     SET recording_state='failed'
                    FROM study_spoken_answer_commands command
                   WHERE command.command_id=$1 AND command.account_id=$2
                     AND artifact.learner_audio_artifact_id=command.learner_audio_artifact_id
                     AND artifact.recording_state='pending'`,
-          values: [input.commandId, input.accountId],
-          readonly: false,
-        });
+              values: [input.commandId, input.accountId],
+              readonly: false,
+            });
+          }),
+        );
       }),
     ),
-  completeSpokenAnswer: (input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]) =>
+  completeSpokenAnswer: (
+    input: Parameters<StudyV2Store["completeSpokenAnswer"]>[0] &
+      Readonly<{ capture?: LearnerAudioUploadCapture }>,
+  ) =>
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if (admission !== undefined) yield* admission.authorize(transaction, input);
+            if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
+            if (admission !== undefined && input.capture === undefined)
+              yield* admission.authorize(transaction, input);
+            const captured = input.capture;
+            if (controlledAudio && captured === undefined)
+              return yield* rejected("command-in-flight");
+            if (captured !== undefined) {
+              const { archive: _archive, capture: _capture, ...success } = input;
+              yield* transaction.execute({
+                label: "study-v2.audio.require-success",
+                text: "SELECT require_account_spoken_success_private_v1($1,$2::jsonb)",
+                values: [captured.uploadAttemptId, JSON.stringify(success)],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "study-v2.audio.require-archive",
+                text: "SELECT require_account_spoken_archive_private_v1($1,$2,$3)",
+                values: [captured.uploadAttemptId, input.archive.state, input.archive.objectRef],
+                readonly: false,
+              });
+            }
             const command = yield* transaction.execute<Row>({
               label: "study-v2.spoken.complete-command",
               text: `SELECT request_hash, state, result_snapshot, lease_token,
@@ -1119,10 +1187,16 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                         AND EXISTS (SELECT 1 FROM study_sessions_v2 s
                           WHERE s.session_id=study_spoken_answer_commands.session_id
                             AND s.account_id=$2 AND s.session_id=$3 AND s.community_id=$4
-                            AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
-                            AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id))
+                            AND ($5::boolean OR (active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                            AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id))))
                         FOR UPDATE`,
-              values: [input.commandId, input.accountId, input.sessionId, input.communityId],
+              values: [
+                input.commandId,
+                input.accountId,
+                input.sessionId,
+                input.communityId,
+                captured !== undefined,
+              ],
               readonly: false,
             });
             if (command.rows.length !== 1) return yield* rejected("not-found");
@@ -1139,7 +1213,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (text(commandRow, "lease_token") !== input.leaseToken) {
               return yield* rejected("command-in-flight");
             }
-            if (commandRow.lease_live !== true) {
+            if (captured === undefined && commandRow.lease_live !== true) {
               return yield* rejected("command-in-flight");
             }
             const selected = yield* transaction.execute<Row>({
@@ -1157,10 +1231,16 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                        JOIN study_review_items review ON review.review_item_id=i.review_item_id
                       WHERE i.session_item_id=$1 AND i.session_id=$2 AND i.account_id=$3
                         AND s.community_id=$4
-                        AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
-                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
+                        AND ($5::boolean OR (active_activity_persona(s.account_id,s.persona_id,s.community_id)
+                        AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)))
                         AND s.status='active' FOR UPDATE OF i, s`,
-              values: [input.sessionItemId, input.sessionId, input.accountId, input.communityId],
+              values: [
+                input.sessionItemId,
+                input.sessionId,
+                input.accountId,
+                input.communityId,
+                captured !== undefined,
+              ],
               readonly: false,
             });
             if (selected.rows.length !== 1) return yield* rejected("not-found");
@@ -1178,47 +1258,37 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (input.attemptNumber !== integer(selectedRow, "item_presentation_count") + 1) {
               return yield* rejected("attempt-conflict");
             }
-            const artifact = yield* transaction.execute<Row>({
-              label: "study-v2.spoken.artifact",
-              text: `UPDATE learner_audio_artifacts
+            const tombstoned =
+              captured === undefined
+                ? null
+                : yield* transaction.execute<Row>({
+                    label: "study-v2.audio.tombstone",
+                    text: "SELECT learner_audio_artifact_id FROM learner_audio_artifacts WHERE learner_audio_artifact_id=$1 AND participation_owner_id=$2 AND recording_state='deleted'",
+                    values: [input.artifactId, captured.sourceOwnerId],
+                    readonly: false,
+                  });
+            const artifact =
+              tombstoned !== null && tombstoned.rows.length === 1
+                ? tombstoned
+                : yield* transaction.execute<Row>({
+                    label: "study-v2.spoken.artifact",
+                    text: `UPDATE learner_audio_artifacts
                         SET object_ref=$3, recording_state=$4
                       WHERE learner_audio_artifact_id=$1 AND account_id=$2
                         AND recording_state='pending'
                         AND (($4='stored' AND $3=expected_object_ref)
                           OR ($4='failed' AND $3 IS NULL))
                     RETURNING learner_audio_artifact_id`,
-              values: [
-                input.artifactId,
-                input.accountId,
-                input.archive.objectRef,
-                input.archive.state,
-              ],
-              readonly: false,
-            });
+                    values: [
+                      input.artifactId,
+                      input.accountId,
+                      input.archive.objectRef,
+                      input.archive.state,
+                    ],
+                    readonly: false,
+                  });
             if (artifact.rows.length !== 1) return yield* rejected("command-in-flight");
-            const feedback = {
-              kind: "transcript_diff" as const,
-              match_kind: input.grade.matchKind,
-              heard_transcript: input.grade.heardTranscript,
-              matched: input.grade.matched,
-              missing: input.grade.missing,
-              extra: input.grade.extra,
-              substituted: input.grade.substituted.map(({ expected, heard }) => ({
-                expected,
-                heard,
-              })),
-              policy_revision: input.grade.policyRevision,
-            };
-            const tokenDiff = {
-              match_kind: input.grade.matchKind,
-              matched: input.grade.matched.map(({ position }) => position),
-              missing: input.grade.missing.map(({ position }) => position),
-              extra: input.grade.extra,
-              substituted: input.grade.substituted.map(({ expected, heard }) => ({
-                expected_position: expected.position,
-                heard,
-              })),
-            };
+            const { feedback, tokenDiff } = projectStudySpokenFeedback(input.grade);
             const priorReceipt =
               input.rerecordEnabled &&
               !input.grade.correct &&
@@ -1233,40 +1303,28 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                     readonly: false,
                   })
                 : null;
-            const rerecord =
-              priorReceipt !== null &&
-              priorReceipt.rows.length === 0 &&
-              input.rerecordAssessment.candidateReason !== null;
-            const assessment = input.rerecordAssessment;
-            const spoken = {
-              language_provenance: input.languageProvenance,
-              rerecord_decision: {
-                policy_revision: assessment.policyRevision,
-                enabled: input.rerecordEnabled,
-                kind: rerecord ? ("ungraded_rerecord" as const) : ("graded" as const),
-                reason: rerecord ? assessment.candidateReason : null,
-                voice_overlap: {
-                  revision: assessment.voiceOverlap.revision,
-                  matched_tokens: assessment.voiceOverlap.matchedTokens,
-                  reference_tokens: assessment.voiceOverlap.referenceTokens,
-                  below_one_third: assessment.voiceOverlap.belowOneThird,
-                },
-                strong_remainder: {
-                  revision: assessment.strongRemainder.revision,
-                  matched_tokens: assessment.strongRemainder.matchedTokens,
-                  reference_tokens: assessment.strongRemainder.referenceTokens,
-                  strong: assessment.strongRemainder.strong,
-                },
-                language_mismatch: {
-                  revision: assessment.languageMismatch.revision,
-                  expected_language: assessment.languageMismatch.expectedLanguage,
-                  detected_language: assessment.languageMismatch.detectedLanguage,
-                  detected_confidence: assessment.languageMismatch.detectedConfidence,
-                  clear: assessment.languageMismatch.clear,
-                },
+            const spokenAttempt = evaluateStudySpokenAttempt({
+              grade: input.grade,
+              attemptNumber: input.attemptNumber,
+              rerecordEnabled: input.rerecordEnabled,
+              rerecordAssessment: input.rerecordAssessment,
+              priorRerecordRecorded: priorReceipt === null || priorReceipt.rows.length !== 0,
+              review: {
+                difficulty: number(selectedRow, "difficulty"),
+                lapses: integer(selectedRow, "lapses"),
+                repetitions: integer(selectedRow, "repetitions"),
+                reviewedAt: Date.parse(input.acceptedAt),
+                stability: number(selectedRow, "stability"),
               },
-            };
-            if (rerecord) {
+            });
+            const rerecord = spokenAttempt.kind === "ungraded_rerecord";
+            const spoken = projectStudySpokenResultMetadata({
+              languageProvenance: input.languageProvenance,
+              rerecordEnabled: input.rerecordEnabled,
+              rerecord,
+              assessment: input.rerecordAssessment,
+            });
+            if (spokenAttempt.kind === "ungraded_rerecord") {
               const session = yield* readSession(transaction, input);
               if (session === null) return yield* rejected("not-found");
               const result = decode(StudyAnswerResultV2, {
@@ -1366,20 +1424,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const reviewGrade = studyTranscriptReviewGrade(
-              input.grade.matchKind,
-              input.attemptNumber,
-            );
-            const review = scheduleStudyReviewV1(
-              {
-                difficulty: number(selectedRow, "difficulty"),
-                lapses: integer(selectedRow, "lapses"),
-                repetitions: integer(selectedRow, "repetitions"),
-                reviewedAt: Date.parse(input.acceptedAt),
-                stability: number(selectedRow, "stability"),
-              },
-              reviewGrade,
-            );
+            const review = spokenAttempt.review;
             yield* transaction.execute({
               label: "study-v2.spoken.review",
               text: `UPDATE study_review_items
@@ -1408,7 +1453,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const resolved = input.grade.correct || input.attemptNumber >= 3;
+            const resolved = spokenAttempt.resolved;
             yield* transaction.execute({
               label: "study-v2.spoken.lesson-item",
               text: `UPDATE study_lesson_item_state_v2
@@ -1434,14 +1479,14 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               readonly: false,
             });
             const remainingRow = remaining.rows[0] as Row;
-            const nextPresentationCount = queueOrdinal + 1;
-            const presentationCap = Math.min(20, 3 * integer(remainingRow, "total"));
-            const complete =
-              integer(remainingRow, "count") === 0 || nextPresentationCount >= presentationCap;
-            if (complete) {
-              const completed = yield* transaction.execute<Row>({
-                label: "study-v2.spoken.session-complete",
-                text: `UPDATE study_sessions_v2 SET status='completed',
+            yield* continueStudyLessonMutation(
+              {
+                complete: (transition) =>
+                  Effect.gen(function* () {
+                    const nextPresentationCount = transition.nextPresentationCount;
+                    const completed = yield* transaction.execute<Row>({
+                      label: "study-v2.spoken.session-complete",
+                      text: `UPDATE study_sessions_v2 SET status='completed',
                         completed_at=$2::timestamptz, presentation_count=$3,
                         completion_reason=$4, current_session_item_id=NULL,
                         current_presented_at=NULL
@@ -1449,18 +1494,18 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                     RETURNING persona_id, community_id, post_id, audio_revision,
                               qualification_policy_revision, timezone, telegram_practice_only,
                               ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
-                values: [
-                  input.sessionId,
-                  input.acceptedAt,
-                  nextPresentationCount,
-                  integer(remainingRow, "count") === 0 ? "all_resolved" : "presentation_budget",
-                ],
-                readonly: false,
-              });
-              if (completed.rows.length === 1) {
-                const progress = yield* transaction.execute<Row>({
-                  label: "study-v2.spoken.qualification-progress",
-                  text: `SELECT count(*)::bigint AS exercise_count,
+                      values: [
+                        input.sessionId,
+                        input.acceptedAt,
+                        nextPresentationCount,
+                        transition.completionReason,
+                      ],
+                      readonly: false,
+                    });
+                    if (completed.rows.length === 1) {
+                      const progress = yield* transaction.execute<Row>({
+                        label: "study-v2.spoken.qualification-progress",
+                        text: `SELECT count(*)::bigint AS exercise_count,
                                 count(*) FILTER (WHERE EXISTS (
                                   SELECT 1 FROM study_attempts_v2 presented
                                    WHERE presented.session_item_id=item.session_item_id
@@ -1471,91 +1516,106 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                                      AND attempt.attempt_number=1 AND attempt.outcome='correct'
                                 ))::bigint AS first_pass_correct
                            FROM study_session_items_v2 item WHERE item.session_id=$1`,
-                  values: [input.sessionId],
-                  readonly: false,
-                });
-                const progressRow = progress.rows[0] as Row;
-                const exerciseCount = integer(progressRow, "exercise_count");
-                const presentedCount = integer(progressRow, "presented_count");
-                const firstPassCorrect = integer(progressRow, "first_pass_correct");
-                const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
-                if (
-                  presentedCount === exerciseCount &&
-                  firstPassCorrect >= requiredCorrect &&
-                  completed.rows[0]?.telegram_practice_only !== true
-                ) {
-                  const terminal = completed.rows[0] as Row;
-                  yield* transaction.execute({
-                    label: "study-v2.spoken.qualification-insert",
-                    text: `INSERT INTO activity_qualifications (
+                        values: [input.sessionId],
+                        readonly: false,
+                      });
+                      const progressRow = progress.rows[0] as Row;
+                      const exerciseCount = integer(progressRow, "exercise_count");
+                      const presentedCount = integer(progressRow, "presented_count");
+                      const firstPassCorrect = integer(progressRow, "first_pass_correct");
+                      const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
+                      if (
+                        presentedCount === exerciseCount &&
+                        firstPassCorrect >= requiredCorrect &&
+                        completed.rows[0]?.telegram_practice_only !== true
+                      ) {
+                        const terminal = completed.rows[0] as Row;
+                        yield* transaction.execute({
+                          label: "study-v2.spoken.qualification-insert",
+                          text: `INSERT INTO activity_qualifications (
                              qualification_id, account_id, persona_id, community_id, post_id,
                              audio_revision, activity_key, study_session_id, score_bps,
                              qualification_policy_version_id, qualified_at, streak_day,
                              evidence_summary, created_at
                            ) VALUES ($1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,
                              $11::date,$12::jsonb,$10::timestamptz)`,
-                    values: [
-                      input.qualificationId,
-                      input.accountId,
-                      text(terminal, "persona_id"),
-                      text(terminal, "community_id"),
-                      text(terminal, "post_id"),
-                      integer(terminal, "audio_revision"),
-                      input.sessionId,
-                      Math.floor((10_000 * firstPassCorrect) / exerciseCount),
-                      text(terminal, "qualification_policy_revision"),
-                      input.acceptedAt,
-                      date(terminal.streak_day),
-                      JSON.stringify({
-                        kind: "study_session_first_pass_v2",
-                        qualifying_exercise_count: exerciseCount,
-                        first_pass_correct: firstPassCorrect,
-                        required_correct: requiredCorrect,
-                      }),
-                    ],
-                    readonly: false,
-                  });
-                  yield* recordQualificationProjections(transaction, {
-                    accountId: input.accountId,
-                    communityId: text(terminal, "community_id"),
-                    personaId: text(terminal, "persona_id"),
-                    postId: text(terminal, "post_id"),
-                    activity: "study",
-                    qualificationId: input.qualificationId,
-                    qualifiedAt: input.acceptedAt,
-                    streakDay: date(terminal.streak_day),
-                    timezone: text(terminal, "timezone"),
-                  }).pipe(Effect.mapError(() => failed("constraint")));
-                }
-              }
-            } else {
-              const next = yield* transaction.execute<Row>({
-                label: "study-v2.spoken.next-item",
-                text: `SELECT session_item_id
+                          values: [
+                            input.qualificationId,
+                            input.accountId,
+                            text(terminal, "persona_id"),
+                            text(terminal, "community_id"),
+                            text(terminal, "post_id"),
+                            integer(terminal, "audio_revision"),
+                            input.sessionId,
+                            Math.floor((10_000 * firstPassCorrect) / exerciseCount),
+                            text(terminal, "qualification_policy_revision"),
+                            input.acceptedAt,
+                            date(terminal.streak_day),
+                            JSON.stringify({
+                              kind: "study_session_first_pass_v2",
+                              qualifying_exercise_count: exerciseCount,
+                              first_pass_correct: firstPassCorrect,
+                              required_correct: requiredCorrect,
+                            }),
+                          ],
+                          readonly: false,
+                        });
+                        yield* recordQualificationProjections(transaction, {
+                          accountId: input.accountId,
+                          communityId: text(terminal, "community_id"),
+                          personaId: text(terminal, "persona_id"),
+                          postId: text(terminal, "post_id"),
+                          activity: "study",
+                          qualificationId: input.qualificationId,
+                          qualifiedAt: input.acceptedAt,
+                          streakDay: date(terminal.streak_day),
+                          timezone: text(terminal, "timezone"),
+                        }).pipe(Effect.mapError(() => failed("constraint")));
+                      }
+                    }
+                  }),
+                advance: (transition) =>
+                  Effect.gen(function* () {
+                    const nextPresentationCount = transition.nextPresentationCount;
+                    const next = yield* transaction.execute<Row>({
+                      label: "study-v2.spoken.next-item",
+                      text: `SELECT session_item_id
                          FROM study_lesson_item_state_v2
                         WHERE session_id=$1 AND NOT lesson_resolved
                      ORDER BY CASE WHEN presentation_count=0 THEN 0 ELSE 1 END,
                               last_queue_ordinal NULLS FIRST, original_ordinal
                         LIMIT 1`,
-                values: [input.sessionId],
-                readonly: false,
-              });
-              if (next.rows.length !== 1) return yield* Effect.fail(failed("invalid-row"));
-              yield* transaction.execute({
-                label: "study-v2.spoken.session-advance",
-                text: `UPDATE study_sessions_v2
+                      values: [input.sessionId],
+                      readonly: false,
+                    });
+                    if (next.rows.length !== 1) return yield* Effect.fail(failed("invalid-row"));
+                    yield* transaction.execute({
+                      label: "study-v2.spoken.session-advance",
+                      text: `UPDATE study_sessions_v2
                           SET current_session_item_id=$2, current_presented_at=$3::timestamptz,
                               presentation_count=$4
                         WHERE session_id=$1 AND status='active'`,
-                values: [
-                  input.sessionId,
-                  text(next.rows[0] as Row, "session_item_id"),
-                  input.acceptedAt,
-                  nextPresentationCount,
-                ],
-                readonly: false,
-              });
-            }
+                      values: [
+                        input.sessionId,
+                        text(next.rows[0] as Row, "session_item_id"),
+                        input.acceptedAt,
+                        nextPresentationCount,
+                      ],
+                      readonly: false,
+                    });
+                  }),
+                keepCurrent: () =>
+                  Effect.gen(function* () {
+                    return yield* Effect.fail(failed("invalid-row"));
+                  }),
+              },
+              {
+                kind: "advance",
+                priorPresentationCount: queueOrdinal,
+                totalCards: integer(remainingRow, "total"),
+                remainingUnresolvedCards: integer(remainingRow, "count"),
+              },
+            );
             const session = yield* readSession(transaction, input);
             if (session === null) return yield* rejected("not-found");
             const result = decode(StudyAnswerResultV2, {
@@ -1663,21 +1723,22 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
             if (input.attemptNumber !== integer(row, "item_presentation_count") + 1) {
               return yield* rejected("attempt-conflict");
             }
-            const correct = gradeExactChoiceV2(
-              input.answer.choice_key,
-              String(grader.correct_choice_key),
-            );
-            const spent = correct || input.attemptNumber >= integer(row, "maximum_attempts");
-            const feedback = !spent
-              ? { kind: "none" as const }
-              : {
-                  kind: "choice_reveal" as const,
-                  correct_choice_key: String(grader.correct_choice_key),
-                  correct_text: String(grader.correct_text),
-                  ...(typeof grader.explanation === "string"
-                    ? { explanation: grader.explanation }
-                    : {}),
-                };
+            const choice = evaluateStudyChoice({
+              submittedChoiceKey: input.answer.choice_key,
+              correctChoiceKey: String(grader.correct_choice_key),
+              correctText: String(grader.correct_text),
+              explanation: typeof grader.explanation === "string" ? grader.explanation : undefined,
+              attemptNumber: input.attemptNumber,
+              maximumAttempts: integer(row, "maximum_attempts"),
+              review: {
+                difficulty: number(row, "difficulty"),
+                lapses: integer(row, "lapses"),
+                repetitions: integer(row, "repetitions"),
+                reviewedAt: Date.parse(input.acceptedAt),
+                stability: number(row, "stability"),
+              },
+            });
+            const { correct, spent, feedback } = choice;
             yield* transaction.execute({
               label: "study-v2.answer.insert",
               text: `INSERT INTO study_attempts_v2 (
@@ -1738,16 +1799,7 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               ],
               readonly: false,
             });
-            const review = scheduleStudyReviewV1(
-              {
-                difficulty: number(row, "difficulty"),
-                lapses: integer(row, "lapses"),
-                repetitions: integer(row, "repetitions"),
-                reviewedAt: Date.parse(input.acceptedAt),
-                stability: number(row, "stability"),
-              },
-              correct ? (input.attemptNumber === 1 ? "good" : "hard") : "again",
-            );
+            const review = choice.review;
             yield* transaction.execute({
               label: "study-v2.answer.review",
               text: `UPDATE study_review_items
@@ -1801,14 +1853,14 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
               readonly: false,
             });
             const remainingRow = remaining.rows[0] as Row;
-            const nextPresentationCount = queueOrdinal + 1;
-            const presentationCap = Math.min(20, 3 * integer(remainingRow, "total"));
-            const complete =
-              integer(remainingRow, "count") === 0 || nextPresentationCount >= presentationCap;
-            if (complete) {
-              const completed = yield* transaction.execute<Row>({
-                label: "study-v2.answer.session-complete",
-                text: `UPDATE study_sessions_v2 SET status='completed',
+            yield* continueStudyLessonMutation(
+              {
+                complete: (transition) =>
+                  Effect.gen(function* () {
+                    const nextPresentationCount = transition.nextPresentationCount;
+                    const completed = yield* transaction.execute<Row>({
+                      label: "study-v2.answer.session-complete",
+                      text: `UPDATE study_sessions_v2 SET status='completed',
                         completed_at=$2::timestamptz, presentation_count=$3,
                         completion_reason=$4, current_session_item_id=NULL,
                         current_presented_at=NULL
@@ -1816,18 +1868,18 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                     RETURNING persona_id, community_id, post_id, audio_revision,
                               qualification_policy_revision, timezone, telegram_practice_only,
                               ($2::timestamptz AT TIME ZONE timezone)::date AS streak_day`,
-                values: [
-                  input.sessionId,
-                  input.acceptedAt,
-                  nextPresentationCount,
-                  integer(remainingRow, "count") === 0 ? "all_resolved" : "presentation_budget",
-                ],
-                readonly: false,
-              });
-              if (completed.rows.length === 1) {
-                const progress = yield* transaction.execute<Row>({
-                  label: "study-v2.answer.qualification-progress",
-                  text: `SELECT count(*)::bigint AS exercise_count,
+                      values: [
+                        input.sessionId,
+                        input.acceptedAt,
+                        nextPresentationCount,
+                        transition.completionReason,
+                      ],
+                      readonly: false,
+                    });
+                    if (completed.rows.length === 1) {
+                      const progress = yield* transaction.execute<Row>({
+                        label: "study-v2.answer.qualification-progress",
+                        text: `SELECT count(*)::bigint AS exercise_count,
                                 count(*) FILTER (WHERE EXISTS (
                                   SELECT 1 FROM study_attempts_v2 presented
                                    WHERE presented.session_item_id=item.session_item_id
@@ -1838,108 +1890,122 @@ export const makeControlPlaneStudyV2Repository = (admission?: StudyV2Admission) 
                                      AND attempt.attempt_number=1 AND attempt.outcome='correct'
                                 ))::bigint AS first_pass_correct
                            FROM study_session_items_v2 item WHERE item.session_id=$1`,
-                  values: [input.sessionId],
-                  readonly: false,
-                });
-                const progressRow = progress.rows[0] as Row;
-                const exerciseCount = integer(progressRow, "exercise_count");
-                const presentedCount = integer(progressRow, "presented_count");
-                const firstPassCorrect = integer(progressRow, "first_pass_correct");
-                const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
-                if (
-                  presentedCount === exerciseCount &&
-                  firstPassCorrect >= requiredCorrect &&
-                  completed.rows[0]?.telegram_practice_only !== true
-                ) {
-                  const terminal = completed.rows[0] as Row;
-                  yield* transaction.execute({
-                    label: "study-v2.answer.qualification-insert",
-                    text: `INSERT INTO activity_qualifications (
+                        values: [input.sessionId],
+                        readonly: false,
+                      });
+                      const progressRow = progress.rows[0] as Row;
+                      const exerciseCount = integer(progressRow, "exercise_count");
+                      const presentedCount = integer(progressRow, "presented_count");
+                      const firstPassCorrect = integer(progressRow, "first_pass_correct");
+                      const requiredCorrect = Math.max(1, Math.ceil((7 * exerciseCount) / 10));
+                      if (
+                        presentedCount === exerciseCount &&
+                        firstPassCorrect >= requiredCorrect &&
+                        completed.rows[0]?.telegram_practice_only !== true
+                      ) {
+                        const terminal = completed.rows[0] as Row;
+                        yield* transaction.execute({
+                          label: "study-v2.answer.qualification-insert",
+                          text: `INSERT INTO activity_qualifications (
                              qualification_id, account_id, persona_id, community_id, post_id,
                              audio_revision, activity_key, study_session_id, score_bps,
                              qualification_policy_version_id, qualified_at, streak_day,
                              evidence_summary, created_at
                            ) VALUES ($1,$2,$3,$4,$5,$6,'study',$7,$8,$9,$10::timestamptz,
                              $11::date,$12::jsonb,$10::timestamptz)`,
-                    values: [
-                      input.qualificationId,
-                      input.accountId,
-                      text(terminal, "persona_id"),
-                      text(terminal, "community_id"),
-                      text(terminal, "post_id"),
-                      integer(terminal, "audio_revision"),
-                      input.sessionId,
-                      Math.floor((10_000 * firstPassCorrect) / exerciseCount),
-                      text(terminal, "qualification_policy_revision"),
-                      input.acceptedAt,
-                      date(terminal.streak_day),
-                      JSON.stringify({
-                        kind: "study_session_first_pass_v2",
-                        qualifying_exercise_count: exerciseCount,
-                        first_pass_correct: firstPassCorrect,
-                        required_correct: requiredCorrect,
-                      }),
-                    ],
-                    readonly: false,
-                  });
-                  yield* recordQualificationProjections(transaction, {
-                    accountId: input.accountId,
-                    communityId: text(terminal, "community_id"),
-                    personaId: text(terminal, "persona_id"),
-                    postId: text(terminal, "post_id"),
-                    activity: "study",
-                    qualificationId: input.qualificationId,
-                    qualifiedAt: input.acceptedAt,
-                    streakDay: date(terminal.streak_day),
-                    timezone: text(terminal, "timezone"),
-                  }).pipe(Effect.mapError(() => failed("constraint")));
-                }
-              }
-            } else if (spent) {
-              // A spent answer resolves this presentation: advance to the
-              // server-selected next card. A retryable answer keeps the
-              // current item so the offered immediate retry targets the card
-              // the session still holds; its item presentation count already
-              // moved to this attempt number.
-              const next = yield* transaction.execute<Row>({
-                label: "study-v2.answer.next-item",
-                text: `SELECT session_item_id
+                          values: [
+                            input.qualificationId,
+                            input.accountId,
+                            text(terminal, "persona_id"),
+                            text(terminal, "community_id"),
+                            text(terminal, "post_id"),
+                            integer(terminal, "audio_revision"),
+                            input.sessionId,
+                            Math.floor((10_000 * firstPassCorrect) / exerciseCount),
+                            text(terminal, "qualification_policy_revision"),
+                            input.acceptedAt,
+                            date(terminal.streak_day),
+                            JSON.stringify({
+                              kind: "study_session_first_pass_v2",
+                              qualifying_exercise_count: exerciseCount,
+                              first_pass_correct: firstPassCorrect,
+                              required_correct: requiredCorrect,
+                            }),
+                          ],
+                          readonly: false,
+                        });
+                        yield* recordQualificationProjections(transaction, {
+                          accountId: input.accountId,
+                          communityId: text(terminal, "community_id"),
+                          personaId: text(terminal, "persona_id"),
+                          postId: text(terminal, "post_id"),
+                          activity: "study",
+                          qualificationId: input.qualificationId,
+                          qualifiedAt: input.acceptedAt,
+                          streakDay: date(terminal.streak_day),
+                          timezone: text(terminal, "timezone"),
+                        }).pipe(Effect.mapError(() => failed("constraint")));
+                      }
+                    }
+                  }),
+                advance: (transition) =>
+                  Effect.gen(function* () {
+                    const nextPresentationCount = transition.nextPresentationCount;
+                    // A spent answer resolves this presentation: advance to the
+                    // server-selected next card. A retryable answer keeps the
+                    // current item so the offered immediate retry targets the card
+                    // the session still holds; its item presentation count already
+                    // moved to this attempt number.
+                    const next = yield* transaction.execute<Row>({
+                      label: "study-v2.answer.next-item",
+                      text: `SELECT session_item_id
                          FROM study_lesson_item_state_v2
                         WHERE session_id=$1 AND NOT lesson_resolved
                      ORDER BY CASE WHEN presentation_count=0 THEN 0 ELSE 1 END,
                               last_queue_ordinal NULLS FIRST, original_ordinal
                         LIMIT 1`,
-                values: [input.sessionId],
-                readonly: false,
-              });
-              if (next.rows.length !== 1) return yield* Effect.fail(failed("invalid-row"));
-              yield* transaction.execute({
-                label: "study-v2.answer.session-advance",
-                text: `UPDATE study_sessions_v2
+                      values: [input.sessionId],
+                      readonly: false,
+                    });
+                    if (next.rows.length !== 1) return yield* Effect.fail(failed("invalid-row"));
+                    yield* transaction.execute({
+                      label: "study-v2.answer.session-advance",
+                      text: `UPDATE study_sessions_v2
                           SET current_session_item_id=$2, current_presented_at=$3::timestamptz,
                               presentation_count=$4
                         WHERE session_id=$1 AND status='active'`,
-                values: [
-                  input.sessionId,
-                  text(next.rows[0] as Row, "session_item_id"),
-                  input.acceptedAt,
-                  nextPresentationCount,
-                ],
-                readonly: false,
-              });
-            } else {
-              // Every graded answer consumes a queue ordinal — presentations
-              // are unique per (session, ordinal) — but a retryable one must
-              // not move the current card or its presentation clock.
-              yield* transaction.execute({
-                label: "study-v2.answer.session-ordinal",
-                text: `UPDATE study_sessions_v2
+                      values: [
+                        input.sessionId,
+                        text(next.rows[0] as Row, "session_item_id"),
+                        input.acceptedAt,
+                        nextPresentationCount,
+                      ],
+                      readonly: false,
+                    });
+                  }),
+                keepCurrent: (transition) =>
+                  Effect.gen(function* () {
+                    const nextPresentationCount = transition.nextPresentationCount;
+                    // Every graded answer consumes a queue ordinal — presentations
+                    // are unique per (session, ordinal) — but a retryable one must
+                    // not move the current card or its presentation clock.
+                    yield* transaction.execute({
+                      label: "study-v2.answer.session-ordinal",
+                      text: `UPDATE study_sessions_v2
                           SET presentation_count=$2
                         WHERE session_id=$1 AND status='active'`,
-                values: [input.sessionId, nextPresentationCount],
-                readonly: false,
-              });
-            }
+                      values: [input.sessionId, nextPresentationCount],
+                      readonly: false,
+                    });
+                  }),
+              },
+              {
+                kind: spent ? "advance" : "choice_retryable",
+                priorPresentationCount: queueOrdinal,
+                totalCards: integer(remainingRow, "total"),
+                remainingUnresolvedCards: integer(remainingRow, "count"),
+              },
+            );
             const session = yield* readSession(transaction, input);
             if (session === null) return yield* rejected("not-found");
             return {

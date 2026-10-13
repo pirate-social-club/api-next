@@ -1,0 +1,13 @@
+{
+  "expiryMigration": "0261_guest_study_resource_expiry.sql",
+  "hashes": {
+    "0254_guest_prepared_study_session_capture.sql": "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
+    "0255_guest_spoken_success_checkpoints.sql": "fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b",
+    "0256_guest_owned_study_mutations.sql": "bb90ea35b74aa8fddfb206aad1ce8ddb439ba53ae5175de7a33fd2c7102684ce",
+    "0257_guest_spoken_audio_archive.sql": "3c5eb872e14558e28f78e607012d498f6fb7c2e8bae05bbba8911fd2ad9bcfec",
+    "0258_guest_recovery_audio_deletion.sql": "cc9792c45c8938b89025a3e723e58f01f021d93d11b426c7600cfcf677bf9aef",
+    "0259_guest_captured_recovery_reads.sql": "3b84f8f3798e777bd7aa674363add62854d330b9ef12079fa49e2f2b24ea0dc9",
+    "0260_owner_study_original_source_reads.sql": "efe82c3b3c132217bc6c01f2b73fef5f7940465d9c08ab18c0bcbaeb3b897120",
+    "0261_guest_study_resource_expiry.sql": "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c"
+  }
+}
