@@ -3,6 +3,204 @@ import { defineConfig } from "vitest/config";
 import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
 const alias = {
+  // Exact workspace subpaths must precede package-root aliases in both
+  // Vite and native Workerd resolution. Keep real source modules in this pool.
+  "@pirate/application/learner-audio-deletion": new URL(
+    "../../packages/application/src/learner-audio-deletion.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/guest-participation-authority": new URL(
+    "../../packages/application/src/guest-participation-authority.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/guest-study-ports": new URL(
+    "../../packages/application/src/guest-study-ports.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/guest-learning-resource-admission": new URL(
+    "../../packages/application/src/guest-learning-resource-admission.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-learner-audio-deletion": new URL(
+    "../../packages/application/src/owner-learner-audio-deletion.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-reward-credit-ports": new URL(
+    "../../packages/application/src/owner-reward-credit-ports.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/guest-proof-verifier": new URL(
+    "../../packages/application/src/guest-proof-verifier.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/learner-audio-capture": new URL(
+    "../../packages/application/src/learner-audio-capture.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/learner-audio-io-outcome": new URL(
+    "../../packages/application/src/learner-audio-io-outcome.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-guest-atomic-start": new URL(
+    "../../packages/application/src/owner-guest-atomic-start.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-spoken-captured-continuation": new URL(
+    "../../packages/application/src/owner-spoken-captured-continuation.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-guest-spoken-checkpoint-recovery": new URL(
+    "../../packages/application/src/owner-guest-spoken-checkpoint-recovery.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-guest-spoken-closed-recovery": new URL(
+    "../../packages/application/src/owner-guest-spoken-closed-recovery.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/owner-guest-study-service": new URL(
+    "../../packages/application/src/owner-guest-study-service.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/account-study-capture-protocol": new URL(
+    "../../packages/application/src/account-study-capture-protocol.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/controlled-account-spoken": new URL(
+    "../../packages/application/src/controlled-account-spoken.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/learner-audio-account-lock": new URL(
+    "../../packages/platform-cf/src/learner-audio-account-lock.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/learner-audio-deletion-repository": new URL(
+    "../../packages/platform-cf/src/learner-audio-deletion-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-proof-crypto": new URL(
+    "../../packages/platform-cf/src/guest-proof-crypto.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-proof-verifier": new URL(
+    "../../packages/platform-cf/src/guest-proof-verifier.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-prepared-study-content-store": new URL(
+    "../../packages/platform-cf/src/guest-prepared-study-content-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-authority-store": new URL(
+    "../../packages/platform-cf/src/guest-authority-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-attachment-preparation-store": new URL(
+    "../../packages/platform-cf/src/guest-attachment-preparation-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-resource-store": new URL(
+    "../../packages/platform-cf/src/guest-resource-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-study-starter": new URL(
+    "../../packages/platform-cf/src/owner-study-starter.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-spoken-checkpoint-store": new URL(
+    "../../packages/platform-cf/src/owner-spoken-checkpoint-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-study-mutations": new URL(
+    "../../packages/platform-cf/src/owner-study-mutations.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-spoken-fenced-archive": new URL(
+    "../../packages/platform-cf/src/owner-spoken-fenced-archive.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/learner-audio-captured-io": new URL(
+    "../../packages/platform-cf/src/learner-audio-captured-io.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-resource-policy": new URL(
+    "../../packages/platform-cf/src/guest-resource-policy.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-recovery-deletion-store": new URL(
+    "../../packages/platform-cf/src/guest-recovery-deletion-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-audio-deletion-io": new URL(
+    "../../packages/platform-cf/src/owner-audio-deletion-io.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-guest-spoken-checkpoint-recovery-store": new URL(
+    "../../packages/platform-cf/src/owner-guest-spoken-checkpoint-recovery-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-practice-participation-read-store": new URL(
+    "../../packages/platform-cf/src/guest-practice-participation-read-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-study-store-composition": new URL(
+    "../../packages/platform-cf/src/owner-study-store-composition.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-account-source-control": new URL(
+    "../../packages/platform-cf/src/owner-account-source-control.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-guest-spoken-dispatch-context": new URL(
+    "../../packages/platform-cf/src/owner-guest-spoken-dispatch-context.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-study-invoking-transcriber": new URL(
+    "../../packages/platform-cf/src/owner-study-invoking-transcriber.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/owner-guest-study-public-visibility": new URL(
+    "../../packages/platform-cf/src/owner-guest-study-public-visibility.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-study-resource-expiry": new URL(
+    "../../packages/platform-cf/src/guest-study-resource-expiry.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/learner-audio-producer-store": new URL(
+    "../../packages/platform-cf/src/learner-audio-producer-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/controlled-account-study-store": new URL(
+    "../../packages/platform-cf/src/controlled-account-study-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/controlled-account-spoken-recovery": new URL(
+    "../../packages/platform-cf/src/controlled-account-spoken-recovery.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/controlled-account-spoken-composition": new URL(
+    "../../packages/platform-cf/src/controlled-account-spoken-composition.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/captured-karaoke-multipart": new URL(
+    "../../packages/platform-cf/src/captured-karaoke-multipart.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/captured-karaoke-sqlite-journal": new URL(
+    "../../packages/platform-cf/src/captured-karaoke-sqlite-journal.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/captured-karaoke-bindings": new URL(
+    "../../packages/platform-cf/src/captured-karaoke-bindings.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/account-audio-deletion-protocol": new URL(
+    "../../packages/platform-cf/src/account-audio-deletion-protocol.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/guest-study-managed-readiness": new URL(
+    "../../packages/platform-cf/src/guest-study-managed-readiness.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
     "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
     import.meta.url,
