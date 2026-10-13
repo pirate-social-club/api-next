@@ -155,6 +155,24 @@ CREATE FUNCTION guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup TEXT)
      AND (other.created_at>=upload.created_at OR other.io_state<>'closed' OR other.cleanup_required)))
 $$;
 
+-- Exact native262 cleanup mechanics; the immutable capture validator is Guest-owned.
+-- Private helper only: no direct runtime or cron EXECUTE authority.
+CREATE FUNCTION prepare_guest_captured_audio_cleanup_private_v1(p_capture JSONB) RETURNS JSONB
+ LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE; command learner_audio_upload_cleanup_commands%ROWTYPE;
+BEGIN
+ upload_id:=require_guest_audio_io_capture_private_v1(p_capture);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id FOR UPDATE;
+ IF upload.io_state<>'closed' OR NOT upload.cleanup_required THEN RAISE EXCEPTION 'closed cleanup-required original upload required'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.object_ref=upload.object_ref AND u.upload_attempt_id<>upload_id
+  AND (u.created_at>=upload.created_at OR u.io_state<>'closed')) THEN RAISE EXCEPTION 'object generation closure is unavailable'; END IF;
+ SELECT * INTO command FROM learner_audio_upload_cleanup_commands WHERE upload_attempt_id=upload_id;
+ IF NOT FOUND THEN INSERT INTO learner_audio_upload_cleanup_commands VALUES('audio_cleanup_'||gen_random_uuid()::TEXT,upload_id,upload.owner_id,upload.object_ref,'pending',clock_timestamp(),NULL) RETURNING * INTO command; END IF;
+ RETURN jsonb_build_object('cleanupId',command.cleanup_id,'uploadAttemptId',upload_id,'objectRef',upload.object_ref);
+END $$;
+
 CREATE FUNCTION prepare_next_guest_ephemeral_audio_cleanup_private_v1() RETURNS JSONB
  LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE chosen TEXT; original_owner TEXT; prepared JSONB;
@@ -187,7 +205,7 @@ BEGIN
  -- Close this exact terminal upload's publication while external DELETE waits.
  -- This does not change the owner's durable deletion fence or provider facts.
   UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE upload_attempt_id=chosen;
-  prepared:=prepare_captured_audio_cleanup_private_v1(read_guest_audio_io_capture_private_v1(chosen));
+  prepared:=prepare_guest_captured_audio_cleanup_private_v1(read_guest_audio_io_capture_private_v1(chosen));
  END IF;
  -- Closed, original capture witnesses let the SDK reject foreign keys before I/O.
  RETURN jsonb_build_object('state','prepared','cleanup',prepared||jsonb_build_object(
@@ -310,7 +328,7 @@ BEGIN
   FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid='participation_owners'::regclass;
  IF trusted_schema='information_schema' OR trusted_schema LIKE 'pg_%' THEN
   RAISE EXCEPTION 'trusted ephemeral namespace required'; END IF;
- FOREACH signature IN ARRAY ARRAY['capture_guest_audio_retention_private_v1()','guest_ephemeral_object_closed_private_v1(text)','guest_ephemeral_upload_ready_private_v1(text)','guest_ephemeral_owner_delete_witness_private_v1(text)','guest_ephemeral_pending_cleanup_ready_private_v1(text)','prepare_next_guest_ephemeral_audio_cleanup_private_v1()','confirm_guest_ephemeral_audio_cleanup_private_v1(text,text,text,timestamptz)','register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)','claim_guest_audio_io_private_v1(jsonb)','settle_guest_audio_io_private_v1(jsonb,text,boolean)'] LOOP
+ FOREACH signature IN ARRAY ARRAY['capture_guest_audio_retention_private_v1()','guest_ephemeral_object_closed_private_v1(text)','guest_ephemeral_upload_ready_private_v1(text)','guest_ephemeral_owner_delete_witness_private_v1(text)','guest_ephemeral_pending_cleanup_ready_private_v1(text)','prepare_guest_captured_audio_cleanup_private_v1(jsonb)','prepare_next_guest_ephemeral_audio_cleanup_private_v1()','confirm_guest_ephemeral_audio_cleanup_private_v1(text,text,text,timestamptz)','register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)','claim_guest_audio_io_private_v1(jsonb)','settle_guest_audio_io_private_v1(jsonb,text,boolean)'] LOOP
   IF NOT EXISTS(SELECT 1 FROM pg_proc f WHERE f.oid=signature::regprocedure
    AND f.pronamespace=trusted_namespace AND f.proowner=trusted_owner AND f.prosecdef) THEN
    RAISE EXCEPTION 'ephemeral routine custody differs'; END IF;
