@@ -13,7 +13,7 @@ import { hash, pgUrl, q } from "./owner-study-starter.pg-fixture.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
 export type EphemeralFixture = RecoveryDeletionFixture &
   Readonly<{ cleanup: Client; cleanupUrl: string; cleanupRole: string }>;
-export const signatures = [
+const signatures = [
   "capture_guest_audio_retention_private_v1()",
   "guest_ephemeral_object_closed_private_v1(text)",
   "guest_ephemeral_upload_ready_private_v1(text)",
