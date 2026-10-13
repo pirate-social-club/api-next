@@ -5,8 +5,10 @@ import {
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeTelegramDatabase } from "./telegram-database.ts";
 import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
+import { makeTelegramStudyStore } from "./telegram-study-store.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -14,7 +16,11 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionStrin
 const suite = connectionString ? describe : describe.skip;
 
 async function fixture(
-  use: (store: ReturnType<typeof makeControlPlaneTelegramStore>, admin: Client) => Promise<void>,
+  use: (
+    store: ReturnType<typeof makeControlPlaneTelegramStore>,
+    admin: Client,
+    connection: string,
+  ) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres configuration missing");
   await withReusablePostgresTestSchema({
@@ -45,7 +51,7 @@ async function fixture(
         "hash",
         "telegram-owner",
       );
-      await use(store, admin);
+      await use(store, admin, connection);
     },
   });
 }
@@ -293,6 +299,16 @@ suite("community Telegram persistence", () => {
             [id],
           );
         },
+        // Changed content returns a message to pending without resetting its attempts. At ten
+        // it can never be claimed again, so it must not hold its follower back for good.
+        "re-enqueued exhausted": async (id) => {
+          await admin.query(
+            "UPDATE community_telegram_deliveries SET attempt_count=10 WHERE delivery_id=$1",
+            [id],
+          );
+          await store.enqueueDelivery({ ...message(id), desiredHash: `${id}-changed` });
+          expect(await row(id)).toEqual({ state: "pending", attempt_count: 10 });
+        },
       };
       for (const [name, end] of Object.entries(abandon)) {
         await store.enqueueDelivery(message(`${name}-feedback`));
@@ -306,6 +322,127 @@ suite("community Telegram persistence", () => {
       // A predecessor that does not exist cannot hold anything back.
       await store.enqueueDelivery(message("orphan", "never-enqueued"));
       expect((await store.claimDelivery("orphan"))?.id).toBe("orphan");
+
+      // A predecessor in flight on its tenth attempt is still being sent: the follower waits
+      // until its lease runs out rather than racing it.
+      await store.enqueueDelivery(message("last-feedback"));
+      await store.enqueueDelivery(message("last-prompt", "last-feedback"));
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET attempt_count=9 WHERE delivery_id='last-feedback'",
+      );
+      await claim("last-feedback");
+      expect(await row("last-feedback")).toEqual({ state: "sending", attempt_count: 10 });
+      expect(await store.claimDelivery("last-prompt")).toBeNull();
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id='last-feedback'",
+      );
+      expect((await store.claimDelivery("last-prompt"))?.id).toBe("last-prompt");
+    }));
+
+  test("prompts waiting on their feedback never starve the scanner", () =>
+    fixture(async (store, admin) => {
+      const message = (id: string, after?: string) => ({
+        id,
+        communityId: "telegram-community",
+        botEpoch: "epoch",
+        chatId: "123",
+        kind: "reply" as const,
+        postId: null,
+        state: "pending" as const,
+        desired: {
+          kind: "text" as const,
+          text: id,
+          media: null,
+          buttons: [],
+          ...(after === undefined ? {} : { after }),
+        },
+        desiredHash: id,
+      });
+      // Sixty prompts, each behind feedback that is waiting out a retry. The prompts are older
+      // than everything else, so a scan ordered by due time would list only them.
+      for (let index = 0; index < 60; index++) {
+        await store.enqueueDelivery(message(`feedback-${index}`));
+        await store.enqueueDelivery(message(`prompt-${index}`, `feedback-${index}`));
+      }
+      await admin.query(
+        `UPDATE community_telegram_deliveries SET next_attempt_at=clock_timestamp()-interval '1 hour'
+          WHERE delivery_id LIKE 'prompt-%'`,
+      );
+      await admin.query(
+        `UPDATE community_telegram_deliveries SET state='failed',attempt_count=1,
+          next_attempt_at=clock_timestamp()+interval '1 hour' WHERE delivery_id LIKE 'feedback-%'`,
+      );
+      // One feedback retry is due now, and one unrelated message is waiting to go.
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET next_attempt_at=clock_timestamp()-interval '1 minute' WHERE delivery_id='feedback-7'",
+      );
+      await store.enqueueDelivery(message("unrelated"));
+      const work = (await store.pendingWork())
+        .filter((item) => item.kind === "delivery")
+        .map((item) => item.id);
+      expect(work.sort()).toEqual(["feedback-7", "unrelated"]);
+      // A prompt behind abandoned feedback is still work: claiming it cancels the feedback.
+      await admin.query(
+        "UPDATE community_telegram_deliveries SET state='uncertain' WHERE delivery_id='feedback-8'",
+      );
+      expect(
+        (await store.pendingWork())
+          .filter((item) => item.kind === "delivery")
+          .map((item) => item.id),
+      ).toContain("prompt-8");
+    }));
+
+  test("only the exact delivered force-reply prompt accepts an answer", () =>
+    fixture(async (store, _admin, connection) => {
+      const chat = makeTelegramStudyStore(
+        makeTelegramDatabase(makeDirectPostgresControlPlaneLayer(connection)),
+        "telegram-community",
+        [],
+      );
+      const prompt = "Say this back:\nhello";
+      const deliver = async (
+        id: string,
+        chatId: string,
+        desired: { kind: "text"; text: string; media: null; buttons: []; keyboard?: unknown },
+      ) => {
+        await store.enqueueDelivery({
+          id,
+          communityId: "telegram-community",
+          botEpoch: "epoch",
+          chatId,
+          kind: "reply",
+          postId: null,
+          state: "pending",
+          desired: desired as never,
+          desiredHash: JSON.stringify(desired),
+        });
+        const claimed = await store.claimDelivery(id);
+        if (!claimed) throw new Error(`Missing claim for ${id}`);
+        await store.finishDelivery(claimed, { kind: "confirmed", messageId: 41 }, "send");
+      };
+      const forceReply = { force_reply: true, selective: true };
+      await deliver("slot", "500", {
+        kind: "text",
+        text: prompt,
+        media: null,
+        buttons: [],
+        keyboard: forceReply,
+      });
+      expect(await chat.promptMessageId("slot", "500", prompt)).toBe(41);
+      // States saved before the prompt text was recorded still need a force-reply prompt.
+      expect(await chat.promptMessageId("slot", "500")).toBe(41);
+      // Another chat, or another line, is not this turn's prompt.
+      expect(await chat.promptMessageId("slot", "501", prompt)).toBeNull();
+      expect(await chat.promptMessageId("slot", "500", "Say this back:\nother")).toBeNull();
+      // The same reply slot later carrying plain text is not a prompt at all.
+      await deliver("slot", "500", {
+        kind: "text",
+        text: "Reply to the line.",
+        media: null,
+        buttons: [],
+      });
+      expect(await chat.promptMessageId("slot", "500", prompt)).toBeNull();
+      expect(await chat.promptMessageId("slot", "500")).toBeNull();
     }));
   test("failed edits retain confirmed content and can be claimed again after retry_after", () =>
     fixture(async (store, admin) => {

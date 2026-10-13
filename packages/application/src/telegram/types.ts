@@ -281,7 +281,8 @@ export interface TelegramServices {
    */
   interfaceLocales?: readonly import("./copy.ts").TelegramLocale[];
   now: () => number;
-  wake: (work: { kind: "inbox" | "delivery"; id: string }) => Promise<void>;
+  /** `delaySeconds` asks for the work no earlier than that; the scanner remains the backstop. */
+  wake: (work: { kind: "inbox" | "delivery"; id: string; delaySeconds?: number }) => Promise<void>;
 }
 
 export function integrationView(record: IntegrationRecord): TelegramIntegration {

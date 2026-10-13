@@ -131,6 +131,26 @@ export async function reconcileTelegramPublication(
   }
 }
 
+// Telegram queues accept delays of up to twelve hours; a longer wait is left to the scanner.
+const MAXIMUM_RETRY_WAKE_SECONDS = 43_200;
+
+/**
+ * A retry is due at its stored time. Ask for it then, so a verdict and the prompt held behind
+ * it do not wait for the next scan. Losing this wake loses only latency.
+ */
+async function wakeForRetry(services: TelegramServices, id: string, retryAfter: number | null) {
+  if (retryAfter === null) return;
+  try {
+    await services.wake({
+      kind: "delivery",
+      id,
+      delaySeconds: Math.min(Math.max(retryAfter, 0) + 1, MAXIMUM_RETRY_WAKE_SECONDS),
+    });
+  } catch {
+    /* The scheduled scanner still finds the due retry. */
+  }
+}
+
 export async function processTelegramDelivery(services: TelegramServices, id: string) {
   // Claim returns the pre-claim state together with its newly fenced attempt.
   const delivery = await services.store.claimDelivery(id);
@@ -215,10 +235,12 @@ export async function processTelegramDelivery(services: TelegramServices, id: st
       { kind: "rejected", code: "preparation_failed", retryAfter: 60 },
       decision,
     );
+    await wakeForRetry(services, delivery.id, 60);
     return;
   }
   const outcome = await services.api.dispatch(credentials.token, delivery, decision, audio);
   await services.store.finishDelivery(delivery, outcome, decision);
+  if (outcome.kind === "rejected") await wakeForRetry(services, delivery.id, outcome.retryAfter);
   // Send whatever was ordered after this message now, without another queue round trip.
   for (const next of await services.store.deliveriesAfter(delivery))
     await processTelegramDelivery(services, next);

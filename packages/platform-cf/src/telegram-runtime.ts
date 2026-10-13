@@ -5,6 +5,7 @@ import {
   processTelegramDelivery,
   processTelegramInbox,
   reconcileTelegramPublication,
+  type TelegramInboxOutcome,
   type TelegramServices,
 } from "@pirate/application/telegram";
 import type { Layer } from "effect";
@@ -49,6 +50,7 @@ export interface TelegramRuntimeOptions {
 }
 
 type TelegramWork = { kind: "inbox" | "delivery"; id: string };
+type TelegramWake = TelegramWork & { delaySeconds?: number };
 type TelegramWorkQueue = {
   send(body: TelegramWork, options?: { delaySeconds?: number }): Promise<void>;
 };
@@ -70,12 +72,20 @@ const INTERRUPTED_UPDATE_BACKSTOP_SECONDS = 130;
 export function makeTelegramWake(input: {
   readonly queue: TelegramWorkQueue;
   readonly defer: TelegramRuntimeOptions["defer"];
-  readonly inbox: (id: string) => Promise<void>;
+  readonly inbox: (id: string) => Promise<TelegramInboxOutcome | void>;
   readonly delivery: (id: string) => Promise<void>;
-}): (work: TelegramWork) => Promise<void> {
+}): (work: TelegramWake) => Promise<void> {
   const { queue, defer } = input;
-  if (defer === undefined) return (work) => queue.send(work);
-  return async (work) => {
+  return async ({ delaySeconds, ...work }) => {
+    // Delayed work is a later retry, never part of the update being handled now.
+    if (delaySeconds !== undefined) {
+      await queue.send(work, { delaySeconds });
+      return;
+    }
+    if (defer === undefined) {
+      await queue.send(work);
+      return;
+    }
     if (work.kind === "delivery") {
       // Only replies produced by an update being handled here are sent here. A request
       // that enqueues many messages must not wait for each of them to be sent.
@@ -92,12 +102,13 @@ export function makeTelegramWake(input: {
     }
     const started = Date.now();
     // Timing only, never ids or content: recovery by the scanner must not hide a slow path.
-    const record = (outcome: "handled" | "failed") =>
+    // A handler error is caught and stored for a retry, so it reports "retry", not success.
+    const record = (outcome: TelegramInboxOutcome | "failed") =>
       console.info("telegram.inline_update", { outcome, elapsed_ms: Date.now() - started });
     const run = () =>
       inlineUpdate.run(true, () =>
         input.inbox(work.id).then(
-          () => record("handled"),
+          (outcome) => record(outcome ?? "completed"),
           () => record("failed"),
         ),
       );

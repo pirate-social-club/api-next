@@ -153,6 +153,11 @@ export async function handleTelegramStudyChat(
     const item = session.items.find((row) => row.session_item_id === current.session_item_id);
     if (item?.presentation.kind !== "say_it_back")
       throw new TelegramFailure({ reason: "unavailable" });
+    // The prompt is the instruction and the line, nothing else. It is graded against the full
+    // line, so a line Telegram would truncate is never shown; the catalogue excludes such songs.
+    const prompt = t("sayThis", { line: item.presentation.reference_text });
+    if (prompt !== boundedTelegramText(prompt))
+      throw new TelegramFailure({ reason: "unavailable" });
     observe("card", item.ordinal, current.presentation_number);
     state = {
       ...state,
@@ -160,16 +165,10 @@ export async function handleTelegramStudyChat(
         itemId: item.session_item_id,
         attemptNumber: current.presentation_number,
         deliveryId: await services.vault.hash(`${inbox.id}:reply`),
+        promptText: prompt,
       },
     };
-    // The prompt is the instruction and the line, nothing else.
-    await respond(
-      {
-        ...text(t("sayThis", { line: item.presentation.reference_text })),
-        keyboard: { force_reply: true, selective: true },
-      },
-      feedback,
-    );
+    await respond({ ...text(prompt), keyboard: { force_reply: true, selective: true } }, feedback);
   };
   let startingLesson = false;
   try {
@@ -323,7 +322,11 @@ export async function handleTelegramStudyChat(
         if (
           !message?.voice ||
           message.reply_to_message?.message_id !==
-            (await study.store.promptMessageId(state.turn.deliveryId))
+            (await study.store.promptMessageId(
+              state.turn.deliveryId,
+              senderId,
+              state.turn.promptText,
+            ))
         ) {
           await respond(text(t("replyToLine")));
           return;
