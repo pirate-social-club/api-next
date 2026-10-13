@@ -138,6 +138,6 @@
     "./controlled-account-spoken": "./src/controlled-account-spoken.ts",
     "./use-cases/guest-learning": "./src/use-cases/guest-learning.ts",
     "./use-cases/hns-browser-transport": "./src/use-cases/hns-browser-transport.ts",
-    "./use-cases/guest-learning-test-fixture": "./src/use-cases/guest-learning.test-fixture.ts"
+    "./use-cases/guest-learning-test-fixture": "./src/use-cases/guest-learning-test-fixture.ts"
   }
 }
