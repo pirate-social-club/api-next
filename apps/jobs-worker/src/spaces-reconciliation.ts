@@ -5,7 +5,6 @@ import {
   type SpacesReconciliationStore,
 } from "@pirate/application";
 import type { AlertSink } from "@pirate/platform-cf";
-import { SpacesVerifierUnavailableError } from "@pirate/platform-cf/spaces-final-issuance-verifier";
 import { Effect, Result } from "effect";
 import {
   defaultRetrySchedule,
@@ -17,12 +16,6 @@ import {
 
 const CAPACITY = 8;
 const VERIFY_TIMEOUT = "8 seconds";
-
-const logUnobservedVerifierFailure = () =>
-  console.warn("spaces.final_issuance.verifier_retry", {
-    phase: "effect_failure_or_timeout",
-    status: null,
-  });
 
 /** A verifier failure or missing certificate leaves the claim pending. A
  * crashed tick leaves a finite lease that the next tick can acquire. */
@@ -54,18 +47,15 @@ const runSpacesReconciliationCycle = Effect.fn("runSpacesReconciliationCycle")(f
   const due = yield* store.leaseDue(CAPACITY);
   for (const target of due) {
     const result = yield* Effect.result(
-      verifier.verify(target).pipe(
-        Effect.timeout(VERIFY_TIMEOUT),
-        Effect.onInterrupt(() => Effect.sync(logUnobservedVerifierFailure)),
-      ),
+      verifier.verify(target).pipe(Effect.timeout(VERIFY_TIMEOUT)),
     );
-    if (
-      Result.isFailure(result) &&
-      !(result.failure instanceof SpacesVerifierUnavailableError && result.failure.diagnosticLogged)
-    ) {
-      // Keep diagnostics for outer timeouts, pre-request rejections and other
-      // unlogged failures. Suppress only an adapter-confirmed duplicate.
-      logUnobservedVerifierFailure();
+    if (Result.isFailure(result)) {
+      // The adapter logs safe HTTP/transport phases. An outer timeout or
+      // interruption can happen without reaching its catch handler.
+      console.warn("spaces.final_issuance.verifier_retry", {
+        phase: "effect_failure_or_timeout",
+        status: null,
+      });
     }
     if (Result.isFailure(result) || result.success.kind === "pending") {
       yield* store.retryLater(target);

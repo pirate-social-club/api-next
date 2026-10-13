@@ -17,13 +17,6 @@ function retryDiagnostic(phase: string, status?: number): void {
   console.warn("spaces.final_issuance.verifier_retry", { phase, status: status ?? null });
 }
 
-/** Carries only whether this invocation already emitted a safe diagnostic. */
-export class SpacesVerifierUnavailableError extends Error {
-  constructor(readonly diagnosticLogged: boolean) {
-    super("Spaces final verification unavailable");
-  }
-}
-
 export type SpacesVerifierFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 export type SpacesVerifierCredentials = Readonly<{
@@ -105,21 +98,36 @@ export function makeSpacesFinalIssuanceVerifier(
   }
   return {
     verify: (target) =>
-      Effect.suspend(() => {
-        let diagnosticLogged = false;
-        const logRetry = (phase: string, status?: number) => {
-          retryDiagnostic(phase, status);
-          diagnosticLogged = true;
-        };
-        return Effect.tryPromise({
-          try: async (signal): Promise<SpacesVerificationResultV1> => {
-            if (target.network !== "mainnet") throw new Error("Spaces verifier network mismatch");
-            if (!SCRIPT.test(target.script_pubkey_hex)) throw new Error("Invalid recipient script");
-            const name = renderSpacesHandleV1({
-              namespace_root: target.namespace_root,
-              handle_label: target.handle_label,
-            });
-            const response = await fetchImpl(VERIFY_URL, {
+      Effect.tryPromise({
+        try: async (signal): Promise<SpacesVerificationResultV1> => {
+          if (target.network !== "mainnet") throw new Error("Spaces verifier network mismatch");
+          if (!SCRIPT.test(target.script_pubkey_hex)) throw new Error("Invalid recipient script");
+          const name = renderSpacesHandleV1({
+            namespace_root: target.namespace_root,
+            handle_label: target.handle_label,
+          });
+          const response = await fetchImpl(VERIFY_URL, {
+            method: "POST",
+            redirect: "manual",
+            headers: {
+              "content-type": "application/json",
+              "CF-Access-Client-Id": credentials.accessClientId,
+              "CF-Access-Client-Secret": credentials.accessClientSecret,
+              authorization: `Bearer ${credentials.bearerToken}`,
+            },
+            body: JSON.stringify({
+              root: `@${target.namespace_root}`,
+              name,
+              recipient_script_pubkey_hex: target.script_pubkey_hex,
+            }),
+            signal,
+          }).catch((error: unknown) => {
+            retryDiagnostic("verify_transport");
+            throw error;
+          });
+          if (response.status === 409) {
+            await response.body?.cancel();
+            const observed = await fetchImpl(OBSERVE_URL, {
               method: "POST",
               redirect: "manual",
               headers: {
@@ -128,86 +136,64 @@ export function makeSpacesFinalIssuanceVerifier(
                 "CF-Access-Client-Secret": credentials.accessClientSecret,
                 authorization: `Bearer ${credentials.bearerToken}`,
               },
-              body: JSON.stringify({
-                root: `@${target.namespace_root}`,
-                name,
-                recipient_script_pubkey_hex: target.script_pubkey_hex,
-              }),
+              body: JSON.stringify({ root: `@${target.namespace_root}`, name }),
               signal,
             }).catch((error: unknown) => {
-              logRetry("verify_transport");
+              retryDiagnostic("observe_transport");
               throw error;
             });
-            if (response.status === 409) {
-              await response.body?.cancel();
-              const observed = await fetchImpl(OBSERVE_URL, {
-                method: "POST",
-                redirect: "manual",
-                headers: {
-                  "content-type": "application/json",
-                  "CF-Access-Client-Id": credentials.accessClientId,
-                  "CF-Access-Client-Secret": credentials.accessClientSecret,
-                  authorization: `Bearer ${credentials.bearerToken}`,
-                },
-                body: JSON.stringify({ root: `@${target.namespace_root}`, name }),
-                signal,
-              }).catch((error: unknown) => {
-                logRetry("observe_transport");
-                throw error;
-              });
-              if (observed.status === 409) {
-                await observed.body?.cancel();
-                logRetry("both_pending", 409);
-                return { kind: "pending" };
-              }
-              if (observed.status !== 200) {
-                logRetry("observe_response", observed.status);
-                await observed.body?.cancel();
-                throw new Error("Spaces verifier unavailable");
-              }
-              let evidence: VerifierEvidence;
-              try {
-                evidence = parseEvidence(
-                  await observed.json(),
-                  target,
-                  "spaces-verifier-name-observation-v1",
-                );
-              } catch (error) {
-                logRetry("observe_evidence", 200);
-                throw error;
-              }
-              if (evidence.recipient_script_pubkey_hex === target.script_pubkey_hex) {
-                return { kind: "final", evidence: finalEvidence(evidence) };
-              }
-              return {
-                kind: "occupied_other",
-                observed_script_pubkey_hex: evidence.recipient_script_pubkey_hex,
-                evidence: finalEvidence(evidence),
-              };
+            if (observed.status === 409) {
+              await observed.body?.cancel();
+              retryDiagnostic("both_pending", 409);
+              return { kind: "pending" };
             }
-            if (response.status !== 200) {
-              logRetry("verify_response", response.status);
-              await response.body?.cancel();
+            if (observed.status !== 200) {
+              retryDiagnostic("observe_response", observed.status);
+              await observed.body?.cancel();
               throw new Error("Spaces verifier unavailable");
             }
             let evidence: VerifierEvidence;
             try {
-              evidence = parseEvidence(await response.json(), target, "spaces-verifier-v1");
+              evidence = parseEvidence(
+                await observed.json(),
+                target,
+                "spaces-verifier-name-observation-v1",
+              );
             } catch (error) {
-              logRetry("verify_evidence", 200);
+              retryDiagnostic("observe_evidence", 200);
               throw error;
             }
-            if (evidence.recipient_script_pubkey_hex !== target.script_pubkey_hex) {
-              logRetry("recipient_mismatch", 200);
-              throw new Error("Spaces verifier recipient mismatch");
+            if (evidence.recipient_script_pubkey_hex === target.script_pubkey_hex) {
+              return { kind: "final", evidence: finalEvidence(evidence) };
             }
             return {
-              kind: "final",
+              kind: "occupied_other",
+              observed_script_pubkey_hex: evidence.recipient_script_pubkey_hex,
               evidence: finalEvidence(evidence),
             };
-          },
-          catch: () => new SpacesVerifierUnavailableError(diagnosticLogged),
-        });
+          }
+          if (response.status !== 200) {
+            retryDiagnostic("verify_response", response.status);
+            await response.body?.cancel();
+            throw new Error("Spaces verifier unavailable");
+          }
+          let evidence: VerifierEvidence;
+          try {
+            evidence = parseEvidence(await response.json(), target, "spaces-verifier-v1");
+          } catch (error) {
+            retryDiagnostic("verify_evidence", 200);
+            throw error;
+          }
+          if (evidence.recipient_script_pubkey_hex !== target.script_pubkey_hex) {
+            retryDiagnostic("recipient_mismatch", 200);
+            throw new Error("Spaces verifier recipient mismatch");
+          }
+          return {
+            kind: "final",
+            evidence: finalEvidence(evidence),
+          };
+        },
+        catch: () => new Error("Spaces final verification unavailable"),
       }),
   };
 }
