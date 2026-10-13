@@ -392,6 +392,13 @@ suite("first disabled owner accounting checkpoint", () => {
         },
         { fallback: false, suffix: "disabled-v2-retained" },
       );
+      // This genuine checkpoint has only the prospective pool leg. The asset
+      // projector still runs its candidate lock, then returns without issuing
+      // a bonus claim, subject consumption or credit.
+      expect(
+        (await f.admin.query("SELECT leg_id,kind FROM song_reward_offer_legs ORDER BY leg_id"))
+          .rows,
+      ).toEqual([{ leg_id: leg.legId, kind: "megapot_pool" }]);
       const people = [
         "retained-account-a",
         "retained-account-b",
@@ -433,6 +440,25 @@ suite("first disabled owner accounting checkpoint", () => {
       await f.admin.query(
         `GRANT INSERT ON decision_records,reward_eligibility_decisions TO ${q(f.role)}`,
       );
+      // Native0053 share validation takes FOR SHARE on these parents. A grant
+      // on one immutable identity column admits that lock without table UPDATE.
+      await f.admin.query(
+        `GRANT UPDATE(offer_id) ON song_reward_offers TO ${q(f.role)}; GRANT UPDATE(eligibility_decision_id) ON reward_eligibility_decisions TO ${q(f.role)}`,
+      );
+      expect(
+        (
+          await f.serving.query(
+            "SELECT has_column_privilege(current_user,'song_reward_offers','offer_id','UPDATE') AS offer_lock,has_table_privilege(current_user,'song_reward_offers','UPDATE') AS offer_table_update,has_column_privilege(current_user,'reward_eligibility_decisions','eligibility_decision_id','UPDATE') AS eligibility_lock,has_table_privilege(current_user,'reward_eligibility_decisions','UPDATE') AS eligibility_table_update",
+          )
+        ).rows,
+      ).toEqual([
+        {
+          offer_lock: true,
+          offer_table_update: false,
+          eligibility_lock: true,
+          eligibility_table_update: false,
+        },
+      ]);
       await f.admin.query(
         `GRANT INSERT ON megapot_pool_shares TO ${q(f.role)},PUBLIC; GRANT INSERT(account_id) ON megapot_pool_shares TO ${q(f.role)},PUBLIC; GRANT EXECUTE ON FUNCTION list_guest_practice_participations_v1(jsonb,text,integer) TO ${q(f.role)}`,
       );
@@ -605,12 +631,31 @@ suite("first disabled owner accounting checkpoint", () => {
       expect(
         await run(projections.listCredits({ accountId: heldAccount, cursor: null, limit: 10 })),
       ).toEqual(beforePublic);
+      // The secured264 trigger also owns its parent row locks. Remove the two
+      // temporary column UPDATEs, preserving the retained table guards.
+      await f.admin.query(
+        `REVOKE UPDATE(offer_id) ON song_reward_offers FROM ${q(f.role)}; REVOKE UPDATE(eligibility_decision_id) ON reward_eligibility_decisions FROM ${q(f.role)}`,
+      );
       // Post264 qualification must use the secured original projector, without
       // retaining the fixture's two temporary pre264 direct write privileges.
       await f.admin.query(
         `REVOKE INSERT ON decision_records,reward_eligibility_decisions FROM ${q(f.role)}`,
       );
       await nativeBoundaries(f);
+      expect(
+        (
+          await f.serving.query(
+            "SELECT has_column_privilege(current_user,'song_reward_offers','offer_id','UPDATE') AS offer_lock,has_table_privilege(current_user,'song_reward_offers','UPDATE') AS offer_table_update,has_column_privilege(current_user,'reward_eligibility_decisions','eligibility_decision_id','UPDATE') AS eligibility_lock,has_table_privilege(current_user,'reward_eligibility_decisions','UPDATE') AS eligibility_table_update",
+          )
+        ).rows,
+      ).toEqual([
+        {
+          offer_lock: false,
+          offer_table_update: false,
+          eligibility_lock: false,
+          eligibility_table_update: false,
+        },
+      ]);
       for (const table of [
         "decision_records",
         "reward_eligibility_decisions",
