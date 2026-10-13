@@ -40,7 +40,7 @@ import {
 } from "./guest-study-serving-composition.ts";
 import { createHttpWorker } from "./transport.ts";
 
-export { Browser, disclosure, json, policy, startBody };
+export { Browser, disclosure, json, startBody };
 export const ordinaryOrigin = "https://community.example";
 export const source = { communityId: "study-community", postId: "study-post" };
 export const implementedSource =
