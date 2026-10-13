@@ -304,6 +304,12 @@ function findProgressIn(
   });
 }
 
+export type MegapotOriginalPurchaseWindow = Readonly<{
+  open: boolean;
+  /** Rounded down from the native checkedAt/deadlineAt interval, never host UTC. */
+  remainingMilliseconds: number;
+}>;
+
 type OriginalPurchaseWindowOptions = Readonly<{ purchaseSafetyMarginSeconds: number }>;
 
 const beginOriginalPurchase = Effect.fn("MegapotPurchaseStore.beginOriginalPurchase")(
@@ -321,21 +327,36 @@ const beginOriginalPurchase = Effect.fn("MegapotPurchaseStore.beginOriginalPurch
   },
 );
 
-const readOriginalWindowIn = Effect.fn("MegapotPurchaseStore.readOriginalWindowIn")(
+const readOriginalWindowSnapshotIn = Effect.fn("MegapotPurchaseStore.readOriginalWindowSnapshotIn")(
   function* (transaction: ControlPlaneTransaction, candidate: MegapotPurchaseCandidate,
     options: OriginalPurchaseWindowOptions) {
     const result = yield* transaction.execute<Row>({
       label: "megapot-purchase.original-window.read",
-      text: `SELECT (read_megapot_original_purchase_window_v1($1,$2::numeric,$3,$4,$5,$6::integer)->>'open')::boolean AS open`,
+      text: `WITH original AS MATERIALIZED (
+        SELECT read_megapot_original_purchase_window_v1($1,$2::numeric,$3,$4,$5,$6::integer) AS window
+      ) SELECT (window->>'open')::boolean AS open,
+        EXTRACT(EPOCH FROM ((window->>'deadlineAt')::timestamptz -
+          (window->>'checkedAt')::timestamptz))*1000 AS remaining_ms FROM original`,
       values: [candidate.poolLegId, candidate.drawingId.toString(), candidate.observationId,
         candidate.snapshotId, candidate.commitmentEffectId, options.purchaseSafetyMarginSeconds],
       readonly: false,
     });
-    if (result.rows.length !== 1 || typeof result.rows[0]?.open !== "boolean")
+    const row = result.rows[0];
+    if (result.rows.length !== 1 || typeof row?.open !== "boolean")
       return yield* storage("invalid-row");
-    return result.rows[0].open;
+    const raw = row.remaining_ms;
+    if ((typeof raw !== "number" && typeof raw !== "string") ||
+        (typeof raw === "string" && !/^-?[0-9]+(?:\.[0-9]+)?$/u.test(raw)))
+      return yield* storage("invalid-row");
+    const remainingMilliseconds = Math.floor(Number(raw));
+    if (!Number.isSafeInteger(remainingMilliseconds)) return yield* storage("invalid-row");
+    return { open: row.open, remainingMilliseconds } satisfies MegapotOriginalPurchaseWindow;
   },
 );
+
+const readOriginalWindowIn = (transaction: ControlPlaneTransaction,
+  candidate: MegapotPurchaseCandidate, options: OriginalPurchaseWindowOptions) =>
+  readOriginalWindowSnapshotIn(transaction, candidate, options).pipe(Effect.map((window) => window.open));
 
 function reserveNonceIn(
   transaction: ControlPlaneTransaction,
@@ -522,6 +543,12 @@ function reserveNonceIn(
 
 export function makeControlPlaneMegapotPurchaseRepository(options: OriginalPurchaseWindowOptions) {
   return {
+    readOriginalWindow: (candidate: MegapotPurchaseCandidate) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          readOriginalWindowSnapshotIn(transaction, candidate, options));
+      }).pipe(mapped),
     isOriginalWindowOpen: (candidate: MegapotPurchaseCandidate) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -1208,12 +1235,14 @@ export const makeControlPlaneMegapotPurchaseStore = (
   options: OriginalPurchaseWindowOptions,
 ): MegapotPurchaseStore & {
   readonly isOriginalWindowOpen: (candidate: MegapotPurchaseCandidate) => Effect.Effect<boolean, MegapotPurchaseFailure>;
+  readonly readOriginalWindow: (candidate: MegapotPurchaseCandidate) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
 } => {
   const repository = makeControlPlaneMegapotPurchaseRepository(options);
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {
     isOriginalWindowOpen: (candidate) => provide(repository.isOriginalWindowOpen(candidate)),
+    readOriginalWindow: (candidate) => provide(repository.readOriginalWindow(candidate)),
     findProgress: (effectId) => provide(repository.findProgress(effectId)),
     loadCandidate: (input) => provide(repository.loadCandidate(input)),
     closePreBroadcast: (input) => provide(repository.closePreBroadcast(input)),

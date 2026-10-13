@@ -149,7 +149,7 @@ export function makeMegapotAttestationRuntime(input: {
     });
     const purchase = makeMegapotPurchaseCoordinator({
       store: purchaseStore,
-      isOriginalWindowOpen: purchaseStore.isOriginalWindowOpen,
+      readOriginalWindow: purchaseStore.readOriginalWindow,
       rpc,
       signer: transactionSigner,
       authority,
