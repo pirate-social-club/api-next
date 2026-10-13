@@ -190,6 +190,18 @@ BEGIN
   RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor_id),
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',expected_predecessor_credential_id)));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='acknowledge_guest_rotation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], expected_predecessor_credential_id text, successor_id text, expected_owner_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION acknowledge_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb, p_reservation text, p_fence bigint) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -238,6 +250,18 @@ BEGIN
  RETURN jsonb_build_object('state','completed','outcome_id',saved->>'checkpointId',
   'result',jsonb_build_object('checkpointId',saved->>'checkpointId'));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='acknowledge_owner_guest_spoken_success_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb, p_reservation text, p_fence bigint';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION acquire_reward_run_lease_v1(requested_run_id text, ttl_seconds integer, max_seconds integer) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER
@@ -965,6 +989,18 @@ BEGIN
  RETURN jsonb_build_object('state','mutated','operationId',p_operation_id,'capture',checked,'decision',p_decision,
   'totalCards',total,'remainingCards',remaining,'priorPresentationCount',(checked->>'priorPresentationCount')::INTEGER);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='apply_guest_json_item_mutation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_capture jsonb, p_decision jsonb, p_operation_id text, p_attempt_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION apply_guest_lesson_transition_private_v1(p_source text, p_session text, p_prior integer, p_kind text, p_next integer, p_completion text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -1001,6 +1037,18 @@ BEGIN
  -- credit/projection facts. Terminal resource release is separate and cannot
  -- release reserved/unknown calls merely because this learning row completed.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='apply_guest_lesson_transition_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_session text, p_prior integer, p_kind text, p_next integer, p_completion text, p_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION apply_guest_spoken_item_mutation_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_token_diff jsonb, p_spoken jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -1074,6 +1122,18 @@ BEGIN
  RETURN jsonb_build_object('state','mutated','operationId',checked->'operationId','capture',checked,'decision',p_decision,
   'feedback',p_feedback,'spoken',p_spoken,'totalCards',total,'remainingCards',remaining,'priorPresentationCount',checked->'priorPresentationCount');
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='apply_guest_spoken_item_mutation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_token_diff jsonb, p_spoken jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -2345,6 +2405,18 @@ BEGIN
  UPDATE learner_audio_account_provider_calls SET state='started' WHERE upload_attempt_id=p_upload;
  RETURN TRUE;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='begin_account_spoken_provider_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_idempotency_key text, input_request_sha256 text, input_ownership_result_sha256 text, input_observation_job_id text, input_observation_request_bytes bytea, input_observation_request_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
@@ -3010,6 +3082,18 @@ CREATE FUNCTION can_guest_access_activity_song_v1(expected_community_id text, ex
       AND p.post_type='song' AND p.status='published' AND p.visibility='public'
       AND p.content_rating='general' AND c.status='active');
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='can_guest_access_activity_song_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_community_id text, expected_post_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION capture_account_karaoke_audio_private_v1(p_account text, p_session text, p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3043,6 +3127,18 @@ BEGIN
   'sourceKind','karaoke','attemptRef',recording.attempt_id,'commandRef',p_session,'reservationRef',p_session,
   'capturedRevision',revision,'objectRef',ref,'contentDigest',NULL,'contentType','audio/L16;rate=16000;channels=1','byteSize',NULL,'durationMs',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_account_karaoke_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION capture_account_study_audio_private_v1(p_account text, p_command text, p_lease text, p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3092,6 +3188,18 @@ BEGIN
   'capturedRevision',revision,'objectRef',artifact.expected_object_ref,'contentDigest',command.audio_digest,
   'contentType',command.audio_content_type,'byteSize',command.audio_byte_size,'durationMs',command.audio_duration_ms);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_account_study_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_command text, p_lease text, p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION capture_guest_audio_retention_private_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3118,6 +3226,18 @@ BEGIN
  NEW.captured_retention_expires_at:=artifact.expires_at;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_guest_audio_retention_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION capture_guest_spoken_dispatch_private_v1(p_source text, p_operation jsonb, p_command text, p_lease text, p_call text, p_reservation text, p_upload text, p_fence bigint, p_rerecord_enabled boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3205,6 +3325,18 @@ BEGIN
   artifact.provider_retention,context,clock_timestamp());
  RETURN jsonb_build_object('captureId',cid,'fresh',TRUE);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_guest_spoken_dispatch_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_command text, p_lease text, p_call text, p_reservation text, p_upload text, p_fence bigint, p_rerecord_enabled boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION cascade_current_content_rating_v2() RETURNS trigger
     LANGUAGE plpgsql
@@ -3421,6 +3553,18 @@ BEGIN
  claimed:=claim_learner_audio_upload_private_v1(upload_id);
  RETURN read_learner_audio_upload_status_private_v1(upload_id)||jsonb_build_object('claimed',claimed);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_captured_learner_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION claim_guest_audio_io_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3439,6 +3583,18 @@ BEGIN
    AND NOT guest_ephemeral_object_closed_private_v1(upload.object_ref)
    AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_guest_audio_io_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION claim_hns_authority_provision_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(provision_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3942,6 +4098,18 @@ BEGIN
  UPDATE learner_audio_upload_attempts SET io_state='writing' WHERE upload_attempt_id=expected_upload;
  RETURN TRUE;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_learner_audio_upload_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION cleanup_guest_authority_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[], context_selected_id text, candidate_credential_ids text[], candidate_intent_ids text[]) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4005,6 +4173,18 @@ BEGIN
   END IF;
   RETURN jsonb_build_object('authority',authority,'cookieEffects',effects);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='cleanup_guest_authority_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_credential_ids text[], proved_intent_ids text[], context_selected_id text, candidate_credential_ids text[], candidate_intent_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION close_unclaimed_learner_audio_private_v1(p_upload text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4021,6 +4201,18 @@ BEGIN
   WHERE upload_attempt_id=p_upload;
  RETURN TRUE;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='close_unclaimed_learner_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION commit_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb, p_candidate jsonb, p_items jsonb, p_operation_id text, p_timezone text, p_disclosure_version text, p_accepted_version text, p_accepted boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4117,6 +4309,18 @@ BEGIN
   WHERE operation_id=p_operation_id;
  RETURN jsonb_build_object('state','completed','operationId',p_operation_id,'result',result);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='commit_guest_study_start_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb, p_candidate jsonb, p_items jsonb, p_operation_id text, p_timezone text, p_disclosure_version text, p_accepted_version text, p_accepted boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4689,12 +4893,24 @@ BEGIN
   resolved_at=CASE WHEN complete_guest_provider_call_v1.p_disposition='unknown' THEN NULL ELSE use_now END WHERE c.call_id=call_record.call_id;
  RETURN jsonb_build_object('state','completed','outcome_id',call_record.call_id);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='complete_guest_provider_call_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_operation jsonb, p_reservation_id text, p_call_id text, p_disposition text, p_checkpoint_id text DEFAULT NULL::text, p_actual_cost text DEFAULT NULL::text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch text, p_revision bigint, p_deleted_at timestamp with time zone) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
+DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; before_deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
  original_command TEXT; original_source TEXT; original_account TEXT;
  source_ids TEXT[]; captured_sources TEXT[];
  batch_row learner_audio_delete_batches%ROWTYPE;
@@ -4746,20 +4962,40 @@ BEGIN
     WHERE f.owner_id IS NULL OR f.revision IS DISTINCT FROM p_revision
       OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
   RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
- complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
  SELECT b.command_id INTO STRICT resolved_command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
+ -- Ordinary Account deletion reports this invocation's newly tombstoned artifacts.
+ -- Full source/batch/command locks above stabilize the SAME captured target set.
+ SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted'))
+ INTO before_deleted_count FROM learner_audio_delete_target_artifacts target
+ LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
+ LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
+ WHERE target.command_id=resolved_command_id;
+ complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
  SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted')),
   count(*) FILTER(WHERE COALESCE(a.recording_state,r.state,'unpublished')<>'deleted')
  INTO deleted_count,remaining_count FROM learner_audio_delete_target_artifacts target
  LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
  LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
  WHERE target.command_id=resolved_command_id;
+ deleted_count:=deleted_count-before_deleted_count;
  IF NOT complete AND deleted_count=0 THEN RAISE EXCEPTION 'audio producers remain unresolved' USING ERRCODE='GA001'; END IF;
  SELECT max(a.deleted_at) INTO latest FROM learner_audio_artifacts a JOIN learner_audio_delete_sources s ON s.owner_id=a.participation_owner_id
   WHERE s.command_id=resolved_command_id;
  RETURN jsonb_build_object('object','learner_audio_deletion','deleted_count',deleted_count,'remaining_count',remaining_count,
   'last_deleted_at',CASE WHEN latest IS NULL THEN NULL ELSE to_char(latest AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_account_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_batch text, p_revision bigint, p_deleted_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_captured_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4781,6 +5017,18 @@ BEGIN
  -- Exact failed/late-upload cleanup retains namespace, checkpoint and original
  -- terminal upload fact. It is not an owner deletion or global absence receipt.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_captured_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_guest_ephemeral_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4818,6 +5066,18 @@ BEGIN
   THEN RAISE EXCEPTION 'original ephemeral artifact differs'; END IF;
  -- A prior positively witnessed owner tombstone retains its original deleted_at.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_guest_ephemeral_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text, p_deleted_at timestamp with time zone) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4833,6 +5093,18 @@ BEGIN
  SELECT b.command_id INTO STRICT command_id FROM learner_audio_delete_batches b WHERE b.batch_id=selected_batch;
  RETURN jsonb_build_object('state','completed','operation',original->'operation','outcomeId',command_id,'result',guest_owner_audio_delete_projection_private_v1(command_id));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_guest_owner_audio_delete_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_batch jsonb, p_fact text, p_deleted_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_guest_pending_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4867,6 +5139,18 @@ BEGIN
   RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,selected_id),
     'cookie_effects','[]'::JSONB);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_guest_pending_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text, expected_owner_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION confirm_learner_audio_delete_private_v1(expected_batch text, expected_revision bigint, external_fact text, at_time timestamp with time zone) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4938,6 +5222,18 @@ BEGIN
    WHERE owner_id=ANY(source_ids) AND active_delete_command_id=command.command_id;
  RETURN TRUE;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='confirm_learner_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_batch text, expected_revision bigint, external_fact text, at_time timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION content_rating_reconciliation_plan_v1(requested_limit integer) RETURNS jsonb
     LANGUAGE plpgsql STABLE
@@ -4969,6 +5265,18 @@ BEGIN
  PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
  RETURN (read_learner_audio_upload_status_private_v1(upload_id)->>'mayContinue')::BOOLEAN;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='continue_captured_learner_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION converge_proved_empty_guest_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -4994,6 +5302,18 @@ BEGIN
     UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=source_id;
   END LOOP;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='converge_proved_empty_guest_sources_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION create_community_moderation_policy_revision_v1(input_account_id text, input_community_id text, input_expected_policy_revision text, input_decisions jsonb) RETURNS community_moderation_policy_update_result_v1
     LANGUAGE plpgsql
@@ -5173,6 +5493,18 @@ BEGIN
     'operation',guest_attachment_operation_identity_v1(new_operation_id),'intent',intent_result,
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','intent','action','issue','intentId',new_intent_id)));
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='create_guest_attachment_intent_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], issuance_key text, issuance_request_hash text, new_operation_id text, new_intent_id text, new_nonce_digest text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
     LANGUAGE sql STABLE
@@ -5586,6 +5918,18 @@ BEGIN
   -- Repair is authenticated metadata, not selection mutation or a cookie effect.
   RETURN jsonb_set(result,'{pointer_repair}',COALESCE(repair,'null'::JSONB));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='discover_guest_authority_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], context_selected_id text, expected_owner_id text, previous_credential_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
@@ -6094,6 +6438,18 @@ BEGIN
  -- owner fence, upload, known-object and successful-checkpoint evidence.
  PERFORM fail_learner_audio_delete_private_v1(p_batch,'unknown');
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='fail_account_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_batch text, p_revision bigint';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION fail_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6107,6 +6463,18 @@ BEGIN
  SELECT b.command_id INTO STRICT command_id FROM learner_audio_delete_batches b WHERE b.batch_id=selected_batch;
  RETURN jsonb_build_object('state','completed','operation',original->'operation','outcomeId',command_id,'result',guest_owner_audio_delete_projection_private_v1(command_id));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='fail_guest_owner_audio_delete_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_batch jsonb, p_fact text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION fail_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_reservation text, p_disposition text, p_failure text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6149,6 +6517,18 @@ BEGIN
   WHERE operation_id=main_op.operation_id; END IF;
  RETURN jsonb_build_object('state','known_aborted','operationId',main_op.operation_id,'result',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='fail_guest_spoken_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_command text, p_original_lease text, p_reservation text, p_disposition text, p_failure text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION fail_learner_audio_delete_private_v1(expected_batch text, external_fact text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6160,6 +6540,18 @@ BEGIN
  -- This never releases the durable owner fence, expires an old upload or
  -- changes provider disposition into a claimed confirmed provider deletion.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='fail_learner_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_batch text, external_fact text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION fence_telegram_learner_linking() RETURNS trigger
     LANGUAGE plpgsql
@@ -6938,6 +7330,18 @@ BEGIN
   AND c.idempotency_key=p_key AND c.content_digest=p_digest AND c.content_type=p_type AND c.byte_size=p_bytes AND c.duration_ms=p_duration;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='find_account_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_item text, p_attempt integer, p_key text, p_digest text, p_type text, p_bytes bigint, p_duration integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION find_guest_owner_audio_delete_v1(p_access jsonb, p_source text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6951,6 +7355,18 @@ BEGIN
  IF NOT FOUND THEN RAISE EXCEPTION 'deletion operation not found' USING ERRCODE='GP004'; END IF;
  RETURN guest_owner_audio_delete_projection_private_v1(command_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='find_guest_owner_audio_delete_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_source text, p_key text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION find_guest_study_start_operation_v1(p_access jsonb, p_source text, p_community text, p_post text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -6971,6 +7387,18 @@ BEGIN
  RETURN jsonb_build_object('state',CASE WHEN operation.state='known_aborted' THEN 'not_started'
   ELSE 'pending_confirmation' END,'session',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='find_guest_study_start_operation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_source text, p_community text, p_post text, p_key text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION find_owner_guest_spoken_success_for_audio_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_attempt integer, p_digest text, p_type text, p_bytes integer, p_duration integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -7021,6 +7449,18 @@ BEGIN
  -- storage. Missing CP is NULL, never authority to regrade/reclaim/redispatch.
  RETURN load_guest_spoken_success_private_v1(source_id,op,cap.command_id,cap.original_lease_token);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='find_owner_guest_spoken_success_for_audio_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_attempt integer, p_digest text, p_type text, p_bytes integer, p_duration integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION finish_guest_json_answer_v1(p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -7057,6 +7497,18 @@ BEGIN
  UPDATE guest_participation_operations SET state='completed',result_snapshot=result,resolved_at=clock_timestamp() WHERE operation_id=p_operation_id;
  RETURN jsonb_build_object('state','completed','operationId',p_operation_id,'result',result);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='finish_guest_json_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION finish_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_spoken jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -7102,6 +7554,18 @@ BEGIN
   WHERE operation_id=main_op.operation_id AND state='reserved';
  RETURN jsonb_build_object('state','completed','operationId',main_op.operation_id,'result',result);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='finish_guest_spoken_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_spoken jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION freeze_reward_leg_qualification_terms() RETURNS trigger
     LANGUAGE plpgsql
@@ -7577,6 +8041,18 @@ BEGIN
   OR (OLD.state IN('known_failed','succeeded') AND NEW.state=OLD.state)) THEN RAISE EXCEPTION 'provider state transition differs'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_account_audio_provider_call_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_account_language_preferences_update() RETURNS trigger
     LANGUAGE plpgsql
@@ -7869,6 +8345,18 @@ BEGIN
   OR (OLD.state='pending' AND NEW.state NOT IN('pending','completed')) THEN RAISE EXCEPTION 'cleanup command identity/terminal state differs'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_captured_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_comment_publication_rating_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -9545,6 +10033,18 @@ BEGIN
    RAISE EXCEPTION 'captured guest start/resource source mismatch' USING ERRCODE='GP003'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_controlled_guest_study_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_creation_avatar_outcomes() RETURNS trigger
     LANGUAGE plpgsql
@@ -10567,6 +11067,18 @@ BEGIN
   ) THEN RAISE EXCEPTION 'confirmed original predecessor required'; END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_credential_insert_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_credential_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10617,6 +11129,18 @@ BEGIN
   ELSE RAISE EXCEPTION 'invalid credential transition'; END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_credential_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_empty_alias_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10642,6 +11166,18 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_empty_alias_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_intent_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10696,6 +11232,18 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_intent_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_issuance_lineage_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10717,6 +11265,18 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_issuance_lineage_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_operation_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10734,6 +11294,18 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_operation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_resource_provider_call_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10748,6 +11320,18 @@ BEGIN
  THEN RAISE EXCEPTION 'provider identity or terminal accounting is immutable'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_resource_provider_call_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_resource_session_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -10762,6 +11346,18 @@ BEGIN
  THEN RAISE EXCEPTION 'resource identity or terminal receipt is immutable'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_guest_resource_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_handle_claim_change_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -11656,6 +12252,18 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_karaoke_recording'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_karaoke_runtime_session_authority() RETURNS trigger
     LANGUAGE plpgsql
@@ -11780,6 +12388,18 @@ BEGIN
    RAISE EXCEPTION 'audio command/source identity is immutable'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_learner_audio_control_state_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_localization_lyric_line_lifecycle() RETURNS trigger
     LANGUAGE plpgsql
@@ -14062,6 +14682,18 @@ BEGIN
   ) THEN RAISE EXCEPTION 'empty alias evidence required'; END IF;
   RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_participation_owner_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_persona_activity_preparation_action() RETURNS trigger
     LANGUAGE plpgsql
@@ -17034,6 +17666,18 @@ BEGIN
     'kind',operation.operation_kind,'idempotencyKey',operation.idempotency_key,
     'requestHash',operation.request_hash);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_attachment_operation_identity_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_operation_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_authority_component_is_empty_v1(original_source_id text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -17064,6 +17708,18 @@ BEGIN
     AND NOT EXISTS(SELECT 1 FROM guest_attachment_intents WHERE owner_id=ANY(member_ids)
       AND state IN ('awaiting_account','awaiting_confirmation') AND expires_at>clock_timestamp());
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_authority_component_is_empty_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='original_source_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_authority_issue_operation_v1(expected_operation_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -17085,6 +17741,18 @@ BEGIN
     'idempotencyKey',operation.idempotency_key,
     'requestHash',operation.request_hash);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_authority_issue_operation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_operation_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_authority_metadata_v1(expected_origin text, proved_ids text[], selected_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -17112,6 +17780,18 @@ BEGIN
     ELSE 'recovery_required' END,
     'selected',selected,'proved_credentials',COALESCE(metadata,'[]'::JSONB),'pointer_repair',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_authority_metadata_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_ephemeral_object_closed_private_v1(p_ref text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17123,6 +17803,18 @@ CREATE FUNCTION guest_ephemeral_object_closed_private_v1(p_ref text) RETURNS boo
   WHERE cleanup.object_ref=p_ref AND cleanup.state='completed'
    AND cap.captured_platform_retention='ephemeral')
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_ephemeral_object_closed_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_ref text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_ephemeral_owner_delete_witness_private_v1(p_upload text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17145,6 +17837,18 @@ CREATE FUNCTION guest_ephemeral_owner_delete_witness_private_v1(p_upload text) R
    AND batch.state='confirmed' AND batch.deleted_at IS NOT NULL
    AND deleted.deleted_at=batch.deleted_at AND command.revision=batch.revision)
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_ephemeral_owner_delete_witness_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17191,6 +17895,18 @@ CREATE FUNCTION guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup text)
     WHERE other.object_ref=upload.object_ref AND other.upload_attempt_id<>upload.upload_attempt_id
      AND (other.created_at>=upload.created_at OR other.io_state<>'closed' OR other.cleanup_required)))
 $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_ephemeral_pending_cleanup_ready_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_cleanup text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_ephemeral_upload_ready_private_v1(p_upload text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17231,6 +17947,18 @@ CREATE FUNCTION guest_ephemeral_upload_ready_private_v1(p_upload text) RETURNS b
     WHERE other.object_ref=upload.object_ref AND other.upload_attempt_id<>upload.upload_attempt_id
      AND (other.created_at>=upload.created_at OR other.io_state<>'closed' OR other.cleanup_required)))
 $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_ephemeral_upload_ready_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_owner_audio_delete_projection_private_v1(p_command text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -17247,6 +17975,18 @@ BEGIN
  RETURN jsonb_build_object('operation',jsonb_build_object('operation_kind','learner_audio_deletion','idempotency_key',command.idempotency_key,'operation_id',command.command_id),
  'state','pending','deleted_count',deleted_count,'remaining_count',remaining_count,'provider_disposition',command.provider_disposition);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_owner_audio_delete_projection_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_command text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_resource_component_has_history_v1(p_component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17256,6 +17996,18 @@ CREATE FUNCTION guest_resource_component_has_history_v1(p_component_ids text[]) 
   OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE source_owner_id=ANY(p_component_ids))
   OR EXISTS(SELECT 1 FROM guest_resource_release_receipts WHERE source_owner_id=ANY(p_component_ids))
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_resource_component_has_history_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_component_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_resource_usage_v1(p_component_ids text[], p_observed_at timestamp with time zone) RETURNS TABLE(owner_active bigint, global_active bigint, owner_calls numeric, global_calls numeric, owner_cost numeric, global_cost numeric)
     LANGUAGE sql STABLE
@@ -17274,6 +18026,18 @@ CREATE FUNCTION guest_resource_usage_v1(p_component_ids text[], p_observed_at ti
   COALESCE(sum(units) FILTER(WHERE source_owner_id=ANY(p_component_ids)),0),COALESCE(sum(units),0),
   COALESCE(sum(cost) FILTER(WHERE source_owner_id=ANY(p_component_ids)),0),COALESCE(sum(cost),0) FROM charges
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_resource_usage_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_component_ids text[], p_observed_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_spoken_component_has_history_private_v1(component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17282,6 +18046,18 @@ CREATE FUNCTION guest_spoken_component_has_history_private_v1(component_ids text
  SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures WHERE source_owner_id=ANY(component_ids))
    OR EXISTS(SELECT 1 FROM guest_study_spoken_checkpoints WHERE source_owner_id=ANY(component_ids))
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_spoken_component_has_history_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='component_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_study_answer_resource_scope_v1(p_community text, p_session text, p_item text, p_attempt integer, p_kind text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE
@@ -17293,6 +18069,18 @@ BEGIN
  RETURN jsonb_build_array('guest_study_answer_v1',p_community,p_session,p_item,p_attempt,p_kind)::TEXT;
 END;
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_study_answer_resource_scope_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_community text, p_session text, p_item text, p_attempt integer, p_kind text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_study_prepared_rows_v1(text, text) RETURNS jsonb
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -17381,6 +18169,18 @@ SELECT jsonb_build_object('accessible',public_resource.accessible,
  'rows',COALESCE((SELECT jsonb_agg(latest ORDER BY exercise_review_key COLLATE "C") FROM latest),'[]'::JSONB))
 FROM public_resource;
 $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_study_prepared_rows_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='text, text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guest_study_start_resource_scope_v1(p_community text, p_post text) RETURNS text
     LANGUAGE sql IMMUTABLE
@@ -17388,6 +18188,18 @@ CREATE FUNCTION guest_study_start_resource_scope_v1(p_community text, p_post tex
     AS $$
  SELECT jsonb_build_array('guest_study_start_v1',p_community,p_post)::TEXT
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guest_study_start_resource_scope_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_community text, p_post text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION handle_spaces_membership_policy_hash_v1(input_policy_id text, input_policy_revision bigint, input_requirement_id text, input_requirement_revision bigint, input_source_revision bigint, input_source_hash text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT
@@ -18739,6 +19551,18 @@ BEGIN
       'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='issue_guest_pending_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_owner_id text, new_credential_id text, new_digest text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION issue_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, expected_owner_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_credential_id text, new_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -18794,6 +19618,18 @@ BEGIN
       'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='issue_guest_rotation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], expected_predecessor_credential_id text, expected_owner_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_credential_id text, new_digest text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION karaoke_audio_target_can_tombstone_private_v1(p_account text, p_artifact text, p_attempt text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -18807,6 +19643,18 @@ CREATE FUNCTION karaoke_audio_target_can_tombstone_private_v1(p_account text, p_
    AND NOT EXISTS(SELECT 1 FROM learner_audio_object_names n WHERE n.owner_id=o.owner_id AND n.artifact_id=p_artifact
     AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=n.object_ref)))
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='karaoke_audio_target_can_tombstone_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_artifact text, p_attempt text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION learner_audio_component_has_history_private_v1(component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -18825,6 +19673,18 @@ CREATE FUNCTION learner_audio_component_has_history_private_v1(component_ids tex
  OR EXISTS(SELECT 1 FROM learner_audio_deleted_objects d JOIN learner_audio_object_names n USING(object_ref)
    WHERE n.owner_id=ANY(component_ids))
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='learner_audio_component_has_history_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='component_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION learner_audio_producer_component_has_history_private_v1(p_owners text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -18836,6 +19696,18 @@ CREATE FUNCTION learner_audio_producer_component_has_history_private_v1(p_owners
  OR EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints WHERE owner_id=ANY(p_owners))
  OR EXISTS(SELECT 1 FROM learner_audio_account_provider_calls WHERE owner_id=ANY(p_owners))
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='learner_audio_producer_component_has_history_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_owners text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION learner_audio_source_component_private_v1(seed_owners text[]) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
@@ -18857,6 +19729,18 @@ BEGIN
  ) SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO component_ids FROM component;
  RETURN component_ids;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='learner_audio_source_component_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='seed_owners text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION list_closed_account_spoken_checkpoints_private_v1(p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -18878,6 +19762,18 @@ BEGIN
  -- Unknown/writing/registered uploads remain pending and never become failed
  -- through age or process loss. Filtering ready rows avoids queue starvation.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='list_closed_account_spoken_checkpoints_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_maximum integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION list_guest_practice_participations_v1(p_access jsonb, p_cursor text, p_limit integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -18914,6 +19810,18 @@ BEGIN
  -- practice sessions from admission. Nonempty learning history remains intact.
  RETURN jsonb_build_object('items','[]'::JSONB,'nextCursor',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='list_guest_practice_participations_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_cursor text, p_limit integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION list_guest_spoken_closed_recovery_v1(p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -18938,6 +19846,18 @@ BEGIN
    ORDER BY cp.persisted_at,cp.checkpoint_id LIMIT p_maximum
   ) candidate),'[]'::JSONB);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='list_guest_spoken_closed_recovery_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_maximum integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION load_account_spoken_success_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -18948,6 +19868,18 @@ BEGIN
  SELECT successful_result INTO STRICT result FROM learner_audio_account_spoken_checkpoints WHERE upload_attempt_id=p_upload;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='load_account_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION load_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -18971,6 +19903,18 @@ BEGIN
   'resourceReservationId',cap.resource_reservation_id,
   'deletionFenceRevision',cap.deletion_fence_revision,'uploadAttemptId',cap.upload_attempt_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='load_guest_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_command text, p_original_lease text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_account_audio_group_private_v1(p_original_account text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19003,6 +19947,18 @@ BEGIN
  FOREACH locked_account_id IN ARRAY account_ids LOOP PERFORM pg_advisory_xact_lock(hashtextextended(locked_account_id,83000001)); END LOOP;
  RETURN source_ids;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_account_audio_group_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_original_account text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_guest_authority_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19038,6 +19994,18 @@ BEGIN
     ) SELECT owner_id FROM component
   ) ORDER BY c.credential_id COLLATE "C" FOR UPDATE;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_guest_authority_sources_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_guest_cleanup_components_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19078,6 +20046,18 @@ BEGIN
   PERFORM 1 FROM guest_attachment_intents WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
     ORDER BY intent_id COLLATE "C" FOR UPDATE;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_guest_cleanup_components_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_credential_ids text[], proved_intent_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_guest_resource_budget_v1(p_source_id text, p_fingerprint text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19102,6 +20082,18 @@ BEGIN
   THEN RAISE EXCEPTION 'owner mismatch' USING ERRCODE='GP002'; END IF;
  RETURN component_ids;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_guest_resource_budget_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_fingerprint text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_hns_root_import_lifecycle_job_v1(input_job_id bigint, input_session_id text, input_job_kind text, input_executor_id text, input_lease_fence bigint) RETURNS TABLE(lifecycle_job_id bigint, created_at timestamp with time zone)
     LANGUAGE sql SECURITY DEFINER
@@ -19284,6 +20276,18 @@ BEGIN
  -- Pure locking/reads create NO fence row and establish NO owner. New history
  -- creation below validates only its active source and persists its own fence.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_learner_audio_sources_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_owners text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_original_account_audio_source_private_v1(p_account text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19295,6 +20299,18 @@ BEGIN
  source_id:=require_existing_account_participation_owner_v1(p_account);
  RETURN source_id;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_original_account_audio_source_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_post_id text) RETURNS TABLE(owner_account_id text, audio_revision bigint, current_policy_revision bigint, current_policy_hash text)
     LANGUAGE sql STRICT SECURITY DEFINER
@@ -19326,6 +20342,18 @@ BEGIN
    WHERE owner_id=NEW.participation_owner_id AND state='empty';
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='map_controlled_guest_learning_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION map_existing_account_learning_source_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19344,6 +20372,18 @@ BEGIN
  UPDATE participation_owners SET state='established' WHERE owner_id=mapped_owner AND state='empty';
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='map_existing_account_learning_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION mark_account_spoken_provider_unknown_private_v1(p_upload text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19358,6 +20398,18 @@ BEGIN
  -- close. The independent unknown provider fact still blocks a new generation.
  PERFORM close_unclaimed_learner_audio_private_v1(p_upload);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='mark_account_spoken_provider_unknown_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
     LANGUAGE plpgsql
@@ -19429,6 +20481,18 @@ BEGIN
  UPDATE learner_audio_upload_attempts SET multipart_upload_id=p_id WHERE upload_attempt_id=p_upload;
  -- ID capture does not itself declare uncertain/closed I/O or clear a fence.
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='note_learner_audio_multipart_id_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE TABLE song_derivative_video_policy_observations (
     operation_id text NOT NULL,
@@ -19680,6 +20744,18 @@ BEGIN
   WHERE upload_attempt_id=p_upload AND state IN('started','unknown');
  IF NOT FOUND THEN RAISE EXCEPTION 'original provider dispatch missing'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='persist_account_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_success jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION persist_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19754,6 +20830,18 @@ BEGIN
   'completed',cp,call_row.maximum_provider_cost_micros::TEXT);
  RETURN jsonb_build_object('state','completed','outcome_id',cp,'result',jsonb_build_object('checkpointId',cp));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='persist_guest_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION persist_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19765,6 +20853,18 @@ BEGIN
  PERFORM require_guest_study_composition_v1();
  RETURN persist_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease,p_result,p_provider);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='persist_owner_guest_spoken_success_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION persona_community_binding_evidence_digest_v1() RETURNS text
     LANGUAGE sql STABLE
@@ -19943,6 +21043,18 @@ BEGIN
  RETURN jsonb_build_object('batchId',prepared_batch_id,'fenceRevision',(SELECT revision FROM learner_audio_delete_batches b WHERE b.batch_id=prepared_batch_id),
  'objectRefs',COALESCE((SELECT jsonb_agg(object_ref ORDER BY ordinal) FROM learner_audio_delete_batch_items i WHERE i.batch_id=prepared_batch_id),'[]'::JSONB));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_account_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_original_account text, p_maximum integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19961,6 +21073,18 @@ BEGIN
  IF NOT FOUND THEN INSERT INTO learner_audio_upload_cleanup_commands VALUES('audio_cleanup_'||gen_random_uuid()::TEXT,upload_id,upload.owner_id,upload.object_ref,'pending',clock_timestamp(),NULL) RETURNING * INTO command; END IF;
  RETURN jsonb_build_object('cleanupId',command.cleanup_id,'uploadAttemptId',upload_id,'objectRef',upload.object_ref);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_captured_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_attachment_target_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], expected_intent_id text, current_account_id text, protected_session_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20076,6 +21200,18 @@ BEGIN
   RETURN jsonb_build_object('state','completed','operation_id',prepared_id,
     'operation',guest_attachment_operation_identity_v1(prepared_id),'prepared',prepared);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_attachment_target_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], expected_intent_id text, current_account_id text, protected_session_digest text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20094,6 +21230,18 @@ BEGIN
  IF NOT FOUND THEN INSERT INTO learner_audio_upload_cleanup_commands VALUES('audio_cleanup_'||gen_random_uuid()::TEXT,upload_id,upload.owner_id,upload.object_ref,'pending',clock_timestamp(),NULL) RETURNING * INTO command; END IF;
  RETURN jsonb_build_object('cleanupId',command.cleanup_id,'uploadAttemptId',upload_id,'objectRef',upload.object_ref);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_captured_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_json_answer_v1(p_access jsonb, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer, p_answer jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20156,6 +21304,18 @@ BEGIN
   'acceptedAt',transaction_timestamp(),'totalCards',total,'remainingCards',remaining,
   'resourceReservationId',reservation.reservation_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_json_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer, p_answer jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_owner_audio_delete_v1(p_access jsonb, p_operation jsonb, p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20180,6 +21340,18 @@ BEGIN
  END IF;
  RETURN jsonb_build_object('state','completed','operation',p_operation,'outcomeId',selected_batch,'result',read_guest_owner_audio_delete_batch_private_v1(selected_batch));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_owner_audio_delete_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_maximum integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_spoken_finalization_v1(p_source text, p_operation jsonb, p_checkpoint text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20265,6 +21437,18 @@ BEGIN
   'priorRerecordRecorded',prior_rerecord,'priorPresentationCount',sess.presentation_count,'currentPresentedAt',sess.current_presented_at,
   'totalCards',total,'remainingCards',remaining,'archive',archive,'resourceReservationId',cap.resource_reservation_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_spoken_finalization_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20327,6 +21511,18 @@ BEGIN
  RETURN jsonb_build_object('state','candidate','reservationId',reservation.reservation_id,
   'sourceOwnerId',reservation.source_owner_id,'sessionId',reservation.session_id)||plan;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_guest_study_start_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_hns_control_observer_operation_insert() RETURNS trigger
     LANGUAGE plpgsql
@@ -20559,7 +21755,10 @@ BEGIN
    UPDATE learner_audio_owner_fences SET revision=next_revision,active_delete_command_id=command.command_id
      WHERE owner_id=ANY(authorized_sources);
    UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE owner_id=ANY(authorized_sources)
-     AND captured_revision<next_revision;
+     AND captured_revision<next_revision
+     AND (io_state<>'closed' OR NOT EXISTS(
+       SELECT 1 FROM learner_audio_deleted_objects deleted
+        WHERE deleted.object_ref=learner_audio_upload_attempts.object_ref));
    -- Claim is serialized by the same owner lock and is mandatory before I/O.
    -- Still-registered intents therefore have a positive no-I/O witness and may
    -- close atomically. Writing/unknown intents NEVER close through this path.
@@ -20582,6 +21781,18 @@ BEGIN
  -- rather than taking repeated head()==NULL as a terminal producer witness.
  RETURN new_batch;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_learner_audio_delete_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_source text, expected_key text, expected_hash text, new_command text, authorized_sources text[], new_batch text, maximum_artifacts integer, provider_fact text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_next_guest_ephemeral_audio_cleanup_private_v1() RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20623,6 +21834,18 @@ BEGIN
  RETURN jsonb_build_object('state','prepared','cleanup',prepared||jsonb_build_object(
   'attemptId',original_capture.attempt_id,'contentDigest',original_capture.audio_digest));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_next_guest_ephemeral_audio_cleanup_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prepare_platform_pirate_label_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -20703,6 +21926,18 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='preserve_learning_source_identity_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION prevent_persona_create_action_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -21303,6 +22538,18 @@ BEGIN
  END IF;
  RETURN jsonb_build_object('source',source,'session',public_session);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='project_owner_study_session_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_community text, p_session text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION promote_operator_managed_route_from_hns_candidate_v1(input_receipt_id text, input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_route_binding_id text, input_operator_route_activation_id text, input_evidence_ref text, input_candidate_bytes bytea) RETURNS TABLE(outcome text, receipt_id text, evidence_ref text, route_binding_id text, binding_generation bigint, app_host_activation_generation bigint)
     LANGUAGE plpgsql
@@ -21804,6 +23051,18 @@ BEGIN
  END IF;
  RETURN mapped_owner;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='provision_account_participation_owner_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_account_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
     LANGUAGE plpgsql
@@ -22005,6 +23264,18 @@ BEGIN
   WHERE account_id=p_account AND source_kind='karaoke' AND command_ref=p_session AND attempt_ref=p_attempt AND artifact_id=p_artifact;
  RETURN read_captured_learner_audio_private_v1(upload_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_account_karaoke_audio_capture_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_attempt text, p_artifact text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_captured_learner_audio_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22025,6 +23296,18 @@ BEGIN
   RAISE EXCEPTION 'immutable archive capture missing or differs'; END IF;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_captured_learner_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_audio_io_capture_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22044,6 +23327,18 @@ BEGIN
    AND u.object_ref='learner-audio/study/'||cap.attempt_id||'/'||cap.audio_digest;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_audio_io_capture_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_browser_proof_snapshot_v1(expected_origin text, credential_proofs jsonb, intent_proofs jsonb, cleanup_operation boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22126,6 +23421,18 @@ BEGIN
   ) INTO result;
   RETURN result;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_browser_proof_snapshot_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, credential_proofs jsonb, intent_proofs jsonb, cleanup_operation boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_credential_proof_matches_v1(expected_origin text, presented_proofs jsonb, cleanup_operation boolean) RETURNS TABLE(credential_id text, credential_source_owner_id text, origin text, credential_state text, session_until timestamp with time zone, pending_expires_at timestamp with time zone, predecessor_id text, confirmed_at timestamp with time zone, revoked_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22158,6 +23465,18 @@ BEGIN
       ON c.credential_id=p->>'credentialId' AND c.secret_digest=p->>'digest'
     WHERE c.origin=expected_origin ORDER BY c.credential_id COLLATE "C";
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_credential_proof_matches_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, presented_proofs jsonb, cleanup_operation boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_learning_lease_observation_v1(expected_origin text, expected_credential_id text, expected_effective_owner text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22188,6 +23507,18 @@ BEGIN
     AND resolve_guest_empty_owner_root_v1(c.owner_id)=expected_effective_owner;
   RETURN result;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_learning_lease_observation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, expected_credential_id text, expected_effective_owner text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_owner_audio_delete_batch_private_v1(p_batch text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22206,6 +23537,18 @@ BEGIN
  'providerDisposition',command.provider_disposition) INTO result;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_owner_audio_delete_batch_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_batch text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_spoken_capture_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -22226,6 +23569,18 @@ BEGIN
   'audioDigest',cap.audio_digest,'audioContentType',cap.audio_content_type,'audioByteSize',cap.audio_byte_size,
   'audioDurationMs',cap.audio_duration_ms,'gradingContext',cap.grading_context);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_spoken_capture_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_command text, p_original_lease text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_spoken_closed_recovery_v1(p_checkpoint text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22273,6 +23628,18 @@ BEGIN
   jsonb_build_object('state','stored','objectRef',upload.object_ref)
   ELSE jsonb_build_object('state','failed','objectRef',NULL) END);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_spoken_closed_recovery_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_checkpoint text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_spoken_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22316,6 +23683,18 @@ BEGIN
   'context',jsonb_build_object('item',item.item_snapshot,'referenceText',exercise.private_grader->>'reference_text',
     'dominantLanguage',dominant,'languageProvenance',provenance));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_spoken_context_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text, p_key text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_guest_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22328,6 +23707,18 @@ BEGIN
   RAISE EXCEPTION 'guest session unavailable' USING ERRCODE='GP010'; END IF;
  RETURN result;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_guest_study_session_snapshot_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_learner_audio_upload_status_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22343,6 +23734,18 @@ BEGIN
     AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL,
   'mayContinue',upload.io_state='writing' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_learner_audio_upload_status_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_original_account_study_answer_receipt_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_hash text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22358,6 +23761,18 @@ BEGIN
  IF NOT FOUND THEN RETURN NULL; END IF;
  RETURN jsonb_build_object('source',source,'attemptId',attempt_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_original_account_study_answer_receipt_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_hash text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_original_account_study_source_v1(p_access jsonb, p_community text, p_session text, p_item text DEFAULT NULL::text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22385,6 +23800,18 @@ BEGIN
   AND participation_owner_kind='account') THEN RETURN NULL; END IF;
  RETURN jsonb_build_object('kind','account','ownerId',original_owner,'accountId',sess.account_id,'personaId',sess.persona_id);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_original_account_study_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text DEFAULT NULL::text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_guest_answer_operation_v1(p_access jsonb, p_source text, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22408,6 +23835,18 @@ BEGIN
   RAISE EXCEPTION 'original spoken request changed' USING ERRCODE='GP005'; END IF;
  RETURN jsonb_build_object('state',original.state,'operationId',original.operation_id,'result',original.result_snapshot);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_guest_answer_operation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_source text, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_guest_answer_source_v1(p_access jsonb, p_community text, p_session text, p_item text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22429,6 +23868,18 @@ BEGIN
  -- mutation; this source read cannot suppress an immutable completed replay.
  RETURN jsonb_build_object('kind','guest','ownerId',sess.participation_owner_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_guest_answer_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_guest_spoken_capture_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22440,6 +23891,18 @@ BEGIN
  PERFORM require_guest_study_composition_v1();
  RETURN read_guest_spoken_capture_private_v1(source_id,p_operation,p_command,p_original_lease);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_guest_spoken_capture_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb, p_operation jsonb, p_command text, p_original_lease text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_guest_spoken_dispatch_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22462,6 +23925,18 @@ BEGIN
  RETURN context||jsonb_build_object('resourceReservationId',sess.guest_resource_reservation_id,
   'deletionFenceRevision',COALESCE(fence.revision,0));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_guest_spoken_dispatch_context_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text, p_item text, p_key text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22473,6 +23948,18 @@ BEGIN
  PERFORM require_guest_study_composition_v1();
  RETURN load_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_guest_spoken_success_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb, p_operation jsonb, p_command text, p_original_lease text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION read_owner_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -22562,6 +24049,18 @@ BEGIN
  END IF;
  RETURN jsonb_build_object('source',source,'session',public_session);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owner_study_session_snapshot_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
     LANGUAGE plpgsql
@@ -23044,6 +24543,18 @@ BEGIN
  UPDATE participation_owners SET state='established' WHERE owner_id=expected_owner AND state='empty';
  RETURN fence.revision;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='register_learner_audio_upload_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_owner text, expected_artifact text, expected_kind text, expected_attempt text, expected_command text, expected_reservation text, expected_object_ref text, upload_id text, expected_captured_revision bigint';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reject_age_verification_ceremony_mutation() RETURNS trigger
     LANGUAGE plpgsql
@@ -23134,12 +24645,36 @@ BEGIN
         AND c.state='confirmed' AND root.state='established' AND root.owner_id<>selected_owner)
   THEN RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reject_guest_copresent_established_conflict_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_owner text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reject_guest_immutable_mutation_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
     AS $$
 BEGIN RAISE EXCEPTION 'guest evidence is immutable'; END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reject_guest_immutable_mutation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reject_handle_nationality_decision_mutation() RETURNS trigger
     LANGUAGE plpgsql
@@ -23428,6 +24963,18 @@ BEGIN
  INSERT INTO guest_resource_release_receipts VALUES(receipt_id,p_source_id,p_operation->>'kind',p_operation->>'idempotencyKey',p_operation->>'requestHash',p_reservation_id,p_session_id,p_terminal_state,use_now);
  RETURN jsonb_build_object('state','completed','outcome_id',receipt_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='release_guest_resource_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_terminal_state text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION release_next_guest_study_resource_remainder_v1() RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -23474,6 +25021,18 @@ BEGIN
  -- accepted checkpoint must still use its original captured continuation.
  RETURN jsonb_build_object('state','released','terminalState',terminal);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='release_next_guest_study_resource_remainder_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION release_reward_gas_topup_on_terminal_effect() RETURNS trigger
     LANGUAGE plpgsql
@@ -23650,6 +25209,18 @@ BEGIN
   RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,selected_id),
     'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','refresh','credentialId',selected_id)));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='renew_guest_authority_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[], selected_id text, expected_owner_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION renew_hns_community_root_import_challenge_v1(input_actor_id text, input_community_id text, input_attachment_intent_id text, input_new_ceremony_intent_id text, input_reservation_request jsonb, input_reservation_request_hash text) RETURNS TABLE(outcome text, ceremony_intent_id text, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -23874,6 +25445,18 @@ BEGIN
   OR (p_state='failed' AND (p_ref IS NOT NULL OR (status->>'mayPublish')::BOOLEAN IS TRUE))
   OR p_state IS NULL OR p_state NOT IN('stored','failed') THEN RAISE EXCEPTION 'account archive result differs from actual fence'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_account_spoken_archive_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_state text, p_ref text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_account_spoken_success_private_v1(p_upload text, p_success jsonb) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -23891,6 +25474,18 @@ BEGIN
   OR command.audio_digest<>captured.content_digest THEN RAISE EXCEPTION 'original account command differs'; END IF;
  RETURN TRUE;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_account_spoken_success_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_success jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
     LANGUAGE plpgsql
@@ -23977,6 +25572,18 @@ BEGIN
   ON s.command_id=f.active_delete_command_id AND s.owner_id=f.owner_id
   WHERE f.owner_id=upload.owner_id AND f.revision>upload.captured_revision) THEN RAISE EXCEPTION 'actual captured deletion fence required'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_captured_audio_deletion_stop_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_captured_karaoke_recording_result_private_v1(p_account text, p_session text, p_attempt text, p_artifact text, p_result jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -23997,6 +25604,18 @@ BEGIN
   IF status->>'storageDisposition' NOT IN('absent','failed') THEN RAISE EXCEPTION 'known failed storage disposition required'; END IF;
  ELSE RAISE EXCEPTION 'Karaoke result shape differs'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_captured_karaoke_recording_result_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_attempt text, p_artifact text, p_result jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_captured_learner_audio_private_v1(p_capture jsonb) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24008,6 +25627,18 @@ BEGIN
   RAISE EXCEPTION 'archive generation differs'; END IF;
  RETURN upload_id;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_captured_learner_audio_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_community_route_hns_control_identity() RETURNS trigger
     LANGUAGE plpgsql
@@ -24223,6 +25854,18 @@ BEGIN
  IF NOT FOUND THEN RAISE EXCEPTION 'account owner must be provisioned before activity'; END IF;
  RETURN mapped_owner;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_existing_account_participation_owner_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_account_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE TABLE guest_participation_operations (
     operation_id text NOT NULL,
@@ -24260,6 +25903,18 @@ BEGIN
   RAISE EXCEPTION 'original answer identity changed' USING ERRCODE='GP005'; END IF;
  RETURN operation;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_answer_operation_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_operation_id text, p_community text, p_session text, p_item text, p_attempt integer, p_kind text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_audio_io_capture_private_v1(p_capture jsonb) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24271,6 +25926,18 @@ BEGIN
   RAISE EXCEPTION 'original archive capture differs' USING ERRCODE='GP005'; END IF;
  RETURN upload_id;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_audio_io_capture_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_audio_recovery_access_private_v1(p_access jsonb, p_source text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24304,6 +25971,18 @@ BEGIN
  -- Confirmed recovery has no server age or learning-lease expiry.
  RETURN sources;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_audio_recovery_access_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_source text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_learning_runtime_role_v1(p_runtime regrole) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24336,6 +26015,18 @@ BEGIN
     RAISE EXCEPTION 'runtime can bypass controlled guest rows' USING ERRCODE='42501'; END IF;
  END LOOP;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_learning_runtime_role_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_runtime regrole';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_practice_only_schema_phase_v1() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24409,6 +26100,18 @@ BEGIN
         'reward_credit_persona_bindings','reward_credit_recipient_selections'))
   THEN RAISE EXCEPTION 'owner history closure unavailable' USING ERRCODE='GP003'; END IF;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_practice_only_schema_phase_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_resource_success_checkpoint_v1(p_checkpoint_id text, p_call_id text, p_reservation_id text, p_source_owner_id text, p_actual_cost numeric) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24436,6 +26139,18 @@ BEGIN
   (SELECT (cap.grading_context->>'rerecordEnabled')::BOOLEAN FROM guest_study_spoken_checkpoints cp
     JOIN guest_study_spoken_captures cap USING(capture_id) WHERE cp.checkpoint_id=p_checkpoint_id));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_resource_success_checkpoint_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_checkpoint_id text, p_call_id text, p_reservation_id text, p_source_owner_id text, p_actual_cost numeric';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_review_schedule_private_v1(p_schedule jsonb, p_accepted timestamp with time zone) RETURNS void
     LANGUAGE plpgsql STABLE
@@ -24466,6 +26181,18 @@ BEGIN
  IF NOT isfinite(due) OR due<=p_accepted OR due>p_accepted+INTERVAL '366 days' THEN
   RAISE EXCEPTION 'bounded shared review clock required' USING ERRCODE='GP003'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_review_schedule_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_schedule jsonb, p_accepted timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_spoken_resource_plan_v1(p_source_id text, p_session_id text, p_reservation_id text, p_rerecord_enabled boolean) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24515,6 +26242,18 @@ BEGIN
   OR rsv.worst_case_cost_micros IS DISTINCT FROM rsv.initial_units*rsv.unit_hold_micros THEN
   RAISE EXCEPTION 'original spoken cost lineage mismatch' USING ERRCODE='GP006'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_spoken_resource_plan_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_session_id text, p_reservation_id text, p_rerecord_enabled boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_study_composition_v1() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24589,6 +26328,18 @@ BEGIN
     AND tgtype=23 AND tgfoid='guard_study_v2_activity_authority()'::regprocedure) THEN
   RAISE EXCEPTION 'private capture immutable source admission unavailable' USING ERRCODE='GP006'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_study_composition_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_guest_study_learning_access_v1(p_access jsonb, p_source text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24614,6 +26365,18 @@ BEGIN
  IF credential.session_until<=clock_timestamp() THEN
   RAISE EXCEPTION 'learning lease expired' USING ERRCODE='GP007'; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_guest_study_learning_access_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_source text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_media_song_pcm_atomic_admission() RETURNS trigger
     LANGUAGE plpgsql
@@ -24693,6 +26456,18 @@ BEGIN
   RAISE EXCEPTION 'captured guest source required' USING ERRCODE='GP002'; END IF;
  RETURN p_source->>'ownerId';
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_owner_guest_source_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -25045,6 +26820,18 @@ BEGIN
   p_operation->>'idempotencyKey',p_operation->>'requestHash','known_aborted',existing.created_at,clock_timestamp());
  RETURN jsonb_build_object('kind','resource_refused','reservation',budget,'plan',plan,'operationId',p_operation_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reserve_guest_prepared_study_start_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_community text, p_post text, p_session_id text, p_target text, p_band text, p_fingerprint text, p_policy jsonb, p_operation_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reserve_guest_provider_call_v1(p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_units integer, p_maximum_cost text, p_cost_version text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -25085,6 +26872,18 @@ BEGIN
  RETURN jsonb_build_object('state','completed','outcome_id',call_id,'result',jsonb_build_object('state','reserved','callId',call_id,
   'reservationId',reservation.reservation_id,'maximumCostMicros',p_maximum_cost));
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reserve_guest_provider_call_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_units integer, p_maximum_cost text, p_cost_version text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reserve_guest_resource_session_v1(p_source_id text, p_operation jsonb, p_session_id text, p_worst_units integer, p_worst_cost text, p_fingerprint text, p_policy jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -25140,6 +26939,18 @@ BEGIN
  IF NOT refused THEN UPDATE participation_owners SET state='established' WHERE owner_id=p_source_id AND state='empty'; END IF;
  RETURN jsonb_build_object('state','completed','outcome_id',receipt_id,'result',result);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reserve_guest_resource_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_operation jsonb, p_session_id text, p_worst_units integer, p_worst_cost text, p_fingerprint text, p_policy jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reserve_guest_spoken_answer_v1(p_access jsonb, p_operation jsonb, p_source text, p_payload jsonb, p_reservation text, p_fence bigint, p_policy jsonb, p_disclosure_version text, p_rerecord_enabled boolean, p_provider_retention text, p_operation_id text, p_upload_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -25288,6 +27099,18 @@ BEGIN
  RETURN jsonb_build_object('state','reserved','commandId',original_cmd,'leaseToken',p_payload->>'leaseToken',
   'attemptId',original_attempt,'artifactId',original_artifact,'resourceReservationId',p_reservation,'deletionFenceRevision',p_fence);
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reserve_guest_spoken_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_source text, p_payload jsonb, p_reservation text, p_fence bigint, p_policy jsonb, p_disclosure_version text, p_rerecord_enabled boolean, p_provider_retention text, p_operation_id text, p_upload_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION reserve_hns_dns_zone_activation_v1(input_operation_id text, input_idempotency_key text, input_activation_document_digest text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_lease_seconds integer) RETURNS TABLE(outcome text, operation_id text, dns_zone_activation_id text, fence_token bigint, lease_expires_at timestamp with time zone, activation_generation bigint)
     LANGUAGE plpgsql
@@ -25362,6 +27185,18 @@ BEGIN
    AND cap.resource_reservation_id=p_reservation AND cap.deletion_fence_revision=p_revision AND cap.audio_digest=p_digest;
  RETURN read_guest_audio_io_capture_private_v1(upload_id);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='resolve_guest_audio_io_capture_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source jsonb, p_operation jsonb, p_artifact text, p_reservation text, p_revision bigint, p_digest text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION resolve_guest_empty_owner_root_v1(source_id text) RETURNS text
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -25380,6 +27215,18 @@ BEGIN
     current_id := target_id;
   END LOOP;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='resolve_guest_empty_owner_root_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='source_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_host text, database_now timestamp with time zone) RETURNS TABLE(normalized_host text, canonical_root text, community_id text, app_host_activation_id text, app_host_activation_generation bigint, app_host_activation_status text, activation_dns_zone_id text, activation_dns_zone_generation bigint, activation_gateway_deployment_reference text, route_binding_id text, route_binding_current boolean, route_authority_kind text, route_authority_reference text, route_authority_generation bigint, route_authority_effective boolean, dns_zone_activation_id text, dns_zone_activation_generation bigint, dns_zone_status text, stable_chain_delegation_matches boolean, dnssec_ds_authenticates_zone boolean, retained_zone_digest_matches boolean, gateway_deployment_reference text, gateway_certificate_spki_sha256 text, gateway_health text)
     LANGUAGE sql STABLE
@@ -25471,6 +27318,18 @@ BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'audio control/source evidence cannot be physically deleted'; END IF;
  RAISE EXCEPTION 'immutable audio control/source evidence';
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='retain_learner_audio_immutable_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION retained_categories_rating_v1(categories jsonb, bound boolean, declared text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE
@@ -26186,6 +28045,18 @@ BEGIN
     GROUP BY prepared->>'exercise_type',prepared->>'learning_language',prepared->>'target_language',prepared->>'learner_band'
   ) grouped));
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='select_guest_study_start_plan_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_community text, p_post text, p_target text, p_band text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION set_guest_learning_retention_v1(p_access jsonb, p_operation jsonb, p_mode text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -26215,6 +28086,18 @@ BEGIN
  -- learning audio, financial evidence, provider records or successful CP.
  RETURN jsonb_build_object('state','completed','operation',p_operation,'outcomeId',operation.operation_id,'result',result);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='set_guest_learning_retention_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_operation jsonb, p_mode text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION set_hns_root_import_lifecycle_plan_digest_v1(input_session_id text, input_digest text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -26275,6 +28158,18 @@ BEGIN
  allowed:=settle_learner_audio_upload_private_v1(upload_id,p_disposition,p_known,NULL);
  RETURN allowed AND NOT guest_ephemeral_object_closed_private_v1(p_capture->>'objectRef');
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_guest_audio_io_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb, p_disposition text, p_known boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION settle_learner_audio_terminal_fact_private_v1(p_upload text, p_disposition text, p_known boolean, p_multipart text, p_fact jsonb) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -26301,6 +28196,18 @@ BEGIN
  published:=settle_learner_audio_upload_private_v1(p_upload,p_disposition,p_known,p_multipart);
  RETURN published;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_learner_audio_terminal_fact_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_disposition text, p_known boolean, p_multipart text, p_fact jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION settle_learner_audio_upload_private_v1(expected_upload text, disposition text, known_no_more_io boolean, multipart_id text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -26335,6 +28242,18 @@ BEGIN
  END IF;
  RETURN publish_allowed;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_learner_audio_upload_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='expected_upload text, disposition text, known_no_more_io boolean, multipart_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -26580,6 +28499,18 @@ BEGIN
   (p_capture->>'priorPresentationCount')::INTEGER,p_transition->>'kind',(p_transition->>'nextPresentationCount')::INTEGER,
   p_transition->>'completionReason',attempt.accepted_at);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='transition_guest_json_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb, p_transition jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION transition_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_transition jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -26614,6 +28545,18 @@ BEGIN
  PERFORM apply_guest_lesson_transition_private_v1(p_source,cap.session_id,(p_capture->>'priorPresentationCount')::INTEGER,
   p_transition->>'kind',(p_transition->>'nextPresentationCount')::INTEGER,p_transition->>'completionReason',(result->>'acceptedAt')::TIMESTAMPTZ);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='transition_guest_spoken_answer_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_transition jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION valid_study_answer_v1(candidate_answer jsonb, expected_kind text) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -28906,6 +30849,18 @@ BEGIN
   END IF;
   RETURN NULL;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_guest_alias_state_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_guest_recovery_operation_private_v1(p_operation jsonb, p_kind text) RETURNS text
     LANGUAGE plpgsql
@@ -28921,6 +30876,18 @@ BEGIN
   RAISE EXCEPTION 'invalid recovery operation' USING ERRCODE='GP005'; END IF;
  RETURN p_operation->>'sourceOwnerId';
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_guest_recovery_operation_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_operation jsonb, p_kind text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_guest_resource_operation_v1(p_source_id text, p_operation jsonb, p_expected_kind text) RETURNS void
     LANGUAGE plpgsql
@@ -28942,6 +30909,18 @@ BEGIN
   OR p_operation->>'requestHash' !~ '^[0-9a-f]{64}$'
  THEN RAISE EXCEPTION 'invalid resource operation' USING ERRCODE='22023'; END IF;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_guest_resource_operation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_source_id text, p_operation jsonb, p_expected_kind text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_guest_resource_policy_v1(p_policy jsonb) RETURNS void
     LANGUAGE plpgsql
@@ -28976,6 +30955,18 @@ BEGIN
    THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
  END LOOP;
 END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_guest_resource_policy_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_policy jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
     LANGUAGE plpgsql
@@ -32960,6 +34951,18 @@ BEGIN
  ) THEN RAISE EXCEPTION 'attempt and original audio provenance disagree'; END IF;
  RETURN NEW;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_study_attempt_audio_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_study_command_audio_source_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -32980,6 +34983,18 @@ BEGIN
    RAISE EXCEPTION 'spoken command and original audio provenance disagree'; END IF;
  RETURN NULL;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_study_command_audio_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_text_content_submission_relations() RETURNS trigger
     LANGUAGE plpgsql
@@ -43586,7 +45601,7 @@ CREATE TABLE study_sessions_v2 (
     CONSTRAINT study_guest_reward_mode_present CHECK (((participation_owner_kind <> 'guest'::text) OR (guest_reward_mode IS NOT NULL))),
     CONSTRAINT study_guest_spoken_call_plan_shape_v1 CHECK ((((participation_owner_kind = 'account'::text) AND (guest_spoken_call_plan IS NULL)) OR ((participation_owner_kind = 'guest'::text) AND ((guest_spoken_call_plan IS NULL) OR
 CASE
-    WHEN ((jsonb_typeof(guest_spoken_call_plan) = 'object'::text) AND (guest_spoken_call_plan ?& ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) AND ((guest_spoken_call_plan - ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) = '{}'::jsonb) AND ((guest_spoken_call_plan ->> 'policy_revision'::text) = 'study_spoken_rerecord_v1'::text) AND ((guest_spoken_call_plan -> 'ungraded_rerecord_per_presentation'::text) = '1'::jsonb) AND (jsonb_typeof((guest_spoken_call_plan -> 'graded_presentation_cap'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text) ~ '^(0|[1-9][0-9]?)$'::text) AND (jsonb_typeof((guest_spoken_call_plan -> 'maximum_paid_calls'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'maximum_paid_calls'::text) ~ '^(0|[1-9][0-9]?)$'::text)) THEN (((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20)) AND (((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)))
+    WHEN ((jsonb_typeof(guest_spoken_call_plan) = 'object'::text) AND (guest_spoken_call_plan ?& ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) AND ((guest_spoken_call_plan - ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) = '{}'::jsonb) AND ((guest_spoken_call_plan ->> 'policy_revision'::text) = 'study_spoken_rerecord_v1'::text) AND ((guest_spoken_call_plan -> 'ungraded_rerecord_per_presentation'::text) = '1'::jsonb) AND (jsonb_typeof((guest_spoken_call_plan -> 'graded_presentation_cap'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text) ~ '^(0|[1-9][0-9]?)$'::text) AND (jsonb_typeof((guest_spoken_call_plan -> 'maximum_paid_calls'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'maximum_paid_calls'::text) ~ '^(0|[1-9][0-9]?)$'::text)) THEN ((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer BETWEEN 0 AND 20) AND (((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)))
     ELSE false
 END)))),
     CONSTRAINT study_session_completion_shape CHECK ((((status = 'active'::text) AND (completed_at IS NULL) AND (completion_reason IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completion_reason IS NOT NULL)))),
