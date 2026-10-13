@@ -612,13 +612,24 @@ function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion: 2 | 3) {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if (beneficiaryVersion === 3)
-              yield* transaction.execute({
-                label: "owner-reward.leg.structural-ready",
-                text: "SELECT require_owner_accounting_ready_private_v1()",
-                values: [],
-                readonly: true,
+            if (beneficiaryVersion === 3) {
+              const admission = yield* transaction.execute<unknown>({
+                label: "owner-reward.leg.authorize-creation",
+                text: "SELECT authorize_owner_megapot_leg_creation_v1($1,$2,$3,$4) AS authorized",
+                values: [input.accountId, input.personaId, input.offerId, input.idempotencyKey],
+                readonly: false,
               });
+              const authorized = yield* Effect.try({
+                try: () => {
+                  if (admission.rows.length !== 1) throw new Error();
+                  return Schema.decodeUnknownSync(Schema.Struct({ authorized: Schema.Boolean }), {
+                    onExcessProperty: "error",
+                  })(admission.rows[0]).authorized;
+                },
+                catch: () => storage("invalid-row"),
+              });
+              if (!authorized) return yield* rejected("not-found");
+            }
             const endpoint = "/reward-offers/:offerId/megapot-pool-legs";
             yield* lockAction(transaction, { ...input, endpoint });
             const replay = yield* transaction.execute<Row>({
