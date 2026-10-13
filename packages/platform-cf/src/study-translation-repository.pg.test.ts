@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
@@ -56,11 +57,13 @@ suite("Study translation generation", () => {
       const lyrics = lines.join("\n");
       const lyricsHash = await digest(lyrics);
       const lineHashes = await Promise.all(lines.map(digest));
+      const birthAccount = makeOwnedOrdinaryAccountBirthFixture(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      await birthAccount("study-account");
+      await birthAccount("study-other-account");
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query(
-          "INSERT INTO users (user_id) VALUES ('study-account'), ('study-other-account')",
-        );
         await admin.query(
           `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at

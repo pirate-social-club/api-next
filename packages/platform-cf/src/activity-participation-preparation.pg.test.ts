@@ -3,6 +3,7 @@ import { prepareActivityPersona } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
@@ -506,12 +507,15 @@ suite("Activity persona preparation", () => {
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     try {
       await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      // Account birth is setup before the content/persona replica fixture and
+      // before restricted activity preparation; its owner is not minted by Study.
+      await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scoped))(
+        "participant",
+      );
       await admin.query("SET session_replication_role = replica");
       let lines: readonly string[] = [];
       try {
-        await admin.query(
-          "INSERT INTO users (user_id) VALUES ('participant'),('participation-author')",
-        );
+        await admin.query("INSERT INTO users (user_id) VALUES ('participation-author')");
         await admin.query(
           `INSERT INTO communities (
              community_id, display_name, status, created_by_user_id, created_at, updated_at
