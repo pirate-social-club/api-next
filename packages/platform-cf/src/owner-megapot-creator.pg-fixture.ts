@@ -1,6 +1,7 @@
 /** Narrow owned extension of the maintained genuine rewarded journey fixture.
  * Expected ordinary123 is a reviewed committed literal, never observed grants. */
 import { expect } from "bun:test";
+import { ownerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
@@ -161,6 +162,12 @@ export async function creatorFixture(
       expect(profile.functions).toHaveLength(123);
       expect(new Set(profile.functions).size).toBe(123);
       expect(profile.functions.filter((s) => s === creatorSignature)).toHaveLength(1);
+      const inherited: readonly string[] = ownerFinancialInheritedSourceDefaults.map((row) => row.signature);
+      expect(inherited).toHaveLength(37);
+      expect(new Set(inherited).size).toBe(37);
+      expect(profile.functions.filter((signature) => inherited.includes(signature))).toHaveLength(7);
+      const effectiveFunctions = [...new Set([...profile.functions, ...inherited])];
+      expect(effectiveFunctions).toHaveLength(153);
       expect(profile.sequence_grants).toEqual([]);
       const native = (
         await f.admin.query(
@@ -229,7 +236,9 @@ export async function creatorFixture(
           await f.admin.query(
             `GRANT DELETE ON TABLE ${q(f.schema)}.${q(grant.table_name)} TO ${q(role)}`,
           );
-        for (const signature of profile.functions) {
+        // Original37 already inherit PUBLIC EXECUTE. Preserve their exact native
+        // ACLs by granting only purpose callbacks outside that closed source set.
+        for (const signature of profile.functions.filter((signature) => !inherited.includes(signature))) {
           const command = Schema.decodeUnknownSync(Schema.Struct({ sql: Schema.String }), {
             onExcessProperty: "error",
           })(
@@ -249,6 +258,29 @@ export async function creatorFixture(
         });
         client.on("error", () => {});
         await bounded(client.connect(), "creator login connect", 3000);
+        // The full private source validator must still accept after actor grants.
+        // No inherited PUBLIC ACL, manifest, source frame or helper grant changes.
+        await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
+        const FunctionOids = Schema.Array(Schema.Struct({ function_oid: Schema.String }));
+        const expectedFunctionOids = Schema.decodeUnknownSync(FunctionOids, { onExcessProperty: "error" })(
+          (await client.query(
+            `SELECT signature::regprocedure::oid::text AS function_oid
+             FROM unnest($1::text[]) signatures(signature)
+             ORDER BY signature::regprocedure::oid::text COLLATE "C"`,
+            [effectiveFunctions.map((signature) => `${f.schema}.${signature}`)],
+          )).rows,
+        );
+        expect(expectedFunctionOids).toHaveLength(153);
+        const actualFunctionOids = Schema.decodeUnknownSync(FunctionOids, { onExcessProperty: "error" })(
+          (await client.query(
+            `SELECT p.oid::text AS function_oid FROM pg_proc p
+             JOIN pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname=$1 AND has_function_privilege(current_user,p.oid,'EXECUTE')
+             ORDER BY p.oid::text COLLATE "C"`,
+            [f.schema],
+          )).rows,
+        );
+        expect(actualFunctionOids).toEqual(expectedFunctionOids);
         expect(
           (
             await client.query(
