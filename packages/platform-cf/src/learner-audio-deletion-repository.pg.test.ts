@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { Client } from "pg";
 import {
   beginHistoricalAudioDeletionFixture,
@@ -129,11 +129,44 @@ suite("learner audio deletion repository", () => {
         { recording_state: "stored", object_ref: "study/object" },
       ]);
 
+      const retainedDeletion = await admin.query(
+        `SELECT command.command_id,fence.revision::text AS revision,upload.upload_attempt_id
+           FROM learner_audio_owner_fences fence
+           JOIN participation_owners owner USING(owner_id)
+           JOIN learner_audio_delete_commands command ON command.command_id=fence.active_delete_command_id
+           JOIN learner_audio_upload_attempts upload ON upload.owner_id=owner.owner_id
+           WHERE owner.account_id='account-1' AND upload.source_kind='karaoke'
+             AND upload.attempt_ref='karaoke-attempt' AND upload.artifact_id='karaoke-artifact'`,
+      );
+      expect(retainedDeletion.rows).toHaveLength(1);
+      const originalDeletion = Schema.decodeUnknownSync(Schema.Struct({
+        command_id: Schema.NonEmptyString,
+        revision: Schema.NonEmptyString,
+        upload_attempt_id: Schema.NonEmptyString,
+      }), { onExcessProperty: "error" })(retainedDeletion.rows[0]);
       failStorage = false;
-      // A fulfilled exact DELETE does not close an unknown historical writer.
-      await expect(run("account-1", "2026-08-29T09:00:30.000Z")).rejects.toMatchObject({
-        reason: "in-flight",
-      });
+      // Known bytes can make bounded progress while the SAME unknown writer
+      // keeps its artifact, original command and active source fence held.
+      const partial = await run("account-1", "2026-08-29T09:00:30.000Z");
+      expect(partial).toMatchObject({ deleted_count: 1, remaining_count: 1 });
+      expect(deletedKeys.at(-1)?.sort()).toEqual([
+        "karaoke/account-1/karaoke-attempt.pcm", "karaoke/object", "study/object",
+      ]);
+      expect((await admin.query(
+        `SELECT command.command_id,fence.revision::text AS revision,upload.upload_attempt_id,
+                command.state,upload.io_state,upload.captured_revision::text AS captured_revision
+           FROM learner_audio_owner_fences fence
+           JOIN participation_owners owner USING(owner_id)
+           JOIN learner_audio_delete_commands command ON command.command_id=fence.active_delete_command_id
+           JOIN learner_audio_upload_attempts upload ON upload.owner_id=owner.owner_id
+           WHERE owner.account_id='account-1' AND upload.source_kind='karaoke'
+             AND upload.attempt_ref='karaoke-attempt' AND upload.artifact_id='karaoke-artifact'`,
+      )).rows).toEqual([{ ...originalDeletion, state: "pending", io_state: "unknown", captured_revision: "0" }]);
+      // Native uncertain disposition cannot authorize original publication.
+      expect((await admin.query(
+        "SELECT settle_learner_audio_upload_private_v1($1,'stored',FALSE,NULL) AS publish",
+        [originalDeletion.upload_attempt_id],
+      )).rows).toEqual([{ publish: false }]);
       expect(
         (await admin.query("SELECT io_state FROM learner_audio_upload_attempts WHERE source_kind='karaoke' AND attempt_ref='karaoke-attempt'")).rows,
       ).toEqual([{ io_state: "unknown" }]);
@@ -146,9 +179,9 @@ suite("learner audio deletion repository", () => {
       await closeOwnedHistoricalApiNextWriter(admin, originalWriter);
       const deleted = await run("account-1", "2026-08-29T09:01:00.000Z");
       expect(deleted).toMatchObject({ deleted_count: 2, remaining_count: 0 });
-      expect(deletedKeys.at(-1)?.sort()).toEqual([
-        "karaoke/account-1/karaoke-attempt.pcm", "karaoke/object", "study/object",
-      ]);
+      // The prior known DELETE already covered the other two original names;
+      // only the SAME original writer's re-created canonical key needs deletion.
+      expect(deletedKeys.at(-1)).toEqual(["karaoke/account-1/karaoke-attempt.pcm"]);
       expect(retainedObjectRefs.has("karaoke/account-1/karaoke-attempt.pcm")).toBe(false);
       expect(
         (
@@ -192,7 +225,7 @@ suite("learner audio deletion repository", () => {
         remaining_count: 0,
         last_deleted_at: "2026-08-29T09:01:00.000Z",
       });
-      // Failed storage, fulfilled-but-unknown refusal, then positively closed deletion.
+      // Failed storage, known partial progress, then positively closed original deletion.
       expect(deletedKeys).toHaveLength(3);
 
       const firstBatch = await run("account-5", "2026-08-29T09:03:00.000Z");
@@ -232,6 +265,6 @@ suite("learner audio deletion repository", () => {
   test("holds unresolved Account writers after expiry and deletes only positive no-I/O generations", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     await runCapturedStudyDeletionExpiryRegression();
-  });
+  }, 15_000);
 
 });
