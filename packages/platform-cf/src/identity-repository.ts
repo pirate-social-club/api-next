@@ -809,7 +809,11 @@ export function makeControlPlaneSessionProductReadiness(
         const db = yield* ControlPlaneDb;
         const result = yield* db.execute<{ ready: boolean }>({
           label: "identity.session.product-readiness",
-          text: `SELECT EXISTS (
+          // A restricted Telegram practice account never receives an ordinary session,
+          // whatever its wallet state: its limited session is a separate principal.
+          text: `SELECT NOT EXISTS (
+                   SELECT 1 FROM telegram_restricted_learners AS learner WHERE learner.account_id=$1
+                 ) AND EXISTS (
                    SELECT 1 FROM personas AS persona
                     JOIN persona_profiles AS profile USING (persona_id)
                    WHERE persona.account_id=$1 AND persona.is_first_persona

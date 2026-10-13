@@ -101,9 +101,12 @@ export function makeTelegramStudyLearnerStore(
             ? restricted(String(existing[0].account_id), String(existing[0].persona_id))
             : "unavailable";
         // An associated account must not gain a second promotable account. Its sender gets
-        // an isolated owner for this bot.
+        // an isolated owner for this bot. An association to the sender's own promotable
+        // reservation (a recovered learner) is not another account: practice continues it.
         const associated = await query(
-          "SELECT 1 FROM telegram_account_associations WHERE telegram_user_id=$1",
+          `SELECT 1 FROM telegram_account_associations a
+          WHERE a.telegram_user_id=$1 AND NOT EXISTS(SELECT 1 FROM telegram_restricted_learners l
+            WHERE l.account_id=a.account_id AND l.telegram_user_id=$1 AND l.local_bot_id IS NULL)`,
           [sender.telegramUserId],
         );
         const localBotId = associated.length ? sender.botId : null;
