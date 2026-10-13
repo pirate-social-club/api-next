@@ -6,6 +6,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   insertStudySongFixture,
@@ -43,9 +44,9 @@ suite("Study v2 spoken lifecycle", () => {
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
       try {
         await applyPostgresTestBaselineConnection({ connectionString: scoped });
-        const { lines } = await insertStudySongFixture(admin);
-
         const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+        await makeOwnedOrdinaryAccountBirthFixture(runtime)("study-account");
+        const { lines } = await insertStudySongFixture(admin, { accountAlreadyBorn: true });
         const grant = { accountId: "study-account", personaId: "study-persona", revision: 1 };
         const lease = {
           sender: {

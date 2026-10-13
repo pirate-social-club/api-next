@@ -46,7 +46,7 @@ suite("Prospective instrumental Karaoke qualification", () => {
       if (!migration) throw new Error("policy migration missing");
       await assertTransitionGuards(admin, migration.sql);
       const account = "policy-history";
-      const persona = await prepareSinger(admin, runtime, account);
+      const persona = await prepareSinger(admin, runtime, account, { historicalPre0247: true });
       const driver = makeKaraokeDriver(
         runtime,
         makeControlPlaneKaraokeRepository(),
