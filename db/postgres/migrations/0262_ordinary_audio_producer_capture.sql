@@ -198,7 +198,7 @@ BEGIN
    WHERE c.owner_id=source_id AND c.command_ref=p_command AND p.state IN('registered','started','unknown')) THEN
   RAISE EXCEPTION 'prior captured generation requires reconciliation'; END IF;
  generation_ref:=jsonb_build_array('account_study_audio_generation_v1',p_command,p_lease)::TEXT;
- SELECT COALESCE((SELECT revision FROM learner_audio_owner_fences WHERE owner_id=source_id),0) INTO revision;
+ SELECT COALESCE((SELECT f.revision FROM learner_audio_owner_fences f WHERE f.owner_id=source_id),0) INTO revision;
  SELECT * INTO STRICT session FROM study_sessions_v2 WHERE session_id=command.session_id AND participation_owner_id=source_id;
  SELECT * INTO STRICT item FROM study_session_items_v2 WHERE session_item_id=command.session_item_id
   AND session_id=session.session_id AND participation_owner_id=source_id;
@@ -237,7 +237,7 @@ BEGIN
  IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts WHERE owner_id=source_id AND source_kind='karaoke'
   AND attempt_ref=recording.attempt_id) THEN RAISE EXCEPTION 'legacy recording requires positive producer disposition'; END IF;
  ref:='karaoke/'||p_account||'/'||recording.attempt_id||'.pcm';
- SELECT COALESCE((SELECT revision FROM learner_audio_owner_fences WHERE owner_id=source_id),0) INTO revision;
+ SELECT COALESCE((SELECT f.revision FROM learner_audio_owner_fences f WHERE f.owner_id=source_id),0) INTO revision;
  revision:=register_learner_audio_upload_private_v1(source_id,recording.artifact_id,'karaoke',recording.attempt_id,
   p_session,p_session,ref,p_upload,revision);
  INSERT INTO learner_audio_account_producer_captures(upload_attempt_id,owner_id,account_id,artifact_id,source_kind,
