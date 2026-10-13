@@ -136,8 +136,13 @@ test("a Worker that can defer handles updates and their replies itself; the queu
     inbox: async (id: string) => {
       handled.push(`inbox:${id}`);
       if (id === "fails") throw Error("processing failed");
+      // The real handler catches its own errors and stores the update for a retry.
+      if (id === "caught") return "retry" as const;
       // An update's replies are woken from inside its own processing.
       await wake({ kind: "delivery", id: `${id}-reply` });
+      // A retry asked for from inside an update is a later wake, never sent inline.
+      if (id === "c") await wake({ kind: "delivery", id: "verdict", delaySeconds: 6 });
+      return "completed" as const;
     },
     delivery: async (id: string) => {
       handled.push(`delivery:${id}`);
@@ -148,7 +153,8 @@ test("a Worker that can defer handles updates and their replies itself; the queu
   wake = makeTelegramWake({ ...base, defer: undefined });
   await wake({ kind: "inbox", id: "a" });
   await wake({ kind: "delivery", id: "b" });
-  expect(queued).toEqual(["inbox:a", "delivery:b"]);
+  await wake({ kind: "delivery", id: "later", delaySeconds: 30 });
+  expect(queued).toEqual(["inbox:a", "delivery:b", "delivery:later@30"]);
   expect(handled).toEqual([]);
   queued.length = 0;
   const background: Promise<unknown>[] = [];
@@ -165,6 +171,7 @@ test("a Worker that can defer handles updates and their replies itself; the queu
   });
   await wake({ kind: "inbox", id: "c" });
   await wake({ kind: "inbox", id: "fails" });
+  await wake({ kind: "inbox", id: "caught" });
   await wake({ kind: "inbox", id: "lost" });
   // A message enqueued outside an update, such as a publication, is not sent inline.
   await wake({ kind: "delivery", id: "publication" });
@@ -174,6 +181,7 @@ test("a Worker that can defer handles updates and their replies itself; the queu
     "inbox:c",
     "delivery:c-reply",
     "inbox:fails",
+    "inbox:caught",
     "inbox:lost",
     "delivery:lost-reply",
   ]);
@@ -182,18 +190,25 @@ test("a Worker that can defer handles updates and their replies itself; the queu
       // Every inline update leaves a delayed backstop for an interrupted run.
       "inbox:c@130",
       "inbox:fails@130",
+      "inbox:caught@130",
       "inbox:lost@130",
+      "delivery:verdict@6",
       // A reply that could not be sent inline falls back to the queue.
       "delivery:lost-reply",
       "delivery:publication",
     ].sort(),
   );
   // Each background update reports its outcome and duration, and nothing that identifies it.
-  expect(timings).toEqual([
-    ["telegram.inline_update", { outcome: "handled", elapsed_ms: expect.any(Number) }],
-    ["telegram.inline_update", { outcome: "failed", elapsed_ms: expect.any(Number) }],
-    ["telegram.inline_update", { outcome: "handled", elapsed_ms: expect.any(Number) }],
-  ]);
+  // A caught handler error reports "retry"; only a rejected run reports "failed".
+  expect(timings).toHaveLength(4);
+  expect(timings).toEqual(
+    expect.arrayContaining([
+      ["telegram.inline_update", { outcome: "completed", elapsed_ms: expect.any(Number) }],
+      ["telegram.inline_update", { outcome: "failed", elapsed_ms: expect.any(Number) }],
+      ["telegram.inline_update", { outcome: "retry", elapsed_ms: expect.any(Number) }],
+    ]),
+  );
+  expect(timings.filter((entry) => JSON.stringify(entry).includes('"completed"'))).toHaveLength(2);
   queued.length = 0;
   handled.length = 0;
   // Outside a request nothing can be deferred, so the update is queued at once instead.

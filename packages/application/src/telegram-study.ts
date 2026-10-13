@@ -37,6 +37,8 @@ export const TelegramStudyState = Schema.Struct({
       itemId: Schema.String,
       attemptNumber: Schema.Number,
       deliveryId: Schema.String,
+      /** The exact prompt shown. States saved before it was recorded omit it. */
+      promptText: Schema.optional(Schema.String),
     }),
   ),
   pendingAnswer: Schema.NullOr(
@@ -116,7 +118,8 @@ export interface TelegramStudyStore {
   release(lease: TelegramStudyLease): Promise<void>;
   catalogue(communityId: string): Promise<readonly { postId: string; title: string }[]>;
   ready(communityId: string, postId: string): Promise<boolean>;
-  promptMessageId(deliveryId: string): Promise<number | null>;
+  /** The message id of this turn's delivered force-reply prompt in this chat, if it is one. */
+  promptMessageId(deliveryId: string, chatId: string, promptText?: string): Promise<number | null>;
   expired(sessionId: string): Promise<boolean>;
   cleanup(): Promise<void>;
 }

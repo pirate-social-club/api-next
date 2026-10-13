@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { processTelegramInbox } from "./chat.ts";
 import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
 import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
 import {
@@ -257,8 +258,80 @@ test("a message whose predecessor must retry is not sent in that pass", async ()
       return { kind: "rejected", code: "telegram_429", retryAfter: 5 };
     },
   };
+  const wakes: unknown[] = [];
+  service.wake = async (work) => {
+    wakes.push(work);
+  };
   await processTelegramDelivery(service, "feedback");
   expect(dispatched).toEqual(["feedback"]);
+  // The retry asks for itself once it is due, rather than waiting for the next scan.
+  expect(wakes).toEqual([{ kind: "delivery", id: "feedback", delaySeconds: 6 }]);
+});
+
+test("a retry wake is best effort and a permanent rejection schedules none", async () => {
+  const feedback = {
+    ...voiceDelivery,
+    id: "feedback",
+    kind: "reply" as const,
+    desired: { kind: "text" as const, text: "feedback", media: null, buttons: [] },
+    desiredHash: "feedback",
+  };
+  let outcome: { kind: "rejected"; code: string; retryAfter: number | null } = {
+    kind: "rejected",
+    code: "telegram_429",
+    retryAfter: 86_400,
+  };
+  const finished: unknown[] = [];
+  const service = services({
+    claimDelivery: async () => feedback,
+    integration: async () => integration,
+    finishDelivery: async (_delivery, value) => {
+      finished.push(value);
+    },
+    deliveriesAfter: async () => [],
+  });
+  service.vault.open = async () =>
+    JSON.stringify({ token: "fixture-token", secret: "fixture-secret" });
+  service.api = { ...service.api, dispatch: async () => outcome };
+  const wakes: unknown[] = [];
+  service.wake = async (work) => {
+    wakes.push(work);
+    throw new Error("queue unavailable");
+  };
+  // A lost wake loses only latency: the stored retry stands and the scanner finds it.
+  await processTelegramDelivery(service, "feedback");
+  expect(finished).toHaveLength(1);
+  // Queue delays stop at twelve hours; a longer wait is left to the scanner.
+  expect(wakes).toEqual([{ kind: "delivery", id: "feedback", delaySeconds: 43_200 }]);
+  outcome = { kind: "rejected", code: "telegram_400", retryAfter: null };
+  await processTelegramDelivery(service, "feedback");
+  expect(wakes).toHaveLength(1);
+});
+
+test("the inbox outcome reports a caught handler failure as a retry, not success", async () => {
+  const item = {
+    id: "inbox",
+    communityId: "community",
+    botEpoch: "epoch",
+    update: { update_id: 1 },
+    attempt: "attempt",
+  };
+  const finished: (string | null)[] = [];
+  const service = services({
+    claimInbox: async (id) => (id === "inbox" ? item : null),
+    integration: async () => {
+      throw new Error("database unavailable");
+    },
+    finishInbox: async (_item, error) => {
+      finished.push(error);
+    },
+  });
+  expect(await processTelegramInbox(service, "inbox")).toBe("retry");
+  expect(finished).toEqual(["processing_failed"]);
+  expect(await processTelegramInbox(service, "other")).toBe("not_claimed");
+  service.store.integration = async () => ({ ...integration, botEpoch: "replacement" });
+  expect(await processTelegramInbox(service, "inbox")).toBe("completed");
+  expect(finished).toEqual(["processing_failed", null]);
 });
 
 test("rotated bot epochs fence already claimed work before provider access", async () => {

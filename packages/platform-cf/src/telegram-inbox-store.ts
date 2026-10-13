@@ -1,5 +1,6 @@
 import type { IncomingUpdate, TelegramStore } from "@pirate/application/telegram";
 import type { TelegramDatabase } from "./telegram-database.ts";
+import { deliveryPredecessorWaiting } from "./telegram-delivery-store.ts";
 import { cleanupTelegramStudyConversations } from "./telegram-study-store.ts";
 
 export function makeTelegramInboxStore(
@@ -64,8 +65,13 @@ export function makeTelegramInboxStore(
       const rows =
         await db.query(`(SELECT 'inbox' AS kind,inbox_id AS id FROM community_telegram_inbox
         WHERE attempts<5 AND next_attempt_at<=clock_timestamp() AND (state='pending' OR (state='processing' AND lease_expires_at<clock_timestamp())) ORDER BY next_attempt_at LIMIT 50)
-        UNION ALL (SELECT 'delivery' AS kind,delivery_id AS id FROM community_telegram_deliveries
-        WHERE (state IN ('pending','failed') AND attempt_count<10 AND next_attempt_at<=clock_timestamp()) OR (state='sending' AND lease_expires_at<clock_timestamp()) ORDER BY next_attempt_at LIMIT 50)`);
+        UNION ALL (SELECT 'delivery' AS kind,d.delivery_id AS id FROM community_telegram_deliveries d
+        WHERE (d.state IN ('pending','failed') AND d.attempt_count<10 AND d.next_attempt_at<=clock_timestamp()
+            -- A follower waiting on its predecessor is not work yet: listing it would let
+            -- fifty waiting prompts fill the batch and starve everything else.
+            AND NOT EXISTS(SELECT 1 FROM community_telegram_deliveries p
+              WHERE p.delivery_id=d.desired->>'after' AND ${deliveryPredecessorWaiting("p")}))
+          OR (d.state='sending' AND d.lease_expires_at<clock_timestamp()) ORDER BY d.next_attempt_at LIMIT 50)`);
       return rows.map((row) => ({ kind: row.kind as "inbox" | "delivery", id: String(row.id) }));
     },
     reserveUsage(communityId, epoch, userId, key, policy, speechCharacters) {

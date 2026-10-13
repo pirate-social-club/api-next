@@ -49,6 +49,16 @@ WHERE p.community_id=$1 AND p.post_id=ANY($2::text[])
       AND exercise.learner_band IS NULL AND exercise.target_language IS NULL
       AND (exercise.learning_language<>'en' OR unit.dominant_language IS DISTINCT FROM 'en'
         OR unit.vocable_only OR unit.proper_name_only OR unit.confidence IS NULL OR unit.confidence<0.8)
+  )
+  -- A Telegram prompt holds at most 4096 UTF-16 units. 2000 code points is at most 4000 units,
+  -- leaving room for the localized instruction, so no prompt is ever truncated while grading
+  -- uses the full line.
+  AND NOT EXISTS (
+    SELECT 1 FROM study_exercise_versions exercise
+    WHERE exercise.community_id=p.community_id AND exercise.post_id=p.post_id
+      AND exercise.audio_revision=submission.audio_revision AND exercise.lyrics_revision=submission.current_lyrics_revision
+      AND exercise.retired_at IS NULL AND exercise.exercise_type='say_it_back'
+      AND char_length(exercise.presentation->>'reference_text')>2000
   ) ORDER BY array_position($2::text[],p.post_id) LIMIT 8`;
 
 export function makeTelegramStudyStore(
@@ -143,10 +153,14 @@ export function makeTelegramStudyStore(
         ],
       );
     },
-    async promptMessageId(id) {
+    async promptMessageId(id, chatId, promptText) {
+      // Only the exact force-reply prompt this turn showed, delivered in this chat, accepts an
+      // answer. The reply slot may later hold other text; that never makes it a prompt.
       const rows = await db.query(
-        "SELECT message_id FROM community_telegram_deliveries WHERE delivery_id=$1 AND state='delivered'",
-        [id],
+        `SELECT message_id FROM community_telegram_deliveries WHERE delivery_id=$1 AND state='delivered'
+          AND kind='reply' AND chat_id=$2 AND (confirmed->'keyboard'->>'force_reply')='true'
+          AND ($3::text IS NULL OR confirmed->>'text'=$3)`,
+        [id, chatId, promptText ?? null],
       );
       const raw = rows[0]?.message_id;
       const value = typeof raw === "string" && /^[1-9][0-9]{0,15}$/u.test(raw) ? Number(raw) : raw;
