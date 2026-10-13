@@ -19,6 +19,8 @@ function runtime(
   execute: (statement: ControlPlaneStatement) => ReturnType<ControlPlaneDb["Service"]["execute"]>,
 ) {
   const transactionExecute: ControlPlaneDb["Service"]["execute"] = ((statement) => {
+    if (statement.label.endsWith("alignment-recovery-cursor.initialize"))
+      return Effect.succeed({ rows: [], rowCount: 0 });
     if (statement.label.endsWith("alignment-recovery-cursor"))
       return Effect.succeed({
         rows: [{ last_identifier: '{"operation_id":"","workflow_instance_id":""}' }],

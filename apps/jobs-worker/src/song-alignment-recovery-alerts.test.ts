@@ -16,11 +16,18 @@ import { collectSongAlignmentRecoveryAlerts } from "./song-alignment-recovery-al
 const emptyCursor = JSON.stringify({ operation_id: "", workflow_instance_id: "" });
 function cursorRuntime(
   candidates: readonly Readonly<Record<string, unknown>>[],
-  options: { stored?: string; fail?: "lookups" | "advance" } = {},
+  options: { stored?: string; missing?: boolean; fail?: "initialize" | "lookups" | "advance" } = {},
 ) {
-  let stored = options.stored ?? emptyCursor;
+  let stored = options.missing ? undefined : (options.stored ?? emptyCursor);
   let advances = 0;
   const execute: ControlPlaneDb["Service"]["execute"] = ((statement) => {
+    if (statement.label.endsWith("cursor.initialize")) {
+      if (options.fail === "initialize") return Effect.die("private initialization failure");
+      return Effect.sync(() => {
+        stored ??= String(statement.values[0]);
+        return { rows: [], rowCount: 0 };
+      });
+    }
     if (statement.label.endsWith("-cursor"))
       return Effect.succeed({ rows: [{ last_identifier: stored }], rowCount: 1 });
     if (statement.label.endsWith("cursor.advance")) {
@@ -49,7 +56,7 @@ function cursorRuntime(
   }) as ControlPlaneDb["Service"]["execute"];
   return {
     layer: Layer.succeed(ControlPlaneDb, { execute, withTransaction: (use) => use({ execute }) }),
-    stored: () => stored,
+    stored: () => stored ?? "",
     advances: () => advances,
   };
 }
@@ -157,7 +164,7 @@ describe("alignment recovery terminal alerts", () => {
         workflow_instance_id: `media-${operationId}-r1`,
       };
     });
-    const controlPlane = cursorRuntime(candidates);
+    const controlPlane = cursorRuntime(candidates, { missing: true });
     const inspected: string[] = [];
     const diagnostic = alignmentRecoveryTerminalMessage({
       outcome: "alignment_recovery_lookup_stale",
@@ -247,7 +254,7 @@ describe("alignment recovery terminal alerts", () => {
     expect(JSON.stringify(errors)).not.toContain("private");
   });
 
-  for (const failure of ["stored", "candidate", "lookups", "advance"] as const)
+  for (const failure of ["initialize", "stored", "candidate", "lookups", "advance"] as const)
     test(`logs an error and performs no Workflow I/O when the scan fails at ${failure}`, async () => {
       const candidate = {
         operation_id: "scan-operation",
@@ -256,7 +263,9 @@ describe("alignment recovery terminal alerts", () => {
       };
       const controlPlane = cursorRuntime([candidate], {
         ...(failure === "stored" ? { stored: "private malformed cursor" } : {}),
-        ...(failure === "lookups" || failure === "advance" ? { fail: failure } : {}),
+        ...(failure === "initialize" || failure === "lookups" || failure === "advance"
+          ? { fail: failure }
+          : {}),
       });
       let inspected = 0;
       const workflow: CloudflareMediaWorkflowBinding = {

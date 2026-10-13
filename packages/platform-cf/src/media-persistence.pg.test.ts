@@ -8094,7 +8094,7 @@ suite("bounded alignment recovery persistence", () => {
             "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts'",
           )
         ).rows,
-      ).toEqual([{ last_identifier: '{"operation_id":"","workflow_instance_id":""}' }]);
+      ).toEqual([]);
       const diagnostic = alignmentRecoveryTerminalMessage({
         outcome: "alignment_recovery_lookup_failed",
         reason: {
@@ -8108,53 +8108,75 @@ suite("bounded alignment recovery persistence", () => {
         ...makeLocalAlertSink("development"),
         log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
       };
-      const collect = () =>
-        collectSongPipelineTerminalAlerts(
-          controlPlane,
-          { media: true, data: false },
-          {
-            media: {
-              get: async (instanceId) => {
-                expect(instanceId).toBe(`media-${operation}-r2`);
-                // The page reservation committed before any Workflow I/O:
-                // another connection can lock the row without waiting.
-                const cursor = await admin.query<{ last_identifier: string }>(
-                  "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE NOWAIT",
-                );
-                expect(JSON.parse(cursor.rows[0]?.last_identifier ?? "null")).toEqual({
-                  operation_id: operation,
-                  workflow_instance_id: instanceId,
-                });
-                return {
-                  status: async () => ({
-                    status: "errored" as const,
-                    error: { name: "Error", message: diagnostic },
-                  }),
-                  sendEvent: async () => undefined,
-                };
-              },
-              createBatch: async () => [],
-            },
-          },
+      // Exercise first-run initialization with runtime metadata privileges,
+      // rather than the schema owner's implicit authority. No migration seeds
+      // the new cursor, and the role cannot write any submission or launch.
+      const alertRole = `media_alignment_alert_${randomUUID().replaceAll("-", "")}`;
+      const schema = (await admin.query<{ name: string }>("SELECT current_schema() AS name"))
+        .rows[0]?.name;
+      if (schema === undefined) throw new Error("missing alert test schema");
+      await admin.query(`CREATE ROLE "${alertRole}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT INSERT, UPDATE ON recovery_inspection_cursors TO "${alertRole}"`);
+        const runtimeConnection = new URL(connection);
+        runtimeConnection.searchParams.set(
+          "options",
+          `${runtimeConnection.searchParams.get("options") ?? ""} -c role=${alertRole}`.trim(),
         );
-      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
-      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
-      expect(logs.map((entry) => entry.event)).toEqual([
-        "pipeline.alert",
-        "pipeline.alert.suppression",
-      ]);
-      expect(logs[0]).toMatchObject({
-        severity: "high",
-        failure_class: "alignment_recovery_lookup_failed",
-        operation_id: operation,
-      });
-      expect(
-        (
-          await admin.query(
-            "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
-          )
-        ).rows,
-      ).toEqual(sweepCursor);
+        const alertControlPlane = makeDirectPostgresControlPlaneLayer(runtimeConnection.toString());
+        const collect = () =>
+          collectSongPipelineTerminalAlerts(
+            alertControlPlane,
+            { media: true, data: false },
+            {
+              media: {
+                get: async (instanceId) => {
+                  expect(instanceId).toBe(`media-${operation}-r2`);
+                  // The page reservation committed before any Workflow I/O:
+                  // another connection can lock the row without waiting.
+                  const cursor = await admin.query<{ last_identifier: string }>(
+                    "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE NOWAIT",
+                  );
+                  expect(JSON.parse(cursor.rows[0]?.last_identifier ?? "null")).toEqual({
+                    operation_id: operation,
+                    workflow_instance_id: instanceId,
+                  });
+                  return {
+                    status: async () => ({
+                      status: "errored" as const,
+                      error: { name: "Error", message: diagnostic },
+                    }),
+                    sendEvent: async () => undefined,
+                  };
+                },
+                createBatch: async () => [],
+              },
+            },
+          );
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        expect(logs.map((entry) => entry.event)).toEqual([
+          "pipeline.alert",
+          "pipeline.alert.suppression",
+        ]);
+        expect(logs[0]).toMatchObject({
+          severity: "high",
+          failure_class: "alignment_recovery_lookup_failed",
+          operation_id: operation,
+        });
+        expect(
+          (
+            await admin.query(
+              "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+            )
+          ).rows,
+        ).toEqual(sweepCursor);
+      } finally {
+        await admin.query(`DROP OWNED BY "${alertRole}"`);
+        await admin.query(`DROP ROLE "${alertRole}"`);
+      }
     });
     completedTestCount += 1;
   }, 60_000);

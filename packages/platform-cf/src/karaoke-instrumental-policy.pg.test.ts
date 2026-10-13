@@ -41,9 +41,7 @@ suite("Prospective instrumental Karaoke qualification", () => {
   test("guards the registry transition and preserves historical policy, session and funded-leg pins", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     await withPolicyDatabase(connectionString, true, async ({ admin, scoped, runtime }) => {
-      const migrations = (await loadPostgresMigrations()).filter(
-        ({ version }) => version <= migrationVersion,
-      );
+      const migrations = await loadPostgresMigrations();
       const migration = migrations.find(({ version }) => version === migrationVersion);
       if (!migration) throw new Error("policy migration missing");
       await assertTransitionGuards(admin, migration.sql);

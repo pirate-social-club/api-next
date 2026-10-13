@@ -125,6 +125,15 @@ export const collectSongAlignmentRecoveryAlerts = Effect.fn("collectSongAlignmen
     const page = yield* db
       .withTransaction((tx) =>
         Effect.gen(function* () {
+          // This table already owns runtime scan progress. Create only this
+          // scanner's key, preserving existing progress on subsequent ticks.
+          // Concurrent first runs serialize on the unique key before locking.
+          yield* tx.execute({
+            label: "song-pipeline.terminal.alignment-recovery-cursor.initialize",
+            text: "INSERT INTO recovery_inspection_cursors (cursor_key,last_updated_at,last_identifier) VALUES ('media-alignment-alerts','epoch',$1) ON CONFLICT (cursor_key) DO NOTHING",
+            values: [JSON.stringify({ operation_id: "", workflow_instance_id: "" })],
+            readonly: false,
+          });
           const saved = yield* tx.execute<Readonly<Record<string, unknown>>>({
             label: "song-pipeline.terminal.alignment-recovery-cursor",
             text: "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE",
