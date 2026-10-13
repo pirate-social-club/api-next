@@ -21,6 +21,7 @@ export async function insertStudySongFixture(
     "Sing the night together",
   ];
   const lyrics = lines.join("\n");
+  const creationRevision = options?.initializeOwnerPolicy === true ? 2 : 1;
   const lineHashes = await Promise.all(lines.map(digest));
   // TEST ONLY: trusted prepared-media fixture; the production policy producer
   // must run on its INITIAL publication insert, not on a fabricated head.
@@ -68,12 +69,13 @@ export async function insertStudySongFixture(
          creation_revision, audio_revision, analysis_revision, current_analysis_revision,
          current_immutable_ref, status, phase, post_id,
          response_snapshot_bytes, response_snapshot_sha256,
-         author_persona_id, lyrics_revision, current_lyrics_revision
+         author_persona_id, lyrics_revision, current_lyrics_revision, current_terms_revision
        ) VALUES ('study-submission','study-community','study-account','study-operation',
          'study-idempotency',$1,'Study song','original','{}'::jsonb,'study-reservation',
-         1,1,1,1,'audio-ref','published',NULL,'study-post',convert_to('snapshot','UTF8'),$2,
-         'study-persona',1,1)`,
-      ["1".repeat(64), await digest("snapshot")],
+         $3::bigint,1,1,1,'audio-ref','published',NULL,'study-post',convert_to('snapshot','UTF8'),$2,
+         'study-persona',1,1,$4::bigint)`,
+      ["1".repeat(64), await digest("snapshot"), creationRevision,
+        options?.initializeOwnerPolicy === true ? 2 : null],
     );
     await admin.query(
       `INSERT INTO media_analysis_evidence (
@@ -106,7 +108,7 @@ export async function insertStudySongFixture(
         creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,
         access_mode,terms_snapshot
       ) VALUES ('study-submission','study-community','study-account','study-persona','study-operation',
-        1,'commercial-remix',1000,'[{"recipient_id":"study-account","share_bps":10000}]'::jsonb,
+        2,'commercial-remix',1000,'[{"recipient_id":"study-account","share_bps":10000}]'::jsonb,
         'public','{"license_preset":"commercial-remix"}'::jsonb)`);
       // Existing fixture inputs are inserted in replica mode. Make ONLY the
       // actual policy initializer run there, then restore its exact O state.
@@ -123,11 +125,26 @@ export async function insertStudySongFixture(
          locked_delivery, projected_at, author_persona_id, lyrics_status,
          lyrics_revision, lyrics_text
        ) VALUES ('study-submission','study-community','study-account','study-operation',
-         'study-post',1,1,1,1,$1,'Study song','audio-ref','ready','en','not_explicit',
+         'study-post',$3::bigint,1,1,1,$1,'Study song','audio-ref','ready','en','not_explicit',
          'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
-      ["2".repeat(64), lyrics],
+      ["2".repeat(64), lyrics, creationRevision],
     );
     if (policyTriggerArmed) {
+      const state = (await admin.query(`SELECT publication.creation_revision::text AS publication_creation,
+        terms.creation_revision::text AS terms_creation,submission.creation_revision::text AS submission_creation,
+        submission.current_terms_revision::text AS current_terms,publication.audio_revision::text AS audio_revision,
+        publication.lyrics_revision::text AS lyrics_revision,publication.operation_id=terms.operation_id
+        AND publication.operation_id=submission.operation_id AS same_operation,
+        publication.actor_account_id=terms.actor_user_id AND publication.actor_account_id=submission.actor_user_id AS same_actor
+        FROM media_publication_projections publication JOIN media_submission_terms terms
+          ON terms.submission_id=publication.submission_id AND terms.creation_revision=publication.creation_revision
+        JOIN media_post_submissions submission ON submission.submission_id=publication.submission_id
+        WHERE publication.community_id='study-community' AND publication.post_id='study-post'`)).rows;
+      if (state.length !== 1 || state[0]?.publication_creation !== "2" || state[0]?.terms_creation !== "2" ||
+          state[0]?.submission_creation !== "2" || state[0]?.current_terms !== "2" ||
+          state[0]?.audio_revision !== "1" || state[0]?.lyrics_revision !== "1" ||
+          state[0]?.same_operation !== true || state[0]?.same_actor !== true)
+        throw new Error("Prepared initial licensed publication revision/source tuple differs");
       await admin.query("ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize");
       policyTriggerArmed = false;
     }
