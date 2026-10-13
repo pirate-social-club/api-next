@@ -109,8 +109,12 @@ async function sourcePacket() {
     if (accepted === undefined) throw new Error("Accepted learning prefix entry is unavailable");
     expect(entry.checksum).toBe(accepted);
   }
-  const checkpoint = first[264];
-  if (checkpoint === undefined) throw new Error("Adopted265 checkpoint is unavailable");
+  expect(first[264]?.version).toBe("0265_account_karaoke_unclaimed_cancellation.sql");
+  expect(first[264]?.checksum).toBe(
+    "337b5469bdf01595413349517f1c0750530280a4a38ac8fd007a2d2e3c4e106f",
+  );
+  const checkpoint = first[265];
+  if (checkpoint === undefined) throw new Error("Adopted266 checkpoint is unavailable");
   expect(checkpoint.version).toBe(checkpointVersion);
   expect(checkpoint.checksum).toBe(checkpointSha);
   return first;
