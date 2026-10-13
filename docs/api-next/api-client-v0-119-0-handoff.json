@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.119.0",
+  "sourceBranch": "feat/guest-rewards-accounting",
+  "sourceBase": "78ac06fa29c8c9db77bd5d2b50f7f70ff10e5c4b",
+  "contractFreezeCommit": "280980c8",
+  "validatedSourceCommit": null,
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/602",
+  "wireContract": "Adds public V2 prepared reward preview, explicit ordinary Account Study consent and original session/start/answer recovery, and original Account participation/credit reads. Admits the existing five Guest attachment/held-credit operations with unchanged wire shapes. All financial requests require the complete verified nonproduction graph; declaration or client presence supplies no runtime authority.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.119.0.tgz",
+    "sha256": "9a0bc94f20dda8c8cbccb8c3ae71624ea8aa35655766ac998d6dba8594aea65e"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.119.0",
+    "sourceIdentifier": "api-next-contracts@68897f5d777ecdaddb1024816e9d86b4a3de3749f4f6bea75ee354e449e54bb9",
+    "openapiSha256": "68897f5d777ecdaddb1024816e9d86b4a3de3749f4f6bea75ee354e449e54bb9",
+    "clientSha256": "58a85f5b1297b54a1bf84bb67a203896fee3c3a4a74d59793043433f2eb0450a"
+  },
+  "validation": {
+    "status": "Genuine maintained generation and pack completed; candidate verification, complete native source/profile acceptance and protected canonical acceptance remain pending.",
+    "operationalBoundary": "No live migration application, deployment, grants, credential changes, feature/offer activation, provider or funded operations. Production remains paused."
+  },
+  "compatibility": {
+    "predecessorVersion": "0.118.0",
+    "disposition": "Additive source contract with unchanged historical Guest operation wire shapes. Historical immutable archives and handoffs retained byte-for-byte; no breaking-change waiver introduced."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.119.0",
+    "beforeActivation": "Accepted complete API/accounting and UI sources, original-drawing recovery before/after sent-COMMIT ambiguity deadlines, five finite managed roles and full composed provider/device/host/Very staging acceptance.",
+    "guestAuthority": "No account/persona/membership/Palm prerequisite; Guest proof stays on the initiating origin. Signup grants access to original participation/held outcomes without late shares, replacement drawings, rollover, expiry or forfeiture.",
+    "statusCopy": "Separate lesson completion, pending admission, committed participation and actual purchased entry; positive owed allocations survive no signup/proof loss. Never promise a personal $1M payout."
+  }
+}
