@@ -1,49 +1,21 @@
-import { readFileSync } from "node:fs";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
-// Both Vite and native Workerd need exact public workspace subpaths before
-// package-root aliases. Derive them from the maintained export manifests so
-// newly selected real Worker graphs resolve without mocked module substitutes.
-const workspaceAliases: [string, string][] = [];
-for (const name of ["application", "platform-cf", "contracts", "domain"]) {
-  const directory = new URL(`../../packages/${name}/`, import.meta.url);
-  const manifest: unknown = JSON.parse(readFileSync(new URL("package.json", directory), "utf8"));
-  if (
-    typeof manifest !== "object" ||
-    manifest === null ||
-    !("exports" in manifest) ||
-    typeof manifest.exports !== "object" ||
-    manifest.exports === null
-  )
-    throw new Error(`Invalid workspace exports: ${name}`);
-  for (const [subpath, target] of Object.entries(manifest.exports)) {
-    if (
-      (subpath !== "." && !subpath.startsWith("./")) ||
-      subpath.includes("*") ||
-      typeof target !== "string" ||
-      !target.startsWith("./")
-    )
-      throw new Error(`Unsupported workspace export: ${name}/${subpath}`);
-    workspaceAliases.push([
-      `@pirate/${name}${subpath === "." ? "" : subpath.slice(1)}`,
-      new URL(target, directory).pathname,
-    ]);
-  }
-}
-// Existing jobs internals also use the maintained tsconfig wildcard source path.
-// These are real source modules, without adding new package-public exports.
+// Preserve the existing explicitly admitted private source overrides. Public
+// exact subpaths come from the same maintained manifests as the other pools.
+const privateAliases: Record<string, string> = {};
 for (const subpath of [
   "media-processing-cloudflare",
   "media-processing-store",
   "namespace-ownership/hns-owner-service-binding",
 ])
-  workspaceAliases.push([
-    `@pirate/platform-cf/${subpath}`,
-    new URL(`../../packages/platform-cf/src/${subpath}.ts`, import.meta.url).pathname,
-  ]);
-const alias = Object.fromEntries(workspaceAliases.sort(([a], [b]) => b.length - a.length));
+  privateAliases[`@pirate/platform-cf/${subpath}`] = new URL(
+    `../../packages/platform-cf/src/${subpath}.ts`,
+    import.meta.url,
+  ).pathname;
+const alias = withWorkspacePublicAliases(privateAliases);
 
 export default defineConfig({
   plugins: [
