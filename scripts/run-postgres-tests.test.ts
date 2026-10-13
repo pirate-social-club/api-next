@@ -58,19 +58,21 @@ describe("PostgreSQL test discovery", () => {
     });
   });
 
-  test("balances every general file across four independent CI shards", () => {
-    expect(postgresGeneralShardCount).toBe(4);
+  test("balances every general file across five independent CI shards", () => {
+    expect(postgresGeneralShardCount).toBe(5);
     const files = [
       "heavy.pg.test.ts",
       "medium.pg.test.ts",
       "small-a.pg.test.ts",
       "small-b.pg.test.ts",
+      "small-c.pg.test.ts",
     ];
     const weights = {
       "heavy.pg.test.ts": 8,
       "medium.pg.test.ts": 6,
       "small-a.pg.test.ts": 2,
       "small-b.pg.test.ts": 2,
+      "small-c.pg.test.ts": 1,
     };
     const shards = shardPostgresTestFiles(files, postgresGeneralShardCount, weights);
 

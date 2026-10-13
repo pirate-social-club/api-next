@@ -109,7 +109,7 @@ export const postgresTestTimeoutMilliseconds = {
   general: 900_000,
 } as const;
 
-export const postgresGeneralShardCount = 4;
+export const postgresGeneralShardCount = 5;
 
 // Weight units approximate tenths of a second from the first baseline-reuse benchmark:
 // reusable suites pay once for installation, then once per reset and test; other suites
@@ -130,6 +130,10 @@ const measuredMinimumWeights: Readonly<Record<string, number>> = {
   // This wrapper runs 33 workerd video tests. Required CI job 114727649879
   // measured 104.90 seconds, which its one Bun test did not represent.
   "packages/platform-cf/src/video-workflow-composed.pg.test.ts": 1_100,
+  // Native guest Study suites run several baseline installs per test.
+  // Required CI run 38353040821 measured 90.1 and 67.3 seconds.
+  "packages/platform-cf/src/guest-study-managed-readiness.pg.test.ts": 910,
+  "packages/platform-cf/src/owner-study-starter.pg.test.ts": 680,
 };
 
 type PostgresTestPartition = {
