@@ -158,6 +158,87 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION acknowledge_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, successor_id text, expected_owner_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE predecessor guest_credentials%ROWTYPE; successor guest_credentials%ROWTYPE; at_time TIMESTAMPTZ;
+BEGIN
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  -- Frozen 028 requires correctly proved successor, not a carried predecessor
+  -- cookie. Verify the stored confirmed predecessor/link under component locks.
+  IF successor_id IS NULL OR NOT successor_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT successor FROM guest_credentials WHERE credential_id=successor_id AND origin=expected_origin;
+  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=expected_predecessor_credential_id AND origin=expected_origin;
+  IF successor.predecessor_id IS DISTINCT FROM expected_predecessor_credential_id OR successor.owner_id<>predecessor.owner_id
+     OR resolve_guest_empty_owner_root_v1(successor.owner_id)<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF successor.state='confirmed' AND predecessor.state='revoked'
+     AND predecessor.revocation_reason='rotation_acknowledged' THEN
+    -- Exact natural triple replay. Do not UPDATE lease, recreate secret or rotate.
+    RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor_id),
+      'cookie_effects','[]'::JSONB);
+  END IF;
+  IF predecessor.state<>'confirmed'
+     OR successor.state<>'pending_successor' OR successor.pending_expires_at<=clock_timestamp()
+    THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  at_time := clock_timestamp();
+  -- BEFORE successor confirmation clears the original-owner partial uniqueness.
+  UPDATE guest_credentials SET state='revoked',revoked_at=at_time,revocation_reason='rotation_acknowledged'
+    WHERE credential_id=expected_predecessor_credential_id;
+  UPDATE guest_credentials SET state='confirmed',confirmed_at=at_time,session_until=at_time+INTERVAL '1 hour'
+    WHERE credential_id=successor_id;
+  RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor_id),
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',expected_predecessor_credential_id)));
+END $$;
+
+CREATE FUNCTION acknowledge_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb, p_reservation text, p_fence bigint) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; saved JSONB; cap guest_study_spoken_captures%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
+ fence learner_audio_owner_fences%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE; published BOOLEAN;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ saved:=load_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease);
+ IF saved IS NULL THEN RAISE EXCEPTION 'prearchive successful checkpoint required' USING ERRCODE='GP010'; END IF;
+ IF p_result IS NULL OR jsonb_typeof(p_result) IS DISTINCT FROM 'object'
+  OR NOT(p_result ? 'archive') OR jsonb_typeof(p_result->'archive') IS DISTINCT FROM 'object'
+  OR (p_result-'archive') IS DISTINCT FROM saved->'result'
+  OR p_provider IS DISTINCT FROM saved->'providerResult'
+  OR saved->>'resourceReservationId' IS DISTINCT FROM p_reservation
+  OR (saved->>'deletionFenceRevision')::BIGINT IS DISTINCT FROM p_fence THEN
+  RAISE EXCEPTION 'accepted success acknowledgement changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=saved->>'captureId';
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=cap.resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(source_id,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[source_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=cap.upload_attempt_id FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=source_id FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cap.artifact_id FOR UPDATE;
+ IF ROW(upload.owner_id,upload.artifact_id,upload.command_ref,upload.reservation_ref,upload.captured_revision,upload.object_ref)
+  IS DISTINCT FROM ROW(source_id,cap.artifact_id,cap.command_id,p_reservation,p_fence,artifact.expected_object_ref) THEN
+  RAISE EXCEPTION 'actual archive source changed' USING ERRCODE='GP005'; END IF;
+ IF upload.io_state<>'closed' THEN
+  RETURN jsonb_build_object('state','reserved','outcome_id',saved->>'checkpointId','result',NULL); END IF;
+ published:=upload.storage_disposition='stored' AND NOT upload.cleanup_required
+  AND fence.revision=p_fence AND fence.active_delete_command_id IS NULL AND artifact.recording_state<>'deleted'
+  AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref);
+ -- A truthful earlier stored observation stays acknowledged after later delete;
+ -- immutable upload history proves that I/O fact. Publication eligibility is
+ -- rederived separately by the finalizer, which cannot resurrect that object.
+ IF p_result->'archive' IS DISTINCT FROM (CASE
+   WHEN p_result#>>'{archive,state}'='stored' AND upload.storage_disposition='stored'
+    THEN jsonb_build_object('state','stored','objectRef',upload.object_ref)
+   WHEN p_result#>>'{archive,state}'='failed' AND (upload.storage_disposition IN('failed','absent') OR NOT published)
+    THEN jsonb_build_object('state','failed','objectRef',NULL)
+   ELSE NULL::JSONB END) THEN
+  RAISE EXCEPTION 'truthful retained archive observation required' USING ERRCODE='GP005'; END IF;
+ RETURN jsonb_build_object('state','completed','outcome_id',saved->>'checkpointId',
+  'result',jsonb_build_object('checkpointId',saved->>'checkpointId'));
+END $$;
+
 CREATE FUNCTION acquire_reward_run_lease_v1(requested_run_id text, ttl_seconds integer, max_seconds integer) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -823,6 +904,176 @@ BEGIN
   RETURN jsonb_build_object('status','applied','plan_hash',expected_plan_hash,'resources',jsonb_array_length(plan->'items'));
 END;
 $_$;
+
+CREATE FUNCTION apply_guest_json_item_mutation_v1(p_access jsonb, p_operation jsonb, p_capture jsonb, p_decision jsonb, p_operation_id text, p_attempt_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE checked JSONB; item JSONB; correct BOOLEAN; spent BOOLEAN; accepted TIMESTAMPTZ; schedule JSONB;
+ source_id TEXT; sid TEXT; iid TEXT; attempt INTEGER; remaining INTEGER; total INTEGER;
+BEGIN
+ checked:=prepare_guest_json_answer_v1(p_access,p_operation,p_capture->>'communityId',p_capture->>'sessionId',
+  p_capture->>'sessionItemId',(p_capture->>'attemptNumber')::INTEGER,p_capture->'answer');
+ IF checked->>'state'<>'candidate' THEN RETURN checked; END IF;
+ IF checked IS DISTINCT FROM p_capture THEN RAISE EXCEPTION 'locked choice facts changed' USING ERRCODE='GP003'; END IF;
+ item:=checked->'item';source_id:=checked->>'sourceOwnerId';sid:=checked->>'sessionId';iid:=checked->>'sessionItemId';
+ attempt:=(checked->>'attemptNumber')::INTEGER;accepted:=(checked->>'acceptedAt')::TIMESTAMPTZ;
+ correct:=checked->'answer'->>'choice_key'=checked->'grader'->>'correctChoiceKey';spent:=correct OR attempt>=3;
+ IF p_decision IS NULL OR jsonb_typeof(p_decision)<>'object'
+  OR p_decision->>'outcome' IS DISTINCT FROM (CASE WHEN correct THEN 'correct' ELSE 'incorrect' END)
+  OR p_decision->>'attemptState' IS DISTINCT FROM (CASE WHEN spent THEN 'spent' ELSE 'retryable' END)
+  OR (p_decision->>'correct')::BOOLEAN IS DISTINCT FROM correct
+  OR (p_decision->>'spent')::BOOLEAN IS DISTINCT FROM spent
+  OR (p_decision->>'resolved')::BOOLEAN IS DISTINCT FROM spent
+  OR (p_decision->>'firstPass')::BOOLEAN IS DISTINCT FROM (attempt=1)
+  OR (NOT spent AND p_decision->'feedback' IS DISTINCT FROM '{"kind":"none"}'::JSONB)
+  OR (spent AND p_decision->'feedback' IS DISTINCT FROM
+    jsonb_build_object('kind','choice_reveal','correct_choice_key',checked->'grader'->'correctChoiceKey',
+      'correct_text',checked->'grader'->'correctText')||CASE WHEN checked->'grader'->'explanation' IS NULL
+      OR checked->'grader'->'explanation'='null'::JSONB THEN '{}'::JSONB ELSE
+      jsonb_build_object('explanation',checked->'grader'->'explanation') END) THEN
+  RAISE EXCEPTION 'shared choice decision invalid' USING ERRCODE='GP003'; END IF;
+ schedule:=p_decision->'review';
+ PERFORM require_guest_review_schedule_private_v1(schedule,accepted);
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,created_at)
+  VALUES(p_operation_id,source_id,'study_answer',guest_study_answer_resource_scope_v1(checked->>'communityId',sid,iid,attempt,'choice'),
+   p_operation->>'idempotencyKey',p_operation->>'requestHash','reserved',clock_timestamp());
+ INSERT INTO study_attempts_v2(attempt_id,session_item_id,attempt_number,submission_kind,submission_evidence,outcome,first_pass,
+  attempt_state,feedback_kind,feedback_evidence,grader_policy_revision,feedback_policy_revision,accepted_at,idempotency_key,request_hash,
+  study_unit_id,exercise_kind,learning_language,target_language,learner_band,source_line_revision,language_profile_revision,
+  localization_revision,grading_revision,review_schedule_version,presented_at,answered_at)
+ VALUES(p_attempt_id,iid,attempt,'single_select',checked->'answer',CASE WHEN correct THEN 'correct' ELSE 'incorrect' END,attempt=1,
+  CASE WHEN spent THEN 'spent' ELSE 'retryable' END,p_decision->'feedback'->>'kind',p_decision->'feedback',
+  item->>'grader_policy_revision',item->>'feedback_policy_revision',accepted,p_operation->>'idempotencyKey',p_operation->>'requestHash',
+  item->'line'->>'study_unit_id','translation_choice',item->'languages'->>'learning_language',item->'languages'->>'target_language',item->>'learner_band',
+  (item->'line'->>'line_version')::BIGINT,(item->>'language_profile_revision')::BIGINT,(checked->>'contentRevision')::BIGINT,
+  item->>'grader_policy_revision','study_review_schedule_v1',(checked->>'currentPresentedAt')::TIMESTAMPTZ,accepted);
+ INSERT INTO study_presentations_v2(presentation_id,session_id,session_item_id,presentation_number,queue_ordinal,presented_at,answered_at,outcome)
+ VALUES('study-presentation-'||p_attempt_id,sid,iid,attempt,(checked->>'priorPresentationCount')::BIGINT,
+  (checked->>'currentPresentedAt')::TIMESTAMPTZ,accepted,CASE WHEN correct THEN 'correct' ELSE 'incorrect' END);
+ UPDATE study_review_items SET difficulty=(schedule->>'difficulty')::NUMERIC,due_at=(schedule->>'dueAt')::TIMESTAMPTZ,
+  lapses=(schedule->>'lapses')::BIGINT,repetitions=(schedule->>'repetitions')::BIGINT,stability=(schedule->>'stability')::NUMERIC,
+  review_state=schedule->>'state',last_reviewed_at=accepted,updated_at=accepted,
+  scheduler_state=jsonb_build_object('difficulty',schedule->'difficulty','due_at',schedule->'dueAt','lapses',schedule->'lapses',
+    'repetitions',schedule->'repetitions','stability',schedule->'stability','state',schedule->'state')
+ WHERE review_item_id=checked->>'reviewItemId' AND participation_owner_id=source_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'review source changed' USING ERRCODE='GP003'; END IF;
+ UPDATE study_lesson_item_state_v2 SET presentation_count=attempt,last_queue_ordinal=(checked->>'priorPresentationCount')::BIGINT,
+  mastered=correct,lesson_resolved=spent,updated_at=accepted WHERE session_item_id=iid AND session_id=sid AND presentation_count=attempt-1;
+ IF NOT FOUND THEN RAISE EXCEPTION 'presentation source changed' USING ERRCODE='GP003'; END IF;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE NOT lesson_resolved)::INTEGER INTO total,remaining FROM study_lesson_item_state_v2 WHERE session_id=sid;
+ RETURN jsonb_build_object('state','mutated','operationId',p_operation_id,'capture',checked,'decision',p_decision,
+  'totalCards',total,'remainingCards',remaining,'priorPresentationCount',(checked->>'priorPresentationCount')::INTEGER);
+END $$;
+
+CREATE FUNCTION apply_guest_lesson_transition_private_v1(p_source text, p_session text, p_prior integer, p_kind text, p_next integer, p_completion text, p_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE session study_sessions_v2%ROWTYPE; total INTEGER; remaining INTEGER; next_item TEXT;
+BEGIN
+ SELECT * INTO STRICT session FROM study_sessions_v2 WHERE session_id=p_session AND participation_owner_id=p_source
+  AND participation_owner_kind='guest' FOR UPDATE;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE NOT lesson_resolved)::INTEGER INTO total,remaining
+  FROM study_lesson_item_state_v2 WHERE session_id=p_session;
+ IF session.status<>'active' OR session.presentation_count<>p_prior OR p_next<>p_prior+1
+  OR p_next NOT BETWEEN 1 AND LEAST(20,3*total) THEN
+  RAISE EXCEPTION 'lesson transition facts changed' USING ERRCODE='GP003'; END IF;
+ IF p_kind='complete' THEN
+  IF p_completion IS DISTINCT FROM (CASE WHEN remaining=0 THEN 'all_resolved' ELSE 'presentation_budget' END)
+   OR NOT(remaining=0 OR p_next>=LEAST(20,3*total)) THEN
+   RAISE EXCEPTION 'completion facts changed' USING ERRCODE='GP003'; END IF;
+  UPDATE study_sessions_v2 SET status='completed',completed_at=p_at,presentation_count=p_next,
+   completion_reason=p_completion,current_session_item_id=NULL,current_presented_at=NULL WHERE session_id=p_session;
+ ELSIF p_kind='advance' THEN
+  IF remaining=0 OR p_next>=LEAST(20,3*total) OR p_completion IS NOT NULL THEN
+   RAISE EXCEPTION 'advance facts changed' USING ERRCODE='GP003'; END IF;
+  SELECT session_item_id INTO STRICT next_item FROM study_lesson_item_state_v2 WHERE session_id=p_session AND NOT lesson_resolved
+   ORDER BY CASE WHEN presentation_count=0 THEN 0 ELSE 1 END,last_queue_ordinal NULLS FIRST,original_ordinal LIMIT 1;
+  UPDATE study_sessions_v2 SET current_session_item_id=next_item,current_presented_at=p_at,presentation_count=p_next WHERE session_id=p_session;
+ ELSIF p_kind='keep_current' THEN
+  IF remaining=0 OR p_next>=LEAST(20,3*total) OR p_completion IS NOT NULL THEN
+   RAISE EXCEPTION 'retry facts changed' USING ERRCODE='GP003'; END IF;
+  -- Choice retry retains its original presentation clock and current card.
+  UPDATE study_sessions_v2 SET presentation_count=p_next WHERE session_id=p_session;
+ ELSE RAISE EXCEPTION 'closed lesson transition required' USING ERRCODE='GP003'; END IF;
+ -- NEVER insert activity_qualifications or touch account streak/token/ticket/
+ -- credit/projection facts. Terminal resource release is separate and cannot
+ -- release reserved/unknown calls merely because this learning row completed.
+END $$;
+
+CREATE FUNCTION apply_guest_spoken_item_mutation_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_token_diff jsonb, p_spoken jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE checked JSONB; result JSONB; item JSONB; source_id TEXT; sid TEXT; iid TEXT; attempt INTEGER;
+ accepted TIMESTAMPTZ; correct BOOLEAN; rerecord BOOLEAN; actual_rerecord BOOLEAN; schedule JSONB; remaining INTEGER; total INTEGER;
+BEGIN
+ checked:=prepare_guest_spoken_finalization_v1(p_source,p_operation,p_checkpoint);
+ IF checked->>'state'<>'candidate' THEN RETURN checked; END IF;
+ IF checked IS DISTINCT FROM p_capture THEN RAISE EXCEPTION 'locked finalization facts changed' USING ERRCODE='GP003'; END IF;
+ result:=checked->'result';item:=checked->'item';source_id:=checked->>'sourceOwnerId';sid:=result->>'sessionId';iid:=result->>'sessionItemId';
+ attempt:=(result->>'attemptNumber')::INTEGER;accepted:=(result->>'acceptedAt')::TIMESTAMPTZ;
+ correct:=(result#>>'{grade,correct}')::BOOLEAN;
+ actual_rerecord:=result->'rerecordEnabled'='true'::JSONB AND correct IS FALSE
+  AND COALESCE(result#>>'{rerecordAssessment,candidateReason}' IN('language_mismatch','low_voice_overlap','single_insertion'),FALSE)
+  AND (checked->>'priorRerecordRecorded')::BOOLEAN IS FALSE;
+ rerecord:=p_decision->>'kind'='ungraded_rerecord';
+ IF p_decision IS NULL OR jsonb_typeof(p_decision) IS DISTINCT FROM 'object'
+  OR correct IS NULL OR rerecord IS DISTINCT FROM actual_rerecord
+  OR p_decision->>'kind' IS DISTINCT FROM (CASE WHEN actual_rerecord THEN 'ungraded_rerecord' ELSE 'graded' END)
+  OR p_decision->>'outcome' IS DISTINCT FROM (CASE WHEN actual_rerecord THEN 'ungraded_rerecord' WHEN correct THEN 'correct' ELSE 'incorrect' END)
+  OR p_decision->>'attemptState' IS DISTINCT FROM (CASE WHEN actual_rerecord THEN 'retryable' ELSE 'spent' END)
+  OR (p_decision->>'firstPass')::BOOLEAN IS DISTINCT FROM (attempt=1)
+  OR (p_decision->>'resolved')::BOOLEAN IS DISTINCT FROM (NOT actual_rerecord AND (correct OR attempt>=3))
+  OR p_feedback->>'kind' IS DISTINCT FROM 'transcript_diff'
+  OR p_feedback->>'heard_transcript' IS DISTINCT FROM result#>>'{grade,heardTranscript}'
+  OR p_feedback->>'policy_revision' IS DISTINCT FROM result#>>'{grade,policyRevision}'
+  OR p_spoken->'language_provenance' IS DISTINCT FROM result->'languageProvenance'
+  OR p_spoken#>>'{rerecord_decision,kind}' IS DISTINCT FROM (CASE WHEN actual_rerecord THEN 'ungraded_rerecord' ELSE 'graded' END)
+  OR p_spoken#>'{rerecord_decision,enabled}' IS DISTINCT FROM result->'rerecordEnabled'
+  OR p_spoken#>'{rerecord_decision,reason}' IS DISTINCT FROM (CASE WHEN actual_rerecord
+     THEN result#>'{rerecordAssessment,candidateReason}' ELSE 'null'::JSONB END) THEN
+  RAISE EXCEPTION 'shared accepted spoken decision changed' USING ERRCODE='GP003'; END IF;
+ IF (rerecord AND p_decision->'review' IS DISTINCT FROM 'null'::JSONB) THEN
+  RAISE EXCEPTION 'rerecord cannot reschedule review' USING ERRCODE='GP003'; END IF;
+ -- Publication is conditional on actual retained ledger/current fence. A deleted
+ -- artifact remains deleted; no success/refinalization can resurrect it.
+ UPDATE learner_audio_artifacts SET recording_state=checked#>>'{archive,state}',object_ref=checked#>>'{archive,objectRef}'
+  WHERE learner_audio_artifact_id=result->>'artifactId' AND participation_owner_id=p_source AND recording_state='pending';
+ IF NOT rerecord THEN
+  schedule:=p_decision->'review';PERFORM require_guest_review_schedule_private_v1(schedule,accepted);
+  INSERT INTO study_attempts_v2(attempt_id,session_item_id,attempt_number,submission_kind,submission_evidence,outcome,first_pass,
+   attempt_state,feedback_kind,feedback_evidence,grader_policy_revision,feedback_policy_revision,accepted_at,idempotency_key,request_hash,
+   study_unit_id,exercise_kind,learning_language,target_language,learner_band,source_line_revision,language_profile_revision,localization_revision,
+   grading_revision,review_schedule_version,presented_at,answered_at,audio_byte_size,audio_duration_ms,provider_detected_language,
+   provider_detected_language_confidence,token_diff,learner_audio_artifact_id)
+  VALUES(result->>'attemptId',iid,attempt,'raw_audio',jsonb_build_object('audio_digest',result->'audioDigest','learner_audio_artifact_id',result->'artifactId'),
+   CASE WHEN correct THEN 'correct' ELSE 'incorrect' END,attempt=1,'spent','transcript_diff',p_feedback,item->>'grader_policy_revision',
+   item->>'feedback_policy_revision',accepted,result->>'commandId',result->>'requestHash',item#>>'{line,study_unit_id}','say_it_back',
+   item#>>'{languages,learning_language}',NULL,NULL,(item#>>'{line,line_version}')::BIGINT,(item->>'language_profile_revision')::BIGINT,NULL,
+   item->>'grader_policy_revision','study_review_schedule_v1',(checked->>'currentPresentedAt')::TIMESTAMPTZ,accepted,
+   (result->>'audioByteSize')::INTEGER,(result->>'audioDurationMs')::INTEGER,result->>'providerDetectedLanguage',
+   (result->>'providerDetectedLanguageConfidence')::NUMERIC,p_token_diff,result->>'artifactId');
+  INSERT INTO study_presentations_v2(presentation_id,session_id,session_item_id,presentation_number,queue_ordinal,presented_at,answered_at,outcome)
+  VALUES('study-presentation-'||(result->>'attemptId'),sid,iid,attempt,(checked->>'priorPresentationCount')::BIGINT,
+   (checked->>'currentPresentedAt')::TIMESTAMPTZ,accepted,CASE WHEN correct THEN 'correct' ELSE 'incorrect' END);
+  UPDATE study_review_items SET difficulty=(schedule->>'difficulty')::NUMERIC,due_at=(schedule->>'dueAt')::TIMESTAMPTZ,
+   lapses=(schedule->>'lapses')::BIGINT,repetitions=(schedule->>'repetitions')::BIGINT,stability=(schedule->>'stability')::NUMERIC,
+   review_state=schedule->>'state',last_reviewed_at=accepted,updated_at=accepted,
+   scheduler_state=jsonb_build_object('difficulty',schedule->'difficulty','due_at',schedule->'dueAt','lapses',schedule->'lapses',
+    'repetitions',schedule->'repetitions','stability',schedule->'stability','state',schedule->'state')
+   WHERE review_item_id=checked->>'reviewItemId' AND participation_owner_id=p_source;
+  IF NOT FOUND THEN RAISE EXCEPTION 'review source changed' USING ERRCODE='GP003'; END IF;
+  UPDATE study_lesson_item_state_v2 SET presentation_count=attempt,last_queue_ordinal=(checked->>'priorPresentationCount')::BIGINT,
+   mastered=correct,lesson_resolved=(p_decision->>'resolved')::BOOLEAN,updated_at=accepted
+   WHERE session_item_id=iid AND session_id=sid AND presentation_count=attempt-1;
+  IF NOT FOUND THEN RAISE EXCEPTION 'presentation source changed' USING ERRCODE='GP003'; END IF;
+ END IF;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE NOT lesson_resolved)::INTEGER INTO total,remaining FROM study_lesson_item_state_v2 WHERE session_id=sid;
+ RETURN jsonb_build_object('state','mutated','operationId',checked->'operationId','capture',checked,'decision',p_decision,
+  'feedback',p_feedback,'spoken',p_spoken,'totalCards',total,'remainingCards',remaining,'priorPresentationCount',checked->'priorPresentationCount');
+END $$;
 
 CREATE FUNCTION apply_hns_root_import_recovery_v1(input_session_id text, input_evidence_ref text, input_expected_revision bigint, input_target_phase text, input_requested_work jsonb, input_evidence_freshness_seconds integer) RETURNS TABLE(outcome text, revision bigint, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -2080,6 +2331,21 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION begin_account_spoken_provider_private_v1(p_upload text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE captured learner_audio_account_producer_captures%ROWTYPE; prior learner_audio_account_provider_calls%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT captured FROM learner_audio_account_producer_captures WHERE upload_attempt_id=p_upload AND source_kind='study';
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[captured.owner_id]);
+ INSERT INTO learner_audio_account_provider_calls VALUES(p_upload,captured.owner_id,'registered',clock_timestamp(),NULL) ON CONFLICT DO NOTHING;
+ SELECT * INTO STRICT prior FROM learner_audio_account_provider_calls WHERE upload_attempt_id=p_upload FOR UPDATE;
+ IF prior.state<>'registered' THEN RETURN FALSE; END IF;
+ UPDATE learner_audio_account_provider_calls SET state='started' WHERE upload_attempt_id=p_upload;
+ RETURN TRUE;
+END $$;
+
 CREATE FUNCTION begin_hns_root_import_observation_v1(input_actor_id text, input_creation_intent_id text, input_root_import_session_id text, input_expected_revision bigint, input_idempotency_key text, input_request_sha256 text, input_ownership_result_sha256 text, input_observation_job_id text, input_observation_request_bytes bytea, input_observation_request_sha256 text) RETURNS TABLE(outcome text, root_import_session_id text, session_revision bigint)
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -2735,6 +3001,211 @@ CREATE FUNCTION can_account_view_content_rating_v1(target_account_id text, targe
   END;
 $$;
 
+CREATE FUNCTION can_guest_access_activity_song_v1(expected_community_id text, expected_post_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS(SELECT 1 FROM posts p JOIN communities c USING(community_id)
+    WHERE p.community_id=expected_community_id AND p.post_id=expected_post_id
+      AND p.post_type='song' AND p.status='published' AND p.visibility='public'
+      AND p.content_rating='general' AND c.status='active');
+$$;
+
+CREATE FUNCTION capture_account_karaoke_audio_private_v1(p_account text, p_session text, p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; recording karaoke_recordings%ROWTYPE;
+ prior learner_audio_account_producer_captures%ROWTYPE; revision BIGINT; ref TEXT;
+BEGIN
+ source_id:=lock_original_account_audio_source_private_v1(p_account);
+ SELECT * INTO STRICT recording FROM karaoke_recordings WHERE session_id=p_session AND account_id=p_account FOR UPDATE;
+ SELECT * INTO prior FROM learner_audio_account_producer_captures
+  WHERE owner_id=source_id AND source_kind='karaoke' AND command_ref=p_session AND producer_generation=p_session;
+ IF FOUND THEN RETURN jsonb_build_object('uploadAttemptId',prior.upload_attempt_id,'sourceOwnerId',source_id,
+  'artifactId',prior.artifact_id,'sourceKind','karaoke','attemptRef',prior.attempt_ref,'commandRef',prior.command_ref,
+  'reservationRef',prior.reservation_ref,'capturedRevision',prior.captured_revision,'objectRef',prior.expected_object_ref,
+  'contentDigest',NULL,'contentType',prior.content_type,'byteSize',NULL,'durationMs',NULL); END IF;
+ IF recording.state<>'pending' OR NOT EXISTS(SELECT 1 FROM karaoke_sessions WHERE session_id=p_session
+  AND account_id=p_account AND attempt_id=recording.attempt_id AND status='active') THEN
+  RAISE EXCEPTION 'new Karaoke capture provenance differs'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts WHERE owner_id=source_id AND source_kind='karaoke'
+  AND attempt_ref=recording.attempt_id) THEN RAISE EXCEPTION 'legacy recording requires positive producer disposition'; END IF;
+ ref:='karaoke/'||p_account||'/'||recording.attempt_id||'.pcm';
+ SELECT COALESCE((SELECT f.revision FROM learner_audio_owner_fences f WHERE f.owner_id=source_id),0) INTO revision;
+ revision:=register_learner_audio_upload_private_v1(source_id,recording.artifact_id,'karaoke',recording.attempt_id,
+  p_session,p_session,ref,p_upload,revision);
+ INSERT INTO learner_audio_account_producer_captures(upload_attempt_id,owner_id,account_id,artifact_id,source_kind,
+  attempt_ref,command_ref,producer_generation,reservation_ref,captured_revision,expected_object_ref,content_type)
+ VALUES(p_upload,source_id,p_account,recording.artifact_id,'karaoke',recording.attempt_id,p_session,p_session,p_session,
+  revision,ref,'audio/L16;rate=16000;channels=1');
+ RETURN jsonb_build_object('uploadAttemptId',p_upload,'sourceOwnerId',source_id,'artifactId',recording.artifact_id,
+  'sourceKind','karaoke','attemptRef',recording.attempt_id,'commandRef',p_session,'reservationRef',p_session,
+  'capturedRevision',revision,'objectRef',ref,'contentDigest',NULL,'contentType','audio/L16;rate=16000;channels=1','byteSize',NULL,'durationMs',NULL);
+END $$;
+
+CREATE FUNCTION capture_account_study_audio_private_v1(p_account text, p_command text, p_lease text, p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; command study_spoken_answer_commands%ROWTYPE;
+ artifact learner_audio_artifacts%ROWTYPE; prior learner_audio_account_producer_captures%ROWTYPE;
+ revision BIGINT; generation_ref TEXT; session study_sessions_v2%ROWTYPE; item study_session_items_v2%ROWTYPE;
+BEGIN
+ source_id:=lock_original_account_audio_source_private_v1(p_account);
+ SELECT * INTO STRICT command FROM study_spoken_answer_commands WHERE command_id=p_command AND account_id=p_account FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=command.learner_audio_artifact_id FOR UPDATE;
+ IF command.state<>'reserved' OR command.lease_token IS DISTINCT FROM p_lease
+  OR command.lease_expires_at<=clock_timestamp() OR command.participation_owner_id<>source_id
+  OR artifact.participation_owner_id<>source_id OR artifact.account_id IS DISTINCT FROM p_account
+  OR artifact.source_kind<>'study' OR artifact.attempt_ref<>command.attempt_id
+  OR artifact.content_digest<>command.audio_digest THEN RAISE EXCEPTION 'account capture provenance differs'; END IF;
+ SELECT * INTO prior FROM learner_audio_account_producer_captures
+  WHERE owner_id=source_id AND source_kind='study' AND command_ref=p_command AND producer_generation=p_lease;
+ IF FOUND THEN RETURN jsonb_build_object('uploadAttemptId',prior.upload_attempt_id,
+  'sourceOwnerId',source_id,'artifactId',prior.artifact_id,'sourceKind','study','attemptRef',prior.attempt_ref,
+  'commandRef',prior.command_ref,'reservationRef',prior.reservation_ref,'capturedRevision',prior.captured_revision,
+  'objectRef',prior.expected_object_ref,'contentDigest',prior.content_digest,'contentType',prior.content_type,'byteSize',prior.byte_size,'durationMs',prior.duration_ms); END IF;
+ -- All unresolved older generations block reclaim; lease expiry is no I/O fact.
+ IF EXISTS(SELECT 1 FROM learner_audio_account_producer_captures c JOIN learner_audio_upload_attempts u USING(upload_attempt_id)
+  WHERE c.owner_id=source_id AND c.command_ref=p_command AND (u.io_state<>'closed' OR u.cleanup_required))
+  OR EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints cp JOIN learner_audio_account_producer_captures c USING(upload_attempt_id)
+   WHERE c.owner_id=source_id AND c.command_ref=p_command)
+  OR EXISTS(SELECT 1 FROM learner_audio_account_producer_captures c JOIN learner_audio_account_provider_calls p USING(upload_attempt_id)
+   WHERE c.owner_id=source_id AND c.command_ref=p_command AND p.state IN('registered','started','unknown')) THEN
+  RAISE EXCEPTION 'prior captured generation requires reconciliation'; END IF;
+ generation_ref:=jsonb_build_array('account_study_audio_generation_v1',p_command,p_lease)::TEXT;
+ SELECT COALESCE((SELECT f.revision FROM learner_audio_owner_fences f WHERE f.owner_id=source_id),0) INTO revision;
+ SELECT * INTO STRICT session FROM study_sessions_v2 WHERE session_id=command.session_id AND participation_owner_id=source_id;
+ SELECT * INTO STRICT item FROM study_session_items_v2 WHERE session_item_id=command.session_item_id
+  AND session_id=session.session_id AND participation_owner_id=source_id;
+ revision:=register_learner_audio_upload_private_v1(source_id,artifact.learner_audio_artifact_id,'study',command.attempt_id,
+  command.command_id,generation_ref,artifact.expected_object_ref,p_upload,revision);
+ INSERT INTO learner_audio_account_producer_captures(upload_attempt_id,owner_id,account_id,artifact_id,source_kind,
+  attempt_ref,command_ref,producer_generation,reservation_ref,captured_revision,expected_object_ref,content_digest,
+  content_type,byte_size,duration_ms,session_id,session_item_id,attempt_number,idempotency_key,request_hash,community_id,item_snapshot)
+ VALUES(p_upload,source_id,p_account,artifact.learner_audio_artifact_id,'study',command.attempt_id,p_command,p_lease,
+  generation_ref,revision,artifact.expected_object_ref,command.audio_digest,command.audio_content_type,command.audio_byte_size,command.audio_duration_ms,
+  command.session_id,command.session_item_id,command.attempt_number,command.idempotency_key,command.request_hash,session.community_id,item.item_snapshot);
+ RETURN jsonb_build_object('uploadAttemptId',p_upload,'sourceOwnerId',source_id,'artifactId',artifact.learner_audio_artifact_id,
+  'sourceKind','study','attemptRef',command.attempt_id,'commandRef',p_command,'reservationRef',generation_ref,
+  'capturedRevision',revision,'objectRef',artifact.expected_object_ref,'contentDigest',command.audio_digest,
+  'contentType',command.audio_content_type,'byteSize',command.audio_byte_size,'durationMs',command.audio_duration_ms);
+END $$;
+
+CREATE FUNCTION capture_guest_audio_retention_private_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE artifact learner_audio_artifacts%ROWTYPE; command study_spoken_answer_commands%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts
+  WHERE learner_audio_artifact_id=NEW.artifact_id AND participation_owner_id=NEW.source_owner_id
+   AND participation_owner_kind='guest' AND account_id IS NULL;
+ SELECT * INTO STRICT command FROM study_spoken_answer_commands
+  WHERE command_id=NEW.command_id AND participation_owner_id=NEW.source_owner_id
+   AND participation_owner_kind='guest' AND account_id IS NULL;
+ IF command.learner_audio_artifact_id IS DISTINCT FROM NEW.artifact_id
+  OR command.lease_token IS DISTINCT FROM NEW.original_lease_token
+  OR command.state IS DISTINCT FROM 'reserved'
+  OR artifact.platform_retention NOT IN('private_learning','ephemeral')
+  OR artifact.expires_at IS DISTINCT FROM command.reserved_at+
+    (CASE WHEN artifact.platform_retention='ephemeral' THEN INTERVAL '24 hours' ELSE INTERVAL '24 months' END)
+  OR (NEW.captured_platform_retention IS NOT NULL AND NEW.captured_platform_retention IS DISTINCT FROM artifact.platform_retention)
+  OR (NEW.captured_retention_expires_at IS NOT NULL AND NEW.captured_retention_expires_at IS DISTINCT FROM artifact.expires_at) THEN
+  RAISE EXCEPTION 'actual future Guest retention capture required'; END IF;
+ NEW.captured_platform_retention:=artifact.platform_retention;
+ NEW.captured_retention_expires_at:=artifact.expires_at;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION capture_guest_spoken_dispatch_private_v1(p_source text, p_operation jsonb, p_command text, p_lease text, p_call text, p_reservation text, p_upload text, p_fence bigint, p_rerecord_enabled boolean) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cmd study_spoken_answer_commands%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
+ artifact learner_audio_artifacts%ROWTYPE; main_op guest_participation_operations%ROWTYPE;
+ sess study_sessions_v2%ROWTYPE; item study_session_items_v2%ROWTYPE;
+ exercise study_exercise_versions%ROWTYPE; profile study_language_profile_units%ROWTYPE;
+ prior guest_study_spoken_captures%ROWTYPE; context JSONB; provenance JSONB; dominant TEXT; cid TEXT;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=p_reservation AND source_owner_id=p_source;
+ PERFORM lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[p_source]);
+ SELECT * INTO prior FROM guest_study_spoken_captures WHERE source_owner_id=p_source AND idempotency_key=p_operation->>'idempotencyKey';
+ IF FOUND THEN
+  IF ROW(prior.request_hash,prior.command_id,prior.original_lease_token,prior.provider_call_id,prior.resource_reservation_id,prior.upload_attempt_id,prior.deletion_fence_revision)
+    IS DISTINCT FROM ROW(p_operation->>'requestHash',p_command,p_lease,p_call,p_reservation,p_upload,p_fence)
+   THEN RAISE EXCEPTION 'captured dispatch conflict' USING ERRCODE='GP005'; END IF;
+  -- A locator-only replay conveys NO new provider dispatch authorization.
+  RETURN jsonb_build_object('captureId',prior.capture_id,'fresh',FALSE);
+ END IF;
+ -- Compose only after the accepted40-unit plan successor and its exact required
+ -- plan checker are supplied by the shared resource owner. Preserve rerecord.
+ IF p_rerecord_enabled IS NULL OR p_lease IS NULL OR char_length(p_lease) NOT BETWEEN 1 AND 256 THEN
+  RAISE EXCEPTION 'closed capture policy required' USING ERRCODE='GP006'; END IF;
+ PERFORM 1 FROM learner_audio_owner_fences WHERE owner_id=p_source AND revision=p_fence
+  AND active_delete_command_id IS NULL FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'deletion-in-progress' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO STRICT cmd FROM study_spoken_answer_commands WHERE command_id=p_command FOR UPDATE;
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=cmd.session_id FOR UPDATE;
+ SELECT * INTO STRICT item FROM study_session_items_v2 WHERE session_item_id=cmd.session_item_id FOR UPDATE;
+ SELECT * INTO STRICT main_op FROM guest_participation_operations WHERE source_owner_id=p_source
+  AND operation_kind='study_answer' AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ SELECT * INTO STRICT call_row FROM guest_resource_provider_calls WHERE call_id=p_call FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cmd.learner_audio_artifact_id FOR UPDATE;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ -- Mandatory private helper from the independently accepted40-unit source
+ -- successor: immutable actual session plan/original reservation, not a flag.
+ PERFORM require_guest_spoken_resource_plan_v1(p_source,cmd.session_id,p_reservation,p_rerecord_enabled);
+ IF ROW(cmd.participation_owner_id,cmd.participation_owner_kind,cmd.account_id,cmd.lease_token,cmd.request_hash,cmd.idempotency_key,cmd.state)
+   IS DISTINCT FROM ROW(p_source,'guest'::TEXT,NULL::TEXT,p_lease,p_operation->>'requestHash',p_operation->>'idempotencyKey','reserved'::TEXT)
+  OR ROW(sess.participation_owner_id,sess.participation_owner_kind,sess.status,sess.guest_resource_reservation_id)
+    IS DISTINCT FROM ROW(p_source,'guest'::TEXT,'active'::TEXT,p_reservation)
+  OR sess.expires_at<=clock_timestamp() OR sess.current_session_item_id IS DISTINCT FROM cmd.session_item_id
+  OR rsv.state<>'active' OR rsv.reservation_expires_at<=clock_timestamp()
+  OR ROW(item.session_id,item.participation_owner_id) IS DISTINCT FROM ROW(cmd.session_id,p_source)
+  OR main_op.request_hash IS DISTINCT FROM p_operation->>'requestHash' OR main_op.state<>'reserved'
+  OR main_op.resource_scope IS DISTINCT FROM guest_study_answer_resource_scope_v1(sess.community_id,cmd.session_id,cmd.session_item_id,cmd.attempt_number::INTEGER,'spoken')
+  OR ROW(call_row.source_owner_id,call_row.idempotency_key,call_row.request_hash,call_row.reservation_id,call_row.session_id,call_row.disposition)
+    IS DISTINCT FROM ROW(p_source,p_operation->>'idempotencyKey',p_operation->>'requestHash',p_reservation,cmd.session_id,'reserved'::TEXT)
+  OR ROW(artifact.participation_owner_id,artifact.source_kind,artifact.attempt_ref,artifact.content_digest,artifact.content_type,artifact.byte_size,artifact.duration_ms)
+    IS DISTINCT FROM ROW(p_source,'study'::TEXT,cmd.attempt_id,cmd.audio_digest,cmd.audio_content_type,cmd.audio_byte_size,cmd.audio_duration_ms)
+  OR ROW(upload.owner_id,upload.artifact_id,upload.source_kind,upload.attempt_ref,upload.command_ref,upload.reservation_ref,upload.captured_revision,upload.io_state)
+    IS DISTINCT FROM ROW(p_source,cmd.learner_audio_artifact_id,'study'::TEXT,cmd.attempt_id,p_command,p_reservation,p_fence,'registered'::TEXT)
+  OR upload.object_ref IS DISTINCT FROM artifact.expected_object_ref
+ THEN RAISE EXCEPTION 'captured command/call/audio mismatch' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO STRICT exercise FROM study_exercise_versions WHERE exercise_version_id=item.exercise_version_id;
+ IF item.item_snapshot->>'exercise_type'<>'say_it_back'
+  OR jsonb_typeof(exercise.private_grader->'reference_text')<>'string'
+  OR NOT((exercise.private_grader->>'kind'='source_token_diff_v1' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_diff_v1')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v2' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v2')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v3' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v3')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v4' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v4'))
+ THEN RAISE EXCEPTION 'accepted spoken context required' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO profile FROM study_language_profile_units WHERE community_id=sess.community_id AND post_id=sess.post_id
+  AND lyrics_revision=sess.lyrics_revision AND language_profile_revision=sess.language_profile_revision AND study_unit_id=exercise.study_unit_id;
+ dominant:=CASE WHEN profile.mixed IS FALSE AND profile.confidence>=0.8 THEN profile.dominant_language END;
+ provenance:=CASE WHEN dominant IS NULL THEN jsonb_build_object('kind','no_authoritative_evidence') ELSE
+  jsonb_build_object('kind','unit_profile','community_id',profile.community_id,'post_id',profile.post_id,'lyrics_revision',profile.lyrics_revision,
+    'language_profile_revision',profile.language_profile_revision,'study_unit_id',profile.study_unit_id,'confidence',profile.confidence,'dominant_language',dominant) END;
+ context:=jsonb_build_object('item',item.item_snapshot,'referenceText',exercise.private_grader->>'reference_text',
+  'dominantLanguage',dominant,'languageProvenance',provenance,'rerecordEnabled',p_rerecord_enabled,'communityId',sess.community_id,
+  'disclosureVersion',sess.guest_disclosure_version,'disclosureAccepted',sess.guest_disclosure_accepted);
+ cid:='gsc_'||gen_random_uuid()::TEXT;
+ INSERT INTO guest_study_spoken_captures(capture_id,source_owner_id,operation_id,idempotency_key,request_hash,
+  command_id,original_lease_token,original_lease_digest,session_id,session_item_id,attempt_number,attempt_id,artifact_id,
+  provider_call_id,resource_reservation_id,upload_attempt_id,deletion_fence_revision,audio_digest,audio_content_type,
+  audio_byte_size,audio_duration_ms,provider_retention,grading_context,created_at)
+ VALUES(cid,p_source,main_op.operation_id,p_operation->>'idempotencyKey',p_operation->>'requestHash',
+  p_command,p_lease,encode(sha256(convert_to(p_lease,'UTF8')),'hex'),cmd.session_id,cmd.session_item_id,cmd.attempt_number,cmd.attempt_id,
+  cmd.learner_audio_artifact_id,p_call,p_reservation,p_upload,p_fence,cmd.audio_digest,cmd.audio_content_type,cmd.audio_byte_size,cmd.audio_duration_ms,
+  artifact.provider_retention,context,clock_timestamp());
+ RETURN jsonb_build_object('captureId',cid,'fresh',TRUE);
+END $$;
+
 CREATE FUNCTION cascade_current_content_rating_v2() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2939,6 +3410,35 @@ BEGIN
     new_generation, input_target_status;
 END;
 $$;
+
+CREATE FUNCTION claim_captured_learner_audio_private_v1(p_capture jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; claimed BOOLEAN;
+BEGIN
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ claimed:=claim_learner_audio_upload_private_v1(upload_id);
+ RETURN read_learner_audio_upload_status_private_v1(upload_id)||jsonb_build_object('claimed',claimed);
+END $$;
+
+CREATE FUNCTION claim_guest_audio_io_private_v1(p_capture jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; claimed BOOLEAN; upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
+BEGIN
+ upload_id:=require_guest_audio_io_capture_private_v1(p_capture);
+ claimed:=claim_learner_audio_upload_private_v1(upload_id);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=upload.owner_id;
+ RETURN jsonb_build_object('capture',p_capture,'claimed',claimed,'ioState',upload.io_state,
+  'storageDisposition',upload.storage_disposition,'cleanupRequired',upload.cleanup_required,
+  'mayContinue',upload.io_state='writing' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL,
+  'mayPublish',upload.io_state='closed' AND upload.storage_disposition='stored' AND NOT upload.cleanup_required
+   AND NOT guest_ephemeral_object_closed_private_v1(upload.object_ref)
+   AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL);
+END $$;
 
 CREATE FUNCTION claim_hns_authority_provision_job_v1(input_executor_id text, input_lease_seconds integer) RETURNS TABLE(provision_job_id text, root_import_session_id text, operation_kind text, request_bytes bytea, request_sha256 text, lease_fence bigint, lease_expires_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3422,6 +3922,201 @@ BEGIN
 
 END;
 $$;
+
+CREATE FUNCTION claim_learner_audio_upload_private_v1(expected_upload text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=upload.owner_id FOR UPDATE;
+ IF upload.io_state<>'registered' THEN RETURN FALSE; END IF;
+ IF fence.active_delete_command_id IS NOT NULL OR fence.revision<>upload.captured_revision THEN
+   UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition='absent',
+     closed_at=clock_timestamp(),cleanup_required=NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=upload.object_ref)
+     WHERE upload_attempt_id=expected_upload;
+   RETURN FALSE; END IF;
+ UPDATE learner_audio_upload_attempts SET io_state='writing' WHERE upload_attempt_id=expected_upload;
+ RETURN TRUE;
+END $$;
+
+CREATE FUNCTION cleanup_guest_authority_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[], context_selected_id text, candidate_credential_ids text[], candidate_intent_ids text[]) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
+  effects JSONB := '[]'; authority JSONB; at_time TIMESTAMPTZ;
+BEGIN
+  PERFORM lock_guest_cleanup_components_v1(expected_origin,proved_credential_ids,proved_intent_ids);
+  IF candidate_credential_ids IS NULL OR candidate_intent_ids IS NULL
+    OR cardinality(candidate_credential_ids)>16 OR cardinality(candidate_intent_ids)>16
+    OR cardinality(candidate_credential_ids)<>(SELECT count(DISTINCT id) FROM unnest(candidate_credential_ids) id)
+    OR cardinality(candidate_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(candidate_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(candidate_credential_ids) id WHERE id IS NULL OR NOT id=ANY(proved_credential_ids))
+    OR EXISTS(SELECT 1 FROM unnest(candidate_intent_ids) id WHERE id IS NULL OR NOT id=ANY(proved_intent_ids))
+    OR (context_selected_id IS NOT NULL AND NOT context_selected_id=ANY(proved_credential_ids))
+  THEN RAISE EXCEPTION 'cleanup requires each exact proof' USING ERRCODE='GP001'; END IF;
+  IF context_selected_id=ANY(candidate_credential_ids) THEN
+    RAISE EXCEPTION 'selected authority is retained' USING ERRCODE='GP003'; END IF;
+  IF EXISTS(SELECT 1 FROM guest_credentials WHERE credential_id=context_selected_id
+      AND state='pending_successor' AND predecessor_id=ANY(candidate_credential_ids)) THEN
+    RAISE EXCEPTION 'selected pending authority retains its predecessor' USING ERRCODE='GP003'; END IF;
+  -- Preflight ALL candidates before any mutation; one live/retained candidate
+  -- refuses the entire request. Unknown COMMIT still needs exact-state replay.
+  FOR credential IN SELECT * FROM guest_credentials WHERE origin=expected_origin
+      AND credential_id=ANY(candidate_credential_ids) ORDER BY credential_id COLLATE "C" LOOP
+    IF credential.state<>'revoked' AND NOT guest_authority_component_is_empty_v1(credential.owner_id) THEN
+      RAISE EXCEPTION 'credential history is retained' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  FOR intent IN SELECT * FROM guest_attachment_intents WHERE origin=expected_origin
+      AND intent_id=ANY(candidate_intent_ids) ORDER BY intent_id COLLATE "C" LOOP
+    IF intent.state IN ('awaiting_account','awaiting_confirmation') AND intent.expires_at>clock_timestamp() THEN
+      RAISE EXCEPTION 'live ceremony is retained' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  at_time := clock_timestamp();
+  FOR credential IN SELECT * FROM guest_credentials WHERE origin=expected_origin
+      AND credential_id=ANY(candidate_credential_ids) ORDER BY credential_id COLLATE "C" LOOP
+    IF credential.state<>'revoked' THEN
+      UPDATE guest_credentials SET state='revoked',revoked_at=at_time,revocation_reason='empty_cleanup'
+        WHERE credential_id=credential.credential_id;
+    END IF;
+    -- Already revoked proof cookie expiry does not erase its retained owner.
+    effects := effects||jsonb_build_array(jsonb_build_object('kind','credential','action','expire','credentialId',credential.credential_id));
+  END LOOP;
+  FOR intent IN SELECT * FROM guest_attachment_intents WHERE origin=expected_origin
+      AND intent_id=ANY(candidate_intent_ids) ORDER BY intent_id COLLATE "C" LOOP
+    IF intent.state IN ('awaiting_account','awaiting_confirmation') THEN
+      UPDATE guest_attachment_intents SET state='expired' WHERE intent_id=intent.intent_id;
+    END IF;
+    effects := effects||jsonb_build_array(jsonb_build_object('kind','intent','action','expire','intentId',intent.intent_id));
+  END LOOP;
+  -- Cleanup can project <=16; it NEVER auto-selects even a singleton without
+  -- approved context.selected. Existing normal metadata helper already honors
+  -- that argument but its declared frozen mapper must use GuestCleanupAuthorityV1.
+  authority := guest_authority_metadata_v1(expected_origin,proved_credential_ids,context_selected_id);
+  IF context_selected_id IS NULL AND cardinality(proved_credential_ids)>0 THEN
+    authority := jsonb_set(authority,'{state}','"authority_conflict"');
+  ELSIF EXISTS(SELECT 1 FROM guest_credentials WHERE credential_id=context_selected_id
+      AND state IN ('pending_bootstrap','pending_successor') AND pending_expires_at<=clock_timestamp()) THEN
+    authority := jsonb_set(authority,'{state}','"recovery_required"');
+  END IF;
+  RETURN jsonb_build_object('authority',authority,'cookieEffects',effects);
+END $$;
+
+CREATE FUNCTION close_unclaimed_learner_audio_private_v1(p_upload text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ IF upload.io_state<>'registered' THEN RETURN FALSE; END IF;
+ -- Mandatory claim uses this same lock. No storage I/O has been issued.
+ UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition='absent',closed_at=clock_timestamp(),cleanup_required=FALSE
+  WHERE upload_attempt_id=p_upload;
+ RETURN TRUE;
+END $$;
+
+CREATE FUNCTION commit_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb, p_candidate jsonb, p_items jsonb, p_operation_id text, p_timezone text, p_disclosure_version text, p_accepted_version text, p_accepted boolean) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE checked JSONB; item JSONB; exercise JSONB; ordinal INTEGER:=0; review_id TEXT;
+ captured_created TIMESTAMPTZ; captured_expires TIMESTAMPTZ;
+ session_id TEXT; source_id TEXT; at_time TIMESTAMPTZ; timezone_name TEXT; result JSONB;
+BEGIN
+ checked:=prepare_guest_study_start_v1(p_access,p_operation,p_community,p_post,p_reservation,p_target,p_band,p_policy);
+ IF checked->>'state'<>'candidate' THEN RETURN checked; END IF;
+ IF checked IS DISTINCT FROM p_candidate THEN
+  RAISE EXCEPTION 'prepared source changed before capture' USING ERRCODE='GP006'; END IF;
+ IF p_accepted IS DISTINCT FROM TRUE OR p_accepted_version IS DISTINCT FROM p_disclosure_version
+  OR p_disclosure_version IS NULL OR char_length(p_disclosure_version) NOT BETWEEN 1 AND 128 THEN
+  RAISE EXCEPTION 'accepted microphone disclosure unavailable' USING ERRCODE='GP006'; END IF;
+ IF p_items IS NULL OR jsonb_typeof(p_items)<>'array'
+  OR jsonb_array_length(p_items)<>jsonb_array_length(checked->'rows')
+  OR jsonb_array_length(p_items) NOT BETWEEN 4 AND 10 THEN
+  RAISE EXCEPTION 'prepared public items invalid' USING ERRCODE='GP006'; END IF;
+ session_id:=checked->>'sessionId';source_id:=checked->>'sourceOwnerId';at_time:=clock_timestamp();
+ SELECT created_at,reservation_expires_at INTO STRICT captured_created,captured_expires
+  FROM guest_resource_session_reservations WHERE reservation_id=p_reservation;
+ SELECT timezone INTO timezone_name FROM participation_owner_clocks WHERE owner_id=source_id FOR UPDATE;
+ IF NOT FOUND THEN
+  IF NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p_timezone) THEN
+   RAISE EXCEPTION 'timezone unavailable' USING ERRCODE='GP006'; END IF;
+  timezone_name:=p_timezone;
+  INSERT INTO participation_owner_clocks(owner_id,timezone,timezone_updated_at,next_change_allowed_at,created_at)
+   VALUES(source_id,timezone_name,at_time,at_time+INTERVAL '168 hours',at_time);
+ END IF;
+ -- Root must wire the controlled row-admission guard for these definer writes;
+ -- the deliberately closed composition helper above is not an admission bypass.
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+   idempotency_key,request_hash,state,created_at)
+  VALUES(p_operation_id,source_id,'study_start',guest_study_start_resource_scope_v1(p_community,p_post),
+   p_operation->>'idempotencyKey',p_operation->>'requestHash','reserved',at_time);
+ INSERT INTO study_sessions_v2(session_id,account_id,persona_id,participation_owner_id,participation_owner_kind,
+   community_id,post_id,audio_revision,lyrics_revision,learning_language,target_language,learner_band,
+   language_profile_revision,study_profile_revision,source_set_revision,selection_policy_revision,
+   qualification_policy_revision,timezone,idempotency_key,request_hash,created_at,expires_at,
+   current_session_item_id,current_presented_at,guest_reward_mode,guest_reward_terms,
+   guest_start_operation_id,guest_disclosure_version,guest_disclosure_accepted,telegram_practice_only,guest_resource_reservation_id,guest_spoken_call_plan)
+  VALUES(session_id,NULL,NULL,source_id,'guest',p_community,p_post,
+   (checked->'rows'->0->>'audio_revision')::BIGINT,(checked->'rows'->0->>'lyrics_revision')::BIGINT,
+   'en',checked->>'targetLanguage',checked->>'learnerBand',
+   (checked->'rows'->0->>'language_profile_revision')::BIGINT,1,1,'study_selection_v1',
+   'study_session_first_pass_v2@1',timezone_name,p_operation->>'idempotencyKey',p_operation->>'requestHash',
+   captured_created,captured_expires,p_items->0->>'session_item_id',at_time,
+   'practice_only',NULL,p_operation_id,p_disclosure_version,TRUE,FALSE,p_reservation,
+   jsonb_build_object('policy_revision','study_spoken_rerecord_v1',
+    'graded_presentation_cap',(checked->>'paidAttemptUnits')::INTEGER/2,
+    'ungraded_rerecord_per_presentation',1,'maximum_paid_calls',(checked->>'paidAttemptUnits')::INTEGER));
+ FOR item IN SELECT value FROM jsonb_array_elements(p_items) LOOP
+  exercise:=checked->'rows'->ordinal;
+  -- SQL validates the shared projection's COMPLETE whitelist. Unknown fields,
+  -- private grader leakage or a forged public item cannot pass this comparison.
+  IF item IS DISTINCT FROM jsonb_build_object(
+    'object','study_session_item_v2','session_item_id',session_id||'_item_'||(ordinal+1),
+    'ordinal',ordinal,'exercise_review_key',exercise->'exercise_review_key',
+    'exercise_version_id',exercise->'exercise_version_id','exercise_type',exercise->'exercise_type',
+    'exercise_variant',exercise->'exercise_variant',
+    'line',jsonb_build_object('post_id',exercise->'post_id','audio_revision',exercise->'audio_revision',
+      'lyrics_revision',exercise->'lyrics_revision','lyric_line_id',exercise->'lyric_line_id',
+      'study_unit_id',exercise->'study_unit_id','line_version',exercise->'line_version',
+      'line_source_hash',exercise->'line_source_hash'),
+    'languages',jsonb_build_object('learning_language',exercise->'learning_language','target_language',exercise->'target_language'),
+    'learner_band',exercise->'learner_band','language_profile_revision',exercise->'language_profile_revision',
+    'presentation',exercise->'presentation','answer_visibility',exercise->'answer_visibility',
+    'feedback_release',exercise->'feedback_release','grader_policy_revision',exercise->'grader_policy_revision',
+    'feedback_policy_revision',exercise->'feedback_policy_revision','quality_policy_revision',exercise->'quality_policy_revision',
+    'maximum_attempts',3) THEN RAISE EXCEPTION 'public item projection changed' USING ERRCODE='GP006'; END IF;
+  review_id:=session_id||'_review_'||(ordinal+1);
+  INSERT INTO study_review_items(review_item_id,account_id,participation_owner_id,participation_owner_kind,
+    exercise_review_key,current_exercise_version_id,scheduler_policy_revision,scheduler_state,
+    community_id,post_id,study_unit_id,exercise_kind,learning_language,target_language,learner_band)
+   VALUES(review_id,NULL,source_id,'guest',item->>'exercise_review_key',item->>'exercise_version_id',
+    'study_review_schedule_v1','{}',p_community,p_post,item->'line'->>'study_unit_id',item->>'exercise_type',
+    item->'languages'->>'learning_language',item->'languages'->>'target_language',item->>'learner_band')
+   ON CONFLICT(participation_owner_id,exercise_review_key) DO UPDATE
+    SET current_exercise_version_id=excluded.current_exercise_version_id,updated_at=clock_timestamp()
+   RETURNING review_item_id INTO review_id;
+  INSERT INTO study_session_items_v2(session_item_id,session_id,ordinal,exercise_review_key,exercise_version_id,
+    review_item_id,item_snapshot,maximum_attempts,account_id,participation_owner_id,participation_owner_kind)
+   VALUES(item->>'session_item_id',session_id,ordinal,item->>'exercise_review_key',item->>'exercise_version_id',
+    review_id,item,3,NULL,source_id,'guest');
+  INSERT INTO study_lesson_item_state_v2(session_item_id,session_id,original_ordinal)
+   VALUES(item->>'session_item_id',session_id,ordinal);
+  ordinal:=ordinal+1;
+ END LOOP;
+ UPDATE participation_owners SET state='established' WHERE owner_id=source_id AND state='empty';
+ result:=read_guest_study_session_snapshot_v1(p_access,p_community,session_id);
+ UPDATE guest_participation_operations SET state='completed',resolved_at=clock_timestamp(),result_snapshot=result
+  WHERE operation_id=p_operation_id;
+ RETURN jsonb_build_object('state','completed','operationId',p_operation_id,'result',result);
+END $$;
 
 CREATE FUNCTION commit_hns_root_import_activation_v1(input_session_id text, input_expected_session_revision bigint, input_expected_lifecycle_revision bigint, input_expected_generation bigint, input_publish_plan_sha256 text, input_readiness_result_sha256 text, input_activation_identity text, input_current_observed_at timestamp with time zone, input_current_resource_sha256 text, input_current_qualifying boolean) RETURNS TABLE(outcome text, revision bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -3957,6 +4652,293 @@ CREATE FUNCTION community_moderation_policy_preimage_v1(input_community_id text,
     revision.platform_floor_hash;
 $$;
 
+CREATE FUNCTION complete_guest_provider_call_v1(p_source_id text, p_operation jsonb, p_reservation_id text, p_call_id text, p_disposition text, p_checkpoint_id text DEFAULT NULL::text, p_actual_cost text DEFAULT NULL::text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE reservation guest_resource_session_reservations%ROWTYPE; call_record guest_resource_provider_calls%ROWTYPE; component_ids TEXT[]; use_now TIMESTAMPTZ;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source_id,p_operation,'study_answer');
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=complete_guest_provider_call_v1.p_reservation_id AND r.source_owner_id=p_source_id;
+ component_ids:=lock_guest_resource_budget_v1(p_source_id,reservation.edge_fingerprint);
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=complete_guest_provider_call_v1.p_reservation_id FOR UPDATE;
+ SELECT * INTO STRICT call_record FROM guest_resource_provider_calls c WHERE c.call_id=complete_guest_provider_call_v1.p_call_id FOR UPDATE;
+ IF ROW(call_record.source_owner_id,call_record.reservation_id,call_record.idempotency_key,call_record.request_hash)
+   IS DISTINCT FROM ROW(p_source_id,p_reservation_id,p_operation->>'idempotencyKey',p_operation->>'requestHash')
+  THEN RAISE EXCEPTION 'idempotency conflict' USING ERRCODE='GP005'; END IF;
+ IF p_disposition IS NULL OR p_disposition NOT IN('completed','failed','not_invoked','unknown')
+  OR (p_disposition='completed' AND (p_checkpoint_id IS NULL OR char_length(p_checkpoint_id) NOT BETWEEN 1 AND 128
+    OR p_actual_cost IS NULL OR p_actual_cost !~ '^(0|[1-9][0-9]{0,77})$' OR p_actual_cost::NUMERIC>call_record.maximum_provider_cost_micros))
+  OR (p_disposition<>'completed' AND (p_checkpoint_id IS NOT NULL OR p_actual_cost IS NOT NULL))
+  THEN RAISE EXCEPTION 'invalid provider disposition' USING ERRCODE='22023'; END IF;
+ IF call_record.disposition IN('completed','failed','not_invoked') THEN
+  IF ROW(call_record.disposition,call_record.checkpoint_id,call_record.actual_cost_micros::TEXT)
+   IS DISTINCT FROM ROW(p_disposition,p_checkpoint_id,p_actual_cost) THEN RAISE EXCEPTION 'terminal provider conflict' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state','completed','outcome_id',call_record.call_id);
+ END IF;
+ IF p_disposition='completed' THEN PERFORM require_guest_resource_success_checkpoint_v1(
+  p_checkpoint_id,call_record.call_id,call_record.reservation_id,p_source_id,p_actual_cost::NUMERIC); END IF;
+ use_now:=clock_timestamp();
+ IF p_disposition='not_invoked' AND reservation.state='active' AND reservation.reservation_expires_at>use_now THEN
+  -- Return the SAME full planned hold to the unspent plan. No global/owner
+  -- budget increase occurs; another deliberate command may use that allowance.
+  UPDATE guest_resource_session_reservations r SET remaining_units=remaining_units+1 WHERE r.reservation_id=reservation.reservation_id;
+ END IF;
+ UPDATE guest_resource_provider_calls c SET disposition=complete_guest_provider_call_v1.p_disposition,
+  checkpoint_id=complete_guest_provider_call_v1.p_checkpoint_id,actual_cost_micros=CASE WHEN p_actual_cost IS NULL THEN NULL ELSE p_actual_cost::NUMERIC END,
+  resolved_at=CASE WHEN complete_guest_provider_call_v1.p_disposition='unknown' THEN NULL ELSE use_now END WHERE c.call_id=call_record.call_id;
+ RETURN jsonb_build_object('state','completed','outcome_id',call_record.call_id);
+END $_$;
+
+CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch text, p_revision bigint, p_deleted_at timestamp with time zone) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
+ original_command TEXT; original_source TEXT; original_account TEXT;
+ source_ids TEXT[]; captured_sources TEXT[];
+ batch_row learner_audio_delete_batches%ROWTYPE;
+ command_row learner_audio_delete_commands%ROWTYPE;
+BEGIN
+ -- Establish topology before reading/locking source authority. This initial
+ -- immutable identity read takes NO owner, account, batch or command row lock.
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF p_batch IS NULL OR char_length(p_batch) NOT BETWEEN 1 AND 128
+  OR p_revision IS NULL OR p_revision NOT BETWEEN 1 AND 9007199254740991 THEN
+  RAISE EXCEPTION 'captured Account batch identity required'; END IF;
+ SELECT b.command_id,c.source_owner_id,o.account_id
+  INTO original_command,original_source,original_account
+  FROM learner_audio_delete_batches b
+  JOIN learner_audio_delete_commands c ON c.command_id=b.command_id
+  JOIN participation_owners o ON o.owner_id=c.source_owner_id
+  WHERE b.batch_id=p_batch AND o.kind='account';
+ IF NOT FOUND OR original_account IS NULL THEN
+  RAISE EXCEPTION 'captured Account deletion source required'; END IF;
+ -- Reviewed77c1 helper stabilizes aliases and locks users, then the full source
+ -- component in raw UTF8 owner order, before any batch/command row lock.
+ source_ids:=lock_account_audio_group_private_v1(original_account);
+ SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO captured_sources
+  FROM learner_audio_delete_sources WHERE command_id=original_command;
+ IF source_ids IS NULL OR captured_sources IS NULL
+  OR captured_sources IS DISTINCT FROM source_ids
+  OR NOT original_source=ANY(source_ids)
+  OR EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(captured_sources)
+    AND (kind<>'account' OR account_id IS NULL)) THEN
+  RAISE EXCEPTION 'captured Account deletion group differs'; END IF;
+ SELECT * INTO STRICT batch_row FROM learner_audio_delete_batches WHERE batch_id=p_batch FOR UPDATE;
+ SELECT * INTO STRICT command_row FROM learner_audio_delete_commands
+  WHERE command_id=batch_row.command_id FOR UPDATE;
+ IF batch_row.command_id IS DISTINCT FROM original_command
+  OR command_row.source_owner_id IS DISTINCT FROM original_source
+  OR batch_row.revision IS DISTINCT FROM p_revision
+  OR command_row.revision IS DISTINCT FROM p_revision THEN
+  RAISE EXCEPTION 'captured Account deletion revision differs'; END IF;
+ -- An old positively completed command has no active fence to reacquire.
+ -- A confirmed batch in a pending command still reconciles genuine late writer
+ -- facts through native253 below; do not replace that with unknown's no-op.
+ IF command_row.state='completed' THEN
+  IF batch_row.state<>'confirmed' THEN
+   RAISE EXCEPTION 'completed Account deletion has no confirmed batch'; END IF;
+ ELSIF command_row.state<>'pending'
+  OR EXISTS(SELECT 1 FROM unnest(source_ids) AS sources(owner_id)
+    LEFT JOIN learner_audio_owner_fences f ON f.owner_id=sources.owner_id
+    WHERE f.owner_id IS NULL OR f.revision IS DISTINCT FROM p_revision
+      OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
+  RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
+ complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
+ SELECT b.command_id INTO STRICT resolved_command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
+ SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted')),
+  count(*) FILTER(WHERE COALESCE(a.recording_state,r.state,'unpublished')<>'deleted')
+ INTO deleted_count,remaining_count FROM learner_audio_delete_target_artifacts target
+ LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
+ LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
+ WHERE target.command_id=resolved_command_id;
+ IF NOT complete AND deleted_count=0 THEN RAISE EXCEPTION 'audio producers remain unresolved' USING ERRCODE='GA001'; END IF;
+ SELECT max(a.deleted_at) INTO latest FROM learner_audio_artifacts a JOIN learner_audio_delete_sources s ON s.owner_id=a.participation_owner_id
+  WHERE s.command_id=resolved_command_id;
+ RETURN jsonb_build_object('object','learner_audio_deletion','deleted_count',deleted_count,'remaining_count',remaining_count,
+  'last_deleted_at',CASE WHEN latest IS NULL THEN NULL ELSE to_char(latest AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
+END $$;
+
+CREATE FUNCTION confirm_captured_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE command learner_audio_upload_cleanup_commands%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT command FROM learner_audio_upload_cleanup_commands WHERE cleanup_id=p_cleanup;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[command.owner_id]);
+ SELECT * INTO STRICT command FROM learner_audio_upload_cleanup_commands WHERE cleanup_id=p_cleanup FOR UPDATE;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ IF command.upload_attempt_id<>p_upload OR command.object_ref<>p_ref OR upload.owner_id<>command.owner_id
+  OR upload.object_ref<>p_ref OR upload.io_state<>'closed' OR p_at IS NULL THEN RAISE EXCEPTION 'original cleanup command differs'; END IF;
+ IF command.state='completed' THEN RETURN; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.object_ref=p_ref AND u.upload_attempt_id<>p_upload
+  AND (u.created_at>=upload.created_at OR u.io_state<>'closed')) THEN RAISE EXCEPTION 'object generation closure changed'; END IF;
+ UPDATE learner_audio_upload_cleanup_commands SET state='completed',completed_at=p_at WHERE cleanup_id=p_cleanup;
+ UPDATE learner_audio_upload_attempts SET cleanup_required=FALSE WHERE upload_attempt_id=p_upload;
+ -- Exact failed/late-upload cleanup retains namespace, checkpoint and original
+ -- terminal upload fact. It is not an owner deletion or global absence receipt.
+END $$;
+
+CREATE FUNCTION confirm_guest_ephemeral_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE original_owner TEXT; original_artifact TEXT; cleanup learner_audio_upload_cleanup_commands%ROWTYPE;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ SELECT cap.source_owner_id,cap.artifact_id INTO STRICT original_owner,original_artifact
+  FROM guest_study_spoken_captures cap
+  JOIN learner_audio_upload_cleanup_commands c ON c.upload_attempt_id=cap.upload_attempt_id
+   AND c.owner_id=cap.source_owner_id
+  WHERE cap.upload_attempt_id=p_upload AND cap.captured_platform_retention='ephemeral'
+   AND c.cleanup_id=p_cleanup AND c.object_ref=p_ref;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[original_owner]);
+ SELECT * INTO STRICT cleanup FROM learner_audio_upload_cleanup_commands WHERE cleanup_id=p_cleanup;
+ IF p_at IS NULL OR cleanup.upload_attempt_id IS DISTINCT FROM p_upload
+  OR cleanup.owner_id IS DISTINCT FROM original_owner OR cleanup.object_ref IS DISTINCT FROM p_ref THEN
+  RAISE EXCEPTION 'exact ephemeral cleanup identity required'; END IF;
+ IF cleanup.state='completed' THEN RETURN; END IF;
+ IF NOT guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup) THEN
+  RAISE EXCEPTION 'original ephemeral continuation remains held'; END IF;
+ PERFORM confirm_captured_audio_cleanup_private_v1(p_cleanup,p_upload,p_ref,p_at);
+ -- The completed cleanup row permanently closes only this namespace. Keep the
+ -- original stored terminal fact, CP, graded answer and financial facts intact.
+ UPDATE learner_audio_artifacts SET recording_state='deleted',object_ref=NULL,deleted_at=p_at
+  WHERE learner_audio_artifact_id=original_artifact AND participation_owner_id=original_owner
+   AND participation_owner_kind='guest' AND account_id IS NULL
+   AND recording_state='stored' AND object_ref=p_ref;
+ IF NOT FOUND AND NOT EXISTS(SELECT 1 FROM learner_audio_artifacts
+   WHERE learner_audio_artifact_id=original_artifact AND participation_owner_id=original_owner
+    AND participation_owner_kind='guest' AND account_id IS NULL
+    AND recording_state='deleted' AND object_ref IS NULL AND deleted_at IS NOT NULL)
+  THEN RAISE EXCEPTION 'original ephemeral artifact differs'; END IF;
+ -- A prior positively witnessed owner tombstone retains its original deleted_at.
+END $$;
+
+CREATE FUNCTION confirm_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text, p_deleted_at timestamp with time zone) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE selected_batch TEXT; command_id TEXT; original JSONB;
+BEGIN
+ selected_batch:=p_batch->>'batchId';original:=read_guest_owner_audio_delete_batch_private_v1(selected_batch);
+ IF p_batch IS DISTINCT FROM original THEN RAISE EXCEPTION 'original deletion batch differs' USING ERRCODE='GP005'; END IF;
+ -- Original immutable command/source/revision survive proof revocation or lease
+ -- loss after external DELETE. No renewed authority is required for callback.
+ PERFORM confirm_learner_audio_delete_private_v1(selected_batch,(original->>'fenceRevision')::BIGINT,p_fact,p_deleted_at);
+ SELECT b.command_id INTO STRICT command_id FROM learner_audio_delete_batches b WHERE b.batch_id=selected_batch;
+ RETURN jsonb_build_object('state','completed','operation',original->'operation','outcomeId',command_id,'result',guest_owner_audio_delete_projection_private_v1(command_id));
+END $$;
+
+CREATE FUNCTION confirm_guest_pending_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE credential guest_credentials%ROWTYPE; root_id TEXT; at_time TIMESTAMPTZ;
+BEGIN
+  -- Confirmation can canonically converge empty proof components. Exclusive
+  -- topology is acquired BEFORE any shared helper or component/credential row.
+  PERFORM pg_advisory_xact_lock(83000003,1);
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials WHERE credential_id=selected_id AND origin=expected_origin;
+  root_id := resolve_guest_empty_owner_root_v1(credential.owner_id);
+  IF root_id<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  PERFORM reject_guest_copresent_established_conflict_v1(expected_origin,proved_ids,root_id);
+  IF credential.predecessor_id IS NOT NULL OR credential.state NOT IN ('pending_bootstrap','confirmed')
+    THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  IF credential.state='confirmed' THEN
+    -- Natural key (origin, credentialId) replay: no UPDATE, secret, cookie or lease renewal.
+    RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,selected_id),
+      'cookie_effects','[]'::JSONB);
+  END IF;
+  at_time := clock_timestamp();
+  IF credential.pending_expires_at<=at_time THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  -- Initial confirmation only. Confirmed replay never aliases an owner.
+  -- Expected source equality was checked before convergence. Only genuinely
+  -- empty components converge; original proof provenance never changes.
+  PERFORM converge_proved_empty_guest_sources_v1(expected_origin,proved_ids);
+  UPDATE guest_credentials SET state='confirmed',confirmed_at=at_time,session_until=at_time+INTERVAL '1 hour'
+    WHERE credential_id=selected_id;
+  RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,selected_id),
+    'cookie_effects','[]'::JSONB);
+END $$;
+
+CREATE FUNCTION confirm_learner_audio_delete_private_v1(expected_batch text, expected_revision bigint, external_fact text, at_time timestamp with time zone) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE batch learner_audio_delete_batches%ROWTYPE; source_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE;
+BEGIN
+ IF external_fact IS NULL OR external_fact NOT IN('deleted','absent') OR at_time IS NULL THEN
+   RAISE EXCEPTION 'known exact batch storage outcome required'; END IF;
+ SELECT * INTO STRICT batch FROM learner_audio_delete_batches WHERE batch_id=expected_batch;
+ SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO source_ids
+   FROM learner_audio_delete_sources WHERE command_id=batch.command_id;
+ PERFORM lock_learner_audio_sources_private_v1(source_ids);
+ SELECT * INTO STRICT batch FROM learner_audio_delete_batches WHERE batch_id=expected_batch FOR UPDATE;
+ SELECT * INTO STRICT command FROM learner_audio_delete_commands WHERE command_id=batch.command_id FOR UPDATE;
+ IF batch.revision<>expected_revision THEN RAISE EXCEPTION 'stale batch fence'; END IF;
+ IF command.state='completed' THEN RETURN TRUE; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(source_ids)
+   AND (revision<>batch.revision OR active_delete_command_id IS DISTINCT FROM batch.command_id)) THEN
+   RAISE EXCEPTION 'source-group fence mismatch'; END IF;
+ IF batch.state<>'confirmed' THEN
+   UPDATE learner_audio_delete_batches SET state='confirmed',deleted_at=at_time WHERE batch_id=expected_batch;
+   INSERT INTO learner_audio_deleted_objects(object_ref,batch_id,deleted_at)
+     SELECT object_ref,expected_batch,at_time FROM learner_audio_delete_batch_items WHERE batch_id=expected_batch
+     ON CONFLICT(object_ref) DO NOTHING;
+   UPDATE learner_audio_upload_attempts u SET cleanup_required=FALSE
+     WHERE u.io_state='closed' AND u.owner_id=ANY(source_ids)
+       AND EXISTS(SELECT 1 FROM learner_audio_delete_batch_items i WHERE i.batch_id=expected_batch AND i.object_ref=u.object_ref);
+ END IF;
+ -- A cached old confirmation cannot restore absence evidence invalidated by
+ -- a later PUT. Re-delete through a NEW immutable batch of the same command.
+ -- Tombstone only after ALL known refs for an artifact are absent and no old
+ -- writer can still publish it. No attempt/progress/provider/financial deletion.
+ UPDATE learner_audio_artifacts a SET recording_state='deleted',object_ref=NULL,deleted_at=at_time
+   WHERE a.participation_owner_id=ANY(source_ids) AND a.recording_state<>'deleted'
+     AND EXISTS(SELECT 1 FROM learner_audio_delete_batch_items i JOIN learner_audio_delete_batches b USING(batch_id) WHERE b.command_id=command.command_id AND b.state='confirmed' AND i.artifact_id=a.learner_audio_artifact_id AND i.owner_id=a.participation_owner_id)
+     AND NOT EXISTS(SELECT 1 FROM learner_audio_object_names n WHERE n.artifact_id=a.learner_audio_artifact_id
+       AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=n.object_ref))
+     AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.artifact_id=a.learner_audio_artifact_id
+       AND u.owner_id=a.participation_owner_id AND (u.io_state<>'closed' OR u.cleanup_required));
+ -- Current guard permits stored->deleted. Pending/failed->deleted needs the
+ -- separate narrow reviewed recording guard below/protocol, never DISABLE.
+ UPDATE karaoke_recordings r SET state='deleted',object_ref=NULL,reconciled_at=at_time
+   FROM learner_audio_artifacts a WHERE a.learner_audio_artifact_id=r.artifact_id
+     AND a.participation_owner_id=ANY(source_ids) AND a.recording_state='deleted' AND r.state='stored';
+ -- Source-owned exact closure also covers retained pending/failed recordings
+ -- without a common artifact. Unknown legacy writers keep this predicate FALSE.
+ UPDATE karaoke_recordings r SET state='deleted',object_ref=NULL,reconciled_at=at_time
+  WHERE r.state IN('pending','failed') AND EXISTS(SELECT 1 FROM participation_owners o WHERE o.kind='account' AND o.account_id=r.account_id AND o.owner_id=ANY(source_ids))
+   AND karaoke_audio_target_can_tombstone_private_v1(r.account_id,r.artifact_id,r.attempt_id);
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts WHERE owner_id=ANY(source_ids)
+     AND captured_revision<command.revision AND (io_state<>'closed' OR cleanup_required))
+   OR EXISTS(SELECT 1 FROM learner_audio_object_names n WHERE n.owner_id=ANY(source_ids)
+     AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=n.object_ref))
+   OR EXISTS(SELECT 1 FROM learner_audio_artifacts WHERE participation_owner_id=ANY(source_ids) AND recording_state<>'deleted')
+   -- No artifact JOIN: pending/failed recordings and delayed outbox callbacks
+   -- remain retained targets. Until the separately accepted exact recording
+   -- guard/producer-disposition packet can tombstone them, completion REFUSES.
+   OR EXISTS(SELECT 1 FROM karaoke_recordings r JOIN participation_owners o ON o.kind='account' AND o.account_id=r.account_id
+     WHERE o.owner_id=ANY(source_ids) AND r.state<>'deleted') THEN
+   RETURN FALSE; END IF;
+ UPDATE learner_audio_delete_commands SET state='completed',completed_at=at_time,
+   final_result=jsonb_build_object('operation',jsonb_build_object('operation_kind','learner_audio_deletion',
+      'idempotency_key',command.idempotency_key,'operation_id',command.command_id),
+     'state','completed','deleted_count',(SELECT count(*) FROM learner_audio_delete_target_artifacts WHERE command_id=command.command_id),
+     'remaining_count',0,'provider_disposition',provider_disposition)
+   WHERE command_id=command.command_id;
+ UPDATE learner_audio_owner_fences SET active_delete_command_id=NULL
+   WHERE owner_id=ANY(source_ids) AND active_delete_command_id=command.command_id;
+ RETURN TRUE;
+END $$;
+
 CREATE FUNCTION content_rating_reconciliation_plan_v1(requested_limit integer) RETURNS jsonb
     LANGUAGE plpgsql STABLE
     AS $$
@@ -3975,6 +4957,43 @@ BEGIN
   RETURN jsonb_build_object('version','content-rating-reconciliation-v1','plan_hash',fingerprint,'limit',requested_limit,'items',items);
 END;
 $$;
+
+CREATE FUNCTION continue_captured_learner_audio_private_v1(p_capture jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ RETURN (read_learner_audio_upload_status_private_v1(upload_id)->>'mayContinue')::BOOLEAN;
+END $$;
+
+CREATE FUNCTION converge_proved_empty_guest_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE roots TEXT[]; canonical TEXT; source_id TEXT;
+BEGIN
+  SELECT array_agg(DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id)) INTO roots
+    FROM guest_credentials c WHERE c.credential_id=ANY(proved_ids) AND c.origin=expected_origin
+      AND (c.state='confirmed' OR
+        (c.state IN ('pending_bootstrap','pending_successor') AND c.pending_expires_at>clock_timestamp()));
+  IF COALESCE(cardinality(roots),0)<=1 THEN RETURN; END IF;
+  FOR source_id IN SELECT unnest(roots) LOOP
+    IF NOT guest_authority_component_is_empty_v1(source_id) THEN
+      RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
+  END LOOP;
+  SELECT owner_id INTO STRICT canonical FROM participation_owners WHERE owner_id=ANY(roots)
+    ORDER BY created_at,owner_id COLLATE "C" LIMIT 1;
+  FOR source_id IN SELECT owner_id FROM participation_owners WHERE owner_id=ANY(roots) AND owner_id<>canonical
+      ORDER BY owner_id COLLATE "C" LOOP
+    INSERT INTO guest_empty_owner_aliases(source_owner_id,canonical_owner_id,origin,created_at)
+      VALUES(source_id,canonical,expected_origin,clock_timestamp());
+    UPDATE participation_owners SET state='aliased_empty' WHERE owner_id=source_id;
+  END LOOP;
+END $$;
 
 CREATE FUNCTION create_community_moderation_policy_revision_v1(input_account_id text, input_community_id text, input_expected_policy_revision text, input_decisions jsonb) RETURNS community_moderation_policy_update_result_v1
     LANGUAGE plpgsql
@@ -4075,6 +5094,85 @@ BEGIN
   RETURN ('updated', next_revision_id)::community_moderation_policy_update_result_v1;
 END;
 $$;
+
+CREATE FUNCTION create_guest_attachment_intent_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], issuance_key text, issuance_request_hash text, new_operation_id text, new_intent_id text, new_nonce_digest text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE credential guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
+  intent guest_attachment_intents%ROWTYPE; at_time TIMESTAMPTZ; intent_result JSONB;
+BEGIN
+  -- Recovery proof has no learning-lease age requirement. No money/binding phase.
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials
+    WHERE credential_id=selected_id AND origin=expected_origin;
+  IF credential.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  IF resolve_guest_empty_owner_root_v1(credential.owner_id)<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF proved_intent_ids IS NULL OR cardinality(proved_intent_ids)>4
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id
+      WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted ceremony context' USING ERRCODE='22023'; END IF;
+  -- The owner/component lock serializes natural issuance and every live intent.
+  PERFORM 1 FROM guest_attachment_intents i WHERE i.owner_id=expected_owner_id
+    ORDER BY i.intent_id COLLATE "C" FOR UPDATE;
+  SELECT * INTO prior FROM guest_secret_issuance_operations
+    WHERE origin=expected_origin AND issuance_kind='attachment_intent'
+      AND resource_scope=credential.owner_id AND idempotency_key=issuance_key;
+  IF FOUND THEN
+    IF prior.request_hash<>issuance_request_hash THEN
+      RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+    IF NOT prior.intent_id=ANY(proved_intent_ids) THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    SELECT * INTO STRICT intent FROM guest_attachment_intents WHERE intent_id=prior.intent_id;
+    IF intent.origin<>expected_origin OR intent.credential_source_owner_id<>credential.owner_id
+      OR intent.credential_id<>selected_id OR intent.owner_id<>expected_owner_id THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    IF intent.state NOT IN ('awaiting_account','awaiting_confirmation')
+      OR intent.expires_at<=clock_timestamp() THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    -- Creation receipt is immutable; preparation never resets its target.
+    SELECT result_snapshot->'intent' INTO intent_result FROM guest_participation_operations
+      WHERE operation_id=prior.operation_id AND state='completed';
+    IF intent_result IS NULL OR intent_result->>'intent_id' IS DISTINCT FROM intent.intent_id
+      OR intent_result->>'state' IS DISTINCT FROM 'awaiting_account'
+      OR intent_result->>'expires_at' IS DISTINCT FROM
+        to_char(intent.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') THEN
+      RAISE EXCEPTION 'invalid ceremony issuance receipt' USING ERRCODE='22023'; END IF;
+    RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_attachment_operation_identity_v1(prior.operation_id),
+      'intent',intent_result,'cookie_effects','[]'::JSONB);
+  END IF;
+  IF cardinality(proved_intent_ids)>=4 THEN
+    RAISE EXCEPTION 'ceremony-cleanup-required' USING ERRCODE='GP007'; END IF;
+  at_time:=clock_timestamp();
+  -- A fresh deliberate issuance key replaces ONLY unconsumed ceremonies.
+  -- Existing target/version and operation evidence remain immutable in old rows.
+  UPDATE guest_attachment_intents SET state=CASE WHEN expires_at<=at_time THEN 'expired' ELSE 'superseded' END
+    WHERE owner_id=expected_owner_id AND state IN ('awaiting_account','awaiting_confirmation');
+  INSERT INTO guest_attachment_intents(intent_id,owner_id,credential_source_owner_id,credential_id,
+    origin,nonce_digest,state,created_at,expires_at)
+    VALUES(new_intent_id,expected_owner_id,credential.owner_id,selected_id,expected_origin,
+      new_nonce_digest,'awaiting_account',at_time,at_time+INTERVAL '15 minutes');
+  intent_result:=jsonb_build_object('intent_id',new_intent_id,'state','awaiting_account',
+    'expires_at',to_char((at_time+INTERVAL '15 minutes') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+  INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,
+    resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+    VALUES(new_operation_id,expected_owner_id,'attachment_intent',credential.owner_id,
+      issuance_key,issuance_request_hash,'completed',jsonb_build_object('intent',intent_result),at_time,at_time);
+  INSERT INTO guest_secret_issuance_operations(origin,issuance_kind,resource_scope,
+    idempotency_key,request_hash,source_owner_id,intent_id,operation_id,created_at)
+    VALUES(expected_origin,'attachment_intent',credential.owner_id,issuance_key,
+      issuance_request_hash,expected_owner_id,new_intent_id,new_operation_id,at_time);
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+    'operation',guest_attachment_operation_identity_v1(new_operation_id),'intent',intent_result,
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','intent','action','issue','intentId',new_intent_id)));
+END $_$;
 
 CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
     LANGUAGE sql STABLE
@@ -4418,6 +5516,76 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION discover_guest_authority_v1(expected_origin text, proved_ids text[], context_selected_id text, expected_owner_id text, previous_credential_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE selected guest_credentials%ROWTYPE; previous guest_credentials%ROWTYPE;
+  candidate guest_credentials%ROWTYPE; candidates INTEGER; selected_root TEXT;
+  metadata JSONB; result JSONB; repair JSONB := NULL; roots_count INTEGER;
+BEGIN
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF context_selected_id IS NOT NULL THEN
+    IF NOT context_selected_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+    SELECT * INTO STRICT selected FROM guest_credentials WHERE origin=expected_origin AND credential_id=context_selected_id;
+    selected_root := resolve_guest_empty_owner_root_v1(selected.owner_id);
+    -- Explicit mismatch does not silently select another proved owner.
+    IF expected_owner_id IS NOT NULL AND expected_owner_id<>selected_root THEN
+      IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=expected_owner_id AND kind='guest') THEN
+        RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+      -- A genuine EMPTY alias can repair a pointer that still names its source.
+      IF resolve_guest_empty_owner_root_v1(expected_owner_id)<>selected_root
+        OR NOT guest_authority_component_is_empty_v1(selected.owner_id) THEN
+        RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+    END IF;
+  END IF;
+  result := guest_authority_metadata_v1(expected_origin,proved_ids,context_selected_id);
+  -- The store honors context.selected, including an adapter-approved singleton.
+  -- It NEVER constructs selection from an ambiguous same-/multi-owner list.
+  IF context_selected_id IS NULL THEN
+    SELECT count(DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id)) INTO roots_count
+      FROM guest_credentials c WHERE origin=expected_origin AND credential_id=ANY(proved_ids)
+        AND (state='confirmed' OR (state IN ('pending_bootstrap','pending_successor') AND pending_expires_at>clock_timestamp()));
+    result := jsonb_set(result,'{state}',to_jsonb(CASE
+      WHEN expected_owner_id IS NOT NULL OR previous_credential_id IS NOT NULL THEN 'recovery_required'
+      WHEN roots_count>0 THEN 'authority_conflict' ELSE 'absent' END::TEXT));
+  ELSIF selected.state='revoked' OR
+    (selected.state IN ('pending_bootstrap','pending_successor') AND selected.pending_expires_at<=clock_timestamp()) THEN
+    result := jsonb_set(result,'{state}','"recovery_required"');
+  END IF;
+  IF previous_credential_id IS NOT NULL AND expected_owner_id IS NOT NULL THEN
+    SELECT * INTO previous FROM guest_credentials WHERE origin=expected_origin AND credential_id=previous_credential_id;
+    IF FOUND AND (previous.owner_id=expected_owner_id OR
+      resolve_guest_empty_owner_root_v1(previous.owner_id)=expected_owner_id) THEN
+      SELECT count(*) INTO candidates FROM guest_credentials c
+        WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids) AND c.state='confirmed'
+          AND c.credential_id<>previous_credential_id
+          AND (c.predecessor_id=previous_credential_id OR
+            (c.owner_id<>previous.owner_id AND resolve_guest_empty_owner_root_v1(c.owner_id)=resolve_guest_empty_owner_root_v1(previous.owner_id)))
+          AND (context_selected_id IS NULL OR context_selected_id=c.credential_id
+            OR context_selected_id=previous_credential_id);
+      IF candidates=1 THEN
+        SELECT * INTO STRICT candidate FROM guest_credentials c
+          WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids) AND c.state='confirmed'
+            AND c.credential_id<>previous_credential_id
+            AND (c.predecessor_id=previous_credential_id OR
+              (c.owner_id<>previous.owner_id AND resolve_guest_empty_owner_root_v1(c.owner_id)=resolve_guest_empty_owner_root_v1(previous.owner_id)))
+            AND (context_selected_id IS NULL OR context_selected_id=c.credential_id
+            OR context_selected_id=previous_credential_id);
+        IF (candidate.predecessor_id=previous_credential_id AND previous.state='revoked'
+              AND previous.revocation_reason='rotation_acknowledged' AND candidate.owner_id=previous.owner_id)
+          OR (candidate.owner_id<>previous.owner_id
+              AND guest_authority_component_is_empty_v1(candidate.owner_id)) THEN
+          repair := jsonb_build_object('previous_credential_id',previous_credential_id,
+            'credential_id',candidate.credential_id,'owner_id',resolve_guest_empty_owner_root_v1(candidate.owner_id));
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+  -- Repair is authenticated metadata, not selection mutation or a cookie effect.
+  RETURN jsonb_set(result,'{pointer_repair}',COALESCE(repair,'null'::JSONB));
+END $$;
 
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
@@ -4868,6 +6036,130 @@ BEGIN
    WHERE persona_id = input_persona_id;
 END;
 $$;
+
+CREATE FUNCTION fail_account_audio_delete_private_v1(p_batch text, p_revision bigint) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE original_command TEXT; original_source TEXT; original_account TEXT;
+ source_ids TEXT[]; captured_sources TEXT[];
+ batch_row learner_audio_delete_batches%ROWTYPE;
+ command_row learner_audio_delete_commands%ROWTYPE;
+BEGIN
+ -- Establish topology before reading/locking source authority. This initial
+ -- immutable identity read takes NO owner, account, batch or command row lock.
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF p_batch IS NULL OR char_length(p_batch) NOT BETWEEN 1 AND 128
+  OR p_revision IS NULL OR p_revision NOT BETWEEN 1 AND 9007199254740991 THEN
+  RAISE EXCEPTION 'captured Account batch identity required'; END IF;
+ SELECT b.command_id,c.source_owner_id,o.account_id
+  INTO original_command,original_source,original_account
+  FROM learner_audio_delete_batches b
+  JOIN learner_audio_delete_commands c ON c.command_id=b.command_id
+  JOIN participation_owners o ON o.owner_id=c.source_owner_id
+  WHERE b.batch_id=p_batch AND o.kind='account';
+ IF NOT FOUND OR original_account IS NULL THEN
+  RAISE EXCEPTION 'captured Account deletion source required'; END IF;
+ -- Reviewed77c1 helper stabilizes aliases and locks users, then the full source
+ -- component in raw UTF8 owner order, before any batch/command row lock.
+ source_ids:=lock_account_audio_group_private_v1(original_account);
+ SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO captured_sources
+  FROM learner_audio_delete_sources WHERE command_id=original_command;
+ IF source_ids IS NULL OR captured_sources IS NULL
+  OR captured_sources IS DISTINCT FROM source_ids
+  OR NOT original_source=ANY(source_ids)
+  OR EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(captured_sources)
+    AND (kind<>'account' OR account_id IS NULL)) THEN
+  RAISE EXCEPTION 'captured Account deletion group differs'; END IF;
+ SELECT * INTO STRICT batch_row FROM learner_audio_delete_batches WHERE batch_id=p_batch FOR UPDATE;
+ SELECT * INTO STRICT command_row FROM learner_audio_delete_commands
+  WHERE command_id=batch_row.command_id FOR UPDATE;
+ IF batch_row.command_id IS DISTINCT FROM original_command
+  OR command_row.source_owner_id IS DISTINCT FROM original_source
+  OR batch_row.revision IS DISTINCT FROM p_revision
+  OR command_row.revision IS DISTINCT FROM p_revision THEN
+  RAISE EXCEPTION 'captured Account deletion revision differs'; END IF;
+ -- A positively confirmed exact batch never regresses because another DELETE
+ -- acknowledgement is unavailable. This changes no prior confirmation/fence.
+ IF batch_row.state='confirmed' THEN RETURN; END IF;
+ IF command_row.state<>'pending'
+  OR EXISTS(SELECT 1 FROM unnest(source_ids) AS sources(owner_id)
+    LEFT JOIN learner_audio_owner_fences f ON f.owner_id=sources.owner_id
+    WHERE f.owner_id IS NULL OR f.revision IS DISTINCT FROM p_revision
+      OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
+  RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
+ -- Constant unresolved outcome only; no caller-selected terminal/deletion fact.
+ -- Raw253 changes only the unconfirmed batch state, retaining command/provider,
+ -- owner fence, upload, known-object and successful-checkpoint evidence.
+ PERFORM fail_learner_audio_delete_private_v1(p_batch,'unknown');
+END $$;
+
+CREATE FUNCTION fail_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE selected_batch TEXT; command_id TEXT; original JSONB;
+BEGIN
+ selected_batch:=p_batch->>'batchId';original:=read_guest_owner_audio_delete_batch_private_v1(selected_batch);
+ IF p_batch IS DISTINCT FROM original THEN RAISE EXCEPTION 'original deletion batch differs' USING ERRCODE='GP005'; END IF;
+ PERFORM fail_learner_audio_delete_private_v1(selected_batch,p_fact);
+ SELECT b.command_id INTO STRICT command_id FROM learner_audio_delete_batches b WHERE b.batch_id=selected_batch;
+ RETURN jsonb_build_object('state','completed','operation',original->'operation','outcomeId',command_id,'result',guest_owner_audio_delete_projection_private_v1(command_id));
+END $$;
+
+CREATE FUNCTION fail_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_reservation text, p_disposition text, p_failure text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cap guest_study_spoken_captures%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
+ call_row guest_resource_provider_calls%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE; main_op guest_participation_operations%ROWTYPE;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE source_owner_id=p_source AND command_id=p_command
+  AND original_lease_digest=encode(sha256(convert_to(p_original_lease,'UTF8')),'hex');
+ IF ROW(cap.idempotency_key,cap.request_hash,cap.original_lease_token,cap.resource_reservation_id)
+  IS DISTINCT FROM ROW(p_operation->>'idempotencyKey',p_operation->>'requestHash',p_original_lease,p_reservation) THEN
+  RAISE EXCEPTION 'original failure identity changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=cap.resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[p_source]);
+ SELECT * INTO STRICT main_op FROM guest_participation_operations WHERE operation_id=cap.operation_id FOR UPDATE;
+ SELECT * INTO STRICT call_row FROM guest_resource_provider_calls WHERE call_id=cap.provider_call_id FOR UPDATE;
+ IF main_op.state='completed' OR EXISTS(SELECT 1 FROM guest_study_spoken_checkpoints WHERE capture_id=cap.capture_id)
+  OR call_row.disposition='completed' THEN RAISE EXCEPTION 'successful command cannot fail' USING ERRCODE='GP005'; END IF;
+ IF p_disposition IS NULL OR p_disposition NOT IN('not_invoked','failed','unknown')
+  OR p_failure IS NULL OR p_failure NOT IN('invalid-response','misconfigured','rate-limited','timeout','unavailable') THEN
+  RAISE EXCEPTION 'trusted closed failure disposition required' USING ERRCODE='GP003'; END IF;
+ PERFORM complete_guest_provider_call_v1(p_source,p_operation,p_reservation,cap.provider_call_id,p_disposition);
+ IF p_disposition='unknown' THEN RETURN jsonb_build_object('state','reserved','operationId',main_op.operation_id,'result',NULL); END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=cap.upload_attempt_id FOR UPDATE;
+ -- Before accepted provider success this exact registered generation has never
+ -- entered archive dispatch. A writing/unknown generation must not be inferred
+ -- absent; leave it retained and block later command reclamation.
+ IF upload.io_state='registered' THEN
+  PERFORM settle_learner_audio_upload_private_v1(upload.upload_attempt_id,'absent',TRUE,NULL); END IF;
+ UPDATE study_spoken_answer_commands SET state='retryable_failed',provider_failure_kind=p_failure,completed_at=clock_timestamp()
+  WHERE command_id=p_command AND participation_owner_id=p_source AND lease_token=p_original_lease AND state='reserved';
+ -- An old retained failure replay after a newer deliberate generation neither
+ -- fails its command nor rewrites the newer artifact metadata.
+ IF FOUND THEN UPDATE learner_audio_artifacts SET recording_state='failed'
+  WHERE learner_audio_artifact_id=cap.artifact_id AND participation_owner_id=p_source AND recording_state='pending'; END IF;
+ IF main_op.state='reserved' THEN UPDATE guest_participation_operations SET state='known_aborted',resolved_at=clock_timestamp()
+  WHERE operation_id=main_op.operation_id; END IF;
+ RETURN jsonb_build_object('state','known_aborted','operationId',main_op.operation_id,'result',NULL);
+END $$;
+
+CREATE FUNCTION fail_learner_audio_delete_private_v1(expected_batch text, external_fact text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF external_fact IS NULL OR external_fact NOT IN('failed','unknown') THEN RAISE EXCEPTION 'invalid unresolved storage fact'; END IF;
+ UPDATE learner_audio_delete_batches SET state=external_fact WHERE batch_id=expected_batch AND state<>'confirmed';
+ -- This never releases the durable owner fence, expires an old upload or
+ -- changes provider disposition into a claimed confirmed provider deletion.
+END $$;
 
 CREATE FUNCTION fence_telegram_learner_linking() RETURNS trigger
     LANGUAGE plpgsql
@@ -5633,6 +6925,184 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION find_account_spoken_success_private_v1(p_account text, p_session text, p_item text, p_attempt integer, p_key text, p_digest text, p_type text, p_bytes bigint, p_duration integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE result JSONB;
+BEGIN
+ PERFORM lock_original_account_audio_source_private_v1(p_account);
+ SELECT jsonb_build_object('capture',read_captured_learner_audio_private_v1(c.upload_attempt_id),'success',cp.successful_result)
+ INTO result FROM learner_audio_account_producer_captures c JOIN learner_audio_account_spoken_checkpoints cp USING(upload_attempt_id)
+ WHERE c.account_id=p_account AND c.session_id=p_session AND c.session_item_id=p_item AND c.attempt_number=p_attempt
+  AND c.idempotency_key=p_key AND c.content_digest=p_digest AND c.content_type=p_type AND c.byte_size=p_bytes AND c.duration_ms=p_duration;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION find_guest_owner_audio_delete_v1(p_access jsonb, p_source text, p_key text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE command_id TEXT;
+BEGIN
+ PERFORM require_guest_audio_recovery_access_private_v1(p_access,p_source);
+ IF p_key IS NULL OR char_length(p_key) NOT BETWEEN 1 AND 128 THEN RAISE EXCEPTION 'invalid deletion key' USING ERRCODE='GP005'; END IF;
+ SELECT c.command_id INTO command_id FROM learner_audio_delete_commands c WHERE source_owner_id=p_source AND idempotency_key=p_key;
+ IF NOT FOUND THEN RAISE EXCEPTION 'deletion operation not found' USING ERRCODE='GP004'; END IF;
+ RETURN guest_owner_audio_delete_projection_private_v1(command_id);
+END $$;
+
+CREATE FUNCTION find_guest_study_start_operation_v1(p_access jsonb, p_source text, p_community text, p_post text, p_key text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+ PERFORM require_guest_study_learning_access_v1(p_access,p_source);
+ IF NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+  RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO operation FROM guest_participation_operations
+  WHERE source_owner_id=p_source AND operation_kind='study_start' AND idempotency_key=p_key;
+ IF NOT FOUND THEN RETURN jsonb_build_object('state','pending_confirmation','session',NULL); END IF;
+ IF operation.resource_scope IS DISTINCT FROM guest_study_start_resource_scope_v1(p_community,p_post) THEN
+  RAISE EXCEPTION 'start resource mismatch' USING ERRCODE='GP002'; END IF;
+ IF operation.state='completed' THEN
+  RETURN jsonb_build_object('state','completed','session',operation.result_snapshot->'session'); END IF;
+ RETURN jsonb_build_object('state',CASE WHEN operation.state='known_aborted' THEN 'not_started'
+  ELSE 'pending_confirmation' END,'session',NULL);
+END $$;
+
+CREATE FUNCTION find_owner_guest_spoken_success_for_audio_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_attempt integer, p_digest text, p_type text, p_bytes integer, p_duration integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE source_id TEXT; cap guest_study_spoken_captures%ROWTYPE;
+ sess study_sessions_v2%ROWTYPE; main_op guest_participation_operations%ROWTYPE; op JSONB;
+BEGIN
+ -- Access is verified initiating-browser adapter output, never a JSON body.
+ -- NEW browser recovery read requires current confirmed same-origin proof;
+ -- accepted internal post-I/O continuation and cron remain proof-independent.
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ source_id:=require_owner_guest_source_private_v1(jsonb_build_object('kind','guest','ownerId',p_access->>'ownerId'));
+ IF p_community IS NULL OR char_length(p_community) NOT BETWEEN 1 AND 128
+  OR p_session IS NULL OR char_length(p_session) NOT BETWEEN 1 AND 128
+  OR p_item IS NULL OR char_length(p_item) NOT BETWEEN 1 AND 128
+  OR p_key IS NULL OR char_length(p_key) NOT BETWEEN 1 AND 128
+  OR p_attempt IS NULL OR p_attempt NOT BETWEEN 1 AND 3
+  OR p_digest IS NULL OR p_digest !~ '^[0-9a-f]{64}$'
+  OR p_type IS NULL OR p_type NOT IN('audio/webm','audio/ogg','audio/mp4','audio/wav')
+  OR p_bytes IS NULL OR p_bytes NOT BETWEEN 1 AND 524288
+  OR p_duration IS NULL OR p_duration NOT BETWEEN 1 AND 60000 THEN
+  RAISE EXCEPTION 'closed recovery audio tuple required' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO cap FROM guest_study_spoken_captures
+  WHERE source_owner_id=source_id AND idempotency_key=p_key;
+ IF NOT FOUND THEN
+  PERFORM require_guest_audio_recovery_access_private_v1(p_access,source_id);
+  RETURN NULL;
+ END IF;
+ -- Correlate and lock the original immutable source and actual credential.
+ -- The accepted helper prevents crossed foreign component locking and rereads
+ -- confirmed state/root. No server age or learning-lease check is introduced.
+ PERFORM require_guest_audio_recovery_access_private_v1(p_access,cap.source_owner_id);
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=cap.session_id;
+ SELECT * INTO STRICT main_op FROM guest_participation_operations WHERE operation_id=cap.operation_id;
+ IF ROW(sess.community_id,cap.session_id,cap.session_item_id,cap.attempt_number,
+   cap.audio_digest,cap.audio_content_type,cap.audio_byte_size,cap.audio_duration_ms)
+  IS DISTINCT FROM ROW(p_community,p_session,p_item,p_attempt,p_digest,p_type,p_bytes,p_duration)
+  OR ROW(sess.participation_owner_id,sess.participation_owner_kind,
+    main_op.source_owner_id,main_op.operation_kind,main_op.idempotency_key,main_op.request_hash,main_op.resource_scope)
+  IS DISTINCT FROM ROW(source_id,'guest'::TEXT,source_id,'study_answer'::TEXT,p_key,cap.request_hash,
+    guest_study_answer_resource_scope_v1(p_community,p_session,p_item,p_attempt,'spoken')) THEN
+  RAISE EXCEPTION 'original recovery operation differs' USING ERRCODE='GP005'; END IF;
+ op:=jsonb_build_object('sourceOwnerId',source_id,'kind','study_answer',
+   'idempotencyKey',cap.idempotency_key,'requestHash',cap.request_hash);
+ -- Original command/lease/hash and accepted grade come only from immutable
+ -- storage. Missing CP is NULL, never authority to regrade/reclaim/redispatch.
+ RETURN load_guest_spoken_success_private_v1(source_id,op,cap.command_id,cap.original_lease_token);
+END $_$;
+
+CREATE FUNCTION finish_guest_json_answer_v1(p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE; owned JSONB; result JSONB;
+BEGIN
+ SELECT * INTO STRICT operation FROM guest_participation_operations WHERE operation_id=p_operation_id FOR UPDATE;
+ IF ROW(operation.source_owner_id,operation.operation_kind,operation.idempotency_key,operation.request_hash,operation.resource_scope)
+  IS DISTINCT FROM ROW(p_capture->>'sourceOwnerId','study_answer',p_operation->>'idempotencyKey',p_operation->>'requestHash',
+   guest_study_answer_resource_scope_v1(p_capture->>'communityId',p_capture->>'sessionId',p_capture->>'sessionItemId',(p_capture->>'attemptNumber')::INTEGER,'choice')) THEN
+  RAISE EXCEPTION 'original answer identity changed' USING ERRCODE='GP005'; END IF;
+ IF operation.state='completed' THEN RETURN jsonb_build_object('state','completed','operationId',operation.operation_id,'result',operation.result_snapshot); END IF;
+ IF operation.state<>'reserved' OR NOT EXISTS(SELECT 1 FROM study_attempts_v2 a JOIN study_session_items_v2 i USING(session_item_id)
+  WHERE a.idempotency_key=operation.idempotency_key AND a.request_hash=operation.request_hash
+   AND i.participation_owner_id=operation.source_owner_id AND i.session_id=p_capture->>'sessionId'
+   AND a.session_item_id=p_capture->>'sessionItemId' AND a.attempt_number=(p_capture->>'attemptNumber')::INTEGER) THEN
+  RAISE EXCEPTION 'actual answer receipt missing' USING ERRCODE='GP003'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM study_sessions_v2 WHERE session_id=p_capture->>'sessionId'
+   AND participation_owner_id=operation.source_owner_id
+   AND presentation_count=(p_capture->>'priorPresentationCount')::BIGINT+1) THEN
+  RAISE EXCEPTION 'shared lesson continuation receipt missing' USING ERRCODE='GP003'; END IF;
+ owned:=project_owner_study_session_private_v1(operation.source_owner_id,p_capture->>'communityId',p_capture->>'sessionId');
+ result:=jsonb_build_object('source',owned->'source','answer',jsonb_build_object('object','guest_study_answer_result_v1',
+  'session_item_id',p_capture->'sessionItemId','attempt_number',p_capture->'attemptNumber','exercise_type','translation_choice',
+  'outcome',p_decision->'outcome','first_pass',p_decision->'firstPass','attempt_state',p_decision->'attemptState',
+  'feedback',p_decision->'feedback','session',owned->'session','participation',jsonb_build_object('state','practice_only')),
+  'participation',jsonb_build_object('state','practice_only'));
+ -- Release only the unspent plan after actual lesson completion. Existing
+ -- reserved/unknown provider holds remain retained by the actual251 primitive.
+ IF owned#>>'{session,status}'='completed' THEN
+  PERFORM release_guest_resource_session_v1(operation.source_owner_id,p_operation,p_capture->>'sessionId',
+   p_capture->>'resourceReservationId','completed'); END IF;
+ UPDATE guest_participation_operations SET state='completed',result_snapshot=result,resolved_at=clock_timestamp() WHERE operation_id=p_operation_id;
+ RETURN jsonb_build_object('state','completed','operationId',p_operation_id,'result',result);
+END $$;
+
+CREATE FUNCTION finish_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_spoken jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
+ main_op guest_participation_operations%ROWTYPE; cmd study_spoken_answer_commands%ROWTYPE; owned JSONB; result JSONB;
+BEGIN
+ SELECT * INTO STRICT cp FROM guest_study_spoken_checkpoints WHERE checkpoint_id=p_checkpoint AND source_owner_id=p_source;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=cp.capture_id;
+ main_op:=require_guest_answer_operation_private_v1(p_source,p_operation,cap.operation_id,
+  cap.grading_context->>'communityId',cap.session_id,cap.session_item_id,cap.attempt_number,'spoken');
+ IF main_op.state='completed' THEN RETURN jsonb_build_object('state','completed','operationId',main_op.operation_id,'result',main_op.result_snapshot); END IF;
+ SELECT * INTO STRICT cmd FROM study_spoken_answer_commands WHERE command_id=cap.command_id FOR UPDATE;
+ IF main_op.state IS DISTINCT FROM 'reserved' OR cmd.state IS DISTINCT FROM 'reserved'
+  OR cmd.lease_token IS DISTINCT FROM cap.original_lease_token OR p_capture->'result' IS DISTINCT FROM cp.success_result
+  OR p_capture->>'captureId' IS DISTINCT FROM cap.capture_id OR p_capture->>'operationId' IS DISTINCT FROM main_op.operation_id
+  OR (p_decision->>'kind'='graded' AND NOT EXISTS(SELECT 1 FROM study_attempts_v2 WHERE attempt_id=cap.attempt_id))
+  OR p_decision->>'kind' IS NULL OR p_decision->>'kind' NOT IN('graded','ungraded_rerecord') THEN
+  RAISE EXCEPTION 'accepted actual completion receipts unavailable' USING ERRCODE='GP003'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM study_sessions_v2 s JOIN study_lesson_item_state_v2 state
+  ON state.session_id=s.session_id AND state.session_item_id=cap.session_item_id
+  WHERE s.session_id=cap.session_id AND s.participation_owner_id=p_source
+   AND ((p_decision->>'kind'='graded' AND state.presentation_count=cap.attempt_number
+     AND s.presentation_count=(p_capture->>'priorPresentationCount')::BIGINT+1)
+    OR (p_decision->>'kind'='ungraded_rerecord' AND state.presentation_count=cap.attempt_number-1
+     AND s.presentation_count=(p_capture->>'priorPresentationCount')::BIGINT
+     AND s.current_session_item_id=cap.session_item_id AND NOT state.lesson_resolved))) THEN
+  RAISE EXCEPTION 'shared lesson continuation receipt missing' USING ERRCODE='GP003'; END IF;
+ owned:=project_owner_study_session_private_v1(p_source,cap.grading_context->>'communityId',cap.session_id);
+ result:=jsonb_build_object('source',owned->'source','answer',jsonb_build_object('object','guest_study_answer_result_v1',
+  'session_item_id',cap.session_item_id,'attempt_number',cap.attempt_number,'exercise_type','say_it_back',
+  'outcome',p_decision->'outcome','first_pass',p_decision->'firstPass','attempt_state',p_decision->'attemptState',
+  'feedback',p_feedback,'spoken',p_spoken,'session',owned->'session','participation',jsonb_build_object('state','practice_only')),
+  'participation',jsonb_build_object('state','practice_only'));
+ IF owned#>>'{session,status}'='completed' THEN
+  PERFORM release_guest_resource_session_v1(p_source,p_operation,cap.session_id,cap.resource_reservation_id,'completed'); END IF;
+ UPDATE study_spoken_answer_commands SET state='completed',result_kind=CASE WHEN p_decision->>'kind'='ungraded_rerecord' THEN 'rerecord' ELSE 'graded' END,
+  result_snapshot=result,completed_at=(cp.success_result->>'acceptedAt')::TIMESTAMPTZ
+  WHERE command_id=cap.command_id AND participation_owner_id=p_source AND lease_token=cap.original_lease_token AND state='reserved';
+ IF NOT FOUND THEN RAISE EXCEPTION 'original command completion changed' USING ERRCODE='GP005'; END IF;
+ UPDATE guest_participation_operations SET state='completed',result_snapshot=result,resolved_at=clock_timestamp()
+  WHERE operation_id=main_op.operation_id AND state='reserved';
+ RETURN jsonb_build_object('state','completed','operationId',main_op.operation_id,'result',result);
+END $$;
+
 CREATE FUNCTION freeze_reward_leg_qualification_terms() RETURNS trigger
     LANGUAGE plpgsql
     AS $_$
@@ -6094,6 +7564,20 @@ CREATE FUNCTION grade_study_answer_v1(candidate_answer jsonb, stored_answer_key 
   END
 $$;
 
+CREATE FUNCTION guard_account_audio_provider_call_private_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'provider outcome evidence retained'; END IF;
+ IF (to_jsonb(NEW)-ARRAY['state','resolved_at']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','resolved_at']) THEN RAISE EXCEPTION 'provider identity differs'; END IF;
+ IF OLD.state IN('known_failed','succeeded') AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN RAISE EXCEPTION 'terminal provider outcome differs'; END IF;
+ IF NOT ((OLD.state='registered' AND NEW.state IN('registered','started','known_failed'))
+  OR (OLD.state IN('started','unknown') AND NEW.state IN('unknown','known_failed','succeeded'))
+  OR (OLD.state IN('known_failed','succeeded') AND NEW.state=OLD.state)) THEN RAISE EXCEPTION 'provider state transition differs'; END IF;
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_account_language_preferences_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -6370,6 +7854,21 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_captured_audio_cleanup_private_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'cleanup evidence is retained'; END IF;
+ IF TG_OP='INSERT' THEN
+  IF NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.upload_attempt_id=NEW.upload_attempt_id AND u.owner_id=NEW.owner_id AND u.object_ref=NEW.object_ref AND u.io_state='closed' AND u.cleanup_required) THEN RAISE EXCEPTION 'cleanup source tuple differs'; END IF;
+  RETURN NEW; END IF;
+ IF (to_jsonb(NEW)-ARRAY['state','completed_at']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','completed_at'])
+  OR (OLD.state='completed' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD))
+  OR (OLD.state='pending' AND NEW.state NOT IN('pending','completed')) THEN RAISE EXCEPTION 'cleanup command identity/terminal state differs'; END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_comment_publication_rating_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -7999,6 +9498,54 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_controlled_guest_study_session_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+ reservation guest_resource_session_reservations%ROWTYPE;
+BEGIN
+ IF NEW.participation_owner_kind IS DISTINCT FROM 'guest' OR NEW.account_id IS NOT NULL
+   OR NEW.persona_id IS NOT NULL OR NEW.guest_reward_mode IS DISTINCT FROM 'practice_only'
+   OR NEW.guest_reward_terms IS NOT NULL OR NEW.guest_disclosure_accepted IS NOT TRUE
+   OR NEW.telegram_practice_only IS NOT FALSE
+   OR (TG_OP='INSERT' AND NEW.guest_spoken_call_plan IS NULL) THEN
+   RAISE EXCEPTION 'closed guest practice source required' USING ERRCODE='GP003'; END IF;
+ IF TG_OP='UPDATE' THEN
+  IF ROW(NEW.community_id,NEW.post_id,NEW.audio_revision,NEW.lyrics_revision,NEW.learning_language,
+      NEW.target_language,NEW.learner_band,NEW.study_profile_revision,NEW.source_set_revision,
+      NEW.selection_policy_revision,NEW.qualification_policy_revision,NEW.timezone,
+      NEW.language_profile_revision,NEW.created_at,NEW.expires_at,
+      NEW.guest_reward_mode,NEW.guest_reward_terms,NEW.guest_start_operation_id,
+      NEW.guest_disclosure_version,NEW.guest_disclosure_accepted,NEW.guest_resource_reservation_id,NEW.guest_spoken_call_plan)
+    IS DISTINCT FROM ROW(OLD.community_id,OLD.post_id,OLD.audio_revision,OLD.lyrics_revision,OLD.learning_language,
+      OLD.target_language,OLD.learner_band,OLD.study_profile_revision,OLD.source_set_revision,
+      OLD.selection_policy_revision,OLD.qualification_policy_revision,OLD.timezone,
+      OLD.language_profile_revision,OLD.created_at,OLD.expires_at,
+      OLD.guest_reward_mode,OLD.guest_reward_terms,OLD.guest_start_operation_id,
+      OLD.guest_disclosure_version,OLD.guest_disclosure_accepted,OLD.guest_resource_reservation_id,OLD.guest_spoken_call_plan) THEN
+    RAISE EXCEPTION 'captured guest session admission is immutable' USING ERRCODE='GP003'; END IF;
+  -- Do not recheck current public visibility, proof lease/revocation or resource
+  -- liveness while recording an already accepted provider/grade checkpoint.
+  RETURN NEW;
+ END IF;
+ SELECT * INTO STRICT operation FROM guest_participation_operations WHERE operation_id=NEW.guest_start_operation_id;
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations WHERE reservation_id=NEW.guest_resource_reservation_id;
+ IF ROW(operation.source_owner_id,operation.operation_kind,operation.idempotency_key,operation.request_hash,operation.resource_scope)
+   IS DISTINCT FROM ROW(NEW.participation_owner_id,'study_start'::TEXT,NEW.idempotency_key,NEW.request_hash,
+    guest_study_start_resource_scope_v1(NEW.community_id,NEW.post_id))
+   OR operation.state NOT IN('reserved','completed')
+   OR ROW(reservation.source_owner_id,reservation.operation_kind,reservation.session_id,reservation.idempotency_key,reservation.request_hash)
+     IS DISTINCT FROM ROW(NEW.participation_owner_id,'study_start'::TEXT,NEW.session_id,NEW.idempotency_key,NEW.request_hash)
+   OR reservation.initial_units<(NEW.guest_spoken_call_plan->>'maximum_paid_calls')::INTEGER
+   OR reservation.state<>'active' OR reservation.reservation_expires_at<=clock_timestamp()
+   OR NEW.created_at IS DISTINCT FROM reservation.created_at
+   OR NEW.expires_at IS DISTINCT FROM reservation.reservation_expires_at
+   OR NOT can_guest_access_activity_song_v1(NEW.community_id,NEW.post_id) THEN
+   RAISE EXCEPTION 'captured guest start/resource source mismatch' USING ERRCODE='GP003'; END IF;
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_creation_avatar_outcomes() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9005,6 +10552,217 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_guest_credential_insert_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF NEW.state NOT IN ('pending_bootstrap','pending_successor')
+     OR NEW.created_at>clock_timestamp() OR NEW.pending_expires_at<=clock_timestamp() THEN
+    RAISE EXCEPTION 'new credentials must enter the live pending protocol';
+  END IF;
+  IF NEW.state='pending_successor' AND NOT EXISTS(
+    SELECT 1 FROM guest_credentials predecessor WHERE predecessor.credential_id=NEW.predecessor_id
+      AND predecessor.owner_id=NEW.owner_id AND predecessor.origin=NEW.origin AND predecessor.state='confirmed'
+  ) THEN RAISE EXCEPTION 'confirmed original predecessor required'; END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_credential_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'credential evidence is retained'; END IF;
+  IF ROW(NEW.credential_id,NEW.owner_id,NEW.origin,NEW.secret_digest,NEW.created_at,
+         NEW.pending_expires_at,NEW.predecessor_id)
+     IS DISTINCT FROM ROW(OLD.credential_id,OLD.owner_id,OLD.origin,OLD.secret_digest,OLD.created_at,
+         OLD.pending_expires_at,OLD.predecessor_id) THEN
+    RAISE EXCEPTION 'credential identity is immutable';
+  END IF;
+  IF OLD.state='revoked' THEN
+    IF (to_jsonb(NEW)-'owner_kind') IS DISTINCT FROM (to_jsonb(OLD)-'owner_kind') THEN
+      RAISE EXCEPTION 'credential revocation is final'; END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.state=OLD.state THEN
+    IF ROW(NEW.confirmed_at,NEW.revoked_at,NEW.revocation_reason)
+       IS DISTINCT FROM ROW(OLD.confirmed_at,OLD.revoked_at,OLD.revocation_reason)
+       OR (OLD.state<>'confirmed' AND NEW.session_until IS DISTINCT FROM OLD.session_until) THEN
+      RAISE EXCEPTION 'invalid credential transition';
+    END IF;
+    IF NEW.session_until IS DISTINCT FROM OLD.session_until AND
+       (NEW.session_until<=OLD.session_until OR NEW.session_until>clock_timestamp()+INTERVAL '1 hour') THEN
+      RAISE EXCEPTION 'invalid deliberate learning renewal';
+    END IF;
+  ELSIF NEW.state='confirmed' AND OLD.state IN ('pending_bootstrap','pending_successor') THEN
+    IF clock_timestamp()>=OLD.pending_expires_at OR NEW.confirmed_at IS NULL
+       OR NEW.confirmed_at<OLD.created_at OR NEW.confirmed_at>clock_timestamp()
+       OR NEW.session_until IS DISTINCT FROM NEW.confirmed_at+INTERVAL '1 hour' THEN
+      RAISE EXCEPTION 'invalid pending confirmation';
+    END IF;
+  ELSIF NEW.state='revoked' THEN
+    IF (NEW.revocation_reason IN ('successor_superseded','pending_expired')
+        AND OLD.state NOT IN ('pending_bootstrap','pending_successor'))
+       OR (NEW.revocation_reason='successor_superseded' AND OLD.state<>'pending_successor')
+       OR (NEW.revocation_reason='rotation_acknowledged' AND OLD.state<>'confirmed') THEN
+      RAISE EXCEPTION 'revocation reason must match the credential protocol';
+    END IF;
+    IF NEW.revocation_reason='empty_cleanup' AND NOT guest_authority_component_is_empty_v1(OLD.owner_id) THEN
+      RAISE EXCEPTION 'credential history is retained' USING ERRCODE='GP003'; END IF;
+    IF ROW(NEW.confirmed_at,NEW.session_until) IS DISTINCT FROM ROW(OLD.confirmed_at,OLD.session_until)
+       OR NEW.revoked_at<OLD.created_at OR NEW.revoked_at>clock_timestamp() THEN
+      RAISE EXCEPTION 'invalid credential revocation';
+    END IF;
+  ELSE RAISE EXCEPTION 'invalid credential transition'; END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_empty_alias_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source participation_owners%ROWTYPE; target participation_owners%ROWTYPE;
+BEGIN
+  PERFORM pg_advisory_xact_lock(83000003,1);
+  PERFORM 1 FROM participation_owners WHERE owner_id IN(NEW.source_owner_id,NEW.canonical_owner_id)
+    ORDER BY owner_id COLLATE "C" FOR UPDATE;
+  SELECT * INTO STRICT source FROM participation_owners WHERE owner_id=NEW.source_owner_id;
+  SELECT * INTO STRICT target FROM participation_owners WHERE owner_id=NEW.canonical_owner_id;
+  IF source.kind<>'guest' OR target.kind<>'guest' OR source.state<>'empty' OR target.state<>'empty'
+     OR source.guest_origin IS DISTINCT FROM target.guest_origin
+     OR ROW(target.created_at,target.owner_id COLLATE "C")>=ROW(source.created_at,source.owner_id COLLATE "C")
+     OR EXISTS(SELECT 1 FROM guest_attachment_intents
+       WHERE owner_id IN(source.owner_id,target.owner_id)
+         AND state IN ('awaiting_account','awaiting_confirmation') AND expires_at>clock_timestamp())
+     OR EXISTS(SELECT 1 FROM guest_participation_operations
+       WHERE source_owner_id IN(source.owner_id,target.owner_id)
+         AND operation_kind='study_start' AND state<>'known_aborted') THEN
+    RAISE EXCEPTION 'only same-origin empty sources may converge';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_intent_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'ceremony evidence is retained'; END IF;
+  IF TG_OP='INSERT' THEN
+    IF NEW.state<>'awaiting_account' OR NEW.target_revision<>0 OR NEW.prepared_operation_id IS NOT NULL
+       OR NEW.created_at>clock_timestamp() OR NEW.expires_at<=clock_timestamp()
+       OR resolve_guest_empty_owner_root_v1(NEW.credential_source_owner_id)<>NEW.owner_id
+       OR resolve_guest_empty_owner_root_v1(NEW.owner_id)<>NEW.owner_id
+       OR NOT EXISTS(SELECT 1 FROM guest_credentials WHERE credential_id=NEW.credential_id
+         AND owner_id=NEW.credential_source_owner_id AND origin=NEW.origin AND state='confirmed') THEN
+      RAISE EXCEPTION 'new ceremony requires its original live empty-target protocol';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(NEW.intent_id,NEW.owner_id,NEW.credential_source_owner_id,NEW.credential_id,
+         NEW.origin,NEW.nonce_digest,NEW.created_at,NEW.expires_at)
+     IS DISTINCT FROM ROW(OLD.intent_id,OLD.owner_id,OLD.credential_source_owner_id,OLD.credential_id,
+         OLD.origin,OLD.nonce_digest,OLD.created_at,OLD.expires_at) THEN
+    RAISE EXCEPTION 'ceremony proof identity is immutable';
+  END IF;
+  IF OLD.state IN ('expired','superseded') THEN
+    IF (to_jsonb(NEW)-'owner_kind') IS DISTINCT FROM (to_jsonb(OLD)-'owner_kind') THEN
+      RAISE EXCEPTION 'ceremony terminal state is final';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.state IN ('expired','superseded') THEN
+    IF ROW(NEW.target_revision,NEW.target_account_id,NEW.target_session_digest,NEW.prepared_operation_id)
+       IS DISTINCT FROM ROW(OLD.target_revision,OLD.target_account_id,OLD.target_session_digest,OLD.prepared_operation_id) THEN
+      RAISE EXCEPTION 'terminal ceremony retains its displayed target';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.state<>'awaiting_confirmation' OR clock_timestamp()>=OLD.expires_at
+     OR NEW.target_revision<OLD.target_revision OR NEW.prepared_operation_id IS NULL THEN
+    RAISE EXCEPTION 'invalid ceremony preparation';
+  END IF;
+  IF ROW(NEW.target_account_id,NEW.target_session_digest) IS DISTINCT FROM ROW(OLD.target_account_id,OLD.target_session_digest) THEN
+    IF NEW.target_revision<>OLD.target_revision+1 OR NEW.prepared_operation_id IS NOT DISTINCT FROM OLD.prepared_operation_id THEN
+      RAISE EXCEPTION 'changed target requires next revision and operation'; END IF;
+  ELSIF ROW(NEW.target_revision,NEW.prepared_operation_id) IS DISTINCT FROM ROW(OLD.target_revision,OLD.prepared_operation_id) THEN
+    RAISE EXCEPTION 'same target preparation must replay';
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM guest_participation_operations WHERE operation_id=NEW.prepared_operation_id
+      AND source_owner_id=NEW.owner_id AND operation_kind='attachment_prepare'
+      AND resource_scope=NEW.intent_id) THEN
+    RAISE EXCEPTION 'preparation must retain its owner operation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_issuance_lineage_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE; expected_kind TEXT;
+BEGIN
+  expected_kind := CASE NEW.issuance_kind WHEN 'bootstrap' THEN 'bootstrap_issue'
+    WHEN 'rotation' THEN 'credential_rotate' ELSE 'attachment_intent' END;
+  SELECT * INTO STRICT operation FROM guest_participation_operations WHERE operation_id=NEW.operation_id;
+  IF operation.source_owner_id<>NEW.source_owner_id OR operation.operation_kind<>expected_kind
+     OR ROW(operation.resource_scope,operation.idempotency_key,operation.request_hash)
+       IS DISTINCT FROM ROW(NEW.resource_scope,NEW.idempotency_key,NEW.request_hash) THEN
+    RAISE EXCEPTION 'issuance must retain its original operation identity';
+  END IF;
+  IF NEW.credential_id IS NOT NULL AND
+     resolve_guest_empty_owner_root_v1(NEW.credential_source_owner_id)<>NEW.source_owner_id THEN
+    RAISE EXCEPTION 'issuance credential source mismatch';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_operation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'guest outcome evidence is retained'; END IF;
+  IF ROW(NEW.operation_id,NEW.source_owner_id,NEW.operation_kind,NEW.resource_scope,
+         NEW.idempotency_key,NEW.request_hash,NEW.created_at)
+     IS DISTINCT FROM ROW(OLD.operation_id,OLD.source_owner_id,OLD.operation_kind,OLD.resource_scope,
+         OLD.idempotency_key,OLD.request_hash,OLD.created_at)
+     OR (OLD.state<>'reserved' AND NEW IS DISTINCT FROM OLD)
+     OR (OLD.state='reserved' AND NEW.state NOT IN ('reserved','completed','known_aborted')) THEN
+    RAISE EXCEPTION 'guest operation identity and resolved outcome are immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_resource_provider_call_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'provider accounting history is retained'; END IF;
+ IF (to_jsonb(NEW)-ARRAY['disposition','checkpoint_id','actual_cost_micros','resolved_at'])
+  IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['disposition','checkpoint_id','actual_cost_micros','resolved_at'])
+  OR (OLD.disposition IN('completed','failed','not_invoked') AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD))
+  OR (OLD.disposition='unknown' AND NEW.disposition='reserved')
+ THEN RAISE EXCEPTION 'provider identity or terminal accounting is immutable'; END IF;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_guest_resource_session_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'resource history is retained'; END IF;
+ IF (to_jsonb(NEW)-ARRAY['state','remaining_units','released_at'])
+  IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','remaining_units','released_at'])
+  OR (OLD.state<>'active' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD))
+  OR (OLD.state='active' AND NEW.state NOT IN('active','completed','expired'))
+ THEN RAISE EXCEPTION 'resource identity or terminal receipt is immutable'; END IF;
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_handle_claim_change_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -9882,27 +11640,22 @@ END
 $$;
 
 CREATE FUNCTION guard_karaoke_recording() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'Karaoke recording rows cannot be deleted';
-  END IF;
-  IF TG_OP = 'UPDATE' THEN
-    IF ROW(NEW.session_id, NEW.attempt_id, NEW.account_id, NEW.artifact_id, NEW.created_at)
-      IS DISTINCT FROM
-       ROW(OLD.session_id, OLD.attempt_id, OLD.account_id, OLD.artifact_id, OLD.created_at) THEN
-      RAISE EXCEPTION 'Karaoke recording identity is immutable';
-    END IF;
-    IF OLD.state <> 'pending' OR NEW.state NOT IN ('stored', 'failed') THEN
-      IF OLD.state <> 'stored' OR NEW.state <> 'deleted' THEN
-        RAISE EXCEPTION 'Invalid Karaoke recording transition';
-      END IF;
-    END IF;
-  END IF;
-  RETURN NEW;
-END
-$$;
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Karaoke recording rows cannot be deleted'; END IF;
+ IF TG_OP='UPDATE' THEN
+  IF ROW(NEW.session_id,NEW.attempt_id,NEW.account_id,NEW.artifact_id,NEW.created_at) IS DISTINCT FROM
+   ROW(OLD.session_id,OLD.attempt_id,OLD.account_id,OLD.artifact_id,OLD.created_at) THEN RAISE EXCEPTION 'Karaoke recording identity is immutable'; END IF;
+  IF OLD.state='deleted' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN RAISE EXCEPTION 'deleted Karaoke recording is immutable'; END IF;
+  IF NEW.state='deleted' AND OLD.state IN('pending','failed','stored') THEN
+   IF NEW.object_ref IS NOT NULL OR (to_jsonb(NEW)-ARRAY['state','object_ref','reconciled_at']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','object_ref','reconciled_at'])
+    OR NOT karaoke_audio_target_can_tombstone_private_v1(OLD.account_id,OLD.artifact_id,OLD.attempt_id) THEN RAISE EXCEPTION 'Karaoke deletion requires exact source closure'; END IF;
+  ELSIF NOT(OLD.state='pending' AND NEW.state IN('stored','failed')) AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN RAISE EXCEPTION 'Invalid Karaoke recording transition'; END IF;
+ END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_karaoke_runtime_session_authority() RETURNS trigger
     LANGUAGE plpgsql
@@ -9983,6 +11736,50 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_learner_audio_control_state_private_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE mutable TEXT[]; identity_new JSONB; identity_old JSONB;
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'durable audio control rows cannot be deleted'; END IF;
+ identity_new:=to_jsonb(NEW);identity_old:=to_jsonb(OLD);
+ IF TG_TABLE_NAME='learner_audio_delete_commands' THEN
+   -- Stored GENERATED ALWAYS values are unavailable in a BEFORE row frame.
+   -- PostgreSQL owns this constant and refuses explicit operation-kind writes.
+   -- Compare every application-owned identity field, excluding only that value.
+   identity_new:=identity_new-'operation_kind';identity_old:=identity_old-'operation_kind';
+   mutable:=ARRAY['state','provider_disposition','completed_at','final_result'];
+   IF OLD.state='completed' AND identity_new IS DISTINCT FROM identity_old THEN
+     RAISE EXCEPTION 'completed deletion fact is immutable'; END IF;
+   IF NEW.state NOT IN('pending','completed') THEN RAISE EXCEPTION 'invalid deletion state'; END IF;
+ ELSIF TG_TABLE_NAME='learner_audio_upload_attempts' THEN
+   mutable:=ARRAY['io_state','storage_disposition','multipart_upload_id','cleanup_required','closed_at'];
+   IF OLD.multipart_upload_id IS NOT NULL AND NEW.multipart_upload_id IS DISTINCT FROM OLD.multipart_upload_id THEN
+     RAISE EXCEPTION 'multipart identity is immutable'; END IF;
+   IF OLD.io_state='closed' AND (to_jsonb(NEW)-'cleanup_required') IS DISTINCT FROM (to_jsonb(OLD)-'cleanup_required') THEN
+     RAISE EXCEPTION 'closed producer cannot reopen or replace its terminal fact'; END IF;
+   IF NOT ((OLD.io_state='registered' AND NEW.io_state IN('registered','writing','closed'))
+     OR (OLD.io_state='writing' AND NEW.io_state IN('writing','unknown','closed'))
+     OR (OLD.io_state='unknown' AND NEW.io_state IN('unknown','closed'))
+     OR (OLD.io_state='closed' AND NEW.io_state='closed')) THEN RAISE EXCEPTION 'invalid IO transition'; END IF;
+ ELSIF TG_TABLE_NAME='learner_audio_delete_batches' THEN
+   mutable:=ARRAY['state','deleted_at'];
+   IF OLD.state='confirmed' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+     RAISE EXCEPTION 'confirmed exact batch is immutable'; END IF;
+ ELSIF TG_TABLE_NAME='learner_audio_owner_fences' THEN
+   mutable:=ARRAY['revision','active_delete_command_id'];
+   IF NEW.revision<OLD.revision THEN RAISE EXCEPTION 'audio fence revision cannot decrease'; END IF;
+   IF OLD.active_delete_command_id IS NOT NULL AND NEW.active_delete_command_id IS DISTINCT FROM OLD.active_delete_command_id
+     AND (NEW.active_delete_command_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM learner_audio_delete_commands
+       WHERE command_id=OLD.active_delete_command_id AND state='completed')) THEN
+     RAISE EXCEPTION 'live deletion fence cannot be replaced or released'; END IF;
+ ELSE RAISE EXCEPTION 'unexpected audio control table'; END IF;
+ IF (identity_new-mutable) IS DISTINCT FROM (identity_old-mutable) THEN
+   RAISE EXCEPTION 'audio command/source identity is immutable'; END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_localization_lyric_line_lifecycle() RETURNS trigger
     LANGUAGE plpgsql
@@ -12247,6 +14044,24 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION guard_participation_owner_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'participation source is retained'; END IF;
+  IF ROW(NEW.owner_id,NEW.kind,NEW.account_id,NEW.guest_origin,NEW.created_at)
+     IS DISTINCT FROM ROW(OLD.owner_id,OLD.kind,OLD.account_id,OLD.guest_origin,OLD.created_at)
+     OR (OLD.state='established' AND NEW.state<>'established')
+     OR (OLD.state='aliased_empty' AND NEW.state<>'aliased_empty') THEN
+    RAISE EXCEPTION 'participation source identity is immutable';
+  END IF;
+  IF NEW.state='aliased_empty' AND NOT EXISTS(
+    SELECT 1 FROM guest_empty_owner_aliases WHERE source_owner_id=NEW.owner_id
+  ) THEN RAISE EXCEPTION 'empty alias evidence required'; END IF;
+  RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_persona_activity_preparation_action() RETURNS trigger
     LANGUAGE plpgsql
@@ -15203,6 +17018,377 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guest_attachment_operation_identity_v1(expected_operation_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT operation FROM guest_participation_operations
+    WHERE operation_id=expected_operation_id FOR SHARE;
+  IF operation.state<>'completed'
+    OR operation.operation_kind NOT IN ('attachment_intent','attachment_prepare') THEN
+    RAISE EXCEPTION 'invalid ceremony operation envelope' USING ERRCODE='22023';
+  END IF;
+  RETURN jsonb_build_object('sourceOwnerId',operation.source_owner_id,
+    'kind',operation.operation_kind,'idempotencyKey',operation.idempotency_key,
+    'requestHash',operation.request_hash);
+END $$;
+
+CREATE FUNCTION guest_authority_component_is_empty_v1(original_source_id text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE root_id TEXT; member_ids TEXT[];
+BEGIN
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  root_id := resolve_guest_empty_owner_root_v1(original_source_id);
+  WITH RECURSIVE component(owner_id) AS (
+    SELECT root_id UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+      JOIN component c ON a.canonical_owner_id=c.owner_id
+  ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO member_ids FROM component;
+  RETURN EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=root_id AND kind='guest' AND state='empty')
+    AND NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(member_ids) AND state='established')
+    AND NOT EXISTS(SELECT 1 FROM study_sessions_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_review_items WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_session_items_v2 WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM study_spoken_answer_commands WHERE participation_owner_id=ANY(member_ids))
+    AND NOT EXISTS(SELECT 1 FROM learner_audio_artifacts WHERE participation_owner_id=ANY(member_ids))
+    AND NOT guest_resource_component_has_history_v1(member_ids)
+    AND NOT learner_audio_component_has_history_private_v1(member_ids)
+    AND NOT guest_spoken_component_has_history_private_v1(member_ids)
+    AND NOT learner_audio_producer_component_has_history_private_v1(member_ids)
+    AND NOT EXISTS(SELECT 1 FROM guest_participation_operations WHERE source_owner_id=ANY(member_ids)
+      AND operation_kind IN ('study_start','study_answer','learning_retention','learner_audio_deletion')
+      AND state<>'known_aborted')
+    AND NOT EXISTS(SELECT 1 FROM guest_attachment_intents WHERE owner_id=ANY(member_ids)
+      AND state IN ('awaiting_account','awaiting_confirmation') AND expires_at>clock_timestamp());
+END $$;
+
+CREATE FUNCTION guest_authority_issue_operation_v1(expected_operation_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT operation FROM guest_participation_operations
+    WHERE operation_id=expected_operation_id FOR SHARE;
+  IF operation.state<>'completed'
+     OR operation.operation_kind NOT IN ('bootstrap_issue','credential_rotate') THEN
+    RAISE EXCEPTION 'invalid guest issuance operation envelope' USING ERRCODE='22023';
+  END IF;
+  -- Original immutable receipt identity, even if its source later became aliased_empty.
+  -- No current root lookup, synthetic pending/abort, raw digest or secret.
+  RETURN jsonb_build_object(
+    'sourceOwnerId',operation.source_owner_id,
+    'kind',operation.operation_kind,
+    'idempotencyKey',operation.idempotency_key,
+    'requestHash',operation.request_hash);
+END $$;
+
+CREATE FUNCTION guest_authority_metadata_v1(expected_origin text, proved_ids text[], selected_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE selected JSONB; metadata JSONB; selected_state TEXT; selected_until TIMESTAMPTZ;
+BEGIN
+  SELECT jsonb_agg(jsonb_build_object(
+      'owner_id',resolve_guest_empty_owner_root_v1(c.owner_id),'credential_id',c.credential_id,
+      'credential_state',c.state,'session_until',CASE WHEN c.session_until IS NULL THEN NULL
+        ELSE to_char(c.session_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END
+    ) ORDER BY c.credential_id COLLATE "C") INTO metadata
+    FROM guest_credentials c WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids);
+  IF selected_id IS NOT NULL THEN
+    IF NOT selected_id=ANY(proved_ids) THEN RAISE EXCEPTION 'selected proof missing' USING ERRCODE='22023'; END IF;
+    SELECT state,session_until INTO selected_state,selected_until FROM guest_credentials
+      WHERE credential_id=selected_id AND origin=expected_origin;
+    SELECT value INTO selected FROM jsonb_array_elements(COALESCE(metadata,'[]'::JSONB))
+      WHERE value->>'credential_id'=selected_id;
+  END IF;
+  RETURN jsonb_build_object('object','guest_authority','state',CASE
+    WHEN selected IS NULL THEN 'absent'
+    WHEN selected_state IN ('pending_bootstrap','pending_successor') THEN 'pending'
+    WHEN selected_state='confirmed' AND selected_until>clock_timestamp() THEN 'confirmed'
+    ELSE 'recovery_required' END,
+    'selected',selected,'proved_credentials',COALESCE(metadata,'[]'::JSONB),'pointer_repair',NULL);
+END $$;
+
+CREATE FUNCTION guest_ephemeral_object_closed_private_v1(p_ref text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM learner_audio_upload_cleanup_commands cleanup
+  JOIN guest_study_spoken_captures cap ON cap.upload_attempt_id=cleanup.upload_attempt_id
+   AND cap.source_owner_id=cleanup.owner_id
+  WHERE cleanup.object_ref=p_ref AND cleanup.state='completed'
+   AND cap.captured_platform_retention='ephemeral')
+$$;
+
+CREATE FUNCTION guest_ephemeral_owner_delete_witness_private_v1(p_upload text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
+  JOIN learner_audio_upload_attempts upload ON upload.upload_attempt_id=cap.upload_attempt_id
+  JOIN learner_audio_deleted_objects deleted ON deleted.object_ref=upload.object_ref
+  JOIN learner_audio_delete_batches batch ON batch.batch_id=deleted.batch_id
+  JOIN learner_audio_delete_commands command ON command.command_id=batch.command_id
+  JOIN learner_audio_delete_sources source ON source.command_id=command.command_id
+   AND source.owner_id=cap.source_owner_id
+  JOIN learner_audio_delete_batch_items item ON item.batch_id=batch.batch_id
+   AND item.object_ref=upload.object_ref AND item.owner_id=cap.source_owner_id AND item.artifact_id=cap.artifact_id
+  JOIN learner_audio_object_names namespace ON namespace.object_ref=upload.object_ref
+   AND namespace.owner_id=cap.source_owner_id AND namespace.artifact_id=cap.artifact_id
+  WHERE cap.upload_attempt_id=p_upload AND cap.captured_platform_retention='ephemeral'
+   AND upload.owner_id=cap.source_owner_id AND upload.artifact_id=cap.artifact_id
+   AND upload.object_ref='learner-audio/study/'||cap.attempt_id||'/'||cap.audio_digest
+   AND batch.state='confirmed' AND batch.deleted_at IS NOT NULL
+   AND deleted.deleted_at=batch.deleted_at AND command.revision=batch.revision)
+$$;
+
+CREATE FUNCTION guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
+  JOIN learner_audio_upload_cleanup_commands cleanup ON cleanup.upload_attempt_id=cap.upload_attempt_id
+   AND cleanup.owner_id=cap.source_owner_id
+  JOIN guest_study_spoken_checkpoints cp USING(capture_id)
+  JOIN guest_resource_provider_calls call_row ON call_row.call_id=cap.provider_call_id
+  JOIN guest_participation_operations operation ON operation.operation_id=cap.operation_id
+  JOIN study_spoken_answer_commands command ON command.command_id=cap.command_id
+  JOIN learner_audio_upload_attempts upload ON upload.upload_attempt_id=cap.upload_attempt_id
+  JOIN learner_audio_artifacts artifact ON artifact.learner_audio_artifact_id=cap.artifact_id
+  JOIN participation_owners owner ON owner.owner_id=cap.source_owner_id
+  WHERE cleanup.cleanup_id=p_cleanup AND cleanup.state='pending'
+   AND cleanup.object_ref=upload.object_ref AND cap.captured_platform_retention='ephemeral'
+   -- Original admitted deadline evidence, not a fresh clock/preference lookup.
+   AND cleanup.created_at>=cap.captured_retention_expires_at-INTERVAL '5 minutes'
+   AND (upload.cleanup_required OR guest_ephemeral_owner_delete_witness_private_v1(upload.upload_attempt_id))
+   AND owner.kind='guest' AND owner.state='established' AND owner.account_id IS NULL
+   AND operation.source_owner_id=cap.source_owner_id AND operation.operation_kind='study_answer'
+   AND operation.state='completed' AND operation.result_snapshot IS NOT NULL
+   AND command.participation_owner_id=cap.source_owner_id AND command.account_id IS NULL
+   AND command.state='completed' AND command.result_snapshot IS NOT NULL
+   AND command.learner_audio_artifact_id=cap.artifact_id
+   AND call_row.source_owner_id=cap.source_owner_id AND call_row.disposition='completed'
+   AND call_row.checkpoint_id=cp.checkpoint_id AND cp.source_owner_id=cap.source_owner_id
+   AND upload.owner_id=cap.source_owner_id AND upload.artifact_id=cap.artifact_id
+   AND upload.command_ref=cap.command_id AND upload.reservation_ref=cap.resource_reservation_id
+   AND upload.captured_revision=cap.deletion_fence_revision
+   AND cap.attempt_id ~ '^[A-Za-z0-9_-]{1,128}$'
+   AND upload.object_ref='learner-audio/study/'||cap.attempt_id||'/'||cap.audio_digest
+   AND upload.io_state='closed' AND upload.storage_disposition='stored'
+   AND artifact.participation_owner_id=cap.source_owner_id AND artifact.account_id IS NULL
+   AND artifact.platform_retention='ephemeral'
+   AND artifact.expires_at=cap.captured_retention_expires_at
+   AND ((artifact.recording_state='stored' AND artifact.object_ref=upload.object_ref)
+    OR (artifact.recording_state='deleted' AND artifact.object_ref IS NULL AND artifact.deleted_at IS NOT NULL
+     AND guest_ephemeral_owner_delete_witness_private_v1(upload.upload_attempt_id)))
+   AND artifact.content_digest=cap.audio_digest
+   AND NOT guest_ephemeral_object_closed_private_v1(upload.object_ref)
+   AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts other
+    WHERE other.object_ref=upload.object_ref AND other.upload_attempt_id<>upload.upload_attempt_id
+     AND (other.created_at>=upload.created_at OR other.io_state<>'closed' OR other.cleanup_required)))
+$_$;
+
+CREATE FUNCTION guest_ephemeral_upload_ready_private_v1(p_upload text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
+  JOIN guest_study_spoken_checkpoints cp USING(capture_id)
+  JOIN guest_resource_provider_calls call_row ON call_row.call_id=cap.provider_call_id
+  JOIN guest_participation_operations operation ON operation.operation_id=cap.operation_id
+  JOIN study_spoken_answer_commands command ON command.command_id=cap.command_id
+  JOIN learner_audio_upload_attempts upload ON upload.upload_attempt_id=cap.upload_attempt_id
+  JOIN learner_audio_artifacts artifact ON artifact.learner_audio_artifact_id=cap.artifact_id
+  JOIN participation_owners owner ON owner.owner_id=cap.source_owner_id
+  WHERE cap.upload_attempt_id=p_upload AND cap.captured_platform_retention='ephemeral'
+   -- Begin eligible cleanup five minutes BEFORE the immutable maximum lifetime.
+   AND cap.captured_retention_expires_at<=clock_timestamp()+INTERVAL '5 minutes'
+   AND owner.kind='guest' AND owner.state='established' AND owner.account_id IS NULL
+   AND operation.source_owner_id=cap.source_owner_id AND operation.operation_kind='study_answer'
+   AND operation.state='completed' AND operation.result_snapshot IS NOT NULL
+   AND command.participation_owner_id=cap.source_owner_id AND command.account_id IS NULL
+   AND command.state='completed' AND command.result_snapshot IS NOT NULL
+   AND command.learner_audio_artifact_id=cap.artifact_id
+   AND call_row.source_owner_id=cap.source_owner_id AND call_row.disposition='completed'
+   AND call_row.checkpoint_id=cp.checkpoint_id AND cp.source_owner_id=cap.source_owner_id
+   AND upload.owner_id=cap.source_owner_id AND upload.artifact_id=cap.artifact_id
+   AND upload.command_ref=cap.command_id AND upload.reservation_ref=cap.resource_reservation_id
+   AND upload.captured_revision=cap.deletion_fence_revision
+   AND cap.attempt_id ~ '^[A-Za-z0-9_-]{1,128}$'
+   AND upload.object_ref='learner-audio/study/'||cap.attempt_id||'/'||cap.audio_digest
+   AND upload.io_state='closed' AND upload.storage_disposition='stored'
+   AND artifact.participation_owner_id=cap.source_owner_id AND artifact.account_id IS NULL
+   AND artifact.platform_retention='ephemeral'
+   AND artifact.expires_at=cap.captured_retention_expires_at
+   AND artifact.recording_state='stored' AND artifact.object_ref=upload.object_ref
+   AND artifact.content_digest=cap.audio_digest
+   AND NOT guest_ephemeral_object_closed_private_v1(upload.object_ref)
+   AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts other
+    WHERE other.object_ref=upload.object_ref AND other.upload_attempt_id<>upload.upload_attempt_id
+     AND (other.created_at>=upload.created_at OR other.io_state<>'closed' OR other.cleanup_required)))
+$_$;
+
+CREATE FUNCTION guest_owner_audio_delete_projection_private_v1(p_command text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE command learner_audio_delete_commands%ROWTYPE; deleted_count BIGINT; remaining_count BIGINT;
+BEGIN
+ SELECT * INTO STRICT command FROM learner_audio_delete_commands WHERE command_id=p_command;
+ IF command.state='completed' THEN RETURN command.final_result; END IF;
+ SELECT count(*) FILTER(WHERE a.recording_state='deleted'),count(*) FILTER(WHERE COALESCE(a.recording_state,'unpublished')<>'deleted')
+ INTO deleted_count,remaining_count FROM learner_audio_delete_target_artifacts target
+ LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
+ WHERE target.command_id=p_command;
+ RETURN jsonb_build_object('operation',jsonb_build_object('operation_kind','learner_audio_deletion','idempotency_key',command.idempotency_key,'operation_id',command.command_id),
+ 'state','pending','deleted_count',deleted_count,'remaining_count',remaining_count,'provider_disposition',command.provider_disposition);
+END $$;
+
+CREATE FUNCTION guest_resource_component_has_history_v1(p_component_ids text[]) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM guest_resource_session_reservations WHERE source_owner_id=ANY(p_component_ids))
+  OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE source_owner_id=ANY(p_component_ids))
+  OR EXISTS(SELECT 1 FROM guest_resource_release_receipts WHERE source_owner_id=ANY(p_component_ids))
+$$;
+
+CREATE FUNCTION guest_resource_usage_v1(p_component_ids text[], p_observed_at timestamp with time zone) RETURNS TABLE(owner_active bigint, global_active bigint, owner_calls numeric, global_calls numeric, owner_cost numeric, global_cost numeric)
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+ WITH remaining AS (
+  SELECT source_owner_id,remaining_units AS units,remaining_units*unit_hold_micros AS cost
+   FROM guest_resource_session_reservations WHERE state='active'
+ ), calls AS (
+  SELECT source_owner_id,units,CASE WHEN disposition='completed' THEN actual_cost_micros ELSE held_cost_micros END AS cost
+   FROM guest_resource_provider_calls WHERE disposition IN('reserved','unknown')
+    OR (disposition IN('completed','failed') AND resolved_at>p_observed_at-INTERVAL '24 hours')
+ ), charges AS (SELECT * FROM remaining UNION ALL SELECT * FROM calls)
+ SELECT (SELECT count(*) FROM guest_resource_session_reservations WHERE state='active' AND source_owner_id=ANY(p_component_ids)),
+  (SELECT count(*) FROM guest_resource_session_reservations WHERE state='active'),
+  COALESCE(sum(units) FILTER(WHERE source_owner_id=ANY(p_component_ids)),0),COALESCE(sum(units),0),
+  COALESCE(sum(cost) FILTER(WHERE source_owner_id=ANY(p_component_ids)),0),COALESCE(sum(cost),0) FROM charges
+$$;
+
+CREATE FUNCTION guest_spoken_component_has_history_private_v1(component_ids text[]) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures WHERE source_owner_id=ANY(component_ids))
+   OR EXISTS(SELECT 1 FROM guest_study_spoken_checkpoints WHERE source_owner_id=ANY(component_ids))
+$$;
+
+CREATE FUNCTION guest_study_answer_resource_scope_v1(p_community text, p_session text, p_item text, p_attempt integer, p_kind text) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF p_kind IS NULL OR p_kind NOT IN('choice','spoken') OR p_attempt IS NULL OR p_attempt NOT BETWEEN 1 AND 3
+ THEN RAISE EXCEPTION 'closed answer scope required' USING ERRCODE='22023'; END IF;
+ RETURN jsonb_build_array('guest_study_answer_v1',p_community,p_session,p_item,p_attempt,p_kind)::TEXT;
+END;
+$$;
+
+CREATE FUNCTION guest_study_prepared_rows_v1(text, text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+WITH public_resource AS (
+  SELECT can_guest_access_activity_song_v1($1,$2) AS accessible
+), source AS (
+SELECT coalesce(publication.lyrics_status='ready'
+                    AND submission.status='published'
+                    AND publication.audio_revision=submission.audio_revision
+                    AND publication.lyrics_revision=submission.current_lyrics_revision
+                    AND lyrics.lyrics_revision IS NOT NULL, false) AS lyrics_ready,
+                    coalesce(publication.language_status='ready', false) AS language_ready,
+                    EXISTS(SELECT 1 FROM media_song_stems stem
+                      WHERE stem.submission_id=publication.submission_id
+                        AND stem.community_id=publication.community_id
+                        AND stem.slot='instrumental_audio')
+                    AND EXISTS(SELECT 1 FROM media_song_stems stem
+                      WHERE stem.submission_id=publication.submission_id
+                        AND stem.community_id=publication.community_id
+                        AND stem.slot='vocal_audio') AS stems_ready
+               FROM media_publication_projections publication
+               JOIN media_post_submissions submission
+                 ON submission.submission_id=publication.submission_id
+                AND submission.community_id=publication.community_id
+                AND submission.post_id=publication.post_id
+               LEFT JOIN media_song_lyrics_revisions lyrics
+                 ON lyrics.submission_id=submission.submission_id
+                AND lyrics.lyrics_revision=publication.lyrics_revision
+              WHERE publication.community_id=$1 AND publication.post_id=$2
+                AND (SELECT accessible FROM public_resource)
+), latest AS (
+            SELECT DISTINCT ON (exercise.exercise_review_key)
+              exercise.exercise_version_id, exercise.exercise_review_key,
+              exercise.exercise_type, exercise.exercise_variant, exercise.community_id,
+              exercise.post_id, exercise.audio_revision, exercise.lyrics_revision,
+              exercise.lyric_line_id, exercise.line_version, exercise.line_source_hash,
+              exercise.study_unit_id, exercise.learning_language, exercise.target_language,
+              exercise.learner_band, accepted_profile.language_profile_revision,
+              exercise.presentation, exercise.answer_visibility, exercise.feedback_release,
+              exercise.grader_policy_revision, exercise.feedback_policy_revision,
+              exercise.quality_policy_revision, membership.ordinal
+              FROM study_exercise_versions exercise
+              JOIN media_publication_projections publication
+                ON publication.community_id=exercise.community_id AND publication.post_id=exercise.post_id
+              JOIN media_post_submissions submission
+                ON submission.submission_id=publication.submission_id
+               AND submission.community_id=publication.community_id AND submission.post_id=publication.post_id
+               AND submission.audio_revision=exercise.audio_revision
+               AND submission.current_lyrics_revision=exercise.lyrics_revision
+              JOIN media_song_lyrics_revisions lyrics
+                ON lyrics.submission_id=submission.submission_id AND lyrics.lyrics_revision=exercise.lyrics_revision
+              JOIN localization_lyrics_revision_lines membership
+                ON membership.community_id=exercise.community_id AND membership.post_id=exercise.post_id
+               AND membership.lyrics_revision=exercise.lyrics_revision AND membership.lyric_line_id=exercise.lyric_line_id
+               AND membership.line_version=exercise.line_version
+              JOIN localization_lyric_line_versions line
+                ON line.community_id=membership.community_id AND line.post_id=membership.post_id
+               AND line.lyric_line_id=membership.lyric_line_id AND line.line_version=membership.line_version
+               AND line.source_hash=exercise.line_source_hash
+              JOIN localization_lyric_line_study_units unit_binding
+                ON unit_binding.community_id=membership.community_id AND unit_binding.post_id=membership.post_id
+               AND unit_binding.lyric_line_id=membership.lyric_line_id AND unit_binding.line_version=membership.line_version
+               AND unit_binding.study_unit_id=exercise.study_unit_id
+              JOIN LATERAL (
+                SELECT profile.language_profile_revision FROM study_language_profiles profile
+                 WHERE profile.community_id=exercise.community_id AND profile.post_id=exercise.post_id
+                   AND profile.lyrics_revision=exercise.lyrics_revision AND profile.source_hash=lyrics.lyrics_sha256
+                   AND (exercise.language_profile_revision IS NULL OR profile.language_profile_revision=exercise.language_profile_revision)
+                 ORDER BY profile.language_profile_revision DESC LIMIT 1
+              ) accepted_profile ON TRUE
+              JOIN study_language_profile_units unit
+                ON unit.community_id=exercise.community_id AND unit.post_id=exercise.post_id
+               AND unit.lyrics_revision=exercise.lyrics_revision AND unit.study_unit_id=exercise.study_unit_id
+               AND unit.language_profile_revision=accepted_profile.language_profile_revision
+             WHERE exercise.community_id=$1 AND exercise.post_id=$2 AND exercise.retired_at IS NULL
+               AND publication.audio_revision=exercise.audio_revision AND publication.lyrics_revision=exercise.lyrics_revision
+               AND publication.lyrics_status='ready' AND submission.status='published'
+               AND EXISTS(SELECT 1 FROM source WHERE lyrics_ready AND language_ready AND stems_ready)
+               AND (SELECT accessible FROM public_resource)
+             ORDER BY exercise.exercise_review_key, exercise.content_revision DESC
+ )
+SELECT jsonb_build_object('accessible',public_resource.accessible,
+ 'source_rows',COALESCE((SELECT jsonb_agg(source) FROM source),'[]'::JSONB),
+ 'rows',COALESCE((SELECT jsonb_agg(latest ORDER BY exercise_review_key COLLATE "C") FROM latest),'[]'::JSONB))
+FROM public_resource;
+$_$;
+
+CREATE FUNCTION guest_study_start_resource_scope_v1(p_community text, p_post text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT jsonb_build_array('guest_study_start_v1',p_community,p_post)::TEXT
+$$;
+
 CREATE FUNCTION handle_spaces_membership_policy_hash_v1(input_policy_id text, input_policy_revision bigint, input_requirement_id text, input_requirement_revision bigint, input_source_revision bigint, input_source_hash text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT
     AS $$
@@ -16455,6 +18641,468 @@ CREATE FUNCTION is_spaces_handle_recipient_live_v1(input_account_id text, input_
      )
 $$;
 
+CREATE FUNCTION issue_guest_pending_v1(expected_origin text, proved_ids text[], selected_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_owner_id text, new_credential_id text, new_digest text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE prior guest_secret_issuance_operations%ROWTYPE;
+  prior_credential guest_credentials%ROWTYPE; selected_credential guest_credentials%ROWTYPE;
+  selected_root TEXT; at_time TIMESTAMPTZ; authority JSONB; snapshot JSONB;
+BEGIN
+  -- Serialize bootstrap natural issuance lookup before any owner/component row
+  -- locks or replacement owner creation. No unbounded hash-identity locks.
+  PERFORM pg_advisory_xact_lock(83000003,1);
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NOT NULL AND NOT selected_id=ANY(proved_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO prior FROM guest_secret_issuance_operations WHERE origin=expected_origin
+    AND issuance_kind='bootstrap' AND resource_scope=expected_origin AND idempotency_key=issuance_key;
+  IF FOUND THEN
+    IF prior.request_hash<>issuance_request_hash THEN RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+    IF NOT prior.credential_id=ANY(proved_ids) THEN
+      -- No unproved owner/credential metadata and no cookie: hash-only receipt
+      -- recovery cannot manufacture the originally issued secret.
+      RETURN jsonb_build_object('state','issuance_requires_restart');
+    END IF;
+    SELECT * INTO STRICT prior_credential FROM guest_credentials
+      WHERE credential_id=prior.credential_id AND origin=expected_origin;
+    IF selected_id IS NOT NULL THEN
+      SELECT * INTO STRICT selected_credential FROM guest_credentials
+        WHERE credential_id=selected_id AND origin=expected_origin;
+      IF resolve_guest_empty_owner_root_v1(selected_credential.owner_id)<>
+         resolve_guest_empty_owner_root_v1(prior_credential.owner_id) THEN
+        -- Even a proved historical issuance cannot silently switch an explicitly
+        -- selected different empty owner to its own authority. Same effective
+        -- source after genuine empty aliasing is permitted, without reparenting.
+        RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002';
+      END IF;
+    END IF;
+    IF prior_credential.state='revoked' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+    IF prior_credential.state='pending_bootstrap' AND prior_credential.pending_expires_at<=clock_timestamp()
+      THEN RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    PERFORM reject_guest_copresent_established_conflict_v1(expected_origin,proved_ids,
+      resolve_guest_empty_owner_root_v1(prior_credential.owner_id));
+    RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_authority_issue_operation_v1(prior.operation_id),
+      'authority',guest_authority_metadata_v1(expected_origin,proved_ids,prior.credential_id),'cookie_effects','[]'::JSONB);
+  END IF;
+  IF selected_id IS NOT NULL THEN
+    SELECT * INTO STRICT selected_credential FROM guest_credentials WHERE credential_id=selected_id AND origin=expected_origin;
+    selected_root := resolve_guest_empty_owner_root_v1(selected_credential.owner_id);
+    PERFORM reject_guest_copresent_established_conflict_v1(expected_origin,proved_ids,selected_root);
+    IF selected_credential.state='confirmed' OR
+      (selected_credential.state='pending_bootstrap' AND selected_credential.pending_expires_at>clock_timestamp()) THEN
+      -- Record the accepted same-key existing-authority command so the frozen
+      -- DurableParticipationOutcome has a real immutable operation/outcome,
+      -- rather than inventing an unrepresentable existing_authority variant.
+      at_time := clock_timestamp();
+      authority := guest_authority_metadata_v1(expected_origin,proved_ids,selected_id);
+      INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+          idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+        VALUES(new_operation_id,selected_root,'bootstrap_issue',expected_origin,issuance_key,issuance_request_hash,
+          'completed',jsonb_build_object('authority',authority),at_time,at_time);
+      INSERT INTO guest_secret_issuance_operations(origin,issuance_kind,resource_scope,idempotency_key,request_hash,
+          source_owner_id,credential_id,credential_source_owner_id,operation_id,created_at)
+        VALUES(expected_origin,'bootstrap',expected_origin,issuance_key,issuance_request_hash,
+          selected_root,selected_id,selected_credential.owner_id,new_operation_id,at_time);
+      RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),
+        'authority',authority,'cookie_effects','[]'::JSONB);
+    END IF;
+    IF selected_credential.state='revoked' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+    IF selected_credential.state='pending_successor' THEN RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
+  END IF;
+  IF EXISTS(SELECT 1 FROM guest_credentials c JOIN participation_owners root
+      ON root.owner_id=resolve_guest_empty_owner_root_v1(c.owner_id)
+      WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids)
+        AND c.state='confirmed' AND root.state='established')
+  THEN RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
+  IF cardinality(proved_ids)>=4 THEN RAISE EXCEPTION 'credential-cleanup-required' USING ERRCODE='GP004'; END IF;
+-- Fresh restart creates only
+  -- a new empty pending candidate. Existing sources/history remain immutable.
+  at_time := clock_timestamp();
+  INSERT INTO participation_owners(owner_id,kind,guest_origin,state,created_at)
+    VALUES(new_owner_id,'guest',expected_origin,'empty',at_time);
+  INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at)
+    VALUES(new_credential_id,new_owner_id,expected_origin,new_digest,'pending_bootstrap',at_time,at_time+INTERVAL '15 minutes');
+  authority := guest_authority_metadata_v1(expected_origin,proved_ids||ARRAY[new_credential_id],new_credential_id);
+  snapshot := jsonb_build_object('authority',authority);
+  INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+      idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+    VALUES(new_operation_id,new_owner_id,'bootstrap_issue',expected_origin,issuance_key,issuance_request_hash,
+      'completed',snapshot,at_time,at_time);
+  INSERT INTO guest_secret_issuance_operations(origin,issuance_kind,resource_scope,idempotency_key,request_hash,
+      source_owner_id,credential_id,credential_source_owner_id,operation_id,created_at)
+    VALUES(expected_origin,'bootstrap',expected_origin,issuance_key,issuance_request_hash,
+      new_owner_id,new_credential_id,new_owner_id,new_operation_id,at_time);
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
+END $$;
+
+CREATE FUNCTION issue_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, expected_owner_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_credential_id text, new_digest text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE predecessor guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
+  successor guest_credentials%ROWTYPE; existing_operation guest_participation_operations%ROWTYPE;
+  at_time TIMESTAMPTZ; authority JSONB;
+BEGIN
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF expected_predecessor_credential_id IS NULL OR NOT expected_predecessor_credential_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT predecessor FROM guest_credentials WHERE credential_id=expected_predecessor_credential_id AND origin=expected_origin;
+  IF resolve_guest_empty_owner_root_v1(predecessor.owner_id)<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  -- No learning-lease requirement. Old acknowledged proof can NEVER rotate.
+  IF predecessor.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO existing_operation FROM guest_participation_operations
+    WHERE source_owner_id=expected_owner_id AND operation_kind='credential_rotate' AND idempotency_key=issuance_key;
+  IF FOUND AND ROW(existing_operation.resource_scope,existing_operation.request_hash)
+      IS DISTINCT FROM ROW(predecessor.owner_id,issuance_request_hash) THEN
+    RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+  SELECT * INTO prior FROM guest_secret_issuance_operations WHERE origin=expected_origin
+    AND issuance_kind='rotation' AND resource_scope=predecessor.owner_id AND idempotency_key=issuance_key;
+  IF FOUND THEN
+    IF prior.request_hash<>issuance_request_hash THEN RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+    IF NOT prior.credential_id=ANY(proved_ids) THEN RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    SELECT * INTO STRICT successor FROM guest_credentials WHERE credential_id=prior.credential_id;
+    IF successor.state<>'pending_successor' OR successor.predecessor_id<>expected_predecessor_credential_id
+       OR successor.pending_expires_at<=clock_timestamp() THEN
+      RETURN jsonb_build_object('state','issuance_requires_restart'); END IF;
+    RETURN jsonb_build_object('state','completed','operation_id',prior.operation_id,
+      'operation',guest_authority_issue_operation_v1(prior.operation_id),
+      'authority',guest_authority_metadata_v1(expected_origin,proved_ids,successor.credential_id),'cookie_effects','[]'::JSONB);
+  END IF;
+  IF cardinality(proved_ids)>=4 THEN RAISE EXCEPTION 'credential-cleanup-required' USING ERRCODE='GP004'; END IF;
+  at_time := clock_timestamp();
+  -- Fresh deliberate key may replace ONLY an unconfirmed successor. Its original
+  -- immutable issuance/operation remains as historical evidence.
+  UPDATE guest_credentials SET state='revoked',revoked_at=at_time,revocation_reason='successor_superseded'
+    WHERE owner_id=predecessor.owner_id AND origin=expected_origin AND state='pending_successor';
+  INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at,predecessor_id)
+    VALUES(new_credential_id,predecessor.owner_id,expected_origin,new_digest,'pending_successor',at_time,
+      at_time+INTERVAL '15 minutes',expected_predecessor_credential_id);
+  authority := guest_authority_metadata_v1(expected_origin,proved_ids||ARRAY[new_credential_id],new_credential_id);
+  INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+      idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+    VALUES(new_operation_id,expected_owner_id,'credential_rotate',predecessor.owner_id,issuance_key,issuance_request_hash,
+      'completed',jsonb_build_object('authority',authority),at_time,at_time);
+  INSERT INTO guest_secret_issuance_operations(origin,issuance_kind,resource_scope,idempotency_key,request_hash,
+      source_owner_id,credential_id,credential_source_owner_id,operation_id,created_at)
+    VALUES(expected_origin,'rotation',predecessor.owner_id,issuance_key,issuance_request_hash,
+      expected_owner_id,new_credential_id,predecessor.owner_id,new_operation_id,at_time);
+  RETURN jsonb_build_object('state','completed','operation_id',new_operation_id,
+      'operation',guest_authority_issue_operation_v1(new_operation_id),'authority',authority,
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','issue','credentialId',new_credential_id)));
+END $$;
+
+CREATE FUNCTION karaoke_audio_target_can_tombstone_private_v1(p_account text, p_artifact text, p_attempt text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM participation_owners o JOIN learner_audio_owner_fences f USING(owner_id)
+  JOIN learner_audio_delete_target_artifacts t ON t.command_id=f.active_delete_command_id AND t.owner_id=o.owner_id
+  WHERE o.kind='account' AND o.account_id=p_account AND t.artifact_id=p_artifact AND t.source_kind='karaoke' AND t.attempt_ref=p_attempt
+   AND EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.owner_id=o.owner_id AND u.artifact_id=p_artifact)
+   AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.owner_id=o.owner_id AND u.artifact_id=p_artifact AND (u.io_state<>'closed' OR u.cleanup_required))
+   AND NOT EXISTS(SELECT 1 FROM learner_audio_object_names n WHERE n.owner_id=o.owner_id AND n.artifact_id=p_artifact
+    AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=n.object_ref)))
+$$;
+
+CREATE FUNCTION learner_audio_component_has_history_private_v1(component_ids text[]) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_delete_commands WHERE source_owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_delete_sources WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_delete_target_artifacts WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_object_names WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_upload_attempts WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_delete_batches b JOIN learner_audio_delete_commands c USING(command_id)
+   WHERE c.source_owner_id=ANY(component_ids) OR EXISTS(SELECT 1 FROM learner_audio_delete_sources s
+     WHERE s.command_id=b.command_id AND s.owner_id=ANY(component_ids)))
+ OR EXISTS(SELECT 1 FROM learner_audio_delete_batch_items WHERE owner_id=ANY(component_ids))
+ OR EXISTS(SELECT 1 FROM learner_audio_deleted_objects d JOIN learner_audio_object_names n USING(object_ref)
+   WHERE n.owner_id=ANY(component_ids))
+$$;
+
+CREATE FUNCTION learner_audio_producer_component_has_history_private_v1(p_owners text[]) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM learner_audio_account_producer_captures WHERE owner_id=ANY(p_owners))
+ OR EXISTS(SELECT 1 FROM learner_audio_upload_terminal_facts WHERE owner_id=ANY(p_owners))
+ OR EXISTS(SELECT 1 FROM learner_audio_upload_cleanup_commands WHERE owner_id=ANY(p_owners))
+ OR EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints WHERE owner_id=ANY(p_owners))
+ OR EXISTS(SELECT 1 FROM learner_audio_account_provider_calls WHERE owner_id=ANY(p_owners))
+$$;
+
+CREATE FUNCTION learner_audio_source_component_private_v1(seed_owners text[]) RETURNS text[]
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE component_ids TEXT[];
+BEGIN
+ IF seed_owners IS NULL OR cardinality(seed_owners)=0
+   OR array_position(seed_owners,NULL) IS NOT NULL
+   OR cardinality(seed_owners)<>(SELECT count(DISTINCT x) FROM unnest(seed_owners)x)
+   OR cardinality(seed_owners)<>(SELECT count(*) FROM participation_owners WHERE owner_id=ANY(seed_owners)) THEN
+   RAISE EXCEPTION 'invalid complete source group'; END IF;
+ WITH RECURSIVE roots(owner_id) AS (
+   SELECT DISTINCT CASE WHEN o.kind='guest' THEN resolve_guest_empty_owner_root_v1(o.owner_id)
+     ELSE o.owner_id END FROM participation_owners o WHERE o.owner_id=ANY(seed_owners)
+ ), component(owner_id) AS (
+   SELECT owner_id FROM roots UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+     JOIN component c ON a.canonical_owner_id=c.owner_id
+ ) SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO component_ids FROM component;
+ RETURN component_ids;
+END $$;
+
+CREATE FUNCTION list_closed_account_spoken_checkpoints_private_v1(p_maximum integer) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF p_maximum IS NULL OR p_maximum NOT BETWEEN 1 AND 25 THEN RAISE EXCEPTION 'recovery bound1..25 required'; END IF;
+ RETURN COALESCE((SELECT jsonb_agg(jsonb_build_object('capture',read_captured_learner_audio_private_v1(c.upload_attempt_id),
+  'success',cp.successful_result,'archive',jsonb_build_object('state',CASE WHEN (read_learner_audio_upload_status_private_v1(c.upload_attempt_id)->>'mayPublish')::BOOLEAN THEN 'stored' ELSE 'failed' END,
+  'objectRef',CASE WHEN (read_learner_audio_upload_status_private_v1(c.upload_attempt_id)->>'mayPublish')::BOOLEAN THEN c.expected_object_ref ELSE NULL END)) ORDER BY cp.persisted_at,c.upload_attempt_id)
+  FROM (SELECT c.upload_attempt_id FROM learner_audio_account_producer_captures c
+   JOIN learner_audio_account_spoken_checkpoints cp USING(upload_attempt_id)
+   JOIN learner_audio_upload_attempts u USING(upload_attempt_id)
+   JOIN study_spoken_answer_commands command ON command.command_id=c.command_ref
+   WHERE command.state='reserved' AND u.io_state='closed'
+   ORDER BY cp.persisted_at,c.upload_attempt_id LIMIT p_maximum) ready
+  JOIN learner_audio_account_producer_captures c USING(upload_attempt_id)
+  JOIN learner_audio_account_spoken_checkpoints cp USING(upload_attempt_id)),'[]'::JSONB);
+ -- Unknown/writing/registered uploads remain pending and never become failed
+ -- through age or process loss. Filtering ready rows avoids queue starvation.
+END $$;
+
+CREATE FUNCTION list_guest_practice_participations_v1(p_access jsonb, p_cursor text, p_limit integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE phase_name TEXT; source_ids TEXT[];
+BEGIN
+ IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100
+  OR (p_cursor IS NOT NULL AND (char_length(p_cursor) NOT BETWEEN 1 AND 128
+   OR p_cursor ~ '[[:space:][:cntrl:]]')) THEN
+  RAISE EXCEPTION 'invalid bounded participation page' USING ERRCODE='22023'; END IF;
+ -- Stabilize the positive phase witness before the C-sorted component locks.
+ -- All admitted schema/topology transitions take the exclusive barrier first.
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ SELECT phase INTO phase_name FROM guest_learning_schema_phase WHERE singleton FOR SHARE;
+ -- Keep this literal here even when accounting replaces the shared predicate:
+ -- an old practice reader MUST NOT silently erase newly admitted liabilities.
+ IF NOT FOUND OR phase_name IS DISTINCT FROM 'practice_only_owner_audio_producer_history_v5' THEN
+  RAISE EXCEPTION 'practice participation reader unavailable' USING ERRCODE='GP003'; END IF;
+ source_ids:=require_guest_audio_recovery_access_private_v1(p_access,p_access->>'ownerId');
+ -- Recovery deliberately ignores learning-lease/credential age. The helper
+ -- rechecks confirmed state, exact origin, original credential provenance,
+ -- effective root and complete component after locks, without creating a fence.
+ IF EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=ANY(source_ids) AND kind<>'guest')
+  OR EXISTS(SELECT 1 FROM study_sessions_v2 WHERE participation_owner_id=ANY(source_ids)
+   AND (participation_owner_kind IS DISTINCT FROM 'guest'
+    OR guest_reward_mode IS DISTINCT FROM 'practice_only' OR guest_reward_terms IS NOT NULL
+    OR account_id IS NOT NULL OR persona_id IS NOT NULL OR telegram_practice_only IS NOT FALSE)) THEN
+  RAISE EXCEPTION 'practice source inventory differs' USING ERRCODE='GP003'; END IF;
+ -- The positive native inventory excludes every accepted guest financial family;
+ -- existing qualifications/shares/credits remain account-only. Immutable guest
+ -- session guards plus the scoped persisted-mode check permanently exclude
+ -- practice sessions from admission. Nonempty learning history remains intact.
+ RETURN jsonb_build_object('items','[]'::JSONB,'nextCursor',NULL);
+END $$;
+
+CREATE FUNCTION list_guest_spoken_closed_recovery_v1(p_maximum integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF p_maximum IS NULL OR p_maximum NOT BETWEEN 1 AND 100 THEN
+  RAISE EXCEPTION 'bounded recovery scan required' USING ERRCODE='22023'; END IF;
+ -- No destructive claim/expiry/reset. Several workers may replay the exact
+ -- accepted continuation, whose existing callbacks serialize/idempotently end.
+ -- Registered/writing/unknown upload is NOT guessed absent or re-PUT by cron.
+ RETURN COALESCE((SELECT jsonb_agg(jsonb_build_object('checkpointId',candidate.checkpoint_id)
+   ORDER BY candidate.persisted_at,candidate.checkpoint_id) FROM (
+   SELECT cp.checkpoint_id,cp.persisted_at FROM guest_study_spoken_checkpoints cp
+   JOIN guest_study_spoken_captures cap USING(capture_id)
+   JOIN guest_participation_operations op ON op.operation_id=cap.operation_id
+   JOIN learner_audio_upload_attempts upload ON upload.upload_attempt_id=cap.upload_attempt_id
+   WHERE op.state='reserved' AND upload.io_state='closed'
+    AND upload.storage_disposition IN('stored','failed','absent')
+   ORDER BY cp.persisted_at,cp.checkpoint_id LIMIT p_maximum
+  ) candidate),'[]'::JSONB);
+END $$;
+
+CREATE FUNCTION load_account_spoken_success_private_v1(p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE result JSONB;
+BEGIN
+ SELECT successful_result INTO STRICT result FROM learner_audio_account_spoken_checkpoints WHERE upload_attempt_id=p_upload;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION load_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO cap FROM guest_study_spoken_captures WHERE source_owner_id=p_source AND command_id=p_command
+  AND original_lease_digest=encode(sha256(convert_to(p_original_lease,'UTF8')),'hex');
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ IF ROW(cap.idempotency_key,cap.request_hash,cap.original_lease_token)
+  IS DISTINCT FROM ROW(p_operation->>'idempotencyKey',p_operation->>'requestHash',p_original_lease)
+ THEN RAISE EXCEPTION 'checkpoint lookup source mismatch' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO cp FROM guest_study_spoken_checkpoints WHERE capture_id=cap.capture_id;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ RETURN jsonb_build_object('checkpointId',cp.checkpoint_id,'captureId',cap.capture_id,
+  'source',jsonb_build_object('kind','guest','ownerId',p_source),'operation',p_operation,'commandId',cap.command_id,
+  'result',cp.success_result||jsonb_build_object('leaseToken',cap.original_lease_token),
+  'providerResult',(cp.provider_result-'transcriptSha256')||jsonb_build_object('transcript',cp.success_result#>'{grade,heardTranscript}'),
+  'resourceReservationId',cap.resource_reservation_id,
+  'deletionFenceRevision',cap.deletion_fence_revision,'uploadAttemptId',cap.upload_attempt_id);
+END $$;
+
+CREATE FUNCTION lock_account_audio_group_private_v1(p_original_account text) RETURNS text[]
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE account_ids TEXT[]; source_ids TEXT[]; canonical_count INTEGER; locked_account_id TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ -- No alias-row or user-row lock may precede topology. This table lock also
+ -- stabilizes existing ordinary alias writers until their controlled outer
+ -- exclusive-barrier admission is installed; it grants them no new authority.
+ LOCK TABLE account_aliases IN SHARE MODE;
+ WITH RECURSIVE group_members(account_id) AS (
+  SELECT p_original_account UNION SELECT CASE WHEN a.source_user_id=g.account_id THEN a.canonical_user_id ELSE a.source_user_id END
+  FROM group_members g JOIN account_aliases a ON (a.source_user_id=g.account_id OR a.canonical_user_id=g.account_id)
+  WHERE (a.kind='alias' AND a.status='active') OR (a.kind='merge' AND a.status IN('finalizing','completed'))
+ ) SELECT array_agg(account_id ORDER BY convert_to(account_id,'UTF8')) INTO account_ids FROM group_members;
+ IF account_ids IS NULL OR cardinality(account_ids)>10000
+  OR EXISTS(SELECT 1 FROM account_aliases WHERE source_user_id=ANY(account_ids) AND kind='merge' AND status='finalizing')
+  OR EXISTS(SELECT 1 FROM unnest(account_ids) id WHERE NOT EXISTS(SELECT 1 FROM users WHERE user_id=id)) THEN
+  RAISE EXCEPTION 'account audio group is unsettled'; END IF;
+ SELECT count(*) INTO canonical_count FROM unnest(account_ids) id WHERE NOT EXISTS(SELECT 1 FROM account_aliases a
+  WHERE a.source_user_id=id AND ((a.kind='alias' AND a.status='active') OR (a.kind='merge' AND a.status='completed')));
+ IF canonical_count<>1 THEN RAISE EXCEPTION 'account audio group canonical closure differs'; END IF;
+ PERFORM 1 FROM users WHERE user_id=ANY(account_ids) ORDER BY convert_to(user_id,'UTF8') FOR UPDATE;
+ SELECT array_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) INTO source_ids FROM participation_owners
+  WHERE kind='account' AND account_id=ANY(account_ids);
+ IF source_ids IS NULL OR cardinality(source_ids)<>cardinality(account_ids) THEN RAISE EXCEPTION 'account audio owner map incomplete'; END IF;
+ PERFORM lock_learner_audio_sources_private_v1(source_ids);
+ FOREACH locked_account_id IN ARRAY account_ids LOOP PERFORM pg_advisory_xact_lock(hashtextextended(locked_account_id,83000001)); END LOOP;
+ RETURN source_ids;
+END $$;
+
+CREATE FUNCTION lock_guest_authority_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR proved_ids IS NULL
+     OR cardinality(proved_ids)>4
+     OR EXISTS(SELECT 1 FROM unnest(proved_ids) id WHERE id IS NULL OR id !~ '^[A-Za-z0-9_-]{21}[AQgw]$')
+     OR cardinality(proved_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_ids) id)
+  THEN RAISE EXCEPTION 'invalid trusted proof context' USING ERRCODE='22023'; END IF;
+  -- The caller taking EXCLUSIVE first (bootstrap) never upgrades a shared lock.
+  -- Other operations keep aliases stable for their complete transaction.
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  PERFORM 1 FROM participation_owners o WHERE o.owner_id IN (
+    WITH RECURSIVE component(owner_id) AS (
+      SELECT DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id)
+        FROM guest_credentials c WHERE c.credential_id=ANY(proved_ids) AND c.origin=expected_origin
+      UNION
+      SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+        JOIN component x ON a.canonical_owner_id=x.owner_id
+    ) SELECT owner_id FROM component
+  ) ORDER BY o.owner_id COLLATE "C" FOR UPDATE;
+  -- Owner component before all credentials; deterministic order prevents
+  -- cross-proof rotation/confirmation locks from reversing the owner order.
+  PERFORM 1 FROM guest_credentials c WHERE c.owner_id IN (
+    WITH RECURSIVE component(owner_id) AS (
+      SELECT DISTINCT resolve_guest_empty_owner_root_v1(c0.owner_id)
+        FROM guest_credentials c0 WHERE c0.credential_id=ANY(proved_ids) AND c0.origin=expected_origin
+      UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+        JOIN component x ON a.canonical_owner_id=x.owner_id
+    ) SELECT owner_id FROM component
+  ) ORDER BY c.credential_id COLLATE "C" FOR UPDATE;
+END $_$;
+
+CREATE FUNCTION lock_guest_cleanup_components_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE roots TEXT[]; member_ids TEXT[];
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%' OR octet_length(expected_origin)>2048
+    OR proved_credential_ids IS NULL OR proved_intent_ids IS NULL
+    OR cardinality(proved_credential_ids)>16 OR cardinality(proved_intent_ids)>16
+    OR EXISTS(SELECT 1 FROM unnest(proved_credential_ids) id WHERE id IS NULL OR id !~ '^[A-Za-z0-9_-]{21}[AQgw]$')
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$')
+    OR cardinality(proved_credential_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_credential_ids) id)
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+  THEN RAISE EXCEPTION 'invalid trusted cleanup context' USING ERRCODE='22023'; END IF;
+  -- No shared->exclusive upgrade. Own EXCLUSIVE topology before any rows;
+  -- cleanup changes revocation/ceremony state but creates no owner or alias.
+  PERFORM pg_advisory_xact_lock(83000003,1);
+  IF cardinality(proved_credential_ids)<>(SELECT count(*) FROM guest_credentials
+      WHERE origin=expected_origin AND credential_id=ANY(proved_credential_ids))
+    OR cardinality(proved_intent_ids)<>(SELECT count(*) FROM guest_attachment_intents
+      WHERE origin=expected_origin AND intent_id=ANY(proved_intent_ids)) THEN
+    RAISE EXCEPTION 'trusted proof context changed' USING ERRCODE='GP001'; END IF;
+  SELECT array_agg(DISTINCT root_id) INTO roots FROM (
+    SELECT resolve_guest_empty_owner_root_v1(c.owner_id) root_id FROM guest_credentials c
+      WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_credential_ids)
+    UNION SELECT resolve_guest_empty_owner_root_v1(i.owner_id) FROM guest_attachment_intents i
+      WHERE i.origin=expected_origin AND i.intent_id=ANY(proved_intent_ids)
+  ) r;
+  WITH RECURSIVE component(owner_id) AS (
+    SELECT unnest(COALESCE(roots,'{}'::TEXT[])) UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+      JOIN component c ON a.canonical_owner_id=c.owner_id
+  ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO member_ids FROM component;
+  PERFORM 1 FROM participation_owners WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY owner_id COLLATE "C" FOR UPDATE;
+  PERFORM 1 FROM guest_credentials WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY credential_id COLLATE "C" FOR UPDATE;
+  PERFORM 1 FROM guest_attachment_intents WHERE owner_id=ANY(COALESCE(member_ids,'{}'::TEXT[]))
+    ORDER BY intent_id COLLATE "C" FOR UPDATE;
+END $_$;
+
+CREATE FUNCTION lock_guest_resource_budget_v1(p_source_id text, p_fingerprint text) RETURNS text[]
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE component_ids TEXT[]; root_id TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'resource global anchor unavailable' USING ERRCODE='GP006'; END IF;
+ IF p_fingerprint IS NULL OR char_length(p_fingerprint) NOT BETWEEN 1 AND 256
+  THEN RAISE EXCEPTION 'trusted edge unavailable' USING ERRCODE='GP006'; END IF;
+ INSERT INTO guest_resource_edge_locks VALUES(p_fingerprint) ON CONFLICT DO NOTHING;
+ PERFORM 1 FROM guest_resource_edge_locks WHERE guest_resource_edge_locks.fingerprint=lock_guest_resource_budget_v1.p_fingerprint FOR UPDATE;
+ SELECT resolve_guest_empty_owner_root_v1(p_source_id) INTO root_id;
+ IF root_id IS DISTINCT FROM p_source_id THEN RAISE EXCEPTION 'owner mismatch' USING ERRCODE='GP002'; END IF;
+ WITH RECURSIVE component(owner_id) AS (
+  SELECT root_id UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a JOIN component c ON a.canonical_owner_id=c.owner_id
+ ) SELECT array_agg(owner_id ORDER BY owner_id COLLATE "C") INTO component_ids FROM component;
+ PERFORM 1 FROM participation_owners WHERE owner_id=ANY(component_ids) ORDER BY owner_id COLLATE "C" FOR UPDATE;
+ IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=p_source_id AND kind='guest' AND state<>'aliased_empty')
+  THEN RAISE EXCEPTION 'owner mismatch' USING ERRCODE='GP002'; END IF;
+ RETURN component_ids;
+END $$;
+
 CREATE FUNCTION lock_hns_root_import_lifecycle_job_v1(input_job_id bigint, input_session_id text, input_job_kind text, input_executor_id text, input_lease_fence bigint) RETURNS TABLE(lifecycle_job_id bigint, created_at timestamp with time zone)
     LANGUAGE sql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -16612,6 +19260,42 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION lock_learner_audio_sources_private_v1(expected_owners text[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; component_ids TEXT[];
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ -- Caller may first lock separate account-authority rows in raw UTF8 order.
+ -- Never pre-lock an incomplete owner singleton: this helper expands the whole
+ -- owner component before taking any owner row; an already locked component
+ -- must have been complete and acquired in the same raw UTF8 order.
+ component_ids:=learner_audio_source_component_private_v1(expected_owners);
+ FOR source_id IN SELECT owner_id FROM participation_owners WHERE owner_id=ANY(component_ids)
+   ORDER BY convert_to(owner_id,'UTF8') FOR UPDATE LOOP
+   -- Actual aliased_empty children are legitimate immutable lock targets. Their
+   -- resolved canonical root is already in component_ids; do not reparent them.
+   IF EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=source_id AND state='aliased_empty')
+      AND NOT resolve_guest_empty_owner_root_v1(source_id)=ANY(component_ids) THEN
+     RAISE EXCEPTION 'alias root missing from locked component'; END IF;
+   PERFORM pg_advisory_xact_lock(hashtextextended(source_id,83000004));
+ END LOOP;
+ -- Pure locking/reads create NO fence row and establish NO owner. New history
+ -- creation below validates only its active source and persists its own fence.
+END $$;
+
+CREATE FUNCTION lock_original_account_audio_source_private_v1(p_account text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT;
+BEGIN
+ PERFORM lock_account_audio_group_private_v1(p_account);
+ source_id:=require_existing_account_participation_owner_v1(p_account);
+ RETURN source_id;
+END $$;
+
 CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_post_id text) RETURNS TABLE(owner_account_id text, audio_revision bigint, current_policy_revision bigint, current_policy_hash text)
     LANGUAGE sql STRICT SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -16623,6 +19307,57 @@ CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_po
      AND head.post_id = input_post_id
      FOR SHARE
 $$;
+
+CREATE FUNCTION map_controlled_guest_learning_source_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF NEW.account_id IS NOT NULL OR NEW.participation_owner_kind IS DISTINCT FROM 'guest'
+   OR NEW.participation_owner_id IS NULL THEN
+   RAISE EXCEPTION 'guest source shape required' USING ERRCODE='GP002'; END IF;
+ -- INVOKER private reads occur only within a real controlled owner frame;
+ -- ordinary raw guest INSERT remains denied by ACL and independently by RLS.
+ IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=NEW.participation_owner_id
+     AND kind='guest' AND state IN('empty','established')
+     AND resolve_guest_empty_owner_root_v1(owner_id)=owner_id) THEN
+   RAISE EXCEPTION 'canonical original guest source required' USING ERRCODE='GP002'; END IF;
+ UPDATE participation_owners SET state='established'
+   WHERE owner_id=NEW.participation_owner_id AND state='empty';
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION map_existing_account_learning_source_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE mapped_owner TEXT;
+BEGIN
+ IF NEW.account_id IS NULL THEN RAISE EXCEPTION 'guest source composition is unavailable'; END IF;
+ SELECT owner_id INTO mapped_owner FROM participation_owners
+   WHERE kind='account' AND account_id=NEW.account_id;
+ IF NOT FOUND THEN RAISE EXCEPTION 'account owner must be provisioned before activity'; END IF;
+ IF (NEW.participation_owner_id IS NOT NULL AND NEW.participation_owner_id<>mapped_owner)
+    OR (NEW.participation_owner_kind IS NOT NULL AND NEW.participation_owner_kind<>'account') THEN
+   RAISE EXCEPTION 'account source owner mismatch'; END IF;
+ NEW.participation_owner_id:=mapped_owner;NEW.participation_owner_kind:='account';
+ UPDATE participation_owners SET state='established' WHERE owner_id=mapped_owner AND state='empty';
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION mark_account_spoken_provider_unknown_private_v1(p_upload text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT;
+BEGIN
+ SELECT owner_id INTO STRICT source_id FROM learner_audio_account_producer_captures WHERE upload_attempt_id=p_upload AND source_kind='study';
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[source_id]);
+ UPDATE learner_audio_account_provider_calls SET state='unknown' WHERE upload_attempt_id=p_upload AND state='started';
+ -- Archive never started after provider failure, so registered audio may safely
+ -- close. The independent unknown provider fact still blocks a new generation.
+ PERFORM close_unclaimed_learner_audio_private_v1(p_upload);
+END $$;
 
 CREATE FUNCTION media_video_stage_fact_immutable() RETURNS trigger
     LANGUAGE plpgsql
@@ -16678,6 +19413,22 @@ CREATE FUNCTION moderation_policy_decision_severity_v1(input_decision text) RETU
     ELSE NULL
   END;
 $$;
+
+CREATE FUNCTION note_learner_audio_multipart_id_private_v1(p_upload text, p_id text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ IF p_id IS NULL OR char_length(p_id) NOT BETWEEN 1 AND 2048 THEN RAISE EXCEPTION 'multipart locator invalid'; END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ IF upload.multipart_upload_id IS NOT NULL AND upload.multipart_upload_id<>p_id THEN RAISE EXCEPTION 'multipart locator differs'; END IF;
+ IF upload.io_state NOT IN('writing','unknown') THEN RAISE EXCEPTION 'producer is not an admitted writer'; END IF;
+ UPDATE learner_audio_upload_attempts SET multipart_upload_id=p_id WHERE upload_attempt_id=p_upload;
+ -- ID capture does not itself declare uncertain/closed I/O or clear a fence.
+END $$;
 
 CREATE TABLE song_derivative_video_policy_observations (
     operation_id text NOT NULL,
@@ -16894,6 +19645,127 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION persist_account_spoken_success_private_v1(p_upload text, p_success jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE captured learner_audio_account_producer_captures%ROWTYPE; prior learner_audio_account_spoken_checkpoints%ROWTYPE;
+ digest TEXT;
+BEGIN
+ SELECT * INTO STRICT captured FROM learner_audio_account_producer_captures WHERE upload_attempt_id=p_upload AND source_kind='study';
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[captured.owner_id]);
+ -- Invoked by real accepted provider/grader callback only. Exact captured
+ -- generation survives current browser/lease/visibility and active deletion.
+ IF jsonb_typeof(p_success)<>'object' OR octet_length(p_success::TEXT)>131072
+  OR p_success->>'commandId' IS DISTINCT FROM captured.command_ref
+  OR p_success->>'leaseToken' IS DISTINCT FROM captured.producer_generation
+  OR p_success->>'artifactId' IS DISTINCT FROM captured.artifact_id
+  OR p_success->>'attemptId' IS DISTINCT FROM captured.attempt_ref
+  OR p_success->>'audioDigest' IS DISTINCT FROM captured.content_digest
+  OR p_success->>'accountId' IS DISTINCT FROM captured.account_id
+  OR p_success->>'sessionId' IS DISTINCT FROM captured.session_id OR p_success->>'sessionItemId' IS DISTINCT FROM captured.session_item_id
+  OR p_success->>'communityId' IS DISTINCT FROM captured.community_id
+  OR p_success->>'requestHash' IS DISTINCT FROM captured.request_hash
+  OR (p_success->>'attemptNumber')::INTEGER IS DISTINCT FROM captured.attempt_number
+  OR (p_success->>'audioByteSize')::BIGINT IS DISTINCT FROM captured.byte_size
+  OR (p_success->>'audioDurationMs')::INTEGER IS DISTINCT FROM captured.duration_ms
+  OR p_success->>'audioContentType' IS DISTINCT FROM captured.content_type
+  OR p_success->'grade'->>'policyRevision' IS DISTINCT FROM captured.item_snapshot->>'grader_policy_revision' THEN
+  RAISE EXCEPTION 'successful account checkpoint capture differs'; END IF;
+ digest:=encode(sha256(convert_to(p_success::TEXT,'UTF8')),'hex');
+ SELECT * INTO prior FROM learner_audio_account_spoken_checkpoints WHERE upload_attempt_id=p_upload;
+ IF FOUND THEN IF prior.payload_sha256<>digest THEN RAISE EXCEPTION 'accepted result changed'; END IF; RETURN; END IF;
+ INSERT INTO learner_audio_account_spoken_checkpoints VALUES(p_upload,captured.owner_id,p_success,digest,clock_timestamp());
+ UPDATE learner_audio_account_provider_calls SET state='succeeded',resolved_at=clock_timestamp()
+  WHERE upload_attempt_id=p_upload AND state IN('started','unknown');
+ IF NOT FOUND THEN RAISE EXCEPTION 'original provider dispatch missing'; END IF;
+END $$;
+
+CREATE FUNCTION persist_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE captured guest_study_spoken_captures%ROWTYPE; prior guest_study_spoken_checkpoints%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
+ cp TEXT; sha TEXT; provider_metadata JSONB;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO STRICT captured FROM guest_study_spoken_captures WHERE command_id=p_command AND source_owner_id=p_source
+  AND original_lease_digest=encode(sha256(convert_to(p_original_lease,'UTF8')),'hex');
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=captured.resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[p_source]);
+ IF ROW(captured.idempotency_key,captured.request_hash,captured.original_lease_token)
+  IS DISTINCT FROM ROW(p_operation->>'idempotencyKey',p_operation->>'requestHash',p_original_lease)
+ THEN RAISE EXCEPTION 'checkpoint captured lease mismatch' USING ERRCODE='GP005'; END IF;
+ PERFORM require_guest_spoken_resource_plan_v1(p_source,captured.session_id,captured.resource_reservation_id,
+  (captured.grading_context->>'rerecordEnabled')::BOOLEAN);
+ IF p_result IS NULL OR jsonb_typeof(p_result)<>'object' OR octet_length(p_result::TEXT)>131072
+  OR (SELECT count(*) FROM jsonb_object_keys(p_result))<>20
+  OR NOT(p_result ?& ARRAY['acceptedAt','artifactId','attemptId','attemptNumber','audioByteSize','audioContentType','audioDigest',
+    'audioDurationMs','commandId','communityId','grade','languageProvenance','rerecordAssessment','rerecordEnabled',
+    'providerDetectedLanguage','providerDetectedLanguageConfidence','qualificationId','requestHash','sessionId','sessionItemId'])
+  OR p_provider IS NULL OR jsonb_typeof(p_provider)<>'object' OR octet_length(p_provider::TEXT)>32768
+  OR (SELECT count(*) FROM jsonb_object_keys(p_provider))<>3
+  OR NOT(p_provider ?& ARRAY['transcript','detectedLanguage','detectedLanguageConfidence'])
+  OR jsonb_typeof(p_provider->'transcript')<>'string' OR char_length(p_provider->>'transcript')>4096
+ THEN RAISE EXCEPTION 'closed sanitized success facts required' USING ERRCODE='22023'; END IF;
+ IF ROW(p_result->>'artifactId',p_result->>'attemptId',p_result->>'commandId',p_result->>'requestHash',p_result->>'sessionId',p_result->>'sessionItemId',
+    p_result->>'audioDigest',p_result->>'audioContentType',p_result->>'communityId')
+  IS DISTINCT FROM ROW(captured.artifact_id,captured.attempt_id,captured.command_id,captured.request_hash,captured.session_id,captured.session_item_id,
+    captured.audio_digest,captured.audio_content_type,captured.grading_context->>'communityId')
+  OR p_result->'attemptNumber' IS DISTINCT FROM to_jsonb(captured.attempt_number)
+  OR p_result->'audioByteSize' IS DISTINCT FROM to_jsonb(captured.audio_byte_size)
+  OR p_result->'audioDurationMs' IS DISTINCT FROM to_jsonb(captured.audio_duration_ms)
+  OR p_result->'languageProvenance' IS DISTINCT FROM captured.grading_context->'languageProvenance'
+  OR p_result->'rerecordEnabled' IS DISTINCT FROM captured.grading_context->'rerecordEnabled'
+  OR p_result->'providerDetectedLanguage' IS DISTINCT FROM p_provider->'detectedLanguage'
+  OR p_result->'providerDetectedLanguageConfidence' IS DISTINCT FROM p_provider->'detectedLanguageConfidence'
+  OR p_result#>'{grade,heardTranscript}' IS DISTINCT FROM p_provider->'transcript'
+  OR p_result#>>'{grade,policyRevision}' IS DISTINCT FROM captured.grading_context#>>'{item,grader_policy_revision}'
+ THEN RAISE EXCEPTION 'successful source/policy correlation failed' USING ERRCODE='GP005'; END IF;
+ -- Platform adapter strict-decodes existing grade/feedback/provenance schemas
+ -- and recomputes genuine shared grading against retained context BEFORE this
+ -- private writer. This function is NEVER a browser/body-facing grant.
+ -- Transcript already exists in bounded grade.heardTranscript. Store no
+ -- duplicate raw transcript/body; reconstruct the narrow frozen result on read.
+ provider_metadata:=jsonb_build_object('detectedLanguage',p_provider->'detectedLanguage',
+  'detectedLanguageConfidence',p_provider->'detectedLanguageConfidence',
+  'transcriptSha256',encode(sha256(convert_to(p_provider->>'transcript','UTF8')),'hex'));
+ sha:=encode(sha256(convert_to(jsonb_build_array(p_result,provider_metadata)::TEXT,'UTF8')),'hex');
+ SELECT * INTO prior FROM guest_study_spoken_checkpoints WHERE capture_id=captured.capture_id;
+ IF FOUND THEN
+  IF prior.payload_sha256<>sha THEN RAISE EXCEPTION 'successful result replay conflict' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state','completed','outcome_id',prior.checkpoint_id,'result',jsonb_build_object('checkpointId',prior.checkpoint_id));
+ END IF;
+ SELECT * INTO STRICT call_row FROM guest_resource_provider_calls WHERE call_id=captured.provider_call_id FOR UPDATE;
+ IF ROW(call_row.source_owner_id,call_row.request_hash,call_row.idempotency_key,call_row.reservation_id,call_row.session_id)
+  IS DISTINCT FROM ROW(p_source,captured.request_hash,captured.idempotency_key,captured.resource_reservation_id,captured.session_id)
+  OR call_row.disposition NOT IN('reserved','unknown') THEN
+  RAISE EXCEPTION 'accepted original provider call required' USING ERRCODE='GP006'; END IF;
+ -- Never test current browser proof, learning/command lease expiry, current
+ -- session expiry/status, current deletion fence, or archive publication here.
+ cp:='gcp_'||gen_random_uuid()::TEXT;
+ INSERT INTO guest_study_spoken_checkpoints VALUES(cp,captured.capture_id,p_source,captured.provider_call_id,captured.resource_reservation_id,
+  p_result,provider_metadata,sha,'reserved_ceiling_v1',call_row.maximum_provider_cost_micros,clock_timestamp());
+ -- Resource result and success checkpoint settle atomically. No invoice claim:
+ -- charge the exact original conservative ceiling, never a caller lower price.
+ PERFORM complete_guest_provider_call_v1(p_source,p_operation,captured.resource_reservation_id,captured.provider_call_id,
+  'completed',cp,call_row.maximum_provider_cost_micros::TEXT);
+ RETURN jsonb_build_object('state','completed','outcome_id',cp,'result',jsonb_build_object('checkpointId',cp));
+END $$;
+
+CREATE FUNCTION persist_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN persist_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease,p_result,p_provider);
+END $$;
+
 CREATE FUNCTION persona_community_binding_evidence_digest_v1() RETURNS text
     LANGUAGE sql STABLE
     AS $$
@@ -17044,6 +19916,417 @@ CREATE FUNCTION post_slug_utf16_code_units(value text) RETURNS integer
   )::INTEGER
   FROM regexp_split_to_table(value, '') AS characters(character);
 $$;
+
+CREATE FUNCTION prepare_account_audio_delete_private_v1(p_original_account text, p_maximum integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sources TEXT[]; active_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE; prepared_batch_id TEXT;
+ source_id TEXT; fresh_command TEXT; fresh_key TEXT; digest TEXT;
+BEGIN
+ IF p_maximum IS DISTINCT FROM 1000 THEN RAISE EXCEPTION 'ordinary batch maximum must remain1000'; END IF;
+ sources:=lock_account_audio_group_private_v1(p_original_account);
+ SELECT array_agg(DISTINCT active_delete_command_id) FILTER(WHERE active_delete_command_id IS NOT NULL) INTO active_ids
+  FROM learner_audio_owner_fences WHERE owner_id=ANY(sources);
+ IF cardinality(active_ids)>1 THEN RAISE EXCEPTION 'account group has conflicting captured deletions'; END IF;
+ IF cardinality(active_ids)=1 THEN
+  SELECT * INTO STRICT command FROM learner_audio_delete_commands WHERE command_id=active_ids[1];
+  source_id:=command.source_owner_id;fresh_command:=command.command_id;fresh_key:=command.idempotency_key;digest:=command.request_hash;
+ ELSE
+  source_id:=require_existing_account_participation_owner_v1(p_original_account);
+  fresh_command:='audio_delete_'||gen_random_uuid()::TEXT;fresh_key:=fresh_command;
+  digest:=encode(sha256(convert_to(jsonb_build_array('account_audio_deletion_v1',source_id,to_jsonb(sources))::TEXT,'UTF8')),'hex');
+ END IF;
+ prepared_batch_id:=prepare_learner_audio_delete_private_v1(source_id,fresh_key,digest,fresh_command,sources,
+  'audio_batch_'||gen_random_uuid()::TEXT,1000,'unknown');
+ IF prepared_batch_id IS NULL THEN RAISE EXCEPTION 'completed deletion has no active prepared batch'; END IF;
+ RETURN jsonb_build_object('batchId',prepared_batch_id,'fenceRevision',(SELECT revision FROM learner_audio_delete_batches b WHERE b.batch_id=prepared_batch_id),
+ 'objectRefs',COALESCE((SELECT jsonb_agg(object_ref ORDER BY ordinal) FROM learner_audio_delete_batch_items i WHERE i.batch_id=prepared_batch_id),'[]'::JSONB));
+END $$;
+
+CREATE FUNCTION prepare_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE; command learner_audio_upload_cleanup_commands%ROWTYPE;
+BEGIN
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id FOR UPDATE;
+ IF upload.io_state<>'closed' OR NOT upload.cleanup_required THEN RAISE EXCEPTION 'closed cleanup-required original upload required'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.object_ref=upload.object_ref AND u.upload_attempt_id<>upload_id
+  AND (u.created_at>=upload.created_at OR u.io_state<>'closed')) THEN RAISE EXCEPTION 'object generation closure is unavailable'; END IF;
+ SELECT * INTO command FROM learner_audio_upload_cleanup_commands WHERE upload_attempt_id=upload_id;
+ IF NOT FOUND THEN INSERT INTO learner_audio_upload_cleanup_commands VALUES('audio_cleanup_'||gen_random_uuid()::TEXT,upload_id,upload.owner_id,upload.object_ref,'pending',clock_timestamp(),NULL) RETURNING * INTO command; END IF;
+ RETURN jsonb_build_object('cleanupId',command.cleanup_id,'uploadAttemptId',upload_id,'objectRef',upload.object_ref);
+END $$;
+
+CREATE FUNCTION prepare_guest_attachment_target_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], expected_intent_id text, current_account_id text, protected_session_digest text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
+  operation guest_participation_operations%ROWTYPE; account_owner_id TEXT;
+  revision BIGINT; at_time TIMESTAMPTZ; canonical_request TEXT; request_digest TEXT;
+  prepared_id TEXT; prepared JSONB; displayed_name TEXT;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR proved_ids IS NULL OR cardinality(proved_ids)>4
+     OR cardinality(proved_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_ids) id)
+     OR EXISTS(SELECT 1 FROM unnest(proved_ids) id
+       WHERE id IS NULL OR id !~ '^[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted proof context' USING ERRCODE='22023'; END IF;
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  -- account_aliases has no users FK. Stabilize absent rows and status changes
+  -- before locking the current account or any owner/credential/intent row.
+  LOCK TABLE account_aliases IN SHARE MODE;
+  PERFORM require_guest_practice_only_schema_phase_v1();
+  IF protected_session_digest IS NULL OR protected_session_digest !~ '^[0-9a-f]{64}$'
+    OR current_account_id IS NULL OR octet_length(current_account_id)>512 THEN
+    RAISE EXCEPTION 'invalid trusted account session binding' USING ERRCODE='22023'; END IF;
+  -- Current account ID comes from ordinary/setup cookie verification, never body.
+  -- Do not provision an owner or upgrade to exclusive topology behind these locks.
+  PERFORM 1 FROM users u WHERE u.user_id=current_account_id AND u.status='active'
+    AND NOT EXISTS(SELECT 1 FROM account_aliases a WHERE a.source_user_id=u.user_id
+      AND ((a.kind='alias' AND a.status='active') OR (a.kind='merge' AND a.status IN ('finalizing','completed'))))
+    FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target-changed' USING ERRCODE='GP008'; END IF;
+  SELECT owner_id INTO account_owner_id FROM participation_owners
+    WHERE kind='account' AND account_id=current_account_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target-changed' USING ERRCODE='GP008'; END IF;
+  -- Combined sorted owner set BEFORE any credential or intent lock.
+  PERFORM 1 FROM participation_owners o WHERE o.owner_id=account_owner_id OR o.owner_id IN (
+    WITH RECURSIVE component(owner_id) AS (
+      SELECT DISTINCT resolve_guest_empty_owner_root_v1(c.owner_id) FROM guest_credentials c
+        WHERE c.credential_id=ANY(proved_ids) AND c.origin=expected_origin
+      UNION SELECT a.source_owner_id FROM guest_empty_owner_aliases a
+        JOIN component x ON a.canonical_owner_id=x.owner_id
+    ) SELECT owner_id FROM component
+  ) ORDER BY o.owner_id COLLATE "C" FOR UPDATE;
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials
+    WHERE credential_id=selected_id AND origin=expected_origin;
+  IF credential.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  IF resolve_guest_empty_owner_root_v1(credential.owner_id)<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF proved_intent_ids IS NULL OR cardinality(proved_intent_ids)>4
+    OR cardinality(proved_intent_ids)<>(SELECT count(DISTINCT id) FROM unnest(proved_intent_ids) id)
+    OR EXISTS(SELECT 1 FROM unnest(proved_intent_ids) id
+      WHERE id IS NULL OR id !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$') THEN
+    RAISE EXCEPTION 'invalid trusted ceremony context' USING ERRCODE='22023'; END IF;
+  IF expected_intent_id IS NULL OR NOT expected_intent_id=ANY(proved_intent_ids) THEN
+    RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT intent FROM guest_attachment_intents
+    WHERE intent_id=expected_intent_id AND origin=expected_origin FOR UPDATE;
+  IF intent.credential_id<>selected_id OR intent.credential_source_owner_id<>credential.owner_id
+    OR intent.owner_id<>expected_owner_id THEN
+    RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  at_time:=clock_timestamp();
+  IF intent.state NOT IN ('awaiting_account','awaiting_confirmation') OR intent.expires_at<=at_time THEN
+    RAISE EXCEPTION 'intent-expired' USING ERRCODE='GP006'; END IF;
+  IF intent.target_revision>0 AND intent.target_account_id=current_account_id
+    AND intent.target_session_digest=protected_session_digest THEN
+    SELECT * INTO STRICT operation FROM guest_participation_operations
+      WHERE operation_id=intent.prepared_operation_id FOR SHARE;
+    prepared:=operation.result_snapshot->'prepared';
+    IF operation.state<>'completed' OR operation.operation_kind<>'attachment_prepare'
+      OR operation.source_owner_id<>intent.owner_id OR operation.resource_scope<>intent.intent_id
+      OR prepared IS NULL OR prepared->>'intent_id' IS DISTINCT FROM intent.intent_id
+      OR (prepared->>'target_revision')::BIGINT IS DISTINCT FROM intent.target_revision
+      OR prepared#>>'{account_confirmation,account_id}' IS DISTINCT FROM current_account_id THEN
+      RAISE EXCEPTION 'invalid preparation replay' USING ERRCODE='22023'; END IF;
+    RETURN jsonb_build_object('state','completed','operation_id',operation.operation_id,
+      'operation',guest_attachment_operation_identity_v1(operation.operation_id),'prepared',prepared);
+  END IF;
+  IF intent.target_revision>=9007199254740991 THEN
+    RAISE EXCEPTION 'ceremony revision exhausted' USING ERRCODE='22023'; END IF;
+  revision:=intent.target_revision+1;
+  -- Stable server key includes the complete natural preparation tuple. No body key.
+  canonical_request:=jsonb_build_array('guest-attachment-prepare-v1',expected_origin,
+    intent.owner_id,intent.intent_id,revision,current_account_id,protected_session_digest)::TEXT;
+  request_digest:=encode(sha256(convert_to(canonical_request,'UTF8')),'hex');
+  prepared_id:='guest_prepare_'||request_digest;
+  -- Frozen account confirmation permits NULL display_name. Current account
+  -- profile is persona-backed; preparation does not require/provision a persona.
+  -- A later named accepted read projection may add the current display name.
+  displayed_name:=NULL;
+  prepared:=jsonb_build_object('intent_id',intent.intent_id,'target_revision',revision,
+    'account_confirmation',jsonb_build_object('account_id',current_account_id,'display_name',displayed_name),
+    'state','awaiting_confirmation');
+  SELECT * INTO operation FROM guest_participation_operations WHERE operation_id=prepared_id;
+  IF FOUND THEN
+    -- Hash collisions can refuse work; they cannot substitute another tuple/history.
+    IF operation.state<>'completed' OR operation.source_owner_id<>intent.owner_id
+      OR operation.operation_kind<>'attachment_prepare' OR operation.resource_scope<>intent.intent_id
+      OR operation.idempotency_key<>request_digest OR operation.request_hash<>request_digest
+      OR operation.result_snapshot->'prepared' IS DISTINCT FROM prepared THEN
+      RAISE EXCEPTION 'idempotency-conflict' USING ERRCODE='GP005'; END IF;
+  ELSE
+    INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,
+      resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+      VALUES(prepared_id,intent.owner_id,'attachment_prepare',intent.intent_id,request_digest,
+        request_digest,'completed',jsonb_build_object('prepared',prepared),at_time,at_time);
+  END IF;
+  UPDATE guest_attachment_intents SET state='awaiting_confirmation',target_revision=revision,
+    target_account_id=current_account_id,target_session_digest=protected_session_digest,
+    prepared_operation_id=prepared_id WHERE intent_id=intent.intent_id;
+  RETURN jsonb_build_object('state','completed','operation_id',prepared_id,
+    'operation',guest_attachment_operation_identity_v1(prepared_id),'prepared',prepared);
+END $_$;
+
+CREATE FUNCTION prepare_guest_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE; command learner_audio_upload_cleanup_commands%ROWTYPE;
+BEGIN
+ upload_id:=require_guest_audio_io_capture_private_v1(p_capture);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id FOR UPDATE;
+ IF upload.io_state<>'closed' OR NOT upload.cleanup_required THEN RAISE EXCEPTION 'closed cleanup-required original upload required'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.object_ref=upload.object_ref AND u.upload_attempt_id<>upload_id
+  AND (u.created_at>=upload.created_at OR u.io_state<>'closed')) THEN RAISE EXCEPTION 'object generation closure is unavailable'; END IF;
+ SELECT * INTO command FROM learner_audio_upload_cleanup_commands WHERE upload_attempt_id=upload_id;
+ IF NOT FOUND THEN INSERT INTO learner_audio_upload_cleanup_commands VALUES('audio_cleanup_'||gen_random_uuid()::TEXT,upload_id,upload.owner_id,upload.object_ref,'pending',clock_timestamp(),NULL) RETURNING * INTO command; END IF;
+ RETURN jsonb_build_object('cleanupId',command.cleanup_id,'uploadAttemptId',upload_id,'objectRef',upload.object_ref);
+END $$;
+
+CREATE FUNCTION prepare_guest_json_answer_v1(p_access jsonb, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer, p_answer jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE session study_sessions_v2%ROWTYPE; reservation guest_resource_session_reservations%ROWTYPE;
+ operation guest_participation_operations%ROWTYPE; selected RECORD; total INTEGER; remaining INTEGER;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ -- Resolve actual immutable source BEFORE accepting caller operation/access.
+ SELECT * INTO session FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community;
+ IF NOT FOUND OR session.participation_owner_kind<>'guest' THEN
+  RAISE EXCEPTION 'guest lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations WHERE reservation_id=session.guest_resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(session.participation_owner_id,reservation.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,session.participation_owner_id);
+ PERFORM validate_guest_resource_operation_v1(session.participation_owner_id,p_operation,'study_answer');
+ IF NOT can_guest_access_activity_song_v1(p_community,session.post_id) THEN
+  RAISE EXCEPTION 'guest lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO operation FROM guest_participation_operations WHERE source_owner_id=session.participation_owner_id
+  AND operation_kind='study_answer' AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(operation.request_hash,operation.resource_scope) IS DISTINCT FROM
+   ROW(p_operation->>'requestHash',guest_study_answer_resource_scope_v1(p_community,p_session,p_item,p_attempt,'choice')) THEN
+   RAISE EXCEPTION 'original answer changed' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state',operation.state,'operationId',operation.operation_id,'result',operation.result_snapshot);
+ END IF;
+ SELECT * INTO STRICT session FROM study_sessions_v2 WHERE session_id=p_session FOR UPDATE;
+ IF session.status<>'active' OR session.expires_at<=clock_timestamp()
+  OR session.guest_reward_mode IS DISTINCT FROM 'practice_only' OR session.guest_reward_terms IS NOT NULL
+  OR session.current_session_item_id IS DISTINCT FROM p_item THEN
+  RAISE EXCEPTION 'lesson attempt unavailable' USING ERRCODE='GP003'; END IF;
+ SELECT i.item_snapshot,i.maximum_attempts,i.review_item_id,e.content_revision,e.private_grader,
+  state.presentation_count,state.lesson_resolved,review.difficulty,review.lapses,review.repetitions,review.stability
+ INTO selected FROM study_session_items_v2 i
+ JOIN study_exercise_versions e ON e.exercise_version_id=i.exercise_version_id
+ JOIN study_lesson_item_state_v2 state ON state.session_item_id=i.session_item_id AND state.session_id=i.session_id
+ JOIN study_review_items review ON review.review_item_id=i.review_item_id AND review.participation_owner_id=i.participation_owner_id
+ WHERE i.session_item_id=p_item AND i.session_id=p_session AND i.participation_owner_id=session.participation_owner_id
+ FOR UPDATE OF i,state,review;
+ IF NOT FOUND OR selected.item_snapshot->>'exercise_type' IS DISTINCT FROM 'translation_choice'
+  OR selected.private_grader->>'kind' IS DISTINCT FROM 'exact_choice_v1' OR selected.maximum_attempts IS DISTINCT FROM 3
+  OR selected.lesson_resolved IS DISTINCT FROM FALSE OR p_attempt IS NULL OR p_attempt NOT BETWEEN 1 AND 3 OR p_attempt<>selected.presentation_count+1
+  OR p_answer IS NULL OR jsonb_typeof(p_answer)<>'object' OR p_answer->>'kind' IS DISTINCT FROM 'single_select'
+  OR p_answer-'kind'-'choice_key'<>'{}'::JSONB OR jsonb_typeof(p_answer->'choice_key') IS DISTINCT FROM 'string'
+  OR jsonb_typeof(selected.private_grader->'correct_choice_key') IS DISTINCT FROM 'string'
+  OR jsonb_typeof(selected.private_grader->'correct_text') IS DISTINCT FROM 'string'
+  OR NOT EXISTS(SELECT 1 FROM jsonb_array_elements(selected.item_snapshot->'presentation'->'choices') choice
+    WHERE choice->>'choice_key'=p_answer->>'choice_key') THEN
+  RAISE EXCEPTION 'lesson attempt unavailable' USING ERRCODE='GP003'; END IF;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE NOT lesson_resolved)::INTEGER INTO total,remaining
+  FROM study_lesson_item_state_v2 WHERE session_id=p_session;
+ RETURN jsonb_build_object('state','candidate','sourceOwnerId',session.participation_owner_id,
+  'communityId',p_community,'sessionId',p_session,'sessionItemId',p_item,'attemptNumber',p_attempt,'answer',p_answer,
+  'item',selected.item_snapshot,'reviewItemId',selected.review_item_id,'contentRevision',selected.content_revision,
+  'grader',jsonb_build_object('correctChoiceKey',selected.private_grader->'correct_choice_key',
+    'correctText',selected.private_grader->'correct_text','explanation',selected.private_grader->'explanation'),
+  'review',jsonb_build_object('difficulty',selected.difficulty,'lapses',selected.lapses,'repetitions',selected.repetitions,'stability',selected.stability),
+  'priorPresentationCount',session.presentation_count,'currentPresentedAt',session.current_presented_at,
+  'acceptedAt',transaction_timestamp(),'totalCards',total,'remainingCards',remaining,
+  'resourceReservationId',reservation.reservation_id);
+END $$;
+
+CREATE FUNCTION prepare_guest_owner_audio_delete_v1(p_access jsonb, p_operation jsonb, p_maximum integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; sources TEXT[]; selected_batch TEXT; command learner_audio_delete_commands%ROWTYPE;
+BEGIN
+ source_id:=validate_guest_recovery_operation_private_v1(p_operation,'learner_audio_deletion');
+ sources:=require_guest_audio_recovery_access_private_v1(p_access,source_id);
+ IF p_maximum IS NULL OR p_maximum NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'batch bound1..1000 required' USING ERRCODE='22023'; END IF;
+ IF resolve_guest_empty_owner_root_v1(source_id)<>source_id OR NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=source_id AND state IN('empty','established')) THEN RAISE EXCEPTION 'active deletion source required' USING ERRCODE='GP002'; END IF;
+ SELECT * INTO command FROM learner_audio_delete_commands WHERE source_owner_id=source_id AND idempotency_key=p_operation->>'idempotencyKey';
+ IF FOUND THEN
+  IF command.request_hash<>p_operation->>'requestHash' THEN RAISE EXCEPTION 'deletion key conflict' USING ERRCODE='GP005'; END IF;
+ ELSIF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(sources) AND active_delete_command_id IS NOT NULL) THEN
+  RAISE EXCEPTION 'original deletion remains pending' USING ERRCODE='GD001'; END IF;
+ selected_batch:=prepare_learner_audio_delete_private_v1(source_id,p_operation->>'idempotencyKey',p_operation->>'requestHash',
+  'audio_delete_'||gen_random_uuid()::TEXT,sources,'audio_batch_'||gen_random_uuid()::TEXT,p_maximum,'unknown');
+ IF selected_batch IS NULL THEN
+  SELECT * INTO STRICT command FROM learner_audio_delete_commands WHERE source_owner_id=source_id AND idempotency_key=p_operation->>'idempotencyKey';
+  SELECT batch_id INTO STRICT selected_batch FROM learner_audio_delete_batches WHERE command_id=command.command_id AND state='confirmed' ORDER BY created_at DESC,batch_id DESC LIMIT 1;
+ END IF;
+ RETURN jsonb_build_object('state','completed','operation',p_operation,'outcomeId',selected_batch,'result',read_guest_owner_audio_delete_batch_private_v1(selected_batch));
+END $$;
+
+CREATE FUNCTION prepare_guest_spoken_finalization_v1(p_source text, p_operation jsonb, p_checkpoint text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
+ main_op guest_participation_operations%ROWTYPE; cmd study_spoken_answer_commands%ROWTYPE;
+ sess study_sessions_v2%ROWTYPE; item study_session_items_v2%ROWTYPE; state study_lesson_item_state_v2%ROWTYPE;
+ review study_review_items%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE;
+ fence learner_audio_owner_fences%ROWTYPE; prior_rerecord BOOLEAN; archive JSONB; total INTEGER; remaining INTEGER;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO cp FROM guest_study_spoken_checkpoints WHERE checkpoint_id=p_checkpoint AND source_owner_id=p_source;
+ IF NOT FOUND THEN RAISE EXCEPTION 'accepted successful checkpoint unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=cp.capture_id;
+ IF ROW(cap.source_owner_id,cap.idempotency_key,cap.request_hash,cp.provider_call_id,cp.resource_reservation_id)
+  IS DISTINCT FROM ROW(p_source,p_operation->>'idempotencyKey',p_operation->>'requestHash',cap.provider_call_id,cap.resource_reservation_id) THEN
+  RAISE EXCEPTION 'original checkpoint identity changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=cap.resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[p_source]);
+ main_op:=require_guest_answer_operation_private_v1(p_source,p_operation,cap.operation_id,
+  cap.grading_context->>'communityId',cap.session_id,cap.session_item_id,cap.attempt_number,'spoken');
+ SELECT * INTO STRICT cmd FROM study_spoken_answer_commands WHERE command_id=cap.command_id FOR UPDATE;
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=cap.session_id FOR UPDATE;
+ SELECT * INTO STRICT call_row FROM guest_resource_provider_calls WHERE call_id=cap.provider_call_id FOR UPDATE;
+ IF ROW(cmd.participation_owner_id,cmd.participation_owner_kind,cmd.account_id,cmd.session_id,cmd.session_item_id,
+    cmd.attempt_number,cmd.attempt_id,cmd.learner_audio_artifact_id,cmd.idempotency_key,cmd.request_hash,cmd.lease_token)
+  IS DISTINCT FROM ROW(p_source,'guest'::TEXT,NULL::TEXT,cap.session_id,cap.session_item_id,
+    cap.attempt_number::BIGINT,cap.attempt_id,cap.artifact_id,cap.idempotency_key,cap.request_hash,cap.original_lease_token)
+  OR ROW(sess.participation_owner_id,sess.participation_owner_kind,sess.guest_resource_reservation_id,sess.community_id)
+    IS DISTINCT FROM ROW(p_source,'guest'::TEXT,cap.resource_reservation_id,cap.grading_context->>'communityId')
+  OR ROW(call_row.source_owner_id,call_row.reservation_id,call_row.session_id,call_row.disposition,call_row.checkpoint_id)
+    IS DISTINCT FROM ROW(p_source,cap.resource_reservation_id,cap.session_id,'completed'::TEXT,cp.checkpoint_id)
+  OR cp.charged_cost_micros IS DISTINCT FROM call_row.actual_cost_micros
+  OR cp.charged_cost_micros IS DISTINCT FROM call_row.maximum_provider_cost_micros
+  OR cp.charge_basis IS DISTINCT FROM 'reserved_ceiling_v1' THEN
+  RAISE EXCEPTION 'retained command/source/lease/call correlation changed' USING ERRCODE='GP005'; END IF;
+ IF main_op.state='completed' THEN
+  IF cmd.state IS DISTINCT FROM 'completed' OR cmd.result_snapshot IS DISTINCT FROM main_op.result_snapshot THEN
+   RAISE EXCEPTION 'immutable completion receipts disagree' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state','completed','operationId',main_op.operation_id,'result',main_op.result_snapshot); END IF;
+ IF main_op.state IS DISTINCT FROM 'reserved' OR cmd.state IS DISTINCT FROM 'reserved'
+  OR sess.status IS DISTINCT FROM 'active' OR sess.current_session_item_id IS DISTINCT FROM cap.session_item_id
+  OR sess.guest_reward_mode IS DISTINCT FROM 'practice_only' OR sess.guest_reward_terms IS NOT NULL THEN
+  RAISE EXCEPTION 'accepted lesson finalization state unavailable' USING ERRCODE='GP003'; END IF;
+ SELECT * INTO STRICT item FROM study_session_items_v2 WHERE session_item_id=cap.session_item_id
+  AND session_id=cap.session_id AND participation_owner_id=p_source FOR UPDATE;
+ SELECT * INTO STRICT state FROM study_lesson_item_state_v2 WHERE session_item_id=cap.session_item_id AND session_id=cap.session_id FOR UPDATE;
+ SELECT * INTO STRICT review FROM study_review_items WHERE review_item_id=item.review_item_id AND participation_owner_id=p_source FOR UPDATE;
+ IF item.item_snapshot IS DISTINCT FROM cap.grading_context->'item' OR item.maximum_attempts IS DISTINCT FROM 3
+  OR state.lesson_resolved IS DISTINCT FROM FALSE OR state.presentation_count+1<>cap.attempt_number THEN
+  RAISE EXCEPTION 'captured lesson item changed' USING ERRCODE='GP003'; END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=cap.upload_attempt_id FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cap.artifact_id FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=p_source FOR UPDATE;
+ IF ROW(upload.owner_id,upload.artifact_id,upload.source_kind,upload.attempt_ref,upload.command_ref,upload.reservation_ref,upload.captured_revision)
+  IS DISTINCT FROM ROW(p_source,cap.artifact_id,'study'::TEXT,cap.attempt_id,cap.command_id,cap.resource_reservation_id,cap.deletion_fence_revision)
+  OR ROW(artifact.participation_owner_id,artifact.source_kind,artifact.attempt_ref,artifact.content_digest,artifact.content_type,artifact.byte_size,artifact.duration_ms)
+    IS DISTINCT FROM ROW(p_source,'study'::TEXT,cap.attempt_id,cap.audio_digest,cap.audio_content_type,cap.audio_byte_size::BIGINT,cap.audio_duration_ms::BIGINT)
+  OR upload.object_ref IS DISTINCT FROM artifact.expected_object_ref THEN
+  RAISE EXCEPTION 'retained upload/artifact source changed' USING ERRCODE='GP005'; END IF;
+ IF upload.io_state IS DISTINCT FROM 'closed' THEN
+  RETURN jsonb_build_object('state','reserved','operationId',main_op.operation_id,'result',NULL); END IF;
+ -- Actual durable253 storage disposition, never caller result.archive. A
+ -- later delete may invalidate publication without erasing successful learning.
+ archive:=CASE WHEN upload.storage_disposition='stored' AND NOT upload.cleanup_required
+   AND fence.revision=cap.deletion_fence_revision AND fence.active_delete_command_id IS NULL
+   AND artifact.recording_state<>'deleted'
+   AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref)
+  THEN jsonb_build_object('state','stored','objectRef',upload.object_ref)
+  ELSE jsonb_build_object('state','failed','objectRef',NULL) END;
+ SELECT EXISTS(SELECT 1 FROM study_spoken_answer_commands prior WHERE prior.session_id=cap.session_id
+  AND prior.session_item_id=cap.session_item_id AND prior.attempt_number=cap.attempt_number
+  AND prior.participation_owner_id=p_source AND prior.result_kind='rerecord' AND prior.state='completed') INTO prior_rerecord;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE NOT lesson_resolved)::INTEGER INTO total,remaining
+  FROM study_lesson_item_state_v2 WHERE session_id=cap.session_id;
+ RETURN jsonb_build_object('state','candidate','checkpointId',cp.checkpoint_id,'captureId',cap.capture_id,'operationId',cap.operation_id,
+  'sourceOwnerId',p_source,'result',cp.success_result,'item',item.item_snapshot,'reviewItemId',item.review_item_id,
+  'review',jsonb_build_object('difficulty',review.difficulty,'lapses',review.lapses,'repetitions',review.repetitions,'stability',review.stability),
+  'priorRerecordRecorded',prior_rerecord,'priorPresentationCount',sess.presentation_count,'currentPresentedAt',sess.current_presented_at,
+  'totalCards',total,'remainingCards',remaining,'archive',archive,'resourceReservationId',cap.resource_reservation_id);
+END $$;
+
+CREATE FUNCTION prepare_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE reservation guest_resource_session_reservations%ROWTYPE;
+ operation guest_participation_operations%ROWTYPE; plan JSONB;
+ component_ids TEXT[]; paid_units INTEGER; stored_policy JSONB;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(p_operation->>'sourceOwnerId',p_operation,'study_start');
+ -- Read immutable edge metadata before row acquisition; lock helper acquires
+ -- shared topology -> global budget -> edge -> C-sorted component owners FIRST.
+ SELECT * INTO reservation FROM guest_resource_session_reservations
+  WHERE reservation_id=p_reservation AND source_owner_id=p_operation->>'sourceOwnerId';
+ IF NOT FOUND THEN RAISE EXCEPTION 'resource reservation unavailable' USING ERRCODE='GP006'; END IF;
+ component_ids:=lock_guest_resource_budget_v1(reservation.source_owner_id,reservation.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,reservation.source_owner_id);
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations
+  WHERE reservation_id=p_reservation FOR UPDATE;
+ IF ROW(reservation.operation_kind,reservation.idempotency_key,reservation.request_hash)
+   IS DISTINCT FROM ROW('study_start',p_operation->>'idempotencyKey',p_operation->>'requestHash') THEN
+  RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+ IF NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+  RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO operation FROM guest_participation_operations
+  WHERE source_owner_id=reservation.source_owner_id AND operation_kind='study_start'
+   AND idempotency_key=reservation.idempotency_key FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(operation.request_hash,operation.resource_scope)
+    IS DISTINCT FROM ROW(reservation.request_hash,
+      guest_study_start_resource_scope_v1(p_community,p_post)) THEN
+   RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+  -- Accepted original snapshot wins over later preview, catalogue or policy.
+  -- No new candidate, budget, clock, grading, secret or outcome is drawn.
+  RETURN jsonb_build_object('state',operation.state,'operationId',operation.operation_id,
+    'result',operation.result_snapshot);
+ END IF;
+ -- Accepted private deletion primitive: never raw owner-array EXECUTE for runtime.
+ -- This derives the complete component from the already trusted/locked source.
+ PERFORM lock_learner_audio_sources_private_v1(component_ids);
+ IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component_ids)
+   AND active_delete_command_id IS NOT NULL) THEN
+  RAISE EXCEPTION 'learner audio deletion in progress' USING ERRCODE='GP009'; END IF;
+ IF p_policy IS NULL OR jsonb_typeof(p_policy)<>'object' THEN
+  RAISE EXCEPTION 'accepted paid policy unavailable' USING ERRCODE='GP006'; END IF;
+ PERFORM validate_guest_resource_policy_v1(p_policy);
+ SELECT policy INTO STRICT stored_policy FROM guest_resource_policy_snapshots
+  WHERE policy_version=reservation.policy_version;
+ IF stored_policy IS DISTINCT FROM p_policy
+  OR reservation.cost_policy_version IS DISTINCT FROM p_policy->>'costPolicyVersion'
+  OR reservation.unit_hold_micros IS DISTINCT FROM (p_policy->>'maximumProviderCallCostMicros')::NUMERIC
+  OR reservation.state<>'active' OR reservation.reservation_expires_at<=clock_timestamp() THEN
+  RAISE EXCEPTION 'accepted paid policy unavailable' USING ERRCODE='GP006'; END IF;
+ plan:=select_guest_study_start_plan_v1(reservation.source_owner_id,p_community,p_post,p_target,p_band);
+ paid_units:=(plan->>'paidAttemptUnits')::INTEGER;
+ IF reservation.remaining_units<paid_units OR reservation.initial_units<paid_units
+  OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE reservation_id=p_reservation) THEN
+  RAISE EXCEPTION 'prepared paid attempt plan was not reserved' USING ERRCODE='GP006'; END IF;
+ RETURN jsonb_build_object('state','candidate','reservationId',reservation.reservation_id,
+  'sourceOwnerId',reservation.source_owner_id,'sessionId',reservation.session_id)||plan;
+END $$;
 
 CREATE FUNCTION prepare_hns_control_observer_operation_insert() RETURNS trigger
     LANGUAGE plpgsql
@@ -17217,6 +20500,130 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION prepare_learner_audio_delete_private_v1(expected_source text, expected_key text, expected_hash text, new_command text, authorized_sources text[], new_batch text, maximum_artifacts integer, provider_fact text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE command learner_audio_delete_commands%ROWTYPE; source_id TEXT; next_revision BIGINT; active_batch TEXT;
+BEGIN
+ IF maximum_artifacts IS NULL OR maximum_artifacts NOT BETWEEN 1 AND 1000 THEN
+   RAISE EXCEPTION 'audio batch bound1..1000 required'; END IF;
+ IF expected_source IS NULL OR authorized_sources IS NULL OR NOT expected_source=ANY(authorized_sources) THEN RAISE EXCEPTION 'operation source outside authorized group'; END IF;
+ PERFORM lock_learner_audio_sources_private_v1(authorized_sources);
+ authorized_sources:=learner_audio_source_component_private_v1(authorized_sources);
+ SELECT * INTO command FROM learner_audio_delete_commands
+   WHERE source_owner_id=expected_source AND idempotency_key=expected_key FOR UPDATE;
+ IF FOUND THEN
+   IF command.request_hash<>expected_hash OR EXISTS(
+     (SELECT owner_id FROM learner_audio_delete_sources WHERE command_id=command.command_id)
+     EXCEPT (SELECT unnest(authorized_sources))) OR EXISTS(
+     (SELECT unnest(authorized_sources)) EXCEPT
+     (SELECT owner_id FROM learner_audio_delete_sources WHERE command_id=command.command_id)) THEN
+     RAISE EXCEPTION 'idempotency-conflict'; END IF;
+   IF command.state='completed' THEN RETURN NULL; END IF;
+ ELSE
+   IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=expected_source
+     AND state IN('empty','established')) THEN RAISE EXCEPTION 'active deletion source required'; END IF;
+   INSERT INTO learner_audio_owner_fences(owner_id) SELECT unnest(authorized_sources) ON CONFLICT DO NOTHING;
+   IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(authorized_sources)
+     AND active_delete_command_id IS NOT NULL) THEN RAISE EXCEPTION 'deletion-in-progress'; END IF;
+   IF EXISTS(SELECT 1 FROM study_spoken_answer_commands c
+     WHERE c.participation_owner_id=ANY(authorized_sources) AND c.state IN('reserved','retryable_failed')
+       AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u
+         WHERE u.owner_id=c.participation_owner_id AND u.command_ref=c.command_id AND u.source_kind='study'))
+     OR EXISTS(SELECT 1 FROM karaoke_recordings r JOIN participation_owners o ON o.kind='account' AND o.account_id=r.account_id
+       WHERE o.owner_id=ANY(authorized_sources) AND r.state IN('pending','failed')
+         AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.owner_id=o.owner_id
+           AND u.attempt_ref=r.attempt_id AND u.source_kind='karaoke')) THEN
+     RAISE EXCEPTION 'untracked legacy producer requires durable disposition'; END IF;
+   next_revision:=nextval('learner_audio_fence_revision_v1');
+   INSERT INTO learner_audio_delete_commands(command_id,source_owner_id,idempotency_key,request_hash,
+     revision,state,provider_disposition,created_at)
+     VALUES(new_command,expected_source,expected_key,expected_hash,next_revision,'pending',provider_fact,clock_timestamp())
+     RETURNING * INTO command;
+   INSERT INTO learner_audio_delete_sources SELECT command.command_id,unnest(authorized_sources);
+   INSERT INTO learner_audio_delete_target_artifacts(command_id,artifact_id,owner_id,original_state,source_kind,attempt_ref)
+     SELECT command.command_id,learner_audio_artifact_id,participation_owner_id,recording_state,source_kind,attempt_ref
+       FROM learner_audio_artifacts WHERE participation_owner_id=ANY(authorized_sources) AND recording_state<>'deleted';
+   INSERT INTO learner_audio_delete_target_artifacts(command_id,artifact_id,owner_id,original_state,source_kind,attempt_ref)
+     SELECT DISTINCT command.command_id,artifact_id,owner_id,'unpublished',source_kind,attempt_ref FROM learner_audio_upload_attempts
+       WHERE owner_id=ANY(authorized_sources) AND (io_state<>'closed' OR cleanup_required)
+     ON CONFLICT(command_id,artifact_id) DO NOTHING;
+   -- Recording targets are retained even without a common audio artifact.
+   INSERT INTO learner_audio_delete_target_artifacts(command_id,artifact_id,owner_id,original_state,source_kind,attempt_ref)
+     SELECT command.command_id,r.artifact_id,o.owner_id,r.state,'karaoke',r.attempt_id
+       FROM karaoke_recordings r JOIN participation_owners o ON o.kind='account' AND o.account_id=r.account_id
+       WHERE o.owner_id=ANY(authorized_sources) AND r.state<>'deleted'
+     ON CONFLICT(command_id,artifact_id) DO NOTHING;
+   UPDATE participation_owners SET state='established' WHERE owner_id=expected_source AND state='empty';
+   UPDATE learner_audio_owner_fences SET revision=next_revision,active_delete_command_id=command.command_id
+     WHERE owner_id=ANY(authorized_sources);
+   UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE owner_id=ANY(authorized_sources)
+     AND captured_revision<next_revision;
+   -- Claim is serialized by the same owner lock and is mandatory before I/O.
+   -- Still-registered intents therefore have a positive no-I/O witness and may
+   -- close atomically. Writing/unknown intents NEVER close through this path.
+   UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition='absent',
+     closed_at=clock_timestamp() WHERE owner_id=ANY(authorized_sources)
+       AND captured_revision<next_revision AND io_state='registered';
+ END IF;
+ SELECT batch_id INTO active_batch FROM learner_audio_delete_batches
+   WHERE command_id=command.command_id AND state<>'confirmed' ORDER BY created_at,batch_id LIMIT 1;
+ IF active_batch IS NOT NULL THEN RETURN active_batch; END IF;
+ INSERT INTO learner_audio_delete_batches(batch_id,command_id,revision,state,created_at)
+   VALUES(new_batch,command.command_id,command.revision,'prepared',clock_timestamp());
+ INSERT INTO learner_audio_delete_batch_items(batch_id,ordinal,owner_id,artifact_id,object_ref)
+   SELECT new_batch,row_number() OVER(ORDER BY convert_to(n.object_ref,'UTF8'))::INTEGER,
+     n.owner_id,n.artifact_id,n.object_ref FROM learner_audio_object_names n
+   WHERE n.owner_id=ANY(authorized_sources)
+     AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=n.object_ref)
+   ORDER BY convert_to(n.object_ref,'UTF8') LIMIT maximum_artifacts;
+ -- Empty batches are still durable. If old IO remains unknown, return pending
+ -- rather than taking repeated head()==NULL as a terminal producer witness.
+ RETURN new_batch;
+END $$;
+
+CREATE FUNCTION prepare_next_guest_ephemeral_audio_cleanup_private_v1() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE chosen TEXT; original_owner TEXT; prepared JSONB;
+ original_cleanup learner_audio_upload_cleanup_commands%ROWTYPE;
+ original_capture guest_study_spoken_captures%ROWTYPE;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ SELECT cap.upload_attempt_id,cap.source_owner_id INTO chosen,original_owner
+  FROM guest_study_spoken_captures cap
+  LEFT JOIN learner_audio_upload_cleanup_commands cleanup ON cleanup.upload_attempt_id=cap.upload_attempt_id
+  WHERE (cleanup.cleanup_id IS NULL AND guest_ephemeral_upload_ready_private_v1(cap.upload_attempt_id))
+   OR (cleanup.state='pending' AND guest_ephemeral_pending_cleanup_ready_private_v1(cleanup.cleanup_id))
+  ORDER BY (cleanup.state='pending') DESC NULLS LAST,
+   cap.captured_retention_expires_at,cap.upload_attempt_id COLLATE "C" LIMIT 1;
+ IF NOT FOUND THEN RETURN jsonb_build_object('state','idle'); END IF;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[original_owner]);
+ SELECT * INTO STRICT original_capture FROM guest_study_spoken_captures WHERE upload_attempt_id=chosen;
+ SELECT * INTO original_cleanup FROM learner_audio_upload_cleanup_commands WHERE upload_attempt_id=chosen;
+ IF FOUND THEN
+  -- Recovery uses original durable authority, not NEW admission or preferences.
+  IF original_cleanup.state<>'pending'
+    OR NOT guest_ephemeral_pending_cleanup_ready_private_v1(original_cleanup.cleanup_id) THEN
+   RETURN jsonb_build_object('state','idle'); END IF;
+  prepared:=jsonb_build_object('cleanupId',original_cleanup.cleanup_id,
+   'uploadAttemptId',original_cleanup.upload_attempt_id,'objectRef',original_cleanup.object_ref);
+ ELSE
+  IF NOT guest_ephemeral_upload_ready_private_v1(chosen) THEN
+   RETURN jsonb_build_object('state','idle'); END IF;
+ -- Close this exact terminal upload's publication while external DELETE waits.
+ -- This does not change the owner's durable deletion fence or provider facts.
+  UPDATE learner_audio_upload_attempts SET cleanup_required=TRUE WHERE upload_attempt_id=chosen;
+  prepared:=prepare_guest_captured_audio_cleanup_private_v1(read_guest_audio_io_capture_private_v1(chosen));
+ END IF;
+ -- Closed, original capture witnesses let the SDK reject foreign keys before I/O.
+ RETURN jsonb_build_object('state','prepared','cleanup',prepared||jsonb_build_object(
+  'attemptId',original_capture.attempt_id,'contentDigest',original_capture.audio_digest));
+END $$;
+
 CREATE FUNCTION prepare_platform_pirate_label_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -17243,6 +20650,59 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION preserve_learning_source_identity_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF ROW(NEW.participation_owner_id,NEW.participation_owner_kind,NEW.account_id)
+    IS DISTINCT FROM ROW(OLD.participation_owner_id,OLD.participation_owner_kind,OLD.account_id) THEN
+   RAISE EXCEPTION 'learning source provenance is immutable'; END IF;
+ IF TG_TABLE_NAME='study_sessions_v2' THEN
+   IF ROW(to_jsonb(NEW)->'session_id',to_jsonb(NEW)->'persona_id',to_jsonb(NEW)->'community_id',
+      to_jsonb(NEW)->'post_id',to_jsonb(NEW)->'idempotency_key',to_jsonb(NEW)->'request_hash')
+       IS DISTINCT FROM ROW(to_jsonb(OLD)->'session_id',to_jsonb(OLD)->'persona_id',to_jsonb(OLD)->'community_id',
+      to_jsonb(OLD)->'post_id',to_jsonb(OLD)->'idempotency_key',to_jsonb(OLD)->'request_hash') THEN
+     RAISE EXCEPTION 'session source and original start identity are immutable'; END IF;
+ ELSIF TG_TABLE_NAME='study_spoken_answer_commands' THEN
+   IF OLD.state='completed' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+     RAISE EXCEPTION 'completed spoken outcome is immutable'; END IF;
+   IF ROW(to_jsonb(NEW)->'command_id',to_jsonb(NEW)->'session_id',to_jsonb(NEW)->'session_item_id',
+      to_jsonb(NEW)->'attempt_id',to_jsonb(NEW)->'attempt_number',to_jsonb(NEW)->'learner_audio_artifact_id')
+       IS DISTINCT FROM ROW(to_jsonb(OLD)->'command_id',to_jsonb(OLD)->'session_id',to_jsonb(OLD)->'session_item_id',
+      to_jsonb(OLD)->'attempt_id',to_jsonb(OLD)->'attempt_number',to_jsonb(OLD)->'learner_audio_artifact_id') THEN
+     RAISE EXCEPTION 'command source and attempt identity are immutable'; END IF;
+   -- Account retry may change command key/hash/audio/lease/reserved_at according
+   -- to the existing repository. Final current command is checked below.
+ ELSIF TG_TABLE_NAME='learner_audio_artifacts' THEN
+   IF OLD.source_kind='karaoke' AND OLD.recording_state IN('stored','deleted') THEN
+     IF NOT ((OLD.recording_state='stored' AND NEW.recording_state='stored'
+              AND NEW.object_ref IS NOT DISTINCT FROM OLD.object_ref)
+          OR (OLD.recording_state='stored' AND NEW.recording_state='deleted'
+              AND NEW.object_ref IS NULL)
+          OR (OLD.recording_state='deleted' AND NEW.recording_state='deleted'
+              AND NEW.object_ref IS NULL AND NEW.deleted_at IS NOT DISTINCT FROM OLD.deleted_at)) THEN
+       RAISE EXCEPTION 'accepted Karaoke archive state and reference are retained'; END IF;
+   END IF;
+   IF ROW(to_jsonb(NEW)->'learner_audio_artifact_id',to_jsonb(NEW)->'source_kind',to_jsonb(NEW)->'attempt_ref')
+       IS DISTINCT FROM ROW(to_jsonb(OLD)->'learner_audio_artifact_id',to_jsonb(OLD)->'source_kind',to_jsonb(OLD)->'attempt_ref') THEN
+     RAISE EXCEPTION 'artifact owner/source/attempt identity is immutable'; END IF;
+   IF ROW(to_jsonb(NEW)->'content_digest',to_jsonb(NEW)->'expected_object_ref',to_jsonb(NEW)->'content_type',
+      to_jsonb(NEW)->'byte_size',to_jsonb(NEW)->'duration_ms')
+       IS DISTINCT FROM ROW(to_jsonb(OLD)->'content_digest',to_jsonb(OLD)->'expected_object_ref',to_jsonb(OLD)->'content_type',
+      to_jsonb(OLD)->'byte_size',to_jsonb(OLD)->'duration_ms') THEN
+     -- Existing account reclaim changes expected audio before any accepted
+     -- attempt. Never rewrite completed provider/attempt evidence.
+     IF OLD.source_kind<>'study' OR OLD.recording_state NOT IN('pending','failed') OR NEW.recording_state<>'pending'
+       OR EXISTS(SELECT 1 FROM study_attempts_v2 WHERE learner_audio_artifact_id=OLD.learner_audio_artifact_id)
+       OR EXISTS(SELECT 1 FROM study_spoken_answer_commands
+          WHERE learner_audio_artifact_id=OLD.learner_audio_artifact_id AND state='completed') THEN
+       RAISE EXCEPTION 'accepted audio evidence is immutable'; END IF;
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION prevent_persona_create_action_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -17766,6 +21226,84 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION project_owner_study_session_private_v1(p_source text, p_community text, p_session text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE session study_sessions_v2%ROWTYPE; items JSONB; source JSONB; public_session JSONB;
+ count_cards INTEGER; answered INTEGER; correct INTEGER; resolved INTEGER;
+ current_presentations INTEGER; at_created TEXT; at_completed TEXT; at_presented TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ SELECT * INTO session FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_id=p_source;
+ IF NOT FOUND THEN RAISE EXCEPTION 'captured Study source missing' USING ERRCODE='GP010'; END IF;
+ IF session.participation_owner_kind='guest' THEN
+  source:=jsonb_build_object('kind','guest','ownerId',session.participation_owner_id);
+ ELSE
+  source:=jsonb_build_object('kind','account','ownerId',session.participation_owner_id,
+   'accountId',session.account_id,'personaId',session.persona_id);
+ END IF;
+ -- Caller already proved original capture/source and owns component/session locks.
+ -- No current cookie/proof/lease/publication predicate is evaluated here.
+ -- One state snapshot for stored items, attempts and lesson progress, preserving
+ -- the existing readSession calculations. No account-only descendant filters.
+ WITH item_rows AS MATERIALIZED (
+  SELECT i.* FROM study_session_items_v2 i WHERE i.session_id=session.session_id
+   AND i.participation_owner_id=session.participation_owner_id
+ ), progress AS (
+  SELECT count(*)::INTEGER AS cards,
+   count(*) FILTER(WHERE EXISTS(SELECT 1 FROM study_attempts_v2 a
+     WHERE a.session_item_id=i.session_item_id AND a.attempt_state='spent'))::INTEGER AS answered,
+   count(*) FILTER(WHERE EXISTS(SELECT 1 FROM study_attempts_v2 a
+     WHERE a.session_item_id=i.session_item_id AND a.attempt_number=1 AND a.outcome='correct'))::INTEGER AS correct
+  FROM item_rows i
+ ), lesson AS (
+  SELECT count(*) FILTER(WHERE lesson_resolved)::INTEGER AS resolved,
+   COALESCE(max(presentation_count) FILTER(WHERE session_item_id=session.current_session_item_id),0)::INTEGER AS presented
+  FROM study_lesson_item_state_v2 WHERE session_id=session.session_id
+ ) SELECT COALESCE((SELECT jsonb_agg(item_snapshot ORDER BY ordinal) FROM item_rows),'[]'),
+   progress.cards,progress.answered,progress.correct,lesson.resolved,lesson.presented
+  INTO items,count_cards,answered,correct,resolved,current_presentations FROM progress CROSS JOIN lesson;
+ IF count_cards NOT BETWEEN 4 AND 10 THEN
+  RAISE EXCEPTION 'stored Study item closure invalid' USING ERRCODE='GP006'; END IF;
+ at_created:=to_char(session.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+ at_completed:=CASE WHEN session.completed_at IS NULL THEN NULL ELSE
+  to_char(session.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END;
+ at_presented:=CASE WHEN session.current_presented_at IS NULL THEN NULL ELSE
+  to_char(session.current_presented_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END;
+ public_session:=jsonb_build_object(
+  'object','study_session_v2','session_id',session.session_id,'persona_id',session.persona_id,
+  'community_id',session.community_id,'post_id',session.post_id,
+  'audio_revision',session.audio_revision,'lyrics_revision',session.lyrics_revision,
+  'languages',jsonb_build_object('learning_language',session.learning_language,'target_language',session.target_language),
+  'learner_band',session.learner_band,'study_profile_revision',session.study_profile_revision,
+  'language_profile_revision',session.language_profile_revision,'source_set_revision',session.source_set_revision,
+  'selection_policy_revision',session.selection_policy_revision,'qualification_policy_revision',session.qualification_policy_revision,
+  'timezone',session.timezone,'status',session.status,'items',items,
+  'progress',jsonb_build_object('qualifying_exercise_count',count_cards,'answered_exercise_count',answered,
+   'first_pass_correct',correct,'required_correct',GREATEST(1,ceil(7.0*count_cards/10)::INTEGER),
+   'score_bps',CASE WHEN answered=count_cards THEN floor(10000.0*correct/count_cards)::INTEGER ELSE NULL END),
+  'lesson',jsonb_build_object('current',CASE WHEN session.current_session_item_id IS NULL THEN NULL ELSE
+   jsonb_build_object('session_item_id',session.current_session_item_id,
+    'presentation_number',current_presentations+1,'is_reappearance',current_presentations>0,
+    'presented_at',at_presented) END,
+   'resolved_card_count',resolved,'total_card_count',count_cards,
+   'presentation_count',session.presentation_count,'presentation_cap',LEAST(20,3*count_cards),
+   'completion_reason',session.completion_reason),
+  'created_at',at_created,'completed_at',at_completed);
+ IF session.participation_owner_kind='guest' THEN
+  IF session.guest_reward_mode IS DISTINCT FROM 'practice_only' OR session.guest_reward_terms IS NOT NULL THEN
+   RAISE EXCEPTION 'guest reward composition unavailable' USING ERRCODE='GP006'; END IF;
+  public_session:=(public_session-'persona_id')||jsonb_build_object(
+   'object','guest_study_session_v1','actor',jsonb_build_object('kind','guest'),
+   'owner_id',session.participation_owner_id,
+   'expires_at',to_char(session.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+   'reward_mode','practice_only','reward_terms',NULL,'participation',jsonb_build_object('state','practice_only'));
+ END IF;
+ RETURN jsonb_build_object('source',source,'session',public_session);
+END $$;
+
 CREATE FUNCTION promote_operator_managed_route_from_hns_candidate_v1(input_receipt_id text, input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_route_binding_id text, input_operator_route_activation_id text, input_evidence_ref text, input_candidate_bytes bytea) RETURNS TABLE(outcome text, receipt_id text, evidence_ref text, route_binding_id text, binding_generation bigint, app_host_activation_generation bigint)
     LANGUAGE plpgsql
     AS $_$
@@ -18246,6 +21784,27 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION provision_account_participation_owner_v1(expected_account_id text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE mapped_owner TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock(83000003,1);
+ PERFORM 1 FROM users u WHERE u.user_id=expected_account_id AND u.status='active'
+   AND NOT EXISTS(SELECT 1 FROM account_aliases a WHERE a.source_user_id=u.user_id AND
+    ((a.kind='alias' AND a.status='active') OR (a.kind='merge' AND a.status IN('finalizing','completed'))))
+   FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'active canonical account required'; END IF;
+ SELECT owner_id INTO mapped_owner FROM participation_owners WHERE kind='account' AND account_id=expected_account_id FOR UPDATE;
+ IF NOT FOUND THEN
+   INSERT INTO participation_owners(owner_id,kind,account_id,state,created_at)
+     VALUES('owner_'||gen_random_uuid()::text,'account',expected_account_id,'empty',clock_timestamp())
+     RETURNING owner_id INTO mapped_owner;
+ END IF;
+ RETURN mapped_owner;
+END $$;
+
 CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -18434,6 +21993,575 @@ CREATE FUNCTION rating_reconciliation_held_v1(kind text, community text, target 
     JOIN content_rating_reconciliation_events e USING(event_id)
     WHERE c.target_kind=kind AND c.community_id=community AND c.target_id=target AND e.outcome='held');
 $$;
+
+CREATE FUNCTION read_account_karaoke_audio_capture_private_v1(p_account text, p_session text, p_attempt text, p_artifact text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT;
+BEGIN
+ PERFORM lock_account_audio_group_private_v1(p_account);
+ SELECT upload_attempt_id INTO STRICT upload_id FROM learner_audio_account_producer_captures
+  WHERE account_id=p_account AND source_kind='karaoke' AND command_ref=p_session AND attempt_ref=p_attempt AND artifact_id=p_artifact;
+ RETURN read_captured_learner_audio_private_v1(upload_id);
+END $$;
+
+CREATE FUNCTION read_captured_learner_audio_private_v1(p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; result JSONB;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ SELECT jsonb_build_object('uploadAttemptId',c.upload_attempt_id,'sourceOwnerId',c.owner_id,
+  'artifactId',c.artifact_id,'sourceKind',c.source_kind,'attemptRef',c.attempt_ref,'commandRef',c.command_ref,
+  'reservationRef',c.reservation_ref,'capturedRevision',c.captured_revision,'objectRef',c.expected_object_ref,
+  'contentDigest',c.content_digest,'contentType',c.content_type,'byteSize',c.byte_size,'durationMs',c.duration_ms)
+ INTO result FROM learner_audio_account_producer_captures c WHERE c.upload_attempt_id=p_upload;
+ IF result IS NULL OR ROW(upload.owner_id,upload.artifact_id,upload.source_kind,upload.attempt_ref,
+  upload.command_ref,upload.reservation_ref,upload.captured_revision,upload.object_ref)
+  IS DISTINCT FROM ROW(result->>'sourceOwnerId',result->>'artifactId',result->>'sourceKind',result->>'attemptRef',
+  result->>'commandRef',result->>'reservationRef',(result->>'capturedRevision')::BIGINT,result->>'objectRef') THEN
+  RAISE EXCEPTION 'immutable archive capture missing or differs'; END IF;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION read_guest_audio_io_capture_private_v1(p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE result JSONB;
+BEGIN
+ SELECT jsonb_build_object('uploadAttemptId',cap.upload_attempt_id,'sourceOwnerId',cap.source_owner_id,
+  'artifactId',cap.artifact_id,'sourceKind','study','attemptRef',cap.attempt_id,'commandRef',cap.command_id,
+  'reservationRef',u.reservation_ref,'capturedRevision',cap.deletion_fence_revision,'objectRef',u.object_ref,
+  'contentDigest',cap.audio_digest,'contentType',cap.audio_content_type,'byteSize',cap.audio_byte_size,'durationMs',cap.audio_duration_ms)
+ INTO STRICT result FROM guest_study_spoken_captures cap JOIN guest_study_spoken_checkpoints cp USING(capture_id)
+  JOIN learner_audio_upload_attempts u ON u.upload_attempt_id=cap.upload_attempt_id
+  WHERE cap.upload_attempt_id=p_upload AND u.owner_id=cap.source_owner_id AND u.artifact_id=cap.artifact_id
+   AND u.source_kind='study' AND u.attempt_ref=cap.attempt_id AND u.command_ref=cap.command_id
+   AND u.reservation_ref=cap.resource_reservation_id AND u.captured_revision=cap.deletion_fence_revision
+   AND u.object_ref='learner-audio/study/'||cap.attempt_id||'/'||cap.audio_digest;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION read_guest_browser_proof_snapshot_v1(expected_origin text, credential_proofs jsonb, intent_proofs jsonb, cleanup_operation boolean) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE
+  maximum_proofs INTEGER;
+  observed_at TIMESTAMPTZ;
+  result JSONB;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR cleanup_operation IS NULL
+     OR credential_proofs IS NULL OR jsonb_typeof(credential_proofs)<>'array'
+     OR intent_proofs IS NULL OR jsonb_typeof(intent_proofs)<>'array' THEN
+    RAISE EXCEPTION 'invalid guest proof input' USING ERRCODE='22023';
+  END IF;
+  maximum_proofs := CASE WHEN cleanup_operation THEN 16 ELSE 4 END;
+  IF jsonb_array_length(credential_proofs)>maximum_proofs
+     OR jsonb_array_length(intent_proofs)>maximum_proofs THEN
+    RAISE EXCEPTION 'invalid guest proof count' USING ERRCODE='22023';
+  END IF;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements(credential_proofs) p
+    WHERE jsonb_typeof(p)<>'object'
+      OR jsonb_typeof(p->'credentialId') IS DISTINCT FROM 'string'
+      OR jsonb_typeof(p->'digest') IS DISTINCT FROM 'string'
+      OR p->>'credentialId' !~ '^[A-Za-z0-9_-]{21}[AQgw]$'
+      OR p->>'digest' !~ '^[0-9a-f]{64}$'
+      OR p - 'credentialId' - 'digest' <> '{}'::JSONB)
+    OR jsonb_array_length(credential_proofs)<>
+       (SELECT count(DISTINCT p->>'credentialId') FROM jsonb_array_elements(credential_proofs) p)
+    OR EXISTS(SELECT 1 FROM jsonb_array_elements(intent_proofs) p
+      WHERE jsonb_typeof(p)<>'object'
+        OR jsonb_typeof(p->'intentId') IS DISTINCT FROM 'string'
+        OR jsonb_typeof(p->'digest') IS DISTINCT FROM 'string'
+        OR p->>'intentId' !~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$'
+        OR p->>'digest' !~ '^[0-9a-f]{64}$'
+        OR p - 'intentId' - 'digest' <> '{}'::JSONB)
+    OR jsonb_array_length(intent_proofs)<>
+       (SELECT count(DISTINCT p->>'intentId') FROM jsonb_array_elements(intent_proofs) p) THEN
+    RAISE EXCEPTION 'invalid guest proof shape' USING ERRCODE='22023';
+  END IF;
+
+  -- Same namespace as current0248 exclusive alias writer, before owner/media locks.
+  -- This reader changes no product row. VOLATILE + explicit clock avoids cached authority.
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  observed_at := clock_timestamp();
+  WITH credentials AS MATERIALIZED (
+    SELECT c.*,resolve_guest_empty_owner_root_v1(c.owner_id) AS effective_owner
+    FROM guest_credentials c JOIN jsonb_array_elements(credential_proofs) p
+      ON c.credential_id=p->>'credentialId' AND c.secret_digest=p->>'digest'
+    WHERE c.origin=expected_origin
+  ), intents AS MATERIALIZED (
+    SELECT i.*,resolve_guest_empty_owner_root_v1(i.credential_source_owner_id) AS effective_owner
+    FROM guest_attachment_intents i JOIN jsonb_array_elements(intent_proofs) p
+      ON i.intent_id=p->>'intentId' AND i.nonce_digest=p->>'digest'
+    WHERE i.origin=expected_origin
+  ) SELECT jsonb_build_object(
+    'origin',expected_origin,
+    'databaseObservedAt',to_char(observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'provedCredentials',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'credentialId',c.credential_id,
+      'credentialSourceOwnerId',c.owner_id,
+      'effectiveOwnerId',c.effective_owner,
+      'ownerId',c.effective_owner,
+      'origin',c.origin,'state',c.state,
+      'leaseUntil',to_char(c.session_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'pendingExpiresAt',to_char(c.pending_expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'predecessorCredentialId',c.predecessor_id,
+      'pendingActive',c.state IN ('pending_bootstrap','pending_successor') AND c.pending_expires_at>observed_at,
+      'learningLeaseActive',c.state='confirmed' AND COALESCE(c.session_until>observed_at,FALSE)
+    ) ORDER BY c.credential_id COLLATE "C") FROM credentials c),'[]'::JSONB),
+    'provedIntents',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'intentId',i.intent_id,'credentialId',i.credential_id,
+      'credentialSourceOwnerId',i.credential_source_owner_id,
+      'effectiveOwnerId',i.effective_owner,'ownerId',i.owner_id,
+      'origin',i.origin,'state',i.state,
+      'expiresAt',to_char(i.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'active',i.state IN ('awaiting_account','awaiting_confirmation') AND i.expires_at>observed_at
+    ) ORDER BY i.intent_id COLLATE "C") FROM intents i),'[]'::JSONB)
+  ) INTO result;
+  RETURN result;
+END $_$;
+
+CREATE FUNCTION read_guest_credential_proof_matches_v1(expected_origin text, presented_proofs jsonb, cleanup_operation boolean) RETURNS TABLE(credential_id text, credential_source_owner_id text, origin text, credential_state text, session_until timestamp with time zone, pending_expires_at timestamp with time zone, predecessor_id text, confirmed_at timestamp with time zone, revoked_at timestamp with time zone)
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE maximum_proofs INTEGER;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR cleanup_operation IS NULL
+     OR presented_proofs IS NULL OR jsonb_typeof(presented_proofs)<>'array' THEN
+    RAISE EXCEPTION 'invalid guest proof input' USING ERRCODE='22023';
+  END IF;
+  maximum_proofs := CASE WHEN cleanup_operation THEN 16 ELSE 4 END;
+  IF jsonb_array_length(presented_proofs)>maximum_proofs THEN
+    RAISE EXCEPTION 'invalid guest proof count' USING ERRCODE='22023';
+  END IF;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements(presented_proofs) p
+    WHERE jsonb_typeof(p)<>'object'
+       OR jsonb_typeof(p->'credentialId') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(p->'digest') IS DISTINCT FROM 'string'
+       OR p->>'credentialId' IS NULL OR p->>'credentialId' !~ '^[A-Za-z0-9_-]{21}[AQgw]$'
+       OR p->>'digest' IS NULL OR p->>'digest' !~ '^[0-9a-f]{64}$')
+    OR (SELECT count(*) FROM jsonb_array_elements(presented_proofs)) <>
+       (SELECT count(DISTINCT p->>'credentialId') FROM jsonb_array_elements(presented_proofs) p)
+  THEN RAISE EXCEPTION 'invalid guest proof shape' USING ERRCODE='22023'; END IF;
+  RETURN QUERY SELECT c.credential_id,c.owner_id,c.origin,c.state,c.session_until,
+    c.pending_expires_at,c.predecessor_id,c.confirmed_at,c.revoked_at
+    FROM guest_credentials c
+    JOIN jsonb_array_elements(presented_proofs) p
+      ON c.credential_id=p->>'credentialId' AND c.secret_digest=p->>'digest'
+    WHERE c.origin=expected_origin ORDER BY c.credential_id COLLATE "C";
+END $_$;
+
+CREATE FUNCTION read_guest_learning_lease_observation_v1(expected_origin text, expected_credential_id text, expected_effective_owner text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE observed_at TIMESTAMPTZ; result JSONB;
+BEGIN
+  IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
+     OR octet_length(expected_origin)>2048 OR expected_credential_id IS NULL
+     OR expected_credential_id !~ '^[A-Za-z0-9_-]{21}[AQgw]$'
+     OR expected_effective_owner IS NULL
+     OR expected_effective_owner !~ '^owner_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+    RAISE EXCEPTION 'invalid guest lease input' USING ERRCODE='22023';
+  END IF;
+  PERFORM pg_advisory_xact_lock_shared(83000003,1);
+  observed_at := clock_timestamp();
+  SELECT jsonb_build_object(
+    'credential',jsonb_build_object(
+      'credentialId',c.credential_id,'credentialSourceOwnerId',c.owner_id,
+      'effectiveOwnerId',expected_effective_owner,'origin',c.origin),
+    'state','confirmed',
+    'leaseUntil',to_char(c.session_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'databaseObservedAt',to_char(observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'active',c.session_until>observed_at
+  ) INTO result FROM guest_credentials c
+  WHERE c.credential_id=expected_credential_id AND c.origin=expected_origin
+    AND c.state='confirmed'
+    AND resolve_guest_empty_owner_root_v1(c.owner_id)=expected_effective_owner;
+  RETURN result;
+END $_$;
+
+CREATE FUNCTION read_guest_owner_audio_delete_batch_private_v1(p_batch text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE batch learner_audio_delete_batches%ROWTYPE; command learner_audio_delete_commands%ROWTYPE; result JSONB;
+BEGIN
+ SELECT * INTO STRICT batch FROM learner_audio_delete_batches WHERE batch_id=p_batch;
+ SELECT * INTO STRICT command FROM learner_audio_delete_commands WHERE command_id=batch.command_id;
+ IF EXISTS(SELECT 1 FROM learner_audio_delete_sources s JOIN participation_owners o USING(owner_id)
+  WHERE s.command_id=command.command_id AND o.kind<>'guest') THEN RAISE EXCEPTION 'guest deletion sources differ' USING ERRCODE='GP002'; END IF;
+ SELECT jsonb_build_object('operation',jsonb_build_object('sourceOwnerId',command.source_owner_id,'kind','learner_audio_deletion','idempotencyKey',command.idempotency_key,'requestHash',command.request_hash),
+ 'batchId',batch.batch_id,'fenceRevision',batch.revision,
+ 'sourceOwnerIds',(SELECT jsonb_agg(owner_id ORDER BY convert_to(owner_id,'UTF8')) FROM learner_audio_delete_sources WHERE command_id=command.command_id),
+ 'artifacts',COALESCE((SELECT jsonb_agg(jsonb_build_object('artifactId',artifact_id,'source',jsonb_build_object('kind','guest','ownerId',owner_id),'objectRef',object_ref) ORDER BY ordinal) FROM learner_audio_delete_batch_items WHERE batch_id=batch.batch_id),'[]'::JSONB),
+ 'providerDisposition',command.provider_disposition) INTO result;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION read_guest_spoken_capture_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cap guest_study_spoken_captures%ROWTYPE;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE source_owner_id=p_source AND command_id=p_command
+  AND original_lease_digest=encode(sha256(convert_to(p_original_lease,'UTF8')),'hex');
+ IF ROW(cap.idempotency_key,cap.request_hash,cap.original_lease_token)
+  IS DISTINCT FROM ROW(p_operation->>'idempotencyKey',p_operation->>'requestHash',p_original_lease)
+ THEN RAISE EXCEPTION 'capture reader mismatch' USING ERRCODE='GP005'; END IF;
+ RETURN jsonb_build_object('captureId',cap.capture_id,'sourceOwnerId',cap.source_owner_id,
+  'commandId',cap.command_id,'operation',p_operation,'sessionId',cap.session_id,'sessionItemId',cap.session_item_id,
+  'attemptId',cap.attempt_id,'artifactId',cap.artifact_id,'attemptNumber',cap.attempt_number,
+  'resourceReservationId',cap.resource_reservation_id,'deletionFenceRevision',cap.deletion_fence_revision,
+  'audioDigest',cap.audio_digest,'audioContentType',cap.audio_content_type,'audioByteSize',cap.audio_byte_size,
+  'audioDurationMs',cap.audio_duration_ms,'gradingContext',cap.grading_context);
+END $$;
+
+CREATE FUNCTION read_guest_spoken_closed_recovery_v1(p_checkpoint text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
+ upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
+ artifact learner_audio_artifacts%ROWTYPE; op guest_participation_operations%ROWTYPE;
+ source_id TEXT; operation JSONB; saved JSONB; eligible BOOLEAN; io_capture JSONB;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF p_checkpoint IS NULL OR char_length(p_checkpoint) NOT BETWEEN 1 AND 128 THEN
+  RAISE EXCEPTION 'bounded checkpoint locator required' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO cp FROM guest_study_spoken_checkpoints WHERE checkpoint_id=p_checkpoint;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=cp.capture_id;
+ source_id:=require_owner_guest_source_private_v1(jsonb_build_object('kind','guest','ownerId',cap.source_owner_id));
+ SELECT * INTO STRICT op FROM guest_participation_operations WHERE operation_id=cap.operation_id;
+ IF op.state='completed' THEN RETURN NULL; END IF;
+ IF op.state<>'reserved' OR ROW(op.source_owner_id,op.operation_kind,op.idempotency_key,op.request_hash)
+  IS DISTINCT FROM ROW(source_id,'study_answer'::TEXT,cap.idempotency_key,cap.request_hash) THEN
+  RAISE EXCEPTION 'checkpoint operation lineage differs' USING ERRCODE='GP005'; END IF;
+ -- Validate actual257 full original upload/artifact/resource/digest/fence
+ -- lineage. The private helper joins the accepted CP; caller locator is no proof.
+ io_capture:=read_guest_audio_io_capture_private_v1(cap.upload_attempt_id);
+ IF io_capture IS NULL THEN RAISE EXCEPTION 'original archive capture unavailable' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=cap.upload_attempt_id;
+ IF upload.io_state<>'closed' OR upload.storage_disposition IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=source_id;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cap.artifact_id;
+ eligible:=upload.storage_disposition='stored' AND NOT upload.cleanup_required
+  AND fence.revision=cap.deletion_fence_revision AND fence.active_delete_command_id IS NULL
+  AND artifact.recording_state<>'deleted'
+  AND NOT EXISTS(SELECT 1 FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref);
+ operation:=jsonb_build_object('sourceOwnerId',source_id,'kind','study_answer',
+  'idempotencyKey',cap.idempotency_key,'requestHash',cap.request_hash);
+ saved:=load_guest_spoken_success_private_v1(source_id,operation,cap.command_id,cap.original_lease_token);
+ IF saved IS NULL OR saved->>'checkpointId' IS DISTINCT FROM p_checkpoint THEN
+  RAISE EXCEPTION 'original successful checkpoint unavailable' USING ERRCODE='GP005'; END IF;
+ -- This is observed closed ledger authority, not a placeholder archive failure.
+ -- ACK and finalizer rederive eligibility under existing ordered locks; a fence
+ -- between this read and ACK cannot resurrect publication or erase the grade.
+ RETURN jsonb_build_object('saved',saved,'archive',CASE WHEN eligible THEN
+  jsonb_build_object('state','stored','objectRef',upload.object_ref)
+  ELSE jsonb_build_object('state','failed','objectRef',NULL) END);
+END $$;
+
+CREATE FUNCTION read_guest_spoken_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
+ item study_session_items_v2%ROWTYPE; exercise study_exercise_versions%ROWTYPE; profile study_language_profile_units%ROWTYPE;
+ dominant TEXT; provenance JSONB;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_kind='guest';
+ IF NOT FOUND THEN RAISE EXCEPTION 'guest spoken lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=sess.guest_resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(sess.participation_owner_id,rsv.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,sess.participation_owner_id);
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=p_session FOR UPDATE;
+ IF NOT can_guest_access_activity_song_v1(p_community,sess.post_id)
+  OR NOT((sess.status='active' AND sess.expires_at>clock_timestamp() AND sess.current_session_item_id=p_item)
+    OR EXISTS(SELECT 1 FROM study_spoken_answer_commands WHERE session_id=p_session AND session_item_id=p_item
+      AND participation_owner_id=sess.participation_owner_id AND idempotency_key=p_key AND state='completed')) THEN
+  RAISE EXCEPTION 'guest spoken lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT item FROM study_session_items_v2 WHERE session_id=p_session AND session_item_id=p_item
+  AND participation_owner_id=sess.participation_owner_id;
+ SELECT * INTO STRICT exercise FROM study_exercise_versions WHERE exercise_version_id=item.exercise_version_id;
+ IF item.item_snapshot->>'exercise_type' IS DISTINCT FROM 'say_it_back'
+  OR jsonb_typeof(exercise.private_grader->'reference_text') IS DISTINCT FROM 'string'
+  OR NOT((exercise.private_grader->>'kind'='source_token_diff_v1' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_diff_v1')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v2' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v2')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v3' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v3')
+    OR (exercise.private_grader->>'kind'='source_token_phonetic_v4' AND item.item_snapshot->>'grader_policy_revision'='script_aware_token_phonetic_v4')) THEN
+  RAISE EXCEPTION 'supported spoken source required' USING ERRCODE='GP003'; END IF;
+ SELECT * INTO profile FROM study_language_profile_units WHERE community_id=sess.community_id AND post_id=sess.post_id
+  AND lyrics_revision=sess.lyrics_revision AND language_profile_revision=sess.language_profile_revision AND study_unit_id=exercise.study_unit_id;
+ dominant:=CASE WHEN profile.mixed IS FALSE AND profile.confidence>=0.8 THEN profile.dominant_language END;
+ provenance:=CASE WHEN dominant IS NULL THEN jsonb_build_object('kind','no_authoritative_evidence') ELSE
+  jsonb_build_object('kind','unit_profile','community_id',profile.community_id,'post_id',profile.post_id,
+   'lyrics_revision',profile.lyrics_revision,'language_profile_revision',profile.language_profile_revision,
+   'study_unit_id',profile.study_unit_id,'confidence',profile.confidence,'dominant_language',dominant) END;
+ RETURN jsonb_build_object('source',jsonb_build_object('kind','guest','ownerId',sess.participation_owner_id),
+  'context',jsonb_build_object('item',item.item_snapshot,'referenceText',exercise.private_grader->>'reference_text',
+    'dominantLanguage',dominant,'languageProvenance',provenance));
+END $$;
+
+CREATE FUNCTION read_guest_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE result JSONB;
+BEGIN
+ result:=read_owner_study_session_snapshot_v1(p_access,p_community,p_session);
+ IF result IS NULL OR result->'source'->>'kind' IS DISTINCT FROM 'guest' THEN
+  RAISE EXCEPTION 'guest session unavailable' USING ERRCODE='GP010'; END IF;
+ RETURN result;
+END $$;
+
+CREATE FUNCTION read_learner_audio_upload_status_private_v1(p_upload text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=upload.owner_id;
+ RETURN jsonb_build_object('capture',read_captured_learner_audio_private_v1(p_upload),
+  'ioState',upload.io_state,'storageDisposition',upload.storage_disposition,'cleanupRequired',upload.cleanup_required,
+  'mayPublish',upload.io_state='closed' AND upload.storage_disposition='stored' AND NOT upload.cleanup_required
+    AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL,
+  'mayContinue',upload.io_state='writing' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL);
+END $$;
+
+CREATE FUNCTION read_original_account_study_answer_receipt_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_hash text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source JSONB; attempt_id TEXT;
+BEGIN
+ source:=read_original_account_study_source_v1(p_access,p_community,p_session,p_item);
+ IF source IS NULL THEN RETURN NULL; END IF;
+ SELECT a.attempt_id INTO attempt_id FROM study_attempts_v2 a JOIN study_session_items_v2 i USING(session_item_id)
+  WHERE i.session_id=p_session AND i.session_item_id=p_item AND i.participation_owner_id=source->>'ownerId'
+   AND a.idempotency_key=p_key AND a.request_hash=p_hash AND a.submission_kind='single_select';
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ RETURN jsonb_build_object('source',source,'attemptId',attempt_id);
+END $$;
+
+CREATE FUNCTION read_original_account_study_source_v1(p_access jsonb, p_community text, p_session text, p_item text DEFAULT NULL::text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE sess study_sessions_v2%ROWTYPE; original_owner TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ IF p_access IS NULL OR jsonb_typeof(p_access) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_access))<>3 OR NOT(p_access ?& ARRAY['kind','accountId','sessionBinding'])
+  OR p_access->>'kind' IS DISTINCT FROM 'account' OR jsonb_typeof(p_access->'accountId') IS DISTINCT FROM 'string'
+  OR jsonb_typeof(p_access->'sessionBinding') IS DISTINCT FROM 'string' OR p_access->>'sessionBinding' !~ '^[0-9a-f]{64}$' THEN
+  RAISE EXCEPTION 'verified ordinary Account context required' USING ERRCODE='GP002'; END IF;
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_kind='account' AND account_id=p_access->>'accountId';
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ -- ORIGINAL map helper only: never provision_account_participation_owner_v1,
+ -- resolve/reparent historical aliases or infer persona from a body/token.
+ original_owner:=require_existing_account_participation_owner_v1(sess.account_id);
+ IF original_owner IS DISTINCT FROM sess.participation_owner_id
+  OR NOT active_activity_persona(sess.account_id,sess.persona_id,sess.community_id)
+  OR NOT can_account_access_activity_song(sess.account_id,sess.community_id,sess.post_id) THEN RETURN NULL; END IF;
+ IF p_item IS NOT NULL AND NOT EXISTS(SELECT 1 FROM study_session_items_v2 WHERE session_item_id=p_item
+  AND session_id=sess.session_id AND participation_owner_id=original_owner AND account_id=sess.account_id
+  AND participation_owner_kind='account') THEN RETURN NULL; END IF;
+ RETURN jsonb_build_object('kind','account','ownerId',original_owner,'accountId',sess.account_id,'personaId',sess.persona_id);
+END $_$;
+
+CREATE FUNCTION read_owner_guest_answer_operation_v1(p_access jsonb, p_source text, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE; original guest_participation_operations%ROWTYPE;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_kind='guest' AND participation_owner_id=p_source;
+ IF NOT FOUND THEN RAISE EXCEPTION 'original guest lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=sess.guest_resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,p_source);
+ SELECT * INTO original FROM guest_participation_operations WHERE source_owner_id=p_source
+  AND operation_kind='study_answer' AND idempotency_key=p_operation->>'idempotencyKey';
+ IF NOT FOUND THEN RETURN jsonb_build_object('state','absent'); END IF;
+ IF ROW(original.request_hash,original.resource_scope) IS DISTINCT FROM ROW(p_operation->>'requestHash',
+  guest_study_answer_resource_scope_v1(p_community,p_session,p_item,p_attempt,'spoken')) THEN
+  RAISE EXCEPTION 'original spoken request changed' USING ERRCODE='GP005'; END IF;
+ RETURN jsonb_build_object('state',original.state,'operationId',original.operation_id,'result',original.result_snapshot);
+END $$;
+
+CREATE FUNCTION read_owner_guest_answer_source_v1(p_access jsonb, p_community text, p_session text, p_item text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_kind='guest';
+ IF NOT FOUND THEN RAISE EXCEPTION 'original guest lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=sess.guest_resource_reservation_id;
+ PERFORM lock_guest_resource_budget_v1(sess.participation_owner_id,rsv.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,sess.participation_owner_id);
+ IF NOT EXISTS(SELECT 1 FROM study_session_items_v2 WHERE session_id=p_session AND session_item_id=p_item
+  AND participation_owner_kind='guest' AND participation_owner_id=sess.participation_owner_id) THEN
+  RAISE EXCEPTION 'original guest item unavailable' USING ERRCODE='GP010'; END IF;
+ -- Publication/current-card/session-expiry checks apply to NEW writes in the
+ -- mutation; this source read cannot suppress an immutable completed replay.
+ RETURN jsonb_build_object('kind','guest','ownerId',sess.participation_owner_id);
+END $$;
+
+CREATE FUNCTION read_owner_guest_spoken_capture_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN read_guest_spoken_capture_private_v1(source_id,p_operation,p_command,p_original_lease);
+END $$;
+
+CREATE FUNCTION read_owner_guest_spoken_dispatch_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE context JSONB; sess study_sessions_v2%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
+BEGIN
+ context:=read_guest_spoken_context_v1(p_access,p_community,p_session,p_item,p_key);
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community
+  AND participation_owner_kind='guest' AND participation_owner_id=context->'source'->>'ownerId';
+ IF sess.guest_resource_reservation_id IS NULL OR NOT EXISTS(SELECT 1 FROM guest_resource_session_reservations r
+  WHERE r.reservation_id=sess.guest_resource_reservation_id AND r.source_owner_id=sess.participation_owner_id AND r.session_id=sess.session_id) THEN
+  RAISE EXCEPTION 'original guest session resource required' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO fence FROM learner_audio_owner_fences WHERE owner_id=sess.participation_owner_id;
+ IF FOUND AND fence.active_delete_command_id IS NOT NULL THEN
+  RAISE EXCEPTION 'learner audio deletion in progress' USING ERRCODE='GP009'; END IF;
+ -- Absent fence has the actual native creation default revision=0. The reserve
+ -- performs that guarded creation before comparing this value. No fence write
+ -- or paid authority is created by this read, and no claim covers later drift.
+ RETURN context||jsonb_build_object('resourceReservationId',sess.guest_resource_reservation_id,
+  'deletionFenceRevision',COALESCE(fence.revision,0));
+END $$;
+
+CREATE FUNCTION read_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM require_guest_study_composition_v1();
+ RETURN load_guest_spoken_success_private_v1(source_id,p_operation,p_command,p_original_lease);
+END $$;
+
+CREATE FUNCTION read_owner_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE session study_sessions_v2%ROWTYPE; items JSONB; source JSONB; public_session JSONB;
+ count_cards INTEGER; answered INTEGER; correct INTEGER; resolved INTEGER;
+ current_presentations INTEGER; at_created TEXT; at_completed TEXT; at_presented TEXT;
+BEGIN
+ -- Immutable source is read from resource, never supplied by caller.
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ SELECT * INTO session FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ IF session.participation_owner_kind='guest' THEN
+  IF p_access->>'kind' IS DISTINCT FROM 'guest'
+   OR p_access->>'ownerId' IS DISTINCT FROM session.participation_owner_id
+   OR NOT can_guest_access_activity_song_v1(session.community_id,session.post_id) THEN RETURN NULL; END IF;
+  PERFORM require_guest_study_learning_access_v1(p_access,session.participation_owner_id);
+  -- Every future guest answer/finalizer must hold this same component lock.
+  -- Re-read after acquisition so session, items and progress cannot mix states.
+  SELECT * INTO STRICT session FROM study_sessions_v2 WHERE session_id=p_session AND community_id=p_community;
+  IF NOT can_guest_access_activity_song_v1(session.community_id,session.post_id) THEN RETURN NULL; END IF;
+  source:=jsonb_build_object('kind','guest','ownerId',session.participation_owner_id);
+ ELSE
+  IF p_access->>'kind' IS DISTINCT FROM 'account'
+   OR p_access->>'accountId' IS DISTINCT FROM session.account_id
+   OR NOT active_activity_persona(session.account_id,session.persona_id,session.community_id)
+   OR NOT can_account_access_activity_song(session.account_id,session.community_id,session.post_id)
+   THEN RETURN NULL; END IF;
+  source:=jsonb_build_object('kind','account','ownerId',session.participation_owner_id,
+   'accountId',session.account_id,'personaId',session.persona_id);
+ END IF;
+ -- One state snapshot for stored items, attempts and lesson progress, preserving
+ -- the existing readSession calculations. No account-only descendant filters.
+ WITH item_rows AS MATERIALIZED (
+  SELECT i.* FROM study_session_items_v2 i WHERE i.session_id=session.session_id
+   AND i.participation_owner_id=session.participation_owner_id
+ ), progress AS (
+  SELECT count(*)::INTEGER AS cards,
+   count(*) FILTER(WHERE EXISTS(SELECT 1 FROM study_attempts_v2 a
+     WHERE a.session_item_id=i.session_item_id AND a.attempt_state='spent'))::INTEGER AS answered,
+   count(*) FILTER(WHERE EXISTS(SELECT 1 FROM study_attempts_v2 a
+     WHERE a.session_item_id=i.session_item_id AND a.attempt_number=1 AND a.outcome='correct'))::INTEGER AS correct
+  FROM item_rows i
+ ), lesson AS (
+  SELECT count(*) FILTER(WHERE lesson_resolved)::INTEGER AS resolved,
+   COALESCE(max(presentation_count) FILTER(WHERE session_item_id=session.current_session_item_id),0)::INTEGER AS presented
+  FROM study_lesson_item_state_v2 WHERE session_id=session.session_id
+ ) SELECT COALESCE((SELECT jsonb_agg(item_snapshot ORDER BY ordinal) FROM item_rows),'[]'),
+   progress.cards,progress.answered,progress.correct,lesson.resolved,lesson.presented
+  INTO items,count_cards,answered,correct,resolved,current_presentations FROM progress CROSS JOIN lesson;
+ IF count_cards NOT BETWEEN 4 AND 10 THEN
+  RAISE EXCEPTION 'stored Study item closure invalid' USING ERRCODE='GP006'; END IF;
+ at_created:=to_char(session.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+ at_completed:=CASE WHEN session.completed_at IS NULL THEN NULL ELSE
+  to_char(session.completed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END;
+ at_presented:=CASE WHEN session.current_presented_at IS NULL THEN NULL ELSE
+  to_char(session.current_presented_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END;
+ public_session:=jsonb_build_object(
+  'object','study_session_v2','session_id',session.session_id,'persona_id',session.persona_id,
+  'community_id',session.community_id,'post_id',session.post_id,
+  'audio_revision',session.audio_revision,'lyrics_revision',session.lyrics_revision,
+  'languages',jsonb_build_object('learning_language',session.learning_language,'target_language',session.target_language),
+  'learner_band',session.learner_band,'study_profile_revision',session.study_profile_revision,
+  'language_profile_revision',session.language_profile_revision,'source_set_revision',session.source_set_revision,
+  'selection_policy_revision',session.selection_policy_revision,'qualification_policy_revision',session.qualification_policy_revision,
+  'timezone',session.timezone,'status',session.status,'items',items,
+  'progress',jsonb_build_object('qualifying_exercise_count',count_cards,'answered_exercise_count',answered,
+   'first_pass_correct',correct,'required_correct',GREATEST(1,ceil(7.0*count_cards/10)::INTEGER),
+   'score_bps',CASE WHEN answered=count_cards THEN floor(10000.0*correct/count_cards)::INTEGER ELSE NULL END),
+  'lesson',jsonb_build_object('current',CASE WHEN session.current_session_item_id IS NULL THEN NULL ELSE
+   jsonb_build_object('session_item_id',session.current_session_item_id,
+    'presentation_number',current_presentations+1,'is_reappearance',current_presentations>0,
+    'presented_at',at_presented) END,
+   'resolved_card_count',resolved,'total_card_count',count_cards,
+   'presentation_count',session.presentation_count,'presentation_cap',LEAST(20,3*count_cards),
+   'completion_reason',session.completion_reason),
+  'created_at',at_created,'completed_at',at_completed);
+ IF session.participation_owner_kind='guest' THEN
+  IF session.guest_reward_mode IS DISTINCT FROM 'practice_only' OR session.guest_reward_terms IS NOT NULL THEN
+   RAISE EXCEPTION 'guest reward composition unavailable' USING ERRCODE='GP006'; END IF;
+  public_session:=(public_session-'persona_id')||jsonb_build_object(
+   'object','guest_study_session_v1','actor',jsonb_build_object('kind','guest'),
+   'owner_id',session.participation_owner_id,
+   'expires_at',to_char(session.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+   'reward_mode','practice_only','reward_terms',NULL,'participation',jsonb_build_object('state','practice_only'));
+ END IF;
+ RETURN jsonb_build_object('source',source,'session',public_session);
+END $$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
     LANGUAGE plpgsql
@@ -18869,6 +22997,54 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION register_learner_audio_upload_private_v1(expected_owner text, expected_artifact text, expected_kind text, expected_attempt text, expected_command text, expected_reservation text, expected_object_ref text, upload_id text, expected_captured_revision bigint) RETURNS bigint
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE fence learner_audio_owner_fences%ROWTYPE; existing learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ -- Trusted wrapper first proves the actual Study command/session or Karaoke
+ -- recording/session and exact existing account owner mapping. Input alone is
+ -- not source authority. Guest Karaoke is not composed by that wrapper.
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[expected_owner]);
+ IF guest_ephemeral_object_closed_private_v1(expected_object_ref) THEN
+  RAISE EXCEPTION 'ephemeral original object namespace is permanently closed'; END IF;
+ SELECT * INTO existing FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ -- Replay below must preserve the original source; only new insertion requires
+ -- an active nonalias source. Existing fence is created in the same transaction.
+ IF NOT FOUND AND NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=expected_owner
+   AND state IN('empty','established')) THEN RAISE EXCEPTION 'active audio source required'; END IF;
+ INSERT INTO learner_audio_owner_fences(owner_id) VALUES(expected_owner) ON CONFLICT DO NOTHING;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=expected_owner FOR UPDATE;
+ SELECT * INTO existing FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ IF FOUND THEN
+   IF ROW(existing.owner_id,existing.artifact_id,existing.source_kind,existing.attempt_ref,
+       existing.command_ref,existing.reservation_ref,existing.object_ref,existing.captured_revision)
+     IS DISTINCT FROM ROW(expected_owner,expected_artifact,expected_kind,expected_attempt,
+       expected_command,expected_reservation,expected_object_ref,expected_captured_revision) THEN
+     RAISE EXCEPTION 'upload identity conflict'; END IF;
+   RETURN existing.captured_revision; END IF;
+ IF expected_captured_revision IS NULL OR expected_captured_revision<>fence.revision
+   OR fence.active_delete_command_id IS NOT NULL THEN RAISE EXCEPTION 'deletion-in-progress'; END IF;
+ INSERT INTO learner_audio_object_names(object_ref,owner_id,artifact_id,source_kind,attempt_ref)
+   VALUES(expected_object_ref,expected_owner,expected_artifact,expected_kind,expected_attempt)
+   ON CONFLICT(object_ref) DO NOTHING;
+ PERFORM 1 FROM learner_audio_object_names WHERE object_ref=expected_object_ref
+   AND owner_id=expected_owner AND artifact_id=expected_artifact AND source_kind=expected_kind
+   AND attempt_ref=expected_attempt FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'object namespace/source conflict'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_upload_attempts WHERE object_ref=expected_object_ref
+   AND (io_state<>'closed' OR cleanup_required)) THEN RAISE EXCEPTION 'prior object write or cleanup is unresolved'; END IF;
+ IF EXISTS(SELECT 1 FROM learner_audio_deleted_objects WHERE object_ref=expected_object_ref) THEN
+   RAISE EXCEPTION 'deleted object namespace cannot be reused'; END IF;
+ INSERT INTO learner_audio_upload_attempts(upload_attempt_id,owner_id,artifact_id,object_ref,
+   source_kind,attempt_ref,command_ref,reservation_ref,captured_revision,io_state,created_at)
+   VALUES(upload_id,expected_owner,expected_artifact,expected_object_ref,expected_kind,expected_attempt,
+     expected_command,expected_reservation,fence.revision,'registered',clock_timestamp());
+ UPDATE participation_owners SET state='established' WHERE owner_id=expected_owner AND state='empty';
+ RETURN fence.revision;
+END $$;
+
 CREATE FUNCTION reject_age_verification_ceremony_mutation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ BEGIN
@@ -18946,6 +23122,24 @@ BEGIN
   RAISE EXCEPTION 'Dance reference actions are append-only';
 END
 $$;
+
+CREATE FUNCTION reject_guest_copresent_established_conflict_v1(expected_origin text, proved_ids text[], selected_owner text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF EXISTS(SELECT 1 FROM guest_credentials c JOIN participation_owners root
+      ON root.owner_id=resolve_guest_empty_owner_root_v1(c.owner_id)
+      WHERE c.origin=expected_origin AND c.credential_id=ANY(proved_ids)
+        AND c.state='confirmed' AND root.state='established' AND root.owner_id<>selected_owner)
+  THEN RAISE EXCEPTION 'authority-conflict' USING ERRCODE='GP003'; END IF;
+END $$;
+
+CREATE FUNCTION reject_guest_immutable_mutation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN RAISE EXCEPTION 'guest evidence is immutable'; END $$;
 
 CREATE FUNCTION reject_handle_nationality_decision_mutation() RETURNS trigger
     LANGUAGE plpgsql
@@ -19190,6 +23384,97 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION release_guest_resource_session_v1(p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_terminal_state text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE reservation guest_resource_session_reservations%ROWTYPE; prior guest_resource_release_receipts%ROWTYPE;
+ component_ids TEXT[]; use_now TIMESTAMPTZ; receipt_id TEXT;
+BEGIN
+ IF p_operation->>'kind' NOT IN('study_start','study_answer') THEN RAISE EXCEPTION 'invalid release operation' USING ERRCODE='22023'; END IF;
+ PERFORM validate_guest_resource_operation_v1(p_source_id,p_operation,p_operation->>'kind');
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=release_guest_resource_session_v1.p_reservation_id AND r.source_owner_id=p_source_id;
+ component_ids:=lock_guest_resource_budget_v1(p_source_id,reservation.edge_fingerprint);
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=release_guest_resource_session_v1.p_reservation_id FOR UPDATE;
+ SELECT * INTO prior FROM guest_resource_release_receipts r WHERE r.source_owner_id=p_source_id
+  AND operation_kind=p_operation->>'kind' AND idempotency_key=p_operation->>'idempotencyKey';
+ IF FOUND THEN
+  IF ROW(prior.request_hash,prior.session_id,prior.reservation_id,prior.terminal_state)
+   IS DISTINCT FROM ROW(p_operation->>'requestHash',p_session_id,p_reservation_id,p_terminal_state)
+   THEN RAISE EXCEPTION 'idempotency conflict' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state','completed','outcome_id',prior.receipt_id);
+ END IF;
+ use_now:=clock_timestamp();
+ IF reservation.session_id IS DISTINCT FROM p_session_id OR p_terminal_state IS NULL OR p_terminal_state NOT IN('completed','expired') OR reservation.state='refused'
+  THEN RAISE EXCEPTION 'invalid terminal resource' USING ERRCODE='22023'; END IF;
+ -- Caller words are not terminal authority. Inspect retained actual session.
+ PERFORM 1 FROM study_sessions_v2 s WHERE s.session_id=release_guest_resource_session_v1.p_session_id
+  AND s.participation_owner_id=p_source_id AND s.participation_owner_kind='guest'
+  AND ((p_terminal_state='completed' AND s.status='completed') OR (p_terminal_state='expired' AND s.expires_at<=use_now)) FOR UPDATE;
+ IF NOT FOUND THEN
+  -- No session alone is NOT an abort witness. An expired uncaptured plan may
+  -- release only after a durable known-aborted main start with exact identity.
+  IF p_terminal_state<>'expired' OR reservation.reservation_expires_at>use_now
+   OR EXISTS(SELECT 1 FROM study_sessions_v2 s
+     WHERE s.session_id=release_guest_resource_session_v1.p_session_id)
+   OR NOT EXISTS(
+   SELECT 1 FROM guest_participation_operations o WHERE o.source_owner_id=p_source_id AND o.operation_kind='study_start'
+    AND o.idempotency_key=reservation.idempotency_key AND o.request_hash=reservation.request_hash AND o.state='known_aborted')
+   THEN RAISE EXCEPTION 'authoritative terminal state required' USING ERRCODE='GP006'; END IF;
+ END IF;
+ IF reservation.state='active' THEN UPDATE guest_resource_session_reservations r SET state=p_terminal_state,remaining_units=0,released_at=use_now WHERE r.reservation_id=reservation.reservation_id; END IF;
+ -- Provider reserved/unknown holds stay intact even when lesson remainder ends.
+ receipt_id:='grr_'||gen_random_uuid()::TEXT;
+ INSERT INTO guest_resource_release_receipts VALUES(receipt_id,p_source_id,p_operation->>'kind',p_operation->>'idempotencyKey',p_operation->>'requestHash',p_reservation_id,p_session_id,p_terminal_state,use_now);
+ RETURN jsonb_build_object('state','completed','outcome_id',receipt_id);
+END $$;
+
+CREATE FUNCTION release_next_guest_study_resource_remainder_v1() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE candidate guest_resource_session_reservations%ROWTYPE;
+ terminal TEXT; release_result JSONB;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ -- Shared topology, then GLOBAL. Native release subsequently acquires original
+ -- EDGE -> complete C-sorted owner component -> reservation/session in order.
+ PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'resource global anchor unavailable' USING ERRCODE='GP006'; END IF;
+ SELECT r.* INTO candidate FROM guest_resource_session_reservations r
+  WHERE r.state='active' AND (
+   EXISTS(SELECT 1 FROM study_sessions_v2 s WHERE s.session_id=r.session_id
+     AND s.participation_owner_id=r.source_owner_id AND s.participation_owner_kind='guest'
+     AND s.guest_resource_reservation_id=r.reservation_id
+     AND (s.status='completed' OR s.expires_at<=clock_timestamp()))
+   OR (r.reservation_expires_at<=clock_timestamp()
+     AND NOT EXISTS(SELECT 1 FROM study_sessions_v2 s WHERE s.session_id=r.session_id)
+     AND EXISTS(SELECT 1 FROM guest_participation_operations o
+       WHERE o.source_owner_id=r.source_owner_id AND o.operation_kind='study_start'
+        AND o.idempotency_key=r.idempotency_key AND o.request_hash=r.request_hash
+        AND o.state='known_aborted')))
+  ORDER BY r.reservation_expires_at,r.reservation_id COLLATE "C" LIMIT 1;
+ IF NOT FOUND THEN RETURN jsonb_build_object('state','idle'); END IF;
+ -- This is only a proposed terminal word. Native0251 independently locks and
+ -- rechecks the actual captured completed/expired session or exact abort witness.
+ SELECT CASE WHEN s.status='completed' THEN 'completed' ELSE 'expired' END INTO terminal
+  FROM study_sessions_v2 s WHERE s.session_id=candidate.session_id
+   AND s.participation_owner_id=candidate.source_owner_id AND s.participation_owner_kind='guest'
+   AND s.guest_resource_reservation_id=candidate.reservation_id;
+ terminal:=COALESCE(terminal,'expired');
+ release_result:=release_guest_resource_session_v1(candidate.source_owner_id,
+  jsonb_build_object('sourceOwnerId',candidate.source_owner_id,'kind','study_start',
+   'idempotencyKey',candidate.idempotency_key,'requestHash',candidate.request_hash),
+  candidate.session_id,candidate.reservation_id,terminal);
+ IF release_result->>'state' IS DISTINCT FROM 'completed'
+   OR release_result->>'outcome_id' IS NULL THEN
+  RAISE EXCEPTION 'native resource release receipt unavailable' USING ERRCODE='GP006'; END IF;
+ -- Do not mark the lesson expired/aborted, mutate an original operation/clock,
+ -- delete a receipt or settle/refund any reserved/unknown provider call. A late
+ -- accepted checkpoint must still use its original captured continuation.
+ RETURN jsonb_build_object('state','released','terminalState',terminal);
+END $$;
+
 CREATE FUNCTION release_reward_gas_topup_on_terminal_effect() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19344,6 +23629,27 @@ BEGIN
     WHERE chain_id=effect.chain_id AND signer_address=effect.signer_address;
 END
 $_$;
+
+CREATE FUNCTION renew_guest_authority_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE credential guest_credentials%ROWTYPE; at_time TIMESTAMPTZ;
+BEGIN
+  PERFORM lock_guest_authority_sources_v1(expected_origin,proved_ids);
+  IF selected_id IS NULL OR NOT selected_id=ANY(proved_ids) THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  SELECT * INTO STRICT credential FROM guest_credentials WHERE credential_id=selected_id AND origin=expected_origin;
+  IF resolve_guest_empty_owner_root_v1(credential.owner_id)<>expected_owner_id THEN RAISE EXCEPTION 'owner-mismatch' USING ERRCODE='GP002'; END IF;
+  IF credential.state<>'confirmed' THEN RAISE EXCEPTION 'proof-revoked' USING ERRCODE='GP001'; END IF;
+  -- Recovery has NO age test. A deliberate renewal after expired learning lease
+  -- extends only the current credential's lease and refreshes its carried value.
+  at_time := clock_timestamp();
+  IF credential.session_until<at_time+INTERVAL '1 hour' THEN
+    UPDATE guest_credentials SET session_until=at_time+INTERVAL '1 hour' WHERE credential_id=selected_id;
+  END IF;
+  RETURN jsonb_build_object('authority',guest_authority_metadata_v1(expected_origin,proved_ids,selected_id),
+    'cookie_effects',jsonb_build_array(jsonb_build_object('kind','credential','action','refresh','credentialId',selected_id)));
+END $$;
 
 CREATE FUNCTION renew_hns_community_root_import_challenge_v1(input_actor_id text, input_community_id text, input_attachment_intent_id text, input_new_ceremony_intent_id text, input_reservation_request jsonb, input_reservation_request_hash text) RETURNS TABLE(outcome text, ceremony_intent_id text, generation bigint)
     LANGUAGE plpgsql SECURITY DEFINER
@@ -19554,6 +23860,38 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_account_spoken_archive_private_v1(p_upload text, p_state text, p_ref text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE capture JSONB; status JSONB;
+BEGIN
+ capture:=read_captured_learner_audio_private_v1(p_upload);
+ IF capture->>'sourceKind'<>'study' OR NOT EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints WHERE upload_attempt_id=p_upload) THEN RAISE EXCEPTION 'accepted original account Study capture required'; END IF;
+ status:=read_learner_audio_upload_status_private_v1(p_upload);
+ IF status->>'ioState'<>'closed' THEN RAISE EXCEPTION 'archive disposition remains unknown'; END IF;
+ IF (p_state='stored' AND (p_ref IS DISTINCT FROM capture->>'objectRef' OR (status->>'mayPublish')::BOOLEAN IS DISTINCT FROM TRUE))
+  OR (p_state='failed' AND (p_ref IS NOT NULL OR (status->>'mayPublish')::BOOLEAN IS TRUE))
+  OR p_state IS NULL OR p_state NOT IN('stored','failed') THEN RAISE EXCEPTION 'account archive result differs from actual fence'; END IF;
+END $$;
+
+CREATE FUNCTION require_account_spoken_success_private_v1(p_upload text, p_success jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE captured learner_audio_account_producer_captures%ROWTYPE; command study_spoken_answer_commands%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT captured FROM learner_audio_account_producer_captures WHERE upload_attempt_id=p_upload AND source_kind='study';
+ PERFORM lock_original_account_audio_source_private_v1(captured.account_id);
+ IF load_account_spoken_success_private_v1(p_upload) IS DISTINCT FROM p_success THEN RAISE EXCEPTION 'accepted account result differs'; END IF;
+ SELECT * INTO STRICT command FROM study_spoken_answer_commands WHERE command_id=captured.command_ref FOR UPDATE;
+ IF command.participation_owner_id<>captured.owner_id OR command.account_id IS DISTINCT FROM captured.account_id
+  OR command.session_id<>captured.session_id OR command.session_item_id<>captured.session_item_id
+  OR command.lease_token<>captured.producer_generation OR command.request_hash<>captured.request_hash
+  OR command.audio_digest<>captured.content_digest THEN RAISE EXCEPTION 'original account command differs'; END IF;
+ RETURN TRUE;
+END $$;
+
 CREATE FUNCTION require_active_author_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19625,6 +23963,51 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION require_captured_audio_deletion_stop_private_v1(p_capture jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE;
+BEGIN
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ IF NOT EXISTS(SELECT 1 FROM learner_audio_owner_fences f JOIN learner_audio_delete_sources s
+  ON s.command_id=f.active_delete_command_id AND s.owner_id=f.owner_id
+  WHERE f.owner_id=upload.owner_id AND f.revision>upload.captured_revision) THEN RAISE EXCEPTION 'actual captured deletion fence required'; END IF;
+END $$;
+
+CREATE FUNCTION require_captured_karaoke_recording_result_private_v1(p_account text, p_session text, p_attempt text, p_artifact text, p_result jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE capture JSONB; status JSONB; fact learner_audio_upload_terminal_facts%ROWTYPE;
+BEGIN
+ capture:=read_account_karaoke_audio_capture_private_v1(p_account,p_session,p_attempt,p_artifact);
+ status:=read_learner_audio_upload_status_private_v1(capture->>'uploadAttemptId');
+ IF status->>'ioState'<>'closed' THEN RAISE EXCEPTION 'Karaoke archive I/O remains unknown'; END IF;
+ IF p_result->>'state'='stored' THEN
+  SELECT * INTO STRICT fact FROM learner_audio_upload_terminal_facts WHERE upload_attempt_id=capture->>'uploadAttemptId';
+  IF (status->>'mayPublish')::BOOLEAN IS DISTINCT FROM TRUE
+   OR ROW(p_result->>'objectRef',p_result->>'contentSha256',(p_result->>'byteSize')::BIGINT,(p_result->>'durationMs')::INTEGER)
+    IS DISTINCT FROM ROW(capture->>'objectRef',fact.content_digest,fact.byte_size,fact.duration_ms) THEN
+   RAISE EXCEPTION 'Karaoke result differs from captured storage fact'; END IF;
+ ELSIF p_result->>'state'='failed' THEN
+  IF status->>'storageDisposition' NOT IN('absent','failed') THEN RAISE EXCEPTION 'known failed storage disposition required'; END IF;
+ ELSE RAISE EXCEPTION 'Karaoke result shape differs'; END IF;
+END $$;
+
+CREATE FUNCTION require_captured_learner_audio_private_v1(p_capture jsonb) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT:=p_capture->>'uploadAttemptId';
+BEGIN
+ IF p_capture IS NULL OR read_captured_learner_audio_private_v1(upload_id) IS DISTINCT FROM p_capture THEN
+  RAISE EXCEPTION 'archive generation differs'; END IF;
+ RETURN upload_id;
+END $$;
 
 CREATE FUNCTION require_community_route_hns_control_identity() RETURNS trigger
     LANGUAGE plpgsql
@@ -19826,6 +24209,412 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_existing_account_participation_owner_v1(expected_account_id text) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE mapped_owner TEXT;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ -- This is original-source bookkeeping, not new account admission authority.
+ -- Do not reparent historical aliases or refuse accepted recovery on status change.
+ SELECT owner_id INTO mapped_owner FROM participation_owners
+   WHERE kind='account' AND account_id=expected_account_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'account owner must be provisioned before activity'; END IF;
+ RETURN mapped_owner;
+END $$;
+
+CREATE TABLE guest_participation_operations (
+    operation_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_kind text NOT NULL,
+    resource_scope text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    state text NOT NULL,
+    result_snapshot jsonb,
+    created_at timestamp with time zone NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT guest_operation_resolution_clock CHECK (((resolved_at IS NULL) OR (resolved_at >= created_at))),
+    CONSTRAINT guest_participation_operations_check CHECK ((((state = 'reserved'::text) AND (result_snapshot IS NULL) AND (resolved_at IS NULL)) OR ((state = 'completed'::text) AND (result_snapshot IS NOT NULL) AND (resolved_at IS NOT NULL)) OR ((state = 'known_aborted'::text) AND (result_snapshot IS NULL) AND (resolved_at IS NOT NULL)))),
+    CONSTRAINT guest_participation_operations_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_participation_operations_operation_id_check CHECK (((char_length(operation_id) >= 1) AND (char_length(operation_id) <= 128))),
+    CONSTRAINT guest_participation_operations_operation_kind_check CHECK ((operation_kind = ANY (ARRAY['bootstrap_issue'::text, 'bootstrap_confirm'::text, 'authority_renew'::text, 'credential_rotate'::text, 'credential_acknowledge'::text, 'credential_cleanup'::text, 'attachment_intent'::text, 'attachment_prepare'::text, 'study_start'::text, 'study_answer'::text, 'learning_retention'::text, 'learner_audio_deletion'::text]))),
+    CONSTRAINT guest_participation_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_participation_operations_resource_scope_check CHECK (((octet_length(resource_scope) >= 1) AND (octet_length(resource_scope) <= 2048))),
+    CONSTRAINT guest_participation_operations_result_snapshot_check CHECK (((result_snapshot IS NULL) OR ((jsonb_typeof(result_snapshot) = 'object'::text) AND (octet_length((result_snapshot)::text) <= 131072)))),
+    CONSTRAINT guest_participation_operations_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'completed'::text, 'known_aborted'::text])))
+);
+
+CREATE FUNCTION require_guest_answer_operation_private_v1(p_source text, p_operation jsonb, p_operation_id text, p_community text, p_session text, p_item text, p_attempt integer, p_kind text) RETURNS guest_participation_operations
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ SELECT * INTO STRICT operation FROM guest_participation_operations WHERE operation_id=p_operation_id FOR UPDATE;
+ IF ROW(operation.source_owner_id,operation.operation_kind,operation.idempotency_key,operation.request_hash,operation.resource_scope)
+  IS DISTINCT FROM ROW(p_source,'study_answer',p_operation->>'idempotencyKey',p_operation->>'requestHash',
+    guest_study_answer_resource_scope_v1(p_community,p_session,p_item,p_attempt,p_kind)) THEN
+  RAISE EXCEPTION 'original answer identity changed' USING ERRCODE='GP005'; END IF;
+ RETURN operation;
+END $$;
+
+CREATE FUNCTION require_guest_audio_io_capture_private_v1(p_capture jsonb) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT:=p_capture->>'uploadAttemptId';
+BEGIN
+ IF p_capture IS NULL OR read_guest_audio_io_capture_private_v1(upload_id) IS DISTINCT FROM p_capture THEN
+  RAISE EXCEPTION 'original archive capture differs' USING ERRCODE='GP005'; END IF;
+ RETURN upload_id;
+END $$;
+
+CREATE FUNCTION require_guest_audio_recovery_access_private_v1(p_access jsonb, p_source text) RETURNS text[]
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sources TEXT[]; credential guest_credentials%ROWTYPE;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF p_access IS NULL OR jsonb_typeof(p_access) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_access))<>4 OR NOT(p_access ?& ARRAY['kind','ownerId','credentialId','origin'])
+  OR p_access->>'kind' IS DISTINCT FROM 'guest'
+  OR EXISTS(SELECT 1 FROM unnest(ARRAY['kind','ownerId','credentialId','origin']) field WHERE jsonb_typeof(p_access->field) IS DISTINCT FROM 'string')
+  OR p_access->>'ownerId' IS DISTINCT FROM resolve_guest_empty_owner_root_v1(p_source)
+  OR NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=p_source AND kind='guest') THEN
+  RAISE EXCEPTION 'recovery source mismatch' USING ERRCODE='GP002'; END IF;
+ -- Topology is stable, so correlate the proved credential's immutable owner
+ -- BEFORE locking any component. A malformed A-source/B-proof pair never locks
+ -- separate components in the opposite order. State/root are reread afterward.
+ SELECT * INTO credential FROM guest_credentials WHERE credential_id=p_access->>'credentialId' AND origin=p_access->>'origin';
+ IF NOT FOUND OR credential.state<>'confirmed' THEN RAISE EXCEPTION 'recovery proof revoked' USING ERRCODE='GP001'; END IF;
+ IF resolve_guest_empty_owner_root_v1(credential.owner_id) IS DISTINCT FROM resolve_guest_empty_owner_root_v1(p_source) THEN
+  RAISE EXCEPTION 'recovery source mismatch' USING ERRCODE='GP002'; END IF;
+ sources:=learner_audio_source_component_private_v1(ARRAY[p_source]);
+ PERFORM lock_learner_audio_sources_private_v1(sources);
+ PERFORM lock_guest_authority_sources_v1(p_access->>'origin',ARRAY[p_access->>'credentialId']);
+ SELECT * INTO credential FROM guest_credentials WHERE credential_id=p_access->>'credentialId' AND origin=p_access->>'origin';
+ IF NOT FOUND OR credential.state<>'confirmed' THEN RAISE EXCEPTION 'recovery proof revoked' USING ERRCODE='GP001'; END IF;
+ IF resolve_guest_empty_owner_root_v1(credential.owner_id) IS DISTINCT FROM resolve_guest_empty_owner_root_v1(p_source) THEN
+  RAISE EXCEPTION 'recovery source mismatch' USING ERRCODE='GP002'; END IF;
+ -- Confirmed recovery has no server age or learning-lease expiry.
+ RETURN sources;
+END $$;
+
+CREATE FUNCTION require_guest_learning_runtime_role_v1(p_runtime regrole) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE relation_name TEXT; table_owner OID; namespace_id OID;
+BEGIN
+ -- PostgreSQL17 SET reachability includes indirect and NOINHERIT memberships.
+ -- Effective privileges of p_runtime alone cannot rule out explicit SET ROLE.
+ IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE oid=p_runtime)
+   OR EXISTS(SELECT 1 FROM pg_roles candidate
+     WHERE pg_has_role(p_runtime::OID,candidate.oid,'SET')
+       AND (candidate.rolsuper OR candidate.rolbypassrls
+         OR candidate.rolcreaterole OR candidate.rolreplication)) THEN
+   RAISE EXCEPTION 'runtime row-security role unavailable' USING ERRCODE='42501'; END IF;
+ FOREACH relation_name IN ARRAY ARRAY[
+  'study_sessions_v2','study_review_items','study_session_items_v2',
+  'study_spoken_answer_commands','learner_audio_artifacts',
+  'study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'
+ ] LOOP
+  SELECT relowner,relnamespace INTO STRICT table_owner,namespace_id FROM pg_class WHERE oid=to_regclass(relation_name);
+  -- Owner RLS exemption also follows inherited owner privileges, even when
+  -- membership SET is FALSE. Retain conservative owner-membership exclusion.
+  IF p_runtime::OID=table_owner OR pg_has_role(p_runtime::OID,table_owner,'MEMBER')
+     OR EXISTS(SELECT 1 FROM pg_roles candidate
+       WHERE pg_has_role(p_runtime::OID,candidate.oid,'SET')
+         AND (candidate.oid=table_owner
+           OR has_schema_privilege(candidate.oid,namespace_id,'CREATE')
+           OR has_table_privilege(candidate.oid,to_regclass(relation_name),'TRUNCATE'))) THEN
+    RAISE EXCEPTION 'runtime can bypass controlled guest rows' USING ERRCODE='42501'; END IF;
+ END LOOP;
+END $$;
+
+CREATE FUNCTION require_guest_practice_only_schema_phase_v1() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE trusted_namespace OID; trusted_owner OID;
+BEGIN
+  SELECT relnamespace,relowner INTO STRICT trusted_namespace,trusted_owner
+    FROM pg_class WHERE oid='participation_owners'::regclass;
+  IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='guest_learning_schema_phase'::regclass
+      AND relnamespace=trusted_namespace AND relowner=trusted_owner)
+    OR (SELECT count(*) FROM guest_learning_schema_phase
+      WHERE singleton AND phase='practice_only_owner_audio_producer_history_v5')<>1
+    OR EXISTS(SELECT 1 FROM unnest(ARRAY[
+      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'
+      ]) required_name WHERE NOT EXISTS(SELECT 1 FROM pg_class relation
+      WHERE relation.oid=to_regclass(required_name) AND relation.relnamespace=trusted_namespace
+        AND relation.relowner=trusted_owner AND relation.relkind='r'))
+    OR NOT EXISTS(SELECT 1 FROM pg_class sequence_relation
+      WHERE sequence_relation.oid=to_regclass('learner_audio_fence_revision_v1')
+        AND sequence_relation.relnamespace=trusted_namespace
+        AND sequence_relation.relowner=trusted_owner AND sequence_relation.relkind='S')
+    OR EXISTS(SELECT 1 FROM pg_depend dependency
+      LEFT JOIN pg_attrdef default_expression ON dependency.classid='pg_attrdef'::regclass
+        AND default_expression.oid=dependency.objid
+      LEFT JOIN pg_class consumer_relation ON consumer_relation.oid=CASE
+        WHEN dependency.classid='pg_attrdef'::regclass THEN default_expression.adrelid
+        WHEN dependency.classid='pg_class'::regclass THEN dependency.objid END
+      WHERE dependency.refclassid='pg_class'::regclass
+        AND dependency.refobjid='learner_audio_fence_revision_v1'::regclass
+        AND NOT (COALESCE(consumer_relation.relnamespace=trusted_namespace AND consumer_relation.relname IN
+          ('learner_audio_owner_fences','learner_audio_delete_commands'),FALSE)
+          OR (dependency.classid='pg_proc'::regclass AND dependency.objid=
+            'prepare_learner_audio_delete_private_v1(text,text,text,text,text[],text,integer,text)'::regprocedure)))
+    OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE c.relnamespace=trusted_namespace AND c.relkind IN ('r','p','f','v','m')
+        AND a.attnum>0 AND NOT a.attisdropped
+        -- Guest source IDs; ordinary account/policy/lease owner fields have
+        -- separate accepted authorities and do not reference guest identities.
+        AND a.attname ~ '(^|_)owner_id$'
+        AND c.relname NOT IN (
+          'participation_owners','guest_credentials','guest_empty_owner_aliases',
+          'participation_owner_clocks','guest_learning_preferences',
+          'guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents',
+          'study_sessions_v2','study_review_items','study_session_items_v2',
+          'study_spoken_answer_commands','learner_audio_artifacts',
+          'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'))
+    OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE fk.contype='f' AND fk.confrelid=ANY(ARRAY[
+          'participation_owners'::regclass,'guest_credentials'::regclass,
+          'guest_empty_owner_aliases'::regclass,'participation_owner_clocks'::regclass,
+          'guest_learning_preferences'::regclass,'guest_participation_operations'::regclass,
+          'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass,
+          'guest_resource_session_reservations'::regclass,'guest_resource_provider_calls'::regclass,
+          'guest_resource_release_receipts'::regclass,
+          'learner_audio_owner_fences'::regclass,'learner_audio_delete_commands'::regclass,'learner_audio_delete_sources'::regclass,'learner_audio_delete_target_artifacts'::regclass,'learner_audio_object_names'::regclass,'learner_audio_upload_attempts'::regclass,'learner_audio_delete_batches'::regclass,'learner_audio_delete_batch_items'::regclass,'learner_audio_deleted_objects'::regclass,'guest_study_spoken_captures'::regclass,'guest_study_spoken_checkpoints'::regclass,'learner_audio_account_producer_captures'::regclass,'learner_audio_upload_terminal_facts'::regclass,'learner_audio_upload_cleanup_commands'::regclass,'learner_audio_account_spoken_checkpoints'::regclass,'learner_audio_account_provider_calls'::regclass])
+        AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
+          'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
+          'guest_learning_preferences','guest_participation_operations',
+          'guest_secret_issuance_operations','guest_attachment_intents',
+          'study_sessions_v2','study_review_items','study_session_items_v2',
+          'study_spoken_answer_commands','learner_audio_artifacts',
+          'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls'))
+    OR EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=trusted_namespace
+      AND relname IN ('guest_owner_associations','participation_eligibility_decisions',
+        'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
+        'reward_credit_persona_bindings','reward_credit_recipient_selections'))
+  THEN RAISE EXCEPTION 'owner history closure unavailable' USING ERRCODE='GP003'; END IF;
+END $_$;
+
+CREATE FUNCTION require_guest_resource_success_checkpoint_v1(p_checkpoint_id text, p_call_id text, p_reservation_id text, p_source_owner_id text, p_actual_cost numeric) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ IF NOT EXISTS(SELECT 1 FROM guest_study_spoken_checkpoints cp
+   JOIN guest_study_spoken_captures cap ON cap.capture_id=cp.capture_id
+   JOIN guest_resource_provider_calls call_row ON call_row.call_id=cp.provider_call_id
+   WHERE cp.checkpoint_id=p_checkpoint_id AND cp.provider_call_id=p_call_id
+     AND cp.resource_reservation_id=p_reservation_id AND cp.source_owner_id=p_source_owner_id
+     AND cap.source_owner_id=cp.source_owner_id AND cap.provider_call_id=cp.provider_call_id
+     AND cap.resource_reservation_id=cp.resource_reservation_id
+     AND ROW(call_row.source_owner_id,call_row.idempotency_key,call_row.request_hash,call_row.reservation_id,call_row.session_id)
+       IS NOT DISTINCT FROM ROW(cap.source_owner_id,cap.idempotency_key,cap.request_hash,cap.resource_reservation_id,cap.session_id)
+     AND cp.charge_basis='reserved_ceiling_v1' AND cp.charged_cost_micros=p_actual_cost
+     AND cp.charged_cost_micros=call_row.maximum_provider_cost_micros)
+ THEN RAISE EXCEPTION 'successful checkpoint lineage unavailable' USING ERRCODE='GP006'; END IF;
+ -- Complete validation includes the frozen session paid-call plan. It must
+ -- inspect original facts only and remain usable after lease/session expiry.
+ PERFORM require_guest_spoken_resource_plan_v1(p_source_owner_id,
+  (SELECT cap.session_id FROM guest_study_spoken_checkpoints cp JOIN guest_study_spoken_captures cap USING(capture_id)
+    WHERE cp.checkpoint_id=p_checkpoint_id),p_reservation_id,
+  (SELECT (cap.grading_context->>'rerecordEnabled')::BOOLEAN FROM guest_study_spoken_checkpoints cp
+    JOIN guest_study_spoken_captures cap USING(capture_id) WHERE cp.checkpoint_id=p_checkpoint_id));
+END $$;
+
+CREATE FUNCTION require_guest_review_schedule_private_v1(p_schedule jsonb, p_accepted timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE key TEXT; number_value NUMERIC; due TIMESTAMPTZ;
+BEGIN
+ IF p_schedule IS NULL OR jsonb_typeof(p_schedule) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_schedule))<>6
+  OR NOT(p_schedule ?& ARRAY['difficulty','dueAt','lapses','repetitions','stability','state'])
+  OR jsonb_typeof(p_schedule->'state') IS DISTINCT FROM 'string'
+  OR p_schedule->>'state' NOT IN('learning','relearning','review')
+  OR jsonb_typeof(p_schedule->'dueAt') IS DISTINCT FROM 'string'
+  OR p_accepted IS NULL OR NOT isfinite(p_accepted) THEN
+  RAISE EXCEPTION 'closed shared review schedule required' USING ERRCODE='GP003'; END IF;
+ FOREACH key IN ARRAY ARRAY['difficulty','stability','lapses','repetitions'] LOOP
+  IF jsonb_typeof(p_schedule->key) IS DISTINCT FROM 'number' THEN
+   RAISE EXCEPTION 'numeric shared review schedule required' USING ERRCODE='GP003'; END IF;
+  number_value:=(p_schedule->>key)::NUMERIC;
+  IF number_value::TEXT IN('NaN','Infinity','-Infinity')
+   OR (key='difficulty' AND number_value NOT BETWEEN 1 AND 10)
+   OR (key='stability' AND number_value NOT BETWEEN 0.25 AND 365)
+   OR (key IN('lapses','repetitions') AND (number_value<0 OR number_value>9007199254740991 OR trunc(number_value)<>number_value))
+   OR (key='repetitions' AND number_value<1) THEN
+   RAISE EXCEPTION 'bounded shared review schedule required' USING ERRCODE='GP003'; END IF;
+ END LOOP;
+ due:=(p_schedule->>'dueAt')::TIMESTAMPTZ;
+ IF NOT isfinite(due) OR due<=p_accepted OR due>p_accepted+INTERVAL '366 days' THEN
+  RAISE EXCEPTION 'bounded shared review clock required' USING ERRCODE='GP003'; END IF;
+END $$;
+
+CREATE FUNCTION require_guest_spoken_resource_plan_v1(p_source_id text, p_session_id text, p_reservation_id text, p_rerecord_enabled boolean) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE sess study_sessions_v2%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE;
+ stored_policy JSONB; stored_unit_cost NUMERIC; item_count INTEGER;
+ spoken_count INTEGER; presentation_cap INTEGER; expected_plan JSONB;
+BEGIN
+ IF p_source_id IS NULL OR p_session_id IS NULL OR p_reservation_id IS NULL
+  OR p_rerecord_enabled IS NULL THEN
+  RAISE EXCEPTION 'captured spoken plan identity required' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_session_id
+  AND participation_owner_id=p_source_id AND participation_owner_kind='guest'
+  AND account_id IS NULL AND persona_id IS NULL;
+ IF NOT FOUND OR sess.guest_spoken_call_plan IS NULL
+  OR sess.guest_resource_reservation_id IS DISTINCT FROM p_reservation_id THEN
+  RAISE EXCEPTION 'captured spoken call plan unavailable' USING ERRCODE='GP006'; END IF;
+ SELECT * INTO rsv FROM guest_resource_session_reservations WHERE reservation_id=p_reservation_id
+  AND source_owner_id=p_source_id AND session_id=p_session_id;
+ IF NOT FOUND OR ROW(rsv.operation_kind,rsv.idempotency_key,rsv.request_hash,rsv.created_at,rsv.reservation_expires_at)
+   IS DISTINCT FROM ROW('study_start'::TEXT,sess.idempotency_key,sess.request_hash,sess.created_at,sess.expires_at) THEN
+  RAISE EXCEPTION 'original spoken reservation mismatch' USING ERRCODE='GP006'; END IF;
+ SELECT count(*)::INTEGER,count(*) FILTER(WHERE item_snapshot->>'exercise_type'='say_it_back')::INTEGER
+  INTO item_count,spoken_count FROM study_session_items_v2
+  WHERE session_id=p_session_id AND participation_owner_id=p_source_id AND participation_owner_kind='guest';
+ IF item_count NOT BETWEEN 4 AND 10 THEN
+  RAISE EXCEPTION 'captured spoken lesson shape unavailable' USING ERRCODE='GP006'; END IF;
+ presentation_cap:=LEAST(20,3*spoken_count);
+ expected_plan:=jsonb_build_object('policy_revision','study_spoken_rerecord_v1',
+  'graded_presentation_cap',presentation_cap,'ungraded_rerecord_per_presentation',1,
+  'maximum_paid_calls',2*presentation_cap);
+ -- Conservative full v1 headroom is held even when trusted current mode has
+ -- rerecord disabled. The per-command captured mode decides whether to use it;
+ -- an untrusted request boolean is never a budget or SQL privilege witness.
+ IF sess.guest_spoken_call_plan IS DISTINCT FROM expected_plan
+  OR rsv.initial_units<2*presentation_cap THEN
+  RAISE EXCEPTION 'original spoken plan not fully reserved' USING ERRCODE='GP006'; END IF;
+ SELECT policy INTO stored_policy FROM guest_resource_policy_snapshots WHERE policy_version=rsv.policy_version;
+ IF NOT FOUND THEN RAISE EXCEPTION 'original spoken resource policy absent' USING ERRCODE='GP006'; END IF;
+ SELECT maximum_provider_cost_micros INTO stored_unit_cost FROM guest_resource_cost_policy_snapshots
+  WHERE cost_policy_version=rsv.cost_policy_version;
+ IF NOT FOUND OR stored_policy->>'costPolicyVersion' IS DISTINCT FROM rsv.cost_policy_version
+  OR (stored_policy->>'maximumProviderCallCostMicros')::NUMERIC IS DISTINCT FROM rsv.unit_hold_micros
+  OR stored_unit_cost IS DISTINCT FROM rsv.unit_hold_micros
+  OR rsv.worst_case_cost_micros IS DISTINCT FROM rsv.initial_units*rsv.unit_hold_micros THEN
+  RAISE EXCEPTION 'original spoken cost lineage mismatch' USING ERRCODE='GP006'; END IF;
+END $$;
+
+CREATE FUNCTION require_guest_study_composition_v1() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE expected_owner OID; namespace_id OID; trusted_schema TEXT;
+ relation_name TEXT; relation_id OID; gate_name TEXT; signature TEXT; function_id OID;
+BEGIN
+ PERFORM pg_advisory_xact_lock_shared(83000003,1);
+ SELECT c.relowner,c.relnamespace,n.nspname INTO STRICT expected_owner,namespace_id,trusted_schema
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE c.oid='participation_owners'::regclass;
+ -- This is the actual positive source/history inventory, not relation-absence
+ -- evidence, a mutable caller flag, GUC, current_user witness or SQL role claim.
+ PERFORM require_guest_practice_only_schema_phase_v1();
+ FOREACH relation_name IN ARRAY ARRAY[
+  'study_sessions_v2','study_review_items','study_session_items_v2',
+  'study_spoken_answer_commands','learner_audio_artifacts',
+  'study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2'
+ ] LOOP
+  relation_id:=to_regclass(relation_name);
+  IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid=relation_id
+    AND relowner=expected_owner AND relnamespace=namespace_id
+    AND relrowsecurity AND NOT relforcerowsecurity) THEN
+   RAISE EXCEPTION 'private capture row boundary unavailable' USING ERRCODE='GP006'; END IF;
+  gate_name:=CASE WHEN relation_name IN('study_attempts_v2','study_presentations_v2','study_lesson_item_state_v2')
+   THEN 'guest_raw_account_child_gate_v1' ELSE 'guest_raw_account_gate_v1' END;
+  IF NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=relation_id AND polname=gate_name
+    AND NOT polpermissive AND polcmd='*' AND polroles=ARRAY[0::OID]
+    AND polqual IS NOT NULL AND polwithcheck IS NOT NULL) THEN
+   RAISE EXCEPTION 'private capture restrictive policy unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+ -- The exact policy bodies and original account guard are source-review and
+ -- genuine-baseline PG obligations, not inferred from their names at runtime.
+ FOREACH relation_name IN ARRAY ARRAY[
+  'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources',
+  'learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts',
+  'learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects',
+  'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts'
+ ] LOOP
+  IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid=to_regclass(relation_name)
+     AND relowner=expected_owner AND relnamespace=namespace_id AND relkind IN('r','p')) THEN
+   RAISE EXCEPTION 'private capture source fence unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+ FOREACH signature IN ARRAY ARRAY[
+  'require_guest_spoken_resource_plan_v1(text,text,text,boolean)',
+  'select_guest_study_start_plan_v1(text,text,text,text,text)',
+  'validate_guest_alias_state_v1()', 'validate_study_command_audio_source_v1()',
+  'lock_learner_audio_sources_private_v1(text[])','require_guest_learning_runtime_role_v1(regrole)'
+ ] LOOP
+  function_id:=to_regprocedure(signature);
+  IF NOT EXISTS(SELECT 1 FROM pg_proc WHERE oid=function_id AND proowner=expected_owner
+    AND pronamespace=namespace_id AND prosecdef
+    AND proconfig @> ARRAY[format('search_path=pg_catalog, %I, pg_temp',trusted_schema)])
+   OR EXISTS(SELECT 1 FROM pg_proc f
+    CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+    WHERE f.oid=function_id AND a.grantee<>f.proowner AND a.privilege_type='EXECUTE') THEN
+   RAISE EXCEPTION 'private capture deferred/fence closure unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
+   AND conname='study_guest_resource_exact_source_session_fk_v1' AND contype='f' AND convalidated
+   AND confrelid='guest_resource_session_reservations'::regclass)
+   OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
+    AND conname='study_guest_spoken_call_plan_shape_v1' AND contype='c' AND convalidated)
+   OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='study_sessions_v2'::regclass
+    AND conname='study_guest_disclosure_true_v1' AND contype='c' AND convalidated)
+   OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='study_sessions_v2'::regclass
+    AND tgname='study_sessions_v2_controlled_guest_authority_v1' AND tgenabled='O'
+    AND tgtype=23 AND tgfoid='guard_controlled_guest_study_session_v1()'::regprocedure)
+   OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='study_sessions_v2'::regclass
+    AND tgname='study_sessions_v2_activity_authority' AND tgenabled='O'
+    AND tgtype=23 AND tgfoid='guard_study_v2_activity_authority()'::regprocedure) THEN
+  RAISE EXCEPTION 'private capture immutable source admission unavailable' USING ERRCODE='GP006'; END IF;
+END $$;
+
+CREATE FUNCTION require_guest_study_learning_access_v1(p_access jsonb, p_source text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE credential guest_credentials%ROWTYPE; root TEXT;
+BEGIN
+ IF p_access IS NULL OR jsonb_typeof(p_access)<>'object'
+   OR p_access->>'kind' IS DISTINCT FROM 'guest'
+   OR NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=p_source AND kind='guest')
+   OR p_access->>'ownerId' IS DISTINCT FROM resolve_guest_empty_owner_root_v1(p_source)
+ THEN RAISE EXCEPTION 'learning source mismatch' USING ERRCODE='GP002'; END IF;
+ PERFORM lock_guest_authority_sources_v1(p_access->>'origin',ARRAY[p_access->>'credentialId']);
+ SELECT * INTO credential FROM guest_credentials WHERE credential_id=p_access->>'credentialId'
+   AND origin=p_access->>'origin';
+ IF NOT FOUND OR credential.state<>'confirmed' THEN
+  RAISE EXCEPTION 'learning proof revoked' USING ERRCODE='GP001'; END IF;
+ root:=resolve_guest_empty_owner_root_v1(credential.owner_id);
+ -- Original aborted/absent keys remain readable through their proven empty alias.
+ -- Accepted sessions/resources establish the source and cannot become empty aliases.
+ IF root IS DISTINCT FROM resolve_guest_empty_owner_root_v1(p_source) THEN
+  RAISE EXCEPTION 'learning source mismatch' USING ERRCODE='GP002'; END IF;
+ IF credential.session_until<=clock_timestamp() THEN
+  RAISE EXCEPTION 'learning lease expired' USING ERRCODE='GP007'; END IF;
+END $$;
+
 CREATE FUNCTION require_media_song_pcm_atomic_admission() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19889,6 +24678,21 @@ BEGIN
   RETURN NULL;
 END;
 $$;
+
+CREATE FUNCTION require_owner_guest_source_private_v1(p_source jsonb) RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF p_source IS NULL OR jsonb_typeof(p_source) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_source))<>2
+  OR NOT(p_source ?& ARRAY['kind','ownerId']) OR p_source->>'kind' IS DISTINCT FROM 'guest'
+  OR jsonb_typeof(p_source->'ownerId') IS DISTINCT FROM 'string'
+  OR char_length(p_source->>'ownerId') NOT BETWEEN 1 AND 128
+  OR NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=p_source->>'ownerId' AND kind='guest') THEN
+  RAISE EXCEPTION 'captured guest source required' USING ERRCODE='GP002'; END IF;
+ RETURN p_source->>'ownerId';
+END $$;
 
 CREATE FUNCTION require_restricted_learner_practice_only() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
@@ -20126,6 +24930,365 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reserve_guest_prepared_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_session_id text, p_target text, p_band text, p_fingerprint text, p_policy jsonb, p_operation_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT:=p_operation->>'sourceOwnerId';
+ existing guest_resource_session_reservations%ROWTYPE;
+ stored_operation guest_participation_operations%ROWTYPE;
+ component_ids TEXT[]; fingerprint TEXT; plan JSONB; budget JSONB;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(source_id,p_operation,'study_start');
+ PERFORM 1 FROM guest_resource_global_lock WHERE singleton FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'resource global anchor unavailable' USING ERRCODE='GP006'; END IF;
+ -- Immutable original edge precedes GLOBAL/EDGE/full component acquisition.
+ -- No fresh edge/catalogue/policy/session draw replaces original receipt identity.
+ SELECT * INTO existing FROM guest_resource_session_reservations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey';
+ -- A retained original abort/held key without resource has no edge to lock.
+ -- Its read-only recovery must not insert a fresh edge or reserve a new plan.
+ IF existing.reservation_id IS NULL THEN
+  SELECT * INTO stored_operation FROM guest_participation_operations
+   WHERE source_owner_id=source_id AND operation_kind='study_start'
+    AND idempotency_key=p_operation->>'idempotencyKey';
+  IF FOUND THEN
+   -- GLOBAL was acquired before the actual credential/full-C proof helper.
+   -- This original-source read permits the accepted empty-alias lookup only;
+   -- NEW allocation below still uses canonical-only resource locking.
+   PERFORM require_guest_study_learning_access_v1(p_access,source_id);
+   SELECT * INTO STRICT stored_operation FROM guest_participation_operations
+    WHERE source_owner_id=source_id AND operation_kind='study_start'
+     AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+   IF ROW(stored_operation.request_hash,stored_operation.resource_scope)
+     IS DISTINCT FROM ROW(p_operation->>'requestHash',guest_study_start_resource_scope_v1(p_community,p_post)) THEN
+    RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+   -- Original rights/clock/receipt remain; completed lesson content still needs
+   -- the current public, published, general-audience resource authority.
+   IF stored_operation.state='completed' AND NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+    RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+   RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
+    'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
+  END IF;
+ END IF;
+ fingerprint:=CASE WHEN existing.reservation_id IS NOT NULL THEN existing.edge_fingerprint ELSE p_fingerprint END;
+ component_ids:=lock_guest_resource_budget_v1(source_id,fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,source_id);
+ SELECT * INTO existing FROM guest_resource_session_reservations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND AND existing.request_hash IS DISTINCT FROM p_operation->>'requestHash' THEN
+  RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+ SELECT * INTO stored_operation FROM guest_participation_operations
+  WHERE source_owner_id=source_id AND operation_kind='study_start'
+   AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(stored_operation.request_hash,stored_operation.resource_scope)
+    IS DISTINCT FROM ROW(p_operation->>'requestHash',guest_study_start_resource_scope_v1(p_community,p_post)) THEN
+   RAISE EXCEPTION 'start operation identity changed' USING ERRCODE='GP005'; END IF;
+  IF existing.reservation_id IS NOT NULL AND existing.state='refused' THEN
+   IF stored_operation.state<>'known_aborted' THEN
+    RAISE EXCEPTION 'refused resource contradicts original start' USING ERRCODE='GP006'; END IF;
+   RETURN jsonb_build_object('kind','resource_refused','operationId',stored_operation.operation_id,'plan',NULL,
+    'reservation',jsonb_build_object('state','completed','outcome_id',existing.reservation_id,'result',existing.original_result));
+  END IF;
+  -- Positive main-row evidence, never absence or transport ambiguity. Original
+  -- accepted/held/definitely aborted outcome wins before fresh source admission.
+  -- Original rights/clock/receipt remain; completed lesson content still needs
+  -- the current public, published, general-audience resource authority.
+  IF stored_operation.state='completed' AND NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+   RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+  RETURN jsonb_build_object('kind','start_outcome','outcome',jsonb_build_object(
+   'state',stored_operation.state,'operationId',stored_operation.operation_id,'result',stored_operation.result_snapshot));
+ END IF;
+ IF existing.reservation_id IS NOT NULL THEN
+  -- A historical standalone resource receipt is retained, not overwritten or
+  -- silently converted into a fabricated new main-abort row. Its original refusal
+  -- is positive evidence; no absence of main is called an abort here.
+  budget:=reserve_guest_resource_session_v1(source_id,p_operation,existing.session_id,
+   existing.initial_units,existing.worst_case_cost_micros::TEXT,existing.edge_fingerprint,p_policy);
+  RETURN jsonb_build_object('kind',CASE WHEN existing.state='refused' THEN 'resource_refused' ELSE 'reservation' END,
+   'reservation',budget,'plan',NULL,'operationId',NULL);
+ END IF;
+ -- NEW only: current public resource, complete audio fence, exact current policy,
+ -- one actual selector and no IO. Any later projection/disclosure/source refusal
+ -- rolls the NEW resource back with the SAME outer transaction.
+ IF NOT can_guest_access_activity_song_v1(p_community,p_post) THEN
+  RAISE EXCEPTION 'public resource unavailable' USING ERRCODE='GP010'; END IF;
+ PERFORM lock_learner_audio_sources_private_v1(component_ids);
+ IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component_ids)
+   AND active_delete_command_id IS NOT NULL) THEN
+  RAISE EXCEPTION 'learner audio deletion in progress' USING ERRCODE='GP009'; END IF;
+ PERFORM validate_guest_resource_policy_v1(p_policy);
+ IF p_operation_id IS NULL OR char_length(p_operation_id) NOT BETWEEN 1 AND 128 THEN
+  RAISE EXCEPTION 'server start operation identity unavailable' USING ERRCODE='22023'; END IF;
+ plan:=select_guest_study_start_plan_v1(source_id,p_community,p_post,p_target,p_band);
+ budget:=reserve_guest_resource_session_v1(source_id,p_operation,p_session_id,
+  (plan->>'paidAttemptUnits')::INTEGER,
+  ((plan->>'paidAttemptUnits')::NUMERIC*(p_policy->>'maximumProviderCallCostMicros')::NUMERIC)::TEXT,
+  p_fingerprint,p_policy);
+ IF budget#>>'{result,state}'='reserved' THEN
+  RETURN jsonb_build_object('kind','reservation','reservation',budget,'plan',plan,'operationId',NULL);
+ END IF;
+ IF budget#>>'{result,state}' IS NULL OR budget#>>'{result,state}' NOT IN('rate_limited','budget_refused') THEN
+  RAISE EXCEPTION 'unexpected resource refusal' USING ERRCODE='GP006'; END IF;
+ -- Definite refusal and its durable main-status witness are atomic. Refusal
+ -- response is emitted only after actual outer COMMIT acknowledgment. Unknown
+ -- COMMIT remains pending; exact status can later recover this ORIGINAL abort.
+ SELECT * INTO STRICT existing FROM guest_resource_session_reservations
+  WHERE reservation_id=budget->>'outcome_id' AND source_owner_id=source_id AND state='refused';
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,
+  idempotency_key,request_hash,state,created_at,resolved_at)
+ VALUES(p_operation_id,source_id,'study_start',guest_study_start_resource_scope_v1(p_community,p_post),
+  p_operation->>'idempotencyKey',p_operation->>'requestHash','known_aborted',existing.created_at,clock_timestamp());
+ RETURN jsonb_build_object('kind','resource_refused','reservation',budget,'plan',plan,'operationId',p_operation_id);
+END $$;
+
+CREATE FUNCTION reserve_guest_provider_call_v1(p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_units integer, p_maximum_cost text, p_cost_version text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE reservation guest_resource_session_reservations%ROWTYPE; prior guest_resource_provider_calls%ROWTYPE;
+ component_ids TEXT[]; call_id TEXT; use_now TIMESTAMPTZ;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source_id,p_operation,'study_answer');
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=reserve_guest_provider_call_v1.p_reservation_id AND r.source_owner_id=p_source_id;
+ component_ids:=lock_guest_resource_budget_v1(p_source_id,reservation.edge_fingerprint);
+ SELECT * INTO STRICT reservation FROM guest_resource_session_reservations r WHERE r.reservation_id=reserve_guest_provider_call_v1.p_reservation_id FOR UPDATE;
+ SELECT * INTO prior FROM guest_resource_provider_calls c WHERE c.source_owner_id=p_source_id
+  AND operation_kind='study_answer' AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(prior.request_hash,prior.session_id,prior.reservation_id,prior.units,prior.maximum_provider_cost_micros::TEXT,prior.cost_policy_version)
+   IS DISTINCT FROM ROW(p_operation->>'requestHash',p_session_id,p_reservation_id,p_units,p_maximum_cost,p_cost_version)
+   THEN RAISE EXCEPTION 'idempotency conflict' USING ERRCODE='GP005'; END IF;
+  IF prior.disposition='completed' THEN RETURN jsonb_build_object('state','completed','outcome_id',prior.call_id,
+   'result',jsonb_build_object('state','completed','callId',prior.call_id,'checkpointId',prior.checkpoint_id)); END IF;
+  IF prior.disposition IN('not_invoked','failed') THEN RETURN jsonb_build_object('state','known_aborted'); END IF;
+  -- Existing reserved receipt might already have dispatched. NEVER reissue
+  -- dispatch authority by replaying an original reserved result snapshot.
+  RETURN jsonb_build_object('state','completed','outcome_id',prior.call_id,
+   'result',jsonb_build_object('state','unknown','callId',prior.call_id,'reservationId',prior.reservation_id));
+ END IF;
+ IF p_units IS DISTINCT FROM 1 OR p_maximum_cost IS NULL OR p_maximum_cost !~ '^[1-9][0-9]{0,77}$'
+  OR p_maximum_cost::NUMERIC>reservation.unit_hold_micros OR p_cost_version IS DISTINCT FROM reservation.cost_policy_version
+  THEN RAISE EXCEPTION 'provider ceiling unavailable' USING ERRCODE='GP006'; END IF;
+ use_now:=clock_timestamp();
+ IF reservation.session_id IS DISTINCT FROM p_session_id OR reservation.state<>'active'
+  OR reservation.reservation_expires_at<=use_now OR reservation.remaining_units<1
+  THEN RAISE EXCEPTION 'resource reservation unavailable' USING ERRCODE='GP006'; END IF;
+ call_id:='gpc_'||gen_random_uuid()::TEXT;
+ UPDATE guest_resource_session_reservations r SET remaining_units=remaining_units-1 WHERE r.reservation_id=reservation.reservation_id;
+ INSERT INTO guest_resource_provider_calls VALUES(call_id,p_source_id,'study_answer',p_operation->>'idempotencyKey',p_operation->>'requestHash',
+  reservation.reservation_id,p_session_id,1,p_cost_version,p_maximum_cost::NUMERIC,reservation.unit_hold_micros,'reserved',NULL,NULL,use_now,NULL);
+ RETURN jsonb_build_object('state','completed','outcome_id',call_id,'result',jsonb_build_object('state','reserved','callId',call_id,
+  'reservationId',reservation.reservation_id,'maximumCostMicros',p_maximum_cost));
+END $_$;
+
+CREATE FUNCTION reserve_guest_resource_session_v1(p_source_id text, p_operation jsonb, p_session_id text, p_worst_units integer, p_worst_cost text, p_fingerprint text, p_policy jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE component_ids TEXT[]; existing guest_resource_session_reservations%ROWTYPE;
+ use_now TIMESTAMPTZ; usage RECORD; edge_count BIGINT; unit_cost NUMERIC; stored_policy JSONB;
+ stored_unit_cost NUMERIC; receipt_id TEXT; result JSONB; refused BOOLEAN:=FALSE;
+BEGIN
+ PERFORM validate_guest_resource_operation_v1(p_source_id,p_operation,'study_start');
+ component_ids:=lock_guest_resource_budget_v1(p_source_id,p_fingerprint);
+ SELECT * INTO existing FROM guest_resource_session_reservations r WHERE r.source_owner_id=p_source_id
+  AND r.operation_kind='study_start' AND r.idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  -- p_session_id is a fresh server-generated candidate, never a client request
+  -- identity. Same-key replay recovers the stored original candidate instead
+  -- of rejecting a fresh ID draw or allocating a replacement session.
+  IF ROW(existing.request_hash,existing.initial_units,existing.worst_case_cost_micros::TEXT)
+    IS DISTINCT FROM ROW(p_operation->>'requestHash',p_worst_units,p_worst_cost)
+   THEN RAISE EXCEPTION 'idempotency conflict' USING ERRCODE='GP005'; END IF;
+  RETURN jsonb_build_object('state','completed','outcome_id',existing.reservation_id,'result',existing.original_result);
+ END IF;
+ PERFORM validate_guest_resource_policy_v1(p_policy);
+ IF p_session_id IS NULL OR char_length(p_session_id) NOT BETWEEN 1 AND 128 OR p_worst_units IS NULL OR p_worst_units NOT BETWEEN 0 AND 40
+  OR p_worst_cost IS NULL OR p_worst_cost !~ '^(0|[1-9][0-9]{0,77})$'
+  THEN RAISE EXCEPTION 'invalid worst case' USING ERRCODE='22023'; END IF;
+ unit_cost:=(p_policy->>'maximumProviderCallCostMicros')::NUMERIC;
+ IF p_worst_cost::NUMERIC<>p_worst_units*unit_cost THEN RAISE EXCEPTION 'unreserved worst case' USING ERRCODE='GP006'; END IF;
+ INSERT INTO guest_resource_policy_snapshots VALUES(p_policy->>'version',p_policy) ON CONFLICT DO NOTHING;
+ SELECT s.policy INTO STRICT stored_policy FROM guest_resource_policy_snapshots s WHERE policy_version=p_policy->>'version';
+ IF stored_policy IS DISTINCT FROM p_policy THEN RAISE EXCEPTION 'policy version changed' USING ERRCODE='GP006'; END IF;
+ INSERT INTO guest_resource_cost_policy_snapshots VALUES(p_policy->>'costPolicyVersion',unit_cost) ON CONFLICT DO NOTHING;
+ SELECT maximum_provider_cost_micros INTO STRICT stored_unit_cost FROM guest_resource_cost_policy_snapshots WHERE cost_policy_version=p_policy->>'costPolicyVersion';
+ IF stored_unit_cost<>unit_cost THEN RAISE EXCEPTION 'cost policy version changed' USING ERRCODE='GP006'; END IF;
+ use_now:=clock_timestamp();
+ SELECT * INTO STRICT usage FROM guest_resource_usage_v1(component_ids,use_now);
+ SELECT count(*) INTO edge_count FROM guest_resource_session_reservations r WHERE edge_fingerprint=p_fingerprint
+  AND state<>'refused' AND created_at>use_now-make_interval(secs=>(p_policy->>'trustedEdgeWindowSeconds')::DOUBLE PRECISION);
+ IF usage.owner_active>=2 OR usage.global_active>=(p_policy->>'maximumGlobalActiveSessions')::NUMERIC
+  OR edge_count>=(p_policy->>'maximumTrustedEdgeSessionsPerWindow')::NUMERIC THEN
+  result:=jsonb_build_object('state','rate_limited','retryAfterSeconds',NULL);refused:=TRUE;
+ ELSIF usage.owner_calls+p_worst_units>60 OR usage.global_calls+p_worst_units>(p_policy->>'maximumGlobalPaidCallsPerRollingDay')::NUMERIC
+  OR usage.owner_cost+p_worst_cost::NUMERIC>(p_policy->>'maximumOwnerCostMicrosPerRollingDay')::NUMERIC
+  OR usage.global_cost+p_worst_cost::NUMERIC>(p_policy->>'maximumGlobalCostMicrosPerRollingDay')::NUMERIC THEN
+  result:=jsonb_build_object('state','budget_refused','retryAfterSeconds',NULL);refused:=TRUE;
+ END IF;
+ receipt_id:='gr_'||gen_random_uuid()::TEXT;
+ IF NOT refused THEN result:=jsonb_build_object('state','reserved','reservationId',receipt_id,'sourceOwnerId',p_source_id,
+  'operation',p_operation,'remainingUnits',p_worst_units,'policyVersion',p_policy->>'version','costPolicyVersion',p_policy->>'costPolicyVersion'); END IF;
+ INSERT INTO guest_resource_session_reservations VALUES(receipt_id,p_source_id,'study_start',p_operation->>'idempotencyKey',p_operation->>'requestHash',
+  p_session_id,p_fingerprint,p_policy->>'version',p_policy->>'costPolicyVersion',p_worst_units,CASE WHEN refused THEN 0 ELSE p_worst_units END,
+  unit_cost,p_worst_cost::NUMERIC,CASE WHEN refused THEN 'refused' ELSE 'active' END,result,use_now,use_now+INTERVAL '24 hours',NULL);
+ IF NOT refused THEN UPDATE participation_owners SET state='established' WHERE owner_id=p_source_id AND state='empty'; END IF;
+ RETURN jsonb_build_object('state','completed','outcome_id',receipt_id,'result',result);
+END $_$;
+
+CREATE FUNCTION reserve_guest_spoken_answer_v1(p_access jsonb, p_operation jsonb, p_source text, p_payload jsonb, p_reservation text, p_fence bigint, p_policy jsonb, p_disclosure_version text, p_rerecord_enabled boolean, p_provider_retention text, p_operation_id text, p_upload_id text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE sess study_sessions_v2%ROWTYPE; item study_session_items_v2%ROWTYPE; state study_lesson_item_state_v2%ROWTYPE;
+ rsv guest_resource_session_reservations%ROWTYPE; main_op guest_participation_operations%ROWTYPE;
+ cmd study_spoken_answer_commands%ROWTYPE; artifact learner_audio_artifacts%ROWTYPE;
+ component TEXT[]; stored_policy JSONB; provider JSONB; captured JSONB; original_cmd TEXT; original_attempt TEXT; original_artifact TEXT;
+ expected_ref TEXT; at_time TIMESTAMPTZ; retention_mode TEXT; artifact_expires TIMESTAMPTZ;
+BEGIN
+ PERFORM require_guest_study_composition_v1();
+ PERFORM validate_guest_resource_operation_v1(p_source,p_operation,'study_answer');
+ IF p_payload IS NULL OR jsonb_typeof(p_payload) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_payload))<>13
+  OR NOT(p_payload ?& ARRAY['sessionId','sessionItemId','attemptNumber','audioDigest','audioContentType','audioByteSize','audioDurationMs',
+    'commandId','attemptId','artifactId','leaseToken','providerRetention','requestHash'])
+  OR jsonb_typeof(p_payload->'audioDigest') IS DISTINCT FROM 'string' OR p_payload->>'audioDigest' !~ '^[0-9a-f]{64}$'
+  OR p_payload->>'requestHash' IS DISTINCT FROM p_operation->>'requestHash'
+  OR p_payload->>'audioContentType' IS NULL OR p_payload->>'audioContentType' NOT IN('audio/webm','audio/ogg','audio/mp4','audio/wav')
+  OR p_provider_retention IS NULL OR p_provider_retention NOT IN('stored','not_stored')
+  OR p_payload->>'providerRetention' IS DISTINCT FROM p_provider_retention
+  OR jsonb_typeof(p_payload->'attemptNumber') IS DISTINCT FROM 'number' OR (p_payload->>'attemptNumber')::NUMERIC NOT BETWEEN 1 AND 3
+  OR trunc((p_payload->>'attemptNumber')::NUMERIC)<>(p_payload->>'attemptNumber')::NUMERIC
+  OR jsonb_typeof(p_payload->'audioByteSize') IS DISTINCT FROM 'number' OR (p_payload->>'audioByteSize')::NUMERIC NOT BETWEEN 1 AND 524288
+  OR trunc((p_payload->>'audioByteSize')::NUMERIC)<>(p_payload->>'audioByteSize')::NUMERIC
+  OR jsonb_typeof(p_payload->'audioDurationMs') IS DISTINCT FROM 'number' OR (p_payload->>'audioDurationMs')::NUMERIC NOT BETWEEN 1 AND 60000
+  OR trunc((p_payload->>'audioDurationMs')::NUMERIC)<>(p_payload->>'audioDurationMs')::NUMERIC THEN
+  RAISE EXCEPTION 'closed spoken request required' USING ERRCODE='GP003'; END IF;
+ SELECT * INTO sess FROM study_sessions_v2 WHERE session_id=p_payload->>'sessionId' AND participation_owner_id=p_source
+  AND participation_owner_kind='guest';
+ IF NOT FOUND THEN RAISE EXCEPTION 'guest spoken lesson unavailable' USING ERRCODE='GP010'; END IF;
+ SELECT * INTO STRICT rsv FROM guest_resource_session_reservations WHERE reservation_id=sess.guest_resource_reservation_id;
+ component:=lock_guest_resource_budget_v1(p_source,rsv.edge_fingerprint);
+ PERFORM require_guest_study_learning_access_v1(p_access,p_source);
+ SELECT * INTO main_op FROM guest_participation_operations WHERE source_owner_id=p_source
+  AND operation_kind='study_answer' AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF ROW(main_op.request_hash,main_op.resource_scope) IS DISTINCT FROM ROW(p_operation->>'requestHash',
+   guest_study_answer_resource_scope_v1(sess.community_id,sess.session_id,p_payload->>'sessionItemId',(p_payload->>'attemptNumber')::INTEGER,'spoken')) THEN
+   RAISE EXCEPTION 'original spoken request changed' USING ERRCODE='GP005'; END IF;
+  -- Any existing key is observation only; it never reissues its old dispatch.
+  IF main_op.state='completed' THEN RETURN jsonb_build_object('state','completed','result',main_op.result_snapshot); END IF;
+  RETURN jsonb_build_object('state','pending_confirmation','operation',p_operation);
+ END IF;
+ PERFORM lock_learner_audio_sources_private_v1(component);
+ IF EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component) AND active_delete_command_id IS NOT NULL) THEN
+  RAISE EXCEPTION 'learner audio deletion in progress' USING ERRCODE='GP009'; END IF;
+ INSERT INTO learner_audio_owner_fences(owner_id) VALUES(p_source) ON CONFLICT DO NOTHING;
+ PERFORM 1 FROM learner_audio_owner_fences WHERE owner_id=p_source AND revision=p_fence AND active_delete_command_id IS NULL FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'new dispatch deletion fence changed' USING ERRCODE='GP009'; END IF;
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=sess.session_id FOR UPDATE;
+ SELECT * INTO item FROM study_session_items_v2 WHERE session_id=sess.session_id AND session_item_id=p_payload->>'sessionItemId'
+  AND participation_owner_id=p_source FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'spoken item unavailable' USING ERRCODE='GP003'; END IF;
+ SELECT * INTO STRICT state FROM study_lesson_item_state_v2 WHERE session_item_id=item.session_item_id AND session_id=sess.session_id FOR UPDATE;
+ IF sess.status<>'active' OR sess.expires_at<=clock_timestamp() OR sess.current_session_item_id IS DISTINCT FROM item.session_item_id
+  OR item.item_snapshot->>'exercise_type' IS DISTINCT FROM 'say_it_back' OR item.maximum_attempts IS DISTINCT FROM 3
+  OR state.lesson_resolved OR (p_payload->>'attemptNumber')::INTEGER<>state.presentation_count+1
+  OR sess.guest_reward_mode IS DISTINCT FROM 'practice_only' OR sess.guest_reward_terms IS NOT NULL
+  OR NOT can_guest_access_activity_song_v1(sess.community_id,sess.post_id)
+  OR ROW(rsv.reservation_id,rsv.source_owner_id,rsv.session_id) IS DISTINCT FROM ROW(p_reservation,p_source,sess.session_id)
+  OR sess.guest_disclosure_accepted IS DISTINCT FROM TRUE OR sess.guest_disclosure_version IS DISTINCT FROM p_disclosure_version THEN
+  RAISE EXCEPTION 'current spoken admission unavailable' USING ERRCODE='GP003'; END IF;
+ PERFORM validate_guest_resource_policy_v1(p_policy);
+ SELECT policy INTO STRICT stored_policy FROM guest_resource_policy_snapshots WHERE policy_version=rsv.policy_version;
+ IF stored_policy IS DISTINCT FROM p_policy OR rsv.cost_policy_version IS DISTINCT FROM p_policy->>'costPolicyVersion'
+  OR rsv.unit_hold_micros IS DISTINCT FROM (p_policy->>'maximumProviderCallCostMicros')::NUMERIC THEN
+  RAISE EXCEPTION 'captured resource policy changed' USING ERRCODE='GP006'; END IF;
+ -- Required private plan closure owned by the separately reviewed forty-unit
+ -- successor. It checks the ORIGINAL stored selected spoken-card allowance
+ -- and policy: enabled rerecord needs two paid invocations per graded slot,
+ -- while the shared graded presentation cap remains twenty. This helper is
+ -- an explicit prerequisite and must stay closed on the actual old20 module.
+ -- No permanent policy downgrade and no caller flag manufactures allowance.
+ PERFORM require_guest_spoken_resource_plan_v1(p_source,sess.session_id,rsv.reservation_id,p_rerecord_enabled);
+ SELECT * INTO cmd FROM study_spoken_answer_commands WHERE session_id=sess.session_id AND participation_owner_id=p_source
+  AND session_item_id=item.session_item_id AND attempt_number=(p_payload->>'attemptNumber')::INTEGER AND result_kind='graded' FOR UPDATE;
+ IF FOUND THEN
+  -- No clock-expiry reclaim. Every retained dispatch must be definitively
+  -- terminal, without accepted success, and its actual object absence closed.
+  IF cmd.state='completed' OR NOT EXISTS(SELECT 1 FROM guest_study_spoken_captures WHERE command_id=cmd.command_id)
+   OR EXISTS(SELECT 1 FROM guest_study_spoken_captures c JOIN guest_resource_provider_calls call_row ON call_row.call_id=c.provider_call_id
+     JOIN learner_audio_upload_attempts u ON u.upload_attempt_id=c.upload_attempt_id
+     LEFT JOIN guest_study_spoken_checkpoints cp ON cp.capture_id=c.capture_id
+     WHERE c.command_id=cmd.command_id AND (cp.checkpoint_id IS NOT NULL OR call_row.disposition NOT IN('failed','not_invoked')
+       OR u.io_state<>'closed' OR u.storage_disposition IS DISTINCT FROM 'absent' OR u.cleanup_required)) THEN
+   RETURN jsonb_build_object('state','pending_confirmation','operation',p_operation); END IF;
+  SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=cmd.learner_audio_artifact_id FOR UPDATE;
+  IF artifact.recording_state NOT IN('pending','failed') OR artifact.deleted_at IS NOT NULL
+   OR artifact.provider_retention IS DISTINCT FROM p_provider_retention
+   OR EXISTS(SELECT 1 FROM study_attempts_v2 WHERE learner_audio_artifact_id=artifact.learner_audio_artifact_id) THEN
+   RAISE EXCEPTION 'accepted artifact cannot be reclaimed' USING ERRCODE='GP003'; END IF;
+  original_cmd:=cmd.command_id;original_attempt:=cmd.attempt_id;original_artifact:=cmd.learner_audio_artifact_id;
+ ELSE
+  original_cmd:=p_payload->>'commandId';original_attempt:=p_payload->>'attemptId';original_artifact:=p_payload->>'artifactId';
+ END IF;
+ IF p_payload->>'leaseToken' IS NULL OR char_length(p_payload->>'leaseToken') NOT BETWEEN 1 AND 256
+  OR p_operation_id IS NULL OR char_length(p_operation_id) NOT BETWEEN 1 AND 128
+  OR p_upload_id IS NULL OR char_length(p_upload_id) NOT BETWEEN 1 AND 128 THEN
+  RAISE EXCEPTION 'private generated command identity required' USING ERRCODE='GP003'; END IF;
+ -- FUTURE recording generation uses the actual source preference. Exact
+ -- accepted-key replay above performs no preference/expiry mutation. The whole
+ -- source component is already locked, serializing the retention producer.
+ SELECT mode INTO retention_mode FROM guest_learning_preferences WHERE owner_id=p_source FOR UPDATE;
+ IF NOT FOUND THEN retention_mode:='private_learning'; END IF;
+ IF retention_mode IS NULL OR retention_mode NOT IN('private_learning','ephemeral') THEN
+  RAISE EXCEPTION 'closed learning retention preference required' USING ERRCODE='GP006'; END IF;
+ at_time:=clock_timestamp();artifact_expires:=CASE WHEN retention_mode='ephemeral'
+  THEN at_time+INTERVAL '24 hours' ELSE at_time+INTERVAL '24 months' END;
+ expected_ref:='learner-audio/study/'||original_attempt||'/'||(p_payload->>'audioDigest');
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,created_at)
+  VALUES(p_operation_id,p_source,'study_answer',guest_study_answer_resource_scope_v1(sess.community_id,sess.session_id,item.session_item_id,
+    (p_payload->>'attemptNumber')::INTEGER,'spoken'),p_operation->>'idempotencyKey',p_operation->>'requestHash','reserved',at_time);
+ IF cmd.command_id IS NULL THEN
+  INSERT INTO study_spoken_answer_commands(command_id,account_id,participation_owner_id,participation_owner_kind,session_id,session_item_id,
+   attempt_number,idempotency_key,request_hash,audio_digest,audio_content_type,audio_byte_size,audio_duration_ms,attempt_id,
+   learner_audio_artifact_id,lease_token,lease_expires_at,state,reserved_at)
+  VALUES(original_cmd,NULL,p_source,'guest',sess.session_id,item.session_item_id,(p_payload->>'attemptNumber')::INTEGER,
+   p_operation->>'idempotencyKey',p_operation->>'requestHash',p_payload->>'audioDigest',p_payload->>'audioContentType',
+   (p_payload->>'audioByteSize')::INTEGER,(p_payload->>'audioDurationMs')::INTEGER,original_attempt,original_artifact,
+   p_payload->>'leaseToken',at_time+INTERVAL '60 seconds','reserved',at_time);
+  INSERT INTO learner_audio_artifacts(learner_audio_artifact_id,account_id,participation_owner_id,participation_owner_kind,
+   source_kind,attempt_ref,expected_object_ref,object_ref,content_digest,content_type,byte_size,duration_ms,platform_retention,
+   provider_retention,recording_state,expires_at,created_at)
+  VALUES(original_artifact,NULL,p_source,'guest','study',original_attempt,expected_ref,NULL,p_payload->>'audioDigest',p_payload->>'audioContentType',
+   (p_payload->>'audioByteSize')::INTEGER,(p_payload->>'audioDurationMs')::INTEGER,retention_mode,p_provider_retention,'pending',artifact_expires,at_time);
+ ELSE
+  UPDATE study_spoken_answer_commands SET idempotency_key=p_operation->>'idempotencyKey',request_hash=p_operation->>'requestHash',
+   audio_digest=p_payload->>'audioDigest',audio_content_type=p_payload->>'audioContentType',audio_byte_size=(p_payload->>'audioByteSize')::INTEGER,
+   audio_duration_ms=(p_payload->>'audioDurationMs')::INTEGER,lease_token=p_payload->>'leaseToken',lease_expires_at=at_time+INTERVAL '60 seconds',
+   state='reserved',provider_failure_kind=NULL,result_snapshot=NULL,completed_at=NULL,reserved_at=at_time WHERE command_id=original_cmd;
+  UPDATE learner_audio_artifacts SET expected_object_ref=expected_ref,object_ref=NULL,content_digest=p_payload->>'audioDigest',
+   content_type=p_payload->>'audioContentType',byte_size=(p_payload->>'audioByteSize')::INTEGER,duration_ms=(p_payload->>'audioDurationMs')::INTEGER,
+   recording_state='pending',platform_retention=retention_mode,expires_at=artifact_expires WHERE learner_audio_artifact_id=original_artifact;
+ END IF;
+ provider:=reserve_guest_provider_call_v1(p_source,p_operation,sess.session_id,p_reservation,1,
+  p_policy->>'maximumProviderCallCostMicros',p_policy->>'costPolicyVersion');
+ IF provider#>>'{result,state}' IS DISTINCT FROM 'reserved' THEN
+  RAISE EXCEPTION 'first fresh provider reservation required' USING ERRCODE='GP006'; END IF;
+ PERFORM register_learner_audio_upload_private_v1(p_source,original_artifact,'study',original_attempt,original_cmd,p_reservation,expected_ref,p_upload_id,p_fence);
+ captured:=capture_guest_spoken_dispatch_private_v1(p_source,p_operation,original_cmd,p_payload->>'leaseToken',
+  provider#>>'{result,callId}',p_reservation,p_upload_id,p_fence,p_rerecord_enabled);
+ IF captured->'fresh' IS DISTINCT FROM 'true'::JSONB THEN
+  RAISE EXCEPTION 'first fresh captured dispatch required' USING ERRCODE='GP006'; END IF;
+ RETURN jsonb_build_object('state','reserved','commandId',original_cmd,'leaseToken',p_payload->>'leaseToken',
+  'attemptId',original_attempt,'artifactId',original_artifact,'resourceReservationId',p_reservation,'deletionFenceRevision',p_fence);
+END $_$;
+
 CREATE FUNCTION reserve_hns_dns_zone_activation_v1(input_operation_id text, input_idempotency_key text, input_activation_document_digest text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_lease_seconds integer) RETURNS TABLE(outcome text, operation_id text, dns_zone_activation_id text, fence_token bigint, lease_expires_at timestamp with time zone, activation_generation bigint)
     LANGUAGE plpgsql
     AS $$
@@ -20180,6 +25343,43 @@ BEGIN
     existing.lease_expires_at, NULL::BIGINT;
 END;
 $$;
+
+CREATE FUNCTION resolve_guest_audio_io_capture_private_v1(p_source jsonb, p_operation jsonb, p_artifact text, p_reservation text, p_revision bigint, p_digest text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; source_id TEXT;
+BEGIN
+ source_id:=require_owner_guest_source_private_v1(p_source);
+ PERFORM validate_guest_resource_operation_v1(source_id,p_operation,'study_answer');
+ IF p_source IS NULL OR p_source-ARRAY['kind','ownerId']<>'{}'::JSONB
+  OR p_source->>'kind'<>'guest' OR p_operation->>'kind'<>'study_answer'
+  OR p_operation->>'sourceOwnerId' IS DISTINCT FROM p_source->>'ownerId' THEN RAISE EXCEPTION 'original archive source differs' USING ERRCODE='GP005'; END IF;
+ SELECT cap.upload_attempt_id INTO STRICT upload_id FROM guest_study_spoken_captures cap
+  JOIN guest_study_spoken_checkpoints cp USING(capture_id)
+  WHERE cap.source_owner_id=p_source->>'ownerId' AND cap.idempotency_key=p_operation->>'idempotencyKey'
+   AND cap.request_hash=p_operation->>'requestHash' AND cap.artifact_id=p_artifact
+   AND cap.resource_reservation_id=p_reservation AND cap.deletion_fence_revision=p_revision AND cap.audio_digest=p_digest;
+ RETURN read_guest_audio_io_capture_private_v1(upload_id);
+END $$;
+
+CREATE FUNCTION resolve_guest_empty_owner_root_v1(source_id text) RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE current_id TEXT := source_id; target_id TEXT; depth INTEGER := 0;
+BEGIN
+  LOOP
+    IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE owner_id=current_id AND kind='guest') THEN
+      RAISE EXCEPTION 'guest source required';
+    END IF;
+    SELECT canonical_owner_id INTO target_id FROM guest_empty_owner_aliases WHERE source_owner_id=current_id;
+    IF NOT FOUND THEN RETURN current_id; END IF;
+    depth := depth+1;
+    IF depth>1000 THEN RAISE EXCEPTION 'guest source component exceeds traversal bound'; END IF;
+    current_id := target_id;
+  END LOOP;
+END $$;
 
 CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_host text, database_now timestamp with time zone) RETURNS TABLE(normalized_host text, canonical_root text, community_id text, app_host_activation_id text, app_host_activation_generation bigint, app_host_activation_status text, activation_dns_zone_id text, activation_dns_zone_generation bigint, activation_gateway_deployment_reference text, route_binding_id text, route_binding_current boolean, route_authority_kind text, route_authority_reference text, route_authority_generation bigint, route_authority_effective boolean, dns_zone_activation_id text, dns_zone_activation_generation bigint, dns_zone_status text, stable_chain_delegation_matches boolean, dnssec_ds_authenticates_zone boolean, retained_zone_digest_matches boolean, gateway_deployment_reference text, gateway_certificate_spki_sha256 text, gateway_health text)
     LANGUAGE sql STABLE
@@ -20262,6 +25462,15 @@ CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_hos
    WHERE database_now IS NOT NULL
      AND input_normalized_host = current_app.normalized_host
 $$;
+
+CREATE FUNCTION retain_learner_audio_immutable_private_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'audio control/source evidence cannot be physically deleted'; END IF;
+ RAISE EXCEPTION 'immutable audio control/source evidence';
+END $$;
 
 CREATE FUNCTION retained_categories_rating_v1(categories jsonb, bound boolean, declared text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE
@@ -20909,6 +26118,104 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION select_guest_study_start_plan_v1(p_source_id text, p_community text, p_post text, p_target text, p_band text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE snapshot JSONB; selected_rows JSONB; selected_target TEXT; selected_band TEXT;
+ source_count INTEGER; helper_count INTEGER; paid_units INTEGER;
+BEGIN
+ IF p_band IS NOT NULL AND p_band NOT IN('A1','A2','B1','B2','C1','C2')
+  OR p_target IS NOT NULL AND (char_length(p_target)>64 OR p_target='en') THEN
+  RAISE EXCEPTION 'prepared selection unavailable' USING ERRCODE='GP006'; END IF;
+ snapshot:=guest_study_prepared_rows_v1(p_community,p_post);
+ IF snapshot->>'accessible' IS DISTINCT FROM 'true'
+  OR jsonb_array_length(snapshot->'source_rows')<>1
+  OR NOT EXISTS(SELECT 1 FROM jsonb_to_recordset(snapshot->'source_rows')
+    AS source(lyrics_ready BOOLEAN,language_ready BOOLEAN,stems_ready BOOLEAN)
+    WHERE lyrics_ready AND language_ready AND stems_ready) THEN
+  RAISE EXCEPTION 'prepared source unavailable' USING ERRCODE='GP006'; END IF;
+ IF (SELECT count(DISTINCT prepared->>'target_language') FROM jsonb_array_elements(snapshot->'rows') prepared)>128
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(snapshot->'rows') prepared
+    WHERE char_length(prepared->>'target_language')>64 OR prepared->>'learning_language'<>'en'
+      OR NOT ((prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
+        OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language' IS NOT NULL
+          AND prepared->>'target_language'<>'en' AND prepared->>'learner_band' IN('A1','A2','B1','B2','C1','C2')))) THEN
+  RAISE EXCEPTION 'prepared catalogue exceeds policy' USING ERRCODE='GP006'; END IF;
+ SELECT count(*)::INTEGER INTO source_count FROM jsonb_array_elements(snapshot->'rows') prepared
+  WHERE prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL;
+ -- Do not pool independent helper languages/bands. Prefer source-only for the
+ -- fully-null request when at least4 source cards already make a valid lesson.
+ IF NOT(p_target IS NULL AND p_band IS NULL AND source_count>=4) THEN
+  SELECT prepared->>'target_language',prepared->>'learner_band',count(*)::INTEGER
+   INTO selected_target,selected_band,helper_count
+   FROM jsonb_array_elements(snapshot->'rows') prepared
+   WHERE prepared->>'exercise_type'='translation_choice'
+    AND (p_target IS NULL OR prepared->>'target_language'=p_target)
+    AND (p_band IS NULL OR prepared->>'learner_band'=p_band)
+   GROUP BY prepared->>'target_language',prepared->>'learner_band'
+   HAVING count(*)+source_count>=4
+   ORDER BY (prepared->>'target_language') COLLATE "C",(prepared->>'learner_band') COLLATE "C" LIMIT 1;
+ END IF;
+ IF source_count+COALESCE(helper_count,0)<4 THEN
+  RAISE EXCEPTION 'insufficient compatible prepared cards' USING ERRCODE='GP006'; END IF;
+ SELECT jsonb_agg(candidate.prepared ORDER BY candidate.repetitions,candidate.last_reviewed_at NULLS FIRST,
+   candidate.ordinal,(candidate.prepared->>'exercise_review_key') COLLATE "C") INTO selected_rows FROM (
+  SELECT prepared,COALESCE(review.repetitions,0) AS repetitions,review.last_reviewed_at,
+   (prepared->>'ordinal')::INTEGER AS ordinal
+  FROM jsonb_array_elements(snapshot->'rows') prepared LEFT JOIN study_review_items review
+    ON review.participation_owner_id=p_source_id
+   AND review.post_id=p_post AND review.study_unit_id=prepared->>'study_unit_id'
+   AND review.exercise_kind=prepared->>'exercise_type' AND review.learning_language=prepared->>'learning_language'
+   AND review.target_language IS NOT DISTINCT FROM prepared->>'target_language'
+   AND review.learner_band IS NOT DISTINCT FROM prepared->>'learner_band' AND review.lifecycle_status='active'
+  WHERE (prepared->>'exercise_type'='say_it_back' AND prepared->>'target_language' IS NULL AND prepared->>'learner_band' IS NULL)
+   OR (prepared->>'exercise_type'='translation_choice' AND prepared->>'target_language'=selected_target
+     AND prepared->>'learner_band'=selected_band)
+  ORDER BY COALESCE(review.repetitions,0),review.last_reviewed_at NULLS FIRST,(prepared->>'ordinal')::INTEGER,
+    (prepared->>'exercise_review_key') COLLATE "C" LIMIT 10
+ ) candidate;
+ SELECT 2*LEAST(20,3*count(*)::INTEGER) INTO paid_units FROM jsonb_array_elements(selected_rows) prepared
+  WHERE prepared->>'exercise_type'='say_it_back';
+ RETURN jsonb_build_object(
+  'targetLanguage',selected_target,'learnerBand',selected_band,'paidAttemptUnits',paid_units,
+  'rows',selected_rows,'catalogue',(SELECT jsonb_agg(grouped ORDER BY exercise_type,target_language NULLS FIRST,learner_band NULLS FIRST) FROM (
+    SELECT prepared->>'exercise_type' AS exercise_type,prepared->>'learning_language' AS learning_language,
+     prepared->>'target_language' AS target_language,prepared->>'learner_band' AS learner_band,count(*)::INTEGER AS count
+    FROM jsonb_array_elements(snapshot->'rows') prepared
+    GROUP BY prepared->>'exercise_type',prepared->>'learning_language',prepared->>'target_language',prepared->>'learner_band'
+  ) grouped));
+END $$;
+
+CREATE FUNCTION set_guest_learning_retention_v1(p_access jsonb, p_operation jsonb, p_mode text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; operation guest_participation_operations%ROWTYPE; scope TEXT; at_time TIMESTAMPTZ; result JSONB;
+BEGIN
+ source_id:=validate_guest_recovery_operation_private_v1(p_operation,'learning_retention');
+ PERFORM require_guest_audio_recovery_access_private_v1(p_access,source_id);
+ IF p_mode IS NULL OR p_mode NOT IN('private_learning','ephemeral') THEN RAISE EXCEPTION 'invalid retention mode' USING ERRCODE='22023'; END IF;
+ IF resolve_guest_empty_owner_root_v1(source_id)<>source_id THEN RAISE EXCEPTION 'active retention source required' USING ERRCODE='GP002'; END IF;
+ scope:=jsonb_build_array('guest_learning_retention_v1',source_id,p_mode)::TEXT;
+ SELECT * INTO operation FROM guest_participation_operations WHERE source_owner_id=source_id AND operation_kind='learning_retention' AND idempotency_key=p_operation->>'idempotencyKey' FOR UPDATE;
+ IF FOUND THEN
+  IF operation.request_hash<>p_operation->>'requestHash' OR operation.resource_scope<>scope THEN RAISE EXCEPTION 'retention key conflict' USING ERRCODE='GP005'; END IF;
+  IF operation.state='completed' THEN RETURN jsonb_build_object('state','completed','operation',p_operation,'outcomeId',operation.operation_id,'result',operation.result_snapshot); END IF;
+  IF operation.state='known_aborted' THEN RETURN jsonb_build_object('state','known_aborted','operation',p_operation); END IF;
+  RETURN jsonb_build_object('state','pending_confirmation','operation',p_operation,'outcomeId',operation.operation_id);
+ END IF;
+ at_time:=clock_timestamp();result:=jsonb_build_object('mode',p_mode,'effective_at',to_char(at_time AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+ INSERT INTO guest_participation_operations(operation_id,source_owner_id,operation_kind,resource_scope,idempotency_key,request_hash,state,result_snapshot,created_at,resolved_at)
+ VALUES('retention_'||gen_random_uuid()::TEXT,source_id,'learning_retention',scope,p_operation->>'idempotencyKey',p_operation->>'requestHash','completed',result,at_time,at_time) RETURNING * INTO operation;
+ INSERT INTO guest_learning_preferences(owner_id,mode,changed_at,operation_id) VALUES(source_id,p_mode,at_time,operation.operation_id)
+ ON CONFLICT(owner_id) DO UPDATE SET mode=EXCLUDED.mode,changed_at=EXCLUDED.changed_at,operation_id=EXCLUDED.operation_id;
+ UPDATE participation_owners SET state='established' WHERE owner_id=source_id AND state='empty';
+ -- Future retention only (Spec028§3). No mass deletion of previously retained
+ -- learning audio, financial evidence, provider records or successful CP.
+ RETURN jsonb_build_object('state','completed','operation',p_operation,'outcomeId',operation.operation_id,'result',result);
+END $$;
+
 CREATE FUNCTION set_hns_root_import_lifecycle_plan_digest_v1(input_session_id text, input_digest text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -20957,6 +26264,77 @@ BEGIN
   RETURN control_record.revision+1;
 END
 $$;
+
+CREATE FUNCTION settle_guest_audio_io_private_v1(p_capture jsonb, p_disposition text, p_known boolean) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; allowed BOOLEAN;
+BEGIN
+ upload_id:=require_guest_audio_io_capture_private_v1(p_capture);
+ allowed:=settle_learner_audio_upload_private_v1(upload_id,p_disposition,p_known,NULL);
+ RETURN allowed AND NOT guest_ephemeral_object_closed_private_v1(p_capture->>'objectRef');
+END $$;
+
+CREATE FUNCTION settle_learner_audio_terminal_fact_private_v1(p_upload text, p_disposition text, p_known boolean, p_multipart text, p_fact jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; published BOOLEAN; captured learner_audio_account_producer_captures%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ IF p_known IS TRUE AND p_disposition='stored' THEN
+  IF p_fact IS NULL OR p_fact-ARRAY['contentDigest','contentType','byteSize','durationMs']<>'{}'::JSONB
+   OR NOT p_fact ?& ARRAY['contentDigest','contentType','byteSize','durationMs'] THEN RAISE EXCEPTION 'closed terminal metadata required'; END IF;
+  SELECT * INTO captured FROM learner_audio_account_producer_captures WHERE upload_attempt_id=p_upload AND source_kind='study';
+  IF FOUND AND (p_fact->>'contentDigest' IS DISTINCT FROM captured.content_digest
+   OR p_fact->>'contentType' IS DISTINCT FROM captured.content_type OR (p_fact->>'byteSize')::BIGINT IS DISTINCT FROM captured.byte_size
+   OR (p_fact->>'durationMs')::INTEGER IS DISTINCT FROM captured.duration_ms) THEN RAISE EXCEPTION 'terminal metadata differs from original Study capture'; END IF;
+  INSERT INTO learner_audio_upload_terminal_facts(upload_attempt_id,owner_id,content_digest,content_type,byte_size,duration_ms,settled_at)
+   VALUES(p_upload,upload.owner_id,p_fact->>'contentDigest',p_fact->>'contentType',(p_fact->>'byteSize')::BIGINT,(p_fact->>'durationMs')::INTEGER,clock_timestamp())
+   ON CONFLICT(upload_attempt_id) DO NOTHING;
+  IF NOT EXISTS(SELECT 1 FROM learner_audio_upload_terminal_facts f WHERE f.upload_attempt_id=p_upload
+   AND jsonb_build_object('contentDigest',f.content_digest,'contentType',f.content_type,'byteSize',f.byte_size,'durationMs',f.duration_ms)=p_fact) THEN
+   RAISE EXCEPTION 'terminal storage fact changed'; END IF;
+ END IF;
+ published:=settle_learner_audio_upload_private_v1(p_upload,p_disposition,p_known,p_multipart);
+ RETURN published;
+END $$;
+
+CREATE FUNCTION settle_learner_audio_upload_private_v1(expected_upload text, disposition text, known_no_more_io boolean, multipart_id text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE; publish_allowed BOOLEAN;
+BEGIN
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=expected_upload FOR UPDATE;
+ SELECT * INTO STRICT fence FROM learner_audio_owner_fences WHERE owner_id=upload.owner_id FOR UPDATE;
+ IF upload.io_state='closed' THEN
+   IF upload.storage_disposition<>disposition THEN RAISE EXCEPTION 'terminal upload result conflict'; END IF;
+   RETURN disposition='stored' AND NOT upload.cleanup_required
+     AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
+ END IF;
+ IF known_no_more_io IS DISTINCT FROM TRUE THEN
+   UPDATE learner_audio_upload_attempts SET io_state='unknown',multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
+     cleanup_required=cleanup_required OR fence.revision<>captured_revision OR fence.active_delete_command_id IS NOT NULL
+     WHERE upload_attempt_id=expected_upload;
+   RETURN FALSE; END IF;
+ IF disposition IS NULL OR disposition NOT IN('stored','absent','failed') THEN RAISE EXCEPTION 'invalid terminal IO fact'; END IF;
+ publish_allowed:=disposition='stored' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
+ UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition=disposition,
+   closed_at=clock_timestamp(),multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
+   cleanup_required=CASE WHEN disposition='absent' AND EXISTS(SELECT 1 FROM learner_audio_deleted_objects d WHERE d.object_ref=upload.object_ref) THEN FALSE ELSE cleanup_required OR NOT publish_allowed END
+   WHERE upload_attempt_id=expected_upload;
+ -- A later stored object invalidates earlier absence/deletion evidence for the
+ -- same key. Its old command stays pending until another exact deletion.
+ IF disposition<>'absent' AND NOT publish_allowed THEN
+   DELETE FROM learner_audio_deleted_objects WHERE object_ref=upload.object_ref;
+ END IF;
+ RETURN publish_allowed;
+END $$;
 
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -21175,6 +26553,67 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION transition_guest_json_answer_v1(p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb, p_transition jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE operation guest_participation_operations%ROWTYPE; attempt study_attempts_v2%ROWTYPE;
+BEGIN
+ operation:=require_guest_answer_operation_private_v1(p_capture->>'sourceOwnerId',p_operation,p_operation_id,
+  p_capture->>'communityId',p_capture->>'sessionId',p_capture->>'sessionItemId',(p_capture->>'attemptNumber')::INTEGER,'choice');
+ IF operation.state IS DISTINCT FROM 'reserved' THEN
+  RAISE EXCEPTION 'reserved answer required' USING ERRCODE='GP003'; END IF;
+ SELECT a.* INTO STRICT attempt FROM study_attempts_v2 a JOIN study_session_items_v2 i USING(session_item_id)
+  WHERE i.session_id=p_capture->>'sessionId' AND i.participation_owner_id=operation.source_owner_id
+   AND a.session_item_id=p_capture->>'sessionItemId' AND a.attempt_number=(p_capture->>'attemptNumber')::INTEGER
+   AND a.idempotency_key=operation.idempotency_key AND a.request_hash=operation.request_hash;
+ IF attempt.submission_kind IS DISTINCT FROM 'single_select'
+  OR attempt.submission_evidence IS DISTINCT FROM p_capture->'answer'
+  OR attempt.feedback_evidence IS DISTINCT FROM p_decision->'feedback'
+  OR attempt.accepted_at IS DISTINCT FROM (p_capture->>'acceptedAt')::TIMESTAMPTZ
+  OR p_transition->>'kind' IS NULL OR p_transition->>'kind' NOT IN('complete','advance','keep_current')
+  OR (attempt.attempt_state='retryable' AND p_transition->>'kind'='advance')
+  OR (attempt.attempt_state='spent' AND p_transition->>'kind'='keep_current') THEN
+  RAISE EXCEPTION 'actual shared continuation receipt changed' USING ERRCODE='GP003'; END IF;
+ PERFORM apply_guest_lesson_transition_private_v1(operation.source_owner_id,p_capture->>'sessionId',
+  (p_capture->>'priorPresentationCount')::INTEGER,p_transition->>'kind',(p_transition->>'nextPresentationCount')::INTEGER,
+  p_transition->>'completionReason',attempt.accepted_at);
+END $$;
+
+CREATE FUNCTION transition_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_transition jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE main_op guest_participation_operations%ROWTYPE; cp guest_study_spoken_checkpoints%ROWTYPE;
+ cap guest_study_spoken_captures%ROWTYPE; result JSONB; sess study_sessions_v2%ROWTYPE;
+BEGIN
+ SELECT * INTO STRICT cp FROM guest_study_spoken_checkpoints WHERE checkpoint_id=p_checkpoint AND source_owner_id=p_source;
+ SELECT * INTO STRICT cap FROM guest_study_spoken_captures WHERE capture_id=cp.capture_id;
+ result:=cp.success_result;
+ main_op:=require_guest_answer_operation_private_v1(p_source,p_operation,cap.operation_id,
+  cap.grading_context->>'communityId',cap.session_id,cap.session_item_id,cap.attempt_number,'spoken');
+ SELECT * INTO STRICT sess FROM study_sessions_v2 WHERE session_id=cap.session_id FOR UPDATE;
+ IF main_op.state IS DISTINCT FROM 'reserved' OR p_capture->>'captureId' IS DISTINCT FROM cap.capture_id
+  OR p_capture->'result' IS DISTINCT FROM result OR p_capture->>'operationId' IS DISTINCT FROM main_op.operation_id THEN
+  RAISE EXCEPTION 'original continuation capture changed' USING ERRCODE='GP005'; END IF;
+ IF p_decision->>'kind'='ungraded_rerecord' THEN
+  IF p_transition->>'kind' IS DISTINCT FROM 'unchanged'
+   OR (p_transition->>'nextPresentationCount')::INTEGER IS DISTINCT FROM sess.presentation_count::INTEGER
+   OR (p_capture->>'priorPresentationCount')::INTEGER IS DISTINCT FROM sess.presentation_count::INTEGER
+   OR EXISTS(SELECT 1 FROM study_attempts_v2 WHERE attempt_id=cap.attempt_id)
+   OR EXISTS(SELECT 1 FROM study_presentations_v2 WHERE presentation_id='study-presentation-'||cap.attempt_id) THEN
+   RAISE EXCEPTION 'rerecord cannot spend a lesson presentation' USING ERRCODE='GP003'; END IF;
+  RETURN;
+ END IF;
+ IF p_decision->>'kind' IS DISTINCT FROM 'graded' OR p_transition->>'kind'='keep_current'
+  OR NOT EXISTS(SELECT 1 FROM study_attempts_v2 WHERE attempt_id=cap.attempt_id AND session_item_id=cap.session_item_id
+    AND attempt_number=cap.attempt_number AND submission_kind='raw_audio' AND attempt_state='spent'
+    AND idempotency_key=cap.command_id AND request_hash=cap.request_hash AND learner_audio_artifact_id=cap.artifact_id) THEN
+  RAISE EXCEPTION 'actual graded receipt missing' USING ERRCODE='GP003'; END IF;
+ PERFORM apply_guest_lesson_transition_private_v1(p_source,cap.session_id,(p_capture->>'priorPresentationCount')::INTEGER,
+  p_transition->>'kind',(p_transition->>'nextPresentationCount')::INTEGER,p_transition->>'completionReason',(result->>'acceptedAt')::TIMESTAMPTZ);
+END $$;
 
 CREATE FUNCTION valid_study_answer_v1(candidate_answer jsonb, expected_kind text) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -23451,6 +28890,92 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION validate_guest_alias_state_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE source_id TEXT; source_state TEXT;
+BEGIN
+  IF TG_TABLE_NAME='guest_empty_owner_aliases' THEN source_id := NEW.source_owner_id;
+  ELSE source_id := NEW.owner_id; END IF;
+  SELECT state INTO STRICT source_state FROM participation_owners WHERE owner_id=source_id;
+  IF (source_state='aliased_empty') IS DISTINCT FROM
+     EXISTS(SELECT 1 FROM guest_empty_owner_aliases WHERE source_owner_id=source_id) THEN
+    RAISE EXCEPTION 'empty alias state and evidence disagree';
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE FUNCTION validate_guest_recovery_operation_private_v1(p_operation jsonb, p_kind text) RETURNS text
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $_$
+BEGIN
+ IF p_kind IS NULL OR p_kind NOT IN('learner_audio_deletion','learning_retention') OR p_operation IS NULL OR jsonb_typeof(p_operation) IS DISTINCT FROM 'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_operation))<>4
+  OR NOT(p_operation ?& ARRAY['sourceOwnerId','kind','idempotencyKey','requestHash'])
+  OR EXISTS(SELECT 1 FROM unnest(ARRAY['sourceOwnerId','kind','idempotencyKey','requestHash']) field WHERE jsonb_typeof(p_operation->field) IS DISTINCT FROM 'string')
+  OR char_length(p_operation->>'sourceOwnerId') NOT BETWEEN 1 AND 128 OR p_operation->>'kind' IS DISTINCT FROM p_kind
+  OR char_length(p_operation->>'idempotencyKey') NOT BETWEEN 1 AND 128 OR p_operation->>'requestHash' !~ '^[0-9a-f]{64}$' THEN
+  RAISE EXCEPTION 'invalid recovery operation' USING ERRCODE='GP005'; END IF;
+ RETURN p_operation->>'sourceOwnerId';
+END $_$;
+
+CREATE FUNCTION validate_guest_resource_operation_v1(p_source_id text, p_operation jsonb, p_expected_kind text) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $_$
+BEGIN
+ IF p_source_id IS NULL OR char_length(p_source_id) NOT BETWEEN 1 AND 128
+  OR p_expected_kind IS NULL OR p_expected_kind NOT IN('study_start','study_answer')
+  OR p_operation IS NULL OR jsonb_typeof(p_operation)<>'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_operation))<>4
+  OR NOT(p_operation ?& ARRAY['sourceOwnerId','kind','idempotencyKey','requestHash'])
+  OR jsonb_typeof(p_operation->'sourceOwnerId')<>'string'
+  OR jsonb_typeof(p_operation->'kind')<>'string'
+  OR p_operation->>'sourceOwnerId' IS DISTINCT FROM p_source_id
+  OR p_operation->>'kind' IS DISTINCT FROM p_expected_kind
+  OR jsonb_typeof(p_operation->'idempotencyKey')<>'string'
+  OR char_length(p_operation->>'idempotencyKey') NOT BETWEEN 1 AND 128
+  OR jsonb_typeof(p_operation->'requestHash')<>'string'
+  OR p_operation->>'requestHash' !~ '^[0-9a-f]{64}$'
+ THEN RAISE EXCEPTION 'invalid resource operation' USING ERRCODE='22023'; END IF;
+END $_$;
+
+CREATE FUNCTION validate_guest_resource_policy_v1(p_policy jsonb) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE field_name TEXT; amount NUMERIC;
+BEGIN
+ IF p_policy IS NULL OR jsonb_typeof(p_policy)<>'object'
+  OR (SELECT count(*) FROM jsonb_object_keys(p_policy))<>11
+  OR NOT(p_policy ?& ARRAY['version','costPolicyVersion','maximumOwnerActiveSessions',
+   'maximumOwnerReservedPaidCallsPerRollingDay','maximumGlobalActiveSessions',
+   'maximumGlobalPaidCallsPerRollingDay','maximumGlobalCostMicrosPerRollingDay',
+   'maximumOwnerCostMicrosPerRollingDay','maximumTrustedEdgeSessionsPerWindow',
+   'trustedEdgeWindowSeconds','maximumProviderCallCostMicros'])
+  OR p_policy->'maximumOwnerActiveSessions' IS DISTINCT FROM '2'::JSONB
+  OR p_policy->'maximumOwnerReservedPaidCallsPerRollingDay' IS DISTINCT FROM '60'::JSONB
+ THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
+ FOREACH field_name IN ARRAY ARRAY['version','costPolicyVersion'] LOOP
+  IF jsonb_typeof(p_policy->field_name)<>'string' OR char_length(p_policy->>field_name) NOT BETWEEN 1 AND 128
+   THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+ FOREACH field_name IN ARRAY ARRAY['maximumGlobalActiveSessions','maximumGlobalPaidCallsPerRollingDay',
+  'maximumTrustedEdgeSessionsPerWindow','trustedEdgeWindowSeconds'] LOOP
+  IF jsonb_typeof(p_policy->field_name)<>'number' THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
+  amount:=(p_policy->>field_name)::NUMERIC;
+  IF amount<1 OR amount>9007199254740991 OR trunc(amount)<>amount
+   THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+ FOREACH field_name IN ARRAY ARRAY['maximumGlobalCostMicrosPerRollingDay',
+  'maximumOwnerCostMicrosPerRollingDay','maximumProviderCallCostMicros'] LOOP
+  IF jsonb_typeof(p_policy->field_name)<>'string' OR p_policy->>field_name !~ '^[1-9][0-9]{0,77}$'
+   THEN RAISE EXCEPTION 'resource policy unavailable' USING ERRCODE='GP006'; END IF;
+ END LOOP;
+END $_$;
 
 CREATE FUNCTION validate_handle_claim_insert_v2() RETURNS trigger
     LANGUAGE plpgsql
@@ -27418,6 +32943,43 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION validate_study_attempt_audio_source_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF NEW.submission_kind='raw_audio' AND NOT EXISTS(
+   SELECT 1 FROM study_session_items_v2 i JOIN learner_audio_artifacts a
+      ON a.learner_audio_artifact_id=NEW.learner_audio_artifact_id
+    WHERE i.session_item_id=NEW.session_item_id AND a.participation_owner_id=i.participation_owner_id
+      AND a.source_kind='study' AND a.attempt_ref=NEW.attempt_id
+      AND a.content_digest IS NOT DISTINCT FROM (NEW.submission_evidence->>'audio_digest')
+      AND a.learner_audio_artifact_id IS NOT DISTINCT FROM (NEW.submission_evidence->>'learner_audio_artifact_id')
+      AND a.byte_size=NEW.audio_byte_size AND a.duration_ms=NEW.audio_duration_ms
+ ) THEN RAISE EXCEPTION 'attempt and original audio provenance disagree'; END IF;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION validate_study_command_audio_source_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE command_record study_spoken_answer_commands%ROWTYPE;
+BEGIN
+ -- A deferred event may carry an older digest from an earlier update. Validate
+ -- the final retained row, consistent with deferred FK behavior.
+ SELECT * INTO command_record FROM study_spoken_answer_commands WHERE command_id=NEW.command_id;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ IF NOT EXISTS(SELECT 1 FROM learner_audio_artifacts a WHERE
+   a.learner_audio_artifact_id=command_record.learner_audio_artifact_id
+   AND a.participation_owner_id=command_record.participation_owner_id
+   AND a.source_kind='study' AND a.attempt_ref=command_record.attempt_id
+   AND a.content_digest=command_record.audio_digest AND a.content_type=command_record.audio_content_type
+   AND a.byte_size=command_record.audio_byte_size AND a.duration_ms=command_record.audio_duration_ms) THEN
+   RAISE EXCEPTION 'spoken command and original audio provenance disagree'; END IF;
+ RETURN NULL;
+END $$;
 
 CREATE FUNCTION validate_text_content_submission_relations() RETURNS trigger
     LANGUAGE plpgsql
@@ -31426,6 +36988,272 @@ CREATE TABLE evidence_receipts (
     CONSTRAINT evidence_receipts_subject_binding_shape_check CHECK ((((subject_key_id IS NULL) AND (subject_binding_event_id IS NULL) AND (subject_binding_epoch IS NULL)) OR ((subject_key_id IS NOT NULL) AND (subject_binding_event_id IS NOT NULL) AND (subject_binding_epoch IS NOT NULL))))
 );
 
+CREATE TABLE guest_attachment_intents (
+    intent_id text NOT NULL,
+    owner_id text NOT NULL,
+    credential_source_owner_id text NOT NULL,
+    credential_id text NOT NULL,
+    origin text NOT NULL,
+    nonce_digest text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    target_revision bigint DEFAULT 0 NOT NULL,
+    target_account_id text,
+    target_session_digest text,
+    prepared_operation_id text,
+    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    CONSTRAINT guest_attachment_intents_check CHECK ((expires_at = (created_at + '00:15:00'::interval))),
+    CONSTRAINT guest_attachment_intents_check1 CHECK ((((target_revision = 0) AND (target_account_id IS NULL) AND (target_session_digest IS NULL)) OR ((target_revision > 0) AND (target_account_id IS NOT NULL) AND (target_session_digest IS NOT NULL)))),
+    CONSTRAINT guest_attachment_intents_check2 CHECK (((state <> 'awaiting_account'::text) OR (target_revision = 0))),
+    CONSTRAINT guest_attachment_intents_check3 CHECK (((state <> 'awaiting_confirmation'::text) OR (target_revision > 0))),
+    CONSTRAINT guest_attachment_intents_intent_id_check CHECK ((intent_id ~ '^gai_[A-Za-z0-9_-]{21}[AQgw]$'::text)),
+    CONSTRAINT guest_attachment_intents_nonce_digest_check CHECK ((nonce_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_attachment_intents_state_check CHECK ((state = ANY (ARRAY['awaiting_account'::text, 'awaiting_confirmation'::text, 'expired'::text, 'superseded'::text]))),
+    CONSTRAINT guest_attachment_intents_target_revision_check CHECK (((target_revision >= 0) AND (target_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT guest_attachment_intents_target_session_digest_check CHECK ((target_session_digest ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE guest_credentials (
+    credential_id text NOT NULL,
+    owner_id text NOT NULL,
+    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    origin text NOT NULL,
+    secret_digest text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    pending_expires_at timestamp with time zone NOT NULL,
+    confirmed_at timestamp with time zone,
+    session_until timestamp with time zone,
+    predecessor_id text,
+    revoked_at timestamp with time zone,
+    revocation_reason text,
+    CONSTRAINT guest_credentials_check CHECK ((pending_expires_at = (created_at + '00:15:00'::interval))),
+    CONSTRAINT guest_credentials_check1 CHECK ((((state = ANY (ARRAY['pending_bootstrap'::text, 'pending_successor'::text])) AND (confirmed_at IS NULL) AND (session_until IS NULL)) OR ((state = 'confirmed'::text) AND (confirmed_at IS NOT NULL) AND (session_until IS NOT NULL)) OR (state = 'revoked'::text))),
+    CONSTRAINT guest_credentials_check2 CHECK (((state = 'revoked'::text) = (revoked_at IS NOT NULL))),
+    CONSTRAINT guest_credentials_check3 CHECK (((state = 'revoked'::text) = (revocation_reason IS NOT NULL))),
+    CONSTRAINT guest_credentials_check4 CHECK (((state <> 'pending_bootstrap'::text) OR (predecessor_id IS NULL))),
+    CONSTRAINT guest_credentials_check5 CHECK (((state <> 'pending_successor'::text) OR (predecessor_id IS NOT NULL))),
+    CONSTRAINT guest_credentials_credential_id_check CHECK ((credential_id ~ '^[A-Za-z0-9_-]{21}[AQgw]$'::text)),
+    CONSTRAINT guest_credentials_secret_digest_check CHECK ((secret_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_credentials_state_check CHECK ((state = ANY (ARRAY['pending_bootstrap'::text, 'pending_successor'::text, 'confirmed'::text, 'revoked'::text]))),
+    CONSTRAINT guest_predecessor_distinct CHECK (((predecessor_id IS NULL) OR (predecessor_id <> credential_id))),
+    CONSTRAINT guest_revocation_reason_closed CHECK (((revocation_reason IS NULL) OR (revocation_reason = ANY (ARRAY['rotation_acknowledged'::text, 'successor_superseded'::text, 'pending_expired'::text, 'empty_cleanup'::text, 'attachment_bound'::text]))))
+);
+
+CREATE TABLE guest_empty_owner_aliases (
+    source_owner_id text NOT NULL,
+    canonical_owner_id text NOT NULL,
+    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    origin text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT guest_empty_owner_aliases_check CHECK ((source_owner_id <> canonical_owner_id))
+);
+
+CREATE TABLE guest_learning_preferences (
+    owner_id text NOT NULL,
+    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    mode text NOT NULL,
+    changed_at timestamp with time zone NOT NULL,
+    operation_id text NOT NULL,
+    CONSTRAINT guest_learning_preferences_mode_check CHECK ((mode = ANY (ARRAY['private_learning'::text, 'ephemeral'::text])))
+);
+
+CREATE TABLE guest_learning_schema_phase (
+    singleton boolean NOT NULL,
+    phase text NOT NULL,
+    CONSTRAINT guest_learning_schema_phase_phase_check CHECK ((phase = 'practice_only_owner_audio_producer_history_v5'::text)),
+    CONSTRAINT guest_learning_schema_phase_singleton_check CHECK (singleton)
+);
+
+CREATE TABLE guest_resource_cost_policy_snapshots (
+    cost_policy_version text NOT NULL,
+    maximum_provider_cost_micros numeric NOT NULL,
+    CONSTRAINT guest_resource_cost_policy_s_maximum_provider_cost_micros_check CHECK (((maximum_provider_cost_micros > (0)::numeric) AND (scale(maximum_provider_cost_micros) = 0))),
+    CONSTRAINT guest_resource_cost_policy_snapshots_cost_policy_version_check CHECK (((char_length(cost_policy_version) >= 1) AND (char_length(cost_policy_version) <= 128)))
+);
+
+CREATE TABLE guest_resource_edge_locks (
+    fingerprint text NOT NULL,
+    CONSTRAINT guest_resource_edge_locks_fingerprint_check CHECK (((char_length(fingerprint) >= 1) AND (char_length(fingerprint) <= 256)))
+);
+
+CREATE TABLE guest_resource_global_lock (
+    singleton boolean NOT NULL,
+    CONSTRAINT guest_resource_global_lock_singleton_check CHECK (singleton)
+);
+
+CREATE TABLE guest_resource_policy_snapshots (
+    policy_version text NOT NULL,
+    policy jsonb NOT NULL,
+    CONSTRAINT guest_resource_policy_snapshots_policy_check CHECK ((jsonb_typeof(policy) = 'object'::text)),
+    CONSTRAINT guest_resource_policy_snapshots_policy_version_check CHECK (((char_length(policy_version) >= 1) AND (char_length(policy_version) <= 128)))
+);
+
+CREATE TABLE guest_resource_provider_calls (
+    call_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_kind text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reservation_id text NOT NULL,
+    session_id text NOT NULL,
+    units integer NOT NULL,
+    cost_policy_version text NOT NULL,
+    maximum_provider_cost_micros numeric NOT NULL,
+    held_cost_micros numeric NOT NULL,
+    disposition text NOT NULL,
+    checkpoint_id text,
+    actual_cost_micros numeric,
+    created_at timestamp with time zone NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT guest_resource_provider_call_maximum_provider_cost_micros_check CHECK (((maximum_provider_cost_micros > (0)::numeric) AND (scale(maximum_provider_cost_micros) = 0))),
+    CONSTRAINT guest_resource_provider_calls_check CHECK (((held_cost_micros >= maximum_provider_cost_micros) AND (scale(held_cost_micros) = 0))),
+    CONSTRAINT guest_resource_provider_calls_check1 CHECK ((((disposition = ANY (ARRAY['reserved'::text, 'unknown'::text])) AND (checkpoint_id IS NULL) AND (actual_cost_micros IS NULL) AND (resolved_at IS NULL)) OR ((disposition = 'completed'::text) AND (checkpoint_id IS NOT NULL) AND (actual_cost_micros >= (0)::numeric) AND (actual_cost_micros <= maximum_provider_cost_micros) AND (scale(actual_cost_micros) = 0) AND (resolved_at IS NOT NULL)) OR ((disposition = ANY (ARRAY['failed'::text, 'not_invoked'::text])) AND (checkpoint_id IS NULL) AND (actual_cost_micros IS NULL) AND (resolved_at IS NOT NULL)))),
+    CONSTRAINT guest_resource_provider_calls_check2 CHECK (((resolved_at IS NULL) OR (resolved_at >= created_at))),
+    CONSTRAINT guest_resource_provider_calls_disposition_check CHECK ((disposition = ANY (ARRAY['reserved'::text, 'unknown'::text, 'completed'::text, 'failed'::text, 'not_invoked'::text]))),
+    CONSTRAINT guest_resource_provider_calls_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_resource_provider_calls_operation_kind_check CHECK ((operation_kind = 'study_answer'::text)),
+    CONSTRAINT guest_resource_provider_calls_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_resource_provider_calls_units_check CHECK ((units = 1))
+);
+
+CREATE TABLE guest_resource_release_receipts (
+    receipt_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_kind text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reservation_id text NOT NULL,
+    session_id text NOT NULL,
+    terminal_state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT guest_resource_release_receipts_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_resource_release_receipts_operation_kind_check CHECK ((operation_kind = ANY (ARRAY['study_start'::text, 'study_answer'::text]))),
+    CONSTRAINT guest_resource_release_receipts_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_resource_release_receipts_terminal_state_check CHECK ((terminal_state = ANY (ARRAY['completed'::text, 'expired'::text])))
+);
+
+CREATE TABLE guest_resource_session_reservations (
+    reservation_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_kind text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    session_id text NOT NULL,
+    edge_fingerprint text NOT NULL,
+    policy_version text NOT NULL,
+    cost_policy_version text NOT NULL,
+    initial_units integer NOT NULL,
+    remaining_units integer NOT NULL,
+    unit_hold_micros numeric NOT NULL,
+    worst_case_cost_micros numeric NOT NULL,
+    state text NOT NULL,
+    original_result jsonb NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    reservation_expires_at timestamp with time zone NOT NULL,
+    released_at timestamp with time zone,
+    CONSTRAINT guest_resource_session_reservation_worst_case_cost_micros_check CHECK (((worst_case_cost_micros >= (0)::numeric) AND (scale(worst_case_cost_micros) = 0))),
+    CONSTRAINT guest_resource_session_reservations_check CHECK (((remaining_units >= 0) AND (remaining_units <= initial_units))),
+    CONSTRAINT guest_resource_session_reservations_check1 CHECK ((worst_case_cost_micros = ((initial_units)::numeric * unit_hold_micros))),
+    CONSTRAINT guest_resource_session_reservations_check2 CHECK ((reservation_expires_at = (created_at + '24:00:00'::interval))),
+    CONSTRAINT guest_resource_session_reservations_check3 CHECK ((((state = 'active'::text) AND (released_at IS NULL)) OR ((state = 'refused'::text) AND (remaining_units = 0) AND (released_at IS NULL)) OR ((state = ANY (ARRAY['completed'::text, 'expired'::text])) AND (remaining_units = 0) AND (released_at IS NOT NULL)))),
+    CONSTRAINT guest_resource_session_reservations_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_resource_session_reservations_initial_units_check CHECK (((initial_units >= 0) AND (initial_units <= 40))),
+    CONSTRAINT guest_resource_session_reservations_operation_kind_check CHECK ((operation_kind = 'study_start'::text)),
+    CONSTRAINT guest_resource_session_reservations_original_result_check CHECK ((jsonb_typeof(original_result) = 'object'::text)),
+    CONSTRAINT guest_resource_session_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_resource_session_reservations_session_id_check CHECK (((char_length(session_id) >= 1) AND (char_length(session_id) <= 128))),
+    CONSTRAINT guest_resource_session_reservations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'refused'::text, 'completed'::text, 'expired'::text]))),
+    CONSTRAINT guest_resource_session_reservations_unit_hold_micros_check CHECK (((unit_hold_micros > (0)::numeric) AND (scale(unit_hold_micros) = 0)))
+);
+
+CREATE TABLE guest_secret_issuance_operations (
+    origin text NOT NULL,
+    issuance_kind text NOT NULL,
+    resource_scope text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    source_owner_id text NOT NULL,
+    credential_id text,
+    credential_source_owner_id text,
+    source_owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    intent_id text,
+    operation_id text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT guest_secret_issuance_operations_check CHECK ((((issuance_kind = ANY (ARRAY['bootstrap'::text, 'rotation'::text])) AND (credential_id IS NOT NULL) AND (credential_source_owner_id IS NOT NULL) AND (intent_id IS NULL)) OR ((issuance_kind = 'attachment_intent'::text) AND (credential_id IS NULL) AND (credential_source_owner_id IS NULL) AND (intent_id IS NOT NULL)))),
+    CONSTRAINT guest_secret_issuance_operations_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_secret_issuance_operations_issuance_kind_check CHECK ((issuance_kind = ANY (ARRAY['bootstrap'::text, 'rotation'::text, 'attachment_intent'::text]))),
+    CONSTRAINT guest_secret_issuance_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE guest_study_spoken_captures (
+    capture_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    command_id text NOT NULL,
+    original_lease_token text NOT NULL,
+    original_lease_digest text NOT NULL,
+    session_id text NOT NULL,
+    session_item_id text NOT NULL,
+    attempt_number integer NOT NULL,
+    attempt_id text NOT NULL,
+    artifact_id text NOT NULL,
+    provider_call_id text NOT NULL,
+    resource_reservation_id text NOT NULL,
+    upload_attempt_id text NOT NULL,
+    deletion_fence_revision bigint NOT NULL,
+    audio_digest text NOT NULL,
+    audio_content_type text NOT NULL,
+    audio_byte_size integer NOT NULL,
+    audio_duration_ms integer NOT NULL,
+    provider_retention text NOT NULL,
+    grading_context jsonb NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    source_owner_kind text DEFAULT 'guest'::text NOT NULL,
+    captured_platform_retention text,
+    captured_retention_expires_at timestamp with time zone,
+    CONSTRAINT guest_capture_retention_shape CHECK (((((captured_platform_retention IS NULL) AND (captured_retention_expires_at IS NULL)) OR ((captured_platform_retention = ANY (ARRAY['private_learning'::text, 'ephemeral'::text])) AND (captured_retention_expires_at IS NOT NULL) AND (captured_retention_expires_at > created_at) AND ((captured_platform_retention <> 'ephemeral'::text) OR (captured_retention_expires_at <= (created_at + '24:00:00'::interval))))) IS TRUE)),
+    CONSTRAINT guest_study_spoken_captures_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
+    CONSTRAINT guest_study_spoken_captures_audio_byte_size_check CHECK (((audio_byte_size >= 1) AND (audio_byte_size <= 524288))),
+    CONSTRAINT guest_study_spoken_captures_audio_content_type_check CHECK ((audio_content_type = ANY (ARRAY['audio/webm'::text, 'audio/ogg'::text, 'audio/mp4'::text, 'audio/wav'::text]))),
+    CONSTRAINT guest_study_spoken_captures_audio_digest_check CHECK ((audio_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_study_spoken_captures_audio_duration_ms_check CHECK (((audio_duration_ms >= 1) AND (audio_duration_ms <= 60000))),
+    CONSTRAINT guest_study_spoken_captures_check CHECK ((original_lease_digest = encode(sha256(convert_to(original_lease_token, 'UTF8'::name)), 'hex'::text))),
+    CONSTRAINT guest_study_spoken_captures_deletion_fence_revision_check CHECK (((deletion_fence_revision >= 0) AND (deletion_fence_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT guest_study_spoken_captures_grading_context_check CHECK (((jsonb_typeof(grading_context) = 'object'::text) AND (octet_length((grading_context)::text) <= 65536))),
+    CONSTRAINT guest_study_spoken_captures_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT guest_study_spoken_captures_original_lease_digest_check CHECK ((original_lease_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_study_spoken_captures_original_lease_token_check CHECK (((char_length(original_lease_token) >= 1) AND (char_length(original_lease_token) <= 256))),
+    CONSTRAINT guest_study_spoken_captures_provider_retention_check CHECK ((provider_retention = ANY (ARRAY['not_stored'::text, 'stored'::text]))),
+    CONSTRAINT guest_study_spoken_captures_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_study_spoken_captures_source_owner_kind_check CHECK ((source_owner_kind = 'guest'::text))
+);
+
+CREATE TABLE guest_study_spoken_checkpoints (
+    checkpoint_id text NOT NULL,
+    capture_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    provider_call_id text NOT NULL,
+    resource_reservation_id text NOT NULL,
+    success_result jsonb NOT NULL,
+    provider_result jsonb NOT NULL,
+    payload_sha256 text NOT NULL,
+    charge_basis text NOT NULL,
+    charged_cost_micros numeric NOT NULL,
+    persisted_at timestamp with time zone NOT NULL,
+    CONSTRAINT guest_study_spoken_checkpoints_charge_basis_check CHECK ((charge_basis = 'reserved_ceiling_v1'::text)),
+    CONSTRAINT guest_study_spoken_checkpoints_charged_cost_micros_check CHECK (((charged_cost_micros > (0)::numeric) AND (scale(charged_cost_micros) = 0))),
+    CONSTRAINT guest_study_spoken_checkpoints_check CHECK ((payload_sha256 = encode(sha256(convert_to((jsonb_build_array(success_result, provider_result))::text, 'UTF8'::name)), 'hex'::text))),
+    CONSTRAINT guest_study_spoken_checkpoints_check1 CHECK ((((provider_result ->> 'transcriptSha256'::text) = encode(sha256(convert_to((success_result #>> '{grade,heardTranscript}'::text[]), 'UTF8'::name)), 'hex'::text)) IS TRUE)),
+    CONSTRAINT guest_study_spoken_checkpoints_payload_sha256_check CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT guest_study_spoken_checkpoints_provider_result_check CHECK (((jsonb_typeof(provider_result) = 'object'::text) AND (octet_length((provider_result)::text) <= 32768))),
+    CONSTRAINT guest_study_spoken_checkpoints_provider_result_check1 CHECK ((((provider_result ?& ARRAY['detectedLanguage'::text, 'detectedLanguageConfidence'::text, 'transcriptSha256'::text]) AND ((provider_result - ARRAY['detectedLanguage'::text, 'detectedLanguageConfidence'::text, 'transcriptSha256'::text]) = '{}'::jsonb) AND (jsonb_typeof((provider_result -> 'transcriptSha256'::text)) = 'string'::text) AND ((provider_result ->> 'transcriptSha256'::text) ~ '^[0-9a-f]{64}$'::text)) IS TRUE)),
+    CONSTRAINT guest_study_spoken_checkpoints_success_result_check CHECK (((jsonb_typeof(success_result) = 'object'::text) AND (octet_length((success_result)::text) <= 131072)))
+);
+
 CREATE TABLE handle_account_directory_bindings (
     binding_kind text NOT NULL,
     binding_version text NOT NULL,
@@ -32710,9 +38538,63 @@ CREATE TABLE karaoke_sessions (
     CONSTRAINT karaoke_sessions_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
 );
 
+CREATE TABLE learner_audio_account_producer_captures (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    account_id text NOT NULL,
+    owner_kind text GENERATED ALWAYS AS ('account'::text) STORED,
+    artifact_id text NOT NULL,
+    source_kind text NOT NULL,
+    attempt_ref text NOT NULL,
+    command_ref text NOT NULL,
+    producer_generation text NOT NULL,
+    session_id text,
+    session_item_id text,
+    attempt_number integer,
+    idempotency_key text,
+    request_hash text,
+    community_id text,
+    item_snapshot jsonb,
+    reservation_ref text NOT NULL,
+    captured_revision bigint NOT NULL,
+    expected_object_ref text NOT NULL,
+    content_digest text,
+    content_type text NOT NULL,
+    byte_size bigint,
+    duration_ms integer,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT learner_audio_account_producer_captures_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT learner_audio_account_producer_captures_captured_revision_check CHECK (((captured_revision >= 0) AND (captured_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT learner_audio_account_producer_captures_check CHECK ((((source_kind = 'study'::text) AND (content_digest IS NOT NULL) AND (byte_size IS NOT NULL) AND (duration_ms IS NOT NULL) AND (session_id IS NOT NULL) AND (session_item_id IS NOT NULL) AND (attempt_number IS NOT NULL) AND (attempt_number > 0) AND (idempotency_key IS NOT NULL) AND (request_hash IS NOT NULL) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND (community_id IS NOT NULL) AND (item_snapshot IS NOT NULL) AND (jsonb_typeof(item_snapshot) = 'object'::text)) OR ((source_kind = 'karaoke'::text) AND (session_id IS NULL) AND (session_item_id IS NULL) AND (attempt_number IS NULL) AND (idempotency_key IS NULL) AND (request_hash IS NULL) AND (community_id IS NULL) AND (item_snapshot IS NULL)))),
+    CONSTRAINT learner_audio_account_producer_captures_content_digest_check CHECK ((content_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_account_producer_captures_duration_ms_check CHECK ((duration_ms > 0)),
+    CONSTRAINT learner_audio_account_producer_captures_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
+);
+
+CREATE TABLE learner_audio_account_provider_calls (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT learner_audio_account_provider_calls_check CHECK (((state = ANY (ARRAY['known_failed'::text, 'succeeded'::text])) = (resolved_at IS NOT NULL))),
+    CONSTRAINT learner_audio_account_provider_calls_state_check CHECK ((state = ANY (ARRAY['registered'::text, 'started'::text, 'unknown'::text, 'known_failed'::text, 'succeeded'::text])))
+);
+
+CREATE TABLE learner_audio_account_spoken_checkpoints (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    successful_result jsonb NOT NULL,
+    payload_sha256 text NOT NULL,
+    persisted_at timestamp with time zone NOT NULL,
+    CONSTRAINT learner_audio_account_spoken_checkpoint_successful_result_check CHECK (((jsonb_typeof(successful_result) = 'object'::text) AND (octet_length((successful_result)::text) <= 131072))),
+    CONSTRAINT learner_audio_account_spoken_checkpoints_check CHECK ((payload_sha256 = encode(sha256(convert_to((successful_result)::text, 'UTF8'::name)), 'hex'::text))),
+    CONSTRAINT learner_audio_account_spoken_checkpoints_payload_sha256_check CHECK ((payload_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE learner_audio_artifacts (
     learner_audio_artifact_id text NOT NULL,
-    account_id text NOT NULL,
+    account_id text,
     source_kind text NOT NULL,
     attempt_ref text NOT NULL,
     expected_object_ref text NOT NULL,
@@ -32727,6 +38609,9 @@ CREATE TABLE learner_audio_artifacts (
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     deleted_at timestamp with time zone,
+    participation_owner_id text NOT NULL,
+    participation_owner_kind text NOT NULL,
+    CONSTRAINT learner_artifact_source_shape CHECK ((((participation_owner_kind = 'account'::text) AND (account_id IS NOT NULL)) OR ((participation_owner_kind = 'guest'::text) AND (account_id IS NULL) AND (source_kind = 'study'::text)))),
     CONSTRAINT learner_audio_artifacts_byte_size_check CHECK ((byte_size > 0)),
     CONSTRAINT learner_audio_artifacts_check CHECK (((recording_state = 'deleted'::text) = (deleted_at IS NOT NULL))),
     CONSTRAINT learner_audio_artifacts_check1 CHECK (((recording_state = 'stored'::text) = (object_ref IS NOT NULL))),
@@ -32737,6 +38622,145 @@ CREATE TABLE learner_audio_artifacts (
     CONSTRAINT learner_audio_artifacts_provider_retention_check CHECK ((provider_retention = ANY (ARRAY['not_stored'::text, 'stored'::text]))),
     CONSTRAINT learner_audio_artifacts_recording_state_check CHECK ((recording_state = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'deleted'::text]))),
     CONSTRAINT learner_audio_artifacts_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
+);
+
+CREATE TABLE learner_audio_delete_batch_items (
+    batch_id text NOT NULL,
+    ordinal integer NOT NULL,
+    owner_id text NOT NULL,
+    artifact_id text NOT NULL,
+    object_ref text NOT NULL,
+    CONSTRAINT learner_audio_delete_batch_items_ordinal_check CHECK (((ordinal >= 1) AND (ordinal <= 1000)))
+);
+
+CREATE TABLE learner_audio_delete_batches (
+    batch_id text NOT NULL,
+    command_id text NOT NULL,
+    revision bigint NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT learner_audio_delete_batches_batch_id_check CHECK (((char_length(batch_id) >= 1) AND (char_length(batch_id) <= 128))),
+    CONSTRAINT learner_audio_delete_batches_check CHECK (((state = 'confirmed'::text) = (deleted_at IS NOT NULL))),
+    CONSTRAINT learner_audio_delete_batches_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'failed'::text, 'unknown'::text, 'confirmed'::text])))
+);
+
+CREATE TABLE learner_audio_delete_commands (
+    command_id text NOT NULL,
+    source_owner_id text NOT NULL,
+    operation_kind text GENERATED ALWAYS AS ('learner_audio_deletion'::text) STORED,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    revision bigint NOT NULL,
+    state text NOT NULL,
+    provider_disposition text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    final_result jsonb,
+    CONSTRAINT learner_audio_delete_commands_check CHECK ((((state = 'pending'::text) AND (completed_at IS NULL) AND (final_result IS NULL)) OR ((state = 'completed'::text) AND (completed_at IS NOT NULL) AND (final_result IS NOT NULL)))),
+    CONSTRAINT learner_audio_delete_commands_command_id_check CHECK (((char_length(command_id) >= 1) AND (char_length(command_id) <= 128))),
+    CONSTRAINT learner_audio_delete_commands_final_result_check CHECK (((final_result IS NULL) OR ((jsonb_typeof(final_result) = 'object'::text) AND (octet_length((final_result)::text) <= 131072)))),
+    CONSTRAINT learner_audio_delete_commands_idempotency_key_check CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 128))),
+    CONSTRAINT learner_audio_delete_commands_provider_disposition_check CHECK ((provider_disposition = ANY (ARRAY['not_stored'::text, 'deletion_confirmed'::text, 'pending'::text, 'unknown'::text, 'unavailable'::text]))),
+    CONSTRAINT learner_audio_delete_commands_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_delete_commands_revision_check CHECK (((revision >= 1) AND (revision <= '9007199254740991'::bigint))),
+    CONSTRAINT learner_audio_delete_commands_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'completed'::text])))
+);
+
+CREATE TABLE learner_audio_delete_sources (
+    command_id text NOT NULL,
+    owner_id text NOT NULL
+);
+
+CREATE TABLE learner_audio_delete_target_artifacts (
+    command_id text NOT NULL,
+    artifact_id text NOT NULL,
+    owner_id text NOT NULL,
+    original_state text NOT NULL,
+    source_kind text NOT NULL,
+    attempt_ref text NOT NULL,
+    CONSTRAINT learner_audio_delete_target_artifacts_original_state_check CHECK ((original_state = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'unpublished'::text]))),
+    CONSTRAINT learner_audio_delete_target_artifacts_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
+);
+
+CREATE TABLE learner_audio_deleted_objects (
+    object_ref text NOT NULL,
+    batch_id text NOT NULL,
+    deleted_at timestamp with time zone NOT NULL
+);
+
+CREATE SEQUENCE learner_audio_fence_revision_v1
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9007199254740991
+    CACHE 1;
+
+CREATE TABLE learner_audio_object_names (
+    object_ref text NOT NULL,
+    owner_id text NOT NULL,
+    artifact_id text NOT NULL,
+    source_kind text NOT NULL,
+    attempt_ref text NOT NULL,
+    CONSTRAINT learner_audio_object_names_artifact_id_check CHECK (((char_length(artifact_id) >= 1) AND (char_length(artifact_id) <= 256))),
+    CONSTRAINT learner_audio_object_names_object_ref_check CHECK (((octet_length(object_ref) >= 1) AND (octet_length(object_ref) <= 2048))),
+    CONSTRAINT learner_audio_object_names_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text])))
+);
+
+CREATE TABLE learner_audio_owner_fences (
+    owner_id text NOT NULL,
+    revision bigint DEFAULT 0 NOT NULL,
+    active_delete_command_id text,
+    CONSTRAINT learner_audio_owner_fences_revision_check CHECK (((revision >= 0) AND (revision <= '9007199254740991'::bigint)))
+);
+
+CREATE TABLE learner_audio_upload_attempts (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    artifact_id text NOT NULL,
+    object_ref text NOT NULL,
+    source_kind text NOT NULL,
+    attempt_ref text NOT NULL,
+    command_ref text NOT NULL,
+    reservation_ref text NOT NULL,
+    captured_revision bigint NOT NULL,
+    io_state text NOT NULL,
+    storage_disposition text,
+    multipart_upload_id text,
+    cleanup_required boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    closed_at timestamp with time zone,
+    CONSTRAINT learner_audio_upload_attempts_captured_revision_check CHECK (((captured_revision >= 0) AND (captured_revision <= '9007199254740991'::bigint))),
+    CONSTRAINT learner_audio_upload_attempts_check CHECK ((((io_state = 'closed'::text) AND (closed_at IS NOT NULL) AND (storage_disposition IS NOT NULL)) OR ((io_state <> 'closed'::text) AND (closed_at IS NULL) AND (storage_disposition IS NULL)))),
+    CONSTRAINT learner_audio_upload_attempts_io_state_check CHECK ((io_state = ANY (ARRAY['registered'::text, 'writing'::text, 'unknown'::text, 'closed'::text]))),
+    CONSTRAINT learner_audio_upload_attempts_source_kind_check CHECK ((source_kind = ANY (ARRAY['study'::text, 'karaoke'::text]))),
+    CONSTRAINT learner_audio_upload_attempts_storage_disposition_check CHECK ((storage_disposition = ANY (ARRAY['stored'::text, 'absent'::text, 'failed'::text]))),
+    CONSTRAINT learner_audio_upload_attempts_upload_attempt_id_check CHECK (((char_length(upload_attempt_id) >= 1) AND (char_length(upload_attempt_id) <= 128)))
+);
+
+CREATE TABLE learner_audio_upload_cleanup_commands (
+    cleanup_id text NOT NULL,
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    object_ref text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT learner_audio_upload_cleanup_commands_check CHECK (((state = 'completed'::text) = (completed_at IS NOT NULL))),
+    CONSTRAINT learner_audio_upload_cleanup_commands_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'completed'::text])))
+);
+
+CREATE TABLE learner_audio_upload_terminal_facts (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    content_digest text NOT NULL,
+    content_type text NOT NULL,
+    byte_size bigint NOT NULL,
+    duration_ms integer NOT NULL,
+    settled_at timestamp with time zone NOT NULL,
+    CONSTRAINT learner_audio_upload_terminal_facts_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT learner_audio_upload_terminal_facts_content_digest_check CHECK ((content_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_upload_terminal_facts_duration_ms_check CHECK ((duration_ms > 0))
 );
 
 CREATE TABLE localization_lyric_line_lineage (
@@ -35140,6 +41164,31 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE participation_owner_clocks (
+    owner_id text NOT NULL,
+    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
+    timezone text NOT NULL,
+    timezone_updated_at timestamp with time zone NOT NULL,
+    next_change_allowed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT participation_owner_clocks_check CHECK ((next_change_allowed_at = (timezone_updated_at + '168:00:00'::interval))),
+    CONSTRAINT participation_owner_clocks_timezone_check CHECK (((btrim(timezone) = timezone) AND ((octet_length(timezone) >= 1) AND (octet_length(timezone) <= 128))))
+);
+
+CREATE TABLE participation_owners (
+    owner_id text NOT NULL,
+    kind text NOT NULL,
+    account_id text,
+    guest_origin text,
+    state text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT participation_owners_check CHECK ((((kind = 'account'::text) AND (account_id IS NOT NULL) AND (guest_origin IS NULL) AND (state <> 'aliased_empty'::text)) OR ((kind = 'guest'::text) AND (account_id IS NULL) AND (guest_origin IS NOT NULL)))),
+    CONSTRAINT participation_owners_guest_origin_check CHECK (((guest_origin IS NULL) OR ((guest_origin ~~ 'https://%'::text) AND (octet_length(guest_origin) <= 2048)))),
+    CONSTRAINT participation_owners_kind_check CHECK ((kind = ANY (ARRAY['account'::text, 'guest'::text]))),
+    CONSTRAINT participation_owners_owner_id_check CHECK ((owner_id ~ '^owner_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)),
+    CONSTRAINT participation_owners_state_check CHECK ((state = ANY (ARRAY['empty'::text, 'established'::text, 'aliased_empty'::text])))
+);
+
 CREATE TABLE persona_activity_preparation_actions (
     account_id text NOT NULL,
     community_id text NOT NULL,
@@ -37345,7 +43394,7 @@ CREATE TABLE study_presentations_v2 (
 
 CREATE TABLE study_review_items (
     review_item_id text NOT NULL,
-    account_id text NOT NULL,
+    account_id text,
     exercise_review_key text NOT NULL,
     current_exercise_version_id text NOT NULL,
     scheduler_policy_revision text NOT NULL,
@@ -37368,6 +43417,8 @@ CREATE TABLE study_review_items (
     review_state text DEFAULT 'new'::text NOT NULL,
     due_at timestamp with time zone,
     last_reviewed_at timestamp with time zone,
+    participation_owner_id text NOT NULL,
+    participation_owner_kind text NOT NULL,
     CONSTRAINT study_review_items_difficulty_check CHECK (((difficulty >= (1)::numeric) AND (difficulty <= (10)::numeric))),
     CONSTRAINT study_review_items_exercise_kind_check CHECK ((exercise_kind = ANY (ARRAY['say_it_back'::text, 'translation_choice'::text]))),
     CONSTRAINT study_review_items_lapses_check CHECK ((lapses >= 0)),
@@ -37381,7 +43432,8 @@ CREATE TABLE study_review_items (
     CONSTRAINT study_review_items_stability_check CHECK (((stability >= 0.25) AND (stability <= (365)::numeric))),
     CONSTRAINT study_review_language_shape CHECK ((((exercise_kind = 'say_it_back'::text) AND (target_language IS NULL) AND (learner_band IS NULL)) OR ((exercise_kind = 'translation_choice'::text) AND (target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
     CONSTRAINT study_review_lifecycle_shape CHECK ((((lifecycle_status = 'active'::text) AND (retired_at IS NULL)) OR ((lifecycle_status = 'retired'::text) AND (retired_at IS NOT NULL)))),
-    CONSTRAINT study_review_scheduler_version CHECK ((scheduler_policy_revision = 'study_review_schedule_v1'::text))
+    CONSTRAINT study_review_scheduler_version CHECK ((scheduler_policy_revision = 'study_review_schedule_v1'::text)),
+    CONSTRAINT study_review_source_shape CHECK ((((participation_owner_kind = 'account'::text) AND (account_id IS NOT NULL)) OR ((participation_owner_kind = 'guest'::text) AND (account_id IS NULL))))
 );
 
 CREATE TABLE study_session_answers (
@@ -37435,7 +43487,10 @@ CREATE TABLE study_session_items_v2 (
     item_snapshot jsonb NOT NULL,
     maximum_attempts bigint NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    account_id text NOT NULL,
+    account_id text,
+    participation_owner_id text NOT NULL,
+    participation_owner_kind text NOT NULL,
+    CONSTRAINT study_item_source_shape CHECK ((((participation_owner_kind = 'account'::text) AND (account_id IS NOT NULL)) OR ((participation_owner_kind = 'guest'::text) AND (account_id IS NULL)))),
     CONSTRAINT study_session_items_v2_item_snapshot_check CHECK ((jsonb_typeof(item_snapshot) = 'object'::text)),
     CONSTRAINT study_session_items_v2_maximum_attempts_check CHECK ((maximum_attempts = 3)),
     CONSTRAINT study_session_items_v2_ordinal_check CHECK (((ordinal >= 0) AND (ordinal <= 9))),
@@ -37491,8 +43546,8 @@ CREATE TABLE study_sessions (
 
 CREATE TABLE study_sessions_v2 (
     session_id text NOT NULL,
-    account_id text NOT NULL,
-    persona_id text NOT NULL,
+    account_id text,
+    persona_id text,
     community_id text NOT NULL,
     post_id text NOT NULL,
     audio_revision bigint NOT NULL,
@@ -37517,11 +43572,29 @@ CREATE TABLE study_sessions_v2 (
     presentation_count bigint DEFAULT 0 NOT NULL,
     completion_reason text,
     telegram_practice_only boolean DEFAULT false NOT NULL,
+    participation_owner_id text NOT NULL,
+    participation_owner_kind text NOT NULL,
+    guest_reward_mode text,
+    guest_reward_terms jsonb,
+    guest_start_operation_id text,
+    guest_disclosure_version text,
+    guest_disclosure_accepted boolean,
+    guest_resource_reservation_id text,
+    guest_spoken_call_plan jsonb,
+    CONSTRAINT study_guest_disclosure_true_v1 CHECK (((participation_owner_kind <> 'guest'::text) OR ((guest_disclosure_accepted IS TRUE) AND ((char_length(guest_disclosure_version) >= 1) AND (char_length(guest_disclosure_version) <= 128)) AND (guest_disclosure_version !~ '[[:space:][:cntrl:]]'::text)))),
+    CONSTRAINT study_guest_resource_source_shape_v1 CHECK ((((participation_owner_kind = 'account'::text) AND (guest_resource_reservation_id IS NULL)) OR ((participation_owner_kind = 'guest'::text) AND (guest_resource_reservation_id IS NOT NULL)))),
+    CONSTRAINT study_guest_reward_mode_present CHECK (((participation_owner_kind <> 'guest'::text) OR (guest_reward_mode IS NOT NULL))),
+    CONSTRAINT study_guest_spoken_call_plan_shape_v1 CHECK ((((participation_owner_kind = 'account'::text) AND (guest_spoken_call_plan IS NULL)) OR ((participation_owner_kind = 'guest'::text) AND ((guest_spoken_call_plan IS NULL) OR
+CASE
+    WHEN ((jsonb_typeof(guest_spoken_call_plan) = 'object'::text) AND (guest_spoken_call_plan ?& ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) AND ((guest_spoken_call_plan - ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) = '{}'::jsonb) AND ((guest_spoken_call_plan ->> 'policy_revision'::text) = 'study_spoken_rerecord_v1'::text) AND ((guest_spoken_call_plan -> 'ungraded_rerecord_per_presentation'::text) = '1'::jsonb) AND (jsonb_typeof((guest_spoken_call_plan -> 'graded_presentation_cap'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text) ~ '^(0|[1-9][0-9]?)$'::text) AND (jsonb_typeof((guest_spoken_call_plan -> 'maximum_paid_calls'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'maximum_paid_calls'::text) ~ '^(0|[1-9][0-9]?)$'::text)) THEN (((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20)) AND (((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)))
+    ELSE false
+END)))),
     CONSTRAINT study_session_completion_shape CHECK ((((status = 'active'::text) AND (completed_at IS NULL) AND (completion_reason IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completion_reason IS NOT NULL)))),
     CONSTRAINT study_session_current_presentation_shape CHECK ((((status = 'active'::text) AND (current_session_item_id IS NOT NULL) AND (current_presented_at IS NOT NULL)) OR ((status = 'completed'::text) AND (current_session_item_id IS NULL) AND (current_presented_at IS NULL)))),
     CONSTRAINT study_session_expiry_shape CHECK ((expires_at > created_at)),
     CONSTRAINT study_session_language_shape CHECK ((((target_language IS NULL) AND (learner_band IS NULL)) OR ((target_language IS NOT NULL) AND (target_language <> learning_language) AND (learner_band IS NOT NULL)))),
     CONSTRAINT study_session_request_hash_shape CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_session_source_shape CHECK ((((participation_owner_kind = 'account'::text) AND (account_id IS NOT NULL) AND (persona_id IS NOT NULL) AND (guest_reward_mode IS NULL) AND (guest_reward_terms IS NULL) AND (guest_start_operation_id IS NULL) AND (guest_disclosure_version IS NULL) AND (guest_disclosure_accepted IS NULL)) OR ((participation_owner_kind = 'guest'::text) AND (account_id IS NULL) AND (persona_id IS NULL) AND (guest_reward_mode = 'practice_only'::text) AND (guest_reward_terms IS NULL) AND (guest_start_operation_id IS NOT NULL) AND (guest_disclosure_version IS NOT NULL) AND (guest_disclosure_accepted IS NOT NULL) AND (telegram_practice_only IS FALSE)))),
     CONSTRAINT study_sessions_v2_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT study_sessions_v2_completion_reason_check CHECK ((completion_reason = ANY (ARRAY['all_resolved'::text, 'presentation_budget'::text]))),
     CONSTRAINT study_sessions_v2_language_profile_revision_check CHECK ((language_profile_revision > 0)),
@@ -37537,7 +43610,7 @@ CREATE TABLE study_sessions_v2 (
 
 CREATE TABLE study_spoken_answer_commands (
     command_id text NOT NULL,
-    account_id text NOT NULL,
+    account_id text,
     session_id text NOT NULL,
     session_item_id text NOT NULL,
     attempt_number bigint NOT NULL,
@@ -37557,6 +43630,9 @@ CREATE TABLE study_spoken_answer_commands (
     reserved_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     completed_at timestamp with time zone,
     result_kind text DEFAULT 'graded'::text NOT NULL,
+    participation_owner_id text NOT NULL,
+    participation_owner_kind text NOT NULL,
+    CONSTRAINT study_command_source_shape CHECK ((((participation_owner_kind = 'account'::text) AND (account_id IS NOT NULL)) OR ((participation_owner_kind = 'guest'::text) AND (account_id IS NULL)))),
     CONSTRAINT study_spoken_answer_commands_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 3))),
     CONSTRAINT study_spoken_answer_commands_audio_byte_size_check CHECK (((audio_byte_size >= 1) AND (audio_byte_size <= 524288))),
     CONSTRAINT study_spoken_answer_commands_audio_content_type_check CHECK ((audio_content_type = ANY (ARRAY['audio/webm'::text, 'audio/ogg'::text, 'audio/mp4'::text, 'audio/wav'::text]))),
@@ -38041,6 +44117,10 @@ CREATE TABLE wallet_sponsored_sends (
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_audio_producer_history_v5');
+
+INSERT INTO guest_resource_global_lock VALUES (true);
 
 INSERT INTO handle_account_directory_bindings VALUES ('account_directory_v1', '1', 'c81ff980a56025b99dcd24d27979a302ca28f162ca7238dda354686082496d3d', 'active', '2000-01-01 00:00:00+00');
 
@@ -39056,6 +45136,99 @@ ALTER TABLE ONLY evidence_receipts
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_pkey PRIMARY KEY (evidence_receipt_id);
 
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_intent_id_owner_id_origin_key UNIQUE (intent_id, owner_id, origin);
+
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_pkey PRIMARY KEY (intent_id);
+
+ALTER TABLE ONLY guest_credentials
+    ADD CONSTRAINT guest_credentials_origin_credential_id_key UNIQUE (origin, credential_id);
+
+ALTER TABLE ONLY guest_credentials
+    ADD CONSTRAINT guest_credentials_owner_id_origin_credential_id_key UNIQUE (owner_id, origin, credential_id);
+
+ALTER TABLE ONLY guest_credentials
+    ADD CONSTRAINT guest_credentials_pkey PRIMARY KEY (credential_id);
+
+ALTER TABLE ONLY guest_empty_owner_aliases
+    ADD CONSTRAINT guest_empty_owner_aliases_pkey PRIMARY KEY (source_owner_id);
+
+ALTER TABLE ONLY guest_learning_preferences
+    ADD CONSTRAINT guest_learning_preferences_pkey PRIMARY KEY (owner_id);
+
+ALTER TABLE ONLY guest_learning_schema_phase
+    ADD CONSTRAINT guest_learning_schema_phase_pkey PRIMARY KEY (singleton);
+
+ALTER TABLE ONLY guest_participation_operations
+    ADD CONSTRAINT guest_participation_operation_source_owner_id_operation_kin_key UNIQUE (source_owner_id, operation_kind, idempotency_key);
+
+ALTER TABLE ONLY guest_participation_operations
+    ADD CONSTRAINT guest_participation_operations_operation_id_source_owner_id_key UNIQUE (operation_id, source_owner_id);
+
+ALTER TABLE ONLY guest_participation_operations
+    ADD CONSTRAINT guest_participation_operations_pkey PRIMARY KEY (operation_id);
+
+ALTER TABLE ONLY guest_resource_cost_policy_snapshots
+    ADD CONSTRAINT guest_resource_cost_policy_snapshots_pkey PRIMARY KEY (cost_policy_version);
+
+ALTER TABLE ONLY guest_resource_edge_locks
+    ADD CONSTRAINT guest_resource_edge_locks_pkey PRIMARY KEY (fingerprint);
+
+ALTER TABLE ONLY guest_resource_global_lock
+    ADD CONSTRAINT guest_resource_global_lock_pkey PRIMARY KEY (singleton);
+
+ALTER TABLE ONLY guest_resource_policy_snapshots
+    ADD CONSTRAINT guest_resource_policy_snapshots_pkey PRIMARY KEY (policy_version);
+
+ALTER TABLE ONLY guest_resource_provider_calls
+    ADD CONSTRAINT guest_resource_provider_calls_pkey PRIMARY KEY (call_id);
+
+ALTER TABLE ONLY guest_resource_provider_calls
+    ADD CONSTRAINT guest_resource_provider_calls_source_owner_id_operation_kin_key UNIQUE (source_owner_id, operation_kind, idempotency_key);
+
+ALTER TABLE ONLY guest_resource_release_receipts
+    ADD CONSTRAINT guest_resource_release_receip_source_owner_id_operation_kin_key UNIQUE (source_owner_id, operation_kind, idempotency_key);
+
+ALTER TABLE ONLY guest_resource_release_receipts
+    ADD CONSTRAINT guest_resource_release_receipts_pkey PRIMARY KEY (receipt_id);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reserv_reservation_id_source_owner_i_key UNIQUE (reservation_id, source_owner_id, session_id);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reserv_source_owner_id_operation_kin_key UNIQUE (source_owner_id, operation_kind, idempotency_key);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reservations_pkey PRIMARY KEY (reservation_id);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operations_pkey PRIMARY KEY (origin, issuance_kind, resource_scope, idempotency_key);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_capture_id_source_owner_id_prov_key UNIQUE (capture_id, source_owner_id, provider_call_id, resource_reservation_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_command_id_original_lease_diges_key UNIQUE (command_id, original_lease_digest);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_pkey PRIMARY KEY (capture_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_provider_call_id_key UNIQUE (provider_call_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_source_owner_id_idempotency_key_key UNIQUE (source_owner_id, idempotency_key);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_capture_id_key UNIQUE (capture_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_pkey PRIMARY KEY (checkpoint_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_provider_call_id_key UNIQUE (provider_call_id);
+
 ALTER TABLE ONLY handle_account_directory_bindings
     ADD CONSTRAINT handle_account_directory_bindings_pkey PRIMARY KEY (binding_kind, binding_version);
 
@@ -39453,10 +45626,85 @@ ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_replay_unique UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_artifact_exact_command_identity_v1 UNIQUE (learner_audio_artifact_id, participation_owner_id, attempt_ref, content_digest);
+
+ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_artifact_owner_identity_unique UNIQUE (learner_audio_artifact_id, participation_owner_id);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_produce_owner_id_source_kind_command__key UNIQUE (owner_id, source_kind, command_ref, producer_generation);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_c_upload_attempt_id_owner_id_key UNIQUE (upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_captures_pkey PRIMARY KEY (upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_account_provider_calls
+    ADD CONSTRAINT learner_audio_account_provider_calls_pkey PRIMARY KEY (upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_account_spoken_checkpoints
+    ADD CONSTRAINT learner_audio_account_spoken_checkpoints_pkey PRIMARY KEY (upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_artifacts
     ADD CONSTRAINT learner_audio_artifacts_pkey PRIMARY KEY (learner_audio_artifact_id);
 
 ALTER TABLE ONLY learner_audio_artifacts
     ADD CONSTRAINT learner_audio_artifacts_source_kind_attempt_ref_content_dig_key UNIQUE (source_kind, attempt_ref, content_digest);
+
+ALTER TABLE ONLY learner_audio_delete_batch_items
+    ADD CONSTRAINT learner_audio_delete_batch_items_batch_id_object_ref_key UNIQUE (batch_id, object_ref);
+
+ALTER TABLE ONLY learner_audio_delete_batch_items
+    ADD CONSTRAINT learner_audio_delete_batch_items_pkey PRIMARY KEY (batch_id, ordinal);
+
+ALTER TABLE ONLY learner_audio_delete_batches
+    ADD CONSTRAINT learner_audio_delete_batches_pkey PRIMARY KEY (batch_id);
+
+ALTER TABLE ONLY learner_audio_delete_commands
+    ADD CONSTRAINT learner_audio_delete_commands_command_id_revision_key UNIQUE (command_id, revision);
+
+ALTER TABLE ONLY learner_audio_delete_commands
+    ADD CONSTRAINT learner_audio_delete_commands_pkey PRIMARY KEY (command_id);
+
+ALTER TABLE ONLY learner_audio_delete_commands
+    ADD CONSTRAINT learner_audio_delete_commands_revision_key UNIQUE (revision);
+
+ALTER TABLE ONLY learner_audio_delete_commands
+    ADD CONSTRAINT learner_audio_delete_commands_source_owner_id_idempotency_k_key UNIQUE (source_owner_id, idempotency_key);
+
+ALTER TABLE ONLY learner_audio_delete_sources
+    ADD CONSTRAINT learner_audio_delete_sources_pkey PRIMARY KEY (command_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_delete_target_artifacts
+    ADD CONSTRAINT learner_audio_delete_target_artifacts_pkey PRIMARY KEY (command_id, artifact_id);
+
+ALTER TABLE ONLY learner_audio_deleted_objects
+    ADD CONSTRAINT learner_audio_deleted_objects_pkey PRIMARY KEY (object_ref);
+
+ALTER TABLE ONLY learner_audio_object_names
+    ADD CONSTRAINT learner_audio_object_names_object_ref_owner_id_artifact_id_key UNIQUE (object_ref, owner_id, artifact_id);
+
+ALTER TABLE ONLY learner_audio_object_names
+    ADD CONSTRAINT learner_audio_object_names_pkey PRIMARY KEY (object_ref);
+
+ALTER TABLE ONLY learner_audio_owner_fences
+    ADD CONSTRAINT learner_audio_owner_fences_pkey PRIMARY KEY (owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_attempts
+    ADD CONSTRAINT learner_audio_upload_attempts_pkey PRIMARY KEY (upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_upload_attempts
+    ADD CONSTRAINT learner_audio_upload_attempts_upload_attempt_id_owner_id_key UNIQUE (upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_cleanup_commands
+    ADD CONSTRAINT learner_audio_upload_cleanup_commands_pkey PRIMARY KEY (cleanup_id);
+
+ALTER TABLE ONLY learner_audio_upload_cleanup_commands
+    ADD CONSTRAINT learner_audio_upload_cleanup_commands_upload_attempt_id_key UNIQUE (upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_upload_terminal_facts
+    ADD CONSTRAINT learner_audio_upload_terminal_facts_pkey PRIMARY KEY (upload_attempt_id);
 
 ALTER TABLE ONLY localization_lyric_line_lineage
     ADD CONSTRAINT localization_lyric_line_lineage_pkey PRIMARY KEY (community_id, post_id, transition_kind, predecessor_line_id, successor_line_id);
@@ -40160,6 +46408,24 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY participation_owner_clocks
+    ADD CONSTRAINT participation_owner_clocks_pkey PRIMARY KEY (owner_id);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_account_id_key UNIQUE (account_id);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_owner_id_account_id_key UNIQUE (owner_id, account_id);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_owner_id_kind_guest_origin_key UNIQUE (owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_owner_id_kind_key UNIQUE (owner_id, kind);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_pkey PRIMARY KEY (owner_id);
+
 ALTER TABLE ONLY persona_activity_preparation_actions
     ADD CONSTRAINT persona_activity_preparation_actions_pkey PRIMARY KEY (account_id, community_id, idempotency_key);
 
@@ -40736,11 +47002,20 @@ ALTER TABLE ONLY study_exercise_versions
 ALTER TABLE ONLY study_exercise_versions
     ADD CONSTRAINT study_exercise_versions_pkey PRIMARY KEY (exercise_version_id);
 
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_exact_session_identity_unique UNIQUE (session_item_id, session_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_session_owner_unique UNIQUE (session_item_id, session_id, participation_owner_id);
+
 ALTER TABLE ONLY study_language_profile_units
     ADD CONSTRAINT study_language_profile_units_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, language_profile_revision, study_unit_id);
 
 ALTER TABLE ONLY study_language_profiles
     ADD CONSTRAINT study_language_profiles_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, language_profile_revision);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_exact_current_target_v1 UNIQUE (session_id, session_item_id);
 
 ALTER TABLE ONLY study_lesson_item_state_v2
     ADD CONSTRAINT study_lesson_item_state_v2_pkey PRIMARY KEY (session_item_id);
@@ -40758,16 +47033,22 @@ ALTER TABLE ONLY study_presentations_v2
     ADD CONSTRAINT study_presentations_v2_session_item_id_presentation_number_key UNIQUE (session_item_id, presentation_number);
 
 ALTER TABLE ONLY study_review_items
-    ADD CONSTRAINT study_review_identity_v2 UNIQUE NULLS NOT DISTINCT (account_id, post_id, study_unit_id, exercise_kind, learning_language, target_language, learner_band);
+    ADD CONSTRAINT study_review_item_account_identity_unique UNIQUE (review_item_id, account_id, exercise_review_key);
 
 ALTER TABLE ONLY study_review_items
-    ADD CONSTRAINT study_review_item_account_identity_unique UNIQUE (review_item_id, account_id, exercise_review_key);
+    ADD CONSTRAINT study_review_item_owner_identity_unique UNIQUE (review_item_id, participation_owner_id, exercise_review_key);
 
 ALTER TABLE ONLY study_review_items
     ADD CONSTRAINT study_review_items_account_id_exercise_review_key_key UNIQUE (account_id, exercise_review_key);
 
 ALTER TABLE ONLY study_review_items
     ADD CONSTRAINT study_review_items_pkey PRIMARY KEY (review_item_id);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_owner_exercise_key_unique UNIQUE (participation_owner_id, exercise_review_key);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_owner_identity_v1 UNIQUE NULLS NOT DISTINCT (participation_owner_id, post_id, study_unit_id, exercise_kind, learning_language, target_language, learner_band);
 
 ALTER TABLE ONLY study_sessions_v2
     ADD CONSTRAINT study_session_account_identity_unique UNIQUE (session_id, account_id);
@@ -40801,6 +47082,12 @@ ALTER TABLE ONLY study_session_items_v2
 
 ALTER TABLE ONLY study_session_items_v2
     ADD CONSTRAINT study_session_items_v2_session_id_ordinal_key UNIQUE (session_id, ordinal);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_owner_idempotency_unique UNIQUE (participation_owner_id, post_id, idempotency_key);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_owner_identity_unique UNIQUE (session_id, participation_owner_id, participation_owner_kind);
 
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_pkey PRIMARY KEY (session_id);
@@ -41173,6 +47460,22 @@ CREATE INDEX evidence_receipts_session_observed_idx ON evidence_receipts USING b
 
 CREATE INDEX evidence_receipts_user_observed_idx ON evidence_receipts USING btree (user_id, observed_at DESC, evidence_receipt_id);
 
+CREATE INDEX guest_credential_owner_proof_lookup ON guest_credentials USING btree (owner_id, origin, state);
+
+CREATE INDEX guest_empty_alias_target_idx ON guest_empty_owner_aliases USING btree (canonical_owner_id);
+
+CREATE UNIQUE INDEX guest_one_confirmed_credential_per_original_owner ON guest_credentials USING btree (owner_id, origin) WHERE (state = 'confirmed'::text);
+
+CREATE UNIQUE INDEX guest_one_live_intent_per_original_owner ON guest_attachment_intents USING btree (owner_id) WHERE (state = ANY (ARRAY['awaiting_account'::text, 'awaiting_confirmation'::text]));
+
+CREATE UNIQUE INDEX guest_one_pending_successor_per_original_owner ON guest_credentials USING btree (owner_id, origin) WHERE (state = 'pending_successor'::text);
+
+CREATE INDEX guest_resource_call_owner ON guest_resource_provider_calls USING btree (source_owner_id, disposition, resolved_at);
+
+CREATE INDEX guest_resource_edge_admissions ON guest_resource_session_reservations USING btree (edge_fingerprint, created_at) WHERE (state <> 'refused'::text);
+
+CREATE INDEX guest_resource_owner_sessions ON guest_resource_session_reservations USING btree (source_owner_id, state);
+
 CREATE INDEX handle_claims_owner_idx ON handle_claims USING btree (actor_account_id, created_at DESC, claim_id DESC);
 
 CREATE INDEX handle_grants_persona_public_idx ON handle_grants USING btree (owner_persona_id, issued_at DESC, grant_id DESC) WHERE (status = 'active'::text);
@@ -41246,6 +47549,10 @@ CREATE INDEX karaoke_sessions_live_account_idx ON karaoke_sessions USING btree (
 CREATE INDEX karaoke_sessions_revision_score_idx ON karaoke_sessions USING btree (community_id, post_id, karaoke_revision_id, account_id);
 
 CREATE INDEX learner_audio_artifacts_stored_account_idx ON learner_audio_artifacts USING btree (account_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
+
+CREATE INDEX learner_audio_open_uploads_v1 ON learner_audio_upload_attempts USING btree (owner_id, captured_revision, upload_attempt_id) WHERE ((io_state <> 'closed'::text) OR cleanup_required);
+
+CREATE INDEX learner_audio_owner_stored ON learner_audio_artifacts USING btree (participation_owner_id, created_at, learner_audio_artifact_id) WHERE (recording_state = 'stored'::text);
 
 CREATE UNIQUE INDEX media_immutable_objects_reservation_operation_key ON media_immutable_objects USING btree (community_id, actor_user_id, operation_id) WHERE (reservation_id IS NOT NULL);
 
@@ -41479,15 +47786,21 @@ CREATE INDEX study_lesson_item_state_queue_idx ON study_lesson_item_state_v2 USI
 
 CREATE INDEX study_review_items_due_selection_idx ON study_review_items USING btree (account_id, post_id, exercise_kind, lifecycle_status, due_at, created_at);
 
+CREATE INDEX study_review_owner_due ON study_review_items USING btree (participation_owner_id, post_id, exercise_kind, lifecycle_status, due_at, created_at);
+
 CREATE INDEX study_sessions_account_created_idx ON study_sessions USING btree (account_id, created_at DESC, session_id);
 
 CREATE INDEX study_sessions_created_at ON study_sessions USING btree (created_at);
+
+CREATE INDEX study_sessions_owner_active ON study_sessions_v2 USING btree (participation_owner_id, expires_at) WHERE (status = 'active'::text);
 
 CREATE INDEX study_sessions_v2_created_at ON study_sessions_v2 USING btree (created_at);
 
 CREATE INDEX study_spoken_answer_commands_live_account_idx ON study_spoken_answer_commands USING btree (account_id, lease_expires_at) WHERE (state = 'reserved'::text);
 
 CREATE UNIQUE INDEX study_spoken_graded_command_slot_unique ON study_spoken_answer_commands USING btree (session_id, session_item_id, attempt_number) WHERE (result_kind = 'graded'::text);
+
+CREATE INDEX study_spoken_owner_recovery ON study_spoken_answer_commands USING btree (participation_owner_id, lease_expires_at) WHERE (state = 'reserved'::text);
 
 CREATE UNIQUE INDEX study_spoken_rerecord_receipt_unique ON study_spoken_answer_commands USING btree (session_id, session_item_id, attempt_number) WHERE (result_kind = 'rerecord'::text);
 
@@ -41566,6 +47879,36 @@ CREATE OR REPLACE VIEW retained_post_rating_base_v1 AS
    FROM (posts p
      LEFT JOIN retained_content_rating_sources_v1 s ON (((s.community_id = p.community_id) AND (s.post_id = p.post_id))))
   GROUP BY p.community_id, p.post_id;
+
+CREATE TRIGGER a00_controlled_guest_source_mapping_v1 BEFORE INSERT ON learner_audio_artifacts FOR EACH ROW WHEN ((new.account_id IS NULL)) EXECUTE FUNCTION map_controlled_guest_learning_source_v1();
+
+CREATE TRIGGER a00_controlled_guest_source_mapping_v1 BEFORE INSERT ON study_review_items FOR EACH ROW WHEN ((new.account_id IS NULL)) EXECUTE FUNCTION map_controlled_guest_learning_source_v1();
+
+CREATE TRIGGER a00_controlled_guest_source_mapping_v1 BEFORE INSERT ON study_session_items_v2 FOR EACH ROW WHEN ((new.account_id IS NULL)) EXECUTE FUNCTION map_controlled_guest_learning_source_v1();
+
+CREATE TRIGGER a00_controlled_guest_source_mapping_v1 BEFORE INSERT ON study_sessions_v2 FOR EACH ROW WHEN ((new.account_id IS NULL)) EXECUTE FUNCTION map_controlled_guest_learning_source_v1();
+
+CREATE TRIGGER a00_controlled_guest_source_mapping_v1 BEFORE INSERT ON study_spoken_answer_commands FOR EACH ROW WHEN ((new.account_id IS NULL)) EXECUTE FUNCTION map_controlled_guest_learning_source_v1();
+
+CREATE TRIGGER a00_existing_account_source_mapping_v1 BEFORE INSERT ON learner_audio_artifacts FOR EACH ROW WHEN ((new.account_id IS NOT NULL)) EXECUTE FUNCTION map_existing_account_learning_source_v1();
+
+CREATE TRIGGER a00_existing_account_source_mapping_v1 BEFORE INSERT ON study_review_items FOR EACH ROW WHEN ((new.account_id IS NOT NULL)) EXECUTE FUNCTION map_existing_account_learning_source_v1();
+
+CREATE TRIGGER a00_existing_account_source_mapping_v1 BEFORE INSERT ON study_session_items_v2 FOR EACH ROW WHEN ((new.account_id IS NOT NULL)) EXECUTE FUNCTION map_existing_account_learning_source_v1();
+
+CREATE TRIGGER a00_existing_account_source_mapping_v1 BEFORE INSERT ON study_sessions_v2 FOR EACH ROW WHEN ((new.account_id IS NOT NULL)) EXECUTE FUNCTION map_existing_account_learning_source_v1();
+
+CREATE TRIGGER a00_existing_account_source_mapping_v1 BEFORE INSERT ON study_spoken_answer_commands FOR EACH ROW WHEN ((new.account_id IS NOT NULL)) EXECUTE FUNCTION map_existing_account_learning_source_v1();
+
+CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON learner_audio_artifacts FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
+
+CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_review_items FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
+
+CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_session_items_v2 FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
+
+CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
+
+CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_spoken_answer_commands FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
 
 CREATE TRIGGER aaa_song_reward_leg_qualification_terms BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION freeze_reward_leg_qualification_terms();
 
@@ -41981,6 +48324,46 @@ CREATE TRIGGER fallback_cutoff_activity_evidence_append_only BEFORE DELETE OR UP
 
 CREATE TRIGGER fallback_cutoff_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_fallback_cutoff_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
+CREATE CONSTRAINT TRIGGER guest_alias_state_closure AFTER INSERT ON guest_empty_owner_aliases DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_guest_alias_state_v1();
+
+CREATE TRIGGER guest_audio_retention_capture BEFORE INSERT ON guest_study_spoken_captures FOR EACH ROW EXECUTE FUNCTION capture_guest_audio_retention_private_v1();
+
+CREATE TRIGGER guest_credential_guard BEFORE DELETE OR UPDATE ON guest_credentials FOR EACH ROW EXECUTE FUNCTION guard_guest_credential_v1();
+
+CREATE TRIGGER guest_credential_insert_guard BEFORE INSERT ON guest_credentials FOR EACH ROW EXECUTE FUNCTION guard_guest_credential_insert_v1();
+
+CREATE TRIGGER guest_empty_alias_guard BEFORE INSERT ON guest_empty_owner_aliases FOR EACH ROW EXECUTE FUNCTION guard_guest_empty_alias_v1();
+
+CREATE TRIGGER guest_empty_alias_immutable BEFORE DELETE OR UPDATE ON guest_empty_owner_aliases FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_intent_guard BEFORE INSERT OR DELETE OR UPDATE ON guest_attachment_intents FOR EACH ROW EXECUTE FUNCTION guard_guest_intent_v1();
+
+CREATE TRIGGER guest_issuance_immutable BEFORE DELETE OR UPDATE ON guest_secret_issuance_operations FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_issuance_lineage_guard BEFORE INSERT ON guest_secret_issuance_operations FOR EACH ROW EXECUTE FUNCTION guard_guest_issuance_lineage_v1();
+
+CREATE TRIGGER guest_operation_guard BEFORE DELETE OR UPDATE ON guest_participation_operations FOR EACH ROW EXECUTE FUNCTION guard_guest_operation_v1();
+
+CREATE CONSTRAINT TRIGGER guest_owner_alias_closure AFTER INSERT OR UPDATE ON participation_owners DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_guest_alias_state_v1();
+
+CREATE TRIGGER guest_resource_cost_policy_immutable BEFORE DELETE OR UPDATE ON guest_resource_cost_policy_snapshots FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_resource_edge_immutable BEFORE DELETE OR UPDATE ON guest_resource_edge_locks FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_resource_global_immutable BEFORE DELETE OR UPDATE ON guest_resource_global_lock FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_resource_policy_immutable BEFORE DELETE OR UPDATE ON guest_resource_policy_snapshots FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_resource_provider_call_guard BEFORE DELETE OR UPDATE ON guest_resource_provider_calls FOR EACH ROW EXECUTE FUNCTION guard_guest_resource_provider_call_v1();
+
+CREATE TRIGGER guest_resource_release_immutable BEFORE DELETE OR UPDATE ON guest_resource_release_receipts FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_resource_session_guard BEFORE DELETE OR UPDATE ON guest_resource_session_reservations FOR EACH ROW EXECUTE FUNCTION guard_guest_resource_session_v1();
+
+CREATE TRIGGER guest_spoken_capture_immutable BEFORE DELETE OR UPDATE ON guest_study_spoken_captures FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
+CREATE TRIGGER guest_spoken_checkpoint_immutable BEFORE DELETE OR UPDATE ON guest_study_spoken_checkpoints FOR EACH ROW EXECUTE FUNCTION reject_guest_immutable_mutation_v1();
+
 CREATE TRIGGER handle_account_directory_bindings_append_only BEFORE DELETE OR UPDATE ON handle_account_directory_bindings FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER handle_claim_actions_append_only BEFORE DELETE OR UPDATE ON handle_claim_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
@@ -42170,6 +48553,32 @@ CREATE TRIGGER karaoke_runtime_session_authority_guard BEFORE UPDATE ON karaoke_
 CREATE TRIGGER karaoke_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_session();
 
 CREATE TRIGGER karaoke_sessions_playback_kind_guard BEFORE UPDATE OF playback_kind ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_session_playback_kind();
+
+CREATE TRIGGER learner_audio_account_capture_immutable BEFORE DELETE OR UPDATE ON learner_audio_account_producer_captures FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_account_checkpoint_immutable BEFORE DELETE OR UPDATE ON learner_audio_account_spoken_checkpoints FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_account_provider_call_state BEFORE DELETE OR UPDATE ON learner_audio_account_provider_calls FOR EACH ROW EXECUTE FUNCTION guard_account_audio_provider_call_private_v1();
+
+CREATE TRIGGER learner_audio_delete_batch_items_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_batch_items FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_delete_batch_state BEFORE DELETE OR UPDATE ON learner_audio_delete_batches FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();
+
+CREATE TRIGGER learner_audio_delete_command_state BEFORE DELETE OR UPDATE ON learner_audio_delete_commands FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();
+
+CREATE TRIGGER learner_audio_delete_sources_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_sources FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_delete_targets_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_target_artifacts FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_object_names_immutable BEFORE DELETE OR UPDATE ON learner_audio_object_names FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_owner_fence_state BEFORE DELETE OR UPDATE ON learner_audio_owner_fences FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();
+
+CREATE TRIGGER learner_audio_terminal_fact_immutable BEFORE DELETE OR UPDATE ON learner_audio_upload_terminal_facts FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_upload_cleanup_guard BEFORE INSERT OR DELETE OR UPDATE ON learner_audio_upload_cleanup_commands FOR EACH ROW EXECUTE FUNCTION guard_captured_audio_cleanup_private_v1();
+
+CREATE TRIGGER learner_audio_upload_state BEFORE DELETE OR UPDATE ON learner_audio_upload_attempts FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();
 
 CREATE TRIGGER localization_lyric_line_delete_guard BEFORE DELETE ON localization_lyric_line_occurrences FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
@@ -42535,6 +48944,8 @@ CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
 
+CREATE TRIGGER participation_owner_guard BEFORE DELETE OR UPDATE ON participation_owners FOR EACH ROW EXECUTE FUNCTION guard_participation_owner_v1();
+
 CREATE TRIGGER persona_activity_preparation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_preparation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_preparation_action();
 
 CREATE TRIGGER persona_activity_presentation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_presentation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
@@ -42833,7 +49244,11 @@ CREATE TRIGGER spaces_taproot_creation_intents_change_guard BEFORE DELETE OR UPD
 
 CREATE TRIGGER sponsor_daily_ticket_totals_change_guard BEFORE DELETE OR UPDATE ON sponsor_daily_ticket_totals FOR EACH ROW EXECUTE FUNCTION guard_sponsor_daily_totals();
 
+CREATE TRIGGER study_attempt_audio_source_guard_v1 BEFORE INSERT ON study_attempts_v2 FOR EACH ROW EXECUTE FUNCTION validate_study_attempt_audio_source_v1();
+
 CREATE TRIGGER study_attempts_v2_immutable BEFORE DELETE OR UPDATE ON study_attempts_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE CONSTRAINT TRIGGER study_command_audio_source_closure_v1 AFTER INSERT OR UPDATE ON study_spoken_answer_commands DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_study_command_audio_source_v1();
 
 CREATE TRIGGER study_exercise_versions_immutable BEFORE DELETE OR UPDATE ON study_exercise_versions FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
@@ -42853,7 +49268,9 @@ CREATE TRIGGER study_session_items_v2_immutable BEFORE DELETE OR UPDATE ON study
 
 CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_sessions FOR EACH ROW EXECUTE FUNCTION guard_study_session();
 
-CREATE TRIGGER study_sessions_v2_activity_authority BEFORE INSERT OR UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION guard_study_v2_activity_authority();
+CREATE TRIGGER study_sessions_v2_activity_authority BEFORE INSERT OR UPDATE ON study_sessions_v2 FOR EACH ROW WHEN ((new.participation_owner_kind = 'account'::text)) EXECUTE FUNCTION guard_study_v2_activity_authority();
+
+CREATE TRIGGER study_sessions_v2_controlled_guest_authority_v1 BEFORE INSERT OR UPDATE ON study_sessions_v2 FOR EACH ROW WHEN ((new.participation_owner_kind = 'guest'::text)) EXECUTE FUNCTION guard_controlled_guest_study_session_v1();
 
 CREATE TRIGGER study_telegram_practice_mode_immutable BEFORE UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION protect_telegram_practice_mode();
 
@@ -43895,6 +50312,129 @@ ALTER TABLE ONLY evidence_receipts
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_credential_source_owner_id_origin_fkey FOREIGN KEY (credential_source_owner_id, origin, credential_id) REFERENCES guest_credentials(owner_id, origin, credential_id);
+
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_owner_id_owner_kind_origin_fkey FOREIGN KEY (owner_id, owner_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_prepared_operation_id_owner_id_fkey FOREIGN KEY (prepared_operation_id, owner_id) REFERENCES guest_participation_operations(operation_id, source_owner_id);
+
+ALTER TABLE ONLY guest_attachment_intents
+    ADD CONSTRAINT guest_attachment_intents_target_account_id_fkey FOREIGN KEY (target_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY guest_credentials
+    ADD CONSTRAINT guest_credentials_owner_id_origin_predecessor_id_fkey FOREIGN KEY (owner_id, origin, predecessor_id) REFERENCES guest_credentials(owner_id, origin, credential_id);
+
+ALTER TABLE ONLY guest_credentials
+    ADD CONSTRAINT guest_credentials_owner_id_owner_kind_origin_fkey FOREIGN KEY (owner_id, owner_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY guest_empty_owner_aliases
+    ADD CONSTRAINT guest_empty_owner_aliases_canonical_owner_id_fkey FOREIGN KEY (canonical_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_empty_owner_aliases
+    ADD CONSTRAINT guest_empty_owner_aliases_canonical_owner_id_owner_kind_or_fkey FOREIGN KEY (canonical_owner_id, owner_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY guest_empty_owner_aliases
+    ADD CONSTRAINT guest_empty_owner_aliases_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_empty_owner_aliases
+    ADD CONSTRAINT guest_empty_owner_aliases_source_owner_id_owner_kind_origi_fkey FOREIGN KEY (source_owner_id, owner_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_issuance_intent_fk FOREIGN KEY (intent_id, source_owner_id, origin) REFERENCES guest_attachment_intents(intent_id, owner_id, origin);
+
+ALTER TABLE ONLY guest_learning_preferences
+    ADD CONSTRAINT guest_learning_preferences_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY guest_participation_operations
+    ADD CONSTRAINT guest_participation_operations_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_learning_preferences
+    ADD CONSTRAINT guest_preferences_operation_owner_fk FOREIGN KEY (operation_id, owner_id) REFERENCES guest_participation_operations(operation_id, source_owner_id);
+
+ALTER TABLE ONLY guest_resource_provider_calls
+    ADD CONSTRAINT guest_resource_provider_calls_cost_policy_version_fkey FOREIGN KEY (cost_policy_version) REFERENCES guest_resource_cost_policy_snapshots(cost_policy_version);
+
+ALTER TABLE ONLY guest_resource_provider_calls
+    ADD CONSTRAINT guest_resource_provider_calls_reservation_id_source_owner__fkey FOREIGN KEY (reservation_id, source_owner_id, session_id) REFERENCES guest_resource_session_reservations(reservation_id, source_owner_id, session_id);
+
+ALTER TABLE ONLY guest_resource_provider_calls
+    ADD CONSTRAINT guest_resource_provider_calls_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_resource_release_receipts
+    ADD CONSTRAINT guest_resource_release_receip_reservation_id_source_owner__fkey FOREIGN KEY (reservation_id, source_owner_id, session_id) REFERENCES guest_resource_session_reservations(reservation_id, source_owner_id, session_id);
+
+ALTER TABLE ONLY guest_resource_release_receipts
+    ADD CONSTRAINT guest_resource_release_receipts_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reservations_cost_policy_version_fkey FOREIGN KEY (cost_policy_version) REFERENCES guest_resource_cost_policy_snapshots(cost_policy_version);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reservations_edge_fingerprint_fkey FOREIGN KEY (edge_fingerprint) REFERENCES guest_resource_edge_locks(fingerprint);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reservations_policy_version_fkey FOREIGN KEY (policy_version) REFERENCES guest_resource_policy_snapshots(policy_version);
+
+ALTER TABLE ONLY guest_resource_session_reservations
+    ADD CONSTRAINT guest_resource_session_reservations_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operati_credential_source_owner_id_o_fkey FOREIGN KEY (credential_source_owner_id, origin, credential_id) REFERENCES guest_credentials(owner_id, origin, credential_id);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operati_operation_id_source_owner_id_fkey FOREIGN KEY (operation_id, source_owner_id) REFERENCES guest_participation_operations(operation_id, source_owner_id);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operati_source_owner_id_source_owner_fkey FOREIGN KEY (source_owner_id, source_owner_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operations_origin_credential_id_fkey FOREIGN KEY (origin, credential_id) REFERENCES guest_credentials(origin, credential_id);
+
+ALTER TABLE ONLY guest_secret_issuance_operations
+    ADD CONSTRAINT guest_secret_issuance_operations_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_artifact_id_source_owner_id_fkey FOREIGN KEY (artifact_id, source_owner_id) REFERENCES learner_audio_artifacts(learner_audio_artifact_id, participation_owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_command_id_fkey FOREIGN KEY (command_id) REFERENCES study_spoken_answer_commands(command_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_operation_id_source_owner_id_fkey FOREIGN KEY (operation_id, source_owner_id) REFERENCES guest_participation_operations(operation_id, source_owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_provider_call_id_fkey FOREIGN KEY (provider_call_id) REFERENCES guest_resource_provider_calls(call_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_resource_reservation_id_source_fkey FOREIGN KEY (resource_reservation_id, source_owner_id, session_id) REFERENCES guest_resource_session_reservations(reservation_id, source_owner_id, session_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_session_item_id_session_id_sou_fkey FOREIGN KEY (session_item_id, session_id, source_owner_id) REFERENCES study_session_items_v2(session_item_id, session_id, participation_owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_source_owner_id_source_owner_k_fkey FOREIGN KEY (source_owner_id, source_owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY guest_study_spoken_captures
+    ADD CONSTRAINT guest_study_spoken_captures_upload_attempt_id_source_owner_fkey FOREIGN KEY (upload_attempt_id, source_owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoint_capture_id_source_owner_id_p_fkey FOREIGN KEY (capture_id, source_owner_id, provider_call_id, resource_reservation_id) REFERENCES guest_study_spoken_captures(capture_id, source_owner_id, provider_call_id, resource_reservation_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES guest_study_spoken_captures(capture_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_provider_call_id_fkey FOREIGN KEY (provider_call_id) REFERENCES guest_resource_provider_calls(call_id);
+
+ALTER TABLE ONLY guest_study_spoken_checkpoints
+    ADD CONSTRAINT guest_study_spoken_checkpoints_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
 ALTER TABLE ONLY handle_account_offering_grant_counters
     ADD CONSTRAINT handle_account_offering_grant_counters_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -44280,7 +50820,109 @@ ALTER TABLE ONLY karaoke_sessions
     ADD CONSTRAINT karaoke_sessions_qualification_policy_version_id_activity__fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
 
 ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_artifact_owner_account_fk FOREIGN KEY (participation_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY learner_audio_artifacts
+    ADD CONSTRAINT learner_artifact_owner_kind_fk FOREIGN KEY (participation_owner_id, participation_owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer__upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_capture_owner_id_account_id_fkey FOREIGN KEY (owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_capture_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_captures_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY learner_audio_account_producer_captures
+    ADD CONSTRAINT learner_audio_account_producer_captures_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_account_provider_calls
+    ADD CONSTRAINT learner_audio_account_provider__upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_account_producer_captures(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_account_provider_calls
+    ADD CONSTRAINT learner_audio_account_provider_calls_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_account_provider_calls
+    ADD CONSTRAINT learner_audio_account_provider_calls_upload_attempt_id_fkey FOREIGN KEY (upload_attempt_id) REFERENCES learner_audio_account_producer_captures(upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_account_spoken_checkpoints
+    ADD CONSTRAINT learner_audio_account_spoken_ch_upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_account_producer_captures(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_account_spoken_checkpoints
+    ADD CONSTRAINT learner_audio_account_spoken_checkpoints_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_account_spoken_checkpoints
+    ADD CONSTRAINT learner_audio_account_spoken_checkpoints_upload_attempt_id_fkey FOREIGN KEY (upload_attempt_id) REFERENCES learner_audio_account_producer_captures(upload_attempt_id);
+
+ALTER TABLE ONLY learner_audio_owner_fences
+    ADD CONSTRAINT learner_audio_active_delete_fk FOREIGN KEY (active_delete_command_id) REFERENCES learner_audio_delete_commands(command_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY learner_audio_artifacts
     ADD CONSTRAINT learner_audio_artifacts_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY learner_audio_delete_batch_items
+    ADD CONSTRAINT learner_audio_delete_batch_it_object_ref_owner_id_artifact_fkey FOREIGN KEY (object_ref, owner_id, artifact_id) REFERENCES learner_audio_object_names(object_ref, owner_id, artifact_id);
+
+ALTER TABLE ONLY learner_audio_delete_batch_items
+    ADD CONSTRAINT learner_audio_delete_batch_items_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES learner_audio_delete_batches(batch_id);
+
+ALTER TABLE ONLY learner_audio_delete_batch_items
+    ADD CONSTRAINT learner_audio_delete_batch_items_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_delete_batches
+    ADD CONSTRAINT learner_audio_delete_batches_command_id_revision_fkey FOREIGN KEY (command_id, revision) REFERENCES learner_audio_delete_commands(command_id, revision);
+
+ALTER TABLE ONLY learner_audio_delete_commands
+    ADD CONSTRAINT learner_audio_delete_commands_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_delete_sources
+    ADD CONSTRAINT learner_audio_delete_sources_command_id_fkey FOREIGN KEY (command_id) REFERENCES learner_audio_delete_commands(command_id);
+
+ALTER TABLE ONLY learner_audio_delete_sources
+    ADD CONSTRAINT learner_audio_delete_sources_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_delete_target_artifacts
+    ADD CONSTRAINT learner_audio_delete_target_artifacts_command_id_fkey FOREIGN KEY (command_id) REFERENCES learner_audio_delete_commands(command_id);
+
+ALTER TABLE ONLY learner_audio_delete_target_artifacts
+    ADD CONSTRAINT learner_audio_delete_target_artifacts_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_deleted_objects
+    ADD CONSTRAINT learner_audio_deleted_objects_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES learner_audio_delete_batches(batch_id);
+
+ALTER TABLE ONLY learner_audio_deleted_objects
+    ADD CONSTRAINT learner_audio_deleted_objects_object_ref_fkey FOREIGN KEY (object_ref) REFERENCES learner_audio_object_names(object_ref);
+
+ALTER TABLE ONLY learner_audio_object_names
+    ADD CONSTRAINT learner_audio_object_names_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_owner_fences
+    ADD CONSTRAINT learner_audio_owner_fences_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_attempts
+    ADD CONSTRAINT learner_audio_upload_attempts_object_ref_owner_id_artifact_fkey FOREIGN KEY (object_ref, owner_id, artifact_id) REFERENCES learner_audio_object_names(object_ref, owner_id, artifact_id);
+
+ALTER TABLE ONLY learner_audio_upload_attempts
+    ADD CONSTRAINT learner_audio_upload_attempts_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_cleanup_commands
+    ADD CONSTRAINT learner_audio_upload_cleanup_co_upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_cleanup_commands
+    ADD CONSTRAINT learner_audio_upload_cleanup_commands_object_ref_fkey FOREIGN KEY (object_ref) REFERENCES learner_audio_object_names(object_ref);
+
+ALTER TABLE ONLY learner_audio_upload_cleanup_commands
+    ADD CONSTRAINT learner_audio_upload_cleanup_commands_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_terminal_facts
+    ADD CONSTRAINT learner_audio_upload_terminal_f_upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
+
+ALTER TABLE ONLY learner_audio_upload_terminal_facts
+    ADD CONSTRAINT learner_audio_upload_terminal_facts_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
 
 ALTER TABLE ONLY localization_lyric_line_lineage
     ADD CONSTRAINT localization_lyric_line_linea_community_id_post_id_predece_fkey FOREIGN KEY (community_id, post_id, predecessor_line_id) REFERENCES localization_lyric_line_occurrences(community_id, post_id, lyric_line_id);
@@ -44990,6 +51632,12 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operati_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
 
+ALTER TABLE ONLY participation_owner_clocks
+    ADD CONSTRAINT participation_owner_clocks_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY participation_owners
+    ADD CONSTRAINT participation_owners_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
 ALTER TABLE ONLY persona_activity_presentation_actions
     ADD CONSTRAINT persona_activity_presentation_account_id_result_persona_id_fkey FOREIGN KEY (account_id, result_persona_id) REFERENCES personas(account_id, persona_id);
 
@@ -45656,11 +52304,41 @@ ALTER TABLE ONLY study_attempts_v2
 ALTER TABLE ONLY study_attempts_v2
     ADD CONSTRAINT study_attempts_v2_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
 
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_command_artifact_owner_fk FOREIGN KEY (learner_audio_artifact_id, participation_owner_id) REFERENCES learner_audio_artifacts(learner_audio_artifact_id, participation_owner_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_command_item_session_owner_fk FOREIGN KEY (session_item_id, session_id, participation_owner_id) REFERENCES study_session_items_v2(session_item_id, session_id, participation_owner_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_command_owner_account_fk FOREIGN KEY (participation_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_command_owner_kind_fk FOREIGN KEY (participation_owner_id, participation_owner_kind) REFERENCES participation_owners(owner_id, kind);
+
 ALTER TABLE ONLY study_exercise_versions
     ADD CONSTRAINT study_exercise_unit_fk FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
 
 ALTER TABLE ONLY study_exercise_versions
     ADD CONSTRAINT study_exercise_versions_community_id_post_id_lyric_line_id_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version, line_source_hash) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version, source_hash);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_guest_resource_exact_source_session_fk_v1 FOREIGN KEY (guest_resource_reservation_id, participation_owner_id, session_id) REFERENCES guest_resource_session_reservations(reservation_id, source_owner_id, session_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_guest_start_operation_fk FOREIGN KEY (guest_start_operation_id, participation_owner_id) REFERENCES guest_participation_operations(operation_id, source_owner_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_owner_account_fk FOREIGN KEY (participation_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_owner_kind_fk FOREIGN KEY (participation_owner_id, participation_owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_review_owner_fk FOREIGN KEY (review_item_id, participation_owner_id, exercise_review_key) REFERENCES study_review_items(review_item_id, participation_owner_id, exercise_review_key);
+
+ALTER TABLE ONLY study_session_items_v2
+    ADD CONSTRAINT study_item_session_owner_fk FOREIGN KEY (session_id, participation_owner_id, participation_owner_kind) REFERENCES study_sessions_v2(session_id, participation_owner_id, participation_owner_kind);
 
 ALTER TABLE ONLY study_language_profile_units
     ADD CONSTRAINT study_language_profile_units_community_id_post_id_lyrics_r_fkey FOREIGN KEY (community_id, post_id, lyrics_revision, language_profile_revision) REFERENCES study_language_profiles(community_id, post_id, lyrics_revision, language_profile_revision);
@@ -45672,10 +52350,16 @@ ALTER TABLE ONLY study_language_profiles
     ADD CONSTRAINT study_language_profiles_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY study_lesson_item_state_v2
+    ADD CONSTRAINT study_lesson_exact_session_item_fk FOREIGN KEY (session_item_id, session_id) REFERENCES study_session_items_v2(session_item_id, session_id);
+
+ALTER TABLE ONLY study_lesson_item_state_v2
     ADD CONSTRAINT study_lesson_item_state_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
 
 ALTER TABLE ONLY study_lesson_item_state_v2
     ADD CONSTRAINT study_lesson_item_state_v2_session_item_id_fkey FOREIGN KEY (session_item_id) REFERENCES study_session_items_v2(session_item_id);
+
+ALTER TABLE ONLY study_presentations_v2
+    ADD CONSTRAINT study_presentation_exact_session_item_fk FOREIGN KEY (session_item_id, session_id) REFERENCES study_session_items_v2(session_item_id, session_id);
 
 ALTER TABLE ONLY study_presentations_v2
     ADD CONSTRAINT study_presentations_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
@@ -45693,6 +52377,12 @@ ALTER TABLE ONLY study_review_items
     ADD CONSTRAINT study_review_items_current_exercise_version_id_fkey FOREIGN KEY (current_exercise_version_id) REFERENCES study_exercise_versions(exercise_version_id);
 
 ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_owner_account_fk FOREIGN KEY (participation_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY study_review_items
+    ADD CONSTRAINT study_review_owner_kind_fk FOREIGN KEY (participation_owner_id, participation_owner_kind) REFERENCES participation_owners(owner_id, kind);
+
+ALTER TABLE ONLY study_review_items
     ADD CONSTRAINT study_review_unit_fk FOREIGN KEY (community_id, post_id, study_unit_id) REFERENCES localization_study_units(community_id, post_id, study_unit_id);
 
 ALTER TABLE ONLY study_session_answers
@@ -45701,14 +52391,11 @@ ALTER TABLE ONLY study_session_answers
 ALTER TABLE ONLY study_sessions_v2
     ADD CONSTRAINT study_session_current_item_fk FOREIGN KEY (current_session_item_id) REFERENCES study_lesson_item_state_v2(session_item_id) DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_exact_current_item_fk FOREIGN KEY (session_id, current_session_item_id) REFERENCES study_lesson_item_state_v2(session_id, session_item_id) DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY study_session_items_v2
     ADD CONSTRAINT study_session_item_exercise_identity_fk FOREIGN KEY (exercise_version_id, exercise_review_key) REFERENCES study_exercise_versions(exercise_version_id, exercise_review_key);
-
-ALTER TABLE ONLY study_session_items_v2
-    ADD CONSTRAINT study_session_item_review_identity_fk FOREIGN KEY (review_item_id, account_id, exercise_review_key) REFERENCES study_review_items(review_item_id, account_id, exercise_review_key);
-
-ALTER TABLE ONLY study_session_items_v2
-    ADD CONSTRAINT study_session_item_session_account_fk FOREIGN KEY (session_id, account_id) REFERENCES study_sessions_v2(session_id, account_id);
 
 ALTER TABLE ONLY study_session_items
     ADD CONSTRAINT study_session_items_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions(session_id);
@@ -45721,6 +52408,12 @@ ALTER TABLE ONLY study_session_items_v2
 
 ALTER TABLE ONLY study_session_items_v2
     ADD CONSTRAINT study_session_items_v2_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions_v2(session_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_owner_account_fk FOREIGN KEY (participation_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
+
+ALTER TABLE ONLY study_sessions_v2
+    ADD CONSTRAINT study_session_owner_kind_fk FOREIGN KEY (participation_owner_id, participation_owner_kind) REFERENCES participation_owners(owner_id, kind);
 
 ALTER TABLE ONLY study_sessions
     ADD CONSTRAINT study_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -45754,6 +52447,9 @@ ALTER TABLE ONLY study_spoken_answer_commands
 
 ALTER TABLE ONLY study_spoken_answer_commands
     ADD CONSTRAINT study_spoken_command_audio_artifact_fk FOREIGN KEY (learner_audio_artifact_id) REFERENCES learner_audio_artifacts(learner_audio_artifact_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY study_spoken_answer_commands
+    ADD CONSTRAINT study_spoken_exact_artifact_owner_attempt_digest_fk FOREIGN KEY (learner_audio_artifact_id, participation_owner_id, attempt_id, audio_digest) REFERENCES learner_audio_artifacts(learner_audio_artifact_id, participation_owner_id, attempt_ref, content_digest) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY study_translation_generation_items
     ADD CONSTRAINT study_translation_generation__community_id_post_id_lyric_l_fkey FOREIGN KEY (community_id, post_id, lyric_line_id, line_version, source_hash) REFERENCES localization_lyric_line_versions(community_id, post_id, lyric_line_id, line_version, source_hash);
@@ -45913,5 +52609,77 @@ ALTER TABLE ONLY verification_start_reservations
 
 ALTER TABLE ONLY verification_start_reservations
     ADD CONSTRAINT verification_start_reservations_creation_ceremony_fk FOREIGN KEY (actor_id, creation_intent_id, creation_requirement_kind, creation_generation, intent_id) REFERENCES community_creation_ceremony_attempts(actor_id, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+CREATE POLICY guest_raw_account_child_gate_v1 ON study_attempts_v2 AS RESTRICTIVE USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_attempts_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_attempts_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+CREATE POLICY guest_raw_account_child_gate_v1 ON study_lesson_item_state_v2 AS RESTRICTIVE USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_lesson_item_state_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_lesson_item_state_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+CREATE POLICY guest_raw_account_child_gate_v1 ON study_presentations_v2 AS RESTRICTIVE USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+CREATE POLICY guest_raw_account_gate_v1 ON learner_audio_artifacts AS RESTRICTIVE USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY guest_raw_account_gate_v1 ON study_review_items AS RESTRICTIVE USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY guest_raw_account_gate_v1 ON study_session_items_v2 AS RESTRICTIVE USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY guest_raw_account_gate_v1 ON study_sessions_v2 AS RESTRICTIVE USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY guest_raw_account_gate_v1 ON study_spoken_answer_commands AS RESTRICTIVE USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+ALTER TABLE learner_audio_artifacts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY legacy_account_access_v1 ON learner_audio_artifacts USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY legacy_account_access_v1 ON study_review_items USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY legacy_account_access_v1 ON study_session_items_v2 USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY legacy_account_access_v1 ON study_sessions_v2 USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY legacy_account_access_v1 ON study_spoken_answer_commands USING ((participation_owner_kind = 'account'::text)) WITH CHECK ((participation_owner_kind = 'account'::text));
+
+CREATE POLICY legacy_account_child_access_v1 ON study_attempts_v2 USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_attempts_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_attempts_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+CREATE POLICY legacy_account_child_access_v1 ON study_lesson_item_state_v2 USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_lesson_item_state_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_lesson_item_state_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+CREATE POLICY legacy_account_child_access_v1 ON study_presentations_v2 USING ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM study_session_items_v2 i
+  WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
+
+ALTER TABLE study_attempts_v2 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_lesson_item_state_v2 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_presentations_v2 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_review_items ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_session_items_v2 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_sessions_v2 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE study_spoken_answer_commands ENABLE ROW LEVEL SECURITY;
 
 SET check_function_bodies = true;
