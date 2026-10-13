@@ -196,6 +196,25 @@ export async function creatorFixture(
           private: true,
         },
       ]);
+      // Mirror accepted owned five-principal isolation after full native proof.
+      // Keep all37 inherited native ACLs; remove only other PUBLIC capabilities.
+      await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
+      const isolationCommands = Schema.decodeUnknownSync(
+        Schema.Array(Schema.Struct({ sql: Schema.String })),
+        { onExcessProperty: "error" },
+      )(
+        (
+          await f.admin.query(
+            `SELECT format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC',p.oid::regprocedure) AS sql
+           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+           WHERE n.nspname=$1 AND NOT(p.oid=ANY(ARRAY(SELECT signature::regprocedure FROM unnest($2::text[]) signatures(signature))))
+           ORDER BY p.oid`,
+            [f.schema, inherited.map((signature) => `${f.schema}.${signature}`)],
+          )
+        ).rows,
+      );
+      for (const command of isolationCommands) await f.admin.query(command.sql);
+      await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
       const role = `creator_login_${crypto.randomUUID().replaceAll("-", "")}`,
         password = Array.from(randomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join(
           "",
