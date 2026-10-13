@@ -79,6 +79,7 @@ const financialResetRelationSql = financialResetRelations
 
 const beforeFinancialResetSql = (
   resetTargets: readonly string[],
+  ownedVideoDatabase?: string,
 ) => `DO $owned_empty_financial_reset$
 DECLARE
   schema_name TEXT := pg_catalog.current_schema();
@@ -91,16 +92,33 @@ DECLARE
   census_round INTEGER := 0;
   changed BOOLEAN;
   relation_row RECORD;
+  video_custody BOOLEAN;
 BEGIN
   -- Reset is a test-only owner operation. No runtime principal or production
   -- namespace receives the temporary guard exception.
-  IF schema_name IS NULL OR schema_name !~
-    '^(api_next_reuse_[a-z0-9_]{1,24}_[0-9a-f]{12}_[0-9]+|api_next_hns_observer_[0-9a-f]{32})$'
+  IF schema_name IS NULL OR ${ownedVideoDatabase === undefined
+    ? `schema_name !~ '^(api_next_reuse_[a-z0-9_]{1,24}_[0-9a-f]{12}_[0-9]+|api_next_hns_observer_[0-9a-f]{32})$'`
+    : `schema_name<>'api_next' OR pg_catalog.current_database()<>'${ownedVideoDatabase}'`}
   THEN RAISE EXCEPTION 'owned disposable PostgreSQL test schema required' USING ERRCODE='GP003'; END IF;
   SELECT n.oid,c.relowner INTO STRICT namespace_id,owner_id
     FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid
     WHERE n.nspname=schema_name AND c.relname='participation_owners' AND c.relkind='r'
       AND n.nspowner=c.relowner AND c.relowner=pg_catalog.to_regrole(current_user);
+  ${ownedVideoDatabase === undefined ? "" : `
+  -- This exact database is created and destroyed by the video harness. Never
+  -- admit a normal api_next namespace from only caller configuration/ownership.
+  IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database()
+      AND datdba=owner_id AND NOT datistemplate)
+    OR NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class WHERE oid=pg_catalog.to_regclass('api_next.owned_video_test_custody')
+      AND relnamespace=namespace_id AND relowner=owner_id AND relkind='r')
+  THEN RAISE EXCEPTION 'owned video database custody unavailable' USING ERRCODE='GP003'; END IF;
+  SELECT count(*)=1 AND COALESCE(bool_and(
+      custody_database_oid=(SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())
+      AND custody_namespace_oid=namespace_id AND custody_role_oid=owner_id),FALSE)
+    INTO STRICT video_custody FROM api_next.owned_video_test_custody;
+  IF video_custody IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'owned video fixture marker mismatch' USING ERRCODE='GP003'; END IF;
+  `}
 
   -- Same topology order as source migration/guest authority: first topology,
   -- then the complete reset table set. Owner DDL does not obey this advisory
@@ -183,7 +201,14 @@ END;
 $verify_empty_financial_reset$;`;
 
 /** Builds a transaction-only reset for an owned, positively empty financial fixture. */
-export function preparePostgresTestBaselineReset(sql: string): string {
+export function preparePostgresTestBaselineReset(
+  sql: string, options: { readonly ownedVideoDatabase?: string } = {},
+): string {
+  // Closed harness-created database family only; this literal is checked against
+  // actual current_database, database/schema/table owner and native fixture custody.
+  if (options.ownedVideoDatabase !== undefined && !/^api_next_video_[0-9]{13}_[a-f0-9]{1,8}$/u.test(options.ownedVideoDatabase)) {
+    throw new Error("Exact owned video fixture database required");
+  }
   const truncateEnd = "RESTART IDENTITY CASCADE;";
   const first = sql.indexOf(truncateEnd);
   if (first < 0 || sql.indexOf(truncateEnd, first + truncateEnd.length) >= 0) {
@@ -202,7 +227,7 @@ export function preparePostgresTestBaselineReset(sql: string): string {
     throw new Error("Tracked PostgreSQL reset target list repeats a relation");
   }
   const split = first + truncateEnd.length;
-  return `${beforeFinancialResetSql(resetTargets)}\n${sql.slice(0, split)}\n${restoreFinancialResetGuardsSql}\n${sql.slice(split)}\n${verifyFinancialResetSql}`;
+  return `${beforeFinancialResetSql(resetTargets, options.ownedVideoDatabase)}\n${sql.slice(0, split)}\n${restoreFinancialResetGuardsSql}\n${sql.slice(split)}\n${verifyFinancialResetSql}`;
 }
 
 /** Restores only a disposable, empty-financial baseline in one owner transaction. */

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { preparePostgresTestBaselineReset } from "@pirate/testing/postgres";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import { videoPlatformAliases as alias, videoPostgresAliases } from "../video-platform-aliases.ts";
@@ -14,10 +15,10 @@ export default defineConfig({
         compatibilityFlags: ["nodejs_compat"],
         bindings: {
           VIDEO_TEST_DATABASE: inject("videoDatabase"),
-          VIDEO_TEST_RESET: readFileSync(
+          VIDEO_TEST_RESET: preparePostgresTestBaselineReset(readFileSync(
             new URL("../../db/postgres/test-reset.sql", import.meta.url),
             "utf8",
-          ),
+          ), { ownedVideoDatabase: new URL(inject("videoDatabase")).pathname.slice(1) }),
         },
       },
     })),

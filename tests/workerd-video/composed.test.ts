@@ -63,7 +63,9 @@ beforeEach(async (context) => {
   admin = new Client({ connectionString: bindings.VIDEO_TEST_DATABASE });
   await admin.connect();
   await admin.query("SET search_path TO api_next,pg_catalog");
-  await admin.query(bindings.VIDEO_TEST_RESET);
+  await admin.query("BEGIN");
+      try { await admin.query(bindings.VIDEO_TEST_RESET); await admin.query("COMMIT"); }
+      catch (error) { await admin.query("ROLLBACK").catch(() => undefined); throw error; }
   await seedVideoActors(admin);
   const url = new URL(bindings.VIDEO_TEST_DATABASE);
   url.searchParams.set("options", "-c search_path=api_next,pg_catalog");
