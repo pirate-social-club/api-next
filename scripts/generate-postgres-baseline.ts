@@ -32,6 +32,7 @@ const baselineSeedTables = [
   "moderation_platform_floor_category_decisions",
   "moderation_platform_floor_current",
   "moderation_platform_floor_revisions",
+  "owner_accounting_native_source_inventory_v1",
   "platform_pirate_label_policy_revisions",
   "qualification_policy_versions",
   "recovery_inspection_cursors",
