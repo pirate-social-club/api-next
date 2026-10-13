@@ -1,6 +1,6 @@
 import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
 const candidate = {
-  "source_head": "7767e6c99ac7848aa6d74523a14d534baac8b9ad",
+  "source_head": "7dc49dce14180dd1180fd3220329af646c36f88c",
   "native_phase": "owner_accounting_native_source_v1",
   "ledger": [
     {
@@ -1069,7 +1069,7 @@ const candidate = {
     },
     {
       "version": "0267_complete_owner_financial_source.sql",
-      "checksum": "b9c081ff659f2c2cf6be00a9dcc1d628cacb2cbc8dabac6c14fac9b7f9e841ca"
+      "checksum": "9fd712bb9f8a966fc9edef4b85ddfa721d1a1b1ac939c2a3d75d88d6805290d0"
     }
   ],
   "required_frames": [
@@ -3211,7 +3211,7 @@ const candidate = {
     },
     {
       "signature": "require_owner_accounting_ready_private_v1()",
-      "body_sha256": "cbb6e8391a8bee8b11067a675de40c30dac670395015a0b53038c44f3a499829",
+      "body_sha256": "88d019fbcc93ee73acf3965f6085dd0193a10df7f3f894936a4fb79ba5b2af80",
       "definer": true,
       "configuration": "pinned"
     },
@@ -3636,6 +3636,45 @@ const candidate = {
     "require_restricted_learner_practice_only()",
     "require_reward_run_authority_v1()",
     "resolve_hns_community_app_host_authority_v1(text,timestamptz)"
+  ],
+  "inherited_source_default_signatures": [
+    "active_activity_persona(text,text,text)",
+    "active_owned_community_persona(text,text,text)",
+    "can_account_access_activity_song(text,text,text)",
+    "can_account_view_content_rating_v1(text,text)",
+    "current_account_age_capability_v1(text)",
+    "current_account_age_evidence_v2(text)",
+    "freeze_reward_leg_qualification_terms()",
+    "gates_v2_append_only_guard()",
+    "gates_v2_validate_reward_subject_consumption()",
+    "guard_activity_qualification()",
+    "guard_asset_bonus_leg_asset()",
+    "guard_megapot_allocation_batch_change()",
+    "guard_megapot_commitment_effect()",
+    "guard_megapot_participant_claim()",
+    "guard_megapot_participant_claim_guard()",
+    "guard_megapot_participant_credit_claim()",
+    "guard_megapot_pool_drawing()",
+    "guard_reward_bound_asset_claim_leg()",
+    "guard_reward_bound_pool_share()",
+    "guard_song_reward_bundle_claim()",
+    "guard_song_reward_bundle_claim_leg()",
+    "guard_song_reward_offer_leg()",
+    "guard_sponsor_daily_totals()",
+    "guard_study_v2_activity_authority()",
+    "project_asset_bonus_claim_from_qualification()",
+    "protect_telegram_practice_mode()",
+    "reject_localization_immutable_mutation()",
+    "reject_megapot_snapshot_change()",
+    "reject_reward_append_only_change()",
+    "reject_telegram_practice_qualification()",
+    "reward_account_very_evidence_v1(text,timestamp with time zone)",
+    "reward_current_qualification_policies(text[])",
+    "reward_json_contains_private_identity(jsonb)",
+    "reward_leg_accepts_qualification(text,text,text)",
+    "validate_asset_bonus_leg_accounting()",
+    "validate_megapot_fallback_cutoff()",
+    "validate_megapot_pool_drawing_transition()"
   ],
   "native_function_bodies": [
     {
@@ -5776,7 +5815,7 @@ const candidate = {
     },
     {
       "name": "require_owner_accounting_ready_private_v1",
-      "body_sha256": "cbb6e8391a8bee8b11067a675de40c30dac670395015a0b53038c44f3a499829",
+      "body_sha256": "88d019fbcc93ee73acf3965f6085dd0193a10df7f3f894936a4fb79ba5b2af80",
       "definer": true,
       "configuration": "pinned"
     },
@@ -57904,5 +57943,5 @@ const candidate = {
 } as const;
 const phase = "WITH anchor AS (SELECT c.relowner,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname='participation_owners' AND c.relkind='r'), inventory AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='owner_accounting_native_source_inventory_v1'), phase AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='guest_learning_schema_phase') SELECT EXISTS(SELECT 1 FROM inventory WHERE relkind='r' AND relrowsecurity AND NOT relforcerowsecurity) AND EXISTS(SELECT 1 FROM phase WHERE relkind='r') AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_policy p ON p.polrelid=i.oid) AND NOT EXISTS(SELECT 1 FROM inventory i CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(i.relacl,pg_catalog.acldefault('r',i.relowner))) acl WHERE acl.grantee<>i.relowner) AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_attribute att ON att.attrelid=i.oid CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl WHERE acl.grantee<>i.relowner) AS valid, 'owner_accounting_native_source_v1'::text AS phase";
 export const ownerFinancialGuestStudyReadinessSource: OwnerFinancialGuestStudyReadinessSource = {
- candidate, accountingManifestSha256: "572117418289613660779426053807b3c687a97d4fca3a8b57fbf8b29cd4ffec", phaseSql: (_quotedSchema:string)=>phase,
+ candidate, accountingManifestSha256: "3aa2dc80014a0454b9c4a6adb5955fc154915e01aa13d8880882262d77997fce", phaseSql: (_quotedSchema:string)=>phase,
 };

@@ -24,7 +24,7 @@ async function adoptedSource() {
     ),
   );
   expect(createHash("sha256").update(actual).digest("hex")).toBe(
-    "0ecd22402334f1e4ec4052491c602b413ed88dffd1aac68ba135acb98e563478",
+    "ba11c3c5f686f5d4d8c77cfdff503ab4ae80e7e8d32244fc804c000524b2e1c1",
   );
   const value = ownerFinancialGuestStudyReadinessSource;
   if (value === null)
