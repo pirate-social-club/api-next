@@ -30,8 +30,9 @@ const one = <S extends Schema.ConstraintDecoder<unknown>>(
   text: string,
   values: readonly unknown[],
   schema: S,
+  readonly = false,
 ) =>
-  tx.execute<unknown>({ label, text, values, readonly: false }).pipe(
+  tx.execute<unknown>({ label, text, values, readonly }).pipe(
     Effect.flatMap((rows) =>
       Effect.try({
         try: () => {
@@ -73,28 +74,34 @@ export const openOwnerDrawingsForObservation = Effect.fn("OwnerDrawingOpener.ope
   });
   const opened: string[] = [];
   for (const target of openings) {
-    const original = yield* boundedLearnerAudioTransaction(
-      Effect.fn("OwnerDrawingOpener.original")(function* (tx: ControlPlaneTransaction) {
-        const saved = yield* one(
-          tx,
-          "owner-drawing.original",
-          "SELECT find_owner_megapot_original_drawing_v1($1,$2) AS result",
-          [target.poolLegId, id],
-          Schema.NullOr(Original),
-        );
-        if (saved !== null) return saved;
-        // Actual server CSPRNG only after original lookup. A concurrent creator's
-        // immutable original wins inside native creation, never a salt overwrite.
-        const salt = crypto.getRandomValues(new Uint8Array(32));
-        return yield* one(
-          tx,
-          "owner-drawing.open",
-          "SELECT open_owner_megapot_drawing_v1($1,$2,$3::bytea) AS result",
-          [target.poolLegId, id, salt],
-          Original,
-        );
-      }),
+    // Native lookup validates the complete source but acquires no business
+    // locks. Keep it outside the bounded owning transaction so creation pays
+    // for one complete native check within the unchanged three-second bound.
+    const saved = yield* one(
+      db,
+      "owner-drawing.original",
+      "SELECT find_owner_megapot_original_drawing_v1($1,$2) AS result",
+      [target.poolLegId, id],
+      Schema.NullOr(Original),
+      true,
     );
+    const original =
+      saved ??
+      (yield* boundedLearnerAudioTransaction(
+        Effect.fn("OwnerDrawingOpener.original")(function* (tx: ControlPlaneTransaction) {
+          // Actual server CSPRNG only after original lookup. Native creation
+          // checks the existing drawing again before and after its leg lock;
+          // a concurrent original wins without any observation/time/salt rewrite.
+          const salt = crypto.getRandomValues(new Uint8Array(32));
+          return yield* one(
+            tx,
+            "owner-drawing.open",
+            "SELECT open_owner_megapot_drawing_v1($1,$2,$3::bytea) AS result",
+            [target.poolLegId, id, salt],
+            Original,
+          );
+        }),
+      ));
     yield* Effect.try({
       try: () => {
         if (original.poolLegId !== target.poolLegId || original.drawingId !== target.drawingId)
