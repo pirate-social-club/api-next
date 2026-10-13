@@ -1,11 +1,9 @@
 export const reusablePostgresTestSuites = [
-  "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-repository.pg.test.ts",
   "packages/platform-cf/src/content-rating-reconciliation.pg.test.ts",
   "packages/platform-cf/src/telegram-store.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
   "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
-  "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
   "packages/platform-cf/src/community-repository.pg.test.ts",
   "packages/platform-cf/src/community-route-repository.pg.test.ts",
   "packages/platform-cf/src/dance-reference-persistence.pg.test.ts",
@@ -18,8 +16,6 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
   "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
   "packages/platform-cf/src/public-profile.pg.test.ts",
-  "packages/platform-cf/src/rewards-qualification.pg.test.ts",
-  "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
   "packages/platform-cf/src/song-owner-video-policy.pg.test.ts",
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
   "packages/platform-cf/src/video-outcome-repository.pg.test.ts",
@@ -27,7 +23,6 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
   "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
-  "scripts/community-purchase-funding-plans.pg.test.ts",
   "scripts/song-video-composed-flow.pg.test.ts",
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
@@ -142,6 +137,11 @@ export const freshSchemaPostgresTestSuites = [
   "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
   "scripts/song-video-render-host.pg.test.ts",
+  "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
+  "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
+  "packages/platform-cf/src/rewards-qualification.pg.test.ts",
+  "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
+  "scripts/community-purchase-funding-plans.pg.test.ts",
 ] as const;
 
 export const noBaselinePostgresTestSuites = [

@@ -680,7 +680,7 @@ async function purchaseAndSweep(
   );
   const sweeps = makeControlPlaneMegapotSweepStore(f.adminRuntime);
   // Native STORE-boundary deterministic custody/drawing observations only.
-  // Zero uses a paying-tier zero sealed sweep and NEVER creates a fake claim.
+  // Zero is a genuine non-paying tier with sealed zero evidence and no claim.
   const sweep = await run(
     sweeps.complete({
       candidate: await run(sweeps.loadCandidate(key)),
@@ -688,7 +688,7 @@ async function purchaseAndSweep(
       observationBlockNumber: 105n,
       observationBlockHash: hex("sweep-block"),
       drawingStateHash: hash("drawing-state"),
-      tierId: 7,
+      tierId: net === 0n ? 0 : 7,
       custodyOwnerAddress: pool.custody,
       grossWinningsAtomic: net,
       referralWinShareAtomic: 0n,
@@ -697,8 +697,43 @@ async function purchaseAndSweep(
       observedAt: new Date().toISOString(),
     }),
   );
-  expect(sweep.outcome).toBe("winnings_detected");
+  expect(sweep.outcome).toBe(net === 0n ? "no_win" : "winnings_detected");
   expect(sweep.netWinningsAtomic).toBe(net);
+  if (net === 0n) {
+    expect(sweep.tierId).toBe(0);
+    expect(sweep.ticketId).toBe(501n);
+    expect(sweep.grossWinningsAtomic).toBe(0n);
+    expect(sweep.referralAccrualAtomic).toBe(0n);
+    expect(
+      (
+        await f.admin.query(
+          `SELECT d.status AS drawing_status,t.status AS ticket_status,
+          sw.ticket_count,sw.winning_ticket_count,e.tier_id,
+          e.gross_winnings_atomic::text AS gross,e.referral_accrual_atomic::text AS referral,
+          e.net_winnings_atomic::text AS net,
+          (SELECT count(*)::integer FROM megapot_claim_effects c WHERE c.pool_leg_id=d.pool_leg_id AND c.drawing_id=d.drawing_id) AS claims
+         FROM megapot_pool_drawings d
+         JOIN megapot_drawing_sweeps sw ON sw.pool_leg_id=d.pool_leg_id AND sw.drawing_id=d.drawing_id
+         JOIN megapot_sweep_ticket_evidence e ON e.sweep_id=sw.sweep_id
+         JOIN megapot_ticket_inventory t ON t.attestation_id=e.attestation_id AND t.ticket_id=e.ticket_id
+         WHERE d.pool_leg_id=$1 AND d.drawing_id=$2::numeric AND sw.sweep_id=$3`,
+          [pool.original.poolLegId, pool.original.drawingId, sweep.sweepId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        drawing_status: "no_win",
+        ticket_status: "no_win",
+        ticket_count: 1,
+        winning_ticket_count: 0,
+        tier_id: 0,
+        gross: "0",
+        referral: "0",
+        net: "0",
+        claims: 0,
+      },
+    ]);
+  }
   if (net > 0n) {
     const claims = makeControlPlaneMegapotClaimStore(f.adminRuntime),
       effect = `claim-${pool.original.poolLegId}`;
