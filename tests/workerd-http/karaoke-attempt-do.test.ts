@@ -295,9 +295,14 @@ describe("Karaoke attempt Durable Object", () => {
       expect(held).toEqual({
         score_state: "pending",
         recording_state: "pending",
-        score_attempts: 8,
-        recording_attempts: 8,
+        score_attempts: row.score_attempts + 7,
+        recording_attempts: row.recording_attempts + 7,
       });
+      // Enqueueing arms an immediate Workerd alarm alongside this explicit
+      // delivery. Count later deliveries from the observed initial baseline
+      // and prove uncertainty holds beyond the ordinary exhaustion limit.
+      expect(held.score_attempts).toBeGreaterThanOrEqual(8);
+      expect(held.recording_attempts).toBeGreaterThanOrEqual(8);
       expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
     });
   });
