@@ -123,6 +123,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
   test("lists private bindings for every published status without exposing another account", async () => {
     await withSchema(async (admin, connection) => {
       await admin.query("INSERT INTO users (user_id) VALUES ('binding-owner'), ('binding-other')");
+      for (const accountId of ["binding-owner", "binding-other"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       await activatePendingPersonaFixtures(admin);
       await seedBornBoundCommunity(admin, "binding-home", ["binding-owner", "binding-other"]);
       for (const personaId of ["bound-active", "bound-retired", "bound-suspended"]) {
@@ -247,6 +250,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
   test("enforces the lifetime slot ceiling and rolling additional-persona rate", async () => {
     await withSchema(async (admin, connection) => {
       await admin.query("INSERT INTO users (user_id) VALUES ('account-slot'),('account-rate')");
+      for (const accountId of ["account-slot", "account-rate"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       await seedBornBoundCommunity(admin, "persona-create-home", ["account-slot", "account-rate"]);
       const repository = makeControlPlanePersonaRepository();
       const create = (accountId: string, ordinal: number, createdAt: string) =>
@@ -312,6 +318,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
           ('account-published-label','active',
            '{"profile":{"display_name":"Published"},"global_handle":{"global_handle_id":"handle-published-label","label_display":"publishedlabel.pirate"}}'::jsonb)`,
       );
+      for (const accountId of ["account-pending-label", "account-published-label"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       const personas = await admin.query<{
         readonly account_id: string;
         readonly persona_id: string;
@@ -378,6 +387,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
          )`,
         [createdAt],
       );
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [
+        "account-persona-a",
+      ]);
       const first = await admin.query<{
         readonly persona_id: string;
         readonly display_name: string | null;
@@ -436,6 +448,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('account-wallet-a'), ('account-wallet-b')",
       );
+      for (const accountId of ["account-wallet-a", "account-wallet-b"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       await seedBornBoundCommunity(admin, "persona-wallet-home", [
         "account-wallet-a",
         "account-wallet-b",
@@ -616,6 +631,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('account-fence-a'), ('account-fence-b')",
       );
+      for (const accountId of ["account-fence-a", "account-fence-b"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       await seedBornBoundCommunity(admin, "persona-fence-home", ["account-fence-a"]);
       const ids = await admin.query<{ readonly account_id: string; readonly persona_id: string }>(
         "SELECT account_id, persona_id FROM personas WHERE is_first_persona ORDER BY account_id",
@@ -745,6 +763,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
   test("requires an eligible same-community replacement for a presenting persona's retirement", async () => {
     await withSchema(async (admin, connection) => {
       await admin.query("INSERT INTO users (user_id) VALUES ('account-replace-a')");
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [
+        "account-replace-a",
+      ]);
       await seedBornBoundCommunity(admin, "persona-replace-home", ["account-replace-a"]);
       await admin.query(
         `INSERT INTO communities
@@ -868,6 +889,9 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       await admin.query(
         "INSERT INTO users (user_id) VALUES ('account-born-a'), ('account-born-b')",
       );
+      for (const accountId of ["account-born-a", "account-born-b"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       await seedBornBoundCommunity(admin, "persona-born-home", ["account-born-a"]);
       const repository = makeControlPlanePersonaRepository();
 

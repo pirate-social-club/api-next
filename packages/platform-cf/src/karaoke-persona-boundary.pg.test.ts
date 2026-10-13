@@ -766,6 +766,22 @@ suite("Karaoke persona boundary", () => {
           `INSERT INTO users (user_id) VALUES
              ('board-account-performer'), ('board-account-plain'), ('board-author')`,
         );
+        await admin.query("SET session_replication_role = origin");
+        const provisionOwner = async (accountId: string): Promise<string> => {
+          const result = await admin.query<{ readonly owner_id: string }>(
+            "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+            [accountId],
+          );
+          const ownerId = result.rows[0]?.owner_id;
+          if (result.rows.length !== 1 || typeof ownerId !== "string" || ownerId.length === 0) {
+            throw new Error("active leaderboard account owner was not provisioned");
+          }
+          return ownerId;
+        };
+        const performerOwnerId = await provisionOwner("board-account-performer");
+        const plainOwnerId = await provisionOwner("board-account-plain");
+        await provisionOwner("board-author");
+        await admin.query("SET session_replication_role = replica");
         await admin.query(
           `INSERT INTO communities (
              community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -897,17 +913,19 @@ suite("Karaoke persona boundary", () => {
           `INSERT INTO activity_qualifications (
              qualification_id, account_id, persona_id, community_id, post_id, audio_revision,
              activity_key, karaoke_session_id, karaoke_attempt_id, score_bps,
-             qualification_policy_version_id, qualified_at, streak_day, evidence_summary
+             qualification_policy_version_id, qualified_at, streak_day, evidence_summary,
+             participation_owner_id, participation_owner_kind
            ) VALUES
              ('board-qualification-performer','board-account-performer',
                'board-persona-performer','board-community','board-post',1,'karaoke',
                'board-session-performer','board-attempt-performer',9500,
                'karaoke_qualification_v2@1',clock_timestamp(),
-               (clock_timestamp() AT TIME ZONE 'UTC')::date,'{}'::jsonb),
+               (clock_timestamp() AT TIME ZONE 'UTC')::date,'{}'::jsonb,$1,'account'),
              ('board-qualification-plain','board-account-plain','board-persona-plain',
                'board-community','board-post',1,'karaoke','board-session-plain',
                'board-attempt-plain',8000,'karaoke_qualification_v2@1',clock_timestamp(),
-               (clock_timestamp() AT TIME ZONE 'UTC')::date,'{}'::jsonb)`,
+               (clock_timestamp() AT TIME ZONE 'UTC')::date,'{}'::jsonb,$2,'account')`,
+          [performerOwnerId, plainOwnerId],
         );
       } finally {
         await admin.query("SET session_replication_role = origin");
