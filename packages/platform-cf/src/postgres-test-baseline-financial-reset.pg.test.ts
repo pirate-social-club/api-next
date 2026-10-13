@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   applyPostgresTestBaseline,
   postgresTestSchemaCatalogFingerprint,
@@ -60,7 +60,7 @@ async function withOwnedBaseline(
   const schema = `api_next_hns_observer_${nonce}`;
   const role = `financial_reset_reader_${nonce}`;
   // Disposable synthetic role password only; no provider/session credential.
-  const password = randomBytes(24).toString("hex");
+  const password = randomUUID();
   const admin = new Client({
     connectionString: url,
     connectionTimeoutMillis: 5000,
@@ -108,7 +108,8 @@ async function withOwnedBaseline(
         cleanupErrors.push(error);
       }
     };
-    if (reader !== undefined) await attempt(() => reader.end());
+    const readerToClose = reader;
+    if (readerToClose !== undefined) await attempt(() => readerToClose.end());
     // Independent attempts: a failed rollback/end/drop cannot skip the others.
     await attempt(() => admin.query("ROLLBACK; RESET ROLE; SET search_path TO public"));
     const cleanupQuery = async (text: string) => {
