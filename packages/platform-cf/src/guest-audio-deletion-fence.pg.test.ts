@@ -139,7 +139,7 @@ async function fixture(use: (f: Fixture) => Promise<void>) {
     // proposal override or unpublished environment filename selects its source.
     const candidate = await migration("0253_learner_audio_deletion_fence.sql");
     const candidateHash = createHash("sha256").update(candidate).digest("hex");
-    expect(candidateHash).toBe("42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc");
+    expect(candidateHash).toBe("27ce4e1c6e3185badb27e23bad96b84a3c9c5a226c7678d736d05072138f6cdb");
     await transaction(admin, async () => {
       await admin.query(candidate);
     });

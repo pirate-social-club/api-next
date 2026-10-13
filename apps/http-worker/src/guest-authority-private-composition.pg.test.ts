@@ -77,7 +77,7 @@ const privateChecksums: Readonly<Record<string, string>> = {
   "0252_guest_learning_controlled_row_admission.sql":
     "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
   "0253_learner_audio_deletion_fence.sql":
-    "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
+    "27ce4e1c6e3185badb27e23bad96b84a3c9c5a226c7678d736d05072138f6cdb",
   "0254_guest_prepared_study_session_capture.sql":
     "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
   "0255_guest_spoken_success_checkpoints.sql":

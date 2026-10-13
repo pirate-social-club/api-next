@@ -1010,7 +1010,7 @@ export const guestStudyReadinessCandidate = {
       version: "0252_guest_learning_controlled_row_admission.sql",
     },
     {
-      checksum: "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
+      checksum: "27ce4e1c6e3185badb27e23bad96b84a3c9c5a226c7678d736d05072138f6cdb",
       version: "0253_learner_audio_deletion_fence.sql",
     },
     {
@@ -1046,7 +1046,7 @@ export const guestStudyReadinessCandidate = {
       version: "0261_guest_study_resource_expiry.sql",
     },
     {
-      checksum: "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
+      checksum: "e266708eae7b1d954421adc8b322ec51103f50506c42da91c22120f57bbcb485",
       version: "0262_ordinary_audio_producer_capture.sql",
     },
     {
@@ -1200,7 +1200,7 @@ export const guestStudyReadinessCandidate = {
       source_file: "0251_guest_learning_resource_reservations.sql",
     },
     {
-      body_sha256: "01426c151c469d2f3e668549272455d588bb5ac04360f77bce23959c48fb3cd9",
+      body_sha256: "1223735bef6606c7a9026eb38b4ce215399d6368ce4aaa47b0dd45b6089e27e4",
       configuration: "pinned",
       definer: true,
       kind: "f",
@@ -1856,7 +1856,7 @@ export const guestStudyReadinessCandidate = {
       source_file: "0254_guest_prepared_study_session_capture.sql",
     },
     {
-      body_sha256: "13ee82f15a52619995916398e0a5513aeae33917cb036c42b05da78ec85756d9",
+      body_sha256: "6fbf8ac76df1d9fe9fc918edd4ad421f5d23ac310412226b4d3f7a84cdea13b9",
       configuration: "pinned",
       definer: true,
       kind: "f",
@@ -2837,6 +2837,6 @@ export const guestStudyReadinessCandidate = {
     },
   ],
   restricted_catalogue_probes: ["pg_ls_dir", "pg_read_binary_file", "pg_read_file", "pg_stat_file"],
-  source_head: "c8bd8ae83efce0d244d1e73626e5898c2c87df80",
-  source_manifest_sha256: "2368f2ddba45b370e738ebbdca3f98533432dde3f7fe311f5f99fccccc93b7cc",
+  source_head: "a5419d49cc261ca0e08cc9bf7a70583bd5a9b620",
+  source_manifest_sha256: "9fac56bd99cc50184e9e3e92aa6cb8e207d58c90f675b8c0f04b2e52e2b364c7",
 } as const;
