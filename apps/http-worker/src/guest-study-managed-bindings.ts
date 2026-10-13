@@ -83,7 +83,7 @@ export function makeDefaultGuestStudyManagedRuntime(
     // index.ts wraps real HTTP fetch in workerBackground.run(ctx.waitUntil,...).
     // Resolve that actual request scope at invocation, never cache a prior ctx.
     // A promise here is already durable/original; absence cannot invent abort.
-    retainTask: (task) => {
+    retainTask: (task: Promise<unknown>) => {
       workerBackground.defer(() => task);
     },
   });
