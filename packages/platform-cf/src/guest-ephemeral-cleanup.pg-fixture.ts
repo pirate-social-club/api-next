@@ -45,15 +45,25 @@ export function bounded<A>(task: Promise<A>, label: string, limit = 3000): Promi
   });
 }
 async function actualInventory() {
-  const raw = process.env.GUEST_EPHEMERAL_NATIVE_INPUTS_JSON;
-  if (!raw) throw new Error("Root exact actual263 source inventory required");
-  const input = Schema.decodeUnknownSync(
+  // Independently reviewed literal source inventory is committed with this
+  // fixture. Runner metadata can assert equality, never replace acceptance.
+  const decodeInventory = Schema.decodeUnknownSync(
     Schema.Struct({
       migration: Schema.String.check(Schema.isPattern(/^0263_.+\.sql$/u)),
       hashes: Schema.Record(Schema.String, Sha),
     }),
     { onExcessProperty: "error" },
-  )(JSON.parse(raw));
+  );
+  const input = decodeInventory(
+    JSON.parse(
+      await readFile(
+        new URL("./guest-ephemeral-native-inputs.pg-fixture.json", import.meta.url),
+        "utf8",
+      ),
+    ),
+  );
+  const declared = process.env.GUEST_EPHEMERAL_NATIVE_INPUTS_JSON;
+  if (declared !== undefined) expect(decodeInventory(JSON.parse(declared))).toEqual(input);
   const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
   const manifest = Schema.decodeUnknownSync(
     Schema.Struct({

@@ -29,9 +29,9 @@ import type { PostgresMigration } from "./postgres-migrations.ts";
 const pgTest = pgUrl ? test : test.skip;
 const signature = "release_next_guest_study_resource_remainder_v1()";
 async function expiryFixture(use: (f: CheckpointFixture) => Promise<void>) {
-  const raw = process.env.GUEST_STUDY_RESOURCE_EXPIRY_NATIVE_INPUTS_JSON;
-  if (!raw) throw new Error("Root exact actual expiry source/version inventory required");
-  const inputs = Schema.decodeUnknownSync(
+  // The exact accepted source/version declaration is committed, not derived
+  // from candidate bytes or required as untracked CI runner state.
+  const decodeInventory = Schema.decodeUnknownSync(
     Schema.Struct({
       expiryMigration: Schema.String.check(Schema.isPattern(/^\d{4}_.+\.sql$/u)),
       hashes: Schema.Record(
@@ -40,7 +40,17 @@ async function expiryFixture(use: (f: CheckpointFixture) => Promise<void>) {
       ),
     }),
     { onExcessProperty: "error" },
-  )(JSON.parse(raw));
+  );
+  const inputs = decodeInventory(
+    JSON.parse(
+      await readFile(
+        new URL("./guest-study-resource-expiry-native-inputs.pg-fixture.json", import.meta.url),
+        "utf8",
+      ),
+    ),
+  );
+  const declared = process.env.GUEST_STUDY_RESOURCE_EXPIRY_NATIVE_INPUTS_JSON;
+  if (declared !== undefined) expect(decodeInventory(JSON.parse(declared))).toEqual(inputs);
   const last = Number(inputs.expiryMigration.slice(0, 4));
   if (last <= 258)
     throw new Error("Root must assign an actual successor; proposal reserves no ordinal");

@@ -1,0 +1,21 @@
+{
+  "migration": "0263_guest_ephemeral_audio_cleanup.sql",
+  "hashes": {
+    "0248_guest_learning_authority_foundation.sql": "2c99571cedbe0640733b3509c657e81d4a89f505ba6d3fed61ea7e0c4befaed1",
+    "0249_study_participation_owner_preservation.sql": "8c3578dcbbbdf929fb412e4493e6e16ab5d2af0fe13d518bd3f582892cd0c732",
+    "0250_guest_browser_authority_transitions.sql": "c025474320a4bc244d974929415fed95ad26b22d0e2cf9657fbd2f328ddafcf9",
+    "0251_guest_learning_resource_reservations.sql": "2de6e6508ec498a616b2db85ceafef1e2dbde7323a060cfae9956d0353d1aae4",
+    "0252_guest_learning_controlled_row_admission.sql": "fc49e0678b1a14430455b29c9f1079c10fe8ee6408724edcbad110cd22b9ea7f",
+    "0253_learner_audio_deletion_fence.sql": "42cc72d500ecdee0169bf86622e1e578632f58e0b40d6ef489d10c9f412c74bc",
+    "0254_guest_prepared_study_session_capture.sql": "2c5d3a799eba282ce4c4993f70f86276372424b8dfcc2946a0dfee457c1b2ad3",
+    "0255_guest_spoken_success_checkpoints.sql": "fb7e3519edf7df95ef8071aaeced8d22509c146edce2f2d0b85d146b06051a2b",
+    "0256_guest_owned_study_mutations.sql": "bb90ea35b74aa8fddfb206aad1ce8ddb439ba53ae5175de7a33fd2c7102684ce",
+    "0257_guest_spoken_audio_archive.sql": "3c5eb872e14558e28f78e607012d498f6fb7c2e8bae05bbba8911fd2ad9bcfec",
+    "0258_guest_recovery_audio_deletion.sql": "cc9792c45c8938b89025a3e723e58f01f021d93d11b426c7600cfcf677bf9aef",
+    "0259_guest_captured_recovery_reads.sql": "3b84f8f3798e777bd7aa674363add62854d330b9ef12079fa49e2f2b24ea0dc9",
+    "0260_owner_study_original_source_reads.sql": "efe82c3b3c132217bc6c01f2b73fef5f7940465d9c08ab18c0bcbaeb3b897120",
+    "0261_guest_study_resource_expiry.sql": "e782d6dc574052f30418d54332087715d2e1ec279543e5f6a8be5c4ffbc4960c",
+    "0262_ordinary_audio_producer_capture.sql": "04a132bf45a4618461bdb6fe1d2654684ac3cef7a7db8df5c4e50e0f3be1c04c",
+    "0263_guest_ephemeral_audio_cleanup.sql": "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55"
+  }
+}
