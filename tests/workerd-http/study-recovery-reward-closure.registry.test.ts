@@ -139,6 +139,8 @@ describe("actual Study recovery qualification closure registry admission", () =>
       "postgres:guest_resource_edge_locks",
       "postgres:guest_resource_session_reservations",
       "postgres:guest_resource_release_receipts",
+      "postgres:learner_audio_upload_attempts",
+      "postgres:learner_audio_upload_cleanup_commands",
     ]);
     expect(withGuest.reads).toContain("postgres:guest_resource_provider_calls");
     expect(guestOnlyWrites).not.toContain("postgres:guest_resource_provider_calls");
