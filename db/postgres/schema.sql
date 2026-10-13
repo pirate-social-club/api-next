@@ -11030,15 +11030,23 @@ BEGIN
  RETURN NEW;
 END $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_disabled_beneficiary_dispatch_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
@@ -11055,15 +11063,23 @@ BEGIN
  RETURN NEW;
 END $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_disabled_owner_credit_dispatch_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
@@ -18034,15 +18050,23 @@ CREATE FUNCTION guest_financial_component_has_history_private_v1(component_ids t
  -- already keeps all original financial sources nonempty independently.
 $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guest_financial_component_has_history_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='component_ids text[]';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
@@ -24746,15 +24770,23 @@ BEGIN
  RAISE EXCEPTION 'owner financial producers remain disabled' USING ERRCODE='GP003';
 END $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='reject_disabled_owner_financial_dml_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
@@ -26012,15 +26044,23 @@ BEGIN
  END LOOP;
 END $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='require_disabled_owner_financial_inventory_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
@@ -26634,15 +26674,23 @@ BEGIN
  IF p_expected<>2 THEN RAISE EXCEPTION 'v3 dispatcher unavailable' USING ERRCODE='GP003'; END IF;
 END $$;
 DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
 BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='require_megapot_beneficiary_version_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_leg text, p_drawing numeric, p_expected smallint';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
+    target_schema,target_function.proname,target_function.identity_arguments);
+  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
+    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
+      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
+  END LOOP;
 END
 $baseline_function_path$;
 
