@@ -924,6 +924,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     (binding) =>
       binding.endpoint.implementation !== "disabled" &&
       binding.endpoint.auth.policy.kind !== "browserParticipation" &&
+      // Financial serving names belong exclusively to their authenticated source graph.
+      // Supplied generic handlers never admit them or require generic authentication.
+      !isOwnerRewardGuestStudyServingName(binding.name) &&
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
         spacesOwnerProofHandlers?.[binding.name] !== undefined ||
