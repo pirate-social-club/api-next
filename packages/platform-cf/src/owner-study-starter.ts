@@ -113,6 +113,10 @@ const LimitsRow = Schema.Struct({
   statement: Schema.Literal("2s"),
   idle: Schema.Literal("2s"),
 });
+const RewardedLimitsRow = Schema.Struct({
+  ...LimitsRow.fields,
+  plan_cache_mode: Schema.Literal("force_generic_plan"),
+});
 const Candidate = Schema.Struct({
   state: Schema.Literal("candidate"),
   reservationId: GuestIdentifierV1,
@@ -228,23 +232,29 @@ const one = <S extends Schema.ConstraintDecoder<unknown>>(
   );
 const limits = Effect.fn("OwnerStudyStarter.limits")(function* (
   transaction: ControlPlaneTransaction,
+  rewarded = false,
 ) {
   yield* transaction.execute({
     label: "guest-study.limits.set",
-    text: "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true)",
+    text: rewarded
+      ? "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true),set_config('plan_cache_mode','force_generic_plan',true)"
+      : "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true)",
     values: [],
     readonly: true,
   });
   const actual = yield* transaction.execute({
     label: "guest-study.limits.verify",
-    text: "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle",
+    text: rewarded
+      ? "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle,current_setting('plan_cache_mode') AS plan_cache_mode"
+      : "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle",
     values: [],
     readonly: true,
   });
   yield* Effect.try({
     try: () => {
       if (actual.rows.length !== 1) throw new Error();
-      decode(LimitsRow, actual.rows[0]);
+      if (rewarded) decode(RewardedLimitsRow, actual.rows[0]);
+      else decode(LimitsRow, actual.rows[0]);
     },
     catch: () => invalid("guest-study.limits.verify.decode"),
   });
@@ -569,7 +579,7 @@ export const makeControlPlaneOwnerStudyStarter = (
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* limits(transaction);
+              yield* limits(transaction, input.rewardMode === "megapot_guest_v1");
               return yield* startInTransaction(transaction, input, policy);
             }),
           );
@@ -584,7 +594,7 @@ export const makeControlPlaneOwnerStudyStarter = (
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* limits(transaction);
+              yield* limits(transaction, input.rewardMode === "megapot_guest_v1");
               const prepared = yield* one(
                 transaction,
                 "guest-study.start.atomic-reserve",
