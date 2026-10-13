@@ -608,6 +608,39 @@ pgTest(
   () =>
     readinessFixture(async (f) => {
       await f.inspector.verify();
+      // All actual LOGIN profiles retain observation/configuration while the
+      // proven native PUBLIC table mutation capability is absent.
+      for (const principal of Object.values(f.principals)) {
+        expect(
+          one(
+            Schema.Struct({
+              select_allowed: Schema.Boolean,
+              update_allowed: Schema.Boolean,
+              column_update_allowed: Schema.Boolean,
+              set_config_allowed: Schema.Boolean,
+            }),
+            (
+              await principal.client.query(`SELECT
+ has_table_privilege(current_user,'pg_catalog.pg_settings','SELECT') AS select_allowed,
+ has_table_privilege(current_user,'pg_catalog.pg_settings','UPDATE') AS update_allowed,
+ has_any_column_privilege(current_user,'pg_catalog.pg_settings','UPDATE') AS column_update_allowed,
+ has_function_privilege(current_user,'pg_catalog.set_config(text,text,boolean)','EXECUTE') AS set_config_allowed`)
+            ).rows,
+          ),
+        ).toEqual({
+          select_allowed: true,
+          update_allowed: false,
+          column_update_allowed: false,
+          set_config_allowed: true,
+        });
+      }
+      // Actual catalogue mutation fault: the SAME unchanged verifier must refuse
+      // restored PUBLIC UPDATE, then accept again after the exact narrow revoke.
+      await fault(
+        f,
+        () => f.admin.query("GRANT UPDATE ON TABLE pg_catalog.pg_settings TO PUBLIC"),
+        () => f.admin.query("REVOKE UPDATE ON TABLE pg_catalog.pg_settings FROM PUBLIC"),
+      );
       for (const signature of [
         "pg_catalog.pg_read_file(text)",
         "pg_catalog.pg_read_binary_file(text)",

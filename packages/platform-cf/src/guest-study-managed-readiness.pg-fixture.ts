@@ -218,6 +218,46 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
       // AFTER native installation/frame evidence. This earns no new native ACL credit.
       await f.admin.query(`REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA ${q(f.schema)} FROM PUBLIC`);
 
+      // The owned initdb baseline grants PUBLIC UPDATE on pg_settings. The
+      // unchanged strict catalogue verifier refuses that mutation capability.
+      // Harden ONLY this proven unused capability in this disposable database;
+      // SELECT, SET/set_config and all native/source ACL evidence remain intact.
+      const nativeSettings = one(
+        Schema.Struct({ known_native_baseline: Schema.Boolean }),
+        (
+          await f.admin.query(`SELECT
+ c.relkind='v' AND c.oid<16384 AND n.nspname='pg_catalog'
+ AND EXISTS(SELECT 1 FROM pg_init_privs i
+  CROSS JOIN LATERAL aclexplode(i.initprivs) a
+  WHERE i.classoid='pg_class'::regclass AND i.objoid=c.oid
+   AND i.objsubid=0 AND i.privtype='i'
+   AND a.grantee=0 AND a.privilege_type='UPDATE')
+ AND ARRAY(SELECT a.privilege_type
+  FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+  WHERE a.grantee=0 ORDER BY a.privilege_type COLLATE "C")
+  =ARRAY['SELECT','UPDATE']::text[]
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute attr
+  CROSS JOIN LATERAL aclexplode(attr.attacl) a
+  WHERE attr.attrelid=c.oid AND attr.attnum>0 AND NOT attr.attisdropped
+   AND a.grantee=0 AND a.privilege_type IN ('INSERT','UPDATE','REFERENCES'))
+ AS known_native_baseline
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE c.oid='pg_catalog.pg_settings'::regclass`)
+        ).rows,
+      ).known_native_baseline;
+      if (!nativeSettings)
+        throw new Error("Owned pg_settings baseline differs; conditional hardening refused");
+      // Register and arm before the write, including a possible COMMIT ACK loss.
+      // Restoration is independently attempted before any actor DROP OWNED.
+      let settingsRestorationArmed = true;
+      restorations.push(async () => {
+        if (settingsRestorationArmed) {
+          await f.admin.query("GRANT UPDATE ON TABLE pg_catalog.pg_settings TO PUBLIC");
+          settingsRestorationArmed = false;
+        }
+      });
+      await f.admin.query("REVOKE UPDATE ON TABLE pg_catalog.pg_settings FROM PUBLIC");
+
       const createPrincipal = async (profile: Profile): Promise<Principal> => {
         if (pgUrl === undefined) throw new Error("Owned loopback PostgreSQL URL required");
         const role = `ready_${profile.toLowerCase()}_${crypto.randomUUID().replaceAll("-", "")}`;
