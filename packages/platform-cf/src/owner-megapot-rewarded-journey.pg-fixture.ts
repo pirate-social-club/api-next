@@ -114,6 +114,19 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
     // Preserve every financial source/owed ledger row until Root physically
     // tears down this owned app and PostgreSQL; no business DROP/delete.
     f.deferDestructiveCleanup();
+    expect((await f.admin.query(`SELECT head.owner_account_id,head.audio_revision::text,
+      revision.policy_revision::text,revision.third_party_reward_legs,revision.pool_leg,
+      revision.derivative_video,head.current_policy_hash=revision.policy_hash AS exact_hash
+      FROM song_owner_policies head JOIN song_owner_policy_revisions revision
+      ON revision.community_id=head.community_id AND revision.post_id=head.post_id
+      AND revision.policy_revision=head.current_policy_revision
+      WHERE head.community_id='study-community' AND head.post_id='study-post'`)).rows)
+      .toEqual([{owner_account_id:"study-account",audio_revision:"1",policy_revision:"1",
+        third_party_reward_legs:"allowed",pool_leg:"allowed",derivative_video:"allowed",exact_hash:true}]);
+    expect((await f.admin.query(`SELECT trigger.tgenabled FROM pg_trigger trigger
+      WHERE trigger.tgrelid='media_publication_projections'::regclass
+      AND trigger.tgname='media_publication_song_owner_policy_initialize'`)).rows)
+      .toEqual([{tgenabled:"O"}]);
     const ownedPgUrl = pgUrl;
     if (!ownedPgUrl) throw new Error("Owned PG required");
     const all = await loadPostgresMigrations();
@@ -473,5 +486,5 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
         [...(failed ? [primary] : []), ...cleanup],
         "Owned rewarded producer failed or cleanup incomplete",
       );
-  });
+  }, { initializeOwnerPolicy: true });
 }

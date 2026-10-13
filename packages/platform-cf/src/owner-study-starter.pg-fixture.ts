@@ -151,7 +151,8 @@ export async function editFixture(admin: Client, sql: string, values: readonly u
     await admin.query("SET session_replication_role=origin");
   }
 }
-export async function fixture(use: (f: Fixture) => Promise<void>) {
+export type PreparedSongFixtureOptions = Readonly<{ initializeOwnerPolicy?: true }>;
+export async function fixture(use: (f: Fixture) => Promise<void>, options?: PreparedSongFixtureOptions) {
   if (!pgUrl) throw new Error("Owned test PG URL missing");
   if (!["127.0.0.1", "localhost"].includes(new URL(pgUrl).hostname))
     throw new Error("Private starter fixture requires coordinator-owned loopback PostgreSQL");
@@ -181,7 +182,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       migrations: packet.historical,
       expectedLedger: [],
     });
-    const { lines } = await insertStudySongFixture(admin);
+    const { lines } = await insertStudySongFixture(admin, options);
     const accountStore = makeControlPlaneStudyV2Store(
       makeDirectPostgresControlPlaneLayer(scoped.toString(), {
         closeTimeoutMs: 2000,

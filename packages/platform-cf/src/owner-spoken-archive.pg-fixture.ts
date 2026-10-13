@@ -1,3 +1,4 @@
+import type { PreparedSongFixtureOptions } from "./owner-study-starter.pg-fixture.ts";
 // Actual maintained inventory through257, expected256; no SQL supplement or
 // fixture creator. All producer rows come from accepted original CP utility.
 import { expect } from "bun:test";
@@ -53,7 +54,7 @@ async function all257(): Promise<readonly PostgresMigration[]> {
   }
   return all;
 }
-export const archiveFixture = (use: (f: ArchiveFixture) => Promise<void>) =>
+export const archiveFixture = (use: (f: ArchiveFixture) => Promise<void>, options?: PreparedSongFixtureOptions) =>
   checkpointFixture(async (f) => {
     if (!pgUrl) throw new Error("Owned loopback PostgreSQL required");
     const all = await all257(),
@@ -103,4 +104,4 @@ export const archiveFixture = (use: (f: ArchiveFixture) => Promise<void>) =>
     for (const signature of [...controlledArchive, ...finalizerLeaves])
       await f.admin.query(`GRANT EXECUTE ON FUNCTION ${signature} TO ${q(f.role)}`);
     await use(f);
-  });
+  }, options);

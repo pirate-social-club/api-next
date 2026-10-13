@@ -12,7 +12,7 @@ const digest = async (value: string): Promise<string> =>
  */
 export async function insertStudySongFixture(
   admin: Pick<Client, "query">,
-  options?: { readonly accountAlreadyBorn?: true },
+  options?: { readonly accountAlreadyBorn?: true; readonly initializeOwnerPolicy?: true },
 ) {
   const lines = [
     "I can love you",
@@ -22,6 +22,9 @@ export async function insertStudySongFixture(
   ];
   const lyrics = lines.join("\n");
   const lineHashes = await Promise.all(lines.map(digest));
+  // TEST ONLY: trusted prepared-media fixture; the production policy producer
+  // must run on its INITIAL publication insert, not on a fabricated head.
+  let policyTriggerArmed = false;
   await admin.query("SET session_replication_role = replica");
   try {
     // Normal identity birth owns its first-persona reservation and immutable owner.
@@ -56,6 +59,8 @@ export async function insertStudySongFixture(
            clock_timestamp(), clock_timestamp())`,
     );
     await admin.query("UPDATE posts SET content_rating='general' WHERE post_id='study-post'");
+    if (options?.initializeOwnerPolicy === true)
+      await admin.query("UPDATE posts SET author_user_id='study-account',author_persona_id='study-persona' WHERE community_id='study-community' AND post_id='study-post'");
     await admin.query(
       `INSERT INTO media_post_submissions (
          submission_id, community_id, actor_user_id, operation_id, idempotency_key,
@@ -93,6 +98,22 @@ export async function insertStudySongFixture(
         )`,
       ["2".repeat(64)],
     );
+    if (options?.initializeOwnerPolicy === true) {
+      // Explicit licensed prepared input for the actual 0107 initializer.
+      // This supplies no policy row/hash: the native producer derives both.
+      await admin.query(`INSERT INTO media_submission_terms (
+        submission_id,community_id,actor_user_id,author_persona_id,operation_id,
+        creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,
+        access_mode,terms_snapshot
+      ) VALUES ('study-submission','study-community','study-account','study-persona','study-operation',
+        1,'commercial-remix',1000,'[{"recipient_id":"study-account","share_bps":10000}]'::jsonb,
+        'public','{"license_preset":"commercial-remix"}'::jsonb)`);
+      // Existing fixture inputs are inserted in replica mode. Make ONLY the
+      // actual policy initializer run there, then restore its exact O state.
+      // No production migration/body/grant or financial guard changes.
+      await admin.query("ALTER TABLE media_publication_projections ENABLE ALWAYS TRIGGER media_publication_song_owner_policy_initialize");
+      policyTriggerArmed = true;
+    }
     await admin.query(
       `INSERT INTO media_publication_projections (
          submission_id, community_id, actor_user_id, operation_id, post_id,
@@ -106,6 +127,11 @@ export async function insertStudySongFixture(
          'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
       ["2".repeat(64), lyrics],
     );
+    if (policyTriggerArmed) {
+      await admin.query("ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize");
+      policyTriggerArmed = false;
+    }
+
     for (const slot of ["instrumental_audio", "vocal_audio"])
       await admin.query(
         `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
@@ -189,7 +215,12 @@ export async function insertStudySongFixture(
       );
     }
   } finally {
-    await admin.query("SET session_replication_role = origin");
+    try {
+      if (policyTriggerArmed)
+        await admin.query("ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize");
+    } finally {
+      await admin.query("SET session_replication_role = origin");
+    }
   }
   return { lines };
 }
