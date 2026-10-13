@@ -296,6 +296,54 @@ export async function creatorFixture(
             )
           ).rows,
         );
+        if (JSON.stringify(actualFunctionOids) !== JSON.stringify(expectedFunctionOids)) {
+          // Refusal diagnostic only: source-owned expected153 never widens.
+          // No OIDs, function bodies, role identities, values or SQL are emitted.
+          try {
+            const difference = await client.query(
+              `WITH expected AS (
+                 SELECT to_regprocedure(format('%I.%s',$1::text,signature))::oid AS function_oid
+                 FROM unnest($2::text[]) signatures(signature)
+               ), actor_role AS (SELECT oid FROM pg_roles WHERE rolname=current_user)
+               SELECT format('%s(%s)',p.proname,replace(oidvectortypes(p.proargtypes),', ',',')) AS signature,
+                 CASE WHEN has_function_privilege(current_user,p.oid,'EXECUTE') THEN 'unexpected' ELSE 'missing' END AS difference,
+                 CASE WHEN format('%s(%s)',p.proname,replace(oidvectortypes(p.proargtypes),', ',','))=ANY($3::text[]) THEN 'purpose_callback'
+                   WHEN format('%s(%s)',p.proname,replace(oidvectortypes(p.proargtypes),', ',','))=ANY($4::text[]) THEN 'native_original37'
+                   ELSE 'unknown_extra' END AS profile_category,
+                 p.prosecdef AS definer,p.proacl IS NULL AS uses_source_default_acl,
+                 coalesce((SELECT jsonb_agg(jsonb_build_object(
+                   'grantee_kind',CASE WHEN acl.grantee=0 THEN 'PUBLIC' WHEN acl.grantee=p.proowner THEN 'function_owner'
+                     WHEN acl.grantee=actor_role.oid THEN 'creator' ELSE 'other_role' END,
+                   'grantor_kind',CASE WHEN acl.grantor=p.proowner THEN 'function_owner'
+                     WHEN acl.grantor=actor_role.oid THEN 'creator' ELSE 'other_role' END,
+                   'privilege',acl.privilege_type,'grantable',acl.is_grantable))
+                   FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl),'[]'::jsonb) AS acl
+               FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN actor_role
+               WHERE n.nspname=$1 AND has_function_privilege(current_user,p.oid,'EXECUTE')
+                 IS DISTINCT FROM (p.oid IN(SELECT function_oid FROM expected))
+               ORDER BY p.proname COLLATE "C",oidvectortypes(p.proargtypes) COLLATE "C" LIMIT 129`,
+              [f.schema, effectiveFunctions, profile.functions, inherited],
+            );
+            console.error(
+              JSON.stringify({
+                fixture: "creator-effective-function-surface-refusal",
+                expectedPurposeCount: 123,
+                expectedInheritedCount: 37,
+                expectedEffectiveCount: 153,
+                diagnosticLimit: 128,
+                truncated: difference.rows.length > 128,
+                difference: difference.rows.slice(0, 128),
+              }),
+            );
+          } catch {
+            console.error(
+              JSON.stringify({
+                fixture: "creator-effective-function-surface-refusal",
+                diagnostic: "catalogue_unavailable",
+              }),
+            );
+          }
+        }
         expect(actualFunctionOids).toEqual(expectedFunctionOids);
         expect(
           (
