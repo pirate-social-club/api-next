@@ -661,12 +661,12 @@ suite("guest resource reservations against actual private source", () => {
         [childProof, owner(2)],
       ])
         await f.admin.query(
-          "INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at) VALUES($1,$2,$3,$4,'pending_bootstrap',clock_timestamp(),clock_timestamp()+INTERVAL '15 minutes')",
+          "WITH sampled AS MATERIALIZED (SELECT clock_timestamp() AS created_at) INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at) SELECT $1,$2,$3,$4,'pending_bootstrap',created_at,created_at+INTERVAL '15 minutes' FROM sampled",
           [id, source, origin, hash],
         );
       await seedOwner(f, 4);
       await f.admin.query(
-        "INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at) VALUES($1,$2,$3,$4,'pending_bootstrap',clock_timestamp(),clock_timestamp()+INTERVAL '15 minutes')",
+        "WITH sampled AS MATERIALIZED (SELECT clock_timestamp() AS created_at) INSERT INTO guest_credentials(credential_id,owner_id,origin,secret_digest,state,created_at,pending_expires_at) SELECT $1,$2,$3,$4,'pending_bootstrap',created_at,created_at+INTERVAL '15 minutes' FROM sampled",
         [peerProof, owner(4), origin, hash],
       );
       await expect(
