@@ -355,7 +355,7 @@ pgTest(
       // This is an owned actual lifecycle/status transition. It writes no new leg,
       // action, drawing, salt, qualification, share, allocation, credit or funding fact.
       await f.admin.query(
-        "UPDATE song_reward_offers SET status='ended',updated_at=clock_timestamp() WHERE offer_id=$1",
+        "UPDATE song_reward_offers SET status='ended',terminal_at=statement_timestamp(),updated_at=statement_timestamp() WHERE offer_id=$1",
         [prepared.offerId],
       );
       const replay = await withClock(prepared.service.addMegapotPoolLeg(prepared.legInput));
