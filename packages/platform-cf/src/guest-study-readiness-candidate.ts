@@ -1053,6 +1053,10 @@ export const guestStudyReadinessCandidate = {
       checksum: "3b0c0da63baacda30b5a450052bb3f1842ec73b8a68011a2674b969f3fc37d55",
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
+    {
+      checksum: "5079bca24832523e7bbd687ba24df819e7577eca74f31d90478ac0fc6da8d53f",
+      version: "0264_legacy_karaoke_terminal_upload_closure.sql",
+    },
   ],
   native_function_bodies: [
     {
@@ -1200,12 +1204,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0251_guest_learning_resource_reservations.sql",
     },
     {
-      body_sha256: "01426c151c469d2f3e668549272455d588bb5ac04360f77bce23959c48fb3cd9",
+      body_sha256: "dde6563d1019bf5a4b62c3c1167373df8eb47351214673214e68c6a58dab97be",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "confirm_account_audio_delete_private_v1",
-      source_file: "0262_ordinary_audio_producer_capture.sql",
+      source_file: "0264_legacy_karaoke_terminal_upload_closure.sql",
     },
     {
       body_sha256: "f948d0b8e7ea2c25bda63d6c3e437a02a94748be1e64a5e7a1fead527079548f",
@@ -1856,12 +1860,12 @@ export const guestStudyReadinessCandidate = {
       source_file: "0254_guest_prepared_study_session_capture.sql",
     },
     {
-      body_sha256: "13ee82f15a52619995916398e0a5513aeae33917cb036c42b05da78ec85756d9",
+      body_sha256: "d8fdd0b581d98d8fb9c87511420001bd9f78ef51fe9cb827d433ba00877ff4de",
       configuration: "pinned",
       definer: true,
       kind: "f",
       name: "prepare_learner_audio_delete_private_v1",
-      source_file: "0253_learner_audio_deletion_fence.sql",
+      source_file: "0264_legacy_karaoke_terminal_upload_closure.sql",
     },
     {
       body_sha256: "a90d16a761a9af6f565860aa317056d365dbf9a1c479244403692f6951b65427",
