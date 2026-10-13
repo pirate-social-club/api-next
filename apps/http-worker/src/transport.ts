@@ -1046,6 +1046,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
         if (
           binding.endpoint.implementation === "disabled" ||
+          (isGuestStudyServingName(binding.name) && options.guestStudy === undefined) ||
           (binding.endpoint.auth.policy.kind === "browserParticipation" &&
             (!isGuestStudyServingName(binding.name) || options.guestStudy === undefined))
         ) {
