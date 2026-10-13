@@ -25,7 +25,8 @@ const migration = () =>
 // Tables created after 0232 are outside what that migration revoked. Their own
 // migrations restrict them, which is tested where they are introduced.
 const laterTables = Object.values(REWARDS_MONEY_TABLES_AFTER_0232).flat();
-const privateLaterTables = REWARDS_MONEY_TABLES_AFTER_0232["0264_disabled_owner_financial_history.sql"];
+const privateLaterTables =
+  REWARDS_MONEY_TABLES_AFTER_0232["0264_disabled_owner_financial_history.sql"];
 if (privateLaterTables === undefined || privateLaterTables.length !== 7) {
   throw new Error("Exact private owner financial inventory required");
 }
@@ -103,9 +104,15 @@ suite("reviewed rewards money destructive privileges", () => {
       expect(privateLater(before)).toHaveLength(privateLaterTables.length);
       expect(privateLater(after)).toHaveLength(privateLaterTables.length);
       for (const rows of [privateLater(before), privateLater(after)]) {
-        expect(rows.every((row) => !row.read && !row.insert && !row.update && !row.remove && !row.truncate)).toBe(true);
+        expect(
+          rows.every(
+            (row) => !row.read && !row.insert && !row.update && !row.remove && !row.truncate,
+          ),
+        ).toBe(true);
       }
-      await expect(writer.query("SELECT * FROM guest_owner_associations")).rejects.toMatchObject({ code: "42501" });
+      await expect(writer.query("SELECT * FROM guest_owner_associations")).rejects.toMatchObject({
+        code: "42501",
+      });
       await expect(writer.query("DELETE FROM reward_ledger_credits")).rejects.toMatchObject({
         code: "42501",
       });
@@ -114,7 +121,11 @@ suite("reviewed rewards money destructive privileges", () => {
       });
       await writer.query(`SET ROLE "${direct}"`);
       expect((await grants()).rows.every((row) => !row.remove && !row.truncate)).toBe(true);
-      expect(privateLater((await grants()).rows).every((row) => !row.read && !row.insert && !row.update && !row.remove && !row.truncate)).toBe(true);
+      expect(
+        privateLater((await grants()).rows).every(
+          (row) => !row.read && !row.insert && !row.update && !row.remove && !row.truncate,
+        ),
+      ).toBe(true);
       const retained = await admin.query<{ owner: string; remove: boolean; truncate: boolean }>(
         "SELECT current_user AS owner,has_table_privilege(current_user,'reward_ledger_credits','DELETE') AS remove,has_table_privilege(current_user,'reward_ledger_credits','TRUNCATE') AS truncate",
       );

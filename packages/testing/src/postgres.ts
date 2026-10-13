@@ -77,7 +77,9 @@ const financialResetRelationSql = financialResetRelations
   .map((relation) => `'${relation}'`)
   .join(",");
 
-const beforeFinancialResetSql = (resetTargets: readonly string[]) => `DO $owned_empty_financial_reset$
+const beforeFinancialResetSql = (
+  resetTargets: readonly string[],
+) => `DO $owned_empty_financial_reset$
 DECLARE
   schema_name TEXT := pg_catalog.current_schema();
   namespace_id OID;
