@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { GuestStudyPreparedContentV2, OwnerAccountStudySessionV1, StartOwnerAccountStudySessionV1 } from "./owner-study.ts";
+import { GuestStudyPreparedContentV2, OwnerAccountStudySessionV1, StartOwnerAccountStudySessionV1, SubmitOwnerAccountStudyAnswerV1 } from "./owner-study.ts";
 import { GuestStudyPreparedContentV1 } from "./guest-study.ts";
-import { StartStudySessionV2 } from "./study-v2.ts";
+import { StartStudySessionV2, SubmitStudyAnswerV2 } from "./study-v2.ts";
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) => Schema.decodeUnknownSync(schema, {onExcessProperty: "error"})(value);
 const instant = "2026-10-11T10:00:00.000Z";
 const item = (ordinal: number) => ({
@@ -118,5 +118,17 @@ describe("Additive119 original-source reward consent", () => {
   expect(() => decode(OwnerAccountStudySessionV1,{...base,session:completed,participation:admitted})).not.toThrow();
   expect(() => decode(OwnerAccountStudySessionV1,{...base,session:{...completed,progress:{...completed.progress,first_pass_correct:2,score_bps:5000}},participation:admitted})).toThrow();
   expect(() => decode(OwnerAccountStudySessionV1,{...base,session:completed,participation:{state:"pending_confirmation",operation:{operation_kind:"study_answer",idempotency_key:"answer-1",operation_id:"operation-1"}}})).not.toThrow();
+ });
+ test("rewarded request keys remain valid original pending locators", () => {
+  const start={idempotency_key:"start-1",persona_id:"persona-1",target_language:null,learner_band:null,timezone:"UTC",
+   reward_preview_terms_hash:"c".repeat(64),disclosure:{version:"disclosure-v1",accepted:true}};
+  for (const key of ["answer with spaces", "\tanswer", "answer\n"])
+   expect(() => decode(StartOwnerAccountStudySessionV1.request.body,{...start,idempotency_key:key})).toThrow();
+  for (const type of ["application/json","audio/webm"]) {
+   const headers={"content-type":type,"idempotency-key":"answer-1","x-study-attempt-number":"1"};
+   expect(() => decode(SubmitOwnerAccountStudyAnswerV1.request.headers,headers)).not.toThrow();
+   expect(() => decode(SubmitStudyAnswerV2.request.headers,{...headers,"idempotency-key":"answer with spaces"})).not.toThrow();
+   expect(() => decode(SubmitOwnerAccountStudyAnswerV1.request.headers,{...headers,"idempotency-key":"answer with spaces"})).toThrow();
+  }
  });
 });

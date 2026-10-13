@@ -136,6 +136,7 @@ export const StartOwnerAccountStudySessionV1 = endpoint({
     maxBodyBytes: 4_096,
     body: Schema.Struct({
       ...StartStudySessionV2.request.body.fields,
+      idempotency_key: GuestIdentifierV1,
       reward_preview_terms_hash: GuestSha256V1,
       disclosure: Schema.Struct({ version: GuestIdentifierV1, accepted: Schema.Literal(true) }),
     }),
@@ -169,7 +170,13 @@ export const SubmitOwnerAccountStudyAnswerV1 = endpoint({
   method: "POST",
   path: "/communities/:communityId/study/owner/v1/sessions/:sessionId/items/:sessionItemId/answers",
   auth: Auth.user({ browserSessionOnly: true }),
-  request: SubmitStudyAnswerV2.request,
+  request: {
+    ...SubmitStudyAnswerV2.request,
+    headers: SubmitStudyAnswerV2.request.headers.mapFields((fields) => ({
+      ...fields,
+      "idempotency-key": GuestIdentifierV1,
+    })),
+  },
   response: OwnerAccountStudyAnswerResultV1,
   cacheControl: "private, no-store",
   errors: accountErrors,
