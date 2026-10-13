@@ -467,7 +467,7 @@ export async function readinessFixture(
           owner,
           inspector: makeGuestStudyManagedReadiness(
             bindings,
-            financial === undefined ? {} : { roleProfile: "owner_financial" },
+            financial === undefined ? undefined : { roleProfile: "owner_financial" },
           ),
           ioCalls: () => io,
           registerRestoration: (restore) => restorations.push(restore),

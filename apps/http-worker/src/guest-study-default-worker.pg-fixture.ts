@@ -97,12 +97,12 @@ export async function defaultWorkerFixture(
       bindings: OwnedManagedBindings;
       ordinaryBindings: Awaited<ReturnType<typeof makeHttpWorkerTestBindings>>;
       ordinarySessionToken: () => Promise<string>;
-      makeWorker: (configuration?: string | null) => Promise<ReturnType<typeof createHttpWorker>>;
+      makeWorker: (configuration?: string | null) => Promise<WorkerFetchTarget>;
       makeHns: (
         configuration?: string | null,
       ) => Promise<Awaited<ReturnType<typeof servingHnsHarness>>>;
       request: (
-        worker: ReturnType<typeof createHttpWorker>,
+        worker: WorkerFetchTarget,
         browser: Browser,
         name: ManagedServingName,
         options?: RequestOptions,
