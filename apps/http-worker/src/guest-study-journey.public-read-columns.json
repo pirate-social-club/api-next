@@ -1,6 +1,6 @@
 {
   "source": "packages/platform-cf/src/guest-prepared-content.pg.test.ts",
-  "source_sha256": "05e32059e47994f0a3e4b52ec76dc29ac6b29b67b64133a6591986249030ba9f",
+  "source_sha256": "5b57b02730abe45b562aa8aaa981e9e1d28d4af4f1422b67a138dd855f382d3d",
   "read_columns": {
     "posts": [
       "community_id",
