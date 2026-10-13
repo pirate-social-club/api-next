@@ -446,7 +446,9 @@ export async function rewardedFixture(
           }),
         );
         if (started.kind !== "start" || started.outcome.state !== "completed")
-          throw new Error("Actual completed rewarded source required");
+          throw new Error(
+            `Actual completed rewarded source required (${started.kind}/${started.outcome.state})`,
+          );
         const session = decode(GuestStudySessionV1, started.outcome.result.session);
         expect(session.reward_terms).toEqual(quote.reward_preview);
         expect(
@@ -629,7 +631,9 @@ export async function rewardedFixture(
           }),
         );
         if (started.kind !== "start" || started.outcome.state !== "completed")
-          throw new Error("Actual completed original native start required");
+          throw new Error(
+            `Actual completed original native start required (${started.kind}/${started.outcome.state})`,
+          );
         let session = decode(GuestStudySessionV1, started.outcome.result.session);
         expect(session.reward_terms).toEqual(terms);
         expect(session.items).toHaveLength(4);
