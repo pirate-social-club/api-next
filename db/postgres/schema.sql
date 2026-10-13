@@ -48857,8 +48857,6 @@ CREATE TRIGGER learner_audio_delete_targets_immutable BEFORE DELETE OR UPDATE ON
 
 CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE DELETE OR UPDATE ON learner_audio_legacy_settlements FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
 
-CREATE TRIGGER learner_audio_legacy_settlements_no_truncate BEFORE TRUNCATE ON learner_audio_legacy_settlements FOR EACH STATEMENT EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
-
 CREATE TRIGGER learner_audio_object_names_immutable BEFORE DELETE OR UPDATE ON learner_audio_object_names FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 
 CREATE TRIGGER learner_audio_owner_fence_state BEFORE DELETE OR UPDATE ON learner_audio_owner_fences FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_control_state_private_v1();

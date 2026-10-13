@@ -1054,7 +1054,7 @@ export const guestStudyReadinessCandidate = {
       version: "0263_guest_ephemeral_audio_cleanup.sql",
     },
     {
-      checksum: "c686ec8f6045a89ab5b76261732272291559cc3ff80373363100ef3ac20fb8dc",
+      checksum: "496d9b4073424a0d8c90bebfa0cde11a1389bfadbf5dad7644ef7b9a3a7e12e9",
       version: "0264_legacy_learner_audio_producer_disposition.sql",
     },
   ],

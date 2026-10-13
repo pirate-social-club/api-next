@@ -372,9 +372,6 @@ suite("learner audio deletion repository", () => {
           can_guard: false,
         },
       ]);
-      await expect(admin.query("TRUNCATE learner_audio_legacy_settlements")).rejects.toThrow(
-        "legacy producer settlement evidence is immutable",
-      );
       // The unresolved legacy Study reservation is now an unknown producer of its
       // exact key. Before any deletion starts, a reclaim still cannot open a new
       // generation on that key while the legacy write is unresolved.

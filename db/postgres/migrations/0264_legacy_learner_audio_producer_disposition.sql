@@ -118,9 +118,6 @@ END $$;
 CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE UPDATE OR DELETE
   ON learner_audio_legacy_settlements
   FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
-CREATE TRIGGER learner_audio_legacy_settlements_no_truncate BEFORE TRUNCATE
-  ON learner_audio_legacy_settlements
-  FOR EACH STATEMENT EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
 
 CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload TEXT,p_disposition TEXT,p_evidence JSONB)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER AS $$

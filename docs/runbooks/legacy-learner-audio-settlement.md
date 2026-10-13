@@ -97,7 +97,7 @@ refuses another key, a non-legacy, guest-owned or already closed upload, an
 observation before the cutover or in the future, and a second, different
 settlement; an identical replay returns `false` without changing anything.
 Evidence is kept in `learner_audio_legacy_settlements`, which only the schema
-owner can read or write and which rejects update, delete and truncate.
+owner can read or write and which rejects update and delete.
 
 A `stored` settlement leaves the object for deletion: an active deletion
 deletes it again in a new batch, and a later account deletion includes it.
