@@ -3,9 +3,14 @@
 Status: draft for review, 2026-10-13. It amends Specs 014 and 026 for phase-two
 recovery and existing-account connection of Telegram practice learners. It is
 not accepted and admits no implementation. The provider section stays open
-until the staging probe has real phone evidence. Decisions marked **Owner
-decision** need the workspace_owner. Production, rewards and funds, credential
-operations and irreversible actions remain excluded.
+until the staging probe has real phone evidence. Production, rewards and funds,
+credential operations and irreversible actions remain excluded.
+
+Decisions R1, R2, C1 and E1 are **selected**. The Telegram coordinator chose
+them on 2026-10-13 under the workspace_owner's standing delegation of in-scope
+judgment for this task (api-next#595 comment 6151444309). The owner did not
+answer them individually. The provider choice is not selected: it depends on
+evidence.
 
 Inputs: Spec 026 (Telegram linking), Spec 014 (restricted practice identity),
 Spec 027 (ownership invariants only), and the reviewed account-connection
@@ -136,25 +141,25 @@ native OIDC is investigated under the same standard.
    Recover refuses. Showing the Connect option is not proof of that account:
    Connect still requires independent sign-in to the target account and
    explicit confirmation of the target.
-6. The browser receives a session for that same account. **Owner decision R1**
-   chooses the scope:
-   - **(a) recommended**: a limited practice session, defined in Limited
-     practice session below. It needs no wallet provisioning and keeps the
-     ordinary full-session readiness gate unchanged.
-   - **(b)**: full in-place promotion. Profile, handle and first-persona
-     preparation, including EVM wallet assignment, run in place. Then the
-     ordinary full session applies.
+6. The browser receives a session for that same account. **Decision R1
+   (selected: limited practice session)** sets the scope: a limited practice
+   session, defined in Limited practice session below. It needs no wallet
+   provisioning and keeps the ordinary full-session readiness gate unchanged.
+   Full in-place promotion (profile, handle and first-persona preparation,
+   including EVM wallet assignment, then the ordinary full session) is not
+   part of this successor. It needs its own separately reviewed promotion
+   contract.
 
    Generic registration must never run. Solid must intercept before its
    session-exchange 401 path triggers automatic registration; otherwise a
    second account is created.
 7. The migration 0246 `require_restricted_learner_practice_only` trigger
-   stays. **Owner decision R2** (recommended: yes): the recovered account stays
+   stays. **Decision R2 (selected: practice-only)**: the recovered account stays
    practice-only for Study until a separately reviewed transition admits
    ordinary Study. The reservation row is never deleted to get around the
    trigger.
 
-## Limited practice session (R1, option a)
+## Limited practice session (R1)
 
 It is a distinct principal kind with its own declared capability, for example
 `restricted_practice_learner`, in the generated authorization policy. It is
@@ -195,7 +200,7 @@ Bounds:
   ordinary session.
 - It is bound to the browser, and Origin and CSRF checks apply to every write.
 - It is never upgraded in place to a full session. Full access needs the
-  separately reviewed promotion (R1, option b).
+  separately reviewed promotion contract.
 
 ## Connect (existing Pirate account)
 
@@ -222,7 +227,7 @@ Bounds:
    account and the restricted practice owner, or the bot-local owner. The
    practice account, its personas and its sessions stay where they are;
    original attribution is unchanged.
-6. **Owner decision C1** (recommended): the relation grants exactly one
+6. **Decision C1 (selected: private read-only history)**: the relation grants exactly one
    capability: the reviewed read-only practice-history projection on the
    existing account's website. It grants nothing else: no ownership of the
    practice account, its personas, wallet or routes, no Study writes on its
@@ -237,10 +242,9 @@ Bounds:
 - The completion message gains a third action, alongside Choose a song and
   Practice again, only while Telegram login acceptance passes on that
   environment. It goes to every unconnected learner alike, per Spec 026.
-  - **Owner decision E1**: the label, either one action that routes to Recover
-    or Connect on the website, or two actions. Recommended: one action,
-    "Open my progress". Progress is already saved in the bot, so the label must
-    not imply it is unsaved.
+  - **Decision E1 (selected: one action)**: a single action, "Open my
+    progress", which routes to Recover or Connect on the website. Progress is
+    already saved in the bot, so the label must not imply it is unsaved.
 - The action carries only a fresh, expiring navigation reference (at most
   fifteen minutes). It is hidden once a current connection or recovery exists
   for that sender. A stale button never recreates it.
@@ -265,8 +269,8 @@ history, association, relation and button behavior.
 ## Delivery order
 
 1. The probe phone run and its managed lookup decide the provider section.
-2. Review and accept this successor and decisions R1, R2, C1 and E1.
-   Integrate into Specs 014 and 026 in the control plane.
+2. Review and accept this successor with the selected R1, R2, C1 and E1, and
+   integrate it into Specs 014 and 026 through the spec process.
 3. API: recovery and connection transactions, provider intents and their
    reconciliation, association and relation,
    session scope, plus adversarial PostgreSQL tests (concurrency, conflicts,
