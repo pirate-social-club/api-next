@@ -1,5 +1,5 @@
 /** Narrow owned extension of the maintained genuine rewarded journey fixture.
- * Expected ordinary123 is a reviewed committed literal, never observed grants. */
+ * Expected ordinary124 is a reviewed committed literal, never observed grants. */
 import { expect } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -153,14 +153,14 @@ export async function creatorFixture(
       // Pin exactly the independently accepted literal; caller/env never supplies expected grants.
       if (
         createHash("sha256").update(bytes).digest("hex") !==
-        "dc98ecb01a8d57944eb543c3882e3eaf7b345040af6c88846d663da37c79d58b"
+        "6a1c64e9a39d5d6f50e9643622697aebac7d5053935f26e3a69659267c82a5c8"
       )
-        throw new Error("Reviewed creator123 profile differs");
+        throw new Error("Reviewed creator124 profile differs");
       const profile = Schema.decodeUnknownSync(Profile, {
         onExcessProperty: "error",
       })(JSON.parse(bytes));
-      expect(profile.functions).toHaveLength(123);
-      expect(new Set(profile.functions).size).toBe(123);
+      expect(profile.functions).toHaveLength(124);
+      expect(new Set(profile.functions).size).toBe(124);
       expect(profile.functions.filter((s) => s === creatorSignature)).toHaveLength(1);
       const inherited: readonly string[] = ownerFinancialInheritedSourceDefaults.map(
         (row) => row.signature,
@@ -171,7 +171,7 @@ export async function creatorFixture(
         7,
       );
       const effectiveFunctions = [...new Set([...profile.functions, ...inherited])];
-      expect(effectiveFunctions).toHaveLength(153);
+      expect(effectiveFunctions).toHaveLength(154);
       expect(profile.sequence_grants).toEqual([]);
       const native = (
         await f.admin.query(
@@ -301,7 +301,7 @@ export async function creatorFixture(
             )
           ).rows,
         );
-        expect(expectedFunctionOids).toHaveLength(153);
+        expect(expectedFunctionOids).toHaveLength(154);
         const actualFunctionOids = Schema.decodeUnknownSync(FunctionOids, {
           onExcessProperty: "error",
         })(
@@ -316,7 +316,7 @@ export async function creatorFixture(
           ).rows,
         );
         if (JSON.stringify(actualFunctionOids) !== JSON.stringify(expectedFunctionOids)) {
-          // Refusal diagnostic only: source-owned expected153 never widens.
+          // Refusal diagnostic only: source-owned expected154 never widens.
           // No OIDs, function bodies, role identities, values or SQL are emitted.
           try {
             const difference = await client.query(
@@ -346,9 +346,9 @@ export async function creatorFixture(
             console.error(
               JSON.stringify({
                 fixture: "creator-effective-function-surface-refusal",
-                expectedPurposeCount: 123,
+                expectedPurposeCount: 124,
                 expectedInheritedCount: 37,
-                expectedEffectiveCount: 153,
+                expectedEffectiveCount: 154,
                 diagnosticLimit: 1024,
                 truncated: difference.rows.length > 1024,
                 difference: difference.rows.slice(0, 1024),

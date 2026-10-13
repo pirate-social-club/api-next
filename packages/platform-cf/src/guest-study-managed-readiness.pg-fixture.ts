@@ -105,8 +105,8 @@ export async function readinessFixture(
         )
           throw new Error("Actual adopted native source ledger required");
         if (financial !== undefined) {
-          expect(candidate.native_function_bodies).toHaveLength(422);
-          expect(financial.candidate.profiles.ordinaryAccount.functions).toHaveLength(123);
+          expect(candidate.native_function_bodies).toHaveLength(423);
+          expect(financial.candidate.profiles.ordinaryAccount.functions).toHaveLength(124);
         }
         const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
         const manifest = decode(

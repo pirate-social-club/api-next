@@ -5829,6 +5829,7 @@
     "reserve_hns_dns_zone_activation_v1(text,text,text,text,bigint,integer)",
     "resolve_hns_community_app_host_authority_v1(text,timestamptz)",
     "reward_current_qualification_policies(text[])",
+    "reward_distinct_nonempty_text_array(text[])",
     "settle_learner_audio_terminal_fact_private_v1(text,text,boolean,text,jsonb)",
     "spaces_sale_namespace_readiness_facts_v1(text,text,text,text,bigint,text,bigint,timestamptz)",
     "spaces_sale_namespace_readiness_reason_v1(text,text,text,text,bigint,text,bigint,timestamptz)",
