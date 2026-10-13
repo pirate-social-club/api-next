@@ -1,6 +1,6 @@
 import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
 const candidate = {
-  "source_head": "7dc49dce14180dd1180fd3220329af646c36f88c",
+  "source_head": "6deab88e57122e6309c291db894c0db8d1635ec6",
   "native_phase": "owner_accounting_native_source_v1",
   "ledger": [
     {
@@ -1069,7 +1069,7 @@ const candidate = {
     },
     {
       "version": "0267_complete_owner_financial_source.sql",
-      "checksum": "9fd712bb9f8a966fc9edef4b85ddfa721d1a1b1ac939c2a3d75d88d6805290d0"
+      "checksum": "a8519048077f3150ce80b37d6bb8d397d434bd470d7eb3ffbdb44753a9ee0dfd"
     }
   ],
   "required_frames": [
@@ -3295,7 +3295,7 @@ const candidate = {
     },
     {
       "signature": "reserve_guest_spoken_answer_v1(jsonb,jsonb,text,jsonb,text,bigint,jsonb,text,boolean,text,text,text)",
-      "body_sha256": "6bdfa9b60468b6f3453b8177999e45ddde311d24d726b4366503031d8b1a0696",
+      "body_sha256": "f71755ad061384469282c770f5e7bd5d1c7888621d377d72f174e430b8d486db",
       "definer": true,
       "configuration": "pinned"
     },
@@ -5899,7 +5899,7 @@ const candidate = {
     },
     {
       "name": "reserve_guest_spoken_answer_v1",
-      "body_sha256": "6bdfa9b60468b6f3453b8177999e45ddde311d24d726b4366503031d8b1a0696",
+      "body_sha256": "f71755ad061384469282c770f5e7bd5d1c7888621d377d72f174e430b8d486db",
       "definer": true,
       "configuration": "pinned"
     },
@@ -57943,5 +57943,5 @@ const candidate = {
 } as const;
 const phase = "WITH anchor AS (SELECT c.relowner,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname='participation_owners' AND c.relkind='r'), inventory AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='owner_accounting_native_source_inventory_v1'), phase AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='guest_learning_schema_phase') SELECT EXISTS(SELECT 1 FROM inventory WHERE relkind='r' AND relrowsecurity AND NOT relforcerowsecurity) AND EXISTS(SELECT 1 FROM phase WHERE relkind='r') AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_policy p ON p.polrelid=i.oid) AND NOT EXISTS(SELECT 1 FROM inventory i CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(i.relacl,pg_catalog.acldefault('r',i.relowner))) acl WHERE acl.grantee<>i.relowner) AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_attribute att ON att.attrelid=i.oid CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl WHERE acl.grantee<>i.relowner) AS valid, 'owner_accounting_native_source_v1'::text AS phase";
 export const ownerFinancialGuestStudyReadinessSource: OwnerFinancialGuestStudyReadinessSource = {
- candidate, accountingManifestSha256: "3aa2dc80014a0454b9c4a6adb5955fc154915e01aa13d8880882262d77997fce", phaseSql: (_quotedSchema:string)=>phase,
+ candidate, accountingManifestSha256: "5d6899e0cdf9932b601984e7764e8c3216408170f8e6c6cb9ec361d73aafcaf8", phaseSql: (_quotedSchema:string)=>phase,
 };
