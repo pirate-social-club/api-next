@@ -22,8 +22,13 @@ export async function seedActivitySong(
   const lineHashes = await Promise.all(LYRIC_LINES.map((line) => digest(line)));
   if (options?.accountAlreadyBorn !== true) {
     await admin.query("INSERT INTO users (user_id) VALUES ($1)", [AUTHOR_ID]);
-    // Genuine account birth provisions the participation owner in the same step.
-    await admin.query("SELECT provision_account_participation_owner_v1($1)", [AUTHOR_ID]);
+    // Genuine account birth provisions the participation owner in the same step
+    // once 0249 installs owners; earlier ledgers have none and 0249 backfills.
+    const owners = await admin.query<{ installed: boolean }>(
+      "SELECT to_regprocedure('provision_account_participation_owner_v1(text)') IS NOT NULL AS installed",
+    );
+    if (owners.rows[0]?.installed === true)
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [AUTHOR_ID]);
   }
   await admin.query(
     `INSERT INTO communities (
