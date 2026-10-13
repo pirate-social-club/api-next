@@ -591,10 +591,10 @@ END $pin_account_archive_result$;
 
 CREATE FUNCTION prepare_account_audio_delete_private_v1(p_original_account TEXT,p_maximum INTEGER) RETURNS JSONB
  LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE sources TEXT[]; active_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE; batch_id TEXT;
+DECLARE sources TEXT[]; active_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE; prepared_batch_id TEXT;
  source_id TEXT; fresh_command TEXT; fresh_key TEXT; digest TEXT;
 BEGIN
- IF p_maximum<>1000 THEN RAISE EXCEPTION 'ordinary batch maximum must remain1000'; END IF;
+ IF p_maximum IS DISTINCT FROM 1000 THEN RAISE EXCEPTION 'ordinary batch maximum must remain1000'; END IF;
  sources:=lock_account_audio_group_private_v1(p_original_account);
  SELECT array_agg(DISTINCT active_delete_command_id) FILTER(WHERE active_delete_command_id IS NOT NULL) INTO active_ids
   FROM learner_audio_owner_fences WHERE owner_id=ANY(sources);
@@ -607,15 +607,15 @@ BEGIN
   fresh_command:='audio_delete_'||gen_random_uuid()::TEXT;fresh_key:=fresh_command;
   digest:=encode(sha256(convert_to(jsonb_build_array('account_audio_deletion_v1',source_id,to_jsonb(sources))::TEXT,'UTF8')),'hex');
  END IF;
- batch_id:=prepare_learner_audio_delete_private_v1(source_id,fresh_key,digest,fresh_command,sources,
+ prepared_batch_id:=prepare_learner_audio_delete_private_v1(source_id,fresh_key,digest,fresh_command,sources,
   'audio_batch_'||gen_random_uuid()::TEXT,1000,'unknown');
- IF batch_id IS NULL THEN RAISE EXCEPTION 'completed deletion has no active prepared batch'; END IF;
- RETURN jsonb_build_object('batchId',batch_id,'fenceRevision',(SELECT revision FROM learner_audio_delete_batches WHERE learner_audio_delete_batches.batch_id=prepare_account_audio_delete_private_v1.batch_id),
- 'objectRefs',COALESCE((SELECT jsonb_agg(object_ref ORDER BY ordinal) FROM learner_audio_delete_batch_items WHERE learner_audio_delete_batch_items.batch_id=prepare_account_audio_delete_private_v1.batch_id),'[]'::JSONB));
+ IF prepared_batch_id IS NULL THEN RAISE EXCEPTION 'completed deletion has no active prepared batch'; END IF;
+ RETURN jsonb_build_object('batchId',prepared_batch_id,'fenceRevision',(SELECT revision FROM learner_audio_delete_batches b WHERE b.batch_id=prepared_batch_id),
+ 'objectRefs',COALESCE((SELECT jsonb_agg(object_ref ORDER BY ordinal) FROM learner_audio_delete_batch_items i WHERE i.batch_id=prepared_batch_id),'[]'::JSONB));
 END $$;
 CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch TEXT,p_revision BIGINT,p_deleted_at TIMESTAMPTZ) RETURNS JSONB
  LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE complete BOOLEAN; command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
+DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
  original_command TEXT; original_source TEXT; original_account TEXT;
  source_ids TEXT[]; captured_sources TEXT[];
  batch_row learner_audio_delete_batches%ROWTYPE;
@@ -668,16 +668,16 @@ BEGIN
       OR f.active_delete_command_id IS DISTINCT FROM command_row.command_id) THEN
   RAISE EXCEPTION 'captured Account deletion fence differs'; END IF;
  complete:=confirm_learner_audio_delete_private_v1(p_batch,p_revision,'deleted',p_deleted_at);
- SELECT b.command_id INTO STRICT command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
+ SELECT b.command_id INTO STRICT resolved_command_id FROM learner_audio_delete_batches b WHERE batch_id=p_batch;
  SELECT count(*) FILTER(WHERE a.recording_state='deleted' OR (a.learner_audio_artifact_id IS NULL AND r.state='deleted')),
   count(*) FILTER(WHERE COALESCE(a.recording_state,r.state,'unpublished')<>'deleted')
  INTO deleted_count,remaining_count FROM learner_audio_delete_target_artifacts target
  LEFT JOIN learner_audio_artifacts a ON a.learner_audio_artifact_id=target.artifact_id AND a.participation_owner_id=target.owner_id
  LEFT JOIN karaoke_recordings r ON target.source_kind='karaoke' AND r.artifact_id=target.artifact_id
- WHERE target.command_id=confirm_account_audio_delete_private_v1.command_id;
+ WHERE target.command_id=resolved_command_id;
  IF NOT complete AND deleted_count=0 THEN RAISE EXCEPTION 'audio producers remain unresolved' USING ERRCODE='GA001'; END IF;
  SELECT max(a.deleted_at) INTO latest FROM learner_audio_artifacts a JOIN learner_audio_delete_sources s ON s.owner_id=a.participation_owner_id
-  WHERE s.command_id=confirm_account_audio_delete_private_v1.command_id;
+  WHERE s.command_id=resolved_command_id;
  RETURN jsonb_build_object('object','learner_audio_deletion','deleted_count',deleted_count,'remaining_count',remaining_count,
   'last_deleted_at',CASE WHEN latest IS NULL THEN NULL ELSE to_char(latest AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
 END $$;
