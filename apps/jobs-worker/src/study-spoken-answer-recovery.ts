@@ -84,6 +84,12 @@ const GUEST_READS = [
   "postgres:guest_resource_release_receipts",
   "postgres:guest_resource_global_lock",
   "postgres:guest_resource_edge_locks",
+  // Exact pending-cleanup and positively confirmed owner-delete witnesses.
+  "postgres:learner_audio_upload_cleanup_commands",
+  "postgres:learner_audio_delete_batches",
+  "postgres:learner_audio_delete_commands",
+  "postgres:learner_audio_delete_sources",
+  "postgres:learner_audio_delete_batch_items",
 ] as const satisfies readonly TableKey[];
 export const STUDY_SPOKEN_ANSWER_RECOVERY_WRITES = [
   "postgres:study_spoken_answer_commands",
@@ -116,6 +122,9 @@ const GUEST_WRITES = [
   "postgres:guest_resource_edge_locks",
   "postgres:guest_resource_session_reservations",
   "postgres:guest_resource_release_receipts",
+  // learner_audio_artifacts is already declared by the shared Account closure.
+  "postgres:learner_audio_upload_attempts",
+  "postgres:learner_audio_upload_cleanup_commands",
 ] as const satisfies readonly TableKey[];
 const SEVERITY: SeverityMapping = {
   expectedFailure: {
@@ -126,6 +135,7 @@ const SEVERITY: SeverityMapping = {
     StudyV2StoreFailed: "high",
     StudyV2CommandRejected: "medium",
     GuestParticipationStoreRejected: "high",
+    GuestEphemeralStorageOutcomeUnknown: "high",
   },
   timeout: "high",
   transactionOutcomeUnknown: "high",

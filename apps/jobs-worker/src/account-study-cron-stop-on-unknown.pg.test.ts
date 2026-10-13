@@ -3,10 +3,9 @@
 import { expect, test } from "bun:test";
 import type { ControlledAccountSpokenProtocol } from "@pirate/application/controlled-account-spoken";
 import { Effect, Schema } from "effect";
-import { makeControlledAccountSpokenRecovery } from "../../../packages/platform-cf/src/controlled-account-spoken-recovery.ts";
-import { makeControlledAccountStudyV2Store } from "../../../packages/platform-cf/src/controlled-account-study-store.ts";
 import {
   dropCommitAcknowledgement,
+  type Fixture,
   fixture,
   harness,
   pgUrl,
@@ -14,8 +13,9 @@ import {
   rejected,
   run,
   stopBeforeFinalize,
-  type Fixture,
 } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
+import { makeControlledAccountSpokenRecovery } from "../../../packages/platform-cf/src/controlled-account-spoken-recovery.ts";
+import { makeControlledAccountStudyV2Store } from "../../../packages/platform-cf/src/controlled-account-study-store.ts";
 import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
 
 const pgTest = pgUrl === undefined ? test.skip : test;
@@ -137,7 +137,8 @@ pgTest(
       });
       const account = makeControlledAccountSpokenRecovery(f.runtime(), finalize);
       let guestStageCalls = 0,
-        expiryStageCalls = 0;
+        expiryStageCalls = 0,
+        cleanupStageCalls = 0;
       const result = await run(
         Effect.result(
           runStudySourceRecoveryCycle({
@@ -155,6 +156,9 @@ pgTest(
                   return { state: "idle" as const };
                 }),
               maximumReleases: 1,
+              ephemeralCleanup: Effect.sync(() => {
+                cleanupStageCalls++;
+              }),
             },
           }),
         ),
@@ -169,6 +173,7 @@ pgTest(
       expect(observed).toEqual([first.command_ref]);
       expect(guestStageCalls).toBe(0);
       expect(expiryStageCalls).toBe(0);
+      expect(cleanupStageCalls).toBe(0);
       const after = await originalRows(f);
       expect(after).toEqual([{ ...first, command_state: "completed", attempts: 1 }, second]);
       expect(normal.calls()).toBe(2);
