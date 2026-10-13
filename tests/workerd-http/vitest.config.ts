@@ -3,6 +3,210 @@ import { defineConfig } from "vitest/config";
 import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 
 const alias = {
+  "@pirate/application/avatars/ports": new URL(
+    "../../packages/application/src/avatars/ports.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/dance/reference-processing-wakeup": new URL(
+    "../../packages/application/src/dance/reference-processing-wakeup.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/data/registration-persistence": new URL(
+    "../../packages/application/src/data/registration-persistence.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/data/registration-workflow-queue": new URL(
+    "../../packages/application/src/data/registration-workflow-queue.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/video/publication-wakeup": new URL(
+    "../../packages/application/src/video/publication-wakeup.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/video/workflow-recovery": new URL(
+    "../../packages/application/src/video/workflow-recovery.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/avatar-storage": new URL(
+    "../../packages/platform-cf/src/avatar-storage.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/avatar-store": new URL(
+    "../../packages/platform-cf/src/avatar-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/cloudflare-orchestration-primitives": new URL(
+    "../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/config": new URL(
+    "../../packages/platform-cf/config/index.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/custody-solvency-coordinator": new URL(
+    "../../packages/platform-cf/src/custody-solvency-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/custody-solvency-repository": new URL(
+    "../../packages/platform-cf/src/custody-solvency-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/dance-reference-processing-repository": new URL(
+    "../../packages/platform-cf/src/dance-reference-processing-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/data-registration-repository": new URL(
+    "../../packages/platform-cf/src/data-registration-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/data/registration-workflow-cloudflare": new URL(
+    "../../packages/platform-cf/src/data/registration-workflow-cloudflare.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/hns-active-lease-renewal-repository": new URL(
+    "../../packages/platform-cf/src/hns-active-lease-renewal-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-approval-coordinator": new URL(
+    "../../packages/platform-cf/src/megapot-approval-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-approval-repository": new URL(
+    "../../packages/platform-cf/src/megapot-approval-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-claim-coordinator": new URL(
+    "../../packages/platform-cf/src/megapot-claim-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-claim-repository": new URL(
+    "../../packages/platform-cf/src/megapot-claim-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-commitment-coordinator": new URL(
+    "../../packages/platform-cf/src/megapot-commitment-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-commitment-r2": new URL(
+    "../../packages/platform-cf/src/megapot-commitment-r2.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-commitment-repository": new URL(
+    "../../packages/platform-cf/src/megapot-commitment-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-drawing-observation-repository": new URL(
+    "../../packages/platform-cf/src/megapot-drawing-observation-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-drawing-observer": new URL(
+    "../../packages/platform-cf/src/megapot-drawing-observer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-purchase-coordinator": new URL(
+    "../../packages/platform-cf/src/megapot-purchase-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-purchase-repository": new URL(
+    "../../packages/platform-cf/src/megapot-purchase-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-sweep-coordinator": new URL(
+    "../../packages/platform-cf/src/megapot-sweep-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-sweep-repository": new URL(
+    "../../packages/platform-cf/src/megapot-sweep-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-v2-rpc": new URL(
+    "../../packages/platform-cf/src/megapot-v2-rpc.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-v2-signer": new URL(
+    "../../packages/platform-cf/src/megapot-v2-signer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/megapot-work-repository": new URL(
+    "../../packages/platform-cf/src/megapot-work-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-owner-active-lease-renewal-service-binding": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-owner-active-lease-renewal-service-binding.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/postgres": new URL(
+    "../../packages/platform-cf/src/postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/reward-operations-control": new URL(
+    "../../packages/platform-cf/src/reward-operations-control.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/reward-payout-coordinator": new URL(
+    "../../packages/platform-cf/src/reward-payout-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/reward-payout-repository": new URL(
+    "../../packages/platform-cf/src/reward-payout-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/reward-refund-coordinator": new URL(
+    "../../packages/platform-cf/src/reward-refund-coordinator.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/reward-refund-repository": new URL(
+    "../../packages/platform-cf/src/reward-refund-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/song-source-recording-consumer": new URL(
+    "../../packages/platform-cf/src/song-source-recording-consumer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/song-source-recording-repository": new URL(
+    "../../packages/platform-cf/src/song-source-recording-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-final-issuance-verifier": new URL(
+    "../../packages/platform-cf/src/spaces-final-issuance-verifier.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-owner-proof-repository": new URL(
+    "../../packages/platform-cf/src/spaces-owner-proof-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-reconciliation-repository": new URL(
+    "../../packages/platform-cf/src/spaces-reconciliation-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-root-authority-observer": new URL(
+    "../../packages/platform-cf/src/spaces-root-authority-observer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-root-observation-targets": new URL(
+    "../../packages/platform-cf/src/spaces-root-observation-targets.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-analysis-outbox-repository": new URL(
+    "../../packages/platform-cf/src/video-analysis-outbox-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-analysis-workflow-cloudflare": new URL(
+    "../../packages/platform-cf/src/video-analysis-workflow-cloudflare.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-publication-repository": new URL(
+    "../../packages/platform-cf/src/video-publication-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/video-publication-wakeup-repository": new URL(
+    "../../packages/platform-cf/src/video-publication-wakeup-repository.ts",
+    import.meta.url,
+  ).pathname,
   // Exact workspace subpaths must precede package-root aliases in both
   // Vite and native Workerd resolution. Keep real source modules in this pool.
   "@pirate/application/learner-audio-deletion": new URL(
