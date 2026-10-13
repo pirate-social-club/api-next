@@ -81,7 +81,8 @@ const Frame = Schema.Struct({
   kind: Schema.Literal("f"),
   namespace: Schema.Literal(true),
   owned: Schema.Literal(true),
-  pinned: Schema.Literal(true),
+  pinned: Schema.Boolean,
+  configuration: Schema.Literals(["none", "pinned", "schema_pinned", "unreviewed"]),
   body_sha256: Schema.String,
 });
 const Body = Schema.Struct({
@@ -91,7 +92,7 @@ const Body = Schema.Struct({
   namespace: Schema.Literal(true),
   kind: Schema.Literal("f"),
   definer: Schema.Boolean,
-  configuration: Schema.Literals(["none", "pinned", "unreviewed"]),
+  configuration: Schema.Literals(["none", "pinned", "schema_pinned", "unreviewed"]),
 });
 const CatalogueBoundary = Schema.Struct({
   violations: Schema.Array(
@@ -325,12 +326,23 @@ export function makeGuestStudyManagedReadiness(
               for (let i = 0; i < actual.length; i++) {
                 const expected = candidate.required_frames[i],
                   observed = actual[i];
+                const configuration = expected?.configuration ?? "pinned";
+                const retainedPin =
+                  options.roleProfile === "owner_financial" && expected !== undefined &&
+                  candidate.retained_schema_pinned_signatures?.includes(expected.signature) === true;
                 assert(
                   expected !== undefined &&
                     observed !== undefined &&
                     expected.signature === observed.signature &&
                     expected.definer === observed.definer &&
-                    expected.body_sha256 === observed.body_sha256,
+                    expected.body_sha256 === observed.body_sha256 &&
+                    (configuration === "none" || configuration === "pinned" ||
+                      configuration === "schema_pinned") &&
+                    observed.configuration === configuration &&
+                    observed.pinned === (configuration === "pinned") &&
+                    (configuration !== "schema_pinned" || retainedPin) &&
+                    (!expected.definer || configuration === "pinned" ||
+                      (configuration === "schema_pinned" && retainedPin)),
                 );
               }
               return actual;
@@ -354,7 +366,13 @@ export function makeGuestStudyManagedReadiness(
                     expected.name === observed.name &&
                     expected.body_sha256 === observed.body_sha256 &&
                     expected.definer === observed.definer &&
-                    expected.configuration === observed.configuration,
+                    expected.configuration === observed.configuration &&
+                    (expected.configuration !== "schema_pinned" ||
+                      (options.roleProfile === "owner_financial" &&
+                        candidate.required_frames.some((frame) =>
+                          frame.signature.startsWith(`${expected.name}(`) &&
+                          frame.configuration === "schema_pinned" &&
+                          candidate.retained_schema_pinned_signatures?.includes(frame.signature) === true))),
                 );
               }
             },

@@ -9,12 +9,16 @@ export interface GuestStudyReadinessCandidate {
     signature: string;
     body_sha256: string;
     definer: boolean;
+    /** Omission preserves the established canonical pinned frame contract. */
+    configuration?: "none" | "pinned" | "schema_pinned";
   }>[];
+  /** Exact separately accepted retained source callbacks only; no blanket legacy pin. */
+  readonly retained_schema_pinned_signatures?: readonly string[];
   readonly native_function_bodies: readonly Readonly<{
     name: string;
     body_sha256: string;
     definer: boolean;
-    configuration: "none" | "pinned" | "unreviewed";
+    configuration: "none" | "pinned" | "schema_pinned" | "unreviewed";
   }>[];
   readonly restricted_catalogue_probes: readonly string[];
   readonly profiles: Readonly<
