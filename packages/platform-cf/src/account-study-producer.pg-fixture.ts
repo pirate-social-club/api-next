@@ -343,7 +343,9 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
         same_namespace: true,
         allowed: false,
       });
-      expect(rows.rows[0]?.proconfig).toContain(`search_path=pg_catalog, ${schema}, pg_temp`);
+      const frame = rows.rows[0]?.proconfig;
+      if (!Array.isArray(frame)) throw new Error(`Private native search path missing: ${signature}`);
+      expect(frame).toContain(`search_path=pg_catalog, ${schema}, pg_temp`);
     }
     // These native raw primitives remain inaccessible even AFTER controlled grants.
     for (const signature of [

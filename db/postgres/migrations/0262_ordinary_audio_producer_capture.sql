@@ -1199,3 +1199,32 @@ BEGIN
   AND a.grantee<>0 AND a.grantee<>f.proowner
  LOOP EXECUTE format('REVOKE ALL ON FUNCTION list_guest_practice_participations_v1(jsonb,text,integer) FROM %I',grantee_name); END LOOP;
 END $bind_practice_participation_reader$;
+
+
+-- CREATE OR REPLACE clears an omitted per-function SET clause. Re-establish
+-- the genuine private frame for both replaced raw primitives before COMMIT.
+DO $pin_replaced_audio_native_primitives$
+DECLARE signature TEXT; trusted_namespace OID; trusted_owner OID;
+ trusted_schema TEXT; grantee_name TEXT;
+BEGIN
+ SELECT c.relnamespace,c.relowner,n.nspname
+  INTO STRICT trusted_namespace,trusted_owner,trusted_schema
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE c.oid='participation_owners'::regclass;
+ IF trusted_schema IS NULL OR trusted_schema='information_schema' OR trusted_schema LIKE 'pg_%'
+  THEN RAISE EXCEPTION 'private audio primitive schema differs'; END IF;
+ FOREACH signature IN ARRAY ARRAY[
+  'register_learner_audio_upload_private_v1(text,text,text,text,text,text,text,text,bigint)',
+  'confirm_learner_audio_delete_private_v1(text,bigint,text,timestamp with time zone)'] LOOP
+  IF NOT EXISTS(SELECT 1 FROM pg_proc f WHERE f.oid=signature::regprocedure
+   AND f.pronamespace=trusted_namespace AND f.proowner=trusted_owner AND f.prosecdef)
+   THEN RAISE EXCEPTION 'private audio primitive provenance differs'; END IF;
+  EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog,%I,pg_temp',signature,trusted_schema);
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
+  FOR grantee_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)
+   FROM pg_proc f CROSS JOIN LATERAL aclexplode(COALESCE(f.proacl,acldefault('f',f.proowner))) a
+   WHERE f.oid=signature::regprocedure AND a.grantee<>0 AND a.grantee<>f.proowner LOOP
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',signature,grantee_name);
+  END LOOP;
+ END LOOP;
+END $pin_replaced_audio_native_primitives$;
