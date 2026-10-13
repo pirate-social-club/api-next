@@ -84,7 +84,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 83;
+const testCount = 84;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -8013,6 +8013,191 @@ async function createRequestedAlignmentRecovery(admin: Client, connection: strin
 }
 
 suite("bounded alignment recovery persistence", () => {
+  test("alerts and deduplicates ordinary published alignment failures without a recovery-action row", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(
+        connection,
+        {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        },
+        {
+          ...analysis,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: "ordinary_alignment_alert_lyrics",
+            policyRevision: "fixture-v1",
+            adapterRevision: "fixture-v1",
+          },
+          lyricsSafety: "allow",
+        },
+        false,
+        "Ordinary alignment alert fixture lyrics",
+      );
+      const outboxEventId = "ordinary_alignment_alert_outbox";
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "ordinary-alignment-alert",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId: `media-post-${operation}`,
+          outbox: {
+            outboxEventId,
+            effectIdentity: "ordinary_alignment_alert_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: `media-post-${operation}`,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      const controlPlane = makeDirectPostgresControlPlaneLayer(connection);
+      const processing = makeMediaProcessingStore(controlPlane);
+      const launch = await processing.claimOutbox(outboxEventId, "ordinary-alignment-alert-worker");
+      if (launch === null) throw new Error("missing ordinary alignment launch");
+      expect(await processing.completeOutbox(launch)).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+      expect(
+        (await processing.listWorkflowCandidates()).map((candidate) => candidate.operationId),
+      ).toContain(operation);
+      const sweepCursor = (
+        await admin.query(
+          "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+        )
+      ).rows;
+      expect(
+        (
+          await admin.query(
+            "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts'",
+          )
+        ).rows,
+      ).toEqual([]);
+      const diagnostic = alignmentRecoveryTerminalMessage({
+        outcome: "alignment_recovery_lookup_failed",
+        reason: {
+          errorClass: "ControlPlaneStatementFailed",
+          code: "57014",
+          query: "media-processing.alignment-recovery-authorization",
+        },
+      });
+      const logs: PipelineLogFields[] = [];
+      const sink = {
+        ...makeLocalAlertSink("development"),
+        log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+      };
+      // Exercise first-run initialization with runtime metadata privileges,
+      // rather than the schema owner's implicit authority. No migration seeds
+      // the new cursor, and the role cannot write any submission or launch.
+      const alertRole = `media_alignment_alert_${randomUUID().replaceAll("-", "")}`;
+      const schema = (await admin.query<{ name: string }>("SELECT current_schema() AS name"))
+        .rows[0]?.name;
+      if (schema === undefined) throw new Error("missing alert test schema");
+      await admin.query(`CREATE ROLE "${alertRole}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT INSERT, UPDATE ON recovery_inspection_cursors TO "${alertRole}"`);
+        const runtimeConnection = new URL(connection);
+        runtimeConnection.searchParams.set(
+          "options",
+          `${runtimeConnection.searchParams.get("options") ?? ""} -c role=${alertRole}`.trim(),
+        );
+        const alertControlPlane = makeDirectPostgresControlPlaneLayer(runtimeConnection.toString());
+        const collect = () =>
+          collectSongPipelineTerminalAlerts(
+            alertControlPlane,
+            { media: true, data: false },
+            {
+              media: {
+                get: async (instanceId) => {
+                  expect(instanceId).toBe(`media-${operation}-r2`);
+                  // The page reservation committed before any Workflow I/O:
+                  // another connection can lock the row without waiting.
+                  const cursor = await admin.query<{ last_identifier: string }>(
+                    "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE NOWAIT",
+                  );
+                  expect(JSON.parse(cursor.rows[0]?.last_identifier ?? "null")).toEqual({
+                    operation_id: operation,
+                    workflow_instance_id: instanceId,
+                  });
+                  return {
+                    status: async () => ({
+                      status: "errored" as const,
+                      error: { name: "Error", message: diagnostic },
+                    }),
+                    sendEvent: async () => undefined,
+                  };
+                },
+                createBatch: async () => [],
+              },
+            },
+          );
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        // After initialization, a pre-seeded cursor requires only SELECT and
+        // UPDATE. PostgreSQL still checks INSERT for ON CONFLICT DO NOTHING,
+        // so revoking it catches any unconditional initialization attempt.
+        await admin.query(`REVOKE INSERT ON recovery_inspection_cursors FROM "${alertRole}"`);
+        expect(
+          await Effect.runPromise(
+            Effect.gen(function* () {
+              const db = yield* ControlPlaneDb;
+              return (yield* db.execute({
+                label: "alignment-alert.fixture.runtime-privileges",
+                text: "SELECT current_user AS role,has_table_privilege(current_user, 'recovery_inspection_cursors', 'INSERT') AS can_insert",
+                values: [],
+                readonly: true,
+              })).rows;
+            }).pipe(Effect.provide(alertControlPlane)),
+          ),
+        ).toEqual([{ role: alertRole, can_insert: false }]);
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        expect(logs.map((entry) => entry.event)).toEqual([
+          "pipeline.alert",
+          "pipeline.alert.suppression",
+        ]);
+        expect(logs[0]).toMatchObject({
+          severity: "high",
+          failure_class: "alignment_recovery_lookup_failed",
+          operation_id: operation,
+        });
+        expect(
+          (
+            await admin.query(
+              "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+            )
+          ).rows,
+        ).toEqual(sweepCursor);
+      } finally {
+        await admin.query(`DROP OWNED BY "${alertRole}"`);
+        await admin.query(`DROP ROLE "${alertRole}"`);
+      }
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
   test("exhaustion completes the action, alerts after completion and preserves the one-recovery rule", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const { processing, request, payload } = await createRequestedAlignmentRecovery(

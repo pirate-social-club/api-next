@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { AlignmentRecoveryLookupDiagnostic } from "../../../packages/application/src/media/alignment-recovery-diagnostics.ts";
 import type {
   MediaProcessingAuthority,
@@ -9,6 +9,7 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import { consumeMediaProcessingQueueMessage } from "../../../packages/application/src/media/processing-queue.ts";
 import { dispatchEligibleMediaOutbox } from "./media-outbox-dispatch.ts";
+import { observeMediaWorkflowRecovery } from "./media-runtime.ts";
 import { sweepMissingMediaWorkflows } from "./media-workflow-sweep.ts";
 
 const candidate = (
@@ -48,6 +49,65 @@ const candidate = (
 });
 
 describe("media Workflow missing-instance sweep", () => {
+  test.each(["stored", "workflow-lookup", "recovery-lookup", "storage"] as const)(
+    "downgrades only a known stored failure while preserving %s failure logging",
+    async (failure) => {
+      const warnings: string[] = [];
+      const errors: string[] = [];
+      const warn = spyOn(console, "warn").mockImplementation((message) => {
+        warnings.push(String(message));
+      });
+      const error = spyOn(console, "error").mockImplementation((message) => {
+        errors.push(String(message));
+      });
+      const current = candidate({ status: "published" });
+      const unavailable = async () => {
+        throw new Error("private storage detail");
+      };
+      try {
+        const result = await sweepMissingMediaWorkflows({
+          store: {
+            listWorkflowCandidates: async () => [current],
+            loadAuthority: unavailable,
+            reconcileTerminalWorkflow: unavailable,
+            replaceMissingWorkflow: unavailable,
+          },
+          workflow: {
+            get: failure === "workflow-lookup" ? unavailable : async () => "finished",
+            getRecoveryFailure:
+              failure === "recovery-lookup"
+                ? unavailable
+                : async () =>
+                    failure === "stored"
+                      ? {
+                          outcome: "alignment_recovery_lookup_stale",
+                          reason: "malformed_recovery_identifiers",
+                        }
+                      : null,
+          },
+          observe: observeMediaWorkflowRecovery,
+        });
+        expect(result.replaced).toBe(0);
+        expect(warnings).toHaveLength(failure === "stored" ? 1 : 0);
+        expect(errors).toHaveLength(failure === "stored" ? 0 : 1);
+        expect([...warnings, ...errors].join()).not.toContain("private storage detail");
+        const logged = [...warnings, ...errors][0];
+        if (logged === undefined) throw new Error("Expected a recovery diagnostic");
+        const diagnostic = JSON.parse(logged);
+        expect(diagnostic.failure_class).toBe(
+          failure === "workflow-lookup"
+            ? "workflow_lookup_failed"
+            : "workflow_terminal_recovery_failed",
+        );
+        if (failure === "stored")
+          expect(diagnostic.recovery_failure.reason).toBe("malformed_recovery_identifiers");
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
   test.each([
     { outcome: "alignment_recovery_lookup_stale", reason: "malformed_artifact" },
     {
