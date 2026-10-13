@@ -1723,7 +1723,10 @@ export async function createProductionHttpWorker(
                   },
             clock: { now: Effect.sync(() => Date.now()) },
             ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
-            store: makeControlPlaneSongRewardOfferStore(controlPlane),
+            store:
+              guestStudy?.mode === "owner_financial"
+                ? guestStudy.prospectiveRewardOfferStore
+                : makeControlPlaneSongRewardOfferStore(controlPlane),
             fundingStore: rewardFundingStore,
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,

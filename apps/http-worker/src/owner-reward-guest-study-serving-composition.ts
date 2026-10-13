@@ -36,6 +36,10 @@ import {
 import { makeControlPlaneOwnerStudyStarter } from "@pirate/platform-cf/owner-study-starter";
 import { composeOwnerAwareStudyV2Store } from "@pirate/platform-cf/owner-study-store-composition";
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
+import {
+  makeControlPlaneOwnerMegapotPoolLegCreator,
+  makeControlPlaneSongRewardOfferStore,
+} from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeElevenLabsStudyBatchTranscriber } from "@pirate/platform-cf/study-spoken-audio";
 import { makeControlPlaneStudyV2Store } from "@pirate/platform-cf/study-v2-repository";
 import type { Layer } from "effect";
@@ -174,6 +178,14 @@ export async function makeOwnerRewardGuestStudyServingComposition(
     { roleProfile: "owner_financial" },
   );
   await readiness.verify();
+  // This actual creator is selected only inside the admitted financial graph.
+  // It owns the verified fifth principal; default/practice graphs keep Version2.
+  const ordinaryRewardOffers = makeControlPlaneSongRewardOfferStore(m.ordinaryAccount);
+  const prospectiveCreator = makeControlPlaneOwnerMegapotPoolLegCreator(m.ordinaryAccount);
+  const prospectiveRewardOfferStore = Object.freeze({
+    ...ordinaryRewardOffers,
+    addMegapotPoolLeg: prospectiveCreator.addMegapotPoolLeg,
+  });
   const config = readGuestStudyRuntimeConfiguration(input.configurationBinding);
   const policy = config?.policy ?? null;
   const disclosure = config?.disclosure ?? null;
@@ -323,6 +335,10 @@ export async function makeOwnerRewardGuestStudyServingComposition(
   return Object.freeze({
     mode: "owner_financial" as const,
     requestAuthentication: checkedAuthentication,
+    prospectiveRewardOfferStore,
+    async verifyProspectiveLegCreationIngress() {
+      await readiness.verify();
+    },
     // Cron remains a distinct role/graph owned by cron composition. No browser
     // handler receives its runtime or controlled closed-checkpoint leaves.
     async handle(

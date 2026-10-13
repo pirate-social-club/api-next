@@ -845,7 +845,7 @@ const OWNER_ACCOUNT_AUTH_NAMES = new Set([
   "ClaimOwnerRewardCreditV1",
 ]);
 const OWNER_ACCOUNT_AUTH_ROUTES = routeTable
-  .filter(({ name }) => OWNER_ACCOUNT_AUTH_NAMES.has(name))
+  .filter(({ name }) => OWNER_ACCOUNT_AUTH_NAMES.has(name) || name === "AddMegapotPoolLeg")
   .map((binding) => ({
     binding,
     path: new RegExp(
@@ -1032,7 +1032,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         ({ binding, path }) => binding.method === context.req.method && path.test(pathname),
       )?.binding;
       const financialAccount = OWNER_ACCOUNT_AUTH_ROUTES.find(
-        ({ binding, path }) => binding.method === context.req.method && path.test(pathname),
+        ({ binding, path }) =>
+          binding.method === context.req.method &&
+          path.test(pathname) &&
+          (binding.name !== "AddMegapotPoolLeg" || options.guestStudy?.mode === "owner_financial"),
       )?.binding;
       let beforeGuestBodyRead: (() => Promise<void>) | undefined;
       if (financialAccount !== undefined) {
@@ -1197,6 +1200,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             );
           }
           if (handler === undefined) throw new NotFound({ message: "Endpoint not found" });
+          // This existing ordinary route stays on the generic authenticator and
+          // decoder. Financial selection adds exact five-principal ingress
+          // admission before cookies/body work, not an endpoint/auth override.
+          if (
+            binding.name === "AddMegapotPoolLeg" &&
+            options.guestStudy?.mode === "owner_financial"
+          )
+            await options.guestStudy.verifyProspectiveLegCreationIngress();
           const authorization = context.req.header("authorization");
           const hasAuthorizationHeader = authorization !== undefined;
           const hasCredentials = authorization !== undefined && authorization.trim() !== "";
