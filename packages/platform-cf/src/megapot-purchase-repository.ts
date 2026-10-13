@@ -333,10 +333,10 @@ const readOriginalWindowSnapshotIn = Effect.fn("MegapotPurchaseStore.readOrigina
     const result = yield* transaction.execute<Row>({
       label: "megapot-purchase.original-window.read",
       text: `WITH original AS MATERIALIZED (
-        SELECT read_megapot_original_purchase_window_v1($1,$2::numeric,$3,$4,$5,$6::integer) AS window
-      ) SELECT (window->>'open')::boolean AS open,
-        EXTRACT(EPOCH FROM ((window->>'deadlineAt')::timestamptz -
-          (window->>'checkedAt')::timestamptz))*1000 AS remaining_ms FROM original`,
+        SELECT read_megapot_original_purchase_window_v1($1,$2::numeric,$3,$4,$5,$6::integer) AS original_window
+      ) SELECT (original_window->>'open')::boolean AS open,
+        EXTRACT(EPOCH FROM ((original_window->>'deadlineAt')::timestamptz -
+          (original_window->>'checkedAt')::timestamptz))*1000 AS remaining_ms FROM original`,
       values: [candidate.poolLegId, candidate.drawingId.toString(), candidate.observationId,
         candidate.snapshotId, candidate.commitmentEffectId, options.purchaseSafetyMarginSeconds],
       readonly: false,
