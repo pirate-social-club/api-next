@@ -15,13 +15,18 @@ export async function beginHistoricalAudioDeletionFixture(connectionString: stri
   const index = migrations.findIndex(
     (migration) => migration.version === "0253_learner_audio_deletion_fence.sql",
   );
-  if (index < 1 || migrations[index - 1]?.version !== "0252_guest_learning_controlled_row_admission.sql")
+  if (
+    index < 1 ||
+    migrations[index - 1]?.version !== "0252_guest_learning_controlled_row_admission.sql"
+  )
     throw new Error("Actual maintained252/253 history boundary is required");
   const prefix = migrations.slice(0, index);
   const applied = await runPostgresMigrations({ connectionString, migrations: prefix });
   if (applied.dryRun) throw new Error("Historical fixture requires an actual owned database");
   expect(applied.result.currentVersion).toBe(prefix.at(-1)?.version);
-  const birth = makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(connectionString));
+  const birth = makeOwnedOrdinaryAccountBirthFixture(
+    makeDirectPostgresControlPlaneLayer(connectionString),
+  );
   for (const accountId of ["account-1", "account-2", "account-3", "account-4", "account-5"])
     await birth(accountId);
   return { prefix, remaining: migrations.slice(index) };
@@ -87,11 +92,15 @@ export async function closeOwnedHistoricalApiNextWriter(
          AND upload.command_ref=recording.session_id AND upload.reservation_ref=recording.session_id
          AND upload.captured_revision=0 AND upload.io_state='unknown'`,
   );
-  if (original.rows.length !== 1) throw new Error("Exactly one genuine253 historical unknown is required");
-  const row = Schema.decodeUnknownSync(Schema.Struct({
-    upload_attempt_id: Schema.NonEmptyString,
-    object_ref: Schema.Literal("karaoke/account-1/karaoke-attempt.pcm"),
-  }), { onExcessProperty: "error" })(original.rows[0]);
+  if (original.rows.length !== 1)
+    throw new Error("Exactly one genuine253 historical unknown is required");
+  const row = Schema.decodeUnknownSync(
+    Schema.Struct({
+      upload_attempt_id: Schema.NonEmptyString,
+      object_ref: Schema.Literal("karaoke/account-1/karaoke-attempt.pcm"),
+    }),
+    { onExcessProperty: "error" },
+  )(original.rows[0]);
   // Only the SAME task cohort started before253 can establish closure.
   // A new write or key absence would not dispose of the retained unknown.
   expect(row.object_ref).toBe(cohort.identity.objectRef);
@@ -106,8 +115,12 @@ export async function closeOwnedHistoricalApiNextWriter(
     [row.upload_attempt_id],
   );
   expect(fact.rows).toEqual([{ publish: false }]);
-  expect((await admin.query(
-    "SELECT io_state,storage_disposition,cleanup_required FROM learner_audio_upload_attempts WHERE upload_attempt_id=$1",
-    [row.upload_attempt_id],
-  )).rows).toEqual([{ io_state: "closed", storage_disposition: "stored", cleanup_required: true }]);
+  expect(
+    (
+      await admin.query(
+        "SELECT io_state,storage_disposition,cleanup_required FROM learner_audio_upload_attempts WHERE upload_attempt_id=$1",
+        [row.upload_attempt_id],
+      )
+    ).rows,
+  ).toEqual([{ io_state: "closed", storage_disposition: "stored", cleanup_required: true }]);
 }
