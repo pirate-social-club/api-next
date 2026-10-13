@@ -161,6 +161,7 @@ $$;
 CREATE FUNCTION acknowledge_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, successor_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE predecessor guest_credentials%ROWTYPE; successor guest_credentials%ROWTYPE; at_time TIMESTAMPTZ;
 BEGIN
@@ -194,6 +195,7 @@ END $$;
 CREATE FUNCTION acknowledge_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb, p_reservation text, p_fence bigint) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; saved JSONB; cap guest_study_spoken_captures%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
@@ -908,6 +910,7 @@ $_$;
 CREATE FUNCTION apply_guest_json_item_mutation_v1(p_access jsonb, p_operation jsonb, p_capture jsonb, p_decision jsonb, p_operation_id text, p_attempt_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE checked JSONB; item JSONB; correct BOOLEAN; spent BOOLEAN; accepted TIMESTAMPTZ; schedule JSONB;
  source_id TEXT; sid TEXT; iid TEXT; attempt INTEGER; remaining INTEGER; total INTEGER;
@@ -969,6 +972,7 @@ END $$;
 CREATE FUNCTION apply_guest_lesson_transition_private_v1(p_source text, p_session text, p_prior integer, p_kind text, p_next integer, p_completion text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE session study_sessions_v2%ROWTYPE; total INTEGER; remaining INTEGER; next_item TEXT;
 BEGIN
@@ -1005,6 +1009,7 @@ END $$;
 CREATE FUNCTION apply_guest_spoken_item_mutation_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_token_diff jsonb, p_spoken jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE checked JSONB; result JSONB; item JSONB; source_id TEXT; sid TEXT; iid TEXT; attempt INTEGER;
  accepted TIMESTAMPTZ; correct BOOLEAN; rerecord BOOLEAN; actual_rerecord BOOLEAN; schedule JSONB; remaining INTEGER; total INTEGER;
@@ -2334,6 +2339,7 @@ $$;
 CREATE FUNCTION begin_account_spoken_provider_private_v1(p_upload text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE captured learner_audio_account_producer_captures%ROWTYPE; prior learner_audio_account_provider_calls%ROWTYPE;
 BEGIN
@@ -3004,6 +3010,7 @@ $$;
 CREATE FUNCTION can_guest_access_activity_song_v1(expected_community_id text, expected_post_id text) RETURNS boolean
     LANGUAGE sql STABLE
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
   SELECT EXISTS(SELECT 1 FROM posts p JOIN communities c USING(community_id)
     WHERE p.community_id=expected_community_id AND p.post_id=expected_post_id
@@ -3014,6 +3021,7 @@ $$;
 CREATE FUNCTION capture_account_karaoke_audio_private_v1(p_account text, p_session text, p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; recording karaoke_recordings%ROWTYPE;
  prior learner_audio_account_producer_captures%ROWTYPE; revision BIGINT; ref TEXT;
@@ -3047,6 +3055,7 @@ END $$;
 CREATE FUNCTION capture_account_study_audio_private_v1(p_account text, p_command text, p_lease text, p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; command study_spoken_answer_commands%ROWTYPE;
  artifact learner_audio_artifacts%ROWTYPE; prior learner_audio_account_producer_captures%ROWTYPE;
@@ -3096,6 +3105,7 @@ END $$;
 CREATE FUNCTION capture_guest_audio_retention_private_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE artifact learner_audio_artifacts%ROWTYPE; command study_spoken_answer_commands%ROWTYPE;
 BEGIN
@@ -3122,6 +3132,7 @@ END $$;
 CREATE FUNCTION capture_guest_spoken_dispatch_private_v1(p_source text, p_operation jsonb, p_command text, p_lease text, p_call text, p_reservation text, p_upload text, p_fence bigint, p_rerecord_enabled boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cmd study_spoken_answer_commands%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
@@ -3414,6 +3425,7 @@ $$;
 CREATE FUNCTION claim_captured_learner_audio_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; claimed BOOLEAN;
 BEGIN
@@ -3425,6 +3437,7 @@ END $$;
 CREATE FUNCTION claim_guest_audio_io_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; claimed BOOLEAN; upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
 BEGIN
@@ -3926,6 +3939,7 @@ $$;
 CREATE FUNCTION claim_learner_audio_upload_private_v1(expected_upload text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
 BEGIN
@@ -3946,6 +3960,7 @@ END $$;
 CREATE FUNCTION cleanup_guest_authority_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[], context_selected_id text, candidate_credential_ids text[], candidate_intent_ids text[]) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
   effects JSONB := '[]'; authority JSONB; at_time TIMESTAMPTZ;
@@ -4009,6 +4024,7 @@ END $$;
 CREATE FUNCTION close_unclaimed_learner_audio_private_v1(p_upload text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -4025,6 +4041,7 @@ END $$;
 CREATE FUNCTION commit_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb, p_candidate jsonb, p_items jsonb, p_operation_id text, p_timezone text, p_disclosure_version text, p_accepted_version text, p_accepted boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE checked JSONB; item JSONB; exercise JSONB; ordinal INTEGER:=0; review_id TEXT;
  captured_created TIMESTAMPTZ; captured_expires TIMESTAMPTZ;
@@ -4655,6 +4672,7 @@ $$;
 CREATE FUNCTION complete_guest_provider_call_v1(p_source_id text, p_operation jsonb, p_reservation_id text, p_call_id text, p_disposition text, p_checkpoint_id text DEFAULT NULL::text, p_actual_cost text DEFAULT NULL::text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE reservation guest_resource_session_reservations%ROWTYPE; call_record guest_resource_provider_calls%ROWTYPE; component_ids TEXT[]; use_now TIMESTAMPTZ;
 BEGIN
@@ -4693,6 +4711,7 @@ END $_$;
 CREATE FUNCTION confirm_account_audio_delete_private_v1(p_batch text, p_revision bigint, p_deleted_at timestamp with time zone) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE complete BOOLEAN; resolved_command_id TEXT; deleted_count BIGINT; remaining_count BIGINT; latest TIMESTAMPTZ;
  original_command TEXT; original_source TEXT; original_account TEXT;
@@ -4764,6 +4783,7 @@ END $$;
 CREATE FUNCTION confirm_captured_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE command learner_audio_upload_cleanup_commands%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -4785,6 +4805,7 @@ END $$;
 CREATE FUNCTION confirm_guest_ephemeral_audio_cleanup_private_v1(p_cleanup text, p_upload text, p_ref text, p_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE original_owner TEXT; original_artifact TEXT; cleanup learner_audio_upload_cleanup_commands%ROWTYPE;
 BEGIN
@@ -4822,6 +4843,7 @@ END $$;
 CREATE FUNCTION confirm_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text, p_deleted_at timestamp with time zone) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE selected_batch TEXT; command_id TEXT; original JSONB;
 BEGIN
@@ -4837,6 +4859,7 @@ END $$;
 CREATE FUNCTION confirm_guest_pending_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE credential guest_credentials%ROWTYPE; root_id TEXT; at_time TIMESTAMPTZ;
 BEGIN
@@ -4871,6 +4894,7 @@ END $$;
 CREATE FUNCTION confirm_learner_audio_delete_private_v1(expected_batch text, expected_revision bigint, external_fact text, at_time timestamp with time zone) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE batch learner_audio_delete_batches%ROWTYPE; source_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE;
 BEGIN
@@ -4961,6 +4985,7 @@ $$;
 CREATE FUNCTION continue_captured_learner_audio_private_v1(p_capture jsonb) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -4973,6 +4998,7 @@ END $$;
 CREATE FUNCTION converge_proved_empty_guest_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE roots TEXT[]; canonical TEXT; source_id TEXT;
 BEGIN
@@ -5098,6 +5124,7 @@ $$;
 CREATE FUNCTION create_guest_attachment_intent_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], issuance_key text, issuance_request_hash text, new_operation_id text, new_intent_id text, new_nonce_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE credential guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
   intent guest_attachment_intents%ROWTYPE; at_time TIMESTAMPTZ; intent_result JSONB;
@@ -5520,6 +5547,7 @@ $$;
 CREATE FUNCTION discover_guest_authority_v1(expected_origin text, proved_ids text[], context_selected_id text, expected_owner_id text, previous_credential_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE selected guest_credentials%ROWTYPE; previous guest_credentials%ROWTYPE;
   candidate guest_credentials%ROWTYPE; candidates INTEGER; selected_root TEXT;
@@ -6040,6 +6068,7 @@ $$;
 CREATE FUNCTION fail_account_audio_delete_private_v1(p_batch text, p_revision bigint) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE original_command TEXT; original_source TEXT; original_account TEXT;
  source_ids TEXT[]; captured_sources TEXT[];
@@ -6098,6 +6127,7 @@ END $$;
 CREATE FUNCTION fail_guest_owner_audio_delete_v1(p_batch jsonb, p_fact text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE selected_batch TEXT; command_id TEXT; original JSONB;
 BEGIN
@@ -6111,6 +6141,7 @@ END $$;
 CREATE FUNCTION fail_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_reservation text, p_disposition text, p_failure text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cap guest_study_spoken_captures%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
  call_row guest_resource_provider_calls%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE; main_op guest_participation_operations%ROWTYPE;
@@ -6153,6 +6184,7 @@ END $$;
 CREATE FUNCTION fail_learner_audio_delete_private_v1(expected_batch text, external_fact text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF external_fact IS NULL OR external_fact NOT IN('failed','unknown') THEN RAISE EXCEPTION 'invalid unresolved storage fact'; END IF;
@@ -6928,6 +6960,7 @@ $_$;
 CREATE FUNCTION find_account_spoken_success_private_v1(p_account text, p_session text, p_item text, p_attempt integer, p_key text, p_digest text, p_type text, p_bytes bigint, p_duration integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE result JSONB;
 BEGIN
@@ -6942,6 +6975,7 @@ END $$;
 CREATE FUNCTION find_guest_owner_audio_delete_v1(p_access jsonb, p_source text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE command_id TEXT;
 BEGIN
@@ -6955,6 +6989,7 @@ END $$;
 CREATE FUNCTION find_guest_study_start_operation_v1(p_access jsonb, p_source text, p_community text, p_post text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE;
 BEGIN
@@ -6975,6 +7010,7 @@ END $$;
 CREATE FUNCTION find_owner_guest_spoken_success_for_audio_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_attempt integer, p_digest text, p_type text, p_bytes integer, p_duration integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE source_id TEXT; cap guest_study_spoken_captures%ROWTYPE;
  sess study_sessions_v2%ROWTYPE; main_op guest_participation_operations%ROWTYPE; op JSONB;
@@ -7025,6 +7061,7 @@ END $_$;
 CREATE FUNCTION finish_guest_json_answer_v1(p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE; owned JSONB; result JSONB;
 BEGIN
@@ -7061,6 +7098,7 @@ END $$;
 CREATE FUNCTION finish_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_spoken jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
  main_op guest_participation_operations%ROWTYPE; cmd study_spoken_answer_commands%ROWTYPE; owned JSONB; result JSONB;
@@ -7567,6 +7605,7 @@ $$;
 CREATE FUNCTION guard_account_audio_provider_call_private_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'provider outcome evidence retained'; END IF;
@@ -7858,6 +7897,7 @@ $$;
 CREATE FUNCTION guard_captured_audio_cleanup_private_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'cleanup evidence is retained'; END IF;
@@ -9501,6 +9541,7 @@ $$;
 CREATE FUNCTION guard_controlled_guest_study_session_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE;
  reservation guest_resource_session_reservations%ROWTYPE;
@@ -10555,6 +10596,7 @@ $$;
 CREATE FUNCTION guard_guest_credential_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF NEW.state NOT IN ('pending_bootstrap','pending_successor')
@@ -10571,6 +10613,7 @@ END $$;
 CREATE FUNCTION guard_guest_credential_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'credential evidence is retained'; END IF;
@@ -10621,6 +10664,7 @@ END $$;
 CREATE FUNCTION guard_guest_empty_alias_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source participation_owners%ROWTYPE; target participation_owners%ROWTYPE;
 BEGIN
@@ -10646,6 +10690,7 @@ END $$;
 CREATE FUNCTION guard_guest_intent_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'ceremony evidence is retained'; END IF;
@@ -10700,6 +10745,7 @@ END $$;
 CREATE FUNCTION guard_guest_issuance_lineage_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE; expected_kind TEXT;
 BEGIN
@@ -10721,6 +10767,7 @@ END $$;
 CREATE FUNCTION guard_guest_operation_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'guest outcome evidence is retained'; END IF;
@@ -10738,6 +10785,7 @@ END $$;
 CREATE FUNCTION guard_guest_resource_provider_call_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'provider accounting history is retained'; END IF;
@@ -10752,6 +10800,7 @@ END $$;
 CREATE FUNCTION guard_guest_resource_session_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'resource history is retained'; END IF;
@@ -11642,6 +11691,7 @@ $$;
 CREATE FUNCTION guard_karaoke_recording() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Karaoke recording rows cannot be deleted'; END IF;
@@ -11740,6 +11790,7 @@ $$;
 CREATE FUNCTION guard_learner_audio_control_state_private_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE mutable TEXT[]; identity_new JSONB; identity_old JSONB;
 BEGIN
@@ -14048,6 +14099,7 @@ $$;
 CREATE FUNCTION guard_participation_owner_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'participation source is retained'; END IF;
@@ -17021,6 +17073,7 @@ $$;
 CREATE FUNCTION guest_attachment_operation_identity_v1(expected_operation_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE;
 BEGIN
@@ -17038,6 +17091,7 @@ END $$;
 CREATE FUNCTION guest_authority_component_is_empty_v1(original_source_id text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE root_id TEXT; member_ids TEXT[];
 BEGIN
@@ -17068,6 +17122,7 @@ END $$;
 CREATE FUNCTION guest_authority_issue_operation_v1(expected_operation_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE;
 BEGIN
@@ -17089,6 +17144,7 @@ END $$;
 CREATE FUNCTION guest_authority_metadata_v1(expected_origin text, proved_ids text[], selected_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE selected JSONB; metadata JSONB; selected_state TEXT; selected_until TIMESTAMPTZ;
 BEGIN
@@ -17116,6 +17172,7 @@ END $$;
 CREATE FUNCTION guest_ephemeral_object_closed_private_v1(p_ref text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM learner_audio_upload_cleanup_commands cleanup
   JOIN guest_study_spoken_captures cap ON cap.upload_attempt_id=cleanup.upload_attempt_id
@@ -17127,6 +17184,7 @@ $$;
 CREATE FUNCTION guest_ephemeral_owner_delete_witness_private_v1(p_upload text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
   JOIN learner_audio_upload_attempts upload ON upload.upload_attempt_id=cap.upload_attempt_id
@@ -17149,6 +17207,7 @@ $$;
 CREATE FUNCTION guest_ephemeral_pending_cleanup_ready_private_v1(p_cleanup text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
  SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
   JOIN learner_audio_upload_cleanup_commands cleanup ON cleanup.upload_attempt_id=cap.upload_attempt_id
@@ -17195,6 +17254,7 @@ $_$;
 CREATE FUNCTION guest_ephemeral_upload_ready_private_v1(p_upload text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
  SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures cap
   JOIN guest_study_spoken_checkpoints cp USING(capture_id)
@@ -17235,6 +17295,7 @@ $_$;
 CREATE FUNCTION guest_owner_audio_delete_projection_private_v1(p_command text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE command learner_audio_delete_commands%ROWTYPE; deleted_count BIGINT; remaining_count BIGINT;
 BEGIN
@@ -17251,6 +17312,7 @@ END $$;
 CREATE FUNCTION guest_resource_component_has_history_v1(p_component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM guest_resource_session_reservations WHERE source_owner_id=ANY(p_component_ids))
   OR EXISTS(SELECT 1 FROM guest_resource_provider_calls WHERE source_owner_id=ANY(p_component_ids))
@@ -17260,6 +17322,7 @@ $$;
 CREATE FUNCTION guest_resource_usage_v1(p_component_ids text[], p_observed_at timestamp with time zone) RETURNS TABLE(owner_active bigint, global_active bigint, owner_calls numeric, global_calls numeric, owner_cost numeric, global_cost numeric)
     LANGUAGE sql STABLE
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  WITH remaining AS (
   SELECT source_owner_id,remaining_units AS units,remaining_units*unit_hold_micros AS cost
@@ -17278,6 +17341,7 @@ $$;
 CREATE FUNCTION guest_spoken_component_has_history_private_v1(component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM guest_study_spoken_captures WHERE source_owner_id=ANY(component_ids))
    OR EXISTS(SELECT 1 FROM guest_study_spoken_checkpoints WHERE source_owner_id=ANY(component_ids))
@@ -17286,6 +17350,7 @@ $$;
 CREATE FUNCTION guest_study_answer_resource_scope_v1(p_community text, p_session text, p_item text, p_attempt integer, p_kind text) RETURNS text
     LANGUAGE plpgsql IMMUTABLE
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF p_kind IS NULL OR p_kind NOT IN('choice','spoken') OR p_attempt IS NULL OR p_attempt NOT BETWEEN 1 AND 3
@@ -17297,6 +17362,7 @@ $$;
 CREATE FUNCTION guest_study_prepared_rows_v1(text, text) RETURNS jsonb
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 WITH public_resource AS (
   SELECT can_guest_access_activity_song_v1($1,$2) AS accessible
@@ -17385,6 +17451,7 @@ $_$;
 CREATE FUNCTION guest_study_start_resource_scope_v1(p_community text, p_post text) RETURNS text
     LANGUAGE sql IMMUTABLE
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT jsonb_build_array('guest_study_start_v1',p_community,p_post)::TEXT
 $$;
@@ -18644,6 +18711,7 @@ $$;
 CREATE FUNCTION issue_guest_pending_v1(expected_origin text, proved_ids text[], selected_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_owner_id text, new_credential_id text, new_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE prior guest_secret_issuance_operations%ROWTYPE;
   prior_credential guest_credentials%ROWTYPE; selected_credential guest_credentials%ROWTYPE;
@@ -18743,6 +18811,7 @@ END $$;
 CREATE FUNCTION issue_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, expected_owner_id text, issuance_key text, issuance_request_hash text, new_operation_id text, new_credential_id text, new_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE predecessor guest_credentials%ROWTYPE; prior guest_secret_issuance_operations%ROWTYPE;
   successor guest_credentials%ROWTYPE; existing_operation guest_participation_operations%ROWTYPE;
@@ -18798,6 +18867,7 @@ END $$;
 CREATE FUNCTION karaoke_audio_target_can_tombstone_private_v1(p_account text, p_artifact text, p_attempt text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM participation_owners o JOIN learner_audio_owner_fences f USING(owner_id)
   JOIN learner_audio_delete_target_artifacts t ON t.command_id=f.active_delete_command_id AND t.owner_id=o.owner_id
@@ -18811,6 +18881,7 @@ $$;
 CREATE FUNCTION learner_audio_component_has_history_private_v1(component_ids text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM learner_audio_owner_fences WHERE owner_id=ANY(component_ids))
  OR EXISTS(SELECT 1 FROM learner_audio_delete_commands WHERE source_owner_id=ANY(component_ids))
@@ -18829,6 +18900,7 @@ $$;
 CREATE FUNCTION learner_audio_producer_component_has_history_private_v1(p_owners text[]) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
  SELECT EXISTS(SELECT 1 FROM learner_audio_account_producer_captures WHERE owner_id=ANY(p_owners))
  OR EXISTS(SELECT 1 FROM learner_audio_upload_terminal_facts WHERE owner_id=ANY(p_owners))
@@ -18840,6 +18912,7 @@ $$;
 CREATE FUNCTION learner_audio_source_component_private_v1(seed_owners text[]) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE component_ids TEXT[];
 BEGIN
@@ -18861,6 +18934,7 @@ END $$;
 CREATE FUNCTION list_closed_account_spoken_checkpoints_private_v1(p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF p_maximum IS NULL OR p_maximum NOT BETWEEN 1 AND 25 THEN RAISE EXCEPTION 'recovery bound1..25 required'; END IF;
@@ -18882,6 +18956,7 @@ END $$;
 CREATE FUNCTION list_guest_practice_participations_v1(p_access jsonb, p_cursor text, p_limit integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE phase_name TEXT; source_ids TEXT[];
 BEGIN
@@ -18918,6 +18993,7 @@ END $$;
 CREATE FUNCTION list_guest_spoken_closed_recovery_v1(p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  PERFORM pg_advisory_xact_lock_shared(83000003,1);
@@ -18942,6 +19018,7 @@ END $$;
 CREATE FUNCTION load_account_spoken_success_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE result JSONB;
 BEGIN
@@ -18952,6 +19029,7 @@ END $$;
 CREATE FUNCTION load_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
 BEGIN
@@ -18975,6 +19053,7 @@ END $$;
 CREATE FUNCTION lock_account_audio_group_private_v1(p_original_account text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE account_ids TEXT[]; source_ids TEXT[]; canonical_count INTEGER; locked_account_id TEXT;
 BEGIN
@@ -19007,6 +19086,7 @@ END $$;
 CREATE FUNCTION lock_guest_authority_sources_v1(expected_origin text, proved_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 BEGIN
   IF expected_origin IS NULL OR expected_origin NOT LIKE 'https://%'
@@ -19042,6 +19122,7 @@ END $_$;
 CREATE FUNCTION lock_guest_cleanup_components_v1(expected_origin text, proved_credential_ids text[], proved_intent_ids text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE roots TEXT[]; member_ids TEXT[];
 BEGIN
@@ -19082,6 +19163,7 @@ END $_$;
 CREATE FUNCTION lock_guest_resource_budget_v1(p_source_id text, p_fingerprint text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE component_ids TEXT[]; root_id TEXT;
 BEGIN
@@ -19263,6 +19345,7 @@ $$;
 CREATE FUNCTION lock_learner_audio_sources_private_v1(expected_owners text[]) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; component_ids TEXT[];
 BEGIN
@@ -19288,6 +19371,7 @@ END $$;
 CREATE FUNCTION lock_original_account_audio_source_private_v1(p_account text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT;
 BEGIN
@@ -19311,6 +19395,7 @@ $$;
 CREATE FUNCTION map_controlled_guest_learning_source_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF NEW.account_id IS NOT NULL OR NEW.participation_owner_kind IS DISTINCT FROM 'guest'
@@ -19330,6 +19415,7 @@ END $$;
 CREATE FUNCTION map_existing_account_learning_source_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE mapped_owner TEXT;
 BEGIN
@@ -19348,6 +19434,7 @@ END $$;
 CREATE FUNCTION mark_account_spoken_provider_unknown_private_v1(p_upload text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT;
 BEGIN
@@ -19417,6 +19504,7 @@ $$;
 CREATE FUNCTION note_learner_audio_multipart_id_private_v1(p_upload text, p_id text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -19648,6 +19736,7 @@ $$;
 CREATE FUNCTION persist_account_spoken_success_private_v1(p_upload text, p_success jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE captured learner_audio_account_producer_captures%ROWTYPE; prior learner_audio_account_spoken_checkpoints%ROWTYPE;
  digest TEXT;
@@ -19684,6 +19773,7 @@ END $$;
 CREATE FUNCTION persist_guest_spoken_success_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE captured guest_study_spoken_captures%ROWTYPE; prior guest_study_spoken_checkpoints%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
@@ -19758,6 +19848,7 @@ END $$;
 CREATE FUNCTION persist_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text, p_result jsonb, p_provider jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT;
 BEGIN
@@ -19920,6 +20011,7 @@ $$;
 CREATE FUNCTION prepare_account_audio_delete_private_v1(p_original_account text, p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sources TEXT[]; active_ids TEXT[]; command learner_audio_delete_commands%ROWTYPE; prepared_batch_id TEXT;
  source_id TEXT; fresh_command TEXT; fresh_key TEXT; digest TEXT;
@@ -19947,6 +20039,7 @@ END $$;
 CREATE FUNCTION prepare_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE; command learner_audio_upload_cleanup_commands%ROWTYPE;
 BEGIN
@@ -19965,6 +20058,7 @@ END $$;
 CREATE FUNCTION prepare_guest_attachment_target_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text, proved_intent_ids text[], expected_intent_id text, current_account_id text, protected_session_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE credential guest_credentials%ROWTYPE; intent guest_attachment_intents%ROWTYPE;
   operation guest_participation_operations%ROWTYPE; account_owner_id TEXT;
@@ -20080,6 +20174,7 @@ END $_$;
 CREATE FUNCTION prepare_guest_captured_audio_cleanup_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE; command learner_audio_upload_cleanup_commands%ROWTYPE;
 BEGIN
@@ -20098,6 +20193,7 @@ END $$;
 CREATE FUNCTION prepare_guest_json_answer_v1(p_access jsonb, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer, p_answer jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE session study_sessions_v2%ROWTYPE; reservation guest_resource_session_reservations%ROWTYPE;
  operation guest_participation_operations%ROWTYPE; selected RECORD; total INTEGER; remaining INTEGER;
@@ -20160,6 +20256,7 @@ END $$;
 CREATE FUNCTION prepare_guest_owner_audio_delete_v1(p_access jsonb, p_operation jsonb, p_maximum integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; sources TEXT[]; selected_batch TEXT; command learner_audio_delete_commands%ROWTYPE;
 BEGIN
@@ -20184,6 +20281,7 @@ END $$;
 CREATE FUNCTION prepare_guest_spoken_finalization_v1(p_source text, p_operation jsonb, p_checkpoint text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE; call_row guest_resource_provider_calls%ROWTYPE;
@@ -20269,6 +20367,7 @@ END $$;
 CREATE FUNCTION prepare_guest_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_reservation text, p_target text, p_band text, p_policy jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE reservation guest_resource_session_reservations%ROWTYPE;
  operation guest_participation_operations%ROWTYPE; plan JSONB;
@@ -20503,6 +20602,7 @@ $_$;
 CREATE FUNCTION prepare_learner_audio_delete_private_v1(expected_source text, expected_key text, expected_hash text, new_command text, authorized_sources text[], new_batch text, maximum_artifacts integer, provider_fact text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE command learner_audio_delete_commands%ROWTYPE; source_id TEXT; next_revision BIGINT; active_batch TEXT;
 BEGIN
@@ -20586,6 +20686,7 @@ END $$;
 CREATE FUNCTION prepare_next_guest_ephemeral_audio_cleanup_private_v1() RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE chosen TEXT; original_owner TEXT; prepared JSONB;
  original_cleanup learner_audio_upload_cleanup_commands%ROWTYPE;
@@ -20654,6 +20755,7 @@ $$;
 CREATE FUNCTION preserve_learning_source_identity_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF ROW(NEW.participation_owner_id,NEW.participation_owner_kind,NEW.account_id)
@@ -21229,6 +21331,7 @@ $$;
 CREATE FUNCTION project_owner_study_session_private_v1(p_source text, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE session study_sessions_v2%ROWTYPE; items JSONB; source JSONB; public_session JSONB;
  count_cards INTEGER; answered INTEGER; correct INTEGER; resolved INTEGER;
@@ -21787,6 +21890,7 @@ $$;
 CREATE FUNCTION provision_account_participation_owner_v1(expected_account_id text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE mapped_owner TEXT;
 BEGIN
@@ -21997,6 +22101,7 @@ $$;
 CREATE FUNCTION read_account_karaoke_audio_capture_private_v1(p_account text, p_session text, p_attempt text, p_artifact text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT;
 BEGIN
@@ -22009,6 +22114,7 @@ END $$;
 CREATE FUNCTION read_captured_learner_audio_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE; result JSONB;
 BEGIN
@@ -22029,6 +22135,7 @@ END $$;
 CREATE FUNCTION read_guest_audio_io_capture_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE result JSONB;
 BEGIN
@@ -22048,6 +22155,7 @@ END $$;
 CREATE FUNCTION read_guest_browser_proof_snapshot_v1(expected_origin text, credential_proofs jsonb, intent_proofs jsonb, cleanup_operation boolean) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE
   maximum_proofs INTEGER;
@@ -22130,6 +22238,7 @@ END $_$;
 CREATE FUNCTION read_guest_credential_proof_matches_v1(expected_origin text, presented_proofs jsonb, cleanup_operation boolean) RETURNS TABLE(credential_id text, credential_source_owner_id text, origin text, credential_state text, session_until timestamp with time zone, pending_expires_at timestamp with time zone, predecessor_id text, confirmed_at timestamp with time zone, revoked_at timestamp with time zone)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE maximum_proofs INTEGER;
 BEGIN
@@ -22162,6 +22271,7 @@ END $_$;
 CREATE FUNCTION read_guest_learning_lease_observation_v1(expected_origin text, expected_credential_id text, expected_effective_owner text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE observed_at TIMESTAMPTZ; result JSONB;
 BEGIN
@@ -22192,6 +22302,7 @@ END $_$;
 CREATE FUNCTION read_guest_owner_audio_delete_batch_private_v1(p_batch text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE batch learner_audio_delete_batches%ROWTYPE; command learner_audio_delete_commands%ROWTYPE; result JSONB;
 BEGIN
@@ -22210,6 +22321,7 @@ END $$;
 CREATE FUNCTION read_guest_spoken_capture_private_v1(p_source text, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cap guest_study_spoken_captures%ROWTYPE;
 BEGIN
@@ -22230,6 +22342,7 @@ END $$;
 CREATE FUNCTION read_guest_spoken_closed_recovery_v1(p_checkpoint text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE cp guest_study_spoken_checkpoints%ROWTYPE; cap guest_study_spoken_captures%ROWTYPE;
  upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
@@ -22277,6 +22390,7 @@ END $$;
 CREATE FUNCTION read_guest_spoken_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
  item study_session_items_v2%ROWTYPE; exercise study_exercise_versions%ROWTYPE; profile study_language_profile_units%ROWTYPE;
@@ -22320,6 +22434,7 @@ END $$;
 CREATE FUNCTION read_guest_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE result JSONB;
 BEGIN
@@ -22332,6 +22447,7 @@ END $$;
 CREATE FUNCTION read_learner_audio_upload_status_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
 BEGIN
@@ -22347,6 +22463,7 @@ END $$;
 CREATE FUNCTION read_original_account_study_answer_receipt_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text, p_hash text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source JSONB; attempt_id TEXT;
 BEGIN
@@ -22362,6 +22479,7 @@ END $$;
 CREATE FUNCTION read_original_account_study_source_v1(p_access jsonb, p_community text, p_session text, p_item text DEFAULT NULL::text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE sess study_sessions_v2%ROWTYPE; original_owner TEXT;
 BEGIN
@@ -22389,6 +22507,7 @@ END $_$;
 CREATE FUNCTION read_owner_guest_answer_operation_v1(p_access jsonb, p_source text, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE; original guest_participation_operations%ROWTYPE;
 BEGIN
@@ -22412,6 +22531,7 @@ END $$;
 CREATE FUNCTION read_owner_guest_answer_source_v1(p_access jsonb, p_community text, p_session text, p_item text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sess study_sessions_v2%ROWTYPE; rsv guest_resource_session_reservations%ROWTYPE;
 BEGIN
@@ -22433,6 +22553,7 @@ END $$;
 CREATE FUNCTION read_owner_guest_spoken_capture_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT;
 BEGIN
@@ -22444,6 +22565,7 @@ END $$;
 CREATE FUNCTION read_owner_guest_spoken_dispatch_context_v1(p_access jsonb, p_community text, p_session text, p_item text, p_key text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE context JSONB; sess study_sessions_v2%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE;
 BEGIN
@@ -22466,6 +22588,7 @@ END $$;
 CREATE FUNCTION read_owner_guest_spoken_success_v1(p_source jsonb, p_operation jsonb, p_command text, p_original_lease text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT;
 BEGIN
@@ -22477,6 +22600,7 @@ END $$;
 CREATE FUNCTION read_owner_study_session_snapshot_v1(p_access jsonb, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE session study_sessions_v2%ROWTYPE; items JSONB; source JSONB; public_session JSONB;
  count_cards INTEGER; answered INTEGER; correct INTEGER; resolved INTEGER;
@@ -23000,6 +23124,7 @@ $$;
 CREATE FUNCTION register_learner_audio_upload_private_v1(expected_owner text, expected_artifact text, expected_kind text, expected_attempt text, expected_command text, expected_reservation text, expected_object_ref text, upload_id text, expected_captured_revision bigint) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE fence learner_audio_owner_fences%ROWTYPE; existing learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -23126,6 +23251,7 @@ $$;
 CREATE FUNCTION reject_guest_copresent_established_conflict_v1(expected_origin text, proved_ids text[], selected_owner text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
   IF EXISTS(SELECT 1 FROM guest_credentials c JOIN participation_owners root
@@ -23138,6 +23264,7 @@ END $$;
 CREATE FUNCTION reject_guest_immutable_mutation_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN RAISE EXCEPTION 'guest evidence is immutable'; END $$;
 
@@ -23387,6 +23514,7 @@ $$;
 CREATE FUNCTION release_guest_resource_session_v1(p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_terminal_state text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE reservation guest_resource_session_reservations%ROWTYPE; prior guest_resource_release_receipts%ROWTYPE;
  component_ids TEXT[]; use_now TIMESTAMPTZ; receipt_id TEXT;
@@ -23432,6 +23560,7 @@ END $$;
 CREATE FUNCTION release_next_guest_study_resource_remainder_v1() RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE candidate guest_resource_session_reservations%ROWTYPE;
  terminal TEXT; release_result JSONB;
@@ -23633,6 +23762,7 @@ $_$;
 CREATE FUNCTION renew_guest_authority_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE credential guest_credentials%ROWTYPE; at_time TIMESTAMPTZ;
 BEGIN
@@ -23863,6 +23993,7 @@ $$;
 CREATE FUNCTION require_account_spoken_archive_private_v1(p_upload text, p_state text, p_ref text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE capture JSONB; status JSONB;
 BEGIN
@@ -23878,6 +24009,7 @@ END $$;
 CREATE FUNCTION require_account_spoken_success_private_v1(p_upload text, p_success jsonb) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE captured learner_audio_account_producer_captures%ROWTYPE; command study_spoken_answer_commands%ROWTYPE;
 BEGIN
@@ -23967,6 +24099,7 @@ $$;
 CREATE FUNCTION require_captured_audio_deletion_stop_private_v1(p_capture jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; upload learner_audio_upload_attempts%ROWTYPE;
 BEGIN
@@ -23981,6 +24114,7 @@ END $$;
 CREATE FUNCTION require_captured_karaoke_recording_result_private_v1(p_account text, p_session text, p_attempt text, p_artifact text, p_result jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE capture JSONB; status JSONB; fact learner_audio_upload_terminal_facts%ROWTYPE;
 BEGIN
@@ -24001,6 +24135,7 @@ END $$;
 CREATE FUNCTION require_captured_learner_audio_private_v1(p_capture jsonb) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT:=p_capture->>'uploadAttemptId';
 BEGIN
@@ -24212,6 +24347,7 @@ $$;
 CREATE FUNCTION require_existing_account_participation_owner_v1(expected_account_id text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE mapped_owner TEXT;
 BEGIN
@@ -24249,6 +24385,7 @@ CREATE TABLE guest_participation_operations (
 CREATE FUNCTION require_guest_answer_operation_private_v1(p_source text, p_operation jsonb, p_operation_id text, p_community text, p_session text, p_item text, p_attempt integer, p_kind text) RETURNS guest_participation_operations
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE;
 BEGIN
@@ -24264,6 +24401,7 @@ END $$;
 CREATE FUNCTION require_guest_audio_io_capture_private_v1(p_capture jsonb) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT:=p_capture->>'uploadAttemptId';
 BEGIN
@@ -24275,6 +24413,7 @@ END $$;
 CREATE FUNCTION require_guest_audio_recovery_access_private_v1(p_access jsonb, p_source text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sources TEXT[]; credential guest_credentials%ROWTYPE;
 BEGIN
@@ -24308,6 +24447,7 @@ END $$;
 CREATE FUNCTION require_guest_learning_runtime_role_v1(p_runtime regrole) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE relation_name TEXT; table_owner OID; namespace_id OID;
 BEGIN
@@ -24340,6 +24480,7 @@ END $$;
 CREATE FUNCTION require_guest_practice_only_schema_phase_v1() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE trusted_namespace OID; trusted_owner OID;
 BEGIN
@@ -24413,6 +24554,7 @@ END $_$;
 CREATE FUNCTION require_guest_resource_success_checkpoint_v1(p_checkpoint_id text, p_call_id text, p_reservation_id text, p_source_owner_id text, p_actual_cost numeric) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  PERFORM require_guest_practice_only_schema_phase_v1();
@@ -24440,6 +24582,7 @@ END $$;
 CREATE FUNCTION require_guest_review_schedule_private_v1(p_schedule jsonb, p_accepted timestamp with time zone) RETURNS void
     LANGUAGE plpgsql STABLE
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE key TEXT; number_value NUMERIC; due TIMESTAMPTZ;
 BEGIN
@@ -24470,6 +24613,7 @@ END $$;
 CREATE FUNCTION require_guest_spoken_resource_plan_v1(p_source_id text, p_session_id text, p_reservation_id text, p_rerecord_enabled boolean) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE sess study_sessions_v2%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE;
@@ -24519,6 +24663,7 @@ END $$;
 CREATE FUNCTION require_guest_study_composition_v1() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE expected_owner OID; namespace_id OID; trusted_schema TEXT;
  relation_name TEXT; relation_id OID; gate_name TEXT; signature TEXT; function_id OID;
@@ -24593,6 +24738,7 @@ END $$;
 CREATE FUNCTION require_guest_study_learning_access_v1(p_access jsonb, p_source text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE credential guest_credentials%ROWTYPE; root TEXT;
 BEGIN
@@ -24682,6 +24828,7 @@ $$;
 CREATE FUNCTION require_owner_guest_source_private_v1(p_source jsonb) RETURNS text
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF p_source IS NULL OR jsonb_typeof(p_source) IS DISTINCT FROM 'object'
@@ -24933,6 +25080,7 @@ $$;
 CREATE FUNCTION reserve_guest_prepared_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_session_id text, p_target text, p_band text, p_fingerprint text, p_policy jsonb, p_operation_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT:=p_operation->>'sourceOwnerId';
  existing guest_resource_session_reservations%ROWTYPE;
@@ -25049,6 +25197,7 @@ END $$;
 CREATE FUNCTION reserve_guest_provider_call_v1(p_source_id text, p_operation jsonb, p_session_id text, p_reservation_id text, p_units integer, p_maximum_cost text, p_cost_version text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE reservation guest_resource_session_reservations%ROWTYPE; prior guest_resource_provider_calls%ROWTYPE;
  component_ids TEXT[]; call_id TEXT; use_now TIMESTAMPTZ;
@@ -25089,6 +25238,7 @@ END $_$;
 CREATE FUNCTION reserve_guest_resource_session_v1(p_source_id text, p_operation jsonb, p_session_id text, p_worst_units integer, p_worst_cost text, p_fingerprint text, p_policy jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE component_ids TEXT[]; existing guest_resource_session_reservations%ROWTYPE;
  use_now TIMESTAMPTZ; usage RECORD; edge_count BIGINT; unit_cost NUMERIC; stored_policy JSONB;
@@ -25144,6 +25294,7 @@ END $_$;
 CREATE FUNCTION reserve_guest_spoken_answer_v1(p_access jsonb, p_operation jsonb, p_source text, p_payload jsonb, p_reservation text, p_fence bigint, p_policy jsonb, p_disclosure_version text, p_rerecord_enabled boolean, p_provider_retention text, p_operation_id text, p_upload_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE sess study_sessions_v2%ROWTYPE; item study_session_items_v2%ROWTYPE; state study_lesson_item_state_v2%ROWTYPE;
  rsv guest_resource_session_reservations%ROWTYPE; main_op guest_participation_operations%ROWTYPE;
@@ -25347,6 +25498,7 @@ $$;
 CREATE FUNCTION resolve_guest_audio_io_capture_private_v1(p_source jsonb, p_operation jsonb, p_artifact text, p_reservation text, p_revision bigint, p_digest text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; source_id TEXT;
 BEGIN
@@ -25366,6 +25518,7 @@ END $$;
 CREATE FUNCTION resolve_guest_empty_owner_root_v1(source_id text) RETURNS text
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE current_id TEXT := source_id; target_id TEXT; depth INTEGER := 0;
 BEGIN
@@ -25466,6 +25619,7 @@ $$;
 CREATE FUNCTION retain_learner_audio_immutable_private_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'audio control/source evidence cannot be physically deleted'; END IF;
@@ -26121,6 +26275,7 @@ $$;
 CREATE FUNCTION select_guest_study_start_plan_v1(p_source_id text, p_community text, p_post text, p_target text, p_band text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE snapshot JSONB; selected_rows JSONB; selected_target TEXT; selected_band TEXT;
  source_count INTEGER; helper_count INTEGER; paid_units INTEGER;
@@ -26190,6 +26345,7 @@ END $$;
 CREATE FUNCTION set_guest_learning_retention_v1(p_access jsonb, p_operation jsonb, p_mode text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; operation guest_participation_operations%ROWTYPE; scope TEXT; at_time TIMESTAMPTZ; result JSONB;
 BEGIN
@@ -26268,6 +26424,7 @@ $$;
 CREATE FUNCTION settle_guest_audio_io_private_v1(p_capture jsonb, p_disposition text, p_known boolean) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload_id TEXT; allowed BOOLEAN;
 BEGIN
@@ -26279,6 +26436,7 @@ END $$;
 CREATE FUNCTION settle_learner_audio_terminal_fact_private_v1(p_upload text, p_disposition text, p_known boolean, p_multipart text, p_fact jsonb) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE; published BOOLEAN; captured learner_audio_account_producer_captures%ROWTYPE;
 BEGIN
@@ -26305,6 +26463,7 @@ END $$;
 CREATE FUNCTION settle_learner_audio_upload_private_v1(expected_upload text, disposition text, known_no_more_io boolean, multipart_id text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE upload learner_audio_upload_attempts%ROWTYPE; fence learner_audio_owner_fences%ROWTYPE; publish_allowed BOOLEAN;
 BEGIN
@@ -26557,6 +26716,7 @@ $$;
 CREATE FUNCTION transition_guest_json_answer_v1(p_operation jsonb, p_operation_id text, p_capture jsonb, p_decision jsonb, p_transition jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE operation guest_participation_operations%ROWTYPE; attempt study_attempts_v2%ROWTYPE;
 BEGIN
@@ -26584,6 +26744,7 @@ END $$;
 CREATE FUNCTION transition_guest_spoken_answer_v1(p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_transition jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE main_op guest_participation_operations%ROWTYPE; cp guest_study_spoken_checkpoints%ROWTYPE;
  cap guest_study_spoken_captures%ROWTYPE; result JSONB; sess study_sessions_v2%ROWTYPE;
@@ -28894,6 +29055,7 @@ $$;
 CREATE FUNCTION validate_guest_alias_state_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE source_id TEXT; source_state TEXT;
 BEGIN
@@ -28910,6 +29072,7 @@ END $$;
 CREATE FUNCTION validate_guest_recovery_operation_private_v1(p_operation jsonb, p_kind text) RETURNS text
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 BEGIN
  IF p_kind IS NULL OR p_kind NOT IN('learner_audio_deletion','learning_retention') OR p_operation IS NULL OR jsonb_typeof(p_operation) IS DISTINCT FROM 'object'
@@ -28925,6 +29088,7 @@ END $_$;
 CREATE FUNCTION validate_guest_resource_operation_v1(p_source_id text, p_operation jsonb, p_expected_kind text) RETURNS void
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 BEGIN
  IF p_source_id IS NULL OR char_length(p_source_id) NOT BETWEEN 1 AND 128
@@ -28946,6 +29110,7 @@ END $_$;
 CREATE FUNCTION validate_guest_resource_policy_v1(p_policy jsonb) RETURNS void
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $_$
 DECLARE field_name TEXT; amount NUMERIC;
 BEGIN
@@ -32947,6 +33112,7 @@ $$;
 CREATE FUNCTION validate_study_attempt_audio_source_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 BEGIN
  IF NEW.submission_kind='raw_audio' AND NOT EXISTS(
@@ -32964,6 +33130,7 @@ END $$;
 CREATE FUNCTION validate_study_command_audio_source_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
+    SET pirate_baseline.pin_catalog TO 'on'
     AS $$
 DECLARE command_record study_spoken_answer_commands%ROWTYPE;
 BEGIN
@@ -43586,7 +43753,7 @@ CREATE TABLE study_sessions_v2 (
     CONSTRAINT study_guest_reward_mode_present CHECK (((participation_owner_kind <> 'guest'::text) OR (guest_reward_mode IS NOT NULL))),
     CONSTRAINT study_guest_spoken_call_plan_shape_v1 CHECK ((((participation_owner_kind = 'account'::text) AND (guest_spoken_call_plan IS NULL)) OR ((participation_owner_kind = 'guest'::text) AND ((guest_spoken_call_plan IS NULL) OR
 CASE
-    WHEN ((jsonb_typeof(guest_spoken_call_plan) = 'object'::text) AND (guest_spoken_call_plan ?& ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) AND ((guest_spoken_call_plan - ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) = '{}'::jsonb) AND ((guest_spoken_call_plan ->> 'policy_revision'::text) = 'study_spoken_rerecord_v1'::text) AND ((guest_spoken_call_plan -> 'ungraded_rerecord_per_presentation'::text) = '1'::jsonb) AND (jsonb_typeof((guest_spoken_call_plan -> 'graded_presentation_cap'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text) ~ '^(0|[1-9][0-9]?)$'::text) AND (jsonb_typeof((guest_spoken_call_plan -> 'maximum_paid_calls'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'maximum_paid_calls'::text) ~ '^(0|[1-9][0-9]?)$'::text)) THEN (((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20)) AND (((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)))
+    WHEN ((jsonb_typeof(guest_spoken_call_plan) = 'object'::text) AND (guest_spoken_call_plan ?& ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) AND ((guest_spoken_call_plan - ARRAY['policy_revision'::text, 'graded_presentation_cap'::text, 'ungraded_rerecord_per_presentation'::text, 'maximum_paid_calls'::text]) = '{}'::jsonb) AND ((guest_spoken_call_plan ->> 'policy_revision'::text) = 'study_spoken_rerecord_v1'::text) AND ((guest_spoken_call_plan -> 'ungraded_rerecord_per_presentation'::text) = '1'::jsonb) AND (jsonb_typeof((guest_spoken_call_plan -> 'graded_presentation_cap'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text) ~ '^(0|[1-9][0-9]?)$'::text) AND (jsonb_typeof((guest_spoken_call_plan -> 'maximum_paid_calls'::text)) = 'number'::text) AND ((guest_spoken_call_plan ->> 'maximum_paid_calls'::text) ~ '^(0|[1-9][0-9]?)$'::text)) THEN ((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer BETWEEN 0 AND 20) AND (((guest_spoken_call_plan ->> 'maximum_paid_calls'::text))::integer = (2 * ((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer)))
     ELSE false
 END)))),
     CONSTRAINT study_session_completion_shape CHECK ((((status = 'active'::text) AND (completed_at IS NULL) AND (completion_reason IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completion_reason IS NOT NULL)))),
@@ -52681,5 +52848,24 @@ ALTER TABLE study_session_items_v2 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE study_sessions_v2 ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE study_spoken_answer_commands ENABLE ROW LEVEL SECURITY;
+
+DO $repin$
+DECLARE pinned pg_catalog.regprocedure;
+BEGIN
+  FOR pinned IN
+    SELECT procedure.oid::pg_catalog.regprocedure
+      FROM pg_catalog.pg_proc AS procedure
+     WHERE procedure.pronamespace = pg_catalog.current_schema()::pg_catalog.regnamespace
+       AND 'pirate_baseline.pin_catalog=on' = ANY(procedure.proconfig)
+  LOOP
+    EXECUTE pg_catalog.format('ALTER FUNCTION %s RESET pirate_baseline.pin_catalog', pinned);
+    EXECUTE pg_catalog.format(
+      'ALTER FUNCTION %s SET search_path TO pg_catalog, %I, pg_temp',
+      pinned,
+      pg_catalog.current_schema()
+    );
+  END LOOP;
+END
+$repin$;
 
 SET check_function_bodies = true;

@@ -1,8 +1,31 @@
+const CATALOG_PIN_MARKER = "pirate_baseline.pin_catalog";
+const REPIN_CATALOG_SEARCH_PATHS = [
+  "DO $repin$",
+  "DECLARE pinned pg_catalog.regprocedure;",
+  "BEGIN",
+  "  FOR pinned IN",
+  "    SELECT procedure.oid::pg_catalog.regprocedure",
+  "      FROM pg_catalog.pg_proc AS procedure",
+  "     WHERE procedure.pronamespace = pg_catalog.current_schema()::pg_catalog.regnamespace",
+  `       AND '${CATALOG_PIN_MARKER}=on' = ANY(procedure.proconfig)`,
+  "  LOOP",
+  `    EXECUTE pg_catalog.format('ALTER FUNCTION %s RESET ${CATALOG_PIN_MARKER}', pinned);`,
+  "    EXECUTE pg_catalog.format(",
+  "      'ALTER FUNCTION %s SET search_path TO pg_catalog, %I, pg_temp',",
+  "      pinned,",
+  "      pg_catalog.current_schema()",
+  "    );",
+  "  END LOOP;",
+  "END",
+  "$repin$;",
+].join("\n");
+
 export function normalizePostgresBaselineDump(dump: string): string {
   const lines = dump.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   const normalized: string[] = [];
   let dollarDelimiter: string | undefined;
   let functionHeader = false;
+  let pinnedCatalog = false;
 
   for (const line of lines) {
     const topLevel = dollarDelimiter === undefined;
@@ -18,6 +41,12 @@ export function normalizePostgresBaselineDump(dump: string): string {
       topLevel && functionHeader && /^SET search_path (?:TO|=) /u.test(trimmed)
         ? line.replace(trimmed, "SET search_path FROM CURRENT")
         : undefined;
+    // An explicit leading pg_catalog cannot be captured FROM CURRENT: with it
+    // first, unqualified CREATE FUNCTION would target pg_catalog. Mark the
+    // function and re-pin it after replay, as its migration does.
+    const pinsCatalog =
+      portableFunctionSearchPath !== undefined &&
+      /^SET search_path (?:TO|=) '?pg_catalog'?\s*,/u.test(trimmed);
     if (
       topLevel &&
       (trimmed.startsWith("--") ||
@@ -72,8 +101,16 @@ export function normalizePostgresBaselineDump(dump: string): string {
         .replaceAll(
           "(health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint)",
           "(health_generation BETWEEN 1 AND '9007199254740991'::bigint)",
+        )
+        .replaceAll(
+          "((((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer >= 0) AND (((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer <= 20))",
+          "(((guest_spoken_call_plan ->> 'graded_presentation_cap'::text))::integer BETWEEN 0 AND 20)",
         ),
     );
+    if (pinsCatalog) {
+      normalized.push(line.replace(trimmed, `SET ${CATALOG_PIN_MARKER} TO 'on'`));
+      pinnedCatalog = true;
+    }
 
     const delimiter = line.match(/\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
     if (dollarDelimiter === undefined) {
@@ -105,6 +142,7 @@ export function normalizePostgresBaselineDump(dump: string): string {
     "",
     body,
     "",
+    ...(pinnedCatalog ? [REPIN_CATALOG_SEARCH_PATHS, ""] : []),
     "SET check_function_bodies = true;",
     "",
   ].join("\n");

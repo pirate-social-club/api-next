@@ -138,6 +138,50 @@ SET search_path TO leaked_session_schema;
     expect(normalized).not.toContain("leaked_session_schema");
   });
 
+  test("re-pins an explicit leading pg_catalog only for functions that declare it", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.ordinary() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'generated_schema', 'pg_temp'
+    AS $$ SELECT 1 $$;
+CREATE FUNCTION public.catalog_pinned() RETURNS integer
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog', 'generated_schema', 'pg_temp'
+    AS $function$
+BEGIN
+  RETURN 1;
+END;
+$function$;
+`);
+
+    expect(normalized).not.toContain("generated_schema");
+    const lines = normalized.split("\n");
+    const marker = "    SET pirate_baseline.pin_catalog TO 'on'";
+    expect(lines.filter((line) => line === marker)).toHaveLength(1);
+    expect(lines[lines.indexOf(marker) - 1]).toBe("    SET search_path FROM CURRENT");
+    expect(lines.indexOf(marker)).toBeGreaterThan(
+      lines.indexOf("CREATE FUNCTION catalog_pinned() RETURNS integer"),
+    );
+    const repin = normalized.indexOf("DO $repin$");
+    expect(repin).toBeGreaterThan(normalized.indexOf("$function$;"));
+    expect(normalized.slice(repin)).toContain(
+      "'ALTER FUNCTION %s SET search_path TO pg_catalog, %I, pg_temp'",
+    );
+    expect(normalized).toEndWith("$repin$;\n\nSET check_function_bodies = true;\n");
+  });
+
+  test("omits the catalog re-pin when no function declares it", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.ordinary() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'generated_schema', 'pg_temp'
+    AS $$ SELECT 1 $$;
+`);
+
+    expect(normalized).not.toContain("pirate_baseline.pin_catalog");
+    expect(normalized).not.toContain("$repin$");
+  });
+
   test("makes migration-created seed timestamps deterministic", () => {
     expect(
       normalizePostgresBaselineSeedDump(
