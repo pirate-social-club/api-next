@@ -129,7 +129,7 @@ export async function ephemeralFixture(
       ).toEqual([{ owner: true, namespace: true, definer: true, pinned: true, private: true }]);
     }
     const cleanupRole = `fixture_ephemeral_${randomUUID().replaceAll("-", "")}`,
-      password = randomBytes(24).toString("hex");
+      password = Array.from(randomBytes(24), (byte) => byte.toString(16).padStart(2, "0")).join("");
     let created = false,
       connected = false,
       primaryFailed = false;
