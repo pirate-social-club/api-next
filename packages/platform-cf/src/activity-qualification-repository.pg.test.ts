@@ -16,11 +16,8 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect } from "effect";
-import type { Client } from "pg";
-import {
-  applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
-} from "../../../scripts/postgres-test-baseline.ts";
+import { Client } from "pg";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
@@ -69,16 +66,40 @@ async function withSchema<A>(
   use: (input: { readonly admin: Client; readonly scopedConnection: string }) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
-    baseConnectionString: connectionString,
-    schemaName: "packages_platform_cf_src_activity_qualification_repository_pg_test_ts",
-    use: async ({ admin, schema }) => {
-      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-      const scopedConnection = connectionForSchema(connectionString, schema);
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-      return await use({ admin, scopedConnection });
-    },
-  });
+  // These cases can create real positive outstanding credits. Never reset or
+  // reuse their business schema: preserve every committed liability until the
+  // owned disposable PostgreSQL database/container is physically removed.
+  const schema = `activity_q_owned_${crypto.randomUUID().replaceAll("-", "")}`;
+  const scopedConnection = connectionForSchema(connectionString, schema);
+  const admin = new Client({ connectionString });
+  let outcome: { kind: "completed"; result: A } | { kind: "failed"; error: unknown } | undefined;
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+    outcome = { kind: "completed", result: await use({ admin, scopedConnection }) };
+  } catch (error) {
+    outcome = { kind: "failed", error };
+  } finally {
+    try {
+      await admin.end();
+    } catch (cleanupError) {
+      closeFailed = true;
+      closeError = cleanupError;
+    }
+    // Intentionally no DELETE, reset, TRUNCATE, DROP SCHEMA, or fake credit
+    // settlement. The test URL must belong to the runner's disposable database.
+  }
+  if (closeFailed) throw new AggregateError(
+    outcome?.kind === "failed" ? [outcome.error, closeError] : [closeError],
+    "Owned qualification fixture client cleanup failed",
+  );
+  if (outcome === undefined) throw new Error("Owned fixture did not return an outcome");
+  if (outcome.kind === "failed") throw outcome.error;
+  return outcome.result;
 }
 
 async function seedAccountSong(
