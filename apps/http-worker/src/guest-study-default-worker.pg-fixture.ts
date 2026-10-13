@@ -285,7 +285,7 @@ export async function defaultWorkerFixture(
                 ? new Uint8Array()
                 : new TextEncoder().encode(JSON.stringify(input.body))
               : new Uint8Array(input.audio);
-          return { definition, path: `/api${path}${query.size === 0 ? "" : `?${query}`}`, bytes };
+          return { definition, path: `${path}${query.size === 0 ? "" : `?${query}`}`, bytes };
         };
         const headers = (
           browser: Browser,
@@ -334,7 +334,7 @@ export async function defaultWorkerFixture(
               throw new Error("Owned forwarded fixture supports exact GET/POST only");
             return taskFetch(
               hns.worker,
-              await hns.signed(path, definition.method, undefined, {
+              await hns.signed(`/api${path}`, definition.method, undefined, {
                 headers: headers(browser, name, input, exactOrigin),
                 bodyBytes: bytes,
               }),

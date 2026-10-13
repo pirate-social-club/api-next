@@ -254,7 +254,7 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
         if (input.body !== undefined) headers.set("content-type", "application/json");
         return f.taskFetch(
           worker,
-          new Request(`${ordinaryOrigin}/api${definition.path}`, {
+          new Request(`${ordinaryOrigin}${definition.path}`, {
             method: definition.method,
             headers,
             ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
