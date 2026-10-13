@@ -44,10 +44,13 @@ describe("Guest Study serving admission", () => {
       });
       let reads = 0;
       const original = request.arrayBuffer.bind(request);
-      request.arrayBuffer = async () => {
-        reads++;
-        return original();
-      };
+      Object.defineProperty(request, "arrayBuffer", {
+        configurable: true,
+        value: async () => {
+          reads++;
+          return original();
+        },
+      });
       const response = await worker.fetch(request);
       expect(response.status).toBe(404);
       expect(response.headers.has("set-cookie")).toBe(false);

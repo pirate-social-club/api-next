@@ -154,13 +154,17 @@ async function harness() {
   return { worker, signed, token, keyReads: () => keyReads };
 }
 describe("Guest Study serving real HNS trust dependencies", () => {
-  test("actual Worker accepts a current RSA Access token and HMAC envelope; replay and expired Access refuse", async () => {
+  test("actual Worker accepts RSA Access and HMAC; safe reads replay while unsafe replay and expired Access refuse", async () => {
     const f = await harness();
     const good = await f.signed("/api/health");
-    const response = await f.worker.fetch(good.clone());
+    const response = await f.worker.fetch(new Request(good.url, { method: good.method, headers: good.headers }));
     expect(response.status).toBe(200);
     expect(f.keyReads()).toBe(1);
-    expect((await f.worker.fetch(good.clone())).status).not.toBe(200);
+    expect((await f.worker.fetch(new Request(good.url, { method: good.method, headers: good.headers }))).status).toBe(200);
+    const unsafe = await f.signed("/api/auth/session/logout", "POST");
+    const replay = () => new Request(unsafe.url, { method: unsafe.method, headers: unsafe.headers });
+    expect((await f.worker.fetch(replay())).status).toBe(200);
+    expect((await f.worker.fetch(replay())).status).toBe(400);
     const expired = await f.signed("/api/health", "GET", await f.token(now - 300));
     expect((await f.worker.fetch(expired)).status).toBe(401);
     const altered = await f.signed("/api/health");
@@ -172,10 +176,13 @@ describe("Guest Study serving real HNS trust dependencies", () => {
     const request = await f.signed("/api/guest/bootstrap", "POST");
     let bodyReads = 0;
     const read = request.arrayBuffer.bind(request);
-    request.arrayBuffer = async () => {
-      bodyReads++;
-      return read();
-    };
+    Object.defineProperty(request, "arrayBuffer", {
+      configurable: true,
+      value: async () => {
+        bodyReads++;
+        return read();
+      },
+    });
     const response = await f.worker.fetch(request);
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
