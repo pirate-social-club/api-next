@@ -40,7 +40,7 @@
     "check:scripts": "tsc --noEmit -p tsconfig.scripts.json && bun scripts/check-scripts-typecheck-coverage.ts",
     "verify:api-client": "bun scripts/verify-api-client-package.ts",
     "knip": "knip",
-    "test": "bun run test:unit && bun run test:node && bun run test:workerd",
+    "test": "bun run test:unit && bun run test:storage && bun run test:node && bun run test:workerd",
     "test:unit": "bun test --path-ignore-patterns='**/*.pg.test.ts' packages apps scripts",
     "test:node": "vitest run --config tests/node/vitest.config.ts",
     "test:postgres": "bun scripts/run-postgres-tests.ts",
@@ -71,7 +71,8 @@
     "reconcile:content-ratings": "bun scripts/reconcile-content-ratings.ts",
     "check:rewards-e2e": "tsc --noEmit -p tsconfig.rewards-e2e.json",
     "e2e:rewards": "bun scripts/rewards-e2e/rewards-runner.mjs",
-    "verify:rewards-e2e-build": "bun scripts/rewards-e2e/verify-build.mjs"
+    "verify:rewards-e2e-build": "bun scripts/rewards-e2e/verify-build.mjs",
+    "test:storage": "bun scripts/run-karaoke-storage-tests.ts"
   },
   "dependencies": {
     "cizgile": "0.1.1",
