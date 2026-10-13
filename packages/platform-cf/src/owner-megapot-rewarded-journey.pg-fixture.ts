@@ -115,7 +115,8 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
     // Preserve every financial source/owed ledger row until Root physically
     // tears down this owned app and PostgreSQL; no business DROP/delete.
     f.deferDestructiveCleanup();
-    if (!pgUrl) throw new Error("Owned PG required");
+    const ownedPgUrl = pgUrl;
+    if (!ownedPgUrl) throw new Error("Owned PG required");
     const all = await loadPostgresMigrations();
     const candidates = all.filter(
       (m) =>
@@ -142,7 +143,7 @@ export async function rewardedFixture(use: (f: RewardedFixture) => Promise<void>
     expect(full[264]?.checksum).toBe(
       "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77",
     );
-    const scoped = new URL(pgUrl);
+    const scoped = new URL(ownedPgUrl);
     scoped.searchParams.set("options", `-c search_path=${f.schema}`);
     await runPostgresMigrations({
       connectionString: scoped.toString(),
