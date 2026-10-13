@@ -943,7 +943,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         // pg_get_functiondef splits the declaration before RETURNS; pg_dump
         // puts that header on one line. Join only that header, leaving body bytes.
         const dump = definitions.rows.map(({ definition }) =>
-          definition.replace(/\n[ \t]+RETURNS /u, " RETURNS ").replaceAll(`${schema}.`, "public."),
+          definition.replace(/\n[ \t]+RETURNS /u, " RETURNS ").replaceAll(`${schema}.`, "public.").trimEnd() + ";",
         ).join("\n");
         await admin.query(normalizePostgresBaselineDump(dump));
         expect(await admin.query("SHOW search_path").then((result) => result.rows))
