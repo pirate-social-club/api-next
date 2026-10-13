@@ -38,6 +38,11 @@ suite("Study v2 Postgres foundation", () => {
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query("INSERT INTO users (user_id) VALUES ('account-1')");
+        // Genuine account birth provisions the participation owner in the same step.
+        await admin.query(
+          "SELECT provision_account_participation_owner_v1(user_id) FROM users WHERE user_id = ANY($1::text[])",
+          [["account-1"]],
+        );
         await admin.query(
           `INSERT INTO personas (persona_id, account_id, status, created_at)
            VALUES ('persona-1', 'account-1', 'active', clock_timestamp())`,
@@ -256,12 +261,14 @@ suite("Study v2 Postgres foundation", () => {
            review_schedule_version, audio_byte_size, audio_duration_ms,
            provider_detected_language, provider_detected_language_confidence,
            token_diff, learner_audio_artifact_id
-         ) VALUES ('attempt-2', 'session-item-1', 1, 'raw_audio', '{}'::jsonb,
+         ) VALUES ('attempt-2', 'session-item-1', 1, 'raw_audio',
+           jsonb_build_object('audio_digest', $2::text, 'learner_audio_artifact_id', 'audio-1'),
            'correct', TRUE, 'spent', 'transcript_diff', '{}'::jsonb,
            'grader-v1', 'feedback-v1', 'answer-command-2', $1, 'unit-1',
            'say_it_back', 'en', NULL, NULL, 1, NULL, NULL, 'grader-v1',
            'study_review_schedule_v1', 100, 1000, 'en', 0.99, '{}'::jsonb, 'audio-1')`,
-        ["6".repeat(64)],
+        // Genuine raw-audio evidence names the exact stored artifact and digest.
+        ["6".repeat(64), "5".repeat(64)],
       );
       const retained = await admin.query(
         `SELECT attempt.audio_byte_size, artifact.recording_state
