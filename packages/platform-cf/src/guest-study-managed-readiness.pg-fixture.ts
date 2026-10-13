@@ -74,7 +74,9 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
   await accountFixture(async (f) => {
     const identities: Principal[] = [],
       restorations: Array<() => Promise<unknown>> = [];
-    let primaryFailure: unknown;
+    let primaryFailure: unknown,
+      primaryFailed = false;
+    const cleanupFailures: Error[] = [];
     try {
       // The maintained Account fixture deliberately ends at the original262
       // producer creation. Extend with the actual FULL declared263 inventory,
@@ -307,10 +309,10 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
         registerRestoration: (restore) => restorations.push(restore),
       });
     } catch (error) {
+      primaryFailed = true;
       primaryFailure = error;
-      throw error;
     } finally {
-      const failures: Error[] = [];
+      const failures = cleanupFailures;
       const attempt = async (label: string, action: () => Promise<unknown>) => {
         try {
           await bounded(action(), label, 5000);
@@ -324,6 +326,14 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
         await attempt("owned metadata restoration", restore);
       for (const principal of identities.reverse()) {
         await attempt("runtime socket close", () => principal.client.end());
+        if (f.destructiveCleanupDeferred()) {
+          failures.push(
+            new Error(
+              "Owned Worker task ownership unknown; grant/login removal deferred until physical application/PostgreSQL barrier",
+            ),
+          );
+          continue;
+        }
         let ownershipKnown = false;
         let ownsBuiltin = true;
         await attempt("owned catalogue ownership probe", async () => {
@@ -357,11 +367,12 @@ export async function readinessFixture(use: (f: ReadinessFixture) => Promise<voi
           f.admin.query(`DROP ROLE ${q(principal.role)}`),
         );
       }
-      if (failures.length > 0)
-        throw new AggregateError(
-          primaryFailure === undefined ? failures : [primaryFailure, ...failures],
-          "Owned readiness cleanup incomplete",
-        );
     }
+    if (cleanupFailures.length > 0)
+      throw new AggregateError(
+        primaryFailed ? [primaryFailure, ...cleanupFailures] : cleanupFailures,
+        "Owned readiness cleanup incomplete",
+      );
+    if (primaryFailed) throw primaryFailure;
   });
 }

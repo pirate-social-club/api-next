@@ -233,6 +233,9 @@ export type Fixture = {
     options?: PostgresControlPlaneOptions,
   ) => ReturnType<typeof makeDirectPostgresControlPlaneLayer>;
   registerDrain: (drain: () => Promise<unknown>) => void;
+  /** Test-only teardown refusal, never a runtime admission/privilege witness. */
+  deferDestructiveCleanup: () => void;
+  destructiveCleanupDeferred: () => boolean;
 };
 export async function fixture(use: (f: Fixture) => Promise<void>) {
   if (!pgUrl) throw new Error("Owned Postgres URL missing");
@@ -252,7 +255,10 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     schemaCreated = false,
     roleCreated = false;
   const drainers: Array<() => Promise<unknown>> = [];
-  let primaryFailure: unknown;
+  let primaryFailure: unknown,
+    primaryFailed = false,
+    destructiveCleanupDeferred = false;
+  const cleanupFailures: Error[] = [];
   try {
     await bounded(admin.connect(), "admin initial connect", 5000);
     await admin.query(`CREATE SCHEMA ${q(schema)}`);
@@ -457,6 +463,10 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
           ...options,
         }),
       registerDrain: (drain) => drainers.push(drain),
+      deferDestructiveCleanup: () => {
+        destructiveCleanupDeferred = true;
+      },
+      destructiveCleanupDeferred: () => destructiveCleanupDeferred,
     };
     await use(f);
     for (const table of privateTables)
@@ -469,10 +479,10 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
         ).rows,
       ).toEqual([{ allowed: false }]);
   } catch (error) {
+    primaryFailed = true;
     primaryFailure = error;
-    throw error;
   } finally {
-    const failures: Error[] = [];
+    const failures = cleanupFailures;
     const attempt = async (label: string, action: () => Promise<unknown>, ms: number) => {
       try {
         await bounded(action(), label, ms);
@@ -508,21 +518,28 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       },
       2000,
     );
-    if (schemaCreated)
+    if (destructiveCleanupDeferred)
+      failures.push(
+        new Error(
+          "Owned application work unresolved; schema/login removal deferred until physical application kill and PostgreSQL stop/remove",
+        ),
+      );
+    if (schemaCreated && !destructiveCleanupDeferred)
       await attempt(
         "owned schema removal",
         () => cleanupQuery(`DROP SCHEMA ${q(schema)} CASCADE`),
         8000,
       );
-    if (roleCreated)
+    if (roleCreated && !destructiveCleanupDeferred)
       await attempt("owned login removal", () => cleanupQuery(`DROP ROLE ${q(role)}`), 8000);
     await attempt("admin client close", () => admin.end(), 2000);
-    if (failures.length)
-      throw new AggregateError(
-        primaryFailure === undefined ? failures : [primaryFailure, ...failures],
-        "Owned fixture cleanup did not complete",
-      );
   }
+  if (cleanupFailures.length)
+    throw new AggregateError(
+      primaryFailed ? [primaryFailure, ...cleanupFailures] : cleanupFailures,
+      "Owned fixture cleanup did not complete",
+    );
+  if (primaryFailed) throw primaryFailure;
 }
 
 export function harness(
