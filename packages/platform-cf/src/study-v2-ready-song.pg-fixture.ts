@@ -19,6 +19,7 @@ const preparedSourceQuery = (admin: Pick<Client, "query">, tag?: string) => {
           .replaceAll("study-post", `${tag}-post`)
           .replaceAll("study-submission", `${tag}-submission`)
           .replaceAll("study-operation", `${tag}-operation`)
+          .replaceAll("study-idempotency", `${tag}-idempotency`)
           .replaceAll("study-run-", `${tag}-run-`)
           .replace(/\bexercise-([1-4])\b/gu, `${tag}-exercise-$1`);
   return (text: string, values?: readonly unknown[]) =>
@@ -199,11 +200,22 @@ export async function insertStudySongFixture(
       policyTriggerArmed = false;
     }
 
-    for (const slot of ["instrumental_audio", "vocal_audio"])
-      await query(
-        `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
-        [slot, "b".repeat(64)],
-      );
+    for (const slot of ["instrumental_audio", "vocal_audio"]) {
+      const tag = options?.additionalSourceTag;
+      if (tag === undefined) {
+        // Preserve every historical default identity and exact SQL/values.
+        await query(
+          `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$1,'sealed-ref-'||$1,'sealed-destination-'||$1,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
+          [slot, "b".repeat(64)],
+        );
+      } else {
+        // The slot is a closed enum; only its globally unique fixture IDs differ.
+        await query(
+          `INSERT INTO media_song_stems(submission_id,slot,community_id,actor_user_id,operation_id,reservation_id,immutable_ref,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES('study-submission',$1,'study-community','study-account','study-operation',$3,$4,$5,'etag','version',1024,'audio/mpeg',$2,'study-persona')`,
+          [slot, "b".repeat(64), `${tag}-stem-${slot}`, `${tag}-sealed-ref-${slot}`, `${tag}-sealed-destination-${slot}`],
+        );
+      }
+    }
     for (const [index, line] of lines.entries()) {
       const ordinal = index + 1;
       await query(
