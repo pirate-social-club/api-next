@@ -434,6 +434,9 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       "posts",
       "media_publication_projections",
       "media_post_submissions",
+      // The existing Account qualification projection locks prospective legs
+      // even when no eligible offer exists. Guest roles receive no such grant.
+      "song_reward_offer_legs",
     ])
       await admin.query(`GRANT UPDATE ON ${q(table)} TO ${q(role)}`);
     for (const signature of controlledFunctions)
