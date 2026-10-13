@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-manifest.ts";
 import {
   partitionPostgresRecoveryFiles,
   partitionPostgresTestFiles,
@@ -11,8 +12,6 @@ import {
   requiredPostgresLockTableEntries,
   shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
-
-import { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-manifest.ts";
 
 describe("PostgreSQL lock capacity preflight", () => {
   test("a default postgres:17 server is refused before any suite starts", () => {

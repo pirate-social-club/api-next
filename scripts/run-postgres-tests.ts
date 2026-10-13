@@ -1,8 +1,8 @@
 import { Client } from "pg";
 import {
   freshSchemaPostgresTestSuites,
-  postgresGeneralSuiteCostEstimates,
   noBaselinePostgresTestSuites,
+  postgresGeneralSuiteCostEstimates,
   reusablePostgresTestSuites,
 } from "./postgres-test-suite-manifest.ts";
 
