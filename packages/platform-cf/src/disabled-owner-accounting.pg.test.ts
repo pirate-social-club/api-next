@@ -39,8 +39,8 @@ import {
 } from "./rewards-composed-pool.pg-fixture.ts";
 
 const suite = pgUrl ? describe : describe.skip;
-const checkpointVersion = "0264_disabled_owner_financial_history.sql";
-const checkpointSha = "96afb781bc957c1fc69c128b715ae079c4db72e6fa1f86162592199509559f55";
+const checkpointVersion = "0265_disabled_owner_financial_history.sql";
+const checkpointSha = "a5ffb1317f5630c822c9d35a59ce2a35dadd8ed0b3de54a6c94ae9304fe4bc77";
 const privateTables = [
   "guest_owner_associations",
   "participation_eligibility_decisions",
@@ -99,18 +99,18 @@ async function sourcePacket() {
     ),
   );
   const all = await loadPostgresMigrations();
-  const first = all.slice(0, 264);
+  const first = all.slice(0, 265);
   expect(first.map(({ version }) => Number(version.slice(0, 4)))).toEqual(
-    Array.from({ length: 264 }, (_, index) => index + 1),
+    Array.from({ length: 265 }, (_, index) => index + 1),
   );
-  expect(Object.keys(literal).sort()).toEqual(first.slice(0, 263).map(({ version }) => version));
-  for (const entry of first.slice(0, 263)) {
+  expect(Object.keys(literal).sort()).toEqual(first.slice(0, 264).map(({ version }) => version));
+  for (const entry of first.slice(0, 264)) {
     const accepted = literal[entry.version];
     if (accepted === undefined) throw new Error("Accepted learning prefix entry is unavailable");
     expect(entry.checksum).toBe(accepted);
   }
-  const checkpoint = first[263];
-  if (checkpoint === undefined) throw new Error("Adopted264 checkpoint is unavailable");
+  const checkpoint = first[264];
+  if (checkpoint === undefined) throw new Error("Adopted265 checkpoint is unavailable");
   expect(checkpoint.version).toBe(checkpointVersion);
   expect(checkpoint.checksum).toBe(checkpointSha);
   return first;
@@ -119,7 +119,7 @@ async function sourcePacket() {
 async function fingerprint(f: Fixture) {
   const values: Record<string, { count: number; hash: string }> = {};
   for (const table of retainedTables) {
-    // Normalize only the five source-owned additive264 version/identity columns.
+    // Normalize only the five source-owned additive265 version/identity columns.
     // Every old financial ID, salt, commitment, beneficiary and amount stays in
     // the canonical ordered hash; payload/private leaves never reach diagnostics.
     const removed =
@@ -369,9 +369,9 @@ suite("first disabled owner accounting checkpoint", () => {
       if (!pgUrl) throw new Error("Owned PostgreSQL URL is required");
       const adminUrl = new URL(pgUrl);
       adminUrl.searchParams.set("options", `-c search_path=${f.schema}`);
-      const original = packet.slice(0, 263);
+      const original = packet.slice(0, 264);
       // Existing fixture installed genuine0001..262 and historical source song
-      // at247; append real263 through the maintained ledger transaction.
+      // at247; append real263/264 through the maintained ledger transaction.
       await runPostgresMigrations({
         connectionString: adminUrl.toString(),
         migrations: original,
@@ -436,7 +436,7 @@ suite("first disabled owner accounting checkpoint", () => {
       };
       for (const accountId of people.slice(0, 3)) await prepare(accountId);
       // Retained0203's original invoker projector records its decision before
-      // the share. Only this isolated pre264 producer role needs these inserts.
+      // the share. Only this isolated pre265 producer role needs these inserts.
       await f.admin.query(
         `GRANT INSERT ON decision_records,reward_eligibility_decisions TO ${q(f.role)}`,
       );
@@ -631,13 +631,13 @@ suite("first disabled owner accounting checkpoint", () => {
       expect(
         await run(projections.listCredits({ accountId: heldAccount, cursor: null, limit: 10 })),
       ).toEqual(beforePublic);
-      // The secured264 trigger also owns its parent row locks. Remove the two
+      // The secured265 trigger also owns its parent row locks. Remove the two
       // temporary column UPDATEs, preserving the retained table guards.
       await f.admin.query(
         `REVOKE UPDATE(offer_id) ON song_reward_offers FROM ${q(f.role)}; REVOKE UPDATE(eligibility_decision_id) ON reward_eligibility_decisions FROM ${q(f.role)}`,
       );
-      // Post264 qualification must use the secured original projector, without
-      // retaining the fixture's two temporary pre264 direct write privileges.
+      // Post265 qualification must use the secured original projector, without
+      // retaining the fixture's two temporary pre265 direct write privileges.
       await f.admin.query(
         `REVOKE INSERT ON decision_records,reward_eligibility_decisions FROM ${q(f.role)}`,
       );

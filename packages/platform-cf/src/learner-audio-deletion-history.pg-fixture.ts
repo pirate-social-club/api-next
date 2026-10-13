@@ -48,6 +48,65 @@ export async function finishHistoricalAudioDeletionFixture(
   expect(applied.result.applied).toEqual(history.remaining.map(({ version }) => version));
 }
 
+const fixtureDigest = (label: string) => new Bun.CryptoHasher("sha256").update(label).digest("hex");
+
+/**
+ * Legacy Karaoke settlement evidence: the attempt host's own reset receipt, as
+ * its applyReset returned it, then abort, listing and HEAD observed after it.
+ * Fixture values exercise the database's validation, not platform quiescence.
+ */
+export function legacyKaraokeSettlementEvidence(
+  objectRef: string,
+  headStatus: "present" | "absent",
+  options: Readonly<{
+    observedMinutesAgo?: number;
+    quiescenceEstablished?: boolean;
+    archiveKey?: string;
+  }> = {},
+) {
+  const hostState = {
+    alarm: null,
+    sockets: 0,
+    scoreState: "pending",
+    recordingState: "pending",
+    archiveKey: options.archiveKey ?? objectRef,
+    uploadId: "fixture-multipart-upload",
+  };
+  return {
+    objectRef,
+    headStatus,
+    openMultipartUploads: 0,
+    abortedMultipartUploadIds: ["fixture-multipart-upload"],
+    servingVersions: [
+      {
+        script: "pirate-api-next-staging",
+        versionId: "fixture-reset-version",
+        sourceCommit: "a".repeat(40),
+        artifactSha256: fixtureDigest("artifact"),
+      },
+    ],
+    producerShutdown: {
+      namespaceId: "fixture-karaoke-namespace",
+      objectId: "f".repeat(64),
+      generation: "staging-reset-v1",
+      inventoryDigest: fixtureDigest("inventory"),
+      state: "active",
+      initial: hostState,
+      current: hostState,
+      cancellationSucceeded: true,
+      quiescenceEstablished: options.quiescenceEstablished ?? true,
+    },
+    shutdownAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    observedAt: new Date(Date.now() - (options.observedMinutesAgo ?? 1) * 60_000).toISOString(),
+    receipts: {
+      reset: fixtureDigest("reset"),
+      abort: fixtureDigest("abort"),
+      listing: fixtureDigest("listing"),
+      head: fixtureDigest("head"),
+    },
+  };
+}
+
 export function beginOwnedHistoricalApiNextWriter(retainedObjectRefs: Set<string>) {
   const identity = Object.freeze({
     accountId: "account-1",
@@ -110,11 +169,21 @@ export async function closeOwnedHistoricalApiNextWriter(
   expect(closed).toEqual({ state: "stored", objectRef: row.object_ref });
   // Assert existence only at the original handback, before exact deletion.
   expect(cohort.hasOriginalObject()).toBe(true);
-  // Installation-owner test call, no runtime grant. A post-fence writer may
-  // close honestly while original publication remains permanently suppressed.
+  // The bare shared closure cannot close an imported legacy producer.
+  await expect(
+    admin.query("SELECT settle_learner_audio_upload_private_v1($1,'stored',TRUE,NULL)", [
+      row.upload_attempt_id,
+    ]),
+  ).rejects.toThrow("imported legacy producer requires recorded settlement evidence");
+  // Installation-owner settlement with the drained host's evidence, no runtime
+  // grant. A post-fence writer closes honestly while original publication
+  // remains permanently suppressed.
   const fact = await admin.query(
-    "SELECT settle_learner_audio_upload_private_v1($1,'stored',TRUE,NULL) AS publish",
-    [row.upload_attempt_id],
+    "SELECT settle_legacy_learner_audio_upload_private_v1($1,'stored',$2::jsonb) AS publish",
+    [
+      row.upload_attempt_id,
+      JSON.stringify(legacyKaraokeSettlementEvidence(row.object_ref, "present")),
+    ],
   );
   expect(fact.rows).toEqual([{ publish: false }]);
   expect(

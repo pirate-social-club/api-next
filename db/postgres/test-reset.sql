@@ -166,7 +166,6 @@ TRUNCATE TABLE
   "guest_empty_owner_aliases",
   "guest_learning_preferences",
   "guest_learning_schema_phase",
-  "guest_owner_associations",
   "guest_participation_operations",
   "guest_resource_cost_policy_snapshots",
   "guest_resource_edge_locks",
@@ -258,6 +257,7 @@ TRUNCATE TABLE
   "learner_audio_delete_sources",
   "learner_audio_delete_target_artifacts",
   "learner_audio_deleted_objects",
+  "learner_audio_legacy_settlements",
   "learner_audio_object_names",
   "learner_audio_owner_fences",
   "learner_audio_upload_attempts",
@@ -336,9 +336,6 @@ TRUNCATE TABLE
   "megapot_drawing_sweeps",
   "megapot_fallback_cutoff_activity_evidence",
   "megapot_fallback_cutoff_evidence",
-  "megapot_owner_allocations",
-  "megapot_owner_shares",
-  "megapot_owner_snapshot_leaves",
   "megapot_participant_claim_guards",
   "megapot_participant_claims",
   "megapot_pool_beneficiary_snapshots",
@@ -370,7 +367,6 @@ TRUNCATE TABLE
   "operator_managed_root_registry_versions",
   "operator_managed_route_activations",
   "operator_managed_route_operations",
-  "participation_eligibility_decisions",
   "participation_owner_clocks",
   "participation_owners",
   "persona_activity_preparation_actions",
@@ -409,8 +405,6 @@ TRUNCATE TABLE
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
   "reward_chain_effects",
-  "reward_credit_persona_bindings",
-  "reward_credit_recipient_selections",
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_gas_topup_daily_budgets",
@@ -529,7 +523,7 @@ INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'st
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
-INSERT INTO guest_learning_schema_phase VALUES (true, 'disabled_owner_financial_history_v1');
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_legacy_audio_settlement_history_v6');
 
 INSERT INTO guest_resource_global_lock VALUES (true);
 

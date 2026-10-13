@@ -1,6 +1,7 @@
 import {
-  ControlPlaneDb,
+  type ControlPlaneDb,
   type ControlPlaneError,
+  type ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
   LearnerAudioDeletionFailed,
 } from "@pirate/application";
@@ -39,6 +40,15 @@ function one<S extends Schema.ConstraintDecoder<unknown>>(
     ),
   );
 }
+// GA001 is the store's unresolved-producer refusal, raised by preparation for
+// an untracked legacy producer and by confirmation for an open upload. It is
+// the account in-flight contract; every other statement failure stays one.
+const unresolvedProducer = (
+  error: ControlPlaneStatementFailed,
+): Effect.Effect<never, ControlPlaneError | LearnerAudioDeletionFailed> =>
+  error.sqlState === "GA001"
+    ? Effect.fail(new LearnerAudioDeletionFailed({ reason: "in-flight" }))
+    : Effect.fail(error);
 export const makeAccountLearnerAudioDeleteProtocol = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): AccountLearnerAudioDeleteProtocol => {
@@ -57,7 +67,7 @@ export const makeAccountLearnerAudioDeleteProtocol = (
           [accountId, maximum],
           Prepared,
         ),
-      );
+      ).pipe(Effect.catchTag("ControlPlaneStatementFailed", unresolvedProducer));
     }),
     unknown: Effect.fn("accountAudioDelete.unknown")(function* (
       batch: Parameters<AccountLearnerAudioDeleteProtocol["unknown"]>[0],
@@ -83,15 +93,7 @@ export const makeAccountLearnerAudioDeleteProtocol = (
           [batch.batchId, batch.fenceRevision, deletedAt],
           LearnerAudioDeletionResult,
         ),
-      ).pipe(
-        Effect.catchTag(
-          "ControlPlaneStatementFailed",
-          (error): Effect.Effect<never, ControlPlaneError | LearnerAudioDeletionFailed> =>
-            error.sqlState === "GA001"
-              ? Effect.fail(new LearnerAudioDeletionFailed({ reason: "in-flight" }))
-              : Effect.fail(error),
-        ),
-      );
+      ).pipe(Effect.catchTag("ControlPlaneStatementFailed", unresolvedProducer));
     }),
   };
 };

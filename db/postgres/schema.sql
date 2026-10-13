@@ -11018,71 +11018,6 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION guard_disabled_beneficiary_dispatch_v1() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-BEGIN
- IF TG_OP='UPDATE' AND NEW.beneficiary_version IS DISTINCT FROM OLD.beneficiary_version THEN
-  RAISE EXCEPTION 'beneficiary version is immutable' USING ERRCODE='GP003'; END IF;
- IF NEW.beneficiary_version IS DISTINCT FROM 2 THEN
-  RAISE EXCEPTION 'prospective owner drawing/freeze/allocation remains disabled' USING ERRCODE='GP003'; END IF;
- RETURN NEW;
-END $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='guard_disabled_beneficiary_dispatch_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
-END
-$baseline_function_path$;
-
-CREATE FUNCTION guard_disabled_owner_credit_dispatch_v1() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-BEGIN
- IF TG_OP='UPDATE' AND ROW(NEW.identity_version,NEW.participation_owner_id)
-   IS DISTINCT FROM ROW(OLD.identity_version,OLD.participation_owner_id) THEN
-  RAISE EXCEPTION 'ledger source identity is immutable' USING ERRCODE='GP003'; END IF;
- IF NEW.identity_version IS DISTINCT FROM 'account_v1' OR NEW.participation_owner_id IS NOT NULL THEN
-  RAISE EXCEPTION 'owner financial credit production remains disabled' USING ERRCODE='GP003'; END IF;
- RETURN NEW;
-END $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='guard_disabled_owner_credit_dispatch_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
-END
-$baseline_function_path$;
-
 CREATE FUNCTION guard_first_persona_handle_reservation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12460,6 +12395,26 @@ BEGIN
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_learner_audio_control_state_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_learner_audio_legacy_settlement_private_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ RAISE EXCEPTION 'legacy producer settlement evidence is immutable';
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_learner_audio_legacy_settlement_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
@@ -17767,7 +17722,6 @@ BEGIN
     AND NOT learner_audio_component_has_history_private_v1(member_ids)
     AND NOT guest_spoken_component_has_history_private_v1(member_ids)
     AND NOT learner_audio_producer_component_has_history_private_v1(member_ids)
-    AND NOT guest_financial_component_has_history_private_v1(member_ids)
     AND NOT EXISTS(SELECT 1 FROM guest_participation_operations WHERE source_owner_id=ANY(member_ids)
       AND operation_kind IN ('study_start','study_answer','learning_retention','learner_audio_deletion')
       AND state<>'known_aborted')
@@ -18023,50 +17977,6 @@ BEGIN
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-END
-$baseline_function_path$;
-
-CREATE FUNCTION guest_financial_component_has_history_private_v1(component_ids text[]) RETURNS boolean
-    LANGUAGE sql STABLE SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
- SELECT EXISTS(SELECT 1 FROM guest_owner_associations WHERE guest_owner_id=ANY(component_ids) OR account_owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM participation_eligibility_decisions WHERE owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM megapot_owner_shares WHERE owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM megapot_owner_snapshot_leaves WHERE owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM megapot_owner_allocations WHERE owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_ledger_credits WHERE participation_owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_credit_recipient_selections WHERE owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_credit_persona_bindings WHERE owner_id=ANY(component_ids))
- -- Existing claim/effect/right evidence is traced through the SAME immutable
- -- ledger source. No second ledger or account-join omission. A credit itself
- -- already makes history nonempty even before a claim/effect exists.
- OR EXISTS(SELECT 1 FROM megapot_participant_claims c JOIN reward_ledger_credits l USING(credit_id) WHERE l.participation_owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_payout_effects e JOIN reward_ledger_credits l USING(credit_id) WHERE l.participation_owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_winner_sends e JOIN reward_ledger_credits l USING(credit_id) WHERE l.participation_owner_id=ANY(component_ids))
- OR EXISTS(SELECT 1 FROM reward_gas_topups e JOIN reward_ledger_credits l USING(credit_id) WHERE l.participation_owner_id=ANY(component_ids))
- -- Actual0227 converted sponsored credit sends to wallet_sponsored_sends and
- -- removed credit_id. Never invent a wallet→credit join; the immutable credit
- -- already keeps all original financial sources nonempty independently.
-$$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='guest_financial_component_has_history_private_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='component_ids text[]';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
 END
 $baseline_function_path$;
 
@@ -19902,7 +19812,7 @@ BEGIN
  SELECT phase INTO phase_name FROM guest_learning_schema_phase WHERE singleton FOR SHARE;
  -- Keep this literal here even when accounting replaces the shared predicate:
  -- an old practice reader MUST NOT silently erase newly admitted liabilities.
- IF NOT FOUND OR phase_name IS DISTINCT FROM 'disabled_owner_financial_history_v1' THEN
+ IF NOT FOUND OR phase_name IS DISTINCT FROM 'practice_only_owner_legacy_audio_settlement_history_v6' THEN
   RAISE EXCEPTION 'practice participation reader unavailable' USING ERRCODE='GP003'; END IF;
  source_ids:=require_guest_audio_recovery_access_private_v1(p_access,p_access->>'ownerId');
  -- Recovery deliberately ignores learning-lease/credential age. The helper
@@ -19914,11 +19824,10 @@ BEGIN
     OR guest_reward_mode IS DISTINCT FROM 'practice_only' OR guest_reward_terms IS NOT NULL
     OR account_id IS NOT NULL OR persona_id IS NOT NULL OR telegram_practice_only IS NOT FALSE)) THEN
   RAISE EXCEPTION 'practice source inventory differs' USING ERRCODE='GP003'; END IF;
- -- Positive disabled inventory requires every financial relation and refuses
- -- ANY unexpected financial rows. The per-component check below additionally
- -- prevents an old practice list from erasing held financial history.
- IF guest_financial_component_has_history_private_v1(source_ids) THEN
-  RAISE EXCEPTION 'financial participation reader successor required' USING ERRCODE='GP003'; END IF;
+ -- The positive native inventory excludes every accepted guest financial family;
+ -- existing qualifications/shares/credits remain account-only. Immutable guest
+ -- session guards plus the scoped persisted-mode check permanently exclude
+ -- practice sessions from admission. Nonempty learning history remains intact.
  RETURN jsonb_build_object('items','[]'::JSONB,'nextCursor',NULL);
 END $$;
 DO $baseline_function_path$
@@ -21842,7 +21751,7 @@ BEGIN
        WHERE o.owner_id=ANY(authorized_sources) AND r.state IN('pending','failed')
          AND NOT EXISTS(SELECT 1 FROM learner_audio_upload_attempts u WHERE u.owner_id=o.owner_id
            AND u.attempt_ref=r.attempt_id AND u.source_kind='karaoke')) THEN
-     RAISE EXCEPTION 'untracked legacy producer requires durable disposition'; END IF;
+     RAISE EXCEPTION 'untracked legacy producer requires durable disposition' USING ERRCODE='GA001'; END IF;
    next_revision:=nextval('learner_audio_fence_revision_v1');
    INSERT INTO learner_audio_delete_commands(command_id,source_owner_id,idempotency_key,request_hash,
      revision,state,provider_disposition,created_at)
@@ -22457,8 +22366,7 @@ END
 $$;
 
 CREATE FUNCTION project_megapot_pool_share_from_qualification() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
     AS $$
 DECLARE
   candidate RECORD;
@@ -22468,9 +22376,6 @@ DECLARE
   identity_digest TEXT;
   admission_hash TEXT;
 BEGIN
-  IF NEW.account_id IS NULL OR NEW.persona_id IS NULL THEN RETURN NEW; END IF;
-  IF NOT EXISTS(SELECT 1 FROM participation_owners WHERE kind='account' AND account_id=NEW.account_id) THEN
-    RAISE EXCEPTION 'retained v2 account provenance unavailable' USING ERRCODE='GP003'; END IF;
   SELECT leg.leg_id, leg.offer_id, drawing.drawing_id, drawing.entry_cutoff_at,
          offer.community_id, offer.reward_policy_version_id,
          policy.policy_hash
@@ -22496,7 +22401,6 @@ BEGIN
      AND NEW.activity_key = ANY(leg.eligible_activities)
      AND NEW.score_bps >= leg.min_score_bps
      AND drawing.status = 'entry_open'
-     AND drawing.beneficiary_version = 2
      AND drawing.drawing_id >= leg.participation_starts_drawing_id
      AND NEW.qualified_at < drawing.entry_cutoff_at
      AND decided_at < drawing.entry_cutoff_at
@@ -22576,18 +22480,6 @@ BEGIN
   RETURN NEW;
 END
 $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
-BEGIN
-  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='project_megapot_pool_share_from_qualification'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-END
-$baseline_function_path$;
 
 CREATE FUNCTION project_owner_study_session_private_v1(p_source text, p_community text, p_session text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -24762,34 +24654,6 @@ BEGIN
 END
 $$;
 
-CREATE FUNCTION reject_disabled_owner_financial_dml_v1() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-BEGIN
- RAISE EXCEPTION 'owner financial producers remain disabled' USING ERRCODE='GP003';
-END $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='reject_disabled_owner_financial_dml_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
-END
-$baseline_function_path$;
-
 CREATE FUNCTION reject_guest_copresent_established_conflict_v1(expected_origin text, proved_ids text[], selected_owner text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25996,74 +25860,6 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION require_disabled_owner_financial_inventory_private_v1() RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-DECLARE namespace_id OID; owner_id OID; schema_name TEXT; relation_name TEXT; relation_id OID; signature TEXT; function_id OID;
-BEGIN
- SELECT c.relnamespace,c.relowner,n.nspname INTO STRICT namespace_id,owner_id,schema_name
- FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid='participation_owners'::regclass;
- FOREACH relation_name IN ARRAY ARRAY['guest_owner_associations','participation_eligibility_decisions','megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations','reward_credit_persona_bindings','reward_credit_recipient_selections'] LOOP
-  relation_id:=to_regclass(format('%I.%I',schema_name,relation_name));
-  IF relation_id IS NULL OR NOT EXISTS(SELECT 1 FROM pg_class WHERE oid=relation_id AND relnamespace=namespace_id AND relowner=owner_id AND relkind='r' AND relrowsecurity AND NOT relforcerowsecurity)
-   OR EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=relation_id)
-   OR EXISTS(SELECT 1 FROM pg_class c CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.oid=relation_id AND a.grantee<>c.relowner)
-   OR EXISTS(SELECT 1 FROM pg_attribute c CROSS JOIN LATERAL aclexplode(c.attacl) a WHERE c.attrelid=relation_id AND a.grantee<>owner_id)
-   OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=relation_id AND contype='p' AND convalidated)
-   OR EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=relation_id AND NOT convalidated)
-   OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=relation_id AND tgname='disabled_owner_financial_dml' AND NOT tgisinternal AND tgenabled='O' AND tgtype=62 AND tgfoid='reject_disabled_owner_financial_dml_v1()'::regprocedure)
-  THEN RAISE EXCEPTION 'positive disabled financial relation unavailable' USING ERRCODE='GP003'; END IF;
-
- END LOOP;
-  -- The disabled phase has NO accepted producer. Even a migration-owner-created
-  -- unexpected financial row makes ALL practice closure unavailable, not empty.
-  IF EXISTS(SELECT 1 FROM guest_owner_associations) OR EXISTS(SELECT 1 FROM participation_eligibility_decisions)
-   OR EXISTS(SELECT 1 FROM megapot_owner_shares) OR EXISTS(SELECT 1 FROM megapot_owner_snapshot_leaves)
-   OR EXISTS(SELECT 1 FROM megapot_owner_allocations) OR EXISTS(SELECT 1 FROM reward_credit_persona_bindings)
-   OR EXISTS(SELECT 1 FROM reward_credit_recipient_selections)
-   OR EXISTS(SELECT 1 FROM reward_ledger_credits WHERE identity_version<>'account_v1' OR participation_owner_id IS NOT NULL)
-  THEN RAISE EXCEPTION 'disabled phase cannot attest financial history as empty' USING ERRCODE='GP003'; END IF;
- FOREACH signature IN ARRAY ARRAY['reject_disabled_owner_financial_dml_v1()','guard_disabled_beneficiary_dispatch_v1()','guard_disabled_owner_credit_dispatch_v1()','require_megapot_beneficiary_version_private_v1(text,numeric,smallint)','guest_financial_component_has_history_private_v1(text[])','require_disabled_owner_financial_inventory_private_v1()'] LOOP
-  function_id:=to_regprocedure(format('%I.%s',schema_name,signature));
-  IF function_id IS NULL OR NOT EXISTS(SELECT 1 FROM pg_proc f WHERE f.oid=function_id AND f.pronamespace=namespace_id AND f.proowner=owner_id AND f.prosecdef AND f.prokind='f' AND f.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',schema_name)])
-   OR EXISTS(SELECT 1 FROM pg_proc f CROSS JOIN LATERAL aclexplode(coalesce(f.proacl,acldefault('f',f.proowner))) a WHERE f.oid=function_id AND a.grantee<>f.proowner)
-  THEN RAISE EXCEPTION 'disabled financial function custody unavailable' USING ERRCODE='GP003'; END IF;
- END LOOP;
- IF NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='reward_ledger_credits'::regclass AND attname='identity_version' AND atttypid='text'::regtype AND attnotnull AND NOT attisdropped)
-  OR NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='reward_ledger_credits'::regclass AND attname='participation_owner_id' AND atttypid='text'::regtype AND NOT attisdropped)
-  OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reward_ledger_credits'::regclass AND conname='owner_credit_identity_closed' AND contype='c' AND convalidated)
-  OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='megapot_pool_drawings'::regclass AND conname='owner_drawing_version_closed' AND contype='c' AND convalidated)
-  OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='reward_ledger_credits'::regclass AND tgname='disabled_owner_credit_dispatch' AND NOT tgisinternal AND tgenabled='O' AND tgtype=23 AND tgfoid='guard_disabled_owner_credit_dispatch_v1()'::regprocedure)
- THEN RAISE EXCEPTION 'disabled ledger/version closure unavailable' USING ERRCODE='GP003'; END IF;
- FOREACH relation_name IN ARRAY ARRAY['megapot_pool_drawings','megapot_pool_beneficiary_snapshots','megapot_allocation_batches'] LOOP
-  relation_id:=to_regclass(format('%I.%I',schema_name,relation_name));
-  IF NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid=relation_id AND attname='beneficiary_version' AND atttypid='smallint'::regtype AND attnotnull AND NOT attisdropped)
-   OR NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=relation_id AND tgname='disabled_beneficiary_dispatch' AND NOT tgisinternal AND tgenabled='O' AND tgtype=23 AND tgfoid='guard_disabled_beneficiary_dispatch_v1()'::regprocedure)
-  THEN RAISE EXCEPTION 'positive drawing version dispatch unavailable' USING ERRCODE='GP003'; END IF;
- END LOOP;
-END $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='require_disabled_owner_financial_inventory_private_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
-END
-$baseline_function_path$;
-
 CREATE FUNCTION require_existing_account_participation_owner_v1(expected_account_id text) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -26263,9 +26059,9 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='guest_learning_schema_phase'::regclass
       AND relnamespace=trusted_namespace AND relowner=trusted_owner)
     OR (SELECT count(*) FROM guest_learning_schema_phase
-      WHERE singleton AND phase='disabled_owner_financial_history_v1')<>1
+      WHERE singleton AND phase='practice_only_owner_legacy_audio_settlement_history_v6')<>1
     OR EXISTS(SELECT 1 FROM unnest(ARRAY[
-      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','guest_owner_associations','participation_eligibility_decisions','megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations','reward_credit_persona_bindings','reward_credit_recipient_selections','reward_ledger_credits','megapot_pool_drawings','megapot_pool_shares','megapot_pool_beneficiary_snapshots','megapot_allocation_batches','megapot_allocations','megapot_participant_claims','megapot_participant_claim_guards','reward_payout_effects','reward_winner_sends','reward_gas_topups','wallet_sponsored_sends','song_reward_bundle_claim_legs'
+      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'
       ]) required_name WHERE NOT EXISTS(SELECT 1 FROM pg_class relation
       WHERE relation.oid=to_regclass(required_name) AND relation.relnamespace=trusted_namespace
         AND relation.relowner=trusted_owner AND relation.relkind='r'))
@@ -26299,7 +26095,7 @@ BEGIN
           'study_sessions_v2','study_review_items','study_session_items_v2',
           'study_spoken_answer_commands','learner_audio_artifacts',
           'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
-          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','guest_owner_associations','participation_eligibility_decisions','megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations','reward_credit_persona_bindings','reward_credit_recipient_selections','reward_ledger_credits','megapot_pool_drawings','megapot_pool_shares','megapot_pool_beneficiary_snapshots','megapot_allocation_batches','megapot_allocations','megapot_participant_claims','megapot_participant_claim_guards','reward_payout_effects','reward_winner_sends','reward_gas_topups','wallet_sponsored_sends','song_reward_bundle_claim_legs'))
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
     OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE fk.contype='f' AND fk.confrelid=ANY(ARRAY[
@@ -26309,7 +26105,7 @@ BEGIN
           'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass,
           'guest_resource_session_reservations'::regclass,'guest_resource_provider_calls'::regclass,
           'guest_resource_release_receipts'::regclass,
-          'learner_audio_owner_fences'::regclass,'learner_audio_delete_commands'::regclass,'learner_audio_delete_sources'::regclass,'learner_audio_delete_target_artifacts'::regclass,'learner_audio_object_names'::regclass,'learner_audio_upload_attempts'::regclass,'learner_audio_delete_batches'::regclass,'learner_audio_delete_batch_items'::regclass,'learner_audio_deleted_objects'::regclass,'guest_study_spoken_captures'::regclass,'guest_study_spoken_checkpoints'::regclass,'learner_audio_account_producer_captures'::regclass,'learner_audio_upload_terminal_facts'::regclass,'learner_audio_upload_cleanup_commands'::regclass,'learner_audio_account_spoken_checkpoints'::regclass,'learner_audio_account_provider_calls'::regclass,'guest_owner_associations'::regclass,'participation_eligibility_decisions'::regclass,'megapot_owner_shares'::regclass,'megapot_owner_snapshot_leaves'::regclass,'megapot_owner_allocations'::regclass,'reward_credit_persona_bindings'::regclass,'reward_credit_recipient_selections'::regclass,'reward_ledger_credits'::regclass,'megapot_participant_claims'::regclass])
+          'learner_audio_owner_fences'::regclass,'learner_audio_delete_commands'::regclass,'learner_audio_delete_sources'::regclass,'learner_audio_delete_target_artifacts'::regclass,'learner_audio_object_names'::regclass,'learner_audio_upload_attempts'::regclass,'learner_audio_delete_batches'::regclass,'learner_audio_delete_batch_items'::regclass,'learner_audio_deleted_objects'::regclass,'guest_study_spoken_captures'::regclass,'guest_study_spoken_checkpoints'::regclass,'learner_audio_account_producer_captures'::regclass,'learner_audio_upload_terminal_facts'::regclass,'learner_audio_upload_cleanup_commands'::regclass,'learner_audio_account_spoken_checkpoints'::regclass,'learner_audio_account_provider_calls'::regclass])
         AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
           'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
           'guest_learning_preferences','guest_participation_operations',
@@ -26317,9 +26113,16 @@ BEGIN
           'study_sessions_v2','study_review_items','study_session_items_v2',
           'study_spoken_answer_commands','learner_audio_artifacts',
           'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
-          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','guest_owner_associations','participation_eligibility_decisions','megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations','reward_credit_persona_bindings','reward_credit_recipient_selections','reward_ledger_credits','megapot_pool_drawings','megapot_pool_shares','megapot_pool_beneficiary_snapshots','megapot_allocation_batches','megapot_allocations','megapot_participant_claims','megapot_participant_claim_guards','reward_payout_effects','reward_winner_sends','reward_gas_topups','wallet_sponsored_sends','song_reward_bundle_claim_legs'))
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
+    -- Legacy producer settlements are account history only; a guest owner can
+    -- never hold one, so admitting the relation adds no guest liability.
+    OR EXISTS(SELECT 1 FROM learner_audio_legacy_settlements s JOIN participation_owners o USING(owner_id)
+      WHERE o.kind<>'account')
+    OR EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=trusted_namespace
+      AND relname IN ('guest_owner_associations','participation_eligibility_decisions',
+        'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
+        'reward_credit_persona_bindings','reward_credit_recipient_selections'))
   THEN RAISE EXCEPTION 'owner history closure unavailable' USING ERRCODE='GP003'; END IF;
-  PERFORM require_disabled_owner_financial_inventory_private_v1();
 END $_$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -26662,37 +26465,6 @@ BEGIN
   RETURN NULL;
 END;
 $$;
-
-CREATE FUNCTION require_megapot_beneficiary_version_private_v1(p_leg text, p_drawing numeric, p_expected smallint) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path FROM CURRENT
-    AS $$
-BEGIN
- IF p_expected IS NULL OR p_expected NOT IN(2,3) OR NOT EXISTS(
-  SELECT 1 FROM megapot_pool_drawings WHERE pool_leg_id=p_leg AND drawing_id=p_drawing AND beneficiary_version=p_expected)
- THEN RAISE EXCEPTION 'drawing beneficiary version unavailable' USING ERRCODE='GP003'; END IF;
- IF p_expected<>2 THEN RAISE EXCEPTION 'v3 dispatcher unavailable' USING ERRCODE='GP003'; END IF;
-END $$;
-DO $baseline_function_path$
-DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD; grantee_role TEXT;
-BEGIN
-  SELECT p.proname, p.oid, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
-    INTO STRICT target_function
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname=target_schema AND p.proname='require_megapot_beneficiary_version_private_v1'
-      AND pg_catalog.pg_get_function_arguments(p.oid)='p_leg text, p_drawing numeric, p_expected smallint';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
-    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
-  EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC',
-    target_schema,target_function.proname,target_function.identity_arguments);
-  FOR grantee_role IN SELECT DISTINCT pg_catalog.pg_get_userbyid(a.grantee)
-    FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-    WHERE p.oid=target_function.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
-    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE',
-      target_schema,target_function.proname,target_function.identity_arguments,grantee_role);
-  END LOOP;
-END
-$baseline_function_path$;
 
 CREATE FUNCTION require_owner_guest_source_private_v1(p_source jsonb) RETURNS text
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -28482,6 +28254,11 @@ BEGIN
      WHERE upload_attempt_id=expected_upload;
    RETURN FALSE; END IF;
  IF disposition IS NULL OR disposition NOT IN('stored','absent','failed') THEN RAISE EXCEPTION 'invalid terminal IO fact'; END IF;
+ IF upload.upload_attempt_id LIKE 'lau\_legacy\_%' AND NOT EXISTS(
+   SELECT 1 FROM learner_audio_legacy_settlements legacy
+    WHERE legacy.upload_attempt_id=upload.upload_attempt_id AND legacy.owner_id=upload.owner_id
+      AND legacy.disposition=settle_learner_audio_upload_private_v1.disposition) THEN
+   RAISE EXCEPTION 'imported legacy producer requires recorded settlement evidence'; END IF;
  publish_allowed:=disposition='stored' AND fence.revision=upload.captured_revision AND fence.active_delete_command_id IS NULL;
  UPDATE learner_audio_upload_attempts SET io_state='closed',storage_disposition=disposition,
    closed_at=clock_timestamp(),multipart_upload_id=COALESCE(multipart_upload_id,multipart_id),
@@ -28502,6 +28279,104 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='settle_learner_audio_upload_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='expected_upload text, disposition text, known_no_more_io boolean, multipart_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION settle_legacy_learner_audio_upload_private_v1(p_upload text, p_disposition text, p_evidence jsonb) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE upload learner_audio_upload_attempts%ROWTYPE; prior learner_audio_legacy_settlements%ROWTYPE;
+ owner_kind TEXT; digest TEXT; observed_at TIMESTAMPTZ; shutdown_at TIMESTAMPTZ;
+ shutdown JSONB; host_state JSONB; observation JSONB; version JSONB;
+ evidence_keys TEXT[]:=ARRAY['objectRef','headStatus','openMultipartUploads','abortedMultipartUploadIds',
+  'servingVersions','producerShutdown','shutdownAt','observedAt','receipts'];
+ receipt_keys TEXT[]:=ARRAY['reset','abort','listing','head'];
+ shutdown_keys TEXT[]:=ARRAY['namespaceId','objectId','generation','inventoryDigest','state','initial',
+  'current','cancellationSucceeded','quiescenceEstablished'];
+ observation_keys TEXT[]:=ARRAY['alarm','sockets','scoreState','recordingState','archiveKey','uploadId'];
+BEGIN
+ IF p_evidence IS NULL OR jsonb_typeof(p_evidence)<>'object' THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload;
+ PERFORM lock_learner_audio_sources_private_v1(ARRAY[upload.owner_id]);
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=p_upload FOR UPDATE;
+ digest:=encode(sha256(convert_to(p_evidence::TEXT,'UTF8')),'hex');
+ SELECT * INTO prior FROM learner_audio_legacy_settlements WHERE upload_attempt_id=p_upload;
+ IF FOUND THEN
+  IF prior.disposition<>p_disposition OR prior.evidence_sha256<>digest THEN
+   RAISE EXCEPTION 'legacy settlement already recorded differently'; END IF;
+  RETURN FALSE; END IF;
+ SELECT kind INTO STRICT owner_kind FROM participation_owners WHERE owner_id=upload.owner_id;
+ IF upload.upload_attempt_id NOT LIKE 'lau\_legacy\_%' OR upload.captured_revision<>0
+  OR upload.io_state<>'unknown' OR owner_kind<>'account'
+  OR upload.object_ref IS DISTINCT FROM p_evidence->>'objectRef' THEN
+  RAISE EXCEPTION 'only an unknown imported legacy producer of this key can be settled'; END IF;
+ IF upload.source_kind<>'karaoke' THEN
+  RAISE EXCEPTION 'a legacy Study write cannot be proven terminal'; END IF;
+ IF NOT p_evidence ?& evidence_keys OR p_evidence-evidence_keys<>'{}'::JSONB
+  OR jsonb_typeof(p_evidence->'receipts')<>'object'
+  OR NOT (p_evidence->'receipts') ?& receipt_keys OR (p_evidence->'receipts')-receipt_keys<>'{}'::JSONB
+  OR EXISTS(SELECT 1 FROM jsonb_each(p_evidence->'receipts') r
+    WHERE jsonb_typeof(r.value)<>'string' OR r.value#>>'{}' !~ '^[0-9a-f]{64}$')
+  OR jsonb_typeof(p_evidence->'servingVersions')<>'array'
+  OR jsonb_array_length(p_evidence->'servingVersions') NOT BETWEEN 1 AND 16
+  OR p_evidence->'headStatus' NOT IN('"present"'::JSONB,'"absent"'::JSONB)
+  OR p_evidence->'openMultipartUploads' IS DISTINCT FROM '0'::JSONB
+  OR jsonb_typeof(p_evidence->'abortedMultipartUploadIds')<>'array'
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_evidence->'abortedMultipartUploadIds') a
+    WHERE jsonb_typeof(a.value)<>'string' OR char_length(a.value#>>'{}') NOT BETWEEN 1 AND 2048)
+  OR jsonb_typeof(p_evidence->'shutdownAt')<>'string' OR jsonb_typeof(p_evidence->'observedAt')<>'string'
+  OR jsonb_typeof(p_evidence->'producerShutdown')<>'object' THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ FOR version IN SELECT value FROM jsonb_array_elements(p_evidence->'servingVersions') LOOP
+  IF jsonb_typeof(version)<>'object' OR NOT version ?& ARRAY['script','versionId','sourceCommit','artifactSha256']
+   OR version-ARRAY['script','versionId','sourceCommit','artifactSha256']<>'{}'::JSONB
+   OR jsonb_typeof(version->'script')<>'string' OR char_length(version->>'script') NOT BETWEEN 1 AND 128
+   OR jsonb_typeof(version->'versionId')<>'string' OR char_length(version->>'versionId') NOT BETWEEN 1 AND 128
+   OR jsonb_typeof(version->'sourceCommit')<>'string' OR version->>'sourceCommit' !~ '^[0-9a-f]{40}$'
+   OR jsonb_typeof(version->'artifactSha256')<>'string' OR version->>'artifactSha256' !~ '^[0-9a-f]{64}$' THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ END LOOP;
+ -- The attempt host's own reset receipt, exactly as it returned it.
+ shutdown:=p_evidence->'producerShutdown';
+ IF NOT shutdown ?& shutdown_keys OR shutdown-shutdown_keys<>'{}'::JSONB
+  OR EXISTS(SELECT 1 FROM unnest(ARRAY['namespaceId','objectId','generation','inventoryDigest']) k
+    WHERE jsonb_typeof(shutdown->k)<>'string' OR char_length(shutdown->>k) NOT BETWEEN 1 AND 128) THEN
+  RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ FOR observation IN SELECT shutdown->k FROM unnest(ARRAY['initial','current']) k LOOP
+  IF jsonb_typeof(observation)<>'object' OR NOT observation ?& observation_keys
+   OR observation-observation_keys<>'{}'::JSONB THEN
+   RAISE EXCEPTION 'legacy producer settlement evidence required'; END IF;
+ END LOOP;
+ host_state:=shutdown->'current';
+ IF shutdown->'state' IS DISTINCT FROM '"active"'::JSONB
+  OR shutdown->'quiescenceEstablished' IS DISTINCT FROM 'true'::JSONB
+  OR shutdown->'cancellationSucceeded' IS DISTINCT FROM 'true'::JSONB
+  OR host_state->'alarm' IS DISTINCT FROM 'null'::JSONB
+  OR host_state->'sockets' IS DISTINCT FROM '0'::JSONB
+  OR host_state->'archiveKey' IS DISTINCT FROM to_jsonb(upload.object_ref) THEN
+  RAISE EXCEPTION 'legacy Karaoke attempt host has not proven producer shutdown'; END IF;
+ shutdown_at:=(p_evidence->>'shutdownAt')::TIMESTAMPTZ;
+ observed_at:=(p_evidence->>'observedAt')::TIMESTAMPTZ;
+ IF observed_at<=shutdown_at OR observed_at>clock_timestamp() THEN
+  RAISE EXCEPTION 'legacy producer must be observed after its host shut down'; END IF;
+ IF p_disposition IS DISTINCT FROM (CASE p_evidence->>'headStatus' WHEN 'present' THEN 'stored' ELSE 'absent' END) THEN
+  RAISE EXCEPTION 'legacy settlement disposition differs from the observed object'; END IF;
+ INSERT INTO learner_audio_legacy_settlements(upload_attempt_id,owner_id,disposition,evidence,evidence_sha256,settled_at)
+  VALUES(p_upload,upload.owner_id,p_disposition,p_evidence,digest,clock_timestamp());
+ RETURN settle_learner_audio_upload_private_v1(p_upload,p_disposition,TRUE,NULL);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_legacy_learner_audio_upload_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_disposition text, p_evidence jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -39329,20 +39204,8 @@ CREATE TABLE guest_learning_preferences (
 CREATE TABLE guest_learning_schema_phase (
     singleton boolean NOT NULL,
     phase text NOT NULL,
-    CONSTRAINT guest_learning_schema_phase_phase_check CHECK ((phase = 'disabled_owner_financial_history_v1'::text)),
+    CONSTRAINT guest_learning_schema_phase_phase_check CHECK ((phase = 'practice_only_owner_legacy_audio_settlement_history_v6'::text)),
     CONSTRAINT guest_learning_schema_phase_singleton_check CHECK (singleton)
-);
-
-CREATE TABLE guest_owner_associations (
-    guest_owner_id text NOT NULL,
-    guest_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
-    account_id text NOT NULL,
-    account_owner_id text NOT NULL,
-    state text NOT NULL,
-    intent_id text NOT NULL,
-    origin text NOT NULL,
-    proved_at timestamp with time zone NOT NULL,
-    CONSTRAINT guest_owner_associations_state_check CHECK ((state = ANY (ARRAY['bound'::text, 'participation_conflict'::text])))
 );
 
 CREATE TABLE guest_resource_cost_policy_snapshots (
@@ -40975,6 +40838,18 @@ CREATE SEQUENCE learner_audio_fence_revision_v1
     MAXVALUE 9007199254740991
     CACHE 1;
 
+CREATE TABLE learner_audio_legacy_settlements (
+    upload_attempt_id text NOT NULL,
+    owner_id text NOT NULL,
+    disposition text NOT NULL,
+    evidence jsonb NOT NULL,
+    evidence_sha256 text NOT NULL,
+    settled_at timestamp with time zone NOT NULL,
+    CONSTRAINT learner_audio_legacy_settlements_disposition_check CHECK ((disposition = ANY (ARRAY['stored'::text, 'absent'::text]))),
+    CONSTRAINT learner_audio_legacy_settlements_evidence_sha256_check CHECK ((evidence_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT learner_audio_legacy_settlements_upload_attempt_id_check CHECK ((upload_attempt_id ~ '^lau_legacy_[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE learner_audio_object_names (
     object_ref text NOT NULL,
     owner_id text NOT NULL,
@@ -42486,15 +42361,13 @@ CREATE TABLE megapot_allocation_batches (
     state text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     credited_at timestamp with time zone,
-    beneficiary_version smallint DEFAULT 2 NOT NULL,
     CONSTRAINT megapot_allocation_batch_state_shape CHECK ((((state = 'prepared'::text) AND (credited_at IS NULL)) OR ((state = 'credited'::text) AND (credited_at IS NOT NULL) AND (credited_at >= created_at)))),
     CONSTRAINT megapot_allocation_batches_algorithm_version_check CHECK ((algorithm_version = 'equal_v1'::text)),
     CONSTRAINT megapot_allocation_batches_allocation_batch_id_check CHECK (((btrim(allocation_batch_id) <> ''::text) AND (allocation_batch_id = btrim(allocation_batch_id)) AND (octet_length(allocation_batch_id) <= 128))),
     CONSTRAINT megapot_allocation_batches_allocation_count_check CHECK ((allocation_count > 0)),
     CONSTRAINT megapot_allocation_batches_allocation_hash_check CHECK ((allocation_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_allocation_batches_net_winnings_atomic_check CHECK ((net_winnings_atomic >= (0)::numeric)),
-    CONSTRAINT megapot_allocation_batches_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'credited'::text]))),
-    CONSTRAINT owner_batch_version_closed CHECK ((beneficiary_version = ANY (ARRAY[2, 3])))
+    CONSTRAINT megapot_allocation_batches_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'credited'::text])))
 );
 
 CREATE TABLE megapot_allocations (
@@ -42718,63 +42591,6 @@ CREATE TABLE megapot_fallback_cutoff_evidence (
     CONSTRAINT megapot_fallback_cutoff_persona_shape CHECK ((((sponsor_kind = 'external_fallback'::text) AND (payout_persona_id IS NOT NULL)) OR ((sponsor_kind = 'shared_platform'::text) AND (payout_persona_id IS NULL))))
 );
 
-CREATE TABLE megapot_owner_allocations (
-    allocation_batch_id text NOT NULL,
-    snapshot_id text NOT NULL,
-    beneficiary_version smallint DEFAULT 3 NOT NULL,
-    ordinal integer NOT NULL,
-    owner_id text NOT NULL,
-    amount_atomic numeric(78,0) NOT NULL,
-    allocation_kind text NOT NULL,
-    credit_id text,
-    CONSTRAINT megapot_owner_allocations_allocation_kind_check CHECK ((allocation_kind = ANY (ARRAY['participant'::text, 'external_fallback'::text, 'platform_sponsorship'::text]))),
-    CONSTRAINT megapot_owner_allocations_amount_atomic_check CHECK ((amount_atomic >= (0)::numeric)),
-    CONSTRAINT megapot_owner_allocations_beneficiary_version_check CHECK ((beneficiary_version = 3)),
-    CONSTRAINT megapot_owner_allocations_check CHECK ((((amount_atomic = (0)::numeric) AND (credit_id IS NULL)) OR ((amount_atomic > (0)::numeric) AND (allocation_kind = ANY (ARRAY['participant'::text, 'external_fallback'::text])) AND (credit_id IS NOT NULL)) OR ((amount_atomic > (0)::numeric) AND (allocation_kind = 'platform_sponsorship'::text) AND (credit_id IS NULL)))),
-    CONSTRAINT megapot_owner_allocations_ordinal_check CHECK ((ordinal >= 0))
-);
-
-CREATE TABLE megapot_owner_shares (
-    pool_leg_id text NOT NULL,
-    drawing_id numeric(78,0) NOT NULL,
-    beneficiary_version smallint DEFAULT 3 NOT NULL,
-    owner_id text NOT NULL,
-    qualification_id text NOT NULL,
-    eligibility_id text NOT NULL,
-    admitted_at timestamp with time zone NOT NULL,
-    leaf_salt bytea NOT NULL,
-    CONSTRAINT megapot_owner_shares_beneficiary_version_check CHECK ((beneficiary_version = 3)),
-    CONSTRAINT megapot_owner_shares_leaf_salt_check CHECK ((octet_length(leaf_salt) = 32))
-);
-
-CREATE TABLE megapot_owner_snapshot_leaves (
-    snapshot_id text NOT NULL,
-    pool_leg_id text NOT NULL,
-    drawing_id numeric(78,0) NOT NULL,
-    beneficiary_version smallint DEFAULT 3 NOT NULL,
-    ordinal integer NOT NULL,
-    owner_id text NOT NULL,
-    owner_kind text NOT NULL,
-    qualification_id text NOT NULL,
-    share_qualification_id text GENERATED ALWAYS AS (
-CASE
-    WHEN (qualification_id = 'fallback'::text) THEN NULL::text
-    ELSE qualification_id
-END) STORED,
-    original_account_id text,
-    original_persona_id text,
-    leaf_salt bytea NOT NULL,
-    order_key text NOT NULL,
-    leaf_commitment text NOT NULL,
-    CONSTRAINT megapot_owner_snapshot_leaves_beneficiary_version_check CHECK ((beneficiary_version = 3)),
-    CONSTRAINT megapot_owner_snapshot_leaves_check CHECK ((((owner_kind = 'account'::text) AND (original_account_id IS NOT NULL) AND (original_persona_id IS NOT NULL)) OR ((owner_kind = 'guest'::text) AND (original_account_id IS NULL) AND (original_persona_id IS NULL) AND (qualification_id <> 'fallback'::text)))),
-    CONSTRAINT megapot_owner_snapshot_leaves_leaf_commitment_check CHECK ((leaf_commitment ~ '^0x[0-9a-f]{64}$'::text)),
-    CONSTRAINT megapot_owner_snapshot_leaves_leaf_salt_check CHECK ((octet_length(leaf_salt) = 32)),
-    CONSTRAINT megapot_owner_snapshot_leaves_order_key_check CHECK ((order_key ~ '^0x[0-9a-f]{64}$'::text)),
-    CONSTRAINT megapot_owner_snapshot_leaves_ordinal_check CHECK ((ordinal >= 0)),
-    CONSTRAINT megapot_owner_snapshot_leaves_owner_kind_check CHECK ((owner_kind = ANY (ARRAY['account'::text, 'guest'::text])))
-);
-
 CREATE TABLE megapot_participant_claim_guards (
     pool_leg_id text NOT NULL,
     drawing_id numeric(78,0) NOT NULL,
@@ -42816,15 +42632,13 @@ CREATE TABLE megapot_pool_beneficiary_snapshots (
     published_artifact jsonb NOT NULL,
     frozen_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    beneficiary_version smallint DEFAULT 2 NOT NULL,
     CONSTRAINT megapot_pool_beneficiary_snapshots_algorithm_version_check CHECK ((algorithm_version = 'equal_v1'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_domain_check CHECK ((domain = 'pirate.megapot-pool-beneficiary-snapshot.v2'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_leaf_count_check CHECK ((leaf_count > 0)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_published_artifact_check CHECK ((jsonb_typeof(published_artifact) = 'object'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_snapshot_hash_check CHECK ((snapshot_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_snapshot_id_check CHECK (((btrim(snapshot_id) <> ''::text) AND (snapshot_id = btrim(snapshot_id)) AND (octet_length(snapshot_id) <= 128))),
-    CONSTRAINT megapot_pool_beneficiary_snapshots_terms_hash_check CHECK ((terms_hash ~ '^0x[0-9a-f]{64}$'::text)),
-    CONSTRAINT owner_snapshot_version_closed CHECK ((beneficiary_version = ANY (ARRAY[2, 3])))
+    CONSTRAINT megapot_pool_beneficiary_snapshots_terms_hash_check CHECK ((terms_hash ~ '^0x[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE megapot_pool_commitment_effects (
@@ -42882,7 +42696,6 @@ CREATE TABLE megapot_pool_drawings (
     cutoff_frozen_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     terminal_at timestamp with time zone,
-    beneficiary_version smallint DEFAULT 2 NOT NULL,
     CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
     CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))),
     CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))),
@@ -42897,8 +42710,7 @@ CREATE TABLE megapot_pool_drawings (
     CONSTRAINT megapot_pool_drawings_reserved_ticket_cost_atomic_check CHECK ((reserved_ticket_cost_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_status_check CHECK ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text]))),
     CONSTRAINT megapot_pool_drawings_ticket_price_ceiling_atomic_check CHECK ((ticket_price_ceiling_atomic > (0)::numeric)),
-    CONSTRAINT megapot_pool_drawings_version_check CHECK ((version > 0)),
-    CONSTRAINT owner_drawing_version_closed CHECK ((beneficiary_version = ANY (ARRAY[2, 3])))
+    CONSTRAINT megapot_pool_drawings_version_check CHECK ((version > 0))
 );
 
 CREATE TABLE megapot_pool_shares (
@@ -42909,9 +42721,7 @@ CREATE TABLE megapot_pool_shares (
     qualification_id text NOT NULL,
     eligibility_decision_id text NOT NULL,
     qualified_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    beneficiary_version smallint DEFAULT 2 NOT NULL,
-    CONSTRAINT retained_v2_share_version CHECK ((beneficiary_version = 2))
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
 );
 
 CREATE TABLE megapot_pool_snapshot_private_leaves (
@@ -43506,26 +43316,6 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_kind_shape CHECK ((((operation_kind = 'activate'::text) AND (registry_reference IS NOT NULL) AND (registry_version > 0) AND (registry_digest ~ '^[0-9a-f]{64}$'::text) AND (expected_activation_generation IS NULL)) OR ((operation_kind = 'revoke'::text) AND (registry_reference IS NULL) AND (registry_version IS NULL) AND (registry_digest IS NULL) AND (expected_activation_generation > 0)))),
     CONSTRAINT operator_managed_route_operations_operation_kind_check CHECK ((operation_kind = ANY (ARRAY['activate'::text, 'revoke'::text]))),
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE participation_eligibility_decisions (
-    eligibility_id text NOT NULL,
-    owner_id text NOT NULL,
-    qualification_id text NOT NULL,
-    pool_leg_id text NOT NULL,
-    drawing_id numeric(78,0) NOT NULL,
-    beneficiary_version smallint DEFAULT 3 NOT NULL,
-    policy_version text NOT NULL,
-    policy_hash text NOT NULL,
-    evidence_reference text NOT NULL,
-    disclosure_reference text,
-    outcome text NOT NULL,
-    decided_at timestamp with time zone NOT NULL,
-    CONSTRAINT participation_eligibility_decisions_beneficiary_version_check CHECK ((beneficiary_version = 3)),
-    CONSTRAINT participation_eligibility_decisions_eligibility_id_check CHECK (((octet_length(eligibility_id) >= 1) AND (octet_length(eligibility_id) <= 128))),
-    CONSTRAINT participation_eligibility_decisions_evidence_reference_check CHECK (((octet_length(evidence_reference) >= 1) AND (octet_length(evidence_reference) <= 2048))),
-    CONSTRAINT participation_eligibility_decisions_outcome_check CHECK ((outcome = 'eligible'::text)),
-    CONSTRAINT participation_eligibility_decisions_policy_hash_check CHECK ((policy_hash ~ '^(0x)?[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE participation_owner_clocks (
@@ -44154,45 +43944,6 @@ CREATE TABLE reward_chain_effects (
     CONSTRAINT reward_chain_effects_version_check CHECK ((version > 0))
 );
 
-CREATE TABLE reward_credit_persona_bindings (
-    credit_id text NOT NULL,
-    owner_id text NOT NULL,
-    owner_kind text NOT NULL,
-    identity_version text GENERATED ALWAYS AS ('owner_v1'::text) STORED,
-    account_id text NOT NULL,
-    persona_id text NOT NULL,
-    binding_source text NOT NULL,
-    account_source_id text GENERATED ALWAYS AS (
-CASE
-    WHEN (owner_kind = 'account'::text) THEN account_id
-    ELSE NULL::text
-END) STORED,
-    guest_binding_owner_id text GENERATED ALWAYS AS (
-CASE
-    WHEN (owner_kind = 'guest'::text) THEN owner_id
-    ELSE NULL::text
-END) STORED,
-    association_state text GENERATED ALWAYS AS ('bound'::text) STORED,
-    selection_revision bigint,
-    bound_at timestamp with time zone NOT NULL,
-    CONSTRAINT reward_credit_persona_bindings_binding_source_check CHECK ((binding_source = ANY (ARRAY['account_original'::text, 'guest_claim'::text]))),
-    CONSTRAINT reward_credit_persona_bindings_check CHECK ((((owner_kind = 'account'::text) AND (binding_source = 'account_original'::text) AND (selection_revision IS NULL)) OR ((owner_kind = 'guest'::text) AND (binding_source = 'guest_claim'::text) AND (selection_revision IS NOT NULL) AND ((selection_revision >= 1) AND (selection_revision <= '9007199254740991'::bigint))))),
-    CONSTRAINT reward_credit_persona_bindings_owner_kind_check CHECK ((owner_kind = ANY (ARRAY['account'::text, 'guest'::text])))
-);
-
-CREATE TABLE reward_credit_recipient_selections (
-    owner_kind text GENERATED ALWAYS AS ('guest'::text) STORED,
-    association_state text GENERATED ALWAYS AS ('bound'::text) STORED,
-    credit_id text NOT NULL,
-    selection_revision bigint NOT NULL,
-    owner_id text NOT NULL,
-    identity_version text GENERATED ALWAYS AS ('owner_v1'::text) STORED,
-    account_id text NOT NULL,
-    persona_id text NOT NULL,
-    selected_at timestamp with time zone NOT NULL,
-    CONSTRAINT reward_credit_recipient_selections_selection_revision_check CHECK (((selection_revision >= 1) AND (selection_revision <= '9007199254740991'::bigint)))
-);
-
 CREATE TABLE reward_eligibility_decisions (
     eligibility_decision_id text NOT NULL,
     leg_id text NOT NULL,
@@ -44313,8 +44064,8 @@ CREATE TABLE reward_gas_topups (
 
 CREATE TABLE reward_ledger_credits (
     credit_id text NOT NULL,
-    account_id text,
-    payout_persona_id text,
+    account_id text NOT NULL,
+    payout_persona_id text NOT NULL,
     chain_id bigint NOT NULL,
     token_address text NOT NULL,
     amount_atomic numeric(78,0) NOT NULL,
@@ -44326,9 +44077,6 @@ CREATE TABLE reward_ledger_credits (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     settled_at timestamp with time zone,
-    identity_version text DEFAULT 'account_v1'::text NOT NULL,
-    participation_owner_id text,
-    CONSTRAINT owner_credit_identity_closed CHECK ((((identity_version = 'account_v1'::text) AND (participation_owner_id IS NULL) AND (account_id IS NOT NULL) AND (payout_persona_id IS NOT NULL)) OR ((identity_version = 'owner_v1'::text) AND (participation_owner_id IS NOT NULL) AND (account_id IS NULL) AND (payout_persona_id IS NULL) AND (source_kind = 'megapot_allocation'::text)))),
     CONSTRAINT reward_ledger_credit_conservation CHECK (((reserved_atomic + paid_atomic) <= amount_atomic)),
     CONSTRAINT reward_ledger_credit_state_shape CHECK ((((state = ANY (ARRAY['credited'::text, 'payout_reserved'::text, 'payout_pending'::text, 'reconciliation_required'::text])) AND (settled_at IS NULL)) OR ((state = 'sent'::text) AND (paid_atomic = amount_atomic) AND (reserved_atomic = (0)::numeric) AND (settled_at IS NOT NULL)))),
     CONSTRAINT reward_ledger_credits_amount_atomic_check CHECK ((amount_atomic > (0)::numeric)),
@@ -46524,7 +46272,7 @@ INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'st
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 
-INSERT INTO guest_learning_schema_phase VALUES (true, 'disabled_owner_financial_history_v1');
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_legacy_audio_settlement_history_v6');
 
 INSERT INTO guest_resource_global_lock VALUES (true);
 
@@ -47566,15 +47314,6 @@ ALTER TABLE ONLY guest_learning_preferences
 ALTER TABLE ONLY guest_learning_schema_phase
     ADD CONSTRAINT guest_learning_schema_phase_pkey PRIMARY KEY (singleton);
 
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_guest_owner_id_account_id_state_key UNIQUE (guest_owner_id, account_id, state);
-
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_intent_id_key UNIQUE (intent_id);
-
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_pkey PRIMARY KEY (guest_owner_id);
-
 ALTER TABLE ONLY guest_participation_operations
     ADD CONSTRAINT guest_participation_operation_source_owner_id_operation_kin_key UNIQUE (source_owner_id, operation_kind, idempotency_key);
 
@@ -48097,6 +47836,9 @@ ALTER TABLE ONLY learner_audio_delete_target_artifacts
 ALTER TABLE ONLY learner_audio_deleted_objects
     ADD CONSTRAINT learner_audio_deleted_objects_pkey PRIMARY KEY (object_ref);
 
+ALTER TABLE ONLY learner_audio_legacy_settlements
+    ADD CONSTRAINT learner_audio_legacy_settlements_pkey PRIMARY KEY (upload_attempt_id);
+
 ALTER TABLE ONLY learner_audio_object_names
     ADD CONSTRAINT learner_audio_object_names_object_ref_owner_id_artifact_id_key UNIQUE (object_ref, owner_id, artifact_id);
 
@@ -48607,39 +48349,6 @@ ALTER TABLE ONLY megapot_fallback_cutoff_activity_evidence
 ALTER TABLE ONLY megapot_fallback_cutoff_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_evidence_pkey PRIMARY KEY (pool_leg_id, drawing_id);
 
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_allocation_batch_id_owner_id_key UNIQUE (allocation_batch_id, owner_id);
-
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_credit_id_key UNIQUE (credit_id);
-
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_pkey PRIMARY KEY (allocation_batch_id, ordinal);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_pkey PRIMARY KEY (pool_leg_id, drawing_id, owner_id);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_pool_leg_id_drawing_id_owner_id_qualif_key UNIQUE (pool_leg_id, drawing_id, owner_id, qualification_id);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_pool_leg_id_drawing_id_qualification_i_key UNIQUE (pool_leg_id, drawing_id, qualification_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_pkey PRIMARY KEY (snapshot_id, ordinal);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_snapshot_id_leaf_commitment_key UNIQUE (snapshot_id, leaf_commitment);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_snapshot_id_order_key_key UNIQUE (snapshot_id, order_key);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_snapshot_id_ordinal_owner_id_key UNIQUE (snapshot_id, ordinal, owner_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_snapshot_id_owner_id_key UNIQUE (snapshot_id, owner_id);
-
 ALTER TABLE ONLY megapot_participant_claim_guards
     ADD CONSTRAINT megapot_participant_claim_guards_credit_id_key UNIQUE (credit_id);
 
@@ -48856,27 +48565,6 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
-ALTER TABLE ONLY megapot_allocation_batches
-    ADD CONSTRAINT owner_batch_version_key UNIQUE (allocation_batch_id, snapshot_id, beneficiary_version);
-
-ALTER TABLE ONLY reward_ledger_credits
-    ADD CONSTRAINT owner_credit_identity_key UNIQUE (credit_id, identity_version, participation_owner_id);
-
-ALTER TABLE ONLY reward_ledger_credits
-    ADD CONSTRAINT owner_credit_lineage_key UNIQUE (credit_id, participation_owner_id, amount_atomic);
-
-ALTER TABLE ONLY megapot_pool_drawings
-    ADD CONSTRAINT owner_drawing_version_key UNIQUE (pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY megapot_pool_beneficiary_snapshots
-    ADD CONSTRAINT owner_snapshot_version_key UNIQUE (snapshot_id, pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY participation_eligibility_decisions
-    ADD CONSTRAINT participation_eligibility_dec_eligibility_id_owner_id_quali_key UNIQUE (eligibility_id, owner_id, qualification_id, pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY participation_eligibility_decisions
-    ADD CONSTRAINT participation_eligibility_decisions_pkey PRIMARY KEY (eligibility_id);
-
 ALTER TABLE ONLY participation_owner_clocks
     ADD CONSTRAINT participation_owner_clocks_pkey PRIMARY KEY (owner_id);
 
@@ -49089,15 +48777,6 @@ ALTER TABLE ONLY reward_chain_effect_transitions
 
 ALTER TABLE ONLY reward_chain_effects
     ADD CONSTRAINT reward_chain_effects_pkey PRIMARY KEY (effect_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_bindings_pkey PRIMARY KEY (credit_id);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selec_credit_id_selection_revision__key UNIQUE (credit_id, selection_revision, account_id, persona_id);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selections_pkey PRIMARY KEY (credit_id, selection_revision);
 
 ALTER TABLE ONLY reward_eligibility_decisions
     ADD CONSTRAINT reward_eligibility_decisions_pkey PRIMARY KEY (eligibility_decision_id);
@@ -50110,8 +49789,6 @@ CREATE INDEX observations_snapshot_response_idx ON observations USING btree (res
 
 CREATE INDEX observations_user_kind_observed_idx ON observations USING btree (user_id, observation_kind, observed_at DESC, observation_id);
 
-CREATE UNIQUE INDEX owner_credit_unique_source ON reward_ledger_credits USING btree (source_kind, source_reference, participation_owner_id) WHERE (identity_version = 'owner_v1'::text);
-
 CREATE UNIQUE INDEX persona_wallet_assignments_address_uidx ON persona_wallet_assignments USING btree (address) WHERE (address IS NOT NULL);
 
 CREATE UNIQUE INDEX persona_wallet_assignments_one_live_kind_uidx ON persona_wallet_assignments USING btree (persona_id, chain_account_kind) WHERE (status = ANY (ARRAY['pending'::text, 'active'::text]));
@@ -50796,28 +50473,6 @@ CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_
 
 CREATE TRIGGER deleted_account_telegram_linking_fence AFTER UPDATE OF status ON users FOR EACH ROW EXECUTE FUNCTION revoke_deleted_account_telegram_linking();
 
-CREATE TRIGGER disabled_beneficiary_dispatch BEFORE INSERT OR UPDATE ON megapot_allocation_batches FOR EACH ROW EXECUTE FUNCTION guard_disabled_beneficiary_dispatch_v1();
-
-CREATE TRIGGER disabled_beneficiary_dispatch BEFORE INSERT OR UPDATE ON megapot_pool_beneficiary_snapshots FOR EACH ROW EXECUTE FUNCTION guard_disabled_beneficiary_dispatch_v1();
-
-CREATE TRIGGER disabled_beneficiary_dispatch BEFORE INSERT OR UPDATE ON megapot_pool_drawings FOR EACH ROW EXECUTE FUNCTION guard_disabled_beneficiary_dispatch_v1();
-
-CREATE TRIGGER disabled_owner_credit_dispatch BEFORE INSERT OR UPDATE ON reward_ledger_credits FOR EACH ROW EXECUTE FUNCTION guard_disabled_owner_credit_dispatch_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON guest_owner_associations FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON megapot_owner_allocations FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON megapot_owner_shares FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON megapot_owner_snapshot_leaves FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON participation_eligibility_decisions FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON reward_credit_persona_bindings FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
-CREATE TRIGGER disabled_owner_financial_dml BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON reward_credit_recipient_selections FOR EACH STATEMENT EXECUTE FUNCTION reject_disabled_owner_financial_dml_v1();
-
 CREATE TRIGGER evidence_receipts_append_only BEFORE DELETE OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER evidence_receipts_validate_metadata BEFORE INSERT OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_evidence_receipt();
@@ -51071,6 +50726,8 @@ CREATE TRIGGER learner_audio_delete_command_state BEFORE DELETE OR UPDATE ON lea
 CREATE TRIGGER learner_audio_delete_sources_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_sources FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 
 CREATE TRIGGER learner_audio_delete_targets_immutable BEFORE DELETE OR UPDATE ON learner_audio_delete_target_artifacts FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
+
+CREATE TRIGGER learner_audio_legacy_settlements_immutable BEFORE DELETE OR UPDATE ON learner_audio_legacy_settlements FOR EACH ROW EXECUTE FUNCTION guard_learner_audio_legacy_settlement_private_v1();
 
 CREATE TRIGGER learner_audio_object_names_immutable BEFORE DELETE OR UPDATE ON learner_audio_object_names FOR EACH ROW EXECUTE FUNCTION retain_learner_audio_immutable_private_v1();
 
@@ -52850,18 +52507,6 @@ ALTER TABLE ONLY guest_secret_issuance_operations
 ALTER TABLE ONLY guest_learning_preferences
     ADD CONSTRAINT guest_learning_preferences_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
 
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
-
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_account_owner_id_account_id_fkey FOREIGN KEY (account_owner_id, account_id) REFERENCES participation_owners(owner_id, account_id);
-
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_guest_owner_id_guest_kind_origin_fkey FOREIGN KEY (guest_owner_id, guest_kind, origin) REFERENCES participation_owners(owner_id, kind, guest_origin);
-
-ALTER TABLE ONLY guest_owner_associations
-    ADD CONSTRAINT guest_owner_associations_intent_id_guest_owner_id_origin_fkey FOREIGN KEY (intent_id, guest_owner_id, origin) REFERENCES guest_attachment_intents(intent_id, owner_id, origin);
-
 ALTER TABLE ONLY guest_participation_operations
     ADD CONSTRAINT guest_participation_operations_source_owner_id_fkey FOREIGN KEY (source_owner_id) REFERENCES participation_owners(owner_id);
 
@@ -53411,6 +53056,9 @@ ALTER TABLE ONLY learner_audio_deleted_objects
 ALTER TABLE ONLY learner_audio_deleted_objects
     ADD CONSTRAINT learner_audio_deleted_objects_object_ref_fkey FOREIGN KEY (object_ref) REFERENCES learner_audio_object_names(object_ref);
 
+ALTER TABLE ONLY learner_audio_legacy_settlements
+    ADD CONSTRAINT learner_audio_legacy_settlement_upload_attempt_id_owner_id_fkey FOREIGN KEY (upload_attempt_id, owner_id) REFERENCES learner_audio_upload_attempts(upload_attempt_id, owner_id);
+
 ALTER TABLE ONLY learner_audio_object_names
     ADD CONSTRAINT learner_audio_object_names_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
 
@@ -53933,45 +53581,6 @@ ALTER TABLE ONLY megapot_fallback_cutoff_evidence
 ALTER TABLE ONLY megapot_fallback_cutoff_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_evidence_sponsor_account_id_fkey FOREIGN KEY (sponsor_account_id) REFERENCES users(user_id);
 
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_allocation_batch_id_snapshot_id__fkey FOREIGN KEY (allocation_batch_id, snapshot_id, beneficiary_version) REFERENCES megapot_allocation_batches(allocation_batch_id, snapshot_id, beneficiary_version);
-
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_credit_id_owner_id_amount_atomic_fkey FOREIGN KEY (credit_id, owner_id, amount_atomic) REFERENCES reward_ledger_credits(credit_id, participation_owner_id, amount_atomic) DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
-
-ALTER TABLE ONLY megapot_owner_allocations
-    ADD CONSTRAINT megapot_owner_allocations_snapshot_id_ordinal_owner_id_fkey FOREIGN KEY (snapshot_id, ordinal, owner_id) REFERENCES megapot_owner_snapshot_leaves(snapshot_id, ordinal, owner_id);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_eligibility_id_owner_id_qualification_fkey FOREIGN KEY (eligibility_id, owner_id, qualification_id, pool_leg_id, drawing_id, beneficiary_version) REFERENCES participation_eligibility_decisions(eligibility_id, owner_id, qualification_id, pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_pool_leg_id_drawing_id_beneficiary_ve_fkey FOREIGN KEY (pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY megapot_owner_shares
-    ADD CONSTRAINT megapot_owner_shares_qualification_id_fkey FOREIGN KEY (qualification_id) REFERENCES activity_qualifications(qualification_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_original_account_id_original_fkey FOREIGN KEY (original_account_id, original_persona_id) REFERENCES personas(account_id, persona_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_owner_id_original_account_id_fkey FOREIGN KEY (owner_id, original_account_id) REFERENCES participation_owners(owner_id, account_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_pool_leg_id_drawing_id_owner_fkey FOREIGN KEY (pool_leg_id, drawing_id, owner_id, share_qualification_id) REFERENCES megapot_owner_shares(pool_leg_id, drawing_id, owner_id, qualification_id);
-
-ALTER TABLE ONLY megapot_owner_snapshot_leaves
-    ADD CONSTRAINT megapot_owner_snapshot_leaves_snapshot_id_pool_leg_id_draw_fkey FOREIGN KEY (snapshot_id, pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_beneficiary_snapshots(snapshot_id, pool_leg_id, drawing_id, beneficiary_version);
-
 ALTER TABLE ONLY megapot_participant_claim_guards
     ADD CONSTRAINT megapot_participant_claim_guards_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -54185,21 +53794,6 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operati_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
 
-ALTER TABLE ONLY megapot_allocation_batches
-    ADD CONSTRAINT owner_batch_drawing_version FOREIGN KEY (pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id, beneficiary_version) DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE ONLY megapot_pool_beneficiary_snapshots
-    ADD CONSTRAINT owner_snapshot_drawing_version FOREIGN KEY (pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id, beneficiary_version) DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE ONLY participation_eligibility_decisions
-    ADD CONSTRAINT participation_eligibility_dec_pool_leg_id_drawing_id_benef_fkey FOREIGN KEY (pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id, beneficiary_version);
-
-ALTER TABLE ONLY participation_eligibility_decisions
-    ADD CONSTRAINT participation_eligibility_decisions_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES participation_owners(owner_id);
-
-ALTER TABLE ONLY participation_eligibility_decisions
-    ADD CONSTRAINT participation_eligibility_decisions_qualification_id_fkey FOREIGN KEY (qualification_id) REFERENCES activity_qualifications(qualification_id);
-
 ALTER TABLE ONLY participation_owner_clocks
     ADD CONSTRAINT participation_owner_clocks_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
 
@@ -54365,9 +53959,6 @@ ALTER TABLE ONLY public_handle_index
 ALTER TABLE ONLY qualification_policy_versions
     ADD CONSTRAINT qualification_policy_versions_activity_key_fkey FOREIGN KEY (activity_key) REFERENCES activity_registry(activity_key);
 
-ALTER TABLE ONLY megapot_pool_shares
-    ADD CONSTRAINT retained_v2_share_drawing_version FOREIGN KEY (pool_leg_id, drawing_id, beneficiary_version) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id, beneficiary_version);
-
 ALTER TABLE ONLY reward_activity_availability_observations
     ADD CONSTRAINT reward_activity_availability_observat_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
@@ -54385,39 +53976,6 @@ ALTER TABLE ONLY reward_chain_effects
 
 ALTER TABLE ONLY reward_chain_effects
     ADD CONSTRAINT reward_chain_effects_replacement_of_effect_id_fkey FOREIGN KEY (replacement_of_effect_id) REFERENCES reward_chain_effects(effect_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_binding_credit_id_identity_version_o_fkey FOREIGN KEY (credit_id, identity_version, owner_id) REFERENCES reward_ledger_credits(credit_id, identity_version, participation_owner_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_binding_credit_id_selection_revision_fkey FOREIGN KEY (credit_id, selection_revision, account_id, persona_id) REFERENCES reward_credit_recipient_selections(credit_id, selection_revision, account_id, persona_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_binding_guest_binding_owner_id_accou_fkey FOREIGN KEY (guest_binding_owner_id, account_id, association_state) REFERENCES guest_owner_associations(guest_owner_id, account_id, state);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_bindings_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_bindings_owner_id_account_source_id_fkey FOREIGN KEY (owner_id, account_source_id) REFERENCES participation_owners(owner_id, account_id);
-
-ALTER TABLE ONLY reward_credit_persona_bindings
-    ADD CONSTRAINT reward_credit_persona_bindings_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selec_credit_id_identity_version_o_fkey FOREIGN KEY (credit_id, identity_version, owner_id) REFERENCES reward_ledger_credits(credit_id, identity_version, participation_owner_id);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selec_owner_id_account_id_associat_fkey FOREIGN KEY (owner_id, account_id, association_state) REFERENCES guest_owner_associations(guest_owner_id, account_id, state);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selections_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selections_credit_id_fkey FOREIGN KEY (credit_id) REFERENCES reward_ledger_credits(credit_id);
-
-ALTER TABLE ONLY reward_credit_recipient_selections
-    ADD CONSTRAINT reward_credit_recipient_selections_owner_id_owner_kind_fkey FOREIGN KEY (owner_id, owner_kind) REFERENCES participation_owners(owner_id, kind);
 
 ALTER TABLE ONLY reward_eligibility_decisions
     ADD CONSTRAINT reward_eligibility_decisions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -54466,9 +54024,6 @@ ALTER TABLE ONLY reward_ledger_credits
 
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_chain_id_token_address_fkey FOREIGN KEY (chain_id, token_address) REFERENCES reward_asset_whitelist(chain_id, token_address);
-
-ALTER TABLE ONLY reward_ledger_credits
-    ADD CONSTRAINT reward_ledger_credits_participation_owner_id_fkey FOREIGN KEY (participation_owner_id) REFERENCES participation_owners(owner_id);
 
 ALTER TABLE ONLY reward_native_transfer_receipt_evidence
     ADD CONSTRAINT reward_native_transfer_receipt_evidence_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
@@ -55217,8 +54772,6 @@ ALTER TABLE ONLY verification_start_reservations
 ALTER TABLE ONLY verification_start_reservations
     ADD CONSTRAINT verification_start_reservations_creation_ceremony_fk FOREIGN KEY (actor_id, creation_intent_id, creation_requirement_kind, creation_generation, intent_id) REFERENCES community_creation_ceremony_attempts(actor_id, intent_id, requirement_kind, generation, ceremony_intent_id);
 
-ALTER TABLE guest_owner_associations ENABLE ROW LEVEL SECURITY;
-
 CREATE POLICY guest_raw_account_child_gate_v1 ON study_attempts_v2 AS RESTRICTIVE USING ((EXISTS ( SELECT 1
    FROM study_session_items_v2 i
   WHERE ((i.session_item_id = study_attempts_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
@@ -55276,18 +54829,6 @@ CREATE POLICY legacy_account_child_access_v1 ON study_presentations_v2 USING ((E
   WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM study_session_items_v2 i
   WHERE ((i.session_item_id = study_presentations_v2.session_item_id) AND (i.participation_owner_kind = 'account'::text)))));
-
-ALTER TABLE megapot_owner_allocations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE megapot_owner_shares ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE megapot_owner_snapshot_leaves ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE participation_eligibility_decisions ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE reward_credit_persona_bindings ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE reward_credit_recipient_selections ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE study_attempts_v2 ENABLE ROW LEVEL SECURITY;
 

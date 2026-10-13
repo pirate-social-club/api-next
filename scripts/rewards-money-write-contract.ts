@@ -5,7 +5,7 @@
  * inherited privileges removed by the migration that creates it instead.
  */
 export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly string[]>> = {
-  "0264_disabled_owner_financial_history.sql": [
+  "0265_disabled_owner_financial_history.sql": [
     "guest_owner_associations",
     "participation_eligibility_decisions",
     "megapot_owner_shares",

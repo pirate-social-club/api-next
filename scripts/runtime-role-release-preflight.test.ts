@@ -156,7 +156,7 @@ describe("destructive money-table inventory", () => {
       const laterSql = await Bun.file(
         new URL(`../db/postgres/migrations/${migration}`, import.meta.url),
       ).text();
-      if (migration === "0264_disabled_owner_financial_history.sql") {
+      if (migration === "0265_disabled_owner_financial_history.sql") {
         //264 owns a stronger closed private boundary than0242's read-only
         // lease tables. Validate its trusted-schema loop and native positive
         // custody checks explicitly; do not make the legacy parser permissive.
