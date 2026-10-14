@@ -205,7 +205,7 @@ suite("owned empty financial baseline reset", () => {
       expect(source).toEqual([
         {
           source_version: "owner_accounting_native_source_v1",
-          manifest_sha256: "40febce4a1390455d0374299934a49e2d1fd943128ef7b51c2576038185e6ad1",
+          manifest_sha256: "6d0eff7fe6ceda2bfbca1be404523ef32e9b21e9d4e81581f45c9cf9ab5cb564",
         },
       ]);
       const functions = (
@@ -285,7 +285,7 @@ suite("owned empty financial baseline reset", () => {
       expect(originalSourceMetadata).toEqual([
         {
           source_version: "owner_accounting_native_source_v1",
-          manifest_sha256: "40febce4a1390455d0374299934a49e2d1fd943128ef7b51c2576038185e6ad1",
+          manifest_sha256: "6d0eff7fe6ceda2bfbca1be404523ef32e9b21e9d4e81581f45c9cf9ab5cb564",
         },
       ]);
       expect(originalSeeds.reduce((sum, row) => sum + Number(row[1]), 0)).toBe(45);
