@@ -1,6 +1,7 @@
-/** Leaf exports used by the jobs runtime must resolve to source inside workerd. */
+/** Explicit platform leaves used by the jobs runtime resolve to source inside workerd. */
 export const rewardsPlatformAliases = Object.fromEntries(
   [
+    "account-owner-reward-hooks",
     "custody-solvency-coordinator",
     "custody-solvency-repository",
     "megapot-approval-coordinator",
