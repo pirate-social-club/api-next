@@ -13,6 +13,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { confirmHistoricalWallet3ef as confirmWallet } from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { makeAccountControlledSpokenProtocol } from "./account-spoken-producer-protocol.ts";
 import {
   type Fixture,
@@ -23,21 +24,20 @@ import {
   run,
 } from "./account-study-producer.pg-fixture.ts";
 import {
-  confirmWallet,
   seedVeryRewardEvidence,
 } from "./activity-participation-composed-identity.pg-fixture.ts";
-import { makeControlledAccountStudyV2Store } from "./controlled-account-study-store.ts";
-import { makeMegapotCommitmentCoordinator } from "./megapot-commitment-coordinator.ts";
-import { makeControlPlaneMegapotCommitmentStore } from "./megapot-commitment-repository.ts";
-import { makeMegapotCutoffCoordinator } from "./megapot-cutoff-coordinator.ts";
-import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.ts";
-import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
+import { makeHistoricalControlledStudyV2Store3ef as makeControlledAccountStudyV2Store } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
+import { makeHistoricalMegapotCommitmentCoordinator3ef as makeMegapotCommitmentCoordinator } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { makeHistoricalMegapotCommitmentStore3ef as makeControlPlaneMegapotCommitmentStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { makeHistoricalMegapotCutoffCoordinator3ef as makeMegapotCutoffCoordinator } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { makeHistoricalMegapotCutoffStore3ef as makeControlPlaneMegapotCutoffStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { makeHistoricalMegapotDrawingObservationStore3ef as makeControlPlaneMegapotDrawingObservationStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
-import { makeControlPlanePersonaStore } from "./persona-repository.ts";
+import { makeHistoricalPersonaStore3ef as makeControlPlanePersonaStore } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
-import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
-import { completeComposedWinningChain } from "./rewards-composed-chain.pg-fixture.ts";
+import { makeHistoricalRewardPayoutStore3ef as makeControlPlaneRewardPayoutStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { makeHistoricalRewardProjectionStore3ef as makeControlPlaneRewardProjectionStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import { completeComposedWinningChain } from "./historical-api-next-3ef1f879.pg-fixture/rewards-composed-chain.pg-fixture.ts";
 import {
   bytes32,
   hash as repeatedHash,
@@ -159,7 +159,8 @@ async function fingerprint(f: Fixture) {
 function accountStudy(f: Fixture, accountId: string, personaId: string) {
   // Actual default driver, genuine controlled Account reserve/capture/provider
   // checkpoint/archive/finalizer; no direct qualification or archive row seed.
-  const runtime = f.runtime({ closeTimeoutMs: 2000 });
+  if (f.sourcePrefix !== "historical262") throw new Error("Explicit historical262 source fixture required");
+  const runtime = makeDirectPostgresControlPlaneLayer(f.runtimeUrl, { closeTimeoutMs: 2000 });
   const store = makeControlledAccountStudyV2Store(runtime);
   const tasks: Promise<unknown>[] = [];
   f.registerDrain(() => Promise.all(tasks));

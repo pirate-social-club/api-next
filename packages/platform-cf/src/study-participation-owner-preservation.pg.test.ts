@@ -10,7 +10,7 @@ import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fi
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
-import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { makeHistoricalStudyV2Repository3ef as makeControlPlaneStudyV2Repository } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;

@@ -1,3 +1,4 @@
+import { prepareHistoricalIdentity3ef, confirmHistoricalWallet3ef } from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { expect } from "bun:test";
 import type { KaraokeSessionAuthority } from "@pirate/application";
 import { Client } from "pg";
@@ -72,8 +73,10 @@ export async function prepareSinger(
   if (options?.historicalPre0247 === true)
     await admin.query("INSERT INTO users(user_id) VALUES ($1)", [accountId]);
   else await makeOwnedOrdinaryAccountBirthFixture(runtime)(accountId);
-  const prepared = await prepareIdentity(runtime)(accountId, `prepare-${accountId}`);
-  await confirmWallet(runtime)(accountId, prepared.persona_id);
+  const prepare = options?.historicalPre0247 === true ? prepareHistoricalIdentity3ef : prepareIdentity;
+  const confirm = options?.historicalPre0247 === true ? confirmHistoricalWallet3ef : confirmWallet;
+  const prepared = await prepare(runtime)(accountId, `prepare-${accountId}`);
+  await confirm(runtime)(accountId, prepared.persona_id);
   return prepared.persona_id;
 }
 
