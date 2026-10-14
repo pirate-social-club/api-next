@@ -1,6 +1,6 @@
 import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
 const candidate = {
-  "source_head": "9e6b63e94e08a883ab6f0a252c8e60d271c9e956",
+  "source_head": "ff3d9247cdf7ff5f18fd18a26f4c562f299767bc",
   "native_phase": "owner_accounting_native_source_v1",
   "ledger": [
     {
@@ -1069,7 +1069,7 @@ const candidate = {
     },
     {
       "version": "0267_complete_owner_financial_source.sql",
-      "checksum": "80aeded1d308c3b0c3659b0e9d7aa96ca1b981d4cb8cb3a0ad54594ee2bf30fd"
+      "checksum": "96ff72221c455cdc50229a93594ddd0317c785c9c043a0e9ed35cfbaded8ca85"
     }
   ],
   "required_frames": [
@@ -1177,7 +1177,7 @@ const candidate = {
     },
     {
       "signature": "allocate_owner_megapot_winnings_private_v1(text,numeric)",
-      "body_sha256": "aa4bb1510787da7bdf94daf91e27edcbb347e3d63eeb0bec4c42005773fe9a11",
+      "body_sha256": "a5f69931300adbcd8745117a531cd4def54fec6ca655e5deac1cd4624cb7812e",
       "definer": true,
       "configuration": "pinned"
     },
@@ -3787,7 +3787,7 @@ const candidate = {
     },
     {
       "name": "allocate_owner_megapot_winnings_private_v1",
-      "body_sha256": "aa4bb1510787da7bdf94daf91e27edcbb347e3d63eeb0bec4c42005773fe9a11",
+      "body_sha256": "a5f69931300adbcd8745117a531cd4def54fec6ca655e5deac1cd4624cb7812e",
       "definer": true,
       "configuration": "pinned"
     },
@@ -57956,5 +57956,5 @@ const candidate = {
 } as const;
 const phase = "WITH anchor AS (SELECT c.relowner,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname='participation_owners' AND c.relkind='r'), inventory AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='owner_accounting_native_source_inventory_v1'), phase AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='guest_learning_schema_phase') SELECT EXISTS(SELECT 1 FROM inventory WHERE relkind='r' AND relrowsecurity AND NOT relforcerowsecurity) AND EXISTS(SELECT 1 FROM phase WHERE relkind='r') AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_policy p ON p.polrelid=i.oid) AND NOT EXISTS(SELECT 1 FROM inventory i CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(i.relacl,pg_catalog.acldefault('r',i.relowner))) acl WHERE acl.grantee<>i.relowner) AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_attribute att ON att.attrelid=i.oid CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl WHERE acl.grantee<>i.relowner) AS valid, 'owner_accounting_native_source_v1'::text AS phase";
 export const ownerFinancialGuestStudyReadinessSource: OwnerFinancialGuestStudyReadinessSource = {
- candidate, accountingManifestSha256: "40febce4a1390455d0374299934a49e2d1fd943128ef7b51c2576038185e6ad1", phaseSql: (_quotedSchema:string)=>phase,
+ candidate, accountingManifestSha256: "6d0eff7fe6ceda2bfbca1be404523ef32e9b21e9d4e81581f45c9cf9ab5cb564", phaseSql: (_quotedSchema:string)=>phase,
 };
