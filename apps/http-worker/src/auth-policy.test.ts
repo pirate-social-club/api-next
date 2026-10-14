@@ -25,6 +25,13 @@ describe("HTTP worker authentication policy boundary", () => {
     }
   });
 
+  test("never interprets the restricted practice learner kind", () => {
+    const policy = { kind: "restrictedPracticeLearner", operation: "read_history" } as never;
+    expect(() => supportedAuthPolicy(policy)).toThrow(
+      "HTTP worker authentication policy is unsupported",
+    );
+  });
+
   test("classifies the supported declarations without changing user semantics", () => {
     expect(supportedAuthPolicy(Auth.admin("avatars:moderate").policy)).toEqual({
       kind: "admin",

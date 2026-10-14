@@ -1,5 +1,9 @@
 import type { Schema } from "effect";
-import { type AuthPolicyApplication, isBrowserParticipationOperation } from "./auth.ts";
+import {
+  type AuthPolicyApplication,
+  isBrowserParticipationOperation,
+  isRestrictedPracticeLearnerOperation,
+} from "./auth.ts";
 import type { ApiError } from "./errors.ts";
 
 /**
@@ -120,6 +124,16 @@ export function endpoint<const E extends EndpointDefinition>(def: E): E {
       def.auth.setupSessionAccess !== undefined)
   ) {
     throw new Error("Invalid browser participation policy");
+  }
+  if (
+    def.auth.policy.kind === "restrictedPracticeLearner" &&
+    (!isRestrictedPracticeLearnerOperation(def.auth.policy.operation) ||
+      def.auth.altcha !== undefined ||
+      def.auth.optionalUser !== undefined ||
+      def.auth.browserSessionOnly !== undefined ||
+      def.auth.setupSessionAccess !== undefined)
+  ) {
+    throw new Error("Invalid restricted practice learner policy");
   }
   if (
     def.auth.setupSessionAccess !== undefined &&

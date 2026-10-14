@@ -56,8 +56,27 @@ export const BrowserParticipationOperationSchema = Schema.Union([
 ]);
 export const isBrowserParticipationOperation = Schema.is(BrowserParticipationOperationSchema);
 
+/**
+ * Closed operation vocabulary for the limited Telegram practice-history
+ * session (R1). It starts empty: no endpoint may accept this principal until
+ * a reviewed operation is added here, and ordinary authority never accepts it.
+ */
+export const restrictedPracticeLearnerOperations = [] as const;
+export type RestrictedPracticeLearnerOperation =
+  (typeof restrictedPracticeLearnerOperations)[number];
+export type RestrictedPracticeLearnerPolicy = {
+  readonly kind: "restrictedPracticeLearner";
+  readonly operation: RestrictedPracticeLearnerOperation;
+};
+export const isRestrictedPracticeLearnerOperation = (
+  operation: unknown,
+): operation is RestrictedPracticeLearnerOperation =>
+  typeof operation === "string" &&
+  (restrictedPracticeLearnerOperations as readonly string[]).includes(operation);
+
 export type AuthPolicy =
   | BrowserParticipationPolicy
+  | RestrictedPracticeLearnerPolicy
   | { readonly kind: "public" }
   | { readonly kind: "user" }
   | { readonly kind: "userOrAdmin" }
@@ -93,6 +112,13 @@ export const Auth = {
         kind: "browserParticipation",
       },
     };
+  },
+  restrictedPracticeLearner: (
+    operation: RestrictedPracticeLearnerOperation,
+  ): AuthPolicyApplication => {
+    if (!isRestrictedPracticeLearnerOperation(operation))
+      throw new Error("Invalid restricted practice learner policy");
+    return { policy: { kind: "restrictedPracticeLearner", operation } };
   },
   successfulGuestAttachment: (): AuthPolicyApplication => ({
     policy: { kind: "user" },
