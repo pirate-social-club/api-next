@@ -29,7 +29,7 @@ const emptySnapshot = (environment: InfisicalSnapshot["environment"]): Infisical
 });
 
 describe("Infisical secret drift audit", () => {
-  test("keeps CloudConvert runtime and operator keys in separate staging custody", () => {
+  test("keeps CloudConvert runtime keys separate from staging operator custody", () => {
     for (const [name, allowedPath] of [
       ["CLOUDCONVERT_RENDER_API_KEY", "/services/api-next"],
       ["CLOUDCONVERT_API_KEY", "/services/api-next/operator"],
@@ -42,7 +42,10 @@ describe("Infisical secret drift audit", () => {
             (v) => v.name === name,
           );
           expect(violations).toEqual(
-            environment === "staging" && path === allowedPath
+            (environment === "staging" && path === allowedPath) ||
+              (environment === "prod" &&
+                name === "CLOUDCONVERT_RENDER_API_KEY" &&
+                path === allowedPath)
               ? []
               : [{ environment, path, kind: "unexpected-secret", name }],
           );
@@ -314,6 +317,15 @@ describe("Infisical secret drift audit", () => {
           "OPENROUTER_API_KEY",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
+          "QENCODE_API_KEY",
+          "CLOUDCONVERT_RENDER_API_KEY",
+          "VIDEO_WORKFLOW_READ_TOKEN",
+          "VIDEO_STREAM_API_TOKEN",
+          "VIDEO_STREAM_SIGNING_JWK_BASE64",
+          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
         ],
       },
     };
@@ -354,7 +366,7 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
-  test("admits optional video secrets only at the staging runtime path", () => {
+  test("admits optional video secrets only at staging and production runtime paths", () => {
     const names = [
       "VIDEO_WORKFLOW_READ_TOKEN",
       "VIDEO_STREAM_SIGNING_JWK_BASE64",
@@ -375,7 +387,7 @@ describe("Infisical secret drift audit", () => {
             kind === "unexpected-secret" && name !== undefined && names.includes(name),
         );
         expect(unexpected).toEqual(
-          environment === "staging" && path === "/services/api-next"
+          environment !== "dev" && path === "/services/api-next"
             ? []
             : [...names]
                 .sort()
@@ -385,7 +397,7 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("admits the retained Stream copies only at exact staging paths", () => {
+  test("admits Stream runtime keys and keeps its retained operator copy staging-only", () => {
     const name = "VIDEO_STREAM_API_TOKEN";
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);
@@ -398,8 +410,8 @@ describe("Infisical secret drift audit", () => {
             ({ kind, name: observed }) => kind === "unexpected-secret" && observed === name,
           ),
         ).toEqual(
-          environment === "staging" &&
-            (path === "/services/api-next" || path === "/services/api-next/operator")
+          (environment !== "dev" && path === "/services/api-next") ||
+            (environment === "staging" && path === "/services/api-next/operator")
             ? []
             : [{ environment, path, kind: "unexpected-secret", name }],
         );
@@ -433,7 +445,7 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("admits song playback secrets only at the staging runtime path", () => {
+  test("admits song playback secrets only at staging and production runtime paths", () => {
     const names = [
       "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
       "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
@@ -451,7 +463,7 @@ describe("Infisical secret drift audit", () => {
               kind === "unexpected-secret" && name !== undefined && names.includes(name),
           ),
         ).toEqual(
-          environment === "staging" && path === "/services/api-next"
+          environment !== "dev" && path === "/services/api-next"
             ? []
             : names.sort().map((name) => ({ environment, path, kind: "unexpected-secret", name })),
         );

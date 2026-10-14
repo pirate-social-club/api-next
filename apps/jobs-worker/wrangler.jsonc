@@ -384,8 +384,12 @@
         "MEDIA_PROCESSING_ENABLED": "false",
         "VIDEO_ANALYSIS_ENABLED": "false",
         "VIDEO_DELIVERY_ENABLED": "false",
+        "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-production",
+        "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-production",
         "DATA_REGISTRATION_ENABLED": "false",
         "SONG_SOURCE_RECORDING_ENABLED": "false",
+        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "false",
         "DATA_REGISTRATION_RPC_URL": "https://aeneid.storyrpc.io",
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0x91016D653FDa20E7C8eb2a1E6710a6504C5d1E7d",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
@@ -405,10 +409,12 @@
         "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
         "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
-      // No learner-audio binding: the first production cron admits renewal only.
-      "r2_buckets": [{ "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-production" }],
+      "r2_buckets": [
+        { "binding": "MEDIA_INGRESS", "bucket_name": "pirate-media-ingress-production" },
+        { "binding": "LEARNER_AUDIO", "bucket_name": "pirate-learner-audio-production" }
+      ],
       "secrets": {
-        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL", "VIDEO_WORKFLOW_READ_TOKEN"]
       }
     }
   },

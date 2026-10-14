@@ -47,16 +47,11 @@ describe("staging song playback configuration", () => {
     for (const name of ["development", "production"] as const) {
       const current = environment(name);
       expect(current.vars?.SONG_PLAYBACK_ENABLED).toBe("false");
-      expect(current.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("");
-      expect(current.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("");
-      expect(current.secrets?.required ?? []).not.toEqual(
-        expect.arrayContaining([
-          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
-          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
-          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
-        ]),
-      );
     }
+    const development = environment("development");
+    expect(development.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("");
+    expect(development.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("");
+    expect(development.secrets?.required ?? []).not.toContain("SONG_PLAYBACK_R2_ACCESS_KEY_ID");
   });
 
   test("reuses the existing isolated limiter and migration", () => {
