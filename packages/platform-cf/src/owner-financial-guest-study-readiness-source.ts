@@ -1,6 +1,6 @@
 import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
 const candidate = {
-  "source_head": "6deab88e57122e6309c291db894c0db8d1635ec6",
+  "source_head": "9e6b63e94e08a883ab6f0a252c8e60d271c9e956",
   "native_phase": "owner_accounting_native_source_v1",
   "ledger": [
     {
@@ -1069,7 +1069,7 @@ const candidate = {
     },
     {
       "version": "0267_complete_owner_financial_source.sql",
-      "checksum": "a8519048077f3150ce80b37d6bb8d397d434bd470d7eb3ffbdb44753a9ee0dfd"
+      "checksum": "80aeded1d308c3b0c3659b0e9d7aa96ca1b981d4cb8cb3a0ad54594ee2bf30fd"
     }
   ],
   "required_frames": [
@@ -1177,7 +1177,7 @@ const candidate = {
     },
     {
       "signature": "allocate_owner_megapot_winnings_private_v1(text,numeric)",
-      "body_sha256": "63ab325dc7e4a962523153293811d5f1cb2a759a5548daf4395631105ce18baa",
+      "body_sha256": "aa4bb1510787da7bdf94daf91e27edcbb347e3d63eeb0bec4c42005773fe9a11",
       "definer": true,
       "configuration": "pinned"
     },
@@ -2263,7 +2263,7 @@ const candidate = {
     },
     {
       "signature": "list_owner_zero_allocation_due_private_v1(integer)",
-      "body_sha256": "6d41b969c8bb106dd883136deaca89f9974e30652ec204ff7043157354bbbd3c",
+      "body_sha256": "b2c6105b6bbc6e4ed7bb2e89b86e174a0b863d4815d8c6470b08f3aee1c3bbe9",
       "definer": true,
       "configuration": "pinned"
     },
@@ -3235,7 +3235,7 @@ const candidate = {
     },
     {
       "signature": "require_owner_megapot_allocation_private_v1(text)",
-      "body_sha256": "6453566542e79337b0ae4adfa725ccf0bea83b976fb67f14b79701a53d4dda82",
+      "body_sha256": "947f53515153c281f93287f2d6a4380273468c8966f05d0e09a3c3b2bc11f437",
       "definer": true,
       "configuration": "pinned"
     },
@@ -3392,6 +3392,12 @@ const candidate = {
     {
       "signature": "reward_current_qualification_policies(text[])",
       "body_sha256": "97ea609d046d44a2e575e856fe8b191ed9ecc75f323f7e37bb1be8ee94a72052",
+      "definer": false,
+      "configuration": "none"
+    },
+    {
+      "signature": "reward_distinct_nonempty_text_array(text[])",
+      "body_sha256": "26d8dc6787c093582b1bcc9641250ff8eb7265cd8237ea983f1188dfc38667a4",
       "definer": false,
       "configuration": "none"
     },
@@ -3781,7 +3787,7 @@ const candidate = {
     },
     {
       "name": "allocate_owner_megapot_winnings_private_v1",
-      "body_sha256": "63ab325dc7e4a962523153293811d5f1cb2a759a5548daf4395631105ce18baa",
+      "body_sha256": "aa4bb1510787da7bdf94daf91e27edcbb347e3d63eeb0bec4c42005773fe9a11",
       "definer": true,
       "configuration": "pinned"
     },
@@ -4867,7 +4873,7 @@ const candidate = {
     },
     {
       "name": "list_owner_zero_allocation_due_private_v1",
-      "body_sha256": "6d41b969c8bb106dd883136deaca89f9974e30652ec204ff7043157354bbbd3c",
+      "body_sha256": "b2c6105b6bbc6e4ed7bb2e89b86e174a0b863d4815d8c6470b08f3aee1c3bbe9",
       "definer": true,
       "configuration": "pinned"
     },
@@ -5839,7 +5845,7 @@ const candidate = {
     },
     {
       "name": "require_owner_megapot_allocation_private_v1",
-      "body_sha256": "6453566542e79337b0ae4adfa725ccf0bea83b976fb67f14b79701a53d4dda82",
+      "body_sha256": "947f53515153c281f93287f2d6a4380273468c8966f05d0e09a3c3b2bc11f437",
       "definer": true,
       "configuration": "pinned"
     },
@@ -5996,6 +6002,12 @@ const candidate = {
     {
       "name": "reward_current_qualification_policies",
       "body_sha256": "97ea609d046d44a2e575e856fe8b191ed9ecc75f323f7e37bb1be8ee94a72052",
+      "definer": false,
+      "configuration": "none"
+    },
+    {
+      "name": "reward_distinct_nonempty_text_array",
+      "body_sha256": "26d8dc6787c093582b1bcc9641250ff8eb7265cd8237ea983f1188dfc38667a4",
       "definer": false,
       "configuration": "none"
     },
@@ -12259,6 +12271,7 @@ const candidate = {
         "reserve_hns_dns_zone_activation_v1(text,text,text,text,bigint,integer)",
         "resolve_hns_community_app_host_authority_v1(text,timestamptz)",
         "reward_current_qualification_policies(text[])",
+        "reward_distinct_nonempty_text_array(text[])",
         "settle_learner_audio_terminal_fact_private_v1(text,text,boolean,text,jsonb)",
         "spaces_sale_namespace_readiness_facts_v1(text,text,text,text,bigint,text,bigint,timestamptz)",
         "spaces_sale_namespace_readiness_reason_v1(text,text,text,text,bigint,text,bigint,timestamptz)",
@@ -57943,5 +57956,5 @@ const candidate = {
 } as const;
 const phase = "WITH anchor AS (SELECT c.relowner,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname='participation_owners' AND c.relkind='r'), inventory AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='owner_accounting_native_source_inventory_v1'), phase AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='guest_learning_schema_phase') SELECT EXISTS(SELECT 1 FROM inventory WHERE relkind='r' AND relrowsecurity AND NOT relforcerowsecurity) AND EXISTS(SELECT 1 FROM phase WHERE relkind='r') AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_policy p ON p.polrelid=i.oid) AND NOT EXISTS(SELECT 1 FROM inventory i CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(i.relacl,pg_catalog.acldefault('r',i.relowner))) acl WHERE acl.grantee<>i.relowner) AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_attribute att ON att.attrelid=i.oid CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl WHERE acl.grantee<>i.relowner) AS valid, 'owner_accounting_native_source_v1'::text AS phase";
 export const ownerFinancialGuestStudyReadinessSource: OwnerFinancialGuestStudyReadinessSource = {
- candidate, accountingManifestSha256: "5d6899e0cdf9932b601984e7764e8c3216408170f8e6c6cb9ec361d73aafcaf8", phaseSql: (_quotedSchema:string)=>phase,
+ candidate, accountingManifestSha256: "40febce4a1390455d0374299934a49e2d1fd943128ef7b51c2576038185e6ad1", phaseSql: (_quotedSchema:string)=>phase,
 };
