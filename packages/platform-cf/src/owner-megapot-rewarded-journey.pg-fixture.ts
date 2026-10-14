@@ -13,6 +13,7 @@ import { makeOwnerGuestSpokenClosedRecovery } from "@pirate/application/owner-gu
 import type { OwnerStudyInvokingTranscriber } from "@pirate/application/owner-guest-study-service";
 import { GuestRewardTermsV1, GuestSha256V1, GuestStudySessionV1 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
+import { Client } from "pg";
 import {
   loadPostgresMigrations,
   runPostgresMigrations,
@@ -22,6 +23,7 @@ import { makeControlledAccountSpokenComposition } from "./controlled-account-spo
 import { makeControlPlanePreparedGuestStudyContentStore } from "./guest-prepared-study-content-store.ts";
 import { makeControlPlanePreparedGuestRewardContentStore } from "./guest-reward-prepared-content-store.ts";
 import { makeOriginalAccountStudySourceControl } from "./owner-account-source-control.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "./owner-financial-guest-study-readiness-source.ts";
 import { makeControlPlaneOwnerGuestSpokenCheckpointRecoveryStores } from "./owner-guest-spoken-checkpoint-recovery-store.ts";
 import { makeOwnerGuestSpokenDispatchContextStore } from "./owner-guest-spoken-dispatch-context.ts";
 import { makeOwnerGuestStudyPublicVisibilityStore } from "./owner-guest-study-public-visibility.ts";
@@ -50,6 +52,83 @@ import { makeControlPlaneOwnerStudyStarter } from "./owner-study-starter.ts";
 import { composeOwnerAwareStudyV2Store } from "./owner-study-store-composition.ts";
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientFactory } from "./postgres.ts";
 import { makeControlPlaneStudyV2Store } from "./study-v2-repository.ts";
+
+// Diagnostic-only native names come from the accepted371+52 source metadata.
+// Never expose SQL text, parameters, rows, raw driver context or error messages.
+const mixedAccountNativeNames = new Set(
+  ownerFinancialGuestStudyReadinessSource.candidate.native_function_bodies.map((row) => row.name),
+);
+const mixedAccountStatementLabel = (text: string, values: readonly unknown[]) => {
+  if (text.startsWith("SELECT prepare_account_owner_reward_action_v1(")) {
+    return values.slice(6).every((value) => value === null)
+      ? "account.capture.prior-lookup"
+      : "account.capture.new";
+  }
+  if (text.startsWith("SELECT start_account_owner_reward_attempt_v1("))
+    return "account.attempt.start";
+  if (text.startsWith("SELECT enter_account_owner_reward_action_v1("))
+    return "account.owning.enter";
+  if (text.startsWith("SELECT lock_account_owner_reward_draw_v1(")) return "account.owning.draw";
+  if (text.startsWith("SELECT complete_account_owner_reward_action_v1("))
+    return "account.owning.complete";
+  if (text.startsWith("SELECT require_account_spoken_success_private_v1("))
+    return "account.spoken.success";
+  if (text.startsWith("SELECT require_account_spoken_archive_private_v1("))
+    return "account.spoken.archive";
+  return "other-statement";
+};
+const mixedAccountDiagnosticClientFactory: PostgresClientFactory = (_url, config) => {
+  const client = new Client(config);
+  // Preserve the default factory's no-log lifecycle observer before connect
+  // through final close; query/COMMIT promises retain their original errors.
+  client.on("error", () => undefined);
+  return {
+    connection: client.connection,
+    connect: () => client.connect(),
+    end: () => client.end(),
+    query: async ({ text, values }) => {
+      try {
+        return await client.query({ text, values: values === undefined ? [] : [...values] });
+      } catch (error) {
+        try {
+          const code =
+            error !== null && typeof error === "object" ? Reflect.get(error, "code") : null;
+          const where =
+            error !== null && typeof error === "object" ? Reflect.get(error, "where") : null;
+          const frames: Array<{ functionName: string; line: number }> = [];
+          if (typeof where === "string") {
+            for (const match of where.matchAll(
+              /PL\/pgSQL function ([a-z][a-z0-9_]{0,199})\([^\n]*?\) line ([0-9]{1,5}) at/gu,
+            )) {
+              const functionName = match[1];
+              const line = Number(match[2]);
+              if (
+                functionName !== undefined &&
+                mixedAccountNativeNames.has(functionName) &&
+                Number.isSafeInteger(line) &&
+                line > 0 &&
+                line <= 99999 &&
+                frames.length < 8
+              )
+                frames.push({ functionName, line });
+            }
+          }
+          console.error(
+            JSON.stringify({
+              fixture: "mixed-account-native-call-refusal",
+              statementLabel: mixedAccountStatementLabel(text, values ?? []),
+              sqlState: typeof code === "string" && /^[A-Z0-9]{5}$/u.test(code) ? code : null,
+              nativeFrames: frames,
+            }),
+          );
+        } catch {
+          // Best-effort metadata must never replace the caught driver error.
+        }
+        throw error;
+      }
+    },
+  };
+};
 
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(s: S, v: unknown): S["Type"] =>
   Schema.decodeUnknownSync(s, { onExcessProperty: "error" })(v);
@@ -286,6 +365,7 @@ export async function rewardedFixture(
       await f.admin.query("SELECT require_owner_accounting_ready_private_v1()");
       const adminRuntime = makeDirectPostgresControlPlaneLayer(scoped.toString(), {
         closeTimeoutMs: 2000,
+        clientFactory: mixedAccountDiagnosticClientFactory,
       });
       const guestRuntime = makeDirectPostgresControlPlaneLayer(f.guestUrl, {
         closeTimeoutMs: 2000,
