@@ -14,7 +14,14 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
 import { makeAccountControlledSpokenProtocol } from "./account-spoken-producer-protocol.ts";
-import { type Fixture, fixture, hash, pgUrl, q, run } from "./account-study-producer.pg-fixture.ts";
+import {
+  type Fixture,
+  historicalAccountBootstrapFixture as fixture,
+  hash,
+  pgUrl,
+  q,
+  run,
+} from "./account-study-producer.pg-fixture.ts";
 import {
   confirmWallet,
   seedVeryRewardEvidence,

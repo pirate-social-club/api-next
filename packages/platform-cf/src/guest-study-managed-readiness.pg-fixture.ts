@@ -7,7 +7,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   type Fixture as AccountFixture,
-  fixture as accountFixture,
+  historicalAccountBootstrapFixture as accountFixture,
   bounded,
   hash,
   pgUrl,

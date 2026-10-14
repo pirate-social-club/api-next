@@ -579,6 +579,12 @@ suite("Activity persona preparation", () => {
       await admin.query(
         `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${quoteIdentifier(schema)} TO api_next_app`,
       );
+      await admin.query(
+        `GRANT EXECUTE ON FUNCTION
+           ${quoteIdentifier(schema)}.lock_account_persona_reward_identity_v1(text),
+           ${quoteIdentifier(schema)}.lock_account_reward_finalization_v1(text,text,text,text)
+         TO api_next_app`,
+      );
 
       // Preparation, session start, reload/resume, completion and replay all
       // run through the restricted runtime role, not the schema owner.

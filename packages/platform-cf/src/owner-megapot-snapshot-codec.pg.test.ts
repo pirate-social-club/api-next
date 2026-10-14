@@ -11,7 +11,11 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
-import { fixture, pgUrl } from "./account-study-producer.pg-fixture.ts";
+import {
+  historicalAccountBootstrapFixture as fixture,
+  pgUrl,
+  stripOwnedAccountFixtureGrants,
+} from "./account-study-producer.pg-fixture.ts";
 
 const suite = pgUrl ? describe : describe.skip;
 const digest = (b: Uint8Array): Uint8Array =>
@@ -68,6 +72,7 @@ suite("native owner snapshot byte codec", () => {
       if (!pgUrl) throw new Error("Owned PG URL required");
       const url = new URL(pgUrl);
       url.searchParams.set("options", `-c search_path=${f.schema}`);
+      await stripOwnedAccountFixtureGrants(f);
       await runPostgresMigrations({
         connectionString: url.toString(),
         migrations: accepted,
