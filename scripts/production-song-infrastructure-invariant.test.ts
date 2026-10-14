@@ -37,22 +37,40 @@ const configs = {
   http: productionOf(await readJsonc("apps/http-worker/wrangler.jsonc")),
   jobs: productionOf(await readJsonc("apps/jobs-worker/wrangler.jsonc")),
   media: productionOf(await readJsonc("apps/media-processor-worker/wrangler.jsonc")),
+  gateway: productionOf(await readJsonc("apps/video-source-gateway/wrangler.jsonc")),
 };
 
 describe("disabled production song infrastructure", () => {
   test("keeps production song runtime gates disabled with the independent HNS cron", () => {
     expect(configs.http.vars).toMatchObject({
       MEDIA_UPLOADS_ENABLED: "false",
+      SONG_PLAYBACK_ENABLED: "false",
+      VIDEO_DELIVERY_ENABLED: "false",
+      VIDEO_SONG_REFERENCE_ENABLED: "false",
+      VIDEO_PCM_REFERENCE_GATE_ENABLED: "false",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "false",
+      STUDY_GENERATION_ENABLED: "false",
+      STUDY_PROFILE_COVERAGE_ENABLED: "false",
+      STUDY_SPOKEN_RERECORD_ENABLED: "false",
+      GUEST_STUDY_SERVING_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.jobs.vars).toMatchObject({
       COMMUNITY_MAINTENANCE_ENABLED: "false",
       MEDIA_PROCESSING_ENABLED: "false",
+      VIDEO_ANALYSIS_ENABLED: "false",
+      VIDEO_DELIVERY_ENABLED: "false",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "false",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "false",
       DATA_REGISTRATION_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.media.vars).toMatchObject({
       MEDIA_PROCESSING_ENABLED: "false",
+      VIDEO_ANALYSIS_ENABLED: "false",
+      VIDEO_DELIVERY_ENABLED: "false",
+      VIDEO_CLOUDCONVERT_RENDER_ENABLED: "false",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "false",
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
@@ -67,14 +85,14 @@ describe("disabled production song infrastructure", () => {
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
-    for (const worker of [configs.jobs, configs.media, configs.data]) {
+    for (const worker of [configs.jobs, configs.media, configs.data, configs.gateway]) {
       expect(worker.workers_dev).toBe(false);
       expect(worker.preview_urls).toBe(false);
     }
   });
 
   test("reuses the reviewed production Hyperdrive everywhere", () => {
-    for (const worker of [configs.http, configs.jobs, configs.media, configs.data]) {
+    for (const worker of Object.values(configs)) {
       expect(worker.hyperdrive).toEqual([
         {
           binding: "CONTROL_PLANE",
@@ -112,6 +130,17 @@ describe("disabled production song infrastructure", () => {
       "pirate-media-immutable-production",
       "pirate-media-derived-production",
     ]);
+    expect(configs.jobs.r2_buckets).toEqual([
+      { binding: "MEDIA_INGRESS", bucket_name: "pirate-media-ingress-production" },
+      { binding: "LEARNER_AUDIO", bucket_name: "pirate-learner-audio-production" },
+    ]);
+    expect(configs.gateway.r2_buckets).toEqual([
+      { binding: "MEDIA_IMMUTABLE_ORIGINALS", bucket_name: "pirate-media-immutable-production" },
+    ]);
+    expect(configs.http.vars).toMatchObject({
+      SONG_PLAYBACK_R2_ACCOUNT_ID: ACCOUNT_ID,
+      SONG_PLAYBACK_R2_BUCKET: "pirate-media-immutable-production",
+    });
     expect(resourceNames(configs.data.r2_buckets, "bucket_name")).toEqual([
       "pirate-media-immutable-production",
     ]);
@@ -169,22 +198,59 @@ describe("disabled production song infrastructure", () => {
     expect(configs.jobs.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
     expect((configs.jobs.secrets as JsonRecord).required).toEqual([
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "VIDEO_WORKFLOW_READ_TOKEN",
     ]);
   });
 
-  test("does not require provider credentials while media processing is disabled", () => {
+  test("prepares v1 provider declarations on their owning Workers while processing stays off", () => {
     expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("false");
-    expect((configs.media.secrets as JsonRecord).required).toEqual([]);
+    expect((configs.media.secrets as JsonRecord).required).toEqual([
+      "CLOUDCONVERT_RENDER_API_KEY",
+      "VIDEO_WORKFLOW_READ_TOKEN",
+      "VIDEO_STREAM_API_TOKEN",
+      "ACRCLOUD_ACCESS_KEY",
+      "ACRCLOUD_ACCESS_SECRET",
+      "ELEVENLABS_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "QENCODE_API_KEY",
+    ]);
+    expect((configs.http.secrets as JsonRecord).required).toEqual(
+      expect.arrayContaining([
+        "ELEVENLABS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+        "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+        "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+        "VIDEO_STREAM_SIGNING_JWK_BASE64",
+        "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+      ]),
+    );
+    expect((configs.http.secrets as JsonRecord).required).not.toContain(
+      "CLOUDCONVERT_RENDER_API_KEY",
+    );
+    for (const worker of [configs.jobs, configs.media]) {
+      expect(worker.vars).toMatchObject({
+        VIDEO_WORKFLOW_ACCOUNT_ID: ACCOUNT_ID,
+        VIDEO_WORKFLOW_NAME: "pirate-video-analysis-production",
+        VIDEO_WORKFLOW_SCRIPT_NAME: "pirate-media-processor-worker-production",
+      });
+    }
+    // These require production provider evidence; staging values are not a substitute.
+    expect(configs.http.vars.VIDEO_STREAM_CUSTOMER_HOST).toBe("");
+    expect(configs.http.vars.VIDEO_STREAM_SIGNING_KEY_ID).toBe("");
+    expect(configs.media.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe("");
+    expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("");
   });
 
-  test("keeps browser CORS aligned with the reviewed production origins", async () => {
+  test("prepares wildcard upload-ingress CORS with only PUT and Content-Type", async () => {
     const policy = JSON.parse(
       await Bun.file("infra/cloudflare/song-production/media-ingress-production-cors.json").text(),
     ) as { rules: readonly JsonRecord[] };
     expect(policy.rules).toEqual([
       {
         allowed: {
-          origins: ["https://app.pirate", "https://pirate.app", "https://pirate.sc"],
+          origins: ["*"],
           methods: ["PUT"],
           headers: ["Content-Type"],
         },

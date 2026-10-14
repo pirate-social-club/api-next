@@ -438,9 +438,8 @@
       "triggers": { "crons": ["* * * * *"] },
       "name": "pirate-http-worker-production",
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
-      // Keep the deployed lifecycle until production video is admitted.
-      // Class creation requires a full deploy, so it must not ride on a
-      // gradual release of unrelated features while video delivery is off.
+      // Source preparation only; product gates remain off. Creating v6 requires
+      // the coordinator's full deploy after the production freeze is lifted.
       "migrations": [
         {
           "tag": "v1",
@@ -452,7 +451,8 @@
         { "tag": "v2", "new_sqlite_classes": ["SelfCallbackCaptureDO"] },
         { "tag": "v3", "deleted_classes": ["SelfCallbackCaptureDO"] },
         { "tag": "v4", "new_sqlite_classes": ["HnsForwarderReplayStoreDO"] },
-        { "tag": "v5", "new_sqlite_classes": ["KaraokeAttemptDO"] }
+        { "tag": "v5", "new_sqlite_classes": ["KaraokeAttemptDO"] },
+        { "tag": "v6", "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"] }
       ],
       "observability": {
         "enabled": true,
@@ -490,6 +490,14 @@
           {
             "name": "HNS_COMMUNITY_APP_API_REPLAY",
             "class_name": "HnsForwarderReplayStoreDO"
+          },
+          {
+            "name": "SONG_PLAYBACK_RATE_LIMITER",
+            "class_name": "VideoPlaybackRateLimiterDO"
+          },
+          {
+            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+            "class_name": "VideoPlaybackRateLimiterDO"
           },
           {
             "name": "KARAOKE_ATTEMPT",
@@ -546,8 +554,8 @@
     "AVATAR_AUTHORING_ENABLED": "false",
         "API_NEXT_ENV": "production",
     "SONG_PLAYBACK_ENABLED": "false",
-    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
-    "SONG_PLAYBACK_R2_BUCKET": "",
+    "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+    "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-production",
     // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
     "VIDEO_DELIVERY_ENABLED": "false",
     "VIDEO_STREAM_CUSTOMER_HOST": "",
@@ -558,7 +566,8 @@
         "STUDY_GENERATION_ENABLED": "false",
         "STUDY_PROFILE_COVERAGE_ENABLED": "false",
         "STUDY_SPOKEN_RERECORD_ENABLED": "false",
-        "STUDY_GENERATION_OPENROUTER_MODEL": "",
+        "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
+        "GUEST_STUDY_SERVING_ENABLED": "false",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
@@ -630,7 +639,14 @@
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
-          "OPENAI_API_KEY"
+          "OPENAI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "OPENROUTER_API_KEY",
+          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+          "VIDEO_STREAM_SIGNING_JWK_BASE64",
+          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64"
         ]
       }
     }

@@ -525,11 +525,12 @@ describe("source-to-Wrangler binding contract", () => {
     expect(staging.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("true");
     expect(staging.vars.VIDEO_SAFETY_GATE).toBe("sampled_frame_openai_v1");
     expect(staging.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
-    for (const environment of ["development", "production"] as const) {
-      const disabled = declaredEnvironment(configs.media, environment);
-      expect(disabled.secrets).not.toContain("CLOUDCONVERT_RENDER_API_KEY");
-      expect(disabled.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBeUndefined();
-    }
+    const development = declaredEnvironment(configs.media, "development");
+    expect(development.secrets).not.toContain("CLOUDCONVERT_RENDER_API_KEY");
+    expect(development.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBeUndefined();
+    const production = declaredEnvironment(configs.media, "production");
+    expect(production.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
+    expect(production.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("false");
     expect(declaredEnvironment(configs.http, "staging").secrets).not.toContain(
       "CLOUDCONVERT_RENDER_API_KEY",
     );
@@ -564,14 +565,12 @@ describe("source-to-Wrangler binding contract", () => {
     ]);
   });
 
-  test("declares the active ElevenLabs speech credential only in staging", () => {
+  test("declares ElevenLabs speech for staging and the prepared production candidate", () => {
     expect(declaredEnvironment(configs.http, "development").secrets).not.toContain(
       "ELEVENLABS_API_KEY",
     );
     expect(declaredEnvironment(configs.http, "staging").secrets).toContain("ELEVENLABS_API_KEY");
-    expect(declaredEnvironment(configs.http, "production").secrets).not.toContain(
-      "ELEVENLABS_API_KEY",
-    );
+    expect(declaredEnvironment(configs.http, "production").secrets).toContain("ELEVENLABS_API_KEY");
   });
 
   test("staging pins real-document verification before nationality authoring is enabled", () => {

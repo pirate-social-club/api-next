@@ -2,11 +2,7 @@
   "rules": [
     {
       "allowed": {
-        "origins": [
-          "https://app.pirate",
-          "https://pirate.app",
-          "https://pirate.sc"
-        ],
+        "origins": ["*"],
         "methods": ["PUT"],
         "headers": ["Content-Type"]
       },
