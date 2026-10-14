@@ -530,7 +530,7 @@ describe("source-to-Wrangler binding contract", () => {
     expect(development.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBeUndefined();
     const production = declaredEnvironment(configs.media, "production");
     expect(production.secrets).toContain("CLOUDCONVERT_RENDER_API_KEY");
-    expect(production.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("false");
+    expect(production.vars.VIDEO_CLOUDCONVERT_RENDER_ENABLED).toBe("true");
     expect(declaredEnvironment(configs.http, "staging").secrets).not.toContain(
       "CLOUDCONVERT_RENDER_API_KEY",
     );
@@ -585,7 +585,7 @@ describe("source-to-Wrangler binding contract", () => {
   test("video Workflow bindings agree on class, name and processor script in every environment", () => {
     for (const environment of ENVIRONMENTS) {
       const suffix = environment === "development" ? "" : `-${environment}`;
-      const enabled = environment === "staging" ? "true" : "false";
+      const enabled = environment === "development" ? "false" : "true";
       for (const worker of ["media", "jobs"] as const) {
         const block = rawEnvironment(configs[worker], environment);
         expect(block.vars?.VIDEO_ANALYSIS_ENABLED).toBe(enabled);

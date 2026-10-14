@@ -43,12 +43,12 @@ describe("staging song playback configuration", () => {
     );
   });
 
-  test("keeps playback disabled outside staging", () => {
-    for (const name of ["development", "production"] as const) {
-      const current = environment(name);
-      expect(current.vars?.SONG_PLAYBACK_ENABLED).toBe("false");
-    }
+  test("prepares production playback while keeping development disabled", () => {
+    const production = environment("production");
+    expect(production.vars?.SONG_PLAYBACK_ENABLED).toBe("true");
+    expect(production.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
     const development = environment("development");
+    expect(development.vars?.SONG_PLAYBACK_ENABLED).toBe("false");
     expect(development.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("");
     expect(development.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("");
     expect(development.secrets?.required ?? []).not.toContain("SONG_PLAYBACK_R2_ACCESS_KEY_ID");

@@ -8,7 +8,7 @@ import {
 
 const source = "a".repeat(40);
 function fixture(mode = "ok") {
-  let version = {
+  const initialVersion = {
     id: "initial",
     annotations: { "workers/message": `git:${source}` },
     resources: {
@@ -22,8 +22,14 @@ function fixture(mode = "ok") {
       ],
     },
   };
+  const versions = {
+    http: structuredClone(initialVersion),
+    jobs: structuredClone(initialVersion),
+  };
   const mutations: string[] = [];
   const api = async (path: string, init?: { method?: string; body?: FormData }) => {
+    const kind = path.includes("http-worker") ? "http" : "jobs";
+    let version = versions[kind];
     if (init?.method === "PATCH") {
       mutations.push(path);
       if (mode === "uncertain") throw Error("Lost response");
@@ -41,6 +47,7 @@ function fixture(mode = "ok") {
       // A settings-created version is always relabelled by the provider.
       version.resources.script.last_deployed_from = "api";
       if (mode === "drift") version.resources.script.etag = "different";
+      versions[kind] = version;
       return {};
     }
     if (path.endsWith("/deployments"))
@@ -62,6 +69,8 @@ test("passive finality requires both enabled Workers at the pinned source withou
   const f = fixture();
   await expect(assertIsolatedServingSource(source, f.api)).rejects.toThrow("enabled flag");
   await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
+  await expect(assertIsolatedServingSource(source, f.api)).rejects.toThrow("enabled flag");
+  await setIsolatedRewardsFlag("http", "true", source, { api: f.api, sleep: async () => {} });
   const before = f.mutations.length;
   await assertIsolatedServingSource(source, f.api);
   await expect(assertIsolatedServingSource("b".repeat(40), f.api)).rejects.toThrow("source");
@@ -112,14 +121,14 @@ test("reading the flags reports what each Worker serves and changes nothing", as
   expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "false", jobs: "false" });
   await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
   const mutations = f.mutations.length;
-  // The fixture serves one version for both names, so both now read on.
-  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "true", jobs: "true" });
+  expect(await readIsolatedRewardsFlags(f.api)).toEqual({ http: "false", jobs: "true" });
   expect(f.mutations.length).toBe(mutations);
 });
 
 test("a newer recovery runner must close out using the Workers' serving source", async () => {
   const f = fixture();
   await setIsolatedRewardsFlag("jobs", "true", source, { api: f.api, sleep: async () => {} });
+  await setIsolatedRewardsFlag("http", "true", source, { api: f.api, sleep: async () => {} });
   const before = f.mutations.length;
   const wrong = await disableIsolatedRewards("b".repeat(40), { api: f.api });
   expect(wrong.flagsOff).toBe(false);
