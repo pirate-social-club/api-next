@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import {
   runCommand,
   runDeploymentCommand,
   verifyDeploymentSource,
+  type WorkerDeploymentInput,
 } from "./deploy-worker-with-provenance";
 
 import type { PrepareStagingBindingGuard } from "./staging-serving-bindings-preflight.ts";
@@ -47,6 +48,38 @@ const input = {
   acceptedMainRef: "origin/main",
 } as const;
 
+const bootstrapAccount = "b".repeat(32);
+const bootstrapWorker = "pirate-video-source-gateway-production";
+const absentWorker = (account = bootstrapAccount, worker = bootstrapWorker, code = 10007) =>
+  `A request to the Cloudflare API (/accounts/${account}/workers/scripts/${worker}/versions?deployable=true) failed.\nThis Worker does not exist on your account. [code: ${code}]`;
+const sourceChecks = (configPath: string) => [
+  { exitCode: 0, stdout: sourceSha },
+  { exitCode: 0 },
+  { exitCode: 0 },
+  { exitCode: 0 },
+  { exitCode: 0, stdout: configPath },
+];
+async function withFirstDeploymentConfig(
+  use: (root: string, release: WorkerDeploymentInput) => Promise<void>,
+) {
+  const root = await mkdtemp(join(tmpdir(), "worker-first-deployment-"));
+  const configPath = "apps/video-source-gateway/wrangler.jsonc";
+  try {
+    await mkdir(join(root, "apps/video-source-gateway"), { recursive: true });
+    await writeFile(
+      join(root, configPath),
+      JSON.stringify({
+        account_id: bootstrapAccount,
+        name: "pirate-video-source-gateway",
+        env: { production: { name: bootstrapWorker } },
+      }),
+    );
+    await use(root, { ...input, configPath, environment: "production" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 function queueRunner(
   results: readonly Readonly<{ exitCode: number; stdout?: string; stderr?: string }>[],
   commands: string[][] = [],
@@ -69,6 +102,106 @@ function queueRunner(
 }
 
 describe("Worker deployment provenance", () => {
+  test("bootstraps only the exact missing Worker and retains guards and version provenance", async () => {
+    await withFirstDeploymentConfig(async (root, release) => {
+      const { runner, commands } = queueRunner([
+        ...sourceChecks(release.configPath),
+        { exitCode: 1, stderr: absentWorker() },
+        { exitCode: 0, stdout: "deployed" },
+        {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { id: "first-version", annotations: { "workers/message": `git:${sourceSha}` } },
+          ]),
+        },
+      ]);
+      const guarded: string[] = [];
+      const reward: typeof withRewardsBindingDeployment = async (
+        _root,
+        _config,
+        _env,
+        operation,
+      ) => {
+        guarded.push("reward");
+        return operation();
+      };
+      const telegram: typeof withTelegramActivationDeployment = async (
+        _root,
+        _config,
+        _env,
+        operation,
+      ) => {
+        guarded.push("telegram");
+        return operation();
+      };
+      const bindings: PrepareStagingBindingGuard = async () => {
+        guarded.push("bindings");
+        return null;
+      };
+      const receipt = await deployWorkerWithProvenance(
+        root,
+        release,
+        runner,
+        () => {},
+        undefined,
+        reward,
+        bindings,
+        telegram,
+      );
+      expect(receipt).toMatchObject({
+        source_sha: sourceSha,
+        worker_version_id: "first-version",
+        environment: "production",
+      });
+      expect(guarded).toEqual(["bindings", "telegram", "reward"]);
+      expect(commands.filter((command) => command.includes("deploy"))).toHaveLength(1);
+      expect(commands[6]?.slice(-2)).toEqual(["--message", `git:${sourceSha}`]);
+    });
+  });
+
+  test("refuses authentication, transport and wrong-target errors before first deployment", async () => {
+    await withFirstDeploymentConfig(async (root, release) => {
+      for (const failure of [
+        { exitCode: 1, stderr: absentWorker(bootstrapAccount, bootstrapWorker, 10000) },
+        { exitCode: 1, stderr: absentWorker("c".repeat(32)) },
+        { exitCode: 1, stderr: absentWorker(bootstrapAccount, "other-worker") },
+        { exitCode: 1, stderr: `${absentWorker()}\nAuthentication failed [code: 10000]` },
+        { exitCode: 1, stderr: "network unavailable [code: 10007]" },
+        { exitCode: 124, stderr: absentWorker() },
+      ]) {
+        const { runner, commands } = queueRunner([...sourceChecks(release.configPath), failure]);
+        await expect(deployWorkerWithProvenance(root, release, runner)).rejects.toThrow(
+          "pre-deploy version listing failed",
+        );
+        expect(commands.some((command) => command.includes("deploy"))).toBe(false);
+      }
+    });
+  });
+
+  test("refuses a missing Worker after upload instead of admitting an unproven first deployment", async () => {
+    await withFirstDeploymentConfig(async (root, release) => {
+      const { runner, commands } = queueRunner([
+        ...sourceChecks(release.configPath),
+        { exitCode: 1, stderr: absentWorker() },
+        { exitCode: 0 },
+        { exitCode: 1, stderr: absentWorker() },
+      ]);
+      await expect(
+        deployWorkerWithProvenance(
+          root,
+          release,
+          runner,
+          () => {},
+          undefined,
+          allowRewardDeployment,
+          allowStagingBindings,
+          allowTelegram,
+        ),
+      ).rejects.toThrow("post-deploy version listing failed");
+      expect(commands.filter((command) => command.includes("deploy"))).toHaveLength(1);
+    });
+  });
+
   test("both reward Workers refuse upload when the obligation guard refuses", async () => {
     for (const configPath of [
       "apps/http-worker/wrangler.jsonc",

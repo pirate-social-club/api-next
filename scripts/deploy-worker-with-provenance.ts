@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -6,6 +7,7 @@ import {
   verifyHnsStagingGatewayManifest,
 } from "./hns-staging-gateway-preflight.ts";
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
+import { parseJsonc } from "./secret-drift-audit.ts";
 import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
 import {
   type PrepareStagingBindingGuard,
@@ -312,6 +314,49 @@ function versionsCommand(input: WorkerDeploymentInput, configPath: string): read
   ];
 }
 
+function missingWorkerBeforeDeployment(
+  result: CommandResult,
+  repositoryRoot: string,
+  input: WorkerDeploymentInput,
+  configPath: string,
+): boolean {
+  if (result.exitCode !== 1) return false;
+  const output = `${result.stdout}\n${result.stderr}`;
+  const codes = [...output.matchAll(/\[code: (\d+)\]/gu)];
+  if (
+    codes.length !== 1 ||
+    codes[0]?.[1] !== "10007" ||
+    !output.includes("This Worker does not exist on your account.")
+  )
+    return false;
+  try {
+    const config = parseJsonc<{
+      account_id?: unknown;
+      name?: unknown;
+      env?: Record<string, { account_id?: unknown; name?: unknown }>;
+    }>(readFileSync(resolve(repositoryRoot, configPath), "utf8"));
+    const account = config.env?.[input.environment]?.account_id ?? config.account_id;
+    const worker = config.env?.[input.environment]?.name ?? config.name;
+    if (
+      typeof account !== "string" ||
+      !/^[a-f0-9]{32}$/u.test(account) ||
+      typeof worker !== "string" ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/u.test(worker)
+    )
+      return false;
+    const endpoints = [
+      ...output.matchAll(/A request to the Cloudflare API \(([^)]+)\) failed\./gu),
+    ];
+    return (
+      endpoints.length === 1 &&
+      endpoints[0]?.[1] ===
+        `/accounts/${account}/workers/scripts/${worker}/versions?deployable=true`
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function deployWorkerWithProvenance(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
@@ -344,9 +389,13 @@ export async function deployWorkerWithProvenance(
   }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
-  const before = parseWorkerVersions(
-    await requiredOutput(runner, listCommand, repositoryRoot, "pre-deploy version listing"),
-  );
+  const beforeResult = await runner(listCommand, repositoryRoot);
+  if (
+    beforeResult.exitCode !== 0 &&
+    !missingWorkerBeforeDeployment(beforeResult, repositoryRoot, input, configPath)
+  )
+    throw new Error(`pre-deploy version listing failed (exit ${beforeResult.exitCode})`);
+  const before = beforeResult.exitCode === 0 ? parseWorkerVersions(beforeResult.stdout.trim()) : [];
   const bindingGuard = await stagingBindingGuard(
     repositoryRoot,
     {
