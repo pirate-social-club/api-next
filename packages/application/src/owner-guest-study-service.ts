@@ -305,10 +305,8 @@ export function makeOwnerGuestStudyService(
         catch: invalid,
       });
       if (body.expected_owner_id !== input.access.ownerId) return yield* reject("owner-mismatch");
-      // This packet implements practice only. It never invents a reward offer,
-      // policy version, economics or an unpaid alternative for spoken practice.
-      if (body.reward_mode !== "practice_only" || body.reward_preview_terms_hash !== null)
-        return yield* reject("resource-policy-unavailable");
+      // Closed mode/hash shape is decoded above. The trusted atomic starter
+      // recovers original SQL identity before reading a NEW actual offer quote.
       const requestHash = yield* hash({
         community_id: input.communityId,
         post_id: input.postId,
@@ -340,8 +338,11 @@ export function makeOwnerGuestStudyService(
           requestHash,
           sessionId: `study_v2_${yield* ids.next}`,
           timezone: body.timezone,
-          rewardMode: "practice_only",
+          rewardMode: body.reward_mode,
           rewardTerms: null,
+          ...(body.reward_preview_terms_hash === null
+            ? {}
+            : { acceptedRewardPreviewTermsHash: body.reward_preview_terms_hash }),
           disclosure: body.disclosure,
           trustedEdge: input.trustedEdge,
           policy: deps.resourcePolicy,

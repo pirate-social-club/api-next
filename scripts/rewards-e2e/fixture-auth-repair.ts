@@ -54,6 +54,13 @@ export async function repairFixtureAuthentication(
       await target.query("BEGIN");
       await target.query("SET LOCAL search_path TO api_next, public");
       try {
+        await target.query("SELECT pg_advisory_xact_lock(83000003,1)");
+        // This offline seed tool has no authority to reparent accepted financial history.
+        const ownerFinancial = await target.query(
+          "SELECT to_regclass('api_next.guest_owner_associations') IS NOT NULL AS present",
+        );
+        if (ownerFinancial.rows[0]?.present === true)
+          throw Error("Owner-accounting topology requires its reviewed association writer");
         const receipt = await target.query(
           `SELECT finished FROM rewards_bootstrap_${identity.branchId}.receipt WHERE branch_id=$1`,
           [identity.branchId],

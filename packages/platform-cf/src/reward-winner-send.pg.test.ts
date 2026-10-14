@@ -20,6 +20,7 @@ import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-t
 import type { MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type { MegapotV2Transaction } from "./megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { rewardFinancialSourceDiagnosticClientFactory } from "./reward-financial-source-diagnostic.pg-fixture.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { makeRewardWinnerSendChain, type RewardWinnerSendRpc } from "./reward-winner-send-chain.ts";
 import { makeControlPlaneRewardWinnerSendStore } from "./reward-winner-send-repository.ts";
@@ -219,6 +220,11 @@ async function seedPrerequisites(admin: Client) {
   await admin.query("SET session_replication_role = replica");
   try {
     await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other')");
+    await admin.query("SET session_replication_role = origin");
+    for (const accountId of ["winner", "other"]) {
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+    }
+    await admin.query("SET session_replication_role = replica");
     await admin.query(
       `INSERT INTO reward_asset_whitelist (
          chain_id, token_address, decimals, symbol, asset_kind, environment, status,
@@ -553,7 +559,9 @@ suite("Postgres 17 Megapot winner send record", () => {
     await admin.query(`SET search_path TO "${schema}"`);
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await seedPrerequisites(admin);
-    layer = makeDirectPostgresControlPlaneLayer(scoped);
+    layer = makeDirectPostgresControlPlaneLayer(scoped, {
+      clientFactory: rewardFinancialSourceDiagnosticClientFactory,
+    });
     store = makeControlPlaneRewardWinnerSendStore(layer);
     service = serviceWith({});
     chain.history(WALLETS.w1, 5);

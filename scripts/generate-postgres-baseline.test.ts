@@ -153,6 +153,83 @@ CREATE FUNCTION public.legacy_example() RETURNS integer
     expect(normalized).not.toContain("pg_catalog.format('pg_catalog, %I");
   });
 
+  test("restores private owner-financial ACLs without widening ordinary function normalization", () => {
+    const source = `
+CREATE FUNCTION public.require_disabled_owner_financial_inventory_private_v1() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$ BEGIN RETURN; END $$;
+CREATE FUNCTION public.ordinary_example() RETURNS integer
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$ SELECT 2 $$;
+`;
+    const normalized = normalizePostgresBaselineDump(source);
+    const ordinary = normalized.indexOf("CREATE FUNCTION ordinary_example()");
+    const privateOutput = normalized.slice(0, ordinary);
+    expect(privateOutput).toContain("REVOKE ALL ON FUNCTION %I.%I(%s) FROM PUBLIC");
+    expect(privateOutput).toContain("a.grantee<>0 AND a.grantee<>p.proowner");
+    expect(privateOutput).toContain("p.oid=target_function.oid");
+    expect(privateOutput).toContain("REVOKE ALL ON FUNCTION %I.%I(%s) FROM %I CASCADE");
+    expect(normalized.slice(ordinary)).not.toContain("REVOKE");
+    expect(normalized).not.toContain("GRANT");
+  });
+
+  test("restores exact source privileges after protected metadata and post-data", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE TABLE public.owner_accounting_native_source_inventory_v1 (
+    singleton boolean NOT NULL,
+    source_version text NOT NULL,
+    manifest jsonb NOT NULL
+);
+INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{}');
+CREATE TRIGGER original_accounting_source_inventory_immutable BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.owner_accounting_native_source_inventory_v1 FOR EACH STATEMENT EXECUTE FUNCTION public.reject_owner_accounting_source_inventory_mutation_v1();
+`);
+    const protectedRow = normalized.indexOf(
+      "INSERT INTO owner_accounting_native_source_inventory_v1",
+    );
+    const immutableGuard = normalized.indexOf(
+      "CREATE TRIGGER original_accounting_source_inventory_immutable",
+    );
+    const sourceBinder = normalized.indexOf("DO $baseline_owner_source_privileges$");
+    expect(protectedRow).toBeGreaterThan(0);
+    expect(immutableGuard).toBeGreaterThan(protectedRow);
+    expect(sourceBinder).toBeGreaterThan(immutableGuard);
+    expect(normalized.lastIndexOf("SET check_function_bodies = true;")).toBeGreaterThan(
+      sourceBinder,
+    );
+    expect(normalized).toContain(
+      "pg_catalog.to_regprocedure(pg_catalog.format('%I.%s',target_schema,expected.signature))",
+    );
+    expect(normalized).toContain("baseline raw function source differs");
+    expect(normalized).toContain("actual_acl IS DISTINCT FROM expected.source_acl");
+    expect(normalized).toContain("private baseline relation custody differs");
+    expect(normalized).toContain("SELECT %I.require_owner_accounting_ready_private_v1()");
+    expect(normalized).not.toContain("GRANT ");
+    expect(normalized).not.toContain("ALTER DEFAULT PRIVILEGES");
+  });
+
+  test("does not select full-source privileges from a metadata name inside an ordinary body", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.ordinary_example() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+CREATE TABLE owner_accounting_native_source_inventory_v1 (singleton boolean);
+END
+$body$;
+`);
+    expect(normalized).not.toContain("DO $baseline_owner_source_privileges$");
+  });
+
+  test("preserves raw function-body blank lines for source attestation", () => {
+    const originalBody = "\nBEGIN\n  PERFORM 1;\n\n\n  PERFORM 2;\nEND\n";
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.preserved_body() RETURNS void
+    LANGUAGE plpgsql
+    AS $body$${originalBody}$body$;
+`);
+    expect(normalized).toContain(`AS $body$${originalBody}$body$;`);
+  });
+
   test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
     expect(() =>
       normalizePostgresBaselineDump(`
@@ -200,6 +277,17 @@ SET search_path TO leaked_session_schema;
     expect(normalized).not.toContain("leaked_session_schema");
   });
 
+  test("preserves opaque source metadata while normalizing schema and ordinary seed dates", () => {
+    const metadata = `INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{"constraints":["((octet_length(upstream_session_ref) >= 1) AND (octet_length(upstream_session_ref) <= 16384))"],"default_expression":"public.example(''2026-08-31 17:07:43.49507+00'')"}');`;
+    const ordinary = "INSERT INTO public.example VALUES ('2026-08-31 17:07:43.49507+00');";
+    const seeds = normalizePostgresBaselineSeedDump(`${metadata}\n${ordinary}`);
+    expect(seeds).toContain(metadata);
+    expect(seeds).toContain("INSERT INTO public.example VALUES ('2000-01-01 00:00:00+00');");
+    const normalized = normalizePostgresBaselineDump(seeds);
+    expect(normalized).toContain(metadata.replace("INSERT INTO public.", "INSERT INTO "));
+    expect(normalized).toContain("INSERT INTO example VALUES ('2000-01-01 00:00:00+00');");
+  });
+
   test("makes migration-created seed timestamps deterministic", () => {
     expect(
       normalizePostgresBaselineSeedDump(
@@ -228,6 +316,17 @@ INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
     expect(normalized).toContain("INSERT INTO seed_table VALUES ('2000-01-01 00:00:00+00');");
     expect(normalized).not.toContain("public.seed_table");
     expect(normalized).not.toContain("statement_timeout");
+  });
+
+  test("retains immutable source metadata outside destructive reset and seed replay", () => {
+    const metadata = `INSERT INTO public.owner_accounting_native_source_inventory_v1 VALUES (true, 'owner_accounting_native_source_v1', '{}');`;
+    const normalized = normalizePostgresBaselineResetDump(
+      `${metadata}\nINSERT INTO public.seed_table VALUES ('original');`,
+      ["seed_table", "owner_accounting_native_source_inventory_v1"],
+    );
+    expect(normalized).toContain('TRUNCATE TABLE\n  "seed_table"');
+    expect(normalized).not.toContain("owner_accounting_native_source_inventory_v1");
+    expect(normalized).toContain("INSERT INTO seed_table VALUES ('original');");
   });
 
   test("fails closed when migration-owned seed tables drift from the manifest", () => {

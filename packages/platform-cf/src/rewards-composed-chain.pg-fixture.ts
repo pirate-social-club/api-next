@@ -38,7 +38,7 @@ export async function completeComposedWinningChain(input: {
   const key = { poolLegId: input.poolLegId, drawingId: input.drawingId };
   const suffix = digest(`${input.poolLegId}:${input.drawingId}`).slice(0, 20);
   const ticket = { normals: [1, 2, 3, 4, 5], bonusball: 1 } as const;
-  const purchase = makeControlPlaneMegapotPurchaseStore(layer);
+  const purchase = makeControlPlaneMegapotPurchaseStore(layer, { purchaseSafetyMarginSeconds: 60 });
   const purchaseCandidate = await run(purchase.loadCandidate(key));
   const purchaseEffectId = `composed-purchase-${suffix}`;
   const reservation = await run(

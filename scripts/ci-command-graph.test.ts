@@ -13,7 +13,9 @@ describe("CI command graph", () => {
   });
 
   test("runs the Knip ratchet implementation through check only", () => {
-    expect(packageJson.scripts["check:knip"]).toBe("node scripts/knip-ratchet.mjs");
+    expect(packageJson.scripts["check:knip"]).toBe(
+      "node scripts/check-historical-source-fixtures.mjs && node scripts/knip-ratchet.mjs",
+    );
   });
 
   test("keeps script behavior tests in the unit discovery graph", () => {

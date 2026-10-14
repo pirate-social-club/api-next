@@ -4,16 +4,19 @@
 export const goldenObservationSql = `
 WITH target AS (
  SELECT l.*,o.community_id,o.post_id,o.audio_revision,o.starts_at,d.drawing_id,d.status AS drawing_status,
- d.entry_cutoff_at,d.net_winnings_atomic,d.snapshot_id,d.allocation_batch_id,d.claim_effect_id
+ d.entry_cutoff_at,d.net_winnings_atomic,d.snapshot_id,d.allocation_batch_id,d.claim_effect_id,d.beneficiary_version AS drawing_beneficiary_version
  FROM song_reward_offer_legs l JOIN song_reward_offers o ON o.offer_id=l.offer_id
  JOIN megapot_pool_drawings d ON d.pool_leg_id=l.leg_id
  WHERE l.leg_id=$1 AND d.drawing_id=$2::numeric
+) , all_allocations AS (
+ SELECT a.allocation_batch_id,a.credit_id FROM megapot_allocations a
+ UNION SELECT a.allocation_batch_id,a.credit_id FROM megapot_owner_allocations a WHERE a.credit_id IS NOT NULL
 ), effect_ids AS (
  SELECT purchase_effect_id AS id FROM megapot_ticket_purchase_effects WHERE pool_leg_id=$1
  UNION SELECT claim_effect_id FROM megapot_claim_effects WHERE pool_leg_id=$1
  UNION SELECT refund_effect_id FROM reward_refund_effects WHERE leg_id=$1
  UNION SELECT p.payout_effect_id FROM reward_payout_effects p
- JOIN megapot_allocations a USING (credit_id)
+ JOIN all_allocations a USING (credit_id)
  JOIN megapot_allocation_batches b USING (allocation_batch_id) WHERE b.pool_leg_id=$1
 )
 SELECT jsonb_build_object(
@@ -36,18 +39,29 @@ SELECT jsonb_build_object(
    JOIN reward_erc20_transfer_receipt_evidence r ON r.effect_id=e.effect_id AND r.transfer_purpose='reward_refund'
     AND r.recipient_address=f.destination_address AND r.amount_atomic=f.amount_atomic WHERE f.leg_id=$1),
  'claim_receipt_atomic',(SELECT COALESCE(sum(net_winnings_atomic),0)::text FROM megapot_claim_receipt_evidence WHERE claim_effect_id=t.claim_effect_id),
- 'shares',COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',account_id,'persona_id',persona_id) ORDER BY account_id)
-   FROM megapot_pool_shares WHERE pool_leg_id=$1 AND drawing_id=$2::numeric),'[]'::jsonb),
+ 'shares',CASE WHEN t.drawing_beneficiary_version=3 THEN COALESCE((SELECT jsonb_agg(jsonb_build_object('owner_id',s.owner_id,'qualification_id',s.qualification_id) ORDER BY s.owner_id) FROM megapot_owner_shares s WHERE s.pool_leg_id=$1 AND s.drawing_id=$2::numeric),'[]'::jsonb) ELSE COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',account_id,'persona_id',persona_id) ORDER BY account_id)
+   FROM megapot_pool_shares WHERE pool_leg_id=$1 AND drawing_id=$2::numeric),'[]'::jsonb) END,
  'qualifications',COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',account_id,'persona_id',persona_id,'activity_key',activity_key))
    FROM activity_qualifications WHERE community_id=t.community_id AND post_id=t.post_id
      AND audio_revision=t.audio_revision AND qualified_at>=t.starts_at AND qualified_at<t.entry_cutoff_at),'[]'::jsonb),
- 'beneficiaries',COALESCE((SELECT jsonb_agg(jsonb_build_object('ordinal',ordinal,'account_id',account_id,'persona_id',persona_id) ORDER BY ordinal)
-   FROM megapot_pool_snapshot_private_leaves WHERE snapshot_id=t.snapshot_id),'[]'::jsonb),
- 'decisions',COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',d.account_id,'persona_id',d.persona_id,
+ 'beneficiaries',CASE WHEN t.drawing_beneficiary_version=3 THEN COALESCE((SELECT jsonb_agg(jsonb_build_object('ordinal',ordinal,'owner_id',owner_id,'owner_kind',owner_kind,'original_account_id',original_account_id,'original_persona_id',original_persona_id) ORDER BY ordinal) FROM megapot_owner_snapshot_leaves WHERE snapshot_id=t.snapshot_id),'[]'::jsonb) ELSE COALESCE((SELECT jsonb_agg(jsonb_build_object('ordinal',ordinal,'account_id',account_id,'persona_id',persona_id) ORDER BY ordinal)
+   FROM megapot_pool_snapshot_private_leaves WHERE snapshot_id=t.snapshot_id),'[]'::jsonb) END,
+ 'decisions',CASE WHEN t.drawing_beneficiary_version=3 THEN COALESCE((SELECT jsonb_agg(jsonb_build_object('owner_id',d.owner_id,'qualification_id',d.qualification_id,'activity_key',q.activity_key,'outcome',d.outcome) ORDER BY d.owner_id) FROM participation_eligibility_decisions d JOIN activity_qualifications q USING(qualification_id) WHERE d.pool_leg_id=$1 AND d.drawing_id=$2::numeric),'[]'::jsonb) ELSE COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',d.account_id,'persona_id',d.persona_id,
     'activity_key',q.activity_key,'outcome',d.outcome,'reason',d.reason))
    FROM reward_eligibility_decisions d JOIN activity_qualifications q USING (qualification_id)
-   WHERE d.leg_id=$1 AND d.drawing_id=$2::numeric AND d.purpose='pool_share'),'[]'::jsonb),
- 'credits',COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',a.account_id,'persona_id',a.persona_id,
+   WHERE d.leg_id=$1 AND d.drawing_id=$2::numeric AND d.purpose='pool_share'),'[]'::jsonb) END,
+ 'credits',CASE WHEN t.drawing_beneficiary_version=3 THEN COALESCE((SELECT jsonb_agg(jsonb_build_object(
+   'owner_id',a.owner_id,'ordinal',a.ordinal,'allocation_kind',a.allocation_kind,'credit_id',a.credit_id,
+   'amount_atomic',a.amount_atomic::text,'paid_atomic',c.paid_atomic::text,'reserved_atomic',c.reserved_atomic::text,'state',c.state,
+   'account_id',identity.effective_account_id,'persona_id',identity.effective_persona_id,
+   'receipt_confirmed',COALESCE(e.state='confirmed' AND r.transfer_purpose='reward_payout' AND r.amount_atomic=a.amount_atomic
+      AND r.recipient_address=p.destination_address AND p.payout_persona_id=identity.effective_persona_id AND p.account_id=identity.effective_account_id,false),
+   'claim_status',(SELECT status FROM megapot_participant_claims WHERE credit_id=a.credit_id)) ORDER BY a.ordinal)
+   FROM megapot_owner_allocations a LEFT JOIN reward_ledger_credits c USING(credit_id)
+   LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(c.credit_id) identity ON true
+   LEFT JOIN reward_payout_effects p USING(credit_id) LEFT JOIN reward_chain_effects e ON e.effect_id=p.payout_effect_id
+   LEFT JOIN reward_erc20_transfer_receipt_evidence r ON r.effect_id=e.effect_id
+   WHERE a.allocation_batch_id=t.allocation_batch_id),'[]'::jsonb) ELSE COALESCE((SELECT jsonb_agg(jsonb_build_object('account_id',a.account_id,'persona_id',a.persona_id,
    'ordinal',a.ordinal,'amount_atomic',a.amount_atomic::text,'paid_atomic',c.paid_atomic::text,
    'reserved_atomic',c.reserved_atomic::text,'state',c.state,
    'receipt_confirmed',COALESCE(e.state='confirmed' AND r.transfer_purpose='reward_payout'
@@ -58,5 +72,5 @@ SELECT jsonb_build_object(
    LEFT JOIN reward_payout_effects p USING (credit_id)
    LEFT JOIN reward_chain_effects e ON e.effect_id=p.payout_effect_id
    LEFT JOIN reward_erc20_transfer_receipt_evidence r ON r.effect_id=e.effect_id
-   WHERE a.allocation_batch_id=t.allocation_batch_id),'[]'::jsonb)
+   WHERE a.allocation_batch_id=t.allocation_batch_id),'[]'::jsonb) END
 ) AS observation FROM target t`;

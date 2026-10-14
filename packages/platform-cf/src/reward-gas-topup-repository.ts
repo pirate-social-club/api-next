@@ -117,11 +117,12 @@ function findByKeyIn(
   executor: Pick<ControlPlaneTransaction, "execute">,
   input: { readonly accountId: string; readonly idempotencyKey: string },
   lock: boolean,
+  originalRecipient = false,
 ) {
   return Effect.gen(function* () {
     const result = yield* executor.execute<Row>({
       label: "reward-gas-topup.idempotency.read",
-      text: `${VIEW_SELECT} WHERE topup.account_id=$1 AND topup.idempotency_key=$2`,
+      text: `${VIEW_SELECT} WHERE ${originalRecipient ? "topup.account_id=$1" : "account_owns_reward_credit_v1($1,topup.credit_id) IS TRUE"} AND topup.idempotency_key=$2`,
       values: [input.accountId, input.idempotencyKey],
       readonly: !lock,
     });
@@ -158,6 +159,25 @@ function reserveIn(
 ): Effect.Effect<RewardGasTopupReservation, RewardGasTopupFailure | ControlPlaneError> {
   return Effect.gen(function* () {
     const { context } = input;
+    yield* transaction.execute({
+      label: "reward-gas-topup.original-identity.lock",
+      text: "SELECT lock_reward_credit_for_payout_v1($1)",
+      values: [context.creditId],
+      readonly: false,
+    });
+    yield* transaction.execute({
+      label: "reward-gas-topup.current-actor.recheck",
+      text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)",
+      values: [
+        context.authenticatedAccountId,
+        context.creditId,
+        context.accountId,
+        context.personaId,
+        context.walletAssignmentId,
+        context.recipientAddress,
+      ],
+      readonly: true,
+    });
     const dayResult = yield* transaction.execute<Row>({
       label: "reward-gas-topup.budget-day.read",
       text: "SELECT ((clock_timestamp() AT TIME ZONE 'UTC')::date)::text AS budget_day",
@@ -186,6 +206,7 @@ function reserveIn(
       transaction,
       { accountId: context.accountId, idempotencyKey: input.idempotencyKey },
       true,
+      true,
     );
     if (replayed !== null) return { kind: "replayed", topup: replayed } as const;
     const perCredit = yield* creditCapIn(transaction, context.creditId);
@@ -203,8 +224,7 @@ function reserveIn(
     if (openTopup !== null) return { kind: "open", topup: openTopup } as const;
     const count = yield* transaction.execute<Row>({
       label: "reward-gas-topup.account-day.count",
-      text: `SELECT count(*)::integer AS topups FROM reward_gas_topups
-              WHERE account_id=$1 AND budget_day=$2::date AND status <> 'released'`,
+      text: `SELECT count_reward_gas_topups_for_account_v1($1,$2::date) AS topups`,
       values: [context.accountId, budgetDay],
       readonly: false,
     });
@@ -299,12 +319,13 @@ export const CONFIRMED_PAYOUT_WALLET = `
      AND evidence.transfer_purpose='reward_payout'
      AND evidence.recipient_address=payout.destination_address
    WHERE payout.credit_id=credit.credit_id
-     AND payout.account_id=credit.account_id
-     AND payout.payout_persona_id=credit.payout_persona_id`;
+     AND payout.account_id=identity.effective_account_id
+     AND payout.payout_persona_id=identity.effective_persona_id`;
 
-function contextFromRow(row: Row): RewardGasTopupRequestContext {
+function contextFromRow(row: Row, authenticatedAccountId: string): RewardGasTopupRequestContext {
   return {
     creditId: text(row, "credit_id"),
+    authenticatedAccountId,
     accountId: text(row, "account_id"),
     personaId: text(row, "payout_persona_id"),
     walletAssignmentId: text(row, "assignment_id"),
@@ -330,7 +351,7 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-gas-topup.context.read",
-            text: `SELECT credit.credit_id, credit.account_id, credit.payout_persona_id,
+            text: `SELECT credit.credit_id, identity.effective_account_id AS account_id, identity.effective_persona_id AS payout_persona_id,
                           credit.chain_id, credit.source_kind, credit.state,
                           EXISTS (
                             SELECT 1 FROM megapot_participant_claims claim
@@ -340,10 +361,11 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
                           wallet.assignment_id, wallet.address,
                           gas.signer_address AS gas_signer_address
                      FROM reward_ledger_credits credit
+                     LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(credit.credit_id) identity ON true
                      LEFT JOIN LATERAL (${CONFIRMED_PAYOUT_WALLET}) wallet ON true
                      LEFT JOIN reward_gas_topup_wallets gas
                        ON gas.chain_id=credit.chain_id AND gas.status='active'
-                    WHERE credit.credit_id=$1 AND credit.account_id=$2`,
+                    WHERE credit.credit_id=$1 AND account_owns_reward_credit_v1($2,credit.credit_id) IS TRUE`,
             values: [input.creditId, input.accountId],
             readonly: true,
           });
@@ -362,7 +384,7 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
             return yield* rejected("credit-not-eligible");
           }
           if (row.gas_signer_address === null) return yield* rejected("gas-wallet-unavailable");
-          return yield* parse(() => contextFromRow(row));
+          return yield* parse(() => contextFromRow(row, input.accountId));
         }),
       ),
     reserve: (input: Parameters<RewardGasTopupRequestStore["reserve"]>[0]) =>
@@ -383,6 +405,7 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
                     db,
                     { accountId: input.context.accountId, idempotencyKey: input.idempotencyKey },
                     false,
+                    true,
                   ),
                 );
                 if (replayed !== null) return { kind: "replayed", topup: replayed } as const;
@@ -398,7 +421,7 @@ export function makeControlPlaneRewardGasTopupRequestRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-gas-topup.view.read",
-            text: `${VIEW_SELECT} WHERE topup.account_id=$1 AND topup.topup_id=$2`,
+            text: `${VIEW_SELECT} WHERE account_owns_reward_credit_v1($1,topup.credit_id) IS TRUE AND topup.topup_id=$2`,
             values: [input.accountId, input.topupId],
             readonly: true,
           });

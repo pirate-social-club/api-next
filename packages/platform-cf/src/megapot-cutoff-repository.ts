@@ -103,7 +103,8 @@ const DUE_SELECT = `
        WHERE account_id=leg.fallback_beneficiary_account_id
        ORDER BY is_first_persona DESC, created_at, persona_id LIMIT 1
     ) fallback_persona ON true
-   WHERE drawing.status='entry_open' AND drawing.entry_cutoff_at <= $1::timestamptz
+   WHERE drawing.status='entry_open' AND drawing.beneficiary_version=2
+     AND drawing.entry_cutoff_at <= $1::timestamptz
    ORDER BY drawing.entry_cutoff_at, drawing.pool_leg_id, drawing.drawing_id
    LIMIT $2`;
 
@@ -278,6 +279,12 @@ export function makeControlPlaneMegapotCutoffRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "megapot-cutoff.original.lock",
+                text: "SELECT lock_megapot_retained_cutoff_v1($1,$2::numeric)",
+                values: [input.candidate.poolLegId, input.candidate.drawingId.toString()],
+                readonly: false,
+              });
               const current = yield* transaction.execute<Row>({
                 label: "megapot-cutoff.drawing.lock",
                 text: `SELECT drawing.pool_leg_id, drawing.drawing_id, drawing.version,
@@ -301,17 +308,32 @@ export function makeControlPlaneMegapotCutoffRepository() {
                             ORDER BY is_first_persona DESC, created_at, persona_id LIMIT 1
                          ) fallback_persona ON true
                         WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
-                          AND drawing.status='entry_open' FOR UPDATE OF drawing, leg`,
+                          AND drawing.status='entry_open' AND drawing.beneficiary_version=2
+                          FOR UPDATE OF drawing, leg`,
                 values: [input.candidate.poolLegId, input.candidate.drawingId.toString()],
                 readonly: false,
               });
               if (current.rows.length !== 1) return yield* rejected("cutoff-conflict");
               const row = current.rows[0] as Row;
+              const readClock = Effect.fn("MegapotCutoffStore.readLockedClock")(function* () {
+                const result = yield* transaction.execute<Row>({
+                  label: "megapot-cutoff.clock.read",
+                  text: "SELECT clock_timestamp() AS checked_at",
+                  values: [],
+                  readonly: true,
+                });
+                if (result.rows.length !== 1) return yield* storage("invalid-row");
+                return yield* Effect.try({
+                  try: () => instant(result.rows[0] as Row, "checked_at"),
+                  catch: () => storage("invalid-row"),
+                });
+              });
+              let frozenAt = yield* readClock();
               if (
                 integer(row, "version") !== input.candidate.version ||
                 instant(row, "entry_cutoff_at") !== input.candidate.entryCutoffAt ||
                 text(row, "leg_terms_hash") !== input.candidate.termsHash ||
-                Date.parse(input.frozenAt) < Date.parse(input.candidate.entryCutoffAt)
+                Date.parse(frozenAt) < Date.parse(input.candidate.entryCutoffAt)
               ) {
                 return yield* rejected("cutoff-conflict");
               }
@@ -323,6 +345,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                 values: [input.candidate.poolLegId, input.candidate.drawingId.toString()],
                 readonly: false,
               });
+              frozenAt = yield* readClock();
               const shares = shareRows.rows.map(beneficiary);
               if (!sameBeneficiaries(shares, input.candidate.shares)) {
                 return yield* rejected("cutoff-conflict");
@@ -337,7 +360,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   currentVersion: input.candidate.version,
                   status: "closed_no_entries",
                   reason: "no_entries",
-                  frozenAt: input.frozenAt,
+                  frozenAt,
                   shareCount,
                 });
               }
@@ -356,11 +379,12 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   values: [input.candidate.poolLegId, input.candidate.drawingId.toString()],
                   readonly: false,
                 });
+                frozenAt = yield* readClock();
                 fallbackDecision = eligibility.rows[0] ?? null;
                 if (
                   fallbackDecision === null ||
                   text(fallbackDecision, "outcome") !== "eligible" ||
-                  Date.parse(instant(fallbackDecision, "expires_at")) <= Date.parse(input.frozenAt)
+                  Date.parse(instant(fallbackDecision, "expires_at")) <= Date.parse(frozenAt)
                 ) {
                   return yield* closeDrawing(transaction, {
                     poolLegId: input.candidate.poolLegId,
@@ -368,7 +392,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     currentVersion: input.candidate.version,
                     status: "closed_fallback_ineligible",
                     reason: "fallback_ineligible",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
@@ -414,10 +438,8 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     (availabilityRow) =>
                       nullableText(availabilityRow, "availability_observation_id") !== null &&
                       text(availabilityRow, "state") === "available" &&
-                      Date.parse(instant(availabilityRow, "observed_at")) <=
-                        Date.parse(input.frozenAt) &&
-                      Date.parse(instant(availabilityRow, "expires_at")) >
-                        Date.parse(input.frozenAt),
+                      Date.parse(instant(availabilityRow, "observed_at")) <= Date.parse(frozenAt) &&
+                      Date.parse(instant(availabilityRow, "expires_at")) > Date.parse(frozenAt),
                   );
                 if (!available) {
                   return yield* closeDrawing(transaction, {
@@ -426,7 +448,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     currentVersion: input.candidate.version,
                     status: "closed_fallback_unavailable",
                     reason: "fallback_unavailable",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
@@ -449,7 +471,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     currentVersion: input.candidate.version,
                     status: "closed_unfunded",
                     reason: "insufficient_budget",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
@@ -471,10 +493,11 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     currentVersion: input.candidate.version,
                     status: "closed_unfunded",
                     reason: "sponsor_budget_missing",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
+                frozenAt = yield* readClock();
                 const budgetRow = budget.rows[0] as Row;
                 const available =
                   bigint(budgetRow, "funded_atomic") +
@@ -489,7 +512,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     currentVersion: input.candidate.version,
                     status: "closed_unfunded",
                     reason: "sponsor_budget_exhausted",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
@@ -497,7 +520,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
 
               const needsDailyReservation = fundingSource === "shared_sponsor_budget" || fallback;
               let sponsorKind: "shared_platform" | "external_fallback" | null = null;
-              const sponsorDay = input.frozenAt.slice(0, 10);
+              const sponsorDay = frozenAt.slice(0, 10);
               if (needsDailyReservation) {
                 sponsorKind =
                   fundingSource === "shared_sponsor_budget"
@@ -550,6 +573,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   ],
                   readonly: false,
                 });
+                frozenAt = yield* readClock();
                 if (dailyReserved.rowCount !== 1) {
                   return yield* closeDrawing(transaction, {
                     poolLegId: input.candidate.poolLegId,
@@ -560,7 +584,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                         ? "closed_fallback_ceiling"
                         : "closed_unfunded",
                     reason: "sponsor_daily_ceiling",
-                    frozenAt: input.frozenAt,
+                    frozenAt,
                     shareCount,
                   });
                 }
@@ -621,6 +645,22 @@ export function makeControlPlaneMegapotCutoffRepository() {
                 });
               }
 
+              frozenAt = yield* readClock();
+              // A funding/daily-budget wait cannot preserve expired fallback evidence.
+              // Roll back this whole reservation if its original day/evidence changed.
+              if (
+                (needsDailyReservation && sponsorDay !== frozenAt.slice(0, 10)) ||
+                (fallbackDecision !== null &&
+                  Date.parse(instant(fallbackDecision, "expires_at")) <= Date.parse(frozenAt)) ||
+                availabilityRows.some(
+                  (availabilityRow) =>
+                    Date.parse(instant(availabilityRow, "observed_at")) > Date.parse(frozenAt) ||
+                    Date.parse(instant(availabilityRow, "expires_at")) <= Date.parse(frozenAt),
+                )
+              ) {
+                return yield* rejected("cutoff-conflict");
+              }
+
               if (fallback && fallbackDecision !== null && sponsorKind !== null) {
                 const publicEvidenceHash = hashDocument({
                   community_id: text(row, "community_id"),
@@ -628,7 +668,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   audio_revision: integer(row, "audio_revision"),
                   status: "published",
                   visibility: "public",
-                  checked_at: input.frozenAt,
+                  checked_at: frozenAt,
                 });
                 const availabilitySetHash = hashDocument(
                   availabilityRows.map((availabilityRow) => ({
@@ -654,7 +694,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                     sponsorKind,
                     publicEvidenceHash,
                     availabilitySetHash,
-                    input.frozenAt,
+                    frozenAt,
                   ],
                   readonly: false,
                 });
@@ -695,7 +735,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   input.snapshot.published.leafCount,
                   input.snapshot.published.snapshotHash,
                   JSON.stringify(input.snapshot.published),
-                  input.frozenAt,
+                  frozenAt,
                 ],
                 readonly: false,
               });
@@ -758,7 +798,7 @@ export function makeControlPlaneMegapotCutoffRepository() {
                   shareCount,
                   fallback,
                   targetSnapshotId,
-                  input.frozenAt,
+                  frozenAt,
                   input.snapshot.published.snapshotHash,
                 ],
                 readonly: false,

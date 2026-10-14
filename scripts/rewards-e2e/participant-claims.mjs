@@ -18,6 +18,22 @@ export async function claimParticipantCredit(
       recheck: check,
       deadline: run.deadline,
     });
+  // New owner Account participant uses the actual119 reader and immutable
+  // original-persona branch. This rehearsal never auto-selects a Guest recipient.
+  const ownerCredit =
+    credit.identity_version === "owner_v1"
+      ? await browserApi(page, `/api/users/me/rewards/owner-credits/v1/${credit.credit_id}`)
+      : null;
+  if (
+    ownerCredit !== null &&
+    (ownerCredit.object !== "owner_reward_credit_v1" ||
+      ownerCredit.credit_id !== credit.credit_id ||
+      ownerCredit.owner_id !== credit.participation_owner_id ||
+      ownerCredit.recipient?.kind !== "account_owner" ||
+      ownerCredit.recipient.original_persona_id !== credit.recipient_persona_id ||
+      ownerCredit.recipient.binding?.persona_id !== credit.recipient_persona_id)
+  )
+    throw Error("Original Account participant recipient differs; Guest ceremony remains explicit");
   const intent = await once("claim-intent", () =>
     browserApi(page, "/api/rewards/claim-verification-intents", { method: "POST" }),
   );
@@ -41,7 +57,12 @@ export async function claimParticipantCredit(
   );
   if (completed.status !== "completed") throw Error("Simulated verification incomplete");
   const claim = await once("claim-credit", () =>
-    browserApi(page, `/api/rewards/credits/${credit.credit_id}/claim`, { method: "POST" }),
+    ownerCredit === null
+      ? browserApi(page, `/api/rewards/credits/${credit.credit_id}/claim`, { method: "POST" })
+      : browserApi(page, `/api/rewards/credits/${credit.credit_id}/owner-claims/v1`, {
+          method: "POST",
+          body: { idempotency_key: `${run.runId}-${role}-owner-claim`, selection_revision: null },
+        }),
   );
   if (claim.outcome !== "accepted") throw Error("Participant claim not accepted");
   return waitForEvidence(

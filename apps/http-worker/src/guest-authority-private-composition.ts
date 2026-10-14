@@ -9,11 +9,13 @@ export type GuestAuthorityPrivateCompositionDependencies = GuestAuthorityComposi
 export function makeGuestAuthorityPrivateComposition(
   dependencies: GuestAuthorityPrivateCompositionDependencies,
 ) {
-  // Actual canonical metadata is consumed directly. Accounting remains held;
+  // Actual canonical metadata is consumed directly. Accounting handlers remain absent from this private graph;
   // this helper neither clones nor rewrites learning declarations.
   for (const name of guestAccountingNames)
-    if (guestParticipationRegistry[name].implementation !== "disabled")
-      throw new Error("Private authority composition requires disabled accounting declarations");
+    if (guestParticipationRegistry[name].implementation !== undefined)
+      throw new Error(
+        "Private authority composition requires source-admitted accounting declarations",
+      );
   return Object.freeze({
     ...makeGuestAuthorityComposition(dependencies),
     pendingLearningInputs: Object.freeze({

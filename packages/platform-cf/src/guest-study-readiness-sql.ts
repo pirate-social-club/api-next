@@ -57,7 +57,12 @@ SELECT coalesce((SELECT jsonb_agg(DISTINCT jsonb_build_object('function_oid',p.o
  coalesce((SELECT jsonb_agg(to_jsonb(f) ORDER BY schema_name COLLATE "C",function_oid COLLATE "C") FROM functions f),'[]') AS functions`;
 export const functionsSql = `SELECT signature,p.oid::text AS function_oid,p.prosecdef AS definer,
  p.prokind::text AS kind,p.pronamespace=anchor.namespace_id AS namespace,
- p.proowner=anchor.owner_id AS owned,p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)] AS pinned,
+ p.proowner=anchor.owner_id AS owned,
+ coalesce(p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)],false) AS pinned,
+ CASE WHEN p.proconfig IS NULL THEN 'none'
+  WHEN p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)] THEN 'pinned'
+  WHEN p.proconfig=ARRAY[format('search_path=%I, pg_temp',$1)] THEN 'schema_pinned'
+  ELSE 'unreviewed' END AS configuration,
  encode(sha256(convert_to(p.prosrc,'UTF8')),'hex') AS body_sha256
 FROM unnest($2::text[]) q(signature) LEFT JOIN pg_catalog.pg_proc p
  ON p.oid=pg_catalog.to_regprocedure($1 || '.' || signature)
@@ -69,6 +74,7 @@ export const bodiesSql = `SELECT p.proname AS name,encode(sha256(convert_to(p.pr
  p.prokind::text AS kind,p.prosecdef AS definer,
  CASE WHEN p.proconfig IS NULL THEN 'none'
   WHEN p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1)] THEN 'pinned'
+  WHEN p.proconfig=ARRAY[format('search_path=%I, pg_temp',$1)] THEN 'schema_pinned'
   ELSE 'unreviewed' END AS configuration
 FROM pg_catalog.pg_proc p CROSS JOIN (SELECT relnamespace AS namespace_id,relowner AS owner_id
  FROM pg_catalog.pg_class WHERE oid=pg_catalog.to_regclass($1 || '.participation_owners')) anchor

@@ -1,39 +1,33 @@
 export const reusablePostgresTestSuites = [
-  "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-repository.pg.test.ts",
   "packages/platform-cf/src/content-rating-reconciliation.pg.test.ts",
   "packages/platform-cf/src/telegram-store.pg.test.ts",
-  "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/community-creation-repository.pg.test.ts",
   "packages/platform-cf/src/community-owner-reservation.pg.test.ts",
-  "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
   "packages/platform-cf/src/community-repository.pg.test.ts",
   "packages/platform-cf/src/community-route-repository.pg.test.ts",
   "packages/platform-cf/src/dance-reference-persistence.pg.test.ts",
   "packages/platform-cf/src/feed-repository.pg.test.ts",
   "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
-  "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
   "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
   "packages/platform-cf/src/public-profile.pg.test.ts",
-  "packages/platform-cf/src/rewards-qualification.pg.test.ts",
-  "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
   "packages/platform-cf/src/song-owner-video-policy.pg.test.ts",
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
   "packages/platform-cf/src/video-outcome-repository.pg.test.ts",
   "packages/platform-cf/src/video-publication-repository.pg.test.ts",
-  "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
   "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
-  "scripts/community-purchase-funding-plans.pg.test.ts",
   "scripts/song-video-composed-flow.pg.test.ts",
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
+  "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/karaoke-instrumental-policy.pg.test.ts",
   "packages/platform-cf/src/reward-unsigned-purchase-recovery.pg.test.ts",
   "packages/platform-cf/src/sidebar-profile-reads.pg.test.ts",
@@ -143,9 +137,25 @@ export const freshSchemaPostgresTestSuites = [
   "scripts/public-post-slug-backfill.pg.test.ts",
   "scripts/public-profile-backfill.pg.test.ts",
   "scripts/song-video-render-host.pg.test.ts",
+  "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
+  "packages/platform-cf/src/community-purchase-funding-producer-repository.pg.test.ts",
+  "packages/platform-cf/src/rewards-qualification.pg.test.ts",
+  "packages/platform-cf/src/rewards-song-offers.pg.test.ts",
+  "scripts/community-purchase-funding-plans.pg.test.ts",
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  // Genuine native prefix/LOGIN fixtures, matching the existing financial native
+  // and four-principal Worker groups; neither uses the reusable rendered baseline.
+  "packages/platform-cf/src/owner-megapot-creator.pg.test.ts",
+  "apps/http-worker/src/owner-financial-default-worker.pg.test.ts",
+  "apps/http-worker/src/current267-legacy-v2-preservation.pg.test.ts",
+  "apps/jobs-worker/src/guest-study-recovery-current267.pg.test.ts",
+  "packages/platform-cf/src/owner-megapot-positive-native.pg.test.ts",
+  "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
+  "packages/platform-cf/src/owner-megapot-snapshot-codec.pg.test.ts",
+  "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts",
+  "packages/platform-cf/src/postgres-test-baseline-financial-reset.pg.test.ts",
   "apps/http-worker/src/guest-study-default-worker.pg.test.ts",
   "packages/platform-cf/src/guest-ephemeral-cleanup.pg.test.ts",
   "packages/platform-cf/src/guest-study-managed-readiness.pg.test.ts",
@@ -226,19 +236,34 @@ export const classifiedPostgresTestSuites = [
 // historical estimates whose test-file bytes match (not transitive fixtures) from run38353040821. Source
 // and safe timing receipts are retained in the reviewed coordinator packet.
 // Planning estimates only: no test acceptance, skip, deadline or runtime authority.
-// Activity preparation is an explicitly incomplete-tail98s estimate (two passes
-// plus the remaining90s callback); nationality is unobserved4*30s=120s.
+// Nine current suites use independently timed complete Bun processes from the
+// reviewed owned native gate95aa63f2 (source0f12e8f8), including setup and cleanup.
+// Each rounded-up monotonic whole-process observation adds10ms for display rounding.
+// These replace the old Activity incomplete-tail estimate and include all observed
+// increases, including Account, default Worker and the two newly measured files.
+// Nationality remains unobserved4*30s=120s.
 // The two environment-specific skipped profiles keep the ordinary count model.
+// The two preserved fixture suites above now install a fresh scope per case.
+// Current scheduler/video costs use their passed fresh-scope gate25428f88; each
+// includes its case sum plus all enclosing unallocated process time and10ms.
 export const postgresGeneralSuiteCostEstimates: Readonly<
   Record<string, Readonly<{ sourceCallCount: number; milliseconds: number }>>
 > = {
+  "apps/jobs-worker/src/guest-study-recovery-current267.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 16816,
+  },
+  "apps/http-worker/src/current267-legacy-v2-preservation.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 8380,
+  },
   "apps/http-worker/src/guest-authority-private-composition.pg.test.ts": {
     sourceCallCount: 6,
     milliseconds: 19625,
   },
   "apps/http-worker/src/guest-study-default-worker.pg.test.ts": {
     sourceCallCount: 3,
-    milliseconds: 25480,
+    milliseconds: 59386,
   },
   "apps/http-worker/src/guest-study-private-journey.pg.test.ts": {
     sourceCallCount: 5,
@@ -311,7 +336,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/account-study-producer.pg.test.ts": {
     sourceCallCount: 2,
-    milliseconds: 13432,
+    milliseconds: 25732,
   },
   "packages/platform-cf/src/activity-participation-authority.pg.test.ts": {
     sourceCallCount: 1,
@@ -323,7 +348,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/activity-participation-preparation.pg.test.ts": {
     sourceCallCount: 3,
-    milliseconds: 98000,
+    milliseconds: 11677,
   },
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts": {
     sourceCallCount: 11,
@@ -437,7 +462,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/guest-learning-row-boundary.pg.test.ts": {
     sourceCallCount: 2,
-    milliseconds: 3005,
+    milliseconds: 3831,
   },
   "packages/platform-cf/src/guest-prepared-content.pg.test.ts": {
     sourceCallCount: 5,
@@ -577,7 +602,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts": {
     sourceCallCount: 4,
-    milliseconds: 8367,
+    milliseconds: 12506,
   },
   "packages/platform-cf/src/hns-single-owner-readiness-cutover.pg.test.ts": {
     sourceCallCount: 19,
@@ -594,7 +619,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/karaoke-instrumental-policy.pg.test.ts": {
     sourceCallCount: 3,
-    milliseconds: 10452,
+    milliseconds: 13342,
   },
   "packages/platform-cf/src/karaoke-persona-boundary.pg.test.ts": {
     sourceCallCount: 4,
@@ -704,7 +729,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/reward-gas-topup.pg.test.ts": {
     sourceCallCount: 11,
-    milliseconds: 4165,
+    milliseconds: 4899,
   },
   "packages/platform-cf/src/reward-http-admission.pg.test.ts": {
     sourceCallCount: 2,
@@ -728,7 +753,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/reward-winner-send.pg.test.ts": {
     sourceCallCount: 21,
-    milliseconds: 7016,
+    milliseconds: 7321,
   },
   "packages/platform-cf/src/rewards-composed-settlement.pg.test.ts": {
     sourceCallCount: 1,
@@ -877,7 +902,7 @@ export const postgresGeneralSuiteCostEstimates: Readonly<
   },
   "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts": {
     sourceCallCount: 1,
-    milliseconds: 5763,
+    milliseconds: 6448,
   },
   "packages/platform-cf/src/video-safety-evidence.pg.test.ts": {
     sourceCallCount: 12,

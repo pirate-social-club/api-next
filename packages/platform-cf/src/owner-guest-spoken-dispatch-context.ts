@@ -7,6 +7,7 @@ import {
 } from "@pirate/application";
 import {
   GuestIdentifierV1,
+  GuestParticipationResultV1,
   GuestStudyAnswerResultV1,
   StudySessionItemV2,
   StudySpokenLanguageProvenanceV2,
@@ -40,7 +41,7 @@ const failed = () =>
 const OwnedAnswer = Schema.Struct({
   source: Reply.fields.source,
   answer: GuestStudyAnswerResultV1,
-  participation: Schema.Struct({ state: Schema.Literal("practice_only") }),
+  participation: GuestParticipationResultV1,
 });
 const Original = Schema.Union([
   Schema.Struct({ state: Schema.Literal("absent") }),

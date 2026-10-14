@@ -26,11 +26,14 @@ import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "@pirate/platform-cf/megapot-v2-signer";
+import { makeOwnerMegapotCommitmentCoordinator } from "@pirate/platform-cf/owner-megapot-commitment-coordinator";
+import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
 import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardPayoutCoordinator } from "@pirate/platform-cf/reward-payout-coordinator";
 import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-payout-repository";
 import { makeRewardRefundCoordinator } from "@pirate/platform-cf/reward-refund-coordinator";
 import { makeControlPlaneRewardRefundStore } from "@pirate/platform-cf/reward-refund-repository";
+import { makeVersionedMegapotCommitmentCoordinator } from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { Effect, type Layer } from "effect";
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
 import { observeMegapotDrawingForCycle } from "./megapot-rewards-cycle.ts";
@@ -141,8 +144,12 @@ export function makeMegapotAttestationRuntime(input: {
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
+    const purchaseStore = makeControlPlaneMegapotPurchaseStore(controlPlane, {
+      purchaseSafetyMarginSeconds: options.purchaseSafetyMarginSeconds,
+    });
     const purchase = makeMegapotPurchaseCoordinator({
-      store: makeControlPlaneMegapotPurchaseStore(controlPlane),
+      store: purchaseStore,
+      readOriginalWindow: purchaseStore.readOriginalWindow,
       rpc,
       signer: transactionSigner,
       authority,
@@ -180,11 +187,20 @@ export function makeMegapotAttestationRuntime(input: {
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
-    const commitment = makeMegapotCommitmentCoordinator({
-      store: makeControlPlaneMegapotCommitmentStore(controlPlane),
-      signer: commitmentSigner,
-      authority,
-      publisher: commitmentPublisher,
+    const commitment = makeVersionedMegapotCommitmentCoordinator({
+      runtime: controlPlane,
+      account: makeMegapotCommitmentCoordinator({
+        store: makeControlPlaneMegapotCommitmentStore(controlPlane),
+        signer: commitmentSigner,
+        authority,
+        publisher: commitmentPublisher,
+      }),
+      owner: makeOwnerMegapotCommitmentCoordinator({
+        store: makeControlPlaneOwnerMegapotSettlementStore(controlPlane),
+        signer: commitmentSigner,
+        authority,
+        publisher: commitmentPublisher,
+      }),
     });
     return { approval, purchase, claim, payout, refund, commitment };
   };
@@ -229,7 +245,7 @@ export function makeMegapotAttestationRuntime(input: {
     publishCommitment: (work) =>
       signing().pipe(
         Effect.flatMap(({ commitment }) =>
-          commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+          commitment.commit({ poolLegId: work.poolLegId, drawingId: work.drawingId.toString() }),
         ),
       ),
     approve: (work) =>

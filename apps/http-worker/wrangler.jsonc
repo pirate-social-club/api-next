@@ -99,6 +99,7 @@
   ],
   "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-development" }] },
   "vars": {
+        "GUEST_STUDY_REWARDS_ENABLED": "false",
         "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
     "API_NEXT_ENV": "development",
@@ -283,6 +284,7 @@
       "images": { "binding": "AVATAR_IMAGES" },
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
+        "GUEST_STUDY_REWARDS_ENABLED": "false",
         "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "true",
         "AVATAR_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
@@ -542,6 +544,7 @@
       ],
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-production" }] },
       "vars": {
+        "GUEST_STUDY_REWARDS_ENABLED": "false",
         "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
         "API_NEXT_ENV": "production",

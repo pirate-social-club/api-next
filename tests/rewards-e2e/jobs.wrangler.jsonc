@@ -66,6 +66,8 @@
     "consumers": []
   },
   "vars": {
+    "GUEST_STUDY_REWARDS_ENABLED": "false",
+    "GUEST_STUDY_SERVING_ENABLED": "false",
     "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_CLEANUP_ENABLED": "false",
     "API_NEXT_ENV": "development",
@@ -158,6 +160,8 @@
         "binding": "CF_VERSION_METADATA"
       },
       "vars": {
+        "GUEST_STUDY_REWARDS_ENABLED": "false",
+        "GUEST_STUDY_SERVING_ENABLED": "false",
         "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
         "AVATAR_CLEANUP_ENABLED": "false",
         "API_NEXT_ENV": "development",

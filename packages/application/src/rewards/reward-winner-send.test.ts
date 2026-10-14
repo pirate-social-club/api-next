@@ -309,6 +309,7 @@ function fixture(options: { existing?: RewardWinnerSendRecord; pendingNonce?: bi
     loadContext: ({ accountId, creditId }) =>
       Effect.succeed({
         creditId,
+        authenticatedAccountId: accountId,
         accountId,
         personaId: "persona-1",
         walletAssignmentId: "assignment-1",

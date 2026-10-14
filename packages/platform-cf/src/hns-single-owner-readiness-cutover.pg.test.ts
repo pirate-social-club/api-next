@@ -3,6 +3,26 @@ import { createHash, randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 
+// Offline api-next migration ceremony at accepted source3ef1f879 (max0263).
+// Later native financial migrations require an intact foundation and private ACLs;
+// this deliberately historical ceremony retains its original cutover/grant oracles.
+async function loadAcceptedCeremonyMigrations() {
+  const migrations = (await loadPostgresMigrations()).filter(
+    (migration) => migration.version <= "0263_guest_ephemeral_audio_cleanup.sql",
+  );
+  const ledgerDigest = createHash("sha256")
+    .update(migrations.map((migration) => `${migration.version}:${migration.checksum}`).join("\n"))
+    .digest("hex");
+  if (
+    migrations.length !== 263 ||
+    migrations.at(-1)?.version !== "0263_guest_ephemeral_audio_cleanup.sql" ||
+    ledgerDigest !== "5a979354fa869bc4c387a11357d8203e1b57bbdfd67095c8b13da4f705107f32"
+  ) {
+    throw new Error("Accepted3ef historical ceremony migration inventory changed");
+  }
+  return migrations;
+}
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
@@ -42,7 +62,7 @@ async function withSchema<A>(
   try {
     await admin.query(`CREATE SCHEMA ${quote(schema)}`);
     await admin.query(`SET search_path TO ${quote(schema)}`);
-    for (const migration of await loadPostgresMigrations()) {
+    for (const migration of await loadAcceptedCeremonyMigrations()) {
       if (migrationFilter(migration.version)) await admin.query(migration.sql);
     }
     return await use(admin);
@@ -1353,9 +1373,22 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
             "SELECT count(*)::text AS count FROM pg_roles WHERE rolname IN ('api_next_app','api_next_operator')",
           );
           expect(existing.rows[0]?.count).toBe("0");
-          const template = await Bun.file(
+          const currentTemplate = await Bun.file(
             new URL("../../../db/postgres/roles.sql.example", import.meta.url),
           ).text();
+          // This is the accepted 0263 ceremony, before the ordinary-account
+          // function-grant block was added. Require the entire rendered template
+          // to be byte-exact source3ef; all original role/probe oracles remain.
+          const template = currentTemplate.replace(
+            /-- Migrations 0247-0265 make every function they define owner-only and infer no\n[\s\S]*?-- Ordinary account function grants end\n\n/u,
+            "",
+          );
+          if (
+            createHash("sha256").update(template).digest("hex") !==
+            "5943908e11c296e21a3e0b689657b0b72f91eecb3db475f1a49e6dbc690f0fb1"
+          ) {
+            throw new Error("Accepted3ef historical role template changed");
+          }
           await admin.query("BEGIN");
           try {
             await admin.query(`SET LOCAL search_path TO ${quote(schema)}, public`);

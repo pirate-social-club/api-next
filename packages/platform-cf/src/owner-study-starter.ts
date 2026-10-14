@@ -20,6 +20,7 @@ import type {
 } from "@pirate/application/owner-guest-atomic-start";
 import {
   GuestIdentifierV1,
+  GuestRewardTermsV1,
   GuestSha256V1,
   GuestStudyPreparedContentV1,
   GuestStudySessionV1,
@@ -111,6 +112,10 @@ const LimitsRow = Schema.Struct({
   lock: Schema.Literal("250ms"),
   statement: Schema.Literal("2s"),
   idle: Schema.Literal("2s"),
+});
+const RewardedLimitsRow = Schema.Struct({
+  ...LimitsRow.fields,
+  plan_cache_mode: Schema.Literal("force_generic_plan"),
 });
 const Candidate = Schema.Struct({
   state: Schema.Literal("candidate"),
@@ -227,23 +232,29 @@ const one = <S extends Schema.ConstraintDecoder<unknown>>(
   );
 const limits = Effect.fn("OwnerStudyStarter.limits")(function* (
   transaction: ControlPlaneTransaction,
+  rewarded = false,
 ) {
   yield* transaction.execute({
     label: "guest-study.limits.set",
-    text: "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true)",
+    text: rewarded
+      ? "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true),set_config('plan_cache_mode','force_generic_plan',true)"
+      : "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true)",
     values: [],
     readonly: true,
   });
   const actual = yield* transaction.execute({
     label: "guest-study.limits.verify",
-    text: "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle",
+    text: rewarded
+      ? "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle,current_setting('plan_cache_mode') AS plan_cache_mode"
+      : "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle",
     values: [],
     readonly: true,
   });
   yield* Effect.try({
     try: () => {
       if (actual.rows.length !== 1) throw new Error();
-      decode(LimitsRow, actual.rows[0]);
+      if (rewarded) decode(RewardedLimitsRow, actual.rows[0]);
+      else decode(LimitsRow, actual.rows[0]);
     },
     catch: () => invalid("guest-study.limits.verify.decode"),
   });
@@ -261,9 +272,19 @@ const assertGuestResult = (
     result.session.owner_id !== input.source.ownerId ||
     result.session.community_id !== input.communityId ||
     result.session.post_id !== input.postId ||
-    result.session.reward_mode !== "practice_only"
+    result.session.reward_mode !== input.rewardMode
   )
     throw new Error();
+  if (result.session.reward_mode === "megapot_guest_v1") {
+    const original = decode(GuestRewardTermsV1, input.rewardTerms);
+    const stored = decode(GuestRewardTermsV1, result.session.reward_terms);
+    if (
+      !Object.entries(original).every(([key, value]) =>
+        Object.entries(stored).some(([other, otherValue]) => key === other && value === otherValue),
+      )
+    )
+      throw new Error();
+  } else if (result.session.reward_terms !== null) throw new Error();
 };
 const assertReadResult = (result: OwnerStudySession | null, input: Input<"getSession">) => {
   if (result === null) return;
@@ -334,6 +355,7 @@ export const makeControlPlaneOwnerStudyStarter = (
   disclosure: Disclosure | null,
   rawPolicy: unknown,
   newOperationId: () => string = () => `guest_start_${crypto.randomUUID()}`,
+  rawPurchaseSafetyMarginSeconds?: unknown,
 ): Methods & OwnerGuestAtomicStarter => {
   // Explicit reviewed server composition inputs, no invented production defaults.
   const configuredDisclosure =
@@ -346,10 +368,25 @@ export const makeControlPlaneOwnerStudyStarter = (
     );
   const validateIntent = Effect.fn("GuestStudyStarter.validateIntent")(function* (
     input: StartIntent,
+    acceptedRewardPreviewTermsHash?: string,
   ) {
+    if (acceptedRewardPreviewTermsHash !== undefined) {
+      if (input.rewardMode !== "megapot_guest_v1")
+        return yield* reject("resource-policy-unavailable");
+      yield* Effect.try({
+        try: () => decode(GuestSha256V1, acceptedRewardPreviewTermsHash),
+        catch: () => reject("resource-policy-unavailable"),
+      });
+    }
     // Practice-only still has paid spoken work. Missing policy cannot yield
     // a NEW candidate; SQL may only recover an already accepted exact receipt.
-    if (input.rewardMode !== "practice_only" || input.rewardTerms !== null)
+    if (
+      (input.rewardMode === "practice_only" && input.rewardTerms !== null) ||
+      (input.rewardMode === "megapot_guest_v1" &&
+        input.rewardTerms === null &&
+        acceptedRewardPreviewTermsHash === undefined) ||
+      (input.rewardMode !== "practice_only" && input.rewardMode !== "megapot_guest_v1")
+    )
       return yield* reject("resource-policy-unavailable");
     if (
       input.source.kind !== "guest" ||
@@ -369,6 +406,7 @@ export const makeControlPlaneOwnerStudyStarter = (
     activePolicy: GuestResourceAdmissionPolicy | null,
     expectedPlan: Schema.Schema.Type<typeof SelectedPlan> | null = null,
     capturedOperationId?: string,
+    acceptedRewardPreviewTermsHash?: string,
   ) {
     const values = [
       JSON.stringify(input.access),
@@ -457,11 +495,48 @@ export const makeControlPlaneOwnerStudyStarter = (
       input.disclosure.version !== configuredDisclosure.version
     )
       return yield* reject("resource-policy-unavailable");
+    const safetyMargin =
+      input.rewardMode === "practice_only"
+        ? null
+        : yield* Effect.try({
+            try: () =>
+              decode(
+                Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86400 })),
+                rawPurchaseSafetyMarginSeconds,
+              ),
+            catch: () => reject("resource-policy-unavailable"),
+          });
+    let acceptedTerms = input.rewardTerms;
+    if (input.rewardMode === "megapot_guest_v1" && acceptedRewardPreviewTermsHash !== undefined) {
+      const first = prepared.rows[0];
+      if (first === undefined) return yield* reject("resource-policy-unavailable");
+      const quote = yield* one(
+        transaction,
+        "owner-reward.start.original-terms",
+        "SELECT read_guest_reward_start_terms_v1($1,$2,$3::bigint,$4::bigint,$5,$6::integer) AS result",
+        [
+          input.communityId,
+          input.postId,
+          first.audio_revision,
+          first.lyrics_revision,
+          configuredDisclosure.version,
+          safetyMargin,
+        ],
+        Schema.NullOr(
+          Schema.Struct({ terms: GuestRewardTermsV1, reward_preview_terms_hash: GuestSha256V1 }),
+        ),
+      );
+      if (quote === null || quote.reward_preview_terms_hash !== acceptedRewardPreviewTermsHash)
+        return yield* reject("resource-policy-unavailable");
+      acceptedTerms = quote.terms;
+    }
     const operationId = capturedOperationId ?? newOperationId();
     const committed = yield* one(
       transaction,
       "guest-study.start.commit",
-      "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result",
+      input.rewardMode === "practice_only"
+        ? "SELECT commit_guest_study_start_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15) AS result"
+        : "SELECT commit_guest_study_start_with_rewards_v1($1::jsonb,$2::jsonb,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::integer) AS result",
       [
         ...values,
         JSON.stringify(prepared),
@@ -471,6 +546,13 @@ export const makeControlPlaneOwnerStudyStarter = (
         configuredDisclosure.version,
         input.disclosure.version,
         input.disclosure.accepted,
+        ...(input.rewardMode === "practice_only"
+          ? []
+          : [
+              input.rewardMode,
+              JSON.stringify(decode(GuestRewardTermsV1, acceptedTerms)),
+              safetyMargin,
+            ]),
       ],
       Resolved,
     );
@@ -478,9 +560,13 @@ export const makeControlPlaneOwnerStudyStarter = (
       try: () => {
         if (committed.state === "completed" && committed.result !== null) {
           if (committed.operationId !== operationId) throw new Error();
-          assertGuestResult(committed.result, input, prepared.sessionId);
+          assertGuestResult(
+            committed.result,
+            { ...input, rewardTerms: acceptedTerms },
+            prepared.sessionId,
+          );
         }
-        return outcome(committed, input);
+        return outcome(committed, { ...input, rewardTerms: acceptedTerms });
       },
       catch: () => invalid("guest-study.start.outcome"),
     });
@@ -493,7 +579,7 @@ export const makeControlPlaneOwnerStudyStarter = (
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* limits(transaction);
+              yield* limits(transaction, input.rewardMode === "megapot_guest_v1");
               return yield* startInTransaction(transaction, input, policy);
             }),
           );
@@ -502,13 +588,13 @@ export const makeControlPlaneOwnerStudyStarter = (
     startPreparedSession: (input) =>
       provide(
         Effect.gen(function* () {
-          yield* validateIntent(input);
+          yield* validateIntent(input, input.acceptedRewardPreviewTermsHash);
           if (input.trustedEdge.kind !== "trusted_edge")
             return yield* Effect.fail(reject("resource-policy-unavailable"));
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
-              yield* limits(transaction);
+              yield* limits(transaction, input.rewardMode === "megapot_guest_v1");
               const prepared = yield* one(
                 transaction,
                 "guest-study.start.atomic-reserve",
@@ -531,7 +617,15 @@ export const makeControlPlaneOwnerStudyStarter = (
                 return yield* Effect.try({
                   try: (): GuestAtomicStudyStartOutcome => ({
                     kind: "start",
-                    outcome: outcome(prepared.outcome, input),
+                    outcome: outcome(
+                      prepared.outcome,
+                      input.rewardMode === "megapot_guest_v1" &&
+                        input.rewardTerms === null &&
+                        prepared.outcome.result !== null &&
+                        prepared.outcome.result.session.object === "guest_study_session_v1"
+                        ? { ...input, rewardTerms: prepared.outcome.result.session.reward_terms }
+                        : input,
+                    ),
                   }),
                   catch: () => invalid("guest-study.start.atomic-replay"),
                 });
@@ -571,6 +665,7 @@ export const makeControlPlaneOwnerStudyStarter = (
                 input.policy,
                 prepared.plan,
                 input.freshRefusalOperationId,
+                input.acceptedRewardPreviewTermsHash,
               );
               return { kind: "start" as const, outcome: result };
             }),

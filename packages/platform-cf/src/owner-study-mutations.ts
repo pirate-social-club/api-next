@@ -21,6 +21,7 @@ import {
 import type { OwnerSpokenCapturedContinuationStore } from "@pirate/application/owner-spoken-captured-continuation";
 import {
   GuestIdentifierV1,
+  GuestParticipationResultV1,
   GuestSha256V1,
   GuestStudyAnswerResultV1,
   StudySessionItemV2,
@@ -71,7 +72,7 @@ const Choice = Schema.Struct({
 const OwnedAnswer = Schema.Struct({
   source: Source,
   answer: GuestStudyAnswerResultV1,
-  participation: Schema.Struct({ state: Schema.Literal("practice_only") }),
+  participation: GuestParticipationResultV1,
 });
 const Resolved = Schema.Struct({
   state: Schema.Literals(["completed", "reserved", "known_aborted"]),
@@ -293,9 +294,24 @@ const assertAnswer = (
   check(
     saved.source.ownerId === sourceOwnerId &&
       saved.answer.session.owner_id === sourceOwnerId &&
-      saved.answer.session.reward_mode === "practice_only" &&
-      saved.participation.state === "practice_only",
+      saved.participation.state === saved.answer.participation.state,
   );
+  const economic = saved.participation;
+  const projected = saved.answer.participation;
+  if (economic.state === "admitted")
+    check(
+      projected.state === "admitted" &&
+        economic.share_id === projected.share_id &&
+        economic.original_drawing_id === projected.original_drawing_id &&
+        economic.pool_leg_id === projected.pool_leg_id,
+    );
+  if (economic.state === "pending_confirmation")
+    check(
+      projected.state === "pending_confirmation" &&
+        economic.operation.operation_kind === projected.operation.operation_kind &&
+        economic.operation.idempotency_key === projected.operation.idempotency_key &&
+        economic.operation.operation_id === projected.operation.operation_id,
+    );
   if (expected !== undefined)
     check(
       saved.answer.session.community_id === expected.communityId &&

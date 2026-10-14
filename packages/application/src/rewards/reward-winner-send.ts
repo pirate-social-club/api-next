@@ -66,6 +66,9 @@ export type RewardWinnerSendTransactionKind = "transfer" | "cancel";
 /** The caller's claimed, paid participant credit and the wallet that received it. */
 export type RewardWinnerSendContext = Readonly<{
   creditId: string;
+  /** Trusted ordinary actor, separately rechecked after original source locks. */
+  authenticatedAccountId: string;
+  /** Immutable original paid recipient; never rewritten to the canonical actor. */
   accountId: string;
   personaId: string;
   walletAssignmentId: string;
@@ -120,7 +123,8 @@ export type RewardWinnerSendOutcome =
       confirmations: number;
     }>;
 
-/** A fresh nonce read, run by the store only while it holds the sender's lock. */
+/** Fresh chain read before the owning SQL transaction; the store rechecks the
+ * observed nonce against every consumed reservation under the sender lock. */
 export type RewardWinnerSendNonceReader = Effect.Effect<bigint, RewardWinnerSendChainUnavailable>;
 
 export interface RewardWinnerSendStore {

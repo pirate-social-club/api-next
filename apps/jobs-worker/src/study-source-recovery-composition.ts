@@ -1,6 +1,8 @@
 // Internal reviewed composition, no activation/flags/runtime role grants.
 import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import { makeOwnerGuestSpokenClosedRecovery } from "@pirate/application/owner-guest-spoken-closed-recovery";
+import { makeControlPlaneAccountOriginalAdmissionReconciliation } from "@pirate/platform-cf/account-original-admission-reconciliation";
+import { makeControlPlaneAccountOwnerRewardHooks } from "@pirate/platform-cf/account-owner-reward-hooks";
 import { makeControlledAccountSpokenRecovery } from "@pirate/platform-cf/controlled-account-spoken-recovery";
 import { makeControlledAccountStudyV2Store } from "@pirate/platform-cf/controlled-account-study-store";
 import { makeGuestEphemeralCleanupStage } from "@pirate/platform-cf/guest-ephemeral-cleanup";
@@ -11,7 +13,12 @@ import type { Layer } from "effect";
 import type { StudySourceRecoveryStages } from "./study-source-recovery-cycle.ts";
 
 type Runtime = Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
-export type GuestStudyRecoveryComposition = () => NonNullable<StudySourceRecoveryStages["guest"]>;
+export type GuestStudyRecoveryComposition = (() => NonNullable<
+  StudySourceRecoveryStages["guest"]
+>) & {
+  /** Only the verified financial factory attaches this actual Account layer. */
+  readonly accountOriginalAdmissionRuntime?: Runtime;
+};
 /** Explicit reviewed source composition; callers do not infer this from an R2
  * binding, cookie/proof, current provider key, today's lease or a generic flag.
  * Both the Guest cron principal and its exact DELETE bucket are explicit; the
@@ -39,8 +46,21 @@ export function makeGuestStudyRecoveryComposition(
 export function makeStudySourceRecoveryStages(
   runtime: Runtime,
   guest?: GuestStudyRecoveryComposition,
+  accountOriginalAdmissionReconciliation?: Runtime,
 ): StudySourceRecoveryStages {
-  const accountStore = makeControlledAccountStudyV2Store(runtime);
+  const originalRewards = makeControlPlaneAccountOwnerRewardHooks(runtime, null);
+  const accountStore = makeControlledAccountStudyV2Store(runtime, undefined, originalRewards);
   const account = makeControlledAccountSpokenRecovery(runtime, accountStore.finalize);
-  return { account: account.recover(), ...(guest === undefined ? {} : { guest: guest() }) };
+  return {
+    account: account.recover(),
+    ...(accountOriginalAdmissionReconciliation === undefined
+      ? {}
+      : {
+          accountOriginalAdmissionReconciliation:
+            makeControlPlaneAccountOriginalAdmissionReconciliation(
+              accountOriginalAdmissionReconciliation,
+            ).recover(8),
+        }),
+    ...(guest === undefined ? {} : { guest: guest() }),
+  };
 }

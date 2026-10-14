@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { mediaSha256Bytes } from "../../application/src/media/submission-service.ts";
 import { createOriginalVideoSubmission } from "../../domain/src/video-submission.ts";
@@ -18,7 +18,7 @@ const suite = url ? describe : describe.skip;
 suite("video reservation cleanup PostgreSQL", () => {
   test("aborts expired uploads, retries uncertain abort, skips live and manifested reservations", async () => {
     if (!url) throw new Error("missing URL");
-    await withReusablePostgresTestSchema({
+    await withPreservedPostgresTestSchema({
       baseConnectionString: url,
       schemaName: "video_reservation_cleanup_pg_test",
       use: async ({ admin, schema }) => {

@@ -785,7 +785,7 @@ async function withSchema(
   }) => Promise<void>,
 ): Promise<void> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  const schema = `api_next_study_${name}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const schema = `api_next_${name.replaceAll("-", "_")}_${crypto.randomUUID().replaceAll("-", "")}`;
   const scoped = connectionForSchema(connectionString, schema);
   const admin = new Client({ connectionString });
   await admin.connect();

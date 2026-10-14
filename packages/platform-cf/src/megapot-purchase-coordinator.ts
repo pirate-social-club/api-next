@@ -11,6 +11,7 @@ import type {
 import { deriveMegapotTicket } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
+import type { MegapotOriginalPurchaseWindow } from "./megapot-purchase-repository.ts";
 import {
   encodeMegapotBuyTickets,
   MEGAPOT_REFERRAL_SPLIT_SCALE,
@@ -75,6 +76,8 @@ export type MegapotPurchaseCoordinatorOptions = Readonly<{
   gasLimitMultiplierBps: number;
   nativeGasReserveFloorWei: bigint;
   now?: () => number;
+  /** Monotonic elapsed time; the database supplies the original deadline budget. */
+  monotonicNow?: () => number;
 }>;
 
 export interface MegapotPurchaseCoordinator {
@@ -196,6 +199,9 @@ function preparedFrom(
 
 export function makeMegapotPurchaseCoordinator(input: {
   readonly store: MegapotPurchaseStore;
+  readonly readOriginalWindow: (
+    candidate: MegapotPurchaseCandidate,
+  ) => Effect.Effect<MegapotOriginalPurchaseWindow, MegapotPurchaseFailure>;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
   readonly authority: RewardRunAuthority;
@@ -216,6 +222,29 @@ export function makeMegapotPurchaseCoordinator(input: {
     throw failed("invalid_config", "configuration");
   }
   const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const originalWindowDeadline = Effect.fn("MegapotPurchaseCoordinator.originalWindowDeadline")(
+    function* (candidate: MegapotPurchaseCandidate) {
+      // Starting before the query conservatively counts its entire round trip,
+      // as well as the final authority lookup, against the database clock budget.
+      const startedAt = monotonicNow();
+      const window = yield* input.readOriginalWindow(candidate);
+      const deadline = startedAt + window.remainingMilliseconds;
+      if (
+        !window.open ||
+        !Number.isFinite(startedAt) ||
+        !Number.isSafeInteger(window.remainingMilliseconds) ||
+        window.remainingMilliseconds <= 0 ||
+        !Number.isFinite(deadline)
+      )
+        return yield* failed("cutoff_safety_margin", "preflight");
+      return deadline;
+    },
+  );
+  const originalWindowIsLive = (deadline: number): boolean => {
+    const sampledAt = monotonicNow();
+    return Number.isFinite(sampledAt) && sampledAt < deadline;
+  };
 
   const rpcEffect = <A>(
     phase: MegapotPurchaseCoordinatorFailed["phase"],
@@ -241,6 +270,9 @@ export function makeMegapotPurchaseCoordinator(input: {
       return yield* failed("drawing_rolled_over", "preflight");
     }
     if (live.state.jackpotLock) return yield* failed("drawing_locked", "preflight");
+    const originalDeadline = yield* originalWindowDeadline(candidate);
+    if (!originalWindowIsLive(originalDeadline))
+      return yield* failed("cutoff_safety_margin", "preflight");
     const nowSeconds = BigInt(Math.floor(now() / 1_000));
     if (live.state.drawingTime <= nowSeconds + BigInt(options.purchaseSafetyMarginSeconds)) {
       return yield* failed("cutoff_safety_margin", "preflight");
@@ -410,13 +442,16 @@ export function makeMegapotPurchaseCoordinator(input: {
     }
     // Sending needs authority. It is asked outside the handling below, so a refusal
     // is never taken for a broadcast of unknown outcome.
+    const originalDeadline = yield* originalWindowDeadline(purchase);
     yield* input.authority.ensure();
-    const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
-      rpc.sendRawTransaction(purchase.signedTransaction as Hex),
-    ).pipe(
-      Effect.map((hash) => ({ kind: "accepted" as const, hash })),
-      Effect.catch(() => Effect.succeed({ kind: "uncertain" as const })),
-    );
+    const submission = yield* originalWindowIsLive(originalDeadline)
+      ? rpcEffect("receipt", "receipt_evidence_invalid", () =>
+          rpc.sendRawTransaction(purchase.signedTransaction as Hex),
+        ).pipe(
+          Effect.map((hash) => ({ kind: "accepted" as const, hash })),
+          Effect.catch(() => Effect.succeed({ kind: "uncertain" as const })),
+        )
+      : Effect.fail(failed("cutoff_safety_margin", "preflight"));
     if (
       submission.kind === "uncertain" ||
       submission.hash.toLowerCase() !== purchase.signedTransactionHash.toLowerCase()
@@ -458,20 +493,23 @@ export function makeMegapotPurchaseCoordinator(input: {
     maxPriorityFeePerGas: bigint,
   ) {
     // Signing needs authority, on a resumed reservation as much as a new one.
+    const originalDeadline = yield* originalWindowDeadline(reservation);
     yield* input.authority.ensure();
-    const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
-      signer.sign({
-        chainId: reservation.chainId,
-        signerAddress: reservation.custodyAddress,
-        targetAddress: reservation.jackpotAddress,
-        nonce: reservation.nonce,
-        data: calldata,
-        valueWei: 0n,
-        gas,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      }),
-    );
+    const signed = yield* originalWindowIsLive(originalDeadline)
+      ? rpcEffect("prepare", "signer_mismatch", () =>
+          signer.sign({
+            chainId: reservation.chainId,
+            signerAddress: reservation.custodyAddress,
+            targetAddress: reservation.jackpotAddress,
+            nonce: reservation.nonce,
+            data: calldata,
+            valueWei: 0n,
+            gas,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+          }),
+        )
+      : Effect.fail(failed("cutoff_safety_margin", "preflight"));
     const calldataHash = yield* sha256Hex(hexToBytes(calldata));
     yield* store.prepare({
       reservation,
@@ -651,17 +689,32 @@ export function makeMegapotPurchaseCoordinator(input: {
     if (nativeBalance < requiredNative) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
-    const reservation = yield* store.reserveNonce({
-      candidate,
-      effectId,
-      ticket,
-      observedPendingNonce: pendingNonce,
-      observedBlockNumber: feeQuote.observedBlockNumber,
-      observedBlockHash: feeQuote.observedBlockHash,
-      observedAt: new Date(now()).toISOString(),
-    });
+    const reserved = yield* store
+      .reserveNonce({
+        candidate,
+        effectId,
+        ticket,
+        observedPendingNonce: pendingNonce,
+        observedBlockNumber: feeQuote.observedBlockNumber,
+        observedBlockHash: feeQuote.observedBlockHash,
+        observedAt: new Date(now()).toISOString(),
+      })
+      .pipe(
+        Effect.map((reservation) => ({ kind: "reserved" as const, reservation })),
+        Effect.catchTag("MegapotPurchaseStorageFailed", (error) =>
+          Effect.gen(function* () {
+            // An unknown COMMIT is NEVER a no-effect witness or permission to close.
+            if (error.reason !== "constraint") return yield* error;
+            if ((yield* store.findProgress(effectId)) !== null) return yield* error;
+            const closed = yield* checkPreBroadcastWindow(candidate);
+            if (closed === null) return yield* error;
+            return closed;
+          }),
+        ),
+      );
+    if (reserved.kind === "closed") return reserved;
     return yield* signReserved(
-      reservation,
+      reserved.reservation,
       calldata,
       gas,
       feeQuote.maxFeePerGas,

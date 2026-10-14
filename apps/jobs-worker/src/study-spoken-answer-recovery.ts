@@ -74,8 +74,19 @@ const READS = [
   "postgres:age_verification_ceremony_attempts",
   "postgres:age_verification_requirement_states",
   "postgres:account_age_verification_current",
+  // Prospective Account/Guest completion/retained-group source closure.
+  "postgres:guest_owner_associations",
+  "postgres:participation_eligibility_decisions",
+  "postgres:megapot_owner_shares",
+  "postgres:owner_participation_admission_operations",
+  "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_READS = [
+  // Actual bounded captured-choice source and original hold owning continuation.
+  "postgres:owner_captured_guest_choice_commands",
+  "postgres:megapot_drawing_observations",
+  "postgres:megapot_deployment_attestations",
+  "postgres:platform_sponsorship_budgets",
   "postgres:guest_study_spoken_captures",
   "postgres:guest_study_spoken_checkpoints",
   "postgres:guest_participation_operations",
@@ -116,8 +127,15 @@ export const STUDY_SPOKEN_ANSWER_RECOVERY_WRITES = [
   "postgres:song_reward_bundle_claim_legs",
   "postgres:song_reward_offer_legs",
   "postgres:reward_ledger_credits",
+  // Actual qualified fourth-card completion can create original held/admitted
+  // owner facts. Plain practice neither fabricates nor drops these liabilities.
+  "postgres:participation_eligibility_decisions",
+  "postgres:megapot_owner_shares",
+  "postgres:owner_participation_admission_operations",
+  "postgres:owner_participation_admission_attempts",
 ] as const satisfies readonly TableKey[];
 const GUEST_WRITES = [
+  "postgres:owner_captured_guest_choice_commands",
   "postgres:guest_participation_operations",
   "postgres:guest_resource_edge_locks",
   "postgres:guest_resource_session_reservations",
@@ -151,7 +169,11 @@ export function makeStudySpokenAnswerRecoveryJob(
     const db = yield* ControlPlaneDb,
       collector = yield* AlertCollector;
     const summary = yield* runStudySourceRecoveryCycle(
-      makeStudySourceRecoveryStages(Layer.succeed(ControlPlaneDb, db), guest),
+      makeStudySourceRecoveryStages(
+        Layer.succeed(ControlPlaneDb, db),
+        guest,
+        guest?.accountOriginalAdmissionRuntime,
+      ),
     );
     if (summary.account.fenced > 0)
       yield* collector.emit({

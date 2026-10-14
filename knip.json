@@ -26,6 +26,47 @@
         "infra/**/*.ts",
         "scripts/hns-continuity/*.mjs"
       ]
+    },
+    "packages/platform-cf": {
+      "entry": [
+        "src/index.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/activity-qualification-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/bounded-audio-transaction.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/community-join-intent-resolver.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/control-plane-error-classification.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/controlled-account-study-store.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/custody-solvency-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/document-ceremony-store.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/gates-v2-community.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/hns-authority-diagnostics.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/learner-audio-account-lock.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/learner-audio-captured-io.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/learner-audio-producer-store.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-allocation-coordinator.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-allocation-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-claim-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-commitment-coordinator.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-commitment-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-cutoff-coordinator.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-cutoff-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-drawing-observation-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-purchase-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-sweep-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/megapot-v2.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/nationality-ceremony-store.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/persona-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/postgres.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-claim-verification-intent.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-obligation-authority.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-operations-control.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-payout-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-projection-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/reward-qualification-policy.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/rewards-composed-chain.pg-fixture.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/study-v2-item-projection.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/study-v2-repository.ts",
+        "src/historical-api-next-3ef1f879.pg-fixture/worker-request-diagnostics.ts"
+      ]
     }
   }
 }

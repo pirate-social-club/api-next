@@ -342,7 +342,7 @@ const lockQualificationPolicies = Effect.fn("SongRewardOffer.lockQualificationPo
   }
 });
 
-export function makeControlPlaneSongRewardOfferRepository() {
+function makeSongRewardOfferRepositoryWithVersion(beneficiaryVersion: 2 | 3) {
   return {
     listAdmittedAssets: (input: Parameters<SongRewardOfferStore["listAdmittedAssets"]>[0]) =>
       Effect.gen(function* () {
@@ -612,6 +612,24 @@ export function makeControlPlaneSongRewardOfferRepository() {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            if (beneficiaryVersion === 3) {
+              const admission = yield* transaction.execute<unknown>({
+                label: "owner-reward.leg.authorize-creation",
+                text: "SELECT authorize_owner_megapot_leg_creation_v1($1,$2,$3,$4) AS authorized",
+                values: [input.accountId, input.personaId, input.offerId, input.idempotencyKey],
+                readonly: false,
+              });
+              const authorized = yield* Effect.try({
+                try: () => {
+                  if (admission.rows.length !== 1) throw new Error();
+                  return Schema.decodeUnknownSync(Schema.Struct({ authorized: Schema.Boolean }), {
+                    onExcessProperty: "error",
+                  })(admission.rows[0]).authorized;
+                },
+                catch: () => storage("invalid-row"),
+              });
+              if (!authorized) return yield* rejected("not-found");
+            }
             const endpoint = "/reward-offers/:offerId/megapot-pool-legs";
             yield* lockAction(transaction, { ...input, endpoint });
             const replay = yield* transaction.execute<Row>({
@@ -627,6 +645,24 @@ export function makeControlPlaneSongRewardOfferRepository() {
               if (text(row, "request_hash") !== input.requestHash) {
                 return yield* rejected("idempotency-conflict");
               }
+              const originalVersion = yield* transaction.execute<unknown>({
+                label: "owner-reward.leg.original-version",
+                text: "SELECT beneficiary_version FROM song_reward_offer_legs WHERE leg_id=$1",
+                values: [text(row, "leg_id")],
+                readonly: true,
+              });
+              const storedVersion = yield* Effect.try({
+                try: () => {
+                  if (originalVersion.rows.length !== 1) throw new Error();
+                  return Schema.decodeUnknownSync(
+                    Schema.Struct({ beneficiary_version: Schema.Literals([2, 3]) }),
+                    { onExcessProperty: "error" },
+                  )(originalVersion.rows[0]).beneficiary_version;
+                },
+                catch: () => storage("unavailable"),
+              });
+              if (storedVersion !== beneficiaryVersion)
+                return yield* rejected("idempotency-conflict");
               return { leg: yield* readLeg(transaction, text(row, "leg_id")), replayed: true };
             }
             const lockedHead = yield* lockOwnerPolicyHead(transaction, { offerId: input.offerId });
@@ -713,11 +749,11 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        empty_pool_policy,funding_source,fallback_beneficiary_account_id,
                        fallback_payout_persona_id,referral_allocation_version,referral_policy_hash,
                        referral_disclosed_at,legal_activation_gate,created_at,updated_at,
-                       owner_policy_kind,owner_policy_revision,owner_policy_hash
+                       owner_policy_kind,owner_policy_revision,owner_policy_hash,beneficiary_version
                      ) VALUES ($1,$2,'megapot_pool','draft',$3,'refund_to_funders_pro_rata',$4,
                        $5,$6,$7,$8,1,$9,$10,'equal_v1','keccak_packed_v1',$11,$12,$13,$14,
                        $15,'leg_budget',$16,$17,$18,$19,$20,'test_only',$5,$5,
-                       'frozen_policy',$21,$22)`,
+                       'frozen_policy',$21,$22,$23)`,
               values: [
                 input.legId,
                 input.offerId,
@@ -741,6 +777,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.referralDisclosedAt,
                 integer(row, "owner_policy_revision"),
                 text(row, "owner_policy_hash"),
+                beneficiaryVersion,
               ],
               readonly: false,
             });
@@ -1014,6 +1051,21 @@ export function makeControlPlaneSongRewardOfferRepository() {
       }).pipe(mapped),
   };
 }
+
+/** Existing ordinary creator retains its original2 behavior. Version is trusted
+ * source composition, never a browser/admin request flag or an old-leg promotion. */
+export function makeControlPlaneSongRewardOfferRepository() {
+  return makeSongRewardOfferRepositoryWithVersion(2);
+}
+export const makeControlPlaneOwnerMegapotPoolLegCreator = (
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): Pick<SongRewardOfferStore, "addMegapotPoolLeg"> => {
+  const repository = makeSongRewardOfferRepositoryWithVersion(3);
+  return {
+    addMegapotPoolLeg: (input) =>
+      mapped(Effect.provide(layer)(repository.addMegapotPoolLeg(input))),
+  };
+};
 
 export const makeControlPlaneSongRewardOfferStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,

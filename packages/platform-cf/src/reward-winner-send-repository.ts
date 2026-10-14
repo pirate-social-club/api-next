@@ -11,7 +11,7 @@ import {
   RewardWinnerSendStorageFailed,
   type RewardWinnerSendStore,
 } from "@pirate/application";
-import { Effect, type Layer } from "effect";
+import { Effect, type Layer, Schema } from "effect";
 import { CONFIRMED_PAYOUT_WALLET } from "./reward-gas-topup-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -145,7 +145,7 @@ function getIn(executor: Executor, input: { readonly accountId: string; readonly
   return Effect.gen(function* () {
     const result = yield* executor.execute<Row>({
       label: "reward-winner-send.record.read",
-      text: `${RECORD_SELECT} WHERE send.account_id=$1 AND send.send_id=$2`,
+      text: `${RECORD_SELECT} WHERE account_owns_reward_credit_v1($1,send.credit_id) IS TRUE AND send.send_id=$2`,
       values: [input.accountId, input.sendId],
       readonly: true,
     });
@@ -171,7 +171,7 @@ function lockIn(
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "reward-winner-send.record.lock",
-      text: `SELECT account_id, attempt, status FROM reward_winner_sends
+      text: `SELECT account_id, credit_id, attempt, status FROM reward_winner_sends
               WHERE send_id=$1 FOR UPDATE`,
       values: [input.sendId],
       readonly: false,
@@ -180,11 +180,27 @@ function lockIn(
     const row = result.rows[0] as Row;
     const locked = yield* parse(() => ({
       accountId: text(row, "account_id"),
+      creditId: text(row, "credit_id"),
       attempt: integer(row, "attempt"),
       status: text(row, "status") as RewardWinnerSendStatus,
     }));
-    if (input.accountId !== undefined && locked.accountId !== input.accountId) {
-      return yield* rejected("not-found");
+    if (input.accountId !== undefined) {
+      const observed = yield* transaction.execute({
+        label: "reward-winner-send.owner-access.read",
+        text: "SELECT account_owns_reward_credit_v1($1,$2) AS owned",
+        values: [input.accountId, locked.creditId],
+        readonly: true,
+      });
+      const owned = yield* Effect.try({
+        try: () => {
+          if (observed.rows.length !== 1) throw new Error();
+          return Schema.decodeUnknownSync(Schema.Struct({ owned: Schema.Boolean }), {
+            onExcessProperty: "error",
+          })(observed.rows[0]).owned;
+        },
+        catch: () => storage("invalid-row"),
+      });
+      if (!owned) return yield* rejected("not-found");
     }
     return locked;
   });
@@ -296,9 +312,10 @@ function insertOutcomeIn(
   });
 }
 
-function contextFromRow(row: Row): RewardWinnerSendContext {
+function contextFromRow(row: Row, authenticatedAccountId: string): RewardWinnerSendContext {
   return {
     creditId: text(row, "credit_id"),
+    authenticatedAccountId,
     accountId: text(row, "account_id"),
     personaId: text(row, "payout_persona_id"),
     walletAssignmentId: text(row, "assignment_id"),
@@ -321,7 +338,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                           attempt.amount_atomic::text AS amount_atomic
                      FROM reward_winner_send_attempts attempt
                      JOIN reward_winner_sends send ON send.send_id=attempt.send_id
-                    WHERE attempt.account_id=$1 AND attempt.idempotency_key=$2`,
+                    WHERE account_owns_reward_credit_v1($1,send.credit_id) IS TRUE AND attempt.idempotency_key=$2`,
             values: [input.accountId, input.idempotencyKey],
             readonly: true,
           });
@@ -352,7 +369,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-winner-send.credit.read",
-            text: `${RECORD_SELECT} WHERE send.account_id=$1 AND send.credit_id=$2
+            text: `${RECORD_SELECT} WHERE account_owns_reward_credit_v1($1,send.credit_id) IS TRUE AND send.credit_id=$2
                     ORDER BY (send.status <> 'cancelled') DESC, send.created_at DESC,
                              send.send_id DESC
                     LIMIT 1`,
@@ -375,7 +392,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-winner-send.context.read",
-            text: `SELECT credit.credit_id, credit.account_id, credit.payout_persona_id,
+            text: `SELECT credit.credit_id, identity.effective_account_id AS account_id, identity.effective_persona_id AS payout_persona_id,
                           credit.chain_id, credit.token_address,
                           credit.paid_atomic::text AS paid_atomic,
                           credit.source_kind, credit.state,
@@ -386,8 +403,9 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                           ) AS claimed,
                           wallet.assignment_id, wallet.address
                      FROM reward_ledger_credits credit
+                     LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(credit.credit_id) identity ON true
                      LEFT JOIN LATERAL (${CONFIRMED_PAYOUT_WALLET}) wallet ON true
-                    WHERE credit.credit_id=$1 AND credit.account_id=$2`,
+                    WHERE credit.credit_id=$1 AND account_owns_reward_credit_v1($2,credit.credit_id) IS TRUE`,
             values: [input.creditId, input.accountId],
             readonly: true,
           });
@@ -403,20 +421,40 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           ) {
             return yield* rejected("credit-not-eligible");
           }
-          return yield* parse(() => contextFromRow(row));
+          return yield* parse(() => contextFromRow(row, input.accountId));
         }),
       ),
     create: (input: Parameters<RewardWinnerSendStore["create"]>[0]) =>
       mapped(
         Effect.gen(function* () {
+          const observedNonce = yield* input.readNonce;
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const { context } = input;
+              yield* transaction.execute({
+                label: "reward-winner-send.original-identity.lock",
+                text: "SELECT lock_reward_credit_for_payout_v1($1)",
+                values: [context.creditId],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "reward-winner-send.current-actor.recheck",
+                text: "SELECT require_reward_credit_new_spend_authority_v1($1,$2,$3,$4,$5,$6)",
+                values: [
+                  context.authenticatedAccountId,
+                  context.creditId,
+                  context.accountId,
+                  context.personaId,
+                  context.walletAssignmentId,
+                  context.senderAddress,
+                ],
+                readonly: true,
+              });
               const nonce = yield* reserveSenderNonceIn(transaction, {
                 chainId: context.chainId,
                 senderAddress: context.senderAddress,
-                readNonce: input.readNonce,
+                readNonce: Effect.succeed(observedNonce),
               });
               yield* transaction.execute({
                 label: "reward-winner-send.create",
@@ -453,7 +491,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                 readonly: false,
               });
               return yield* requireRecord(transaction, {
-                accountId: context.accountId,
+                accountId: context.authenticatedAccountId,
                 sendId: input.sendId,
               });
             }),
@@ -463,13 +501,26 @@ export function makeControlPlaneRewardWinnerSendRepository() {
     startAttempt: (input: Parameters<RewardWinnerSendStore["startAttempt"]>[0]) =>
       mapped(
         Effect.gen(function* () {
+          const observedNonce = yield* input.readNonce;
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "reward-winner-send.retry-current-actor.recheck",
+                text: "SELECT require_reward_send_new_spend_authority_v1($1,$2)",
+                values: [input.accountId, input.sendId],
+                readonly: true,
+              });
               const sender = yield* transaction.execute<Row>({
                 label: "reward-winner-send.sender.read",
                 text: `SELECT chain_id, sender_address FROM reward_winner_sends
-                        WHERE send_id=$1 AND account_id=$2`,
+                        WHERE send_id=$1 AND account_owns_reward_credit_v1($2,credit_id) IS TRUE`,
                 values: [input.sendId, input.accountId],
                 readonly: false,
               });
@@ -486,7 +537,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
               }
               const nonce = yield* reserveSenderNonceIn(transaction, {
                 ...identity,
-                readNonce: input.readNonce,
+                readNonce: Effect.succeed(observedNonce),
               });
               const attempt = input.previousAttempt + 1;
               yield* transaction.execute({
@@ -498,7 +549,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
                 values: [
                   input.sendId,
                   attempt,
-                  input.accountId,
+                  locked.accountId,
                   input.idempotencyKey,
                   input.recipientAddress,
                   input.amountAtomic.toString(),
@@ -526,6 +577,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               const existing = yield* transaction.execute<Row>({
                 label: "reward-winner-send.transaction.read",
@@ -585,6 +642,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               // Another request settled or moved this attempt first.
               if (
@@ -621,6 +684,12 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "reward-winner-send.original-source.lock",
+                text: "SELECT lock_reward_send_financial_source_v1($1)",
+                values: [input.sendId],
+                readonly: false,
+              });
               const locked = yield* lockIn(transaction, input);
               if (locked.attempt !== input.attempt || locked.status !== "settled_unverified") {
                 return yield* rejected("send-conflict");

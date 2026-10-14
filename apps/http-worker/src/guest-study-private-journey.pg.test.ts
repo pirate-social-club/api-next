@@ -300,7 +300,7 @@ suite("genuine guest learning private HTTP/PostgreSQL journey", () => {
       ).toBe(true);
       expect(
         guestAccountingNames.every(
-          (name) => guestParticipationRegistry[name].implementation === "disabled",
+          (name) => guestParticipationRegistry[name].implementation === undefined,
         ),
       ).toBe(true);
     });

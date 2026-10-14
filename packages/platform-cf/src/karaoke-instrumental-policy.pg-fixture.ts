@@ -13,6 +13,10 @@ import {
   prepareIdentity,
 } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
+import {
+  confirmHistoricalWallet3ef,
+  prepareHistoricalIdentity3ef,
+} from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -72,8 +76,11 @@ export async function prepareSinger(
   if (options?.historicalPre0247 === true)
     await admin.query("INSERT INTO users(user_id) VALUES ($1)", [accountId]);
   else await makeOwnedOrdinaryAccountBirthFixture(runtime)(accountId);
-  const prepared = await prepareIdentity(runtime)(accountId, `prepare-${accountId}`);
-  await confirmWallet(runtime)(accountId, prepared.persona_id);
+  const prepare =
+    options?.historicalPre0247 === true ? prepareHistoricalIdentity3ef : prepareIdentity;
+  const confirm = options?.historicalPre0247 === true ? confirmHistoricalWallet3ef : confirmWallet;
+  const prepared = await prepare(runtime)(accountId, `prepare-${accountId}`);
+  await confirm(runtime)(accountId, prepared.persona_id);
   return prepared.persona_id;
 }
 

@@ -228,6 +228,9 @@ suite("Activity persona preparation", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      for (const accountId of ["participant", "foreign-account"]) {
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+      }
       const layer = makeDirectPostgresControlPlaneLayer(scoped);
       const services = personaServices(layer);
 
@@ -415,6 +418,7 @@ suite("Activity persona preparation", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", ["racer"]);
       const services = personaServices(makeDirectPostgresControlPlaneLayer(scoped));
       const raced = await Promise.allSettled([
         prepare(services, {
@@ -552,6 +556,10 @@ suite("Activity persona preparation", () => {
         await admin.query("SET session_replication_role = origin");
       }
 
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [
+        "participation-author",
+      ]);
+
       // The runtime role is cluster-global. Create it only when absent and
       // remove it again so this file cannot break suites that assert the
       // deployment role template has not been applied yet.
@@ -570,6 +578,12 @@ suite("Activity persona preparation", () => {
       );
       await admin.query(
         `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${quoteIdentifier(schema)} TO api_next_app`,
+      );
+      await admin.query(
+        `GRANT EXECUTE ON FUNCTION
+           ${quoteIdentifier(schema)}.lock_account_persona_reward_identity_v1(text),
+           ${quoteIdentifier(schema)}.lock_account_reward_finalization_v1(text,text,text,text)
+         TO api_next_app`,
       );
 
       // Preparation, session start, reload/resume, completion and replay all

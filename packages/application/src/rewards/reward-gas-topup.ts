@@ -45,6 +45,9 @@ export type RewardGasTopupLimits = Readonly<{
 /** A paid, claimed credit and the wallet a top-up would fund. */
 export type RewardGasTopupRequestContext = Readonly<{
   creditId: string;
+  /** Trusted ordinary actor, separately rechecked after original source locks. */
+  authenticatedAccountId: string;
+  /** Immutable original paid recipient; never rewritten to the canonical actor. */
   accountId: string;
   personaId: string;
   walletAssignmentId: string;

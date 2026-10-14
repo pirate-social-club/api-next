@@ -49,6 +49,10 @@ import {
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
 import {
+  type GuestStudyRecoveryManagedBindings,
+  makeDefaultGuestStudyRecoveryComposition,
+} from "./guest-study-recovery-managed-composition.ts";
+import {
   type HnsActiveLeaseRenewalBindings,
   makeHnsActiveLeaseRenewalJob,
 } from "./hns-active-lease-renewal";
@@ -70,6 +74,7 @@ import {
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -86,7 +91,7 @@ import {
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
-import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
+import type { GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -110,6 +115,7 @@ export {
   makeMegapotRewardsJob,
   runMegapotRewardsCycle,
 } from "./megapot-rewards";
+export { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
 export {
   buildJobRegistry,
   groupDueJobsByLane,
@@ -144,7 +150,8 @@ export interface JobsWorkerEnv
     HnsActiveLeaseRenewalBindings,
     MediaJobsBindings,
     TelegramBindings,
-    SpacesReconciliationBindings {
+    SpacesReconciliationBindings,
+    GuestStudyRecoveryManagedBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
@@ -764,10 +771,17 @@ export function makeJobsWorkerDeclarations(
   }
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
-  if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
-  if (learnerAudio !== undefined) {
-    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery));
-  }
+  const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
+  const studyJob =
+    learnerAudio === undefined
+      ? undefined
+      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+  // One actual writer owns both source families. The unchanged registry still
+  // rejects arbitrary duplicate declarations; no shared-writer waiver exists.
+  if (megapotJob !== undefined && studyJob !== undefined) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  } else if (megapotJob !== undefined) declarations.push(megapotJob);
+  else if (studyJob !== undefined) declarations.push(studyJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }
@@ -850,6 +864,10 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
+    const guestStudyRecovery = await makeDefaultGuestStudyRecoveryComposition(
+      env,
+      config.API_NEXT_ENV,
+    );
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -868,6 +886,7 @@ export default {
           })()
         : undefined,
       spacesReconciliation,
+      guestStudyRecovery,
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);

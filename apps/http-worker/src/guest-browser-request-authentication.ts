@@ -158,7 +158,94 @@ export function makeGuestBrowserRequestAuthenticator(
           : null;
     return kind === null ? null : { kind, accountId: verified.userId, token };
   };
+  const trustedOrigin = (
+    request: Request,
+    verifiedHns?: VerifiedHnsCommunityAppApiRequest,
+  ): string => {
+    const headers = request.headers;
+    if (verifiedHns !== undefined) {
+      if (
+        protectedIngress === undefined ||
+        new URL(request.url).origin !== protectedIngress ||
+        verifiedHns.exact_origin !== `https://${verifiedHns.normalized_host}`
+      )
+        throw refused("guest_origin_or_csrf_invalid");
+      try {
+        return exactHttpsOrigin(verifiedHns.exact_origin);
+      } catch {
+        throw refused("guest_origin_or_csrf_invalid");
+      }
+    }
+    if (
+      hasReservedHnsCommunityAppHeader(headers) ||
+      (protectedIngress !== undefined && new URL(request.url).origin === protectedIngress)
+    )
+      throw refused("guest_origin_or_csrf_invalid");
+    return ordinaryOrigin;
+  };
+  const accountBoundary = (headers: Headers, origin: string, unsafe: boolean) => {
+    if (headers.has("authorization")) throw refused("account_proof_required");
+    const suppliedOrigin = headers.get("origin");
+    if (suppliedOrigin !== null && suppliedOrigin !== origin)
+      throw refused("guest_origin_or_csrf_invalid");
+    if (unsafe) assertOrdinaryCookieCsrf(headers, origin);
+  };
   return {
+    /** Account-only original recovery. Guest cookie damage/revocation cannot gate it.
+     * The caller never supplies an account ID, scope witness or session digest.
+     */
+    async authenticateOrdinaryAccount(
+      input: Readonly<{
+        request: Request;
+        purpose: "ordinary_account" | "successful_attachment";
+        unsafe: boolean;
+        verifiedHns?: VerifiedHnsCommunityAppApiRequest;
+      }>,
+    ): Promise<
+      Readonly<{ origin: string; account: OrdinaryBrowserAccount | SetupBrowserAccount }>
+    > {
+      const origin = trustedOrigin(input.request, input.verifiedHns);
+      const headers = new Headers(input.request.headers);
+      accountBoundary(headers, origin, input.unsafe);
+      const verified = await verifyAccountPurpose(
+        headers,
+        input.purpose === "successful_attachment",
+      );
+      if (verified === null) throw refused("account_proof_required");
+      const binding = await sessionBinding(origin, verified.token);
+      const account: OrdinaryBrowserAccount | SetupBrowserAccount =
+        verified.kind === "ordinary_account"
+          ? { kind: "ordinary_account", accountId: verified.accountId, sessionBinding: binding }
+          : {
+              kind: "persona_wallet_setup",
+              accountId: verified.accountId,
+              sessionBinding: binding,
+            };
+      return { origin, account };
+    },
+    /** Refusal-only account checks AFTER actual Access and BEFORE actual HNS MAC body hash.
+     * Claimed host does not mint authority: authenticateOrdinaryAccount requires final MAC proof.
+     */
+    async precheckOrdinaryAccountHnsBeforeBody(
+      input: Readonly<{
+        request: Request;
+        purpose: "ordinary_account" | "successful_attachment";
+        unsafe: boolean;
+      }>,
+    ): Promise<void> {
+      if (protectedIngress === undefined || new URL(input.request.url).origin !== protectedIngress)
+        throw refused("guest_origin_or_csrf_invalid");
+      const headers = new Headers(input.request.headers);
+      const host = headers.get(HNS_FORWARDER_HOST_HEADER);
+      if (host === null || !isCanonicalHnsForwarderHost(host))
+        throw refused("guest_origin_or_csrf_invalid");
+      accountBoundary(headers, `https://${host}`, input.unsafe);
+      const verified = await verifyAccountPurpose(
+        headers,
+        input.purpose === "successful_attachment",
+      );
+      if (verified === null) throw refused("account_proof_required");
+    },
     /** Refusal only. Actual HNS verifier invokes this AFTER Access, BEFORE body clone/hash.
      * Canonical claimed host is never final authority; no context or binding is minted.
      */
@@ -210,26 +297,7 @@ export function makeGuestBrowserRequestAuthenticator(
       }>,
     ): Promise<BrowserParticipationContext> {
       const headers = new Headers(input.request.headers);
-      let origin = ordinaryOrigin;
-      if (input.verifiedHns !== undefined) {
-        const verified = input.verifiedHns;
-        if (
-          protectedIngress === undefined ||
-          new URL(input.request.url).origin !== protectedIngress ||
-          verified.exact_origin !== `https://${verified.normalized_host}`
-        )
-          throw refused("guest_origin_or_csrf_invalid");
-        try {
-          origin = exactHttpsOrigin(verified.exact_origin);
-        } catch {
-          throw refused("guest_origin_or_csrf_invalid");
-        }
-      } else if (
-        hasReservedHnsCommunityAppHeader(headers) ||
-        (protectedIngress !== undefined && new URL(input.request.url).origin === protectedIngress)
-      ) {
-        throw refused("guest_origin_or_csrf_invalid");
-      }
+      const origin = trustedOrigin(input.request, input.verifiedHns);
       // Header-only origin/guest CSRF/cookie cap checks precede any account verifier,
       // digest work, handler, body decode, canonical request hash or reservation.
       assertGuestBrowserRequestBoundary({

@@ -148,7 +148,7 @@ describe("PostgreSQL test discovery", () => {
     }
   });
 
-  test("counts native pgTest aliases in the same shard model as ordinary calls", () => {
+  test("counts native pgTest aliases in the same shard model as ordinary calls", async () => {
     const source = [
       "const pgTest = pgUrl ? test : test.skip;",
       'test("ordinary", () => undefined);',
@@ -157,6 +157,28 @@ describe("PostgreSQL test discovery", () => {
     ].join("\n");
     expect(postgresTestSourceCallCount(source)).toBe(3);
     expect(postgresTestSourceCallCount("const pgTest = pgUrl ? test : test.skip;")).toBe(0);
+    // These exact new groups must reach the normal required PostgreSQL shard,
+    // keeping real pgTest discovery and the existing independent category model.
+    for (const file of [
+      "packages/platform-cf/src/owner-megapot-creator.pg.test.ts",
+      "apps/http-worker/src/owner-financial-default-worker.pg.test.ts",
+    ]) {
+      const nativeSource = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
+      const nativeCount = postgresTestSourceCallCount(nativeSource);
+      expect(nativeCount).toBe(3);
+      expect(postgresTestFileWeight(file, nativeCount)).toBe(60);
+    }
+    // Two current267 native suites now have complete whole-process observations;
+    // pgTest discovery retains their one-call source-growth bound.
+    for (const [file, measuredWeight] of [
+      ["apps/http-worker/src/current267-legacy-v2-preservation.pg.test.ts", 84],
+      ["apps/jobs-worker/src/guest-study-recovery-current267.pg.test.ts", 169],
+    ] as const) {
+      const nativeSource = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
+      const nativeCount = postgresTestSourceCallCount(nativeSource);
+      expect(nativeCount).toBe(1);
+      expect(postgresTestFileWeight(file, nativeCount)).toBe(measuredWeight);
+    }
     // The full current four-case readiness group is measured as one complete
     // file; alias discovery never restores the old one-call weight20.
     expect(

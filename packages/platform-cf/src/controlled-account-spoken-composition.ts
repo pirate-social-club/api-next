@@ -1,10 +1,7 @@
-import {
-  type ControlPlaneDb,
-  type ControlPlaneError,
-  type StudyBatchTranscriber,
-} from "@pirate/application";
+import type { ControlPlaneDb, ControlPlaneError, StudyBatchTranscriber } from "@pirate/application";
 import { makeControlledAccountSpokenService } from "@pirate/application/controlled-account-spoken";
 import type { Layer } from "effect";
+import type { AccountOwnerRewardHooks } from "./account-owner-reward-hooks.ts";
 import { makeAccountControlledSpokenProtocol } from "./account-spoken-producer-protocol.ts";
 import { makeControlledAccountStudyV2Store } from "./controlled-account-study-store.ts";
 import type { CapturedStudyAudioBucket } from "./learner-audio-captured-io.ts";
@@ -16,8 +13,9 @@ export const makeControlledAccountSpokenComposition = (
   rerecordEnabled: boolean,
   retainTask: (task: Promise<unknown>) => void,
   admission?: StudyV2Admission,
+  ownerRewards?: AccountOwnerRewardHooks,
 ) => {
-  const store = makeControlledAccountStudyV2Store(runtime, admission);
+  const store = makeControlledAccountStudyV2Store(runtime, admission, ownerRewards);
   const protocol = makeAccountControlledSpokenProtocol(
     runtime,
     store.reserve,

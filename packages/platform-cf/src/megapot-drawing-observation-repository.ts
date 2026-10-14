@@ -10,6 +10,7 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { mapMegapotStorageFailure } from "./control-plane-error-classification.ts";
+import { openOwnerDrawingsForObservation } from "./owner-drawing-opener.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -255,7 +256,7 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
                          JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
                          JOIN megapot_drawing_observations observation
                            ON observation.observation_id=$1
-                        WHERE leg.kind='megapot_pool' AND leg.status='active'
+                        WHERE leg.kind='megapot_pool' AND leg.status='active' AND leg.beneficiary_version=2
                           AND offer.status='active'
                           AND leg.attestation_id=observation.attestation_id
                           AND observation.drawing_id >= leg.participation_starts_drawing_id
@@ -296,5 +297,29 @@ export const makeControlPlaneMegapotDrawingObservationStore = (
   return {
     loadCandidate: (attestationId) => provide(repository.loadCandidate(attestationId)),
     recordAndOpen: (observation) => provide(repository.recordAndOpen(observation)),
+  };
+};
+
+/** Managed prospective3 observer composition. The original chain observation
+ * must ACK before an opening is attempted; retry uses native original drawing
+ * identity/salt. Provider observation and ticket purchase remain separate. */
+export const makeControlPlaneOwnerMegapotDrawingObservationStore = (
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): MegapotDrawingObservationStore => {
+  const ordinary = makeControlPlaneMegapotDrawingObservationStore(layer);
+  return {
+    loadCandidate: ordinary.loadCandidate,
+    recordAndOpen: Effect.fn("OwnerDrawingObservationStore.recordAndOpen")(function* (
+      input: Parameters<MegapotDrawingObservationStore["recordAndOpen"]>[0],
+    ) {
+      const accepted = yield* ordinary.recordAndOpen(input);
+      const ownerOpened = yield* mapped<string[], never, never>(
+        openOwnerDrawingsForObservation(accepted.observationId).pipe(Effect.provide(layer)),
+      );
+      return {
+        ...accepted,
+        openedPoolLegIds: [...new Set([...accepted.openedPoolLegIds, ...ownerOpened])].sort(),
+      };
+    }),
   };
 };

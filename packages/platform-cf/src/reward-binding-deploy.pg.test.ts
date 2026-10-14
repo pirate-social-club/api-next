@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
   assertRewardsShutdownInventory,
@@ -25,7 +25,7 @@ const scoped = (schema: string) => {
 suite("reward binding shutdown database proof", () => {
   test("a zero-owed upload holds pause until completion and running control refuses shutdown", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await withPreservedPostgresTestSchema({
       baseConnectionString: url,
       schemaName: "reward_binding_empty",
       use: async ({ admin, schema }) => {
@@ -82,7 +82,7 @@ suite("reward binding shutdown database proof", () => {
 
   test("actual funded leg and open offer remain visible even while paused; missing inventory cannot deploy", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await withPreservedPostgresTestSchema({
       baseConnectionString: url,
       schemaName: "reward_binding_funded",
       use: async ({ admin, schema }) => {

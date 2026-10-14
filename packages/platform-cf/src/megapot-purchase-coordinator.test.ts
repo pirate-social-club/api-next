@@ -158,6 +158,12 @@ function harness(
     lease?: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
     /** Makes the record of a submission fail, as a lost database write would. */
     record?: { fail: boolean };
+    originalWindow?: { open: boolean; lapseAfter?: "reserve" | "prepare" };
+    reserveFailure?: "constraint" | "outcome-unknown";
+    pendingAdmission?: boolean;
+    monotonic?: { now: number };
+    beforeWindowRead?: (progress: MegapotPurchaseProgress | null) => Promise<void>;
+    beforeAuthority?: (progress: MegapotPurchaseProgress | null) => Promise<void>;
   }> = {},
 ) {
   let progress: MegapotPurchaseProgress | null = null;
@@ -174,6 +180,11 @@ function harness(
     },
     reserveNonce: (request) => {
       events.push("reserve");
+      if (input.originalWindow?.lapseAfter === "reserve") input.originalWindow.open = false;
+      if (input.reserveFailure !== undefined) {
+        if (input.originalWindow !== undefined) input.originalWindow.open = false;
+        return Effect.fail(new MegapotPurchaseStorageFailed({ reason: input.reserveFailure }));
+      }
       if (input.lease?.lapseAfter === "reserve") input.lease.live = false;
 
       const reservation = {
@@ -188,6 +199,7 @@ function harness(
     },
     prepare: (request) => {
       events.push("prepare");
+      if (input.originalWindow?.lapseAfter === "prepare") input.originalWindow.open = false;
       if (input.lease?.lapseAfter === "prepare") input.lease.live = false;
 
       prepared = {
@@ -315,13 +327,28 @@ function harness(
   const coordinator = makeMegapotPurchaseCoordinator({
     authority: {
       ensure: () =>
-        Effect.suspend(() =>
-          input.lease === undefined || input.lease.live
-            ? Effect.void
-            : Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
-        ),
+        Effect.gen(function* () {
+          if (input.beforeAuthority !== undefined)
+            yield* Effect.tryPromise({
+              try: () => input.beforeAuthority?.(progress) ?? Promise.resolve(),
+              catch: () => new RewardOperationsPaused({ reason: "paused" }),
+            });
+          if (input.lease !== undefined && !input.lease.live)
+            return yield* new RewardOperationsPaused({ reason: "paused" });
+        }),
     },
     store,
+    readOriginalWindow: () =>
+      Effect.gen(function* () {
+        if (input.beforeWindowRead !== undefined)
+          yield* Effect.tryPromise({
+            try: () => input.beforeWindowRead?.(progress) ?? Promise.resolve(),
+            catch: () => new MegapotPurchaseStorageFailed({ reason: "constraint" }),
+          });
+        if (input.pendingAdmission)
+          return yield* new MegapotPurchaseStorageFailed({ reason: "constraint" });
+        return { open: input.originalWindow?.open ?? true, remainingMilliseconds: 1_000 };
+      }),
     rpc,
     signer,
     options: {
@@ -330,6 +357,7 @@ function harness(
       gasLimitMultiplierBps: 12_000,
       nativeGasReserveFloorWei: 1_000n,
       now: () => 1_800_000_000_000,
+      monotonicNow: () => input.monotonic?.now ?? 0,
     },
   });
   return {
@@ -496,4 +524,211 @@ describe("Megapot purchase under a run lease", () => {
       "submission:accepted",
     ]);
   });
+});
+
+describe("original drawing purchase window", () => {
+  const command = { poolLegId: candidate.poolLegId, drawingId: 101n };
+  const attempt = (fixture: ReturnType<typeof harness>) =>
+    Effect.runPromise(
+      fixture.coordinator.purchase(command).pipe(
+        Effect.map((value) => value.kind as string),
+        Effect.catch((error) => Effect.succeed(`failed:${error._tag}`)),
+      ),
+    );
+
+  test("a resolved original deadline closes only the original proven-unsent drawing", async () => {
+    const fixture = harness({ originalWindow: { open: false } });
+    expect(await attempt(fixture)).toBe("closed");
+    expect(fixture.events).toEqual(["close:cutoff_safety_margin"]);
+    expect(fixture.getProgress()).toBeNull();
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("an unresolved admission holds both purchase and no-purchase closure", async () => {
+    const fixture = harness({ originalWindow: { open: false }, pendingAdmission: true });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    await expect(
+      Effect.runPromise(fixture.coordinator.closeUnavailable(command)),
+    ).rejects.toThrow();
+    expect(fixture.events).toEqual([]);
+    expect(fixture.getProgress()).toBeNull();
+  });
+
+  test("a deadline crossed during nonce locking closes after definite rollback only", async () => {
+    const fixture = harness({ originalWindow: { open: true }, reserveFailure: "constraint" });
+    expect(await attempt(fixture)).toBe("closed");
+    expect(fixture.events).toEqual(["reserve", "close:cutoff_safety_margin"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("unknown reserve COMMIT never closes or releases an original drawing", async () => {
+    const fixture = harness({ originalWindow: { open: true }, reserveFailure: "outcome-unknown" });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    expect(fixture.events).toEqual(["reserve"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("a retained nonce reservation cannot be signed after its original deadline", async () => {
+    const fixture = harness({ originalWindow: { open: true, lapseAfter: "reserve" } });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getProgress()?.state).toBe("nonce_reserved");
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.events).toEqual(["reserve"]);
+    expect(fixture.getSignCalls()).toBe(0);
+    expect(fixture.getSendCalls()).toBe(0);
+  });
+
+  test("a retained signature cannot be sent after its original deadline", async () => {
+    const fixture = harness({ originalWindow: { open: true, lapseAfter: "prepare" } });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseCoordinatorFailed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(0);
+    expect(fixture.events).toEqual(["reserve", "prepare"]);
+  });
+
+  test("original landed transaction recovery bypasses later window/config rejection", async () => {
+    const originalWindow = { open: true };
+    const record = { fail: true };
+    const fixture = harness({ originalWindow, record });
+    expect(await attempt(fixture)).toBe("failed:MegapotPurchaseStorageFailed");
+    expect(fixture.getProgress()?.state).toBe("prepared");
+    expect(fixture.getSendCalls()).toBe(1);
+    record.fail = false;
+    originalWindow.open = false;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.getSignCalls()).toBe(1);
+    expect(fixture.getSendCalls()).toBe(1);
+    expect(fixture.events).not.toContain("close:cutoff_safety_margin");
+  });
+});
+
+// Deferred query and authority boundaries exercise the two different waits:
+// pause must be sampled AFTER the window, while the original deadline must
+// still be checked synchronously AFTER the final authority response.
+const purchaseBoundaryGate = () => {
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  let used = false;
+  return {
+    entered: entered.promise,
+    release: () => released.resolve(),
+    wait: async () => {
+      if (used) return;
+      used = true;
+      entered.resolve();
+      await released.promise;
+    },
+  };
+};
+const finitePurchaseBoundary = async <A>(promise: Promise<A>): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("owned purchase boundary did not settle")),
+          1_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+for (const phase of ["sign", "send"] as const) {
+  const state = phase === "sign" ? "nonce_reserved" : "prepared";
+  test(`pause during original-window wait refuses ${phase} before external IO`, async () => {
+    const gate = purchaseBoundaryGate();
+    const lease = { live: true };
+    const fixture = harness({
+      lease,
+      beforeWindowRead: (progress) => (progress?.state === state ? gate.wait() : Promise.resolve()),
+    });
+    const original = Effect.runPromise(
+      fixture.coordinator.purchase({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+    ).then(
+      (value) => ({ kind: "completed" as const, value }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    try {
+      await finitePurchaseBoundary(gate.entered);
+      lease.live = false;
+      gate.release();
+      const result = await finitePurchaseBoundary(original);
+      expect(result.kind).toBe("failed");
+      if (result.kind !== "failed") throw new Error("pause unexpectedly admitted external IO");
+      expect(result.error).toBeInstanceOf(RewardOperationsPaused);
+      expect(fixture.getProgress()?.state).toBe(state);
+      expect(fixture.getSignCalls()).toBe(phase === "sign" ? 0 : 1);
+      expect(fixture.getSendCalls()).toBe(0);
+      expect(fixture.events.some((event) => event.startsWith("submission:"))).toBe(false);
+    } finally {
+      gate.release();
+      await finitePurchaseBoundary(original);
+    }
+  });
+
+  test(`original deadline passing during final authority wait refuses ${phase}`, async () => {
+    const gate = purchaseBoundaryGate();
+    const monotonic = { now: 0 };
+    const fixture = harness({
+      monotonic,
+      beforeAuthority: (progress) => (progress?.state === state ? gate.wait() : Promise.resolve()),
+    });
+    const original = Effect.runPromise(
+      fixture.coordinator.purchase({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+    ).then(
+      (value) => ({ kind: "completed" as const, value }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    try {
+      await finitePurchaseBoundary(gate.entered);
+      monotonic.now = 1_000;
+      gate.release();
+      const result = await finitePurchaseBoundary(original);
+      expect(result.kind).toBe("failed");
+      if (result.kind !== "failed")
+        throw new Error("expired original deadline admitted external IO");
+      expect(result.error).toMatchObject({
+        _tag: "MegapotPurchaseCoordinatorFailed",
+        reason: "cutoff_safety_margin",
+      });
+      expect(fixture.getProgress()?.state).toBe(state);
+      expect(fixture.getSignCalls()).toBe(phase === "sign" ? 0 : 1);
+      expect(fixture.getSendCalls()).toBe(0);
+      expect(fixture.events.some((event) => event.startsWith("submission:"))).toBe(false);
+    } finally {
+      gate.release();
+      await finitePurchaseBoundary(original);
+    }
+  });
+}
+
+test("original-window round trip consumes the native deadline budget", async () => {
+  const monotonic = { now: 0 };
+  const fixture = harness({
+    monotonic,
+    beforeWindowRead: (progress) => {
+      if (progress?.state === "nonce_reserved") monotonic.now = 1_001;
+      return Promise.resolve();
+    },
+  });
+  await expect(
+    Effect.runPromise(
+      fixture.coordinator.purchase({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+    ),
+  ).rejects.toMatchObject({
+    _tag: "MegapotPurchaseCoordinatorFailed",
+    reason: "cutoff_safety_margin",
+  });
+  expect(fixture.getProgress()?.state).toBe("nonce_reserved");
+  expect(fixture.getSignCalls()).toBe(0);
+  expect(fixture.getSendCalls()).toBe(0);
 });

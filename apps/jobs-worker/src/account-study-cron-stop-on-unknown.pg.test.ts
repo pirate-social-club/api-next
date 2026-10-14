@@ -16,6 +16,7 @@ import {
 } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
 import { makeControlledAccountSpokenRecovery } from "../../../packages/platform-cf/src/controlled-account-spoken-recovery.ts";
 import { makeControlledAccountStudyV2Store } from "../../../packages/platform-cf/src/controlled-account-study-store.ts";
+import { runSerialStudyMegapotRecovery } from "./serial-study-megapot-recovery.ts";
 import { runStudySourceRecoveryCycle } from "./study-source-recovery-cycle.ts";
 
 const pgTest = pgUrl === undefined ? test.skip : test;
@@ -139,30 +140,42 @@ pgTest(
       let guestStageCalls = 0,
         expiryStageCalls = 0,
         cleanupStageCalls = 0;
+      let financialStageCalls = 0;
+      const originalStartedAtMs = Date.now();
       const result = await run(
         Effect.result(
-          runStudySourceRecoveryCycle({
-            account: account.recover(),
-            guest: {
-              // These are only downstream execution observers, never mocked DB
-              // results or claimed successful Guest/release authority.
-              closed: Effect.sync(() => {
-                guestStageCalls++;
-                return { examined: 0, completed: 0, pending: 0, skipped: 0 };
-              }),
-              releaseNext: () =>
-                Effect.sync(() => {
-                  expiryStageCalls++;
-                  return { state: "idle" as const };
+          runSerialStudyMegapotRecovery({
+            outerStartedAtMs: originalStartedAtMs,
+            now: Date.now,
+            // Only an execution observer follows the real Study native stage;
+            // this is not a successful financial SDK/receipt or money fixture.
+            financial: Effect.sync(() => {
+              financialStageCalls++;
+            }),
+            study: runStudySourceRecoveryCycle({
+              account: account.recover(),
+              guest: {
+                // These are only downstream execution observers, never mocked DB
+                // results or claimed successful Guest/release authority.
+                closed: Effect.sync(() => {
+                  guestStageCalls++;
+                  return { examined: 0, completed: 0, pending: 0, skipped: 0 };
                 }),
-              maximumReleases: 1,
-              ephemeralCleanup: Effect.sync(() => {
-                cleanupStageCalls++;
-              }),
-            },
+                releaseNext: () =>
+                  Effect.sync(() => {
+                    expiryStageCalls++;
+                    return { state: "idle" as const };
+                  }),
+                maximumReleases: 1,
+                ephemeralCleanup: Effect.sync(() => {
+                  cleanupStageCalls++;
+                }),
+              },
+            }).pipe(Effect.asVoid),
           }),
         ),
       );
+      expect(financialStageCalls).toBe(0);
       expect(lost.observed()).toBe(true);
       expect(result._tag).toBe("Failure");
       if (result._tag === "Failure")

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./account-original-admission-reconciliation": "./src/account-original-admission-reconciliation.ts",
     "./account-age-verification": "./src/account-age-verification.ts",
     "./karaoke-reset-caller": "./src/karaoke-reset-caller.ts",
     ".": "./src/index.ts",
@@ -240,7 +241,20 @@
     "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts",
     "./guest-study-managed-readiness": "./src/guest-study-managed-readiness.ts",
     "./guest-study-managed-control-planes": "./src/guest-study-managed-control-planes.ts",
-    "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts"
+    "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts",
+    "./owner-megapot-settlement-store": "./src/owner-megapot-settlement-store.ts",
+    "./owner-megapot-commitment-coordinator": "./src/owner-megapot-commitment-coordinator.ts",
+    "./versioned-megapot-coordinators": "./src/versioned-megapot-coordinators.ts",
+    "./owner-reward-credit-read-store": "./src/owner-reward-credit-read-store.ts",
+    "./owner-credit-erasure-admission-store": "./src/owner-credit-erasure-admission-store.ts",
+    "./owner-recipient-store": "./src/owner-recipient-store.ts",
+    "./guest-reward-prepared-content-store": "./src/guest-reward-prepared-content-store.ts",
+    "./owner-reward-study-continuation": "./src/owner-reward-study-continuation.ts",
+    "./owner-drawing-opener": "./src/owner-drawing-opener.ts",
+    "./owner-participation-read-store": "./src/owner-participation-read-store.ts",
+    "./owner-account-study-facade": "./src/owner-account-study-facade.ts",
+    "./guest-study-readiness-profile": "./src/guest-study-readiness-profile.ts",
+    "./owner-financial-guest-study-readiness-source": "./src/owner-financial-guest-study-readiness-source.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

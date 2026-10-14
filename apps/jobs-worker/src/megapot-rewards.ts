@@ -15,15 +15,19 @@ import {
   makeControlPlaneRewardPayoutStore,
   makeControlPlaneRewardRefundStore,
   makeMegapotAllocationCoordinator,
-  makeMegapotCutoffCoordinator,
   makeRewardFundingCoordinator,
   makeRewardGasTopupCoordinator,
   type RewardFundingCoordinator,
 } from "@pirate/platform-cf";
+import { makeControlPlaneOwnerMegapotSettlementStore } from "@pirate/platform-cf/owner-megapot-settlement-store";
 import {
   makeControlPlaneRewardLeaseExpiryPause,
   makeControlPlaneRewardRunAuthority,
 } from "@pirate/platform-cf/reward-operations-control";
+import {
+  makeVersionedMegapotAllocationCoordinator,
+  makeVersionedMegapotCutoffCoordinator,
+} from "@pirate/platform-cf/versioned-megapot-coordinators";
 import { Effect, Exit, Fiber, Layer } from "effect";
 import {
   MEGAPOT_REWARDS_CYCLE_JOB,
@@ -79,6 +83,27 @@ const MEGAPOT_REWARDS_READS = [
   "postgres:megapot_pool_shares",
   "postgres:megapot_pool_beneficiary_snapshots",
   "postgres:megapot_pool_snapshot_private_leaves",
+  "postgres:participation_owners",
+  "postgres:users",
+  "postgres:account_aliases",
+  "postgres:guest_empty_owner_aliases",
+  "postgres:personas",
+  "postgres:persona_community_bindings",
+  "postgres:persona_wallet_assignments",
+  "postgres:guest_learning_schema_phase",
+  "postgres:activity_qualifications",
+  "postgres:participation_eligibility_decisions",
+  "postgres:megapot_owner_shares",
+  "postgres:megapot_owner_snapshot_leaves",
+  "postgres:megapot_owner_allocations",
+  "postgres:reward_credit_persona_bindings",
+  "postgres:reward_credit_recipient_selections",
+  "postgres:guest_owner_associations",
+  "postgres:megapot_participant_claims",
+  "postgres:account_owner_reward_sources",
+  "postgres:study_sessions_v2",
+  "postgres:owner_participation_admission_operations",
+  "postgres:owner_participation_admission_attempts",
   "postgres:megapot_pool_commitment_effects",
   "postgres:reward_signer_nonces",
   "postgres:reward_chain_effects",
@@ -114,10 +139,32 @@ const MEGAPOT_REWARDS_WRITES = MEGAPOT_REWARDS_READS.filter(
     table !== "postgres:megapot_deployment_attestations" &&
     table !== "postgres:reward_activity_availability_observations" &&
     table !== "postgres:megapot_pool_shares" &&
-    table !== "postgres:reward_gas_topup_wallets",
+    table !== "postgres:reward_gas_topup_wallets" &&
+    table !== "postgres:participation_owners" &&
+    table !== "postgres:users" &&
+    table !== "postgres:account_aliases" &&
+    table !== "postgres:guest_empty_owner_aliases" &&
+    table !== "postgres:personas" &&
+    table !== "postgres:persona_community_bindings" &&
+    table !== "postgres:persona_wallet_assignments" &&
+    table !== "postgres:guest_learning_schema_phase" &&
+    table !== "postgres:activity_qualifications" &&
+    table !== "postgres:participation_eligibility_decisions" &&
+    table !== "postgres:megapot_owner_shares" &&
+    table !== "postgres:reward_credit_recipient_selections" &&
+    table !== "postgres:guest_owner_associations" &&
+    table !== "postgres:megapot_participant_claims" &&
+    table !== "postgres:account_owner_reward_sources" &&
+    table !== "postgres:study_sessions_v2" &&
+    table !== "postgres:owner_participation_admission_operations" &&
+    table !== "postgres:owner_participation_admission_attempts",
 ) satisfies readonly TableKey[];
 
 const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
+  "ControlPlaneAcquireFailed",
+  "ControlPlaneOperationTimedOut",
+  "ControlPlaneStatementFailed",
+  "ControlPlaneTransactionOutcomeUnknown",
   "MegapotRewardRoutingRejected",
   "CustodySolvencyCoordinatorFailed",
   "CustodySolvencyRejected",
@@ -339,15 +386,30 @@ export function makeMegapotRewardsJob(
         }
       }
       const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
-      const cutoff = makeMegapotCutoffCoordinator({
-        store: makeControlPlaneMegapotCutoffStore(controlPlane),
-        externalSponsorDailyTicketCeiling: options.externalSponsorDailyTicketCeiling,
-        externalSponsorDailySpendCeilingAtomic: options.externalSponsorDailySpendCeilingAtomic,
-        sharedSponsorDailyTicketCeiling: options.sharedSponsorDailyTicketCeiling,
-        sharedSponsorDailySpendCeilingAtomic: options.sharedSponsorDailySpendCeilingAtomic,
+      const ownerStore = makeControlPlaneOwnerMegapotSettlementStore(controlPlane);
+      const cutoff = makeVersionedMegapotCutoffCoordinator({
+        runtime: controlPlane,
+        account: {
+          store: makeControlPlaneMegapotCutoffStore(controlPlane),
+          externalSponsorDailyTicketCeiling: options.externalSponsorDailyTicketCeiling,
+          externalSponsorDailySpendCeilingAtomic: options.externalSponsorDailySpendCeilingAtomic,
+          sharedSponsorDailyTicketCeiling: options.sharedSponsorDailyTicketCeiling,
+          sharedSponsorDailySpendCeilingAtomic: options.sharedSponsorDailySpendCeilingAtomic,
+        },
+        ownerStore,
+        ownerCeilings: {
+          externalTickets: options.externalSponsorDailyTicketCeiling,
+          externalSpendAtomic: options.externalSponsorDailySpendCeilingAtomic.toString(),
+          sharedTickets: options.sharedSponsorDailyTicketCeiling,
+          sharedSpendAtomic: options.sharedSponsorDailySpendCeilingAtomic.toString(),
+        },
       });
-      const allocation = makeMegapotAllocationCoordinator({
-        store: makeControlPlaneMegapotAllocationStore(controlPlane),
+      const allocation = makeVersionedMegapotAllocationCoordinator({
+        runtime: controlPlane,
+        ownerStore,
+        account: makeMegapotAllocationCoordinator({
+          store: makeControlPlaneMegapotAllocationStore(controlPlane),
+        }),
       });
 
       const leaseAlert = yield* pauseOnRunLeaseExpiry(
@@ -382,7 +444,11 @@ export function makeMegapotRewardsJob(
           sweep: routing.sweep,
           claim: routing.claim,
           allocate: (work) =>
-            allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+            allocation.allocate({
+              poolLegId: work.poolLegId,
+              drawingId: work.drawingId.toString(),
+            }),
+          allocateZeroNet: allocation.allocateZeroNet,
           closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
           refund: routing.refund,
           payout: routing.payout,

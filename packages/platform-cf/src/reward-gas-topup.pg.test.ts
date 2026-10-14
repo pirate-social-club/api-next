@@ -24,6 +24,7 @@ import {
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "./megapot-v2-signer.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { rewardFinancialSourceDiagnosticClientFactory } from "./reward-financial-source-diagnostic.pg-fixture.ts";
 import {
   deriveRewardGasTopupEffectId,
   makeRewardGasTopupCoordinator,
@@ -113,6 +114,11 @@ async function seedPrerequisites(admin: Client) {
   await admin.query("SET session_replication_role = replica");
   try {
     await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other'), ('third')");
+    await admin.query("SET session_replication_role = origin");
+    for (const accountId of ["winner", "other", "third"]) {
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+    }
+    await admin.query("SET session_replication_role = replica");
     for (const [index, row] of FIXTURES.entries()) {
       const credit = `credit-${row.persona}`;
       const assignment = `assignment-${row.persona}`;
@@ -334,7 +340,9 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     await admin.query(`SET search_path TO "${schema}"`);
     await applyPostgresTestBaselineConnection({ rewardsRunning: true, connectionString: scoped });
     await seedPrerequisites(admin);
-    layer = makeDirectPostgresControlPlaneLayer(scoped);
+    layer = makeDirectPostgresControlPlaneLayer(scoped, {
+      clientFactory: rewardFinancialSourceDiagnosticClientFactory,
+    });
     let sequence = 0;
     requester = makeRewardGasTopupRequester({
       store: makeControlPlaneRewardGasTopupRequestStore(layer),
@@ -671,7 +679,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
              FROM reward_gas_topups WHERE topup_id=$2`,
         [WALLETS.otherNew, topupId],
       ),
-    ).rejects.toThrow("must target the confirmed payout wallet");
+    ).rejects.toThrow("gas must retain its original credit recipient");
   });
 
   test("the guard rejects a custody-signed or mismatched gas top-up effect", async () => {

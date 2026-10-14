@@ -26,12 +26,12 @@ const baselineModule =
       });
 const PgClientConstructor = pgModule?.Client;
 const applyPostgresTestBaselineConnection = baselineModule?.applyPostgresTestBaselineConnection;
-const withReusablePostgresTestSchema = baselineModule?.withReusablePostgresTestSchema;
+const withPreservedPostgresTestSchema = baselineModule?.withPreservedPostgresTestSchema;
 const suite =
   connectionString === undefined ||
   PgClientConstructor === undefined ||
   applyPostgresTestBaselineConnection === undefined ||
-  withReusablePostgresTestSchema === undefined
+  withPreservedPostgresTestSchema === undefined
     ? describe.skip
     : describe;
 
@@ -57,11 +57,11 @@ async function withSchema<A>(
   if (PgClientConstructor === undefined) throw new Error("package-local pg driver unavailable");
   if (
     applyPostgresTestBaselineConnection === undefined ||
-    withReusablePostgresTestSchema === undefined
+    withPreservedPostgresTestSchema === undefined
   ) {
     throw new Error("PostgreSQL baseline helper is unavailable");
   }
-  return withReusablePostgresTestSchema({
+  return withPreservedPostgresTestSchema({
     baseConnectionString: connectionString,
     schemaName: "scripts_community_purchase_funding_plans_pg_test_ts",
     use: async ({ admin, schema }) => {

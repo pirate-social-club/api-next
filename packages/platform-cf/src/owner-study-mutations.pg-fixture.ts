@@ -11,6 +11,7 @@ import {
   type Fixture,
   fixture,
   hash,
+  type PreparedSongFixtureOptions,
   pgUrl,
   policy,
   q,
@@ -88,7 +89,10 @@ export type MutationFixture = Fixture & {
     options?: PostgresControlPlaneOptions,
   ) => ReturnType<typeof makeControlPlaneOwnerStudyMutations>;
 };
-export async function mutationFixture(use: (f: MutationFixture) => Promise<void>) {
+export async function mutationFixture(
+  use: (f: MutationFixture) => Promise<void>,
+  options?: PreparedSongFixtureOptions,
+) {
   if (!pgUrl) throw new Error("Owned loopback PostgreSQL URL required");
   const all = await migrations();
   await fixture(async (f) => {
@@ -198,5 +202,5 @@ export async function mutationFixture(use: (f: MutationFixture) => Promise<void>
         },
       );
     await use({ ...f, mutationStore: mutationStoreFor(), mutationStoreFor });
-  });
+  }, options);
 }

@@ -2,10 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -26,16 +28,18 @@ const connectionForSchema = (raw: string, schema: string): string => {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
 
-async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (admin: Client, scopedConnection: string) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return withPreservedPostgresTestSchema({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_rewards_qualification_pg_test_ts",
     use: async ({ admin, schema }) => {
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
       const scopedConnection = connectionForSchema(connectionString, schema);
       await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-      return await use(admin);
+      return await use(admin, scopedConnection);
     },
   });
 }
@@ -43,6 +47,7 @@ async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
 async function seedAccountSong(
   admin: Client,
   suffix: string,
+  scopedConnection: string,
 ): Promise<{
   readonly accountId: string;
   readonly communityId: string;
@@ -52,10 +57,9 @@ async function seedAccountSong(
   const accountId = `account-${suffix}`;
   const communityId = `community-${suffix}`;
   const postId = `post-${suffix}`;
-  await admin.query(
-    `INSERT INTO users (user_id, status, account, created_at)
-     VALUES ($1, 'active', '{}'::jsonb, clock_timestamp() - interval '30 days')`,
-    [accountId],
+  // Genuine identity birth commits user and immutable Account owner together.
+  await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scopedConnection))(
+    accountId,
   );
   await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
@@ -148,8 +152,8 @@ suite("Postgres 17 activity qualification persistence", () => {
   });
 
   test("enforces an account-pinned IANA timezone with a prospective seven-day CAS", async () => {
-    await withSchema(async (admin) => {
-      const { accountId } = await seedAccountSong(admin, "clock");
+    await withSchema(async (admin, scopedConnection) => {
+      const { accountId } = await seedAccountSong(admin, "clock", scopedConnection);
       await admin.query(
         `UPDATE account_streak_clocks
             SET timezone='America/New_York',
@@ -183,8 +187,8 @@ suite("Postgres 17 activity qualification persistence", () => {
   });
 
   test("grades frozen Study items and permits only the exact qualifying reducer output", async () => {
-    await withSchema(async (admin) => {
-      const identity = await seedAccountSong(admin, "study");
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedAccountSong(admin, "study", scopedConnection);
       const createdAt = new Date(Date.now() - 60_000).toISOString();
       const completedAt = new Date().toISOString();
       await admin.query(
@@ -332,8 +336,8 @@ suite("Postgres 17 activity qualification persistence", () => {
   });
 
   test("binds Karaoke terminal evidence and rejects below-policy qualifications", async () => {
-    await withSchema(async (admin) => {
-      const identity = await seedAccountSong(admin, "karaoke");
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedAccountSong(admin, "karaoke", scopedConnection);
       const createdAt = new Date(Date.now() - 60_000).toISOString();
       const completedAt = new Date().toISOString();
       await admin.query(
@@ -427,8 +431,8 @@ suite("Postgres 17 activity qualification persistence", () => {
   });
 
   test("keeps full-mix qualification reversible through immutable v2 policy rows", async () => {
-    await withSchema(async (admin) => {
-      const identity = await seedAccountSong(admin, "karaoke-v2");
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedAccountSong(admin, "karaoke-v2", scopedConnection);
       const createdAt = new Date(Date.now() - 60_000).toISOString();
       const completedAt = new Date().toISOString();
       await admin.query(

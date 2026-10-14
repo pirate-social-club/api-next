@@ -1,5 +1,5 @@
 import {
-  ControlPlaneDb,
+  type ControlPlaneDb,
   type ControlPlaneError,
   type StudyV2Failure,
   type StudyV2Store,
@@ -8,6 +8,7 @@ import {
 import type { ControlledAccountSpokenProtocol } from "@pirate/application/controlled-account-spoken";
 import { StudyAnswerResultV2 } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
+import type { AccountOwnerRewardHooks } from "./account-owner-reward-hooks.ts";
 import { LearnerAudioUploadCaptureSchema } from "./learner-audio-producer-store.ts";
 import { makeControlPlaneStudyV2Repository, type StudyV2Admission } from "./study-v2-repository.ts";
 
@@ -26,12 +27,13 @@ const invalid = () => new StudyV2StoreFailed({ reason: "invalid-row" });
 export const makeControlledAccountStudyV2Store = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   admission?: StudyV2Admission,
+  ownerRewards?: AccountOwnerRewardHooks,
 ): Readonly<{
   ordinary: StudyV2Store;
   reserve: ControlledAccountSpokenProtocol["reserve"];
   finalize: ControlledAccountSpokenProtocol["finalize"];
 }> => {
-  const repository = makeControlPlaneStudyV2Repository(admission, true);
+  const repository = makeControlPlaneStudyV2Repository(admission, true, ownerRewards);
   const provide = <A>(
     effect: Effect.Effect<A, ControlPlaneError | StudyV2Failure, ControlPlaneDb>,
   ) =>

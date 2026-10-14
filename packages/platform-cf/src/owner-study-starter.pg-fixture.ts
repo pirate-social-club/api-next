@@ -110,6 +110,9 @@ export type Fixture = {
   accountStore: ReturnType<typeof makeControlPlaneStudyV2Store>;
   accountOriginal: Awaited<ReturnType<typeof accountStart>>;
   lines: readonly string[];
+  /** TEST ONLY: unknown owned work requires app-kill/PG-stop before DROP. */
+  deferDestructiveCleanup: () => void;
+  destructiveCleanupDeferred: () => boolean;
   storeFor: (
     config?: PostgresControlPlaneOptions,
     policyInput?: unknown,
@@ -148,13 +151,26 @@ export async function editFixture(admin: Client, sql: string, values: readonly u
     await admin.query("SET session_replication_role=origin");
   }
 }
-export async function fixture(use: (f: Fixture) => Promise<void>) {
+export type PreparedSongFixtureOptions = Readonly<{
+  initializeOwnerPolicy?: true;
+  ownedResetNamespace?: true;
+  canonicalManagedSchema?: true;
+}>;
+export async function fixture(
+  use: (f: Fixture) => Promise<void>,
+  options?: PreparedSongFixtureOptions,
+) {
   if (!pgUrl) throw new Error("Owned test PG URL missing");
   if (!["127.0.0.1", "localhost"].includes(new URL(pgUrl).hostname))
     throw new Error("Private starter fixture requires coordinator-owned loopback PostgreSQL");
   const packet = await migrations();
   const suffix = crypto.randomUUID().replaceAll("-", "");
-  const schema = `gs_capture_${suffix}`,
+  const schema =
+      options?.canonicalManagedSchema === true
+        ? "api_next"
+        : options?.ownedResetNamespace === true
+          ? `api_next_hns_observer_${suffix}`
+          : `gs_capture_${suffix}`,
     role = `gs_capture_login_${suffix}`;
   const password = bytesHex(randomBytes(32));
   const admin = new Client({
@@ -162,11 +178,12 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     connectionTimeoutMillis: 5000,
     statement_timeout: 15000,
   });
+  let cleanupDeferred = false;
   let guest: Client | undefined;
   let createdSchema = false,
     createdRole = false;
-  await admin.connect();
   try {
+    await admin.connect();
     await admin.query(`CREATE SCHEMA ${q(schema)}`);
     createdSchema = true;
     await admin.query(`SET search_path TO ${q(schema)},pg_catalog`);
@@ -177,7 +194,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       migrations: packet.historical,
       expectedLedger: [],
     });
-    const { lines } = await insertStudySongFixture(admin);
+    const { lines } = await insertStudySongFixture(admin, options);
     const accountStore = makeControlPlaneStudyV2Store(
       makeDirectPostgresControlPlaneLayer(scoped.toString(), {
         closeTimeoutMs: 2000,
@@ -273,7 +290,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
     );
     createdRole = true;
     await admin.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${q(schema)} FROM PUBLIC,${q(role)};
-      REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(schema)} FROM PUBLIC,${q(role)};GRANT USAGE ON SCHEMA ${q(schema)} TO ${q(role)}`);
+      REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(schema)} FROM ${q(role)};GRANT USAGE ON SCHEMA ${q(schema)} TO ${q(role)}`);
     await admin.query("SELECT require_guest_learning_runtime_role_v1($1::regrole)", [role]);
     for (const signature of [
       "prepare_guest_study_start_v1(jsonb,jsonb,text,text,text,text,text,jsonb)",
@@ -332,13 +349,18 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
       accountOriginal,
       lines,
       storeFor,
+      deferDestructiveCleanup: () => {
+        cleanupDeferred = true;
+      },
+      destructiveCleanupDeferred: () => cleanupDeferred,
     });
   } finally {
     if (guest) await guest.end().catch(() => undefined);
     await admin.query("ROLLBACK").catch(() => undefined);
     try {
-      if (createdSchema) await admin.query(`DROP SCHEMA ${q(schema)} CASCADE`);
-      if (createdRole) await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
+      if (createdSchema && !cleanupDeferred) await admin.query(`DROP SCHEMA ${q(schema)} CASCADE`);
+      if (createdRole && !cleanupDeferred)
+        await admin.query(`DROP OWNED BY ${q(role)};DROP ROLE ${q(role)}`);
     } finally {
       await admin.end();
     }

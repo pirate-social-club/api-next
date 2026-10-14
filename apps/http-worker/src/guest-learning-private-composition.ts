@@ -6,7 +6,9 @@ export function makeGuestLearningPrivateComposition(
   dependencies: Parameters<typeof makeGuestLearningComposition>[0],
 ) {
   for (const name of guestAccountingNames)
-    if (guestParticipationRegistry[name].implementation !== "disabled")
-      throw new Error("Private learning composition requires disabled accounting declarations");
+    if (guestParticipationRegistry[name].implementation !== undefined)
+      throw new Error(
+        "Private learning composition requires source-admitted accounting declarations",
+      );
   return Object.freeze({ ...makeGuestLearningComposition(dependencies) });
 }

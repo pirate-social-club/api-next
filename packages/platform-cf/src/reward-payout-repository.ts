@@ -114,7 +114,8 @@ const ASSET_BONUS_LINEAGE = `
          AND credit.source_kind='asset_bonus'`;
 
 const CANDIDATE_SELECT = `
-  SELECT credit.credit_id, credit.account_id, credit.payout_persona_id,
+  SELECT credit.credit_id, identity.effective_account_id AS account_id,
+         identity.effective_persona_id AS payout_persona_id,
          (credit.amount_atomic-credit.paid_atomic) AS amount_atomic,
          wallet.assignment_id AS wallet_assignment_id,
          wallet.address AS destination_address,
@@ -128,6 +129,7 @@ const CANDIDATE_SELECT = `
          attestation.referrer_address, attestation.jackpot_code_hash,
          attestation.usdc_code_hash, attestation.ticket_nft_code_hash
     FROM reward_ledger_credits credit
+    LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(credit.credit_id) identity ON true
     JOIN reward_asset_whitelist asset
       ON asset.chain_id=credit.chain_id AND asset.token_address=credit.token_address
     LEFT JOIN LATERAL (
@@ -140,6 +142,8 @@ const CANDIDATE_SELECT = `
          AND allocation.allocation_kind IN ('participant','external_fallback')
          AND credit.source_kind IN ('megapot_allocation','external_fallback')
        UNION
+      SELECT identity.pinned_attestation_id WHERE identity.pinned_attestation_id IS NOT NULL
+       UNION
       ${ASSET_BONUS_LINEAGE}
     ) lineage ON true
     JOIN megapot_deployment_attestations attestation
@@ -151,8 +155,9 @@ const CANDIDATE_SELECT = `
     LEFT JOIN LATERAL (
       SELECT assignment_id, address
         FROM persona_wallet_assignments
-       WHERE account_id=credit.account_id
-         AND persona_id=credit.payout_persona_id
+       WHERE account_id=identity.effective_account_id
+         AND persona_id=identity.effective_persona_id
+         AND (identity.identity_version='account_v1' OR identity.recipient_ready IS TRUE)
          AND chain_account_kind='evm' AND status='active'
         ORDER BY assigned_at, assignment_id LIMIT 1
     ) wallet ON true
@@ -175,6 +180,7 @@ const LINEAGE_SELECT = `
                    OR attestation.usdc_address=credit.token_address)
          ) AS attestation_matches
     FROM reward_ledger_credits credit
+    LEFT JOIN LATERAL read_reward_credit_effect_identity_v1(credit.credit_id) identity ON true
     LEFT JOIN reward_asset_whitelist asset
       ON asset.chain_id=credit.chain_id AND asset.token_address=credit.token_address
     LEFT JOIN LATERAL (
@@ -186,6 +192,8 @@ const LINEAGE_SELECT = `
        WHERE allocation.credit_id=credit.credit_id
          AND allocation.allocation_kind IN ('participant','external_fallback')
          AND credit.source_kind IN ('megapot_allocation','external_fallback')
+       UNION
+      SELECT identity.pinned_attestation_id WHERE identity.pinned_attestation_id IS NOT NULL
        UNION
       ${ASSET_BONUS_LINEAGE}
     ) lineage ON true
@@ -226,6 +234,13 @@ function loadCandidateIn(
   input: { readonly creditId: string; readonly lock: boolean },
 ): Effect.Effect<RewardPayoutCandidate, RewardPayoutFailure | ControlPlaneError> {
   return Effect.gen(function* () {
+    if (input.lock)
+      yield* transaction.execute({
+        label: "reward-payout.original-identity.lock",
+        text: "SELECT lock_reward_credit_for_payout_v1($1)",
+        values: [input.creditId],
+        readonly: false,
+      });
     const result = yield* transaction.execute<Row>({
       label: "reward-payout.candidate.read",
       text: `${CANDIDATE_SELECT}

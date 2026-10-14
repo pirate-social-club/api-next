@@ -38,6 +38,7 @@ async function scenario(use: (h: ReturnType<typeof harness>, admin: Client) => P
       await admin.query("INSERT INTO users(user_id,status,account) VALUES($1,'active','{}')", [
         account,
       ]);
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [account]);
       await activatePendingPersonaFixtures(admin);
       await admin.query(
         "UPDATE persona_profiles SET display_name='Original profile',revision=revision+1",

@@ -53,13 +53,13 @@ describe("Default managed Guest Study binding selection", () => {
       makeDefaultGuestStudyManagedRuntime({ GUEST_STUDY_SERVING_ENABLED: "TRUE" }, "staging"),
     ).toThrow("nonproduction");
   });
-  test("admitted learning metadata leaves accounting disabled and cannot replace storage admission", () => {
+  test("admitted learning/financial metadata cannot replace runtime flags or storage admission", () => {
     expect(guestLearningNames).toHaveLength(16);
     expect(guestAccountingNames).toHaveLength(5);
     for (const name of guestLearningNames)
       expect(guestParticipationRegistry[name].implementation).toBeUndefined();
     for (const name of guestAccountingNames)
-      expect(guestParticipationRegistry[name].implementation).toBe("disabled");
+      expect(guestParticipationRegistry[name].implementation).toBeUndefined();
     expect(() =>
       makeDefaultGuestStudyManagedRuntime(
         {

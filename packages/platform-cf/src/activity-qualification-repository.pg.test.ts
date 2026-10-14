@@ -16,14 +16,12 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect } from "effect";
-import type { Client } from "pg";
-import {
-  applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
-} from "../../../scripts/postgres-test-baseline.ts";
+import { Client } from "pg";
+import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import {
   activatePendingPersonaFixtures,
   createActivePersonaFixture,
@@ -68,20 +66,46 @@ async function withSchema<A>(
   use: (input: { readonly admin: Client; readonly scopedConnection: string }) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
-    baseConnectionString: connectionString,
-    schemaName: "packages_platform_cf_src_activity_qualification_repository_pg_test_ts",
-    use: async ({ admin, schema }) => {
-      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-      const scopedConnection = connectionForSchema(connectionString, schema);
-      await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
-      return await use({ admin, scopedConnection });
-    },
-  });
+  // These cases can create real positive outstanding credits. Never reset or
+  // reuse their business schema: preserve every committed liability until the
+  // owned disposable PostgreSQL database/container is physically removed.
+  const schema = `activity_q_owned_${crypto.randomUUID().replaceAll("-", "")}`;
+  const scopedConnection = connectionForSchema(connectionString, schema);
+  const admin = new Client({ connectionString });
+  let outcome: { kind: "completed"; result: A } | { kind: "failed"; error: unknown } | undefined;
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    await applyPostgresTestBaselineConnection({ connectionString: scopedConnection });
+    outcome = { kind: "completed", result: await use({ admin, scopedConnection }) };
+  } catch (error) {
+    outcome = { kind: "failed", error };
+  } finally {
+    try {
+      await admin.end();
+    } catch (cleanupError) {
+      closeFailed = true;
+      closeError = cleanupError;
+    }
+    // Intentionally no DELETE, reset, TRUNCATE, DROP SCHEMA, or fake credit
+    // settlement. The test URL must belong to the runner's disposable database.
+  }
+  if (closeFailed)
+    throw new AggregateError(
+      outcome?.kind === "failed" ? [outcome.error, closeError] : [closeError],
+      "Owned qualification fixture client cleanup failed",
+    );
+  if (outcome === undefined) throw new Error("Owned fixture did not return an outcome");
+  if (outcome.kind === "failed") throw outcome.error;
+  return outcome.result;
 }
 
 async function seedAccountSong(
   admin: Client,
+  scopedConnection: string,
   suffix: string,
 ): Promise<{
   readonly accountId: string;
@@ -92,10 +116,10 @@ async function seedAccountSong(
   const accountId = `account-${suffix}`;
   const communityId = `community-${suffix}`;
   const postId = `post-${suffix}`;
-  await admin.query(
-    `INSERT INTO users (user_id, status, account, created_at)
-     VALUES ($1, 'active', '{}'::jsonb, '2026-08-01T00:00:00.000Z')`,
-    [accountId],
+  // Real registration atomically provisions the immutable Account owner before
+  // activity. Fixture setup never creates an owner lazily or disables its guards.
+  await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scopedConnection))(
+    accountId,
   );
   await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
@@ -163,6 +187,7 @@ async function seedAccountSong(
 
 async function seedParticipant(
   admin: Client,
+  scopedConnection: string,
   identity: Readonly<{ readonly communityId: string; readonly postId: string }>,
   suffix: string,
   member = true,
@@ -173,10 +198,10 @@ async function seedParticipant(
   readonly postId: string;
 }> {
   const accountId = `account-${suffix}`;
-  await admin.query(
-    `INSERT INTO users (user_id, status, account, created_at)
-     VALUES ($1, 'active', '{}'::jsonb, '2026-08-01T00:00:00.000Z')`,
-    [accountId],
+  // Real registration atomically provisions the immutable Account owner before
+  // activity. Fixture setup never creates an owner lazily or disables its guards.
+  await makeOwnedOrdinaryAccountBirthFixture(makeDirectPostgresControlPlaneLayer(scopedConnection))(
+    accountId,
   );
   await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
@@ -654,7 +679,7 @@ const provideServices =
 suite("Postgres 17 activity qualification repository", () => {
   test("derives Study items only from the exact public accepted lyrics revision", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "accepted-lyrics-source");
+      const identity = await seedAccountSong(admin, scopedConnection, "accepted-lyrics-source");
       const source = makeControlPlaneAcceptedLyricsStudyItemSource(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -712,7 +737,7 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("freezes Study evidence, replays commands, and emits one account day", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "repository");
+      const identity = await seedAccountSong(admin, scopedConnection, "repository");
       const source = sourceFor(identity);
       const store = makeControlPlaneActivityQualificationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
@@ -947,10 +972,10 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("uses competition rank and keeps every tie at the requested boundary", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const song = await seedAccountSong(admin, "rank-ties");
-      const second = await seedParticipant(admin, song, "rank-ties-second");
-      const third = await seedParticipant(admin, song, "rank-ties-third");
-      const fourth = await seedParticipant(admin, song, "rank-ties-fourth");
+      const song = await seedAccountSong(admin, scopedConnection, "rank-ties");
+      const second = await seedParticipant(admin, scopedConnection, song, "rank-ties-second");
+      const third = await seedParticipant(admin, scopedConnection, song, "rank-ties-third");
+      const fourth = await seedParticipant(admin, scopedConnection, song, "rank-ties-fourth");
       const ranked = [song, second, third, fourth];
       for (const [index, identity] of ranked.entries()) {
         await admin.query(
@@ -1005,7 +1030,7 @@ suite("Postgres 17 activity qualification repository", () => {
   test("does not admit a qualification whose version differs from either frozen reward type", async () => {
     for (const kind of ["megapot_pool", "asset_bonus"] as const) {
       await withSchema(async ({ admin, scopedConnection }) => {
-        const identity = await seedAccountSong(admin, `bound-version-${kind}`);
+        const identity = await seedAccountSong(admin, scopedConnection, `bound-version-${kind}`);
         await seedVeryRewardEvidence(admin, identity.accountId, `bound-version-${kind}`);
         await admin.query(`INSERT INTO qualification_policy_versions
           (qualification_policy_version_id,activity_key,policy_kind,policy_document)
@@ -1074,9 +1099,19 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("projects Study qualification into one Megapot share per account without entry verification", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "pool-share");
-      const participant = await seedParticipant(admin, identity, "pool-share-missing");
-      const lateParticipant = await seedParticipant(admin, identity, "pool-share-late");
+      const identity = await seedAccountSong(admin, scopedConnection, "pool-share");
+      const participant = await seedParticipant(
+        admin,
+        scopedConnection,
+        identity,
+        "pool-share-missing",
+      );
+      const lateParticipant = await seedParticipant(
+        admin,
+        scopedConnection,
+        identity,
+        "pool-share-late",
+      );
       const source = sourceFor(identity);
       await seedVeryRewardEvidence(admin, identity.accountId, "pool-share");
       await seedVeryRewardEvidence(admin, lateParticipant.accountId, "pool-share-late", "2");
@@ -1319,7 +1354,7 @@ suite("Postgres 17 activity qualification repository", () => {
   for (const reward of ["megapot", "asset"] as const) {
     test(`independent ${reward} admission ${reward === "megapot" ? "admits without entry proof" : "ignores membership and refuses absent or revoked proof"}`, async () => {
       await withSchema(async ({ admin, scopedConnection }) => {
-        const owner = await seedAccountSong(admin, `money-${reward}`);
+        const owner = await seedAccountSong(admin, scopedConnection, `money-${reward}`);
         const { legId } =
           reward === "megapot"
             ? await seedOpenMegapotPool(admin, owner, `money-${reward}`)
@@ -1382,7 +1417,7 @@ suite("Postgres 17 activity qualification repository", () => {
           // bonuses keep the §8.1 admission rule.
           const expectedReason = reward === "megapot" ? null : scenario.reason;
           const suffix = `${reward}-${scenario.key}`;
-          const actor = await seedParticipant(admin, owner, suffix);
+          const actor = await seedParticipant(admin, scopedConnection, owner, suffix);
           if (scenario.proof !== "missing") {
             await seedVeryRewardEvidence(
               admin,
@@ -1516,7 +1551,12 @@ suite("Postgres 17 activity qualification repository", () => {
             expect(await awardCount()).toBe(settled);
           }
           if (scenario.key === "verified-nonmember") {
-            const duplicate = await seedParticipant(admin, owner, `${suffix}-duplicate-subject`);
+            const duplicate = await seedParticipant(
+              admin,
+              scopedConnection,
+              owner,
+              `${suffix}-duplicate-subject`,
+            );
             // The provider-scoped fingerprint cannot acquire a second subject
             // identity for another account. The helper transaction rolls back.
             await expect(
@@ -1566,8 +1606,8 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("never-joined unverified account completes Study, holds a pool share and has no posting effects or credits", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const owner = await seedAccountSong(admin, "never-joined-owner");
-      const actor = await seedParticipant(admin, owner, "never-joined", false);
+      const owner = await seedAccountSong(admin, scopedConnection, "never-joined-owner");
+      const actor = await seedParticipant(admin, scopedConnection, owner, "never-joined", false);
       const { legId } = await seedOpenMegapotPool(admin, owner, "never-joined");
       const source = sourceFor(owner);
       const service = makeActivityQualificationService(
@@ -1670,8 +1710,13 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("ratified participation keeps completion after membership loss and admits pool shares without entry evidence", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "participation-money");
-      const missing = await seedParticipant(admin, identity, "participation-missing");
+      const identity = await seedAccountSong(admin, scopedConnection, "participation-money");
+      const missing = await seedParticipant(
+        admin,
+        scopedConnection,
+        identity,
+        "participation-missing",
+      );
       await seedVeryRewardEvidence(admin, identity.accountId, "participation-money");
       const { legId } = await seedOpenMegapotPool(admin, identity, "participation-money");
       const source = sourceFor(identity);
@@ -1774,10 +1819,15 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("credits every available asset-bonus leg once per verified account", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "asset-claim");
-      const missing = await seedParticipant(admin, identity, "asset-claim-missing");
-      const second = await seedParticipant(admin, identity, "asset-claim-second");
-      const stale = await seedParticipant(admin, identity, "asset-claim-stale");
+      const identity = await seedAccountSong(admin, scopedConnection, "asset-claim");
+      const missing = await seedParticipant(
+        admin,
+        scopedConnection,
+        identity,
+        "asset-claim-missing",
+      );
+      const second = await seedParticipant(admin, scopedConnection, identity, "asset-claim-second");
+      const stale = await seedParticipant(admin, scopedConnection, identity, "asset-claim-stale");
       await seedVeryRewardEvidence(admin, identity.accountId, "asset-claim");
       await seedVeryRewardEvidence(admin, second.accountId, "asset-claim-second", "2");
       await seedVeryRewardEvidence(admin, stale.accountId, "asset-claim-stale", "3");
@@ -2059,8 +2109,13 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("serializes concurrent asset claims at the funded inventory boundary", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "asset-capacity");
-      const second = await seedParticipant(admin, identity, "asset-capacity-second");
+      const identity = await seedAccountSong(admin, scopedConnection, "asset-capacity");
+      const second = await seedParticipant(
+        admin,
+        scopedConnection,
+        identity,
+        "asset-capacity-second",
+      );
       await seedVeryRewardEvidence(admin, identity.accountId, "asset-capacity");
       await seedVeryRewardEvidence(admin, second.accountId, "asset-capacity-second", "2");
       const { legId, offerId } = await seedOpenAssetBonus(admin, identity, "asset-capacity", {
@@ -2217,7 +2272,7 @@ suite("Postgres 17 activity qualification repository", () => {
 
   test("serializes concurrent finalization and keeps timezone updates prospective", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      const identity = await seedAccountSong(admin, "concurrent");
+      const identity = await seedAccountSong(admin, scopedConnection, "concurrent");
       const source = sourceFor(identity);
       const store = makeControlPlaneActivityQualificationStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),

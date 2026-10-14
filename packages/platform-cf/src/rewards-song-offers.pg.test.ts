@@ -14,7 +14,7 @@ import {
 } from "../../../scripts/postgres-migrations.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
@@ -73,7 +73,7 @@ async function withSchema<A>(
   use: (admin: Client, scopedConnection: string) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return withPreservedPostgresTestSchema({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_rewards_song_offers_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -1638,21 +1638,32 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           WHERE observation_id='drawing-observation-100'`,
         [legId],
       );
+      // Establish the actual canonical Account owner under origin before the
+      // illustrative qualification row bypasses only its fixture prerequisites.
+      const ownerReceipt = await admin.query<{ owner_id: string }>(
+        "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+        [identity.accountId],
+      );
+      const ownerId = ownerReceipt.rows[0]?.owner_id;
+      if (ownerReceipt.rows.length !== 1 || typeof ownerId !== "string" || ownerId.length === 0) {
+        throw new Error("Snapshot fixture Account owner receipt is missing");
+      }
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
           `INSERT INTO activity_qualifications (
              qualification_id, account_id, persona_id, community_id, post_id,
+             participation_owner_id, participation_owner_kind,
              audio_revision, activity_key, study_session_id, score_bps,
              qualification_policy_version_id, qualified_at, streak_day,
              evidence_summary
            ) VALUES (
-             'qualification-snapshot', $1, $2, $3, $4, 3, 'study',
+             'qualification-snapshot', $1, $2, $3, $4, $5, 'account', 3, 'study',
              'study-session-snapshot', 8000, 'study_session_first_pass_v2@1',
              clock_timestamp() - interval '1 minute', current_date,
              '{"kind":"study_session_first_pass_v2"}'::jsonb
            )`,
-          [identity.accountId, identity.personaId, identity.communityId, identity.postId],
+          [identity.accountId, identity.personaId, identity.communityId, identity.postId, ownerId],
         );
       } finally {
         await admin.query("SET session_replication_role = origin");
@@ -1865,6 +1876,20 @@ suite("Postgres 17 Megapot rewards persistence", () => {
   test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "purchase-repository", address("f"));
+      // Current native payout locks require the original Account source owner.
+      // Use the existing canonical-account provisioner before financial work;
+      // this creates no share, credit, claim or replacement participation.
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [
+        identity.accountId,
+      ]);
+      expect(
+        (
+          await admin.query<{ owners: number }>(
+            "SELECT count(*)::INTEGER AS owners FROM participation_owners WHERE kind='account' AND account_id=$1",
+            [identity.accountId],
+          )
+        ).rows,
+      ).toEqual([{ owners: 1 }]);
       await seedMegapotAuthority(admin);
       const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
         fallback: false,
@@ -1956,6 +1981,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
 
       const store = makeControlPlaneMegapotPurchaseStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
+        { purchaseSafetyMarginSeconds: 60 },
       );
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
@@ -2608,7 +2634,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         legId,
       ]);
       const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
-      const store = makeControlPlaneMegapotPurchaseStore(layer);
+      const store = makeControlPlaneMegapotPurchaseStore(layer, {
+        purchaseSafetyMarginSeconds: 60,
+      });
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
       );

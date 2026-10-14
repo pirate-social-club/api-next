@@ -15,6 +15,9 @@ import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeAccountControlledSpokenProtocol } from "./account-spoken-producer-protocol.ts";
 import { makeControlledAccountStudyV2Store } from "./controlled-account-study-store.ts";
 import type { CapturedStudyAudioBucket } from "./learner-audio-captured-io.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
+import { ownerFinancialGuestStudyReadinessSource } from "./owner-financial-guest-study-readiness-source.ts";
+import { ownerFinancialInheritedSourceDefaults } from "./owner-financial-inherited-source-defaults.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientFactory,
@@ -161,7 +164,26 @@ async function migrations() {
     expect(checksum).toBe(declared);
     all.push({ version, checksum, sql });
   }
-  return { historical: all.slice(0, 247), all, candidate };
+  const financial = ownerFinancialGuestStudyReadinessSource.candidate;
+  expect(financial.ledger).toHaveLength(267);
+  expect(financial.native_function_bodies).toHaveLength(423);
+  expect(financial.profiles.ordinaryAccount.functions).toHaveLength(124);
+  const complete: PostgresMigration[] = [];
+  for (const expected of financial.ledger) {
+    const sql = await readFile(new URL(expected.version, directory), "utf8");
+    expect(hash(sql)).toBe(expected.checksum);
+    expect(manifest.migrations[expected.version]).toBe(expected.checksum);
+    complete.push({ version: expected.version, checksum: expected.checksum, sql });
+  }
+  expect(complete.map((row) => Number(row.version.slice(0, 4)))).toEqual(
+    Array.from({ length: 267 }, (_, index) => index + 1),
+  );
+  expect(
+    complete.slice(0, all.length).map(({ version, checksum }) => ({ version, checksum })),
+  ).toEqual(all.map(({ version, checksum }) => ({ version, checksum })));
+  const financialCandidate = complete[266]?.version;
+  if (financialCandidate === undefined) throw new Error("Complete adopted267 source absent");
+  return { historical: all.slice(0, 247), all, complete, candidate, financialCandidate };
 }
 
 // Fixture diagnostics expose statement names and backend constraint metadata,
@@ -229,6 +251,7 @@ export type Fixture = {
   runtimeUrl: string;
   lines: readonly string[];
   candidate: string;
+  sourcePrefix: "modern267" | "historical262";
   runtime: (
     options?: PostgresControlPlaneOptions,
   ) => ReturnType<typeof makeDirectPostgresControlPlaneLayer>;
@@ -237,9 +260,190 @@ export type Fixture = {
   deferDestructiveCleanup: () => void;
   destructiveCleanupDeferred: () => boolean;
 };
+// Owned historical bootstrap only. Never revokes another role or native PUBLIC37.
+export async function stripOwnedAccountFixtureGrants(
+  f: Pick<Fixture, "admin" | "schema" | "role">,
+): Promise<void> {
+  await f.admin.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA ${q(f.schema)} REVOKE ALL ON TABLES FROM ${q(f.role)}`,
+  );
+  await f.admin.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA ${q(f.schema)} REVOKE EXECUTE ON FUNCTIONS FROM ${q(f.role)}`,
+  );
+  await f.admin.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${q(f.schema)} FROM ${q(f.role)}`);
+  await f.admin.query(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${q(f.schema)} FROM ${q(f.role)}`);
+}
+async function assertCompleteAccountNativeSource(admin: Client, schema: string): Promise<void> {
+  const source = ownerFinancialGuestStudyReadinessSource;
+  const rows = (
+    await admin.query(
+      `WITH expected AS (
+      SELECT * FROM jsonb_to_recordset($2::jsonb)
+      AS e(signature text,body_sha256 text,definer boolean,configuration text)
+    ), anchor AS (
+      SELECT relowner,relnamespace FROM pg_class WHERE oid=format('%I.participation_owners',$1::text)::regclass
+    ), checked AS (
+      SELECT e.signature,p.oid,p.prokind='f' AND p.proowner=a.relowner AND p.pronamespace=a.relnamespace
+      AND p.prosecdef=e.definer AND encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')=e.body_sha256
+      AND CASE e.configuration WHEN 'none' THEN p.proconfig IS NULL AND NOT e.definer
+        WHEN 'pinned' THEN p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp',$1::text)]
+        WHEN 'schema_pinned' THEN p.proconfig=ARRAY[format('search_path=%I, pg_temp',$1::text)]
+        ELSE FALSE END AS valid
+      FROM expected e CROSS JOIN anchor a LEFT JOIN pg_proc p ON p.oid=to_regprocedure(format('%I.%s',$1::text,e.signature))
+    ) SELECT (SELECT count(*)=423 AND count(DISTINCT signature)=423 FROM expected)
+      AND (SELECT count(*)=423 AND count(DISTINCT oid)=423 AND bool_and(valid IS TRUE) FROM checked) AS frames,
+      (SELECT encode(sha256(convert_to(manifest::text,'UTF8')),'hex')=$3 FROM owner_accounting_native_source_inventory_v1 WHERE singleton) AS manifest`,
+      [schema, JSON.stringify(source.candidate.required_frames), source.accountingManifestSha256],
+    )
+  ).rows;
+  expect(rows).toEqual([{ frames: true, manifest: true }]);
+  await admin.query("SELECT require_owner_accounting_ready_private_v1()");
+}
+async function provisionFiniteAccountServingRole(
+  admin: Client,
+  serving: Client,
+  schema: string,
+  role: string,
+): Promise<void> {
+  const profile = ownerFinancialGuestStudyReadinessSource.candidate.profiles.ordinaryAccount;
+  const literal = JSON.parse(
+    await readFile(
+      new URL("./owner-megapot-creator-profile.pg-fixture.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(profile).toEqual(literal);
+  expect(profile.functions).toHaveLength(124);
+  expect(new Set(profile.functions).size).toBe(124);
+  const inherited: readonly string[] = ownerFinancialInheritedSourceDefaults.map(
+    (row) => row.signature,
+  );
+  expect(inherited).toHaveLength(37);
+  expect(
+    ownerFinancialGuestStudyReadinessSource.candidate.inherited_source_default_signatures,
+  ).toEqual(inherited);
+  const effective = [...new Set([...profile.functions, ...inherited])];
+  expect(effective).toHaveLength(154);
+  const commands = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ sql: Schema.String })), {
+    onExcessProperty: "error",
+  })(
+    (
+      await admin.query(
+        `SELECT format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC',p.oid::regprocedure) AS sql
+       FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+       WHERE n.nspname=$1 AND NOT(p.oid=ANY(ARRAY(SELECT signature::regprocedure FROM unnest($2::text[]) signatures(signature)))) ORDER BY p.oid`,
+        [schema, inherited.map((signature) => `${schema}.${signature}`)],
+      )
+    ).rows,
+  );
+  for (const command of commands) await admin.query(command.sql);
+  const groups = new Map<string, { table: string; privilege: string; columns: string[] }>();
+  for (const grant of profile.column_grants) {
+    if (!["SELECT", "INSERT", "UPDATE"].includes(grant.privilege))
+      throw new Error("Unreviewed Account column privilege");
+    const key = JSON.stringify([grant.table_name, grant.privilege]);
+    const group = groups.get(key) ?? {
+      table: grant.table_name,
+      privilege: grant.privilege,
+      columns: [],
+    };
+    group.columns.push(grant.column_name);
+    groups.set(key, group);
+  }
+  for (const group of groups.values())
+    await admin.query(
+      `GRANT ${group.privilege} (${group.columns.map(q).join(",")}) ON ${q(schema)}.${q(group.table)} TO ${q(role)}`,
+    );
+  for (const grant of profile.table_grants) {
+    if (grant.privilege !== "DELETE") throw new Error("Unreviewed Account table privilege");
+    await admin.query(`GRANT DELETE ON TABLE ${q(schema)}.${q(grant.table_name)} TO ${q(role)}`);
+  }
+  expect(profile.sequence_grants).toEqual([]);
+  for (const signature of profile.functions.filter((signature) => !inherited.includes(signature)))
+    await admin.query(`GRANT EXECUTE ON FUNCTION ${q(schema)}.${signature} TO ${q(role)}`);
+  const actualFunctions = (
+    await serving.query(
+      `SELECT p.oid::text AS oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname=$1 AND has_function_privilege(current_user,p.oid,'EXECUTE') ORDER BY p.oid::text COLLATE "C"`,
+      [schema],
+    )
+  ).rows;
+  const expectedFunctions = (
+    await serving.query(
+      `SELECT signature::regprocedure::oid::text AS oid FROM unnest($1::text[]) signatures(signature) ORDER BY signature::regprocedure::oid::text COLLATE "C"`,
+      [effective.map((signature) => `${schema}.${signature}`)],
+    )
+  ).rows;
+  expect(expectedFunctions).toHaveLength(154);
+  expect(actualFunctions).toEqual(expectedFunctions);
+  const sorted = <A>(values: readonly A[]) =>
+    [...values].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const columnGrants = (
+    await serving.query(
+      `SELECT c.relname AS table_name,a.attname AS column_name,v.privilege
+     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid
+     CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) v(privilege)
+     WHERE n.nspname=$1 AND c.relkind IN('r','p','v','m','f') AND a.attnum>0 AND NOT a.attisdropped
+       AND has_column_privilege(current_user,c.oid,a.attnum,v.privilege)`,
+      [schema],
+    )
+  ).rows;
+  expect(sorted(columnGrants)).toEqual(sorted(profile.column_grants));
+  const tableGrants = (
+    await serving.query(
+      `SELECT c.relname AS table_name,v.privilege FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) v(privilege)
+     WHERE n.nspname=$1 AND c.relkind IN('r','p','v','m','f') AND has_table_privilege(current_user,c.oid,v.privilege)`,
+      [schema],
+    )
+  ).rows;
+  expect(sorted(tableGrants)).toEqual(sorted(profile.table_grants));
+  expect(
+    (
+      await serving.query(
+        `SELECT c.relname AS sequence_name,v.privilege FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     CROSS JOIN unnest(ARRAY['USAGE','SELECT','UPDATE']) v(privilege)
+     WHERE n.nspname=$1 AND c.relkind='S' AND has_sequence_privilege(current_user,c.oid,v.privilege)`,
+        [schema],
+      )
+    ).rows,
+  ).toEqual([]);
+  expect(
+    (
+      await serving.query(
+        "SELECT current_user=session_user AS same,rolsuper,rolbypassrls,rolinherit,rolcreaterole,rolcreatedb,rolreplication FROM pg_roles WHERE rolname=current_user",
+      )
+    ).rows,
+  ).toEqual([
+    {
+      same: true,
+      rolsuper: false,
+      rolbypassrls: false,
+      rolinherit: false,
+      rolcreaterole: false,
+      rolcreatedb: false,
+      rolreplication: false,
+    },
+  ]);
+  await expect(
+    serving.query("SELECT require_owner_accounting_ready_private_v1()"),
+  ).rejects.toMatchObject({ code: "42501" });
+  for (const table of [
+    "owner_accounting_native_source_inventory_v1",
+    "megapot_owner_shares",
+    "megapot_owner_snapshot_leaves",
+    "megapot_owner_allocations",
+    "reward_credit_persona_bindings",
+    "reward_credit_recipient_selections",
+  ])
+    await expect(serving.query(`SELECT 1 FROM ${q(table)} LIMIT 1`)).rejects.toMatchObject({
+      code: "42501",
+    });
+}
+
 export async function fixture(
   use: (f: Fixture) => Promise<void>,
-  options: Readonly<{ schema?: "api_next" }> = {},
+  options: Readonly<{ schema?: "api_next"; historicalBootstrap262?: true }> = {},
 ) {
   if (!pgUrl) throw new Error("Owned Postgres URL missing");
   if (!["127.0.0.1", "localhost"].includes(new URL(pgUrl).hostname))
@@ -281,8 +485,11 @@ export async function fixture(
       migrations: packet.historical,
       expectedLedger: [],
     });
-    const { lines } = await insertStudySongFixture(admin);
-    await insertTelegramPracticeReadinessFixture(admin);
+    let lines: readonly string[] = [];
+    if (options.historicalBootstrap262 === true) {
+      ({ lines } = await insertStudySongFixture(admin));
+      await insertTelegramPracticeReadinessFixture(admin);
+    }
     expect((await admin.query("SHOW session_replication_role")).rows).toEqual([
       { session_replication_role: "origin" },
     ]);
@@ -316,6 +523,30 @@ export async function fixture(
       (await admin.query("SELECT phase FROM guest_learning_schema_phase WHERE singleton")).rows,
     ).toEqual([{ phase: "practice_only_owner_audio_producer_history_v5" }]);
     await admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
+    if (options.historicalBootstrap262 !== true) {
+      // Remove only this owned malicious-default probe role before full native privacy.
+      await stripOwnedAccountFixtureGrants({ admin, schema, role });
+      await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: packet.complete,
+        expectedLedger: packet.all,
+      });
+      expect(
+        (await admin.query("SELECT version,checksum FROM schema_migrations ORDER BY version")).rows,
+      ).toEqual(packet.complete.map(({ version, checksum }) => ({ version, checksum })));
+      expect(
+        (await admin.query("SELECT phase FROM guest_learning_schema_phase WHERE singleton")).rows,
+      ).toEqual([{ phase: "owner_accounting_native_source_v1" }]);
+      await assertCompleteAccountNativeSource(admin, schema);
+      expect((await admin.query("SHOW session_replication_role")).rows).toEqual([
+        { session_replication_role: "origin" },
+      ]);
+      await makeOwnedOrdinaryAccountBirthFixture(
+        makeDirectPostgresControlPlaneLayer(scoped.toString()),
+      )("study-account");
+      ({ lines } = await insertStudySongFixture(admin, { accountAlreadyBorn: true }));
+      await insertTelegramPracticeReadinessFixture(admin);
+    }
     const runtimeUrl = new URL(scoped);
     runtimeUrl.username = role;
     runtimeUrl.password = password;
@@ -415,49 +646,54 @@ export async function fixture(
         )
       ).rows,
     ).toEqual([{ allowed: false }]);
-    const legacyWrites = [
-      "study_sessions_v2",
-      "study_session_items_v2",
-      "study_review_items",
-      "study_attempts_v2",
-      "study_spoken_answer_commands",
-      "learner_audio_artifacts",
-      "study_lesson_item_state_v2",
-      "study_presentations_v2",
-      "activity_qualifications",
-      "account_streak_clocks",
-      "song_streaks",
-      "community_streaks",
-      "song_streak_days",
-      "song_streak_day_activities",
-      "community_streak_days",
-      "persona_activity_presentations",
-      "telegram_study_conversations",
-    ];
-    for (const table of legacyWrites)
-      await admin.query(`GRANT INSERT,UPDATE ON ${q(table)} TO ${q(role)}`);
-    // PostgreSQL requires UPDATE privilege for the genuine admission's FOR
-    // SHARE row locks even though this fixture never mutates these authority
-    // parents through the serving connection.
-    for (const table of [
-      "communities",
-      "community_telegram_integrations",
-      "users",
-      "personas",
-      "persona_community_bindings",
-      "telegram_bot_grants",
-      "telegram_account_associations",
-      "posts",
-      "media_publication_projections",
-      "media_post_submissions",
-      // The existing Account qualification projection locks prospective legs
-      // even when no eligible offer exists. Guest roles receive no such grant.
-      "song_reward_offer_legs",
-      "megapot_pool_drawings",
-    ])
-      await admin.query(`GRANT UPDATE ON ${q(table)} TO ${q(role)}`);
-    for (const signature of controlledFunctions)
-      await admin.query(`GRANT EXECUTE ON FUNCTION ${schema}.${signature} TO ${q(role)}`);
+    if (options.historicalBootstrap262 === true) {
+      const legacyWrites = [
+        "study_sessions_v2",
+        "study_session_items_v2",
+        "study_review_items",
+        "study_attempts_v2",
+        "study_spoken_answer_commands",
+        "learner_audio_artifacts",
+        "study_lesson_item_state_v2",
+        "study_presentations_v2",
+        "activity_qualifications",
+        "account_streak_clocks",
+        "song_streaks",
+        "community_streaks",
+        "song_streak_days",
+        "song_streak_day_activities",
+        "community_streak_days",
+        "persona_activity_presentations",
+        "telegram_study_conversations",
+      ];
+      for (const table of legacyWrites)
+        await admin.query(`GRANT INSERT,UPDATE ON ${q(table)} TO ${q(role)}`);
+      // PostgreSQL requires UPDATE privilege for the genuine admission's FOR
+      // SHARE row locks even though this fixture never mutates these authority
+      // parents through the serving connection.
+      for (const table of [
+        "communities",
+        "community_telegram_integrations",
+        "users",
+        "personas",
+        "persona_community_bindings",
+        "telegram_bot_grants",
+        "telegram_account_associations",
+        "posts",
+        "media_publication_projections",
+        "media_post_submissions",
+        // The existing Account qualification projection locks prospective legs
+        // even when no eligible offer exists. Guest roles receive no such grant.
+        "song_reward_offer_legs",
+        "megapot_pool_drawings",
+      ])
+        await admin.query(`GRANT UPDATE ON ${q(table)} TO ${q(role)}`);
+      for (const signature of controlledFunctions)
+        await admin.query(`GRANT EXECUTE ON FUNCTION ${schema}.${signature} TO ${q(role)}`);
+    } else {
+      await provisionFiniteAccountServingRole(admin, serving, schema, role);
+      await assertCompleteAccountNativeSource(admin, schema);
+    }
     const f: Fixture = {
       admin,
       serving,
@@ -465,13 +701,20 @@ export async function fixture(
       role,
       runtimeUrl: runtimeUrl.toString(),
       lines,
-      candidate: packet.candidate,
-      runtime: (options) =>
-        makeDirectPostgresControlPlaneLayer(runtimeUrl.toString(), {
+      candidate:
+        options.historicalBootstrap262 === true ? packet.candidate : packet.financialCandidate,
+      sourcePrefix: options.historicalBootstrap262 === true ? "historical262" : "modern267",
+      runtime: (runtimeOptions) => {
+        if (options.historicalBootstrap262 === true)
+          throw new Error(
+            "Historical262 bootstrap requires its accepted pre267 API-next producer closure; current Account runtime is unavailable",
+          );
+        return makeDirectPostgresControlPlaneLayer(runtimeUrl.toString(), {
           closeTimeoutMs: 2000,
           clientFactory: diagnosticClientFactory,
-          ...options,
-        }),
+          ...runtimeOptions,
+        });
+      },
       registerDrain: (drain) => drainers.push(drain),
       deferDestructiveCleanup: () => {
         destructiveCleanupDeferred = true;
@@ -552,12 +795,22 @@ export async function fixture(
   if (primaryFailed) throw primaryFailure;
 }
 
+// Explicit historical API-next bootstrap for source-upgrade tests only.
+export function historicalAccountBootstrapFixture(
+  use: (f: Fixture) => Promise<void>,
+  options: Readonly<{ schema?: "api_next" }> = {},
+): Promise<void> {
+  return fixture(use, { ...options, historicalBootstrap262: true });
+}
+
 export function harness(
   f: Fixture,
   bucket: CapturedStudyAudioBucket,
   options: PostgresControlPlaneOptions = {},
   admission?: StudyV2Admission,
 ) {
+  if (f.sourcePrefix !== "modern267")
+    throw new Error("Current Study harness requires full267 finite Account source");
   const runtime = f.runtime(options),
     store = makeControlledAccountStudyV2Store(runtime, admission);
   const tasks: Promise<unknown>[] = [];
