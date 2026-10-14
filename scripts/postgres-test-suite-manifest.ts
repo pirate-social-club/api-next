@@ -9,7 +9,6 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/dance-reference-persistence.pg.test.ts",
   "packages/platform-cf/src/feed-repository.pg.test.ts",
   "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
-  "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
@@ -20,7 +19,6 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/route-revalidation-completion-repository.pg.test.ts",
   "packages/platform-cf/src/video-outcome-repository.pg.test.ts",
   "packages/platform-cf/src/video-publication-repository.pg.test.ts",
-  "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
   "packages/platform-cf/src/video-stream-ingest-repository.pg.test.ts",
   "packages/platform-cf/src/video-thumbnail-repository.pg.test.ts",
   "scripts/song-video-composed-flow.pg.test.ts",
@@ -28,6 +26,8 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/video-reservation-cleanup.pg.test.ts",
+  "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/karaoke-instrumental-policy.pg.test.ts",
   "packages/platform-cf/src/reward-unsigned-purchase-recovery.pg.test.ts",
   "packages/platform-cf/src/sidebar-profile-reads.pg.test.ts",
@@ -239,6 +239,9 @@ export const classifiedPostgresTestSuites = [
 // Activity preparation is an explicitly incomplete-tail98s estimate (two passes
 // plus the remaining90s callback); nationality is unobserved4*30s=120s.
 // The two environment-specific skipped profiles keep the ordinary count model.
+// The two preserved fixture suites above now install a fresh scope per case.
+// Their existing cost records below remain historical shard estimates; current
+// fresh-scope timings require actual execution and are not inferred from reuse.
 export const postgresGeneralSuiteCostEstimates: Readonly<
   Record<string, Readonly<{ sourceCallCount: number; milliseconds: number }>>
 > = {

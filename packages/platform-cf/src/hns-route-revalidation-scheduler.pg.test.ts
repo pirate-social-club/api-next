@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  withPreservedPostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
 
 mock.module("cloudflare:workers", () => ({
@@ -49,7 +49,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (client: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return withPreservedPostgresTestSchema({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_hns_route_revalidation_scheduler_pg_test_ts",
     use: async ({ admin, schema }) => {
