@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { emptyTelegramStudyState } from "@pirate/application/telegram-study";
 import { Client } from "pg";
@@ -13,6 +13,26 @@ import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeTelegramInboxStore } from "./telegram-inbox-store.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
+
+// Offline api-next migration ceremony at accepted source3ef1f879 (max0263).
+// Later native financial migrations require an intact foundation and private ACLs;
+// this deliberately historical ceremony retains its original cutover/grant oracles.
+async function loadAcceptedCeremonyMigrations() {
+  const migrations = (await loadPostgresMigrations()).filter(
+    (migration) => migration.version <= "0263_guest_ephemeral_audio_cleanup.sql",
+  );
+  const ledgerDigest = createHash("sha256")
+    .update(migrations.map((migration) => `${migration.version}:${migration.checksum}`).join("\n"))
+    .digest("hex");
+  if (
+    migrations.length !== 263 ||
+    migrations.at(-1)?.version !== "0263_guest_ephemeral_audio_cleanup.sql" ||
+    ledgerDigest !== "5a979354fa869bc4c387a11357d8203e1b57bbdfd67095c8b13da4f705107f32"
+  ) {
+    throw new Error("Accepted3ef historical ceremony migration inventory changed");
+  }
+  return migrations;
+}
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -44,7 +64,7 @@ suite("Telegram linking runtime privileges", () => {
       await admin.query("BEGIN");
       await admin.query(`CREATE SCHEMA ${schema}`);
       await admin.query(`SET search_path TO ${schema}, pg_temp`);
-      const migrations = await loadPostgresMigrations();
+      const migrations = await loadAcceptedCeremonyMigrations();
       const linking = migrations.findIndex(
         (m) => m.version === "0237_telegram_learner_linking.sql",
       );

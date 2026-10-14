@@ -3,6 +3,26 @@ import { createHash, randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 
+// Offline api-next migration ceremony at accepted source3ef1f879 (max0263).
+// Later native financial migrations require an intact foundation and private ACLs;
+// this deliberately historical ceremony retains its original cutover/grant oracles.
+async function loadAcceptedCeremonyMigrations() {
+  const migrations = (await loadPostgresMigrations()).filter(
+    (migration) => migration.version <= "0263_guest_ephemeral_audio_cleanup.sql",
+  );
+  const ledgerDigest = createHash("sha256")
+    .update(migrations.map((migration) => `${migration.version}:${migration.checksum}`).join("\n"))
+    .digest("hex");
+  if (
+    migrations.length !== 263 ||
+    migrations.at(-1)?.version !== "0263_guest_ephemeral_audio_cleanup.sql" ||
+    ledgerDigest !== "5a979354fa869bc4c387a11357d8203e1b57bbdfd67095c8b13da4f705107f32"
+  ) {
+    throw new Error("Accepted3ef historical ceremony migration inventory changed");
+  }
+  return migrations;
+}
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
@@ -42,7 +62,7 @@ async function withSchema<A>(
   try {
     await admin.query(`CREATE SCHEMA ${quote(schema)}`);
     await admin.query(`SET search_path TO ${quote(schema)}`);
-    for (const migration of await loadPostgresMigrations()) {
+    for (const migration of await loadAcceptedCeremonyMigrations()) {
       if (migrationFilter(migration.version)) await admin.query(migration.sql);
     }
     return await use(admin);
