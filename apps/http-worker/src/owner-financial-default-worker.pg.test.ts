@@ -30,8 +30,8 @@ async function adoptedSource() {
   if (value === null)
     throw new Error("Actual independently bound non-NULL compiled financial source required");
   expect(value.candidate.ledger).toHaveLength(267);
-  expect(value.candidate.native_function_bodies).toHaveLength(422);
-  expect(value.candidate.profiles.ordinaryAccount.functions).toHaveLength(123);
+  expect(value.candidate.native_function_bodies).toHaveLength(423);
+  expect(value.candidate.profiles.ordinaryAccount.functions).toHaveLength(124);
   return value;
 }
 async function decoded<S extends Schema.ConstraintDecoder<unknown>>(
