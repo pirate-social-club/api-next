@@ -1876,6 +1876,18 @@ suite("Postgres 17 Megapot rewards persistence", () => {
   test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "purchase-repository", address("f"));
+      // Current native payout locks require the original Account source owner.
+      // Use the existing canonical-account provisioner before financial work;
+      // this creates no share, credit, claim or replacement participation.
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [identity.accountId]);
+      expect(
+        (
+          await admin.query<{ owners: number }>(
+            "SELECT count(*)::INTEGER AS owners FROM participation_owners WHERE kind='account' AND account_id=$1",
+            [identity.accountId],
+          )
+        ).rows,
+      ).toEqual([{ owners: 1 }]);
       await seedMegapotAuthority(admin);
       const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
         fallback: false,
