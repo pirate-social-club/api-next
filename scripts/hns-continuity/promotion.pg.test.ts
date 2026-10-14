@@ -34,6 +34,14 @@ suite("operator continuity PostgreSQL transaction", () => {
         const input = await seedContinuityFixture(client);
         const gatewayRotation = rotate ? rotationFixture(input.state) : undefined;
         const prepared = await buildContinuityCandidate({ ...input, gatewayRotation });
+        const dnsArtifact = prepared.candidate.artifacts.find(
+          (artifact) => artifact.name === "dns_zone_activation",
+        );
+        const successorDns = JSON.parse(
+          Buffer.from(dnsArtifact?.bytes_hex ?? "", "hex").toString(),
+        );
+        expect(successorDns.zone_revision).toBe(2026100715);
+        expect(successorDns.zone_bytes_hex).toBe(input.state.dns.zone_hex);
         const args = {
           client,
           state: input.state,
@@ -81,6 +89,9 @@ suite("operator continuity PostgreSQL transaction", () => {
           before[2] + 1,
         );
         expect(await pointers()).toEqual(before);
+        expect(
+          (await readContinuityState(client, input.state.dns.canonical_root)).dns.zone_revision,
+        ).toBe("2026100714");
         const inventoryCount = (
           await client.query("SELECT count(*)::int AS count FROM hns_authority_inventories")
         ).rows[0].count;
@@ -117,6 +128,15 @@ suite("operator continuity PostgreSQL transaction", () => {
           expect((await promoteContinuity({ ...args, mode: "--commit" })).committed).toBe(true);
         }
         expect(await pointers()).toEqual([before[0] + 1, before[1] + 1, before[2] + 1, 1]);
+        const successorState = await readContinuityState(client, input.state.dns.canonical_root);
+        expect(successorState.dns.zone_revision).toBe("2026100715");
+        expect(successorState.dns.zone_hex).toBe(input.state.dns.zone_hex);
+        expect(successorState.dns.dnssec_keyset_version).toBe(
+          input.state.dns.dnssec_keyset_version,
+        );
+        expect(successorState.dns.gateway_certificate_spki_sha256).toBe(
+          input.state.dns.gateway_certificate_spki_sha256,
+        );
         const dependency = await client.query(
           "SELECT * FROM current_hns_sale_namespace_dependency_v1($1,$2,$3,$4,$5,clock_timestamp())",
           [
