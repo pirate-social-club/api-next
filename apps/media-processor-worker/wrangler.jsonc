@@ -244,7 +244,7 @@
         "VIDEO_SAFETY_GATE": "sampled_frame_openai_v1",
         // Verify the production gateway ingress with the coordinator. Do not
         // infer a reachable workers.dev origin while workers_dev is disabled.
-      "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
+      "VIDEO_SOURCE_GATEWAY_ORIGIN": "https://video-source.pirate.sc",
         "VIDEO_WORKFLOW_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "VIDEO_WORKFLOW_NAME": "pirate-video-analysis-production",
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-production",
