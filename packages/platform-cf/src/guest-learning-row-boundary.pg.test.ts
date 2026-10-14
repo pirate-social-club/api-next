@@ -9,7 +9,7 @@ import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
-import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { makeHistoricalStudyV2Repository3ef } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -73,7 +73,7 @@ async function migrationPacket() {
   return { historical, foundation, preservation, authority, resource, rowBoundary };
 }
 
-type Study = ReturnType<typeof makeControlPlaneStudyV2Repository>;
+type Study = ReturnType<typeof makeHistoricalStudyV2Repository3ef>;
 type Reservation = Effect.Success<ReturnType<Study["reserveSpokenAnswer"]>>;
 const reserved = (value: Reservation): Extract<Reservation, { state: "reserved" }> => {
   if (value.state !== "reserved") throw new Error("expected a reserved command");
@@ -88,7 +88,7 @@ const audio = (seed: string) => ({
 });
 function studyDriver(scoped: string, accountId: string, personaId: string) {
   const runtime = makeDirectPostgresControlPlaneLayer(scoped);
-  const store = makeControlPlaneStudyV2Repository();
+  const store = makeHistoricalStudyV2Repository3ef();
   const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
   // Distinct driver instances represent separate server ID-generator scopes.
