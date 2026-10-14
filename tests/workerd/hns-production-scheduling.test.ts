@@ -14,6 +14,10 @@ import jobsWorker, {
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
 } from "../../apps/jobs-worker/src/index";
+import {
+  STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
+  STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
+} from "../../apps/jobs-worker/src/study-spoken-answer-recovery";
 
 const production = JSON.parse(
   (testEnv as unknown as { PRODUCTION_JOBS_CONFIGURATION: string }).PRODUCTION_JOBS_CONFIGURATION,
@@ -37,7 +41,7 @@ function productionEnv(getByName: (name: string) => unknown): JobsWorkerEnv {
 const dueAt = Date.UTC(2026, 8, 5, 17, 30);
 
 describe("production HNS renewal scheduling", () => {
-  it("the scheduled handler admits explicitly configured active ownership renewal without recovery", async () => {
+  it("active ownership renewal retains its separate lane alongside learner-audio recovery", async () => {
     const acquisitions: string[] = [];
     const env: JobsWorkerEnv = {
       ...productionEnv((name) => ({
@@ -66,19 +70,24 @@ describe("production HNS renewal scheduling", () => {
       } as unknown as ExecutionContext,
     );
     await Promise.all(waits);
-    expect(acquisitions).toEqual(["scheduled-cron-main:hns-route-revalidation"]);
+    expect(acquisitions.sort()).toEqual([
+      "scheduled-cron-main:hns-route-revalidation",
+      `scheduled-cron-main:${STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+    ]);
   });
 
-  it("admits exactly renewal from the complete checked-in production declaration list", async () => {
+  it("admits HNS renewal and bound learner-audio recovery while product gates stay off", async () => {
     const env = productionEnv(() => ({}));
     const ownership = makeHnsRouteRevalidationComposition(env);
     expect(ownership).toEqual({ enabled: false });
     expect(production.triggers.crons).toEqual(["*/30 * * * *"]);
-    expect(env.LEARNER_AUDIO).toBeUndefined();
+    expect(env.LEARNER_AUDIO).toBeDefined();
     for (const flag of [
       "COMMUNITY_MAINTENANCE_ENABLED",
       "MEDIA_PROCESSING_ENABLED",
       "VIDEO_ANALYSIS_ENABLED",
+      "VIDEO_DELIVERY_ENABLED",
+      "SONG_VIDEO_PCM_ADMISSION_ENABLED",
       "DATA_REGISTRATION_ENABLED",
       "MEGAPOT_REWARDS_ENABLED",
       "KARAOKE_FINALIZATION_RECOVERY_ENABLED",
@@ -95,16 +104,24 @@ describe("production HNS renewal scheduling", () => {
       undefined,
       env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
     );
-    expect(declarations.map(({ name }) => name)).toEqual([HNS_ROOT_HEALTH_RENEWAL_JOB]);
+    expect(declarations.map(({ name }) => name)).toEqual([
+      HNS_ROOT_HEALTH_RENEWAL_JOB,
+      STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
+    ]);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
-    expect([...groupDueJobsByLane(registry, dueAt).keys()]).toEqual([HNS_ROOT_HEALTH_RENEWAL_LANE]);
-    expect(groupDueJobsByLane(registry, dueAt + 60_000).size).toBe(0);
+    expect([...groupDueJobsByLane(registry, dueAt).keys()]).toEqual([
+      HNS_ROOT_HEALTH_RENEWAL_LANE,
+      STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
+    ]);
+    expect([...groupDueJobsByLane(registry, dueAt + 60_000).keys()]).toEqual([
+      STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
+    ]);
     expect(
       makeJobsWorkerDeclarations({}, "https://rpc.invalid/", ownership, "production", null, false),
     ).toEqual([]);
   });
 
-  it("the real scheduled handler attempts only the renewal lease with production bindings", async () => {
+  it("the real handler attempts only HNS and learner recovery leases, with no effects on refusal", async () => {
     const acquisitions: string[] = [];
     const unexpectedCalls: string[] = [];
     const env = productionEnv((name) => ({
@@ -131,7 +148,10 @@ describe("production HNS renewal scheduling", () => {
         } as unknown as ExecutionContext,
       );
       await Promise.all(waits);
-      expect(acquisitions).toEqual([`scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`]);
+      expect(acquisitions.sort()).toEqual([
+        `scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`,
+        `scheduled-cron-main:${STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+      ]);
       expect(unexpectedCalls).toEqual([]);
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
