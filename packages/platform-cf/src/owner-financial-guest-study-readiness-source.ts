@@ -1,6 +1,6 @@
 import type { OwnerFinancialGuestStudyReadinessSource } from "./guest-study-readiness-profile.ts";
 const candidate = {
-  "source_head": "ff3d9247cdf7ff5f18fd18a26f4c562f299767bc",
+  "source_head": "0cea364fc199d96bd006a0659fb9ecec81566e10",
   "native_phase": "owner_accounting_native_source_v1",
   "ledger": [
     {
@@ -1069,7 +1069,7 @@ const candidate = {
     },
     {
       "version": "0267_complete_owner_financial_source.sql",
-      "checksum": "96ff72221c455cdc50229a93594ddd0317c785c9c043a0e9ed35cfbaded8ca85"
+      "checksum": "d1573237fe1d943e38a4a6159c72bc352332f54f0e90d086684909da7a91d811"
     }
   ],
   "required_frames": [
@@ -1399,7 +1399,7 @@ const candidate = {
     },
     {
       "signature": "complete_account_owner_reward_action_v1(text,text,jsonb)",
-      "body_sha256": "e65f51373b92344812d685cebc98d9fa31d6d17ad38d7561a3cb2e4d22d075ac",
+      "body_sha256": "d967ea48f89d6148edbb253646acb581f4e50c0cdb6bd69af87ba173b21f961a",
       "definer": true,
       "configuration": "pinned"
     },
@@ -1951,7 +1951,7 @@ const candidate = {
     },
     {
       "signature": "guard_selected_account_reward_attempt_private_v1()",
-      "body_sha256": "0223743693c4570e66676a163ce0da9a51f2ad3f964e6a3fbeefde44700cced4",
+      "body_sha256": "8cf8d8a477657eaf1fc8545f0e564b64c021be87019a314d423690da6eb29643",
       "definer": true,
       "configuration": "pinned"
     },
@@ -2977,7 +2977,7 @@ const candidate = {
     },
     {
       "signature": "reconcile_account_owner_admission_attempt_v1(text,text,text,integer)",
-      "body_sha256": "61fa9a42d90cb1d2646b1f52088dcf801211f64d7e953aca1d2bbd8b69ae9419",
+      "body_sha256": "42035b27a1022ba2030dc3968c00604c3ff01746d0018ad381cab1a700638801",
       "definer": true,
       "configuration": "pinned"
     },
@@ -3475,7 +3475,7 @@ const candidate = {
     },
     {
       "signature": "start_account_owner_reward_attempt_v1(text,text,text,text,text,text,text,text,text,text)",
-      "body_sha256": "75ecd4484463d6701eb0b98f86d4b25acf45b9e6bd9268e7e2e2f63435081649",
+      "body_sha256": "2a07fc782231480aaad41bb1d44d3875d2a40bd693d5febc69fccd9b7ffc4308",
       "definer": true,
       "configuration": "pinned"
     },
@@ -4009,7 +4009,7 @@ const candidate = {
     },
     {
       "name": "complete_account_owner_reward_action_v1",
-      "body_sha256": "e65f51373b92344812d685cebc98d9fa31d6d17ad38d7561a3cb2e4d22d075ac",
+      "body_sha256": "d967ea48f89d6148edbb253646acb581f4e50c0cdb6bd69af87ba173b21f961a",
       "definer": true,
       "configuration": "pinned"
     },
@@ -4561,7 +4561,7 @@ const candidate = {
     },
     {
       "name": "guard_selected_account_reward_attempt_private_v1",
-      "body_sha256": "0223743693c4570e66676a163ce0da9a51f2ad3f964e6a3fbeefde44700cced4",
+      "body_sha256": "8cf8d8a477657eaf1fc8545f0e564b64c021be87019a314d423690da6eb29643",
       "definer": true,
       "configuration": "pinned"
     },
@@ -5587,7 +5587,7 @@ const candidate = {
     },
     {
       "name": "reconcile_account_owner_admission_attempt_v1",
-      "body_sha256": "61fa9a42d90cb1d2646b1f52088dcf801211f64d7e953aca1d2bbd8b69ae9419",
+      "body_sha256": "42035b27a1022ba2030dc3968c00604c3ff01746d0018ad381cab1a700638801",
       "definer": true,
       "configuration": "pinned"
     },
@@ -6085,7 +6085,7 @@ const candidate = {
     },
     {
       "name": "start_account_owner_reward_attempt_v1",
-      "body_sha256": "75ecd4484463d6701eb0b98f86d4b25acf45b9e6bd9268e7e2e2f63435081649",
+      "body_sha256": "2a07fc782231480aaad41bb1d44d3875d2a40bd693d5febc69fccd9b7ffc4308",
       "definer": true,
       "configuration": "pinned"
     },
@@ -57956,5 +57956,5 @@ const candidate = {
 } as const;
 const phase = "WITH anchor AS (SELECT c.relowner,c.relnamespace FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname='participation_owners' AND c.relkind='r'), inventory AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='owner_accounting_native_source_inventory_v1'), phase AS (SELECT c.* FROM pg_catalog.pg_class c JOIN anchor a ON c.relnamespace=a.relnamespace AND c.relowner=a.relowner WHERE c.relname='guest_learning_schema_phase') SELECT EXISTS(SELECT 1 FROM inventory WHERE relkind='r' AND relrowsecurity AND NOT relforcerowsecurity) AND EXISTS(SELECT 1 FROM phase WHERE relkind='r') AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_policy p ON p.polrelid=i.oid) AND NOT EXISTS(SELECT 1 FROM inventory i CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(i.relacl,pg_catalog.acldefault('r',i.relowner))) acl WHERE acl.grantee<>i.relowner) AND NOT EXISTS(SELECT 1 FROM inventory i JOIN pg_catalog.pg_attribute att ON att.attrelid=i.oid CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl WHERE acl.grantee<>i.relowner) AS valid, 'owner_accounting_native_source_v1'::text AS phase";
 export const ownerFinancialGuestStudyReadinessSource: OwnerFinancialGuestStudyReadinessSource = {
- candidate, accountingManifestSha256: "6d0eff7fe6ceda2bfbca1be404523ef32e9b21e9d4e81581f45c9cf9ab5cb564", phaseSql: (_quotedSchema:string)=>phase,
+ candidate, accountingManifestSha256: "7d1b61f3914da3b146516f6be267b134354985c1b928edd16ca74effe1b649dc", phaseSql: (_quotedSchema:string)=>phase,
 };

@@ -49,7 +49,7 @@ pgTest(
       ),
     );
     expect(createHash("sha256").update(raw).digest("hex")).toBe(
-      "3ce70c69413d3747cae654a0bc0cb47a2f827a596c7de07d41d0516e4b4193e2",
+      "fc69608523ff80f27abbd533e7364ee44d719ca138c9ce2d6e2b2e22d6ead003",
     );
     const adopted = ownerFinancialGuestStudyReadinessSource;
     if (adopted === null) throw new Error("Actual compiled current267 source required");
