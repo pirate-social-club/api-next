@@ -679,7 +679,7 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
              FROM reward_gas_topups WHERE topup_id=$2`,
         [WALLETS.otherNew, topupId],
       ),
-    ).rejects.toThrow("must target the confirmed payout wallet");
+    ).rejects.toThrow("gas must retain its original credit recipient");
   });
 
   test("the guard rejects a custody-signed or mismatched gas top-up effect", async () => {
