@@ -1377,6 +1377,30 @@ describe("media processing workflow", () => {
     expect(store.attempts.size).toBe(0);
   });
 
+  test("an exhausted classifier enters provider review without another classifier call or publication", async () => {
+    const store = new FakeStore();
+    const startAttempt = store.startAttempt;
+    // The durable store owns the budget. This models its exhausted result,
+    // rather than inventing a second attempt counter in the workflow fixture.
+    store.startAttempt = async (input) =>
+      input.stage === "classifier" ? { kind: "exhausted" } : startAttempt(input);
+    const providerEvents: string[] = [];
+    const deps = dependencies(store, providers(providerEvents));
+    expect(await runWorkflow(workflowPayload(store), "analysis_launch", deps)).toEqual({
+      outcome: "manual_review",
+    });
+    expect(store.current.status).toBe("manual_review");
+    expect(store.events).toContain("commit:provider-review:provider_exhausted");
+    expect(providerEvents.some((event) => event.startsWith("effect:classifier"))).toBe(false);
+    expect(store.publications).toBe(0);
+    expect(store.providerReviews).toBe(1);
+    const priorProviderEvents = [...providerEvents];
+    await runWorkflow(workflowPayload(store), "analysis_launch", deps);
+    expect(providerEvents).toEqual(priorProviderEvents);
+    expect(store.publications).toBe(0);
+    expect(store.providerReviews).toBe(1);
+  });
+
   test("late wakeups and stale workflow revisions are inert", async () => {
     const store = new FakeStore(authority({ status: "abandoned", phase: null }));
     const wakeupOutbox = store.outboxes.get("outbox-1");

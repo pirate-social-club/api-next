@@ -305,7 +305,7 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
       prompt_revision: "lyrics-explicitness-language-prompt-v1",
       policy_revision: "lyrics-explicitness-language-policy-v2-openrouter-zdr",
       classifier_revision: "lyrics-explicitness-language-classifier-v2-gemini-3.7-flash",
-      adapter_revision: "openrouter-classifier-adapter-v3-standard-zdr",
+      adapter_revision: "openrouter-classifier-adapter-v4-bounded-response-evidence",
       provider_policy: {
         require_parameters: true,
         data_collection: "deny",
@@ -318,6 +318,9 @@ function makeEnabledProviders(env: MediaProcessorRuntimeEnv): MediaProcessingPro
       },
       account_plugins_disabled: true,
       transport: makeOpenRouterFetchTransport(),
+      evidence_sink: (evidence) => {
+        console.info("media.openrouter.classifier_attempt", evidence);
+      },
     }),
     artifactReader: makeR2MediaProcessingArtifactReader(derivedArtifacts),
     metadata: makeR2EmbeddedMetadataPort(
