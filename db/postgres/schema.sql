@@ -19056,7 +19056,7 @@ END;
 $_$;
 
 CREATE FUNCTION initialize_song_owner_policy_v1() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
 DECLARE
@@ -19066,6 +19066,17 @@ DECLARE
   initial_hash TEXT;
   database_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
+  IF TG_OP IS DISTINCT FROM 'INSERT'
+    OR TG_WHEN IS DISTINCT FROM 'AFTER'
+    OR TG_LEVEL IS DISTINCT FROM 'ROW'
+    OR TG_TABLE_SCHEMA IS DISTINCT FROM current_schema()
+    OR TG_RELID IS DISTINCT FROM to_regclass(
+      format('%I.media_publication_projections', current_schema())
+    )
+  THEN
+    RAISE EXCEPTION 'song owner policy initialization requires the canonical publication trigger';
+  END IF;
+
   SELECT * INTO publication_post
     FROM posts
    WHERE community_id = NEW.community_id
@@ -19162,6 +19173,18 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='initialize_song_owner_policy_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE TABLE media_post_submissions (
     submission_id text NOT NULL,
@@ -22090,6 +22113,36 @@ DECLARE
   identity_digest TEXT;
   credit_id TEXT;
 BEGIN
+  -- Lock-capable reward roles keep the original single candidate snapshot.
+  -- A restricted ordinary role skips the lock only when no candidate exists.
+  IF NOT pg_catalog.has_any_column_privilege(current_user, 'song_reward_offer_legs'::regclass, 'UPDATE') THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM song_reward_offers offer
+      JOIN song_reward_offer_legs leg ON leg.offer_id = offer.offer_id
+      JOIN policy_versions policy
+        ON policy.community_id = offer.community_id
+       AND policy.policy_version_id = offer.reward_policy_version_id
+       AND policy.policy_purpose = 'reward'
+       AND policy.uniqueness_authority_id = offer.offer_id
+     WHERE offer.community_id = NEW.community_id
+       AND offer.post_id = NEW.post_id
+       AND offer.audio_revision = NEW.audio_revision
+       AND offer.status = 'active'
+       AND decided_at < offer.ends_at
+       AND NEW.qualified_at >= offer.starts_at
+       AND NEW.qualified_at < offer.ends_at
+       AND leg.kind = 'asset_bonus'
+       AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id) AND leg.status = 'active'
+       AND NEW.qualified_at >= leg.participation_starts_at
+       AND leg.fulfilled_atomic / leg.amount_per_claim_atomic < leg.max_claims
+       AND leg.funded_atomic - leg.reserved_atomic - leg.spent_atomic
+         - leg.fulfilled_atomic - leg.refunded_atomic >= leg.amount_per_claim_atomic
+    ) THEN
+      RETURN NEW;
+    END IF;
+  END IF;
+
   SELECT offer.offer_id, offer.community_id, offer.reward_policy_version_id,
          offer.ends_at, policy.policy_hash, leg.leg_id
     INTO candidate
@@ -22408,6 +22461,46 @@ DECLARE
   identity_digest TEXT;
   admission_hash TEXT;
 BEGIN
+  -- Lock-capable reward roles keep the original single candidate snapshot.
+  -- A restricted ordinary role skips the lock only when no candidate exists.
+  IF NOT pg_catalog.has_any_column_privilege(current_user, 'megapot_pool_drawings'::regclass, 'UPDATE') THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM song_reward_offers offer
+      JOIN song_reward_offer_legs leg ON leg.offer_id = offer.offer_id
+      JOIN megapot_pool_drawings drawing ON drawing.pool_leg_id = leg.leg_id
+      JOIN policy_versions policy
+        ON policy.community_id = offer.community_id
+       AND policy.policy_version_id = offer.reward_policy_version_id
+       AND policy.policy_purpose = 'reward'
+       AND policy.uniqueness_authority_id = offer.offer_id
+     WHERE offer.community_id = NEW.community_id
+       AND offer.post_id = NEW.post_id
+       AND offer.audio_revision = NEW.audio_revision
+       AND offer.status = 'active'
+       AND NEW.qualified_at >= offer.starts_at
+       AND NEW.qualified_at < offer.ends_at
+       AND leg.kind = 'megapot_pool'
+       AND reward_leg_accepts_qualification(leg.leg_id, NEW.activity_key, NEW.qualification_policy_version_id)
+       AND leg.status = 'active'
+       AND NEW.qualified_at >= leg.participation_starts_at
+       AND NEW.activity_key = ANY(leg.eligible_activities)
+       AND NEW.score_bps >= leg.min_score_bps
+       AND drawing.status = 'entry_open'
+       AND drawing.drawing_id >= leg.participation_starts_drawing_id
+       AND NEW.qualified_at < drawing.entry_cutoff_at
+       AND decided_at < drawing.entry_cutoff_at
+       AND NOT EXISTS (
+         SELECT 1 FROM megapot_pool_shares share
+          WHERE share.pool_leg_id = leg.leg_id
+            AND share.drawing_id = drawing.drawing_id
+            AND share.account_id = NEW.account_id
+       )
+    ) THEN
+      RETURN NEW;
+    END IF;
+  END IF;
+
   SELECT leg.leg_id, leg.offer_id, drawing.drawing_id, drawing.entry_cutoff_at,
          offer.community_id, offer.reward_policy_version_id,
          policy.policy_hash

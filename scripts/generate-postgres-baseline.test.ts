@@ -153,6 +153,31 @@ CREATE FUNCTION public.legacy_example() RETURNS integer
     expect(normalized).not.toContain("pg_catalog.format('pg_catalog, %I");
   });
 
+  test("preserves the schema-first explicit catalog path without retaining the source schema", () => {
+    const normalized = normalizePostgresBaselineDump(`
+CREATE FUNCTION public.initialize_example() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'generated_schema', 'pg_catalog', 'pg_temp'
+    AS $function$
+  SELECT 1
+$function$;
+`);
+    expect(normalized).not.toContain("generated_schema");
+    expect(normalized).toContain("SET search_path TO %I, pg_catalog, pg_temp");
+    expect(normalized).toContain("pg_get_function_identity_arguments");
+    expect(normalized.indexOf("$function$;")).toBeLessThan(
+      normalized.indexOf("DO $baseline_function_path$"),
+    );
+    expect(() =>
+      normalizePostgresBaselineDump(`
+CREATE FUNCTION public.initialize_example() RETURNS integer
+    LANGUAGE sql
+    SET search_path TO 'generated_schema', 'pg_catalog'
+    AS $function$ SELECT 1 $function$;
+`),
+    ).toThrow("Unsupported schema-first catalog portable function declaration");
+  });
+
   test("refuses unsupported catalog-first declarations and incomplete bodies", () => {
     expect(() =>
       normalizePostgresBaselineDump(`

@@ -752,7 +752,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 60_000);
 
-  test("publishes an allowed instrumental once when the runtime role gains only the missing INSERT grants", async () => {
+  test("publishes once while private owner-policy INSERT remains denied", async () => {
     const role = `runtime_publication_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     const rolePassword = randomUUID().replaceAll("-", "");
     const quotedRole = quoteIdentifier(role);
@@ -776,8 +776,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         roleCreated = true;
         // Mirror the ratified shared-runtime model: schema USAGE, product
         // table DML and sequence SELECT/UPDATE/USAGE. Staging's live grants
-        // make the two song-owner tables SELECT-only, so reproduce that exact
-        // drift instead of a broader denial.
+        // keep the two private song-owner tables SELECT-only. The canonical
+        // initializer must work without exposing those writes to runtime.
         await admin.query(`GRANT USAGE ON SCHEMA ${quoted} TO ${quotedRole}`);
         await admin.query(
           `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoted} TO ${quotedRole}`,
@@ -807,34 +807,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         const authority = await processing.loadAuthority(submission, operation);
         if (authority === null) throw new Error("missing regression authority");
 
-        const failure = await processing.commitPublication(authority).then(
-          () => null,
-          (error: unknown) =>
-            error as {
-              readonly _tag?: unknown;
-              readonly label?: unknown;
-              readonly sqlState?: unknown;
-            },
-        );
-        expect(failure?._tag).toBe("ControlPlaneStatementFailed");
-        expect(failure?.label).toBe("media-publish.projection");
-        expect(failure?.sqlState).toBe("42501");
-        const blocked = await admin.query<{
-          status: string;
-          phase: string | null;
-          post_id: string | null;
-        }>("SELECT status,phase,post_id FROM media_post_submissions WHERE submission_id=$1", [
-          submission,
-        ]);
-        expect(blocked.rows[0]).toMatchObject({
-          status: "processing",
-          phase: "publish",
-          post_id: null,
-        });
-
-        // Only the two demonstrated INSERT grants, never broader DML.
-        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policies TO ${quotedRole}`);
-        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policy_revisions TO ${quotedRole}`);
+        // The canonical trigger owns initialization; runtime never receives
+        // direct INSERT on either private policy ledger.
         expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
         expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
         const posts = await admin.query<{ count: number }>(
@@ -848,6 +822,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           [`media-post-${operation}`],
         );
         expect(policies.rows[0]).toMatchObject({ heads: 1, revisions: 1 });
+        const privateWrites = await admin.query<{ heads: boolean; revisions: boolean }>(
+          "SELECT has_table_privilege($1::text,format('%I.song_owner_policies',$2::text),'INSERT') AS heads, has_table_privilege($1::text,format('%I.song_owner_policy_revisions',$2::text),'INSERT') AS revisions",
+          [role, schema],
+        );
+        expect(privateWrites.rows).toEqual([{ heads: false, revisions: false }]);
         const operations = await admin.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM data_registration_operations WHERE submission_id=$1",
           [submission],
