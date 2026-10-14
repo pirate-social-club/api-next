@@ -22,6 +22,7 @@ import {
   prepareCreatorSource,
 } from "../../../packages/platform-cf/src/owner-megapot-creator.pg-fixture.ts";
 import { pgUrl } from "../../../packages/platform-cf/src/owner-study-starter.pg-fixture.ts";
+import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { ELEVENLABS_STUDY_BATCH_ENDPOINT } from "../../../packages/platform-cf/src/study-spoken-audio.ts";
 import {
   defaultWorkerFixture,
@@ -56,10 +57,15 @@ pgTest(
         const ordinary = f.principals.ordinaryAccount;
         if (ordinary === undefined)
           throw new Error("Verified fifth actual restricted LOGIN required");
+        if (pgUrl === undefined) throw new Error("Actual owned fixture PostgreSQL URL required");
+        const adminUrl = new URL(pgUrl);
+        adminUrl.searchParams.set("options", `-c search_path=${f.schema},pg_catalog`);
         const prepared = await prepareCreatorSource(
           {
             admin: f.admin,
-            adminRuntime: f.adminRuntime,
+            adminRuntime: makeDirectPostgresControlPlaneLayer(adminUrl.toString(), {
+              closeTimeoutMs: 2000,
+            }),
             ordinaryRuntime: ordinary.runtime(),
           },
           "current267-learning-v2",

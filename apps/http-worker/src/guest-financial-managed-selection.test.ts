@@ -79,7 +79,7 @@ describe("Financial Guest selector retains inert and practice authority", () => 
       GUEST_STUDY_CONTROLLED_LEARNING: { connectionString: "postgres://learning.invalid/db" },
       GUEST_STUDY_CRON: { connectionString: "postgres://cron.invalid/db" },
       GUEST_STUDY_READINESS_OBSERVER: { connectionString: "postgres://observer.invalid/db" },
-      get MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS() {
+      get MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS(): string {
         policyReads++;
         throw new Error("Disabled NEW rewards must not read purchase policy");
       },
