@@ -25,6 +25,10 @@ import { pgUrl } from "../../../packages/platform-cf/src/owner-study-starter.pg-
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { ELEVENLABS_STUDY_BATCH_ENDPOINT } from "../../../packages/platform-cf/src/study-spoken-audio.ts";
 import {
+  insertStudySongFixture,
+  insertTelegramPracticeReadinessFixture,
+} from "../../../packages/platform-cf/src/study-v2-ready-song.pg-fixture.ts";
+import {
   defaultWorkerFixture,
   ordinaryOrigin,
   source,
@@ -60,6 +64,19 @@ pgTest(
         if (pgUrl === undefined) throw new Error("Actual owned fixture PostgreSQL URL required");
         const adminUrl = new URL(pgUrl);
         adminUrl.searchParams.set("options", `-c search_path=${f.schema},pg_catalog`);
+        // The Guest Worker song is a creation1 practice source, with no owner
+        // policy head. Prepare a separate licensed initial publication; the real
+        //0107 initializer derives its policy/hash, preserving the existing song.
+        const legacySourceTag = "current267-legacy-v2";
+        const legacyPostId = `${legacySourceTag}-post`;
+        await insertStudySongFixture(f.admin, {
+          accountAlreadyBorn: true,
+          initializeOwnerPolicy: true,
+          additionalSourceTag: legacySourceTag,
+        });
+        await insertTelegramPracticeReadinessFixture(f.admin, {
+          additionalSourceTag: legacySourceTag,
+        });
         const prepared = await prepareCreatorSource(
           {
             admin: f.admin,
@@ -69,6 +86,7 @@ pgTest(
             ordinaryRuntime: ordinary.runtime(),
           },
           "current267-learning-v2",
+          legacyPostId,
         );
         const bindings = {
           ...f.ordinaryBindings,
@@ -194,7 +212,7 @@ pgTest(
             learner_band: null,
             timezone: "UTC",
           });
-          const startPath = `/communities/${source.communityId}/posts/${source.postId}/study/v2/sessions`;
+          const startPath = `/communities/${source.communityId}/posts/${legacyPostId}/study/v2/sessions`;
           const started = await request(startPath, startBody);
           expect(started.status).toBe(201);
           let session = decode(StudySessionV2, await started.json());

@@ -498,6 +498,7 @@ export type CreatorFixture = Parameters<Parameters<typeof creatorFixture>[0]>[0]
 export async function prepareCreatorSource(
   f: Pick<CreatorFixture, "admin" | "adminRuntime" | "ordinaryRuntime">,
   suffix: string,
+  postId = "study-post",
 ) {
   // Genuine original operator/deployment prerequisites, only this owned schema.
   await f.admin.query("BEGIN");
@@ -629,7 +630,7 @@ export async function prepareCreatorSource(
       accountId: actor,
       personaId,
       communityId: "study-community",
-      postId: "study-post",
+      postId,
       idempotencyKey: `creator-offer-${suffix}`,
       startsAt: new Date(Date.now() - 1000).toISOString(),
       endsAt: new Date(Date.now() + 3600000).toISOString(),
