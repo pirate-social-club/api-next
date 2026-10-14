@@ -621,7 +621,7 @@ describe("source-to-Wrangler binding contract", () => {
     expect(staging.vars.AVATAR_CLEANUP_ENABLED).toBe("true");
     expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
     expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(staging.secrets).toContain("MEGAPOT_GAS_TOPUP_PRIVATE_KEY");
     expect(staging.vars.SPACES_RECONCILIATION_ENABLED).toBe("true");
     expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
@@ -688,9 +688,9 @@ describe("source-to-Wrangler binding contract", () => {
     expect(production.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
   });
 
-  test("keeps staging rewards disabled while Spaces stays enabled", () => {
+  test("prepares staging rewards with the existing gas top-up bounds", () => {
     const staging = declaredEnvironment(configs.http, "staging");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_TARGET_WEI).toBe("50000000000000");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_MAX_WEI).toBe("50000000000000");
     expect(staging.vars.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT).toBe("3");
