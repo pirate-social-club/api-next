@@ -247,13 +247,13 @@ const statement = (
 const limits = Effect.fn("OwnerStudyMutations.limits")(function* (tx: ControlPlaneTransaction) {
   yield* tx.execute({
     label: "guest-study.mutation.bounds.set",
-    text: "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true)",
+    text: "SELECT set_config('transaction_timeout','3s',true),set_config('lock_timeout','250ms',true),set_config('statement_timeout','2s',true),set_config('idle_in_transaction_session_timeout','2s',true),set_config('plan_cache_mode','force_generic_plan',true)",
     values: [],
     readonly: true,
   });
   const actual = yield* tx.execute({
     label: "guest-study.mutation.bounds.verify",
-    text: "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle",
+    text: "SELECT current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle,current_setting('plan_cache_mode') AS plan_cache_mode",
     values: [],
     readonly: true,
   });
@@ -266,6 +266,7 @@ const limits = Effect.fn("OwnerStudyMutations.limits")(function* (tx: ControlPla
           lock: Schema.Literal("250ms"),
           statement: Schema.Literal("2s"),
           idle: Schema.Literal("2s"),
+          plan_cache_mode: Schema.Literal("force_generic_plan"),
         }),
         actual.rows[0],
       );
