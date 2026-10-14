@@ -7,10 +7,10 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeHistoricalStudyV2Repository3ef as makeControlPlaneStudyV2Repository } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import type { PostgresMigration } from "./postgres-migrations.ts";
 import { insertStudySongFixture } from "./study-v2-ready-song.pg-fixture.ts";
-import { makeHistoricalStudyV2Repository3ef as makeControlPlaneStudyV2Repository } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;

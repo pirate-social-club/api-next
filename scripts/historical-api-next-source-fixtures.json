@@ -311,14 +311,14 @@
     }
   ],
   "authoredFixtureFiles": {
-    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts": "d1dd8211ed4bc06534896698f13cbb96d25ca005394f1d10e49f6f245d132efc",
+    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts": "98f317848b962b01ed55ad2e716b1bbdfed9085a11c9a1c9620c6fb0c8896399",
     "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts": "087c6ad76b9dfe9bc2babc54320f9b6d246df85bb91baea16fc861cab584fe5c",
-    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts": "ce0f3b18ff53dae40c8887655439cab0de1867f0445cba6d6eee4743769658b4"
+    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts": "1378ffd2111f2566c06911f3fd1b2eaefbbbb2032cf1b98a720d6848a8940ff6"
   },
   "approvedTestCallers": {
-    "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts": "834028303ece224b8025b2b63e6fd0927303047ac362fcebdc38d7468188bceb",
-    "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts": "f42a50896c2057bda47c4b7f42b39e801f760b416c9265658f45d4fca76fb1be",
-    "packages/platform-cf/src/karaoke-instrumental-policy.pg-fixture.ts": "3e09bce1cea1272c20201ed80970e86bb367333120cf2c0e411fed794e321895"
+    "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts": "bb151935c7f16b5735cb56d5d22831b096fe71dc0ae5309ad04f7b40cb525092",
+    "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts": "394e2c7ff328401b217642bcec99fbcd555784d80eaf65573a26d001f5d42faa",
+    "packages/platform-cf/src/karaoke-instrumental-policy.pg-fixture.ts": "c95a7bcc720a359f889d361bc56e5ec2e3c636ab7886e6e6451180585a2ab614"
   },
   "externalApiOrigins": {
     "packages/application/src/rewards/activity-qualification.ts": "6ca8768ae328c41e3f39b2c83a1b10450128e58d8bfb97f6c30448005f82a553",

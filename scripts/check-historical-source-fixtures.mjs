@@ -1,6 +1,6 @@
 // Immutable accepted API-next fixture APIs are intentional entries, not new runtime exports.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeTypeScript } from "./check-deps.mjs";
@@ -10,7 +10,7 @@ const catalogPath = resolve(root, "scripts/historical-api-next-source-fixtures.j
 const bytes = readFileSync(catalogPath);
 if (
   createHash("sha256").update(bytes).digest("hex") !==
-  "d21c8928e62f2c3fe4362992de780526de4442d1c84d67cc456391e41b664c79"
+  "66bfda713bf941a6ea84e984c4c4e7edfe35962864d0a380a67c4ba46661af69"
 )
   throw new Error(
     "Reviewed historical fixture catalogue changed; independent source closure review required",
@@ -41,8 +41,11 @@ const allowedTargets = new Set([...rawPaths, ...authoredPaths]);
 // The immutable namespace contains exactly raw36 plus authored3 regular files.
 // Census all entry kinds before source scanning: JSON/TXT, directories and symlinks fail.
 const census = readdirSync(resolve(root, catalog.prefix), { withFileTypes: true });
-if (allowedTargets.size !== 39 || census.length !== 39 || census.some((entry) =>
-  !entry.isFile() || !allowedTargets.has(`${catalog.prefix}${entry.name}`)))
+if (
+  allowedTargets.size !== 39 ||
+  census.length !== 39 ||
+  census.some((entry) => !entry.isFile() || !allowedTargets.has(`${catalog.prefix}${entry.name}`))
+)
   throw new Error("Immutable historical namespace must contain exactly39 declared regular files");
 const callers = new Set(Object.keys(catalog.approvedTestCallers));
 for (const caller of callers)

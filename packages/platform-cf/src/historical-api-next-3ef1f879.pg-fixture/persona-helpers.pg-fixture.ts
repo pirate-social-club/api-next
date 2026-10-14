@@ -1,7 +1,7 @@
 /** TEST ONLY explicit historical source construction; current factory stays separate. */
 import { confirmPersonaEvmWallet, prepareActivityPersona } from "@pirate/application";
 import { Effect } from "effect";
-import { COMMUNITY_ID, addressFor } from "../activity-participation-composed.pg-fixture.ts";
+import { addressFor, COMMUNITY_ID } from "../activity-participation-composed.pg-fixture.ts";
 import type { Runtime } from "../activity-participation-composed-drivers.pg-fixture.ts";
 import {
   makeControlPlanePersonaStore,

@@ -13,7 +13,6 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
-import { confirmHistoricalWallet3ef as confirmWallet } from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { makeAccountControlledSpokenProtocol } from "./account-spoken-producer-protocol.ts";
 import {
   type Fixture,
@@ -24,18 +23,23 @@ import {
   run,
 } from "./account-study-producer.pg-fixture.ts";
 import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
-import { makeHistoricalControlledStudyV2Store3ef as makeControlledAccountStudyV2Store } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
-import { makeHistoricalMegapotCommitmentCoordinator3ef as makeMegapotCommitmentCoordinator } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeHistoricalMegapotCommitmentStore3ef as makeControlPlaneMegapotCommitmentStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeHistoricalMegapotCutoffCoordinator3ef as makeMegapotCutoffCoordinator } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeHistoricalMegapotCutoffStore3ef as makeControlPlaneMegapotCutoffStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeHistoricalMegapotDrawingObservationStore3ef as makeControlPlaneMegapotDrawingObservationStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
-import { makeHistoricalPersonaStore3ef as makeControlPlanePersonaStore } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { makeHistoricalRewardPayoutStore3ef as makeControlPlaneRewardPayoutStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
-import { makeHistoricalRewardProjectionStore3ef as makeControlPlaneRewardProjectionStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import {
+  makeHistoricalMegapotCommitmentStore3ef as makeControlPlaneMegapotCommitmentStore,
+  makeHistoricalMegapotCutoffStore3ef as makeControlPlaneMegapotCutoffStore,
+  makeHistoricalMegapotDrawingObservationStore3ef as makeControlPlaneMegapotDrawingObservationStore,
+  makeHistoricalRewardPayoutStore3ef as makeControlPlaneRewardPayoutStore,
+  makeHistoricalRewardProjectionStore3ef as makeControlPlaneRewardProjectionStore,
+  makeHistoricalMegapotCommitmentCoordinator3ef as makeMegapotCommitmentCoordinator,
+  makeHistoricalMegapotCutoffCoordinator3ef as makeMegapotCutoffCoordinator,
+} from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
+import {
+  makeHistoricalControlledStudyV2Store3ef as makeControlledAccountStudyV2Store,
+  makeHistoricalPersonaStore3ef as makeControlPlanePersonaStore,
+} from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
+import { confirmHistoricalWallet3ef as confirmWallet } from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { completeComposedWinningChain } from "./historical-api-next-3ef1f879.pg-fixture/rewards-composed-chain.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   bytes32,
   hash as repeatedHash,

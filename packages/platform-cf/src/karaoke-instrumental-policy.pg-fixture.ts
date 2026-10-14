@@ -1,7 +1,3 @@
-import {
-  prepareHistoricalIdentity3ef,
-  confirmHistoricalWallet3ef,
-} from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { expect } from "bun:test";
 import type { KaraokeSessionAuthority } from "@pirate/application";
 import { Client } from "pg";
@@ -17,6 +13,10 @@ import {
   prepareIdentity,
 } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
+import {
+  confirmHistoricalWallet3ef,
+  prepareHistoricalIdentity3ef,
+} from "./historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
