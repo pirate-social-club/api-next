@@ -1638,21 +1638,32 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           WHERE observation_id='drawing-observation-100'`,
         [legId],
       );
+      // Establish the actual canonical Account owner under origin before the
+      // illustrative qualification row bypasses only its fixture prerequisites.
+      const ownerReceipt = await admin.query<{ owner_id: string }>(
+        "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+        [identity.accountId],
+      );
+      const ownerId = ownerReceipt.rows[0]?.owner_id;
+      if (ownerReceipt.rows.length !== 1 || typeof ownerId !== "string" || ownerId.length === 0) {
+        throw new Error("Snapshot fixture Account owner receipt is missing");
+      }
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
           `INSERT INTO activity_qualifications (
              qualification_id, account_id, persona_id, community_id, post_id,
+             participation_owner_id, participation_owner_kind,
              audio_revision, activity_key, study_session_id, score_bps,
              qualification_policy_version_id, qualified_at, streak_day,
              evidence_summary
            ) VALUES (
-             'qualification-snapshot', $1, $2, $3, $4, 3, 'study',
+             'qualification-snapshot', $1, $2, $3, $4, $5, 'account', 3, 'study',
              'study-session-snapshot', 8000, 'study_session_first_pass_v2@1',
              clock_timestamp() - interval '1 minute', current_date,
              '{"kind":"study_session_first_pass_v2"}'::jsonb
            )`,
-          [identity.accountId, identity.personaId, identity.communityId, identity.postId],
+          [identity.accountId, identity.personaId, identity.communityId, identity.postId, ownerId],
         );
       } finally {
         await admin.query("SET session_replication_role = origin");
