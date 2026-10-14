@@ -159,6 +159,7 @@ describe("actual Study recovery qualification closure registry admission", () =>
     });
     const guestOnlyWrites = withGuest.writes.filter((key) => !f.study.writes.includes(key));
     expect(guestOnlyWrites).toEqual([
+      "postgres:owner_captured_guest_choice_commands",
       "postgres:guest_participation_operations",
       "postgres:guest_resource_edge_locks",
       "postgres:guest_resource_session_reservations",
