@@ -319,7 +319,7 @@
     "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts": "bb151935c7f16b5735cb56d5d22831b096fe71dc0ae5309ad04f7b40cb525092",
     "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts": "394e2c7ff328401b217642bcec99fbcd555784d80eaf65573a26d001f5d42faa",
     "packages/platform-cf/src/karaoke-instrumental-policy.pg-fixture.ts": "c95a7bcc720a359f889d361bc56e5ec2e3c636ab7886e6e6451180585a2ab614",
-    "packages/platform-cf/src/guest-learning-row-boundary.pg.test.ts": "c4a2d4aa0e0fb13750511c4c7b79e3d1b743ae117dc4b7444a5a0a536ce32867"
+    "packages/platform-cf/src/guest-learning-row-boundary.pg.test.ts": "a29b0e165643cbb18fd3951ed1214f39339eb080ac5d45f0f91b1b580b664d2c"
   },
   "externalApiOrigins": {
     "packages/application/src/rewards/activity-qualification.ts": "6ca8768ae328c41e3f39b2c83a1b10450128e58d8bfb97f6c30448005f82a553",

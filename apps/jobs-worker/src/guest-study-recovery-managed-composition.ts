@@ -9,9 +9,7 @@ import {
 } from "@pirate/platform-cf/postgres";
 import { Schema } from "effect";
 import { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
-import {
-  type GuestStudyRecoveryComposition,
-} from "./study-source-recovery-composition.ts";
+import type { GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 
 export interface GuestStudyRecoveryManagedBindings extends GuestStudyManagedControlPlaneBindings {
   readonly GUEST_STUDY_SERVING_ENABLED?: string;
@@ -48,9 +46,9 @@ export async function makeDefaultGuestStudyRecoveryComposition(
   // Installed current267 source is explicit, independent of NEW admission.
   // Existing liabilities/unknown commits/audio cleanup retain original recovery
   // when the NEW rewards flag is absent/false. No purchase/funding job is added.
-  const core = Schema.decodeUnknownSync(
-    Schema.Struct({ connectionString: Schema.NonEmptyString }),
-  )(bindings.CONTROL_PLANE);
+  const core = Schema.decodeUnknownSync(Schema.Struct({ connectionString: Schema.NonEmptyString }))(
+    bindings.CONTROL_PLANE,
+  );
   if (core.connectionString.trim() !== core.connectionString)
     throw new Error("Ordinary Account database binding unavailable");
   const ordinaryAccount = makeHyperdriveControlPlaneLayer(core, {

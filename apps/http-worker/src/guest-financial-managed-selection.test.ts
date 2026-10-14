@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-prepared-v2.ts";
 import {
   type GuestStudyManagedBindings,
-  makeDefaultOwnerRewardGuestStudyManagedRuntime,
   makeDefaultOwnerNativeGuestStudyManagedRuntime,
+  makeDefaultOwnerRewardGuestStudyManagedRuntime,
   ownerFinancialGuestStudySelected,
 } from "./guest-study-managed-bindings.ts";
 
@@ -92,7 +92,9 @@ describe("Financial Guest selector retains inert and practice authority", () => 
     expect(ownerFinancialGuestStudySelected(bindings, "test")).toBe(false);
     expect(policyReads).toBe(0);
     for (const environment of ["production", "prod", "unknown"])
-      expect(() => makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, environment)).toThrow("nonproduction");
+      expect(() => makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, environment)).toThrow(
+        "nonproduction",
+      );
     expect(makeDefaultOwnerNativeGuestStudyManagedRuntime({}, "production")).toBeNull();
   });
   test("actual practice availability and disclosure surviveV2 without a reward/hash; nonnull rewards and private extras refuse", () => {

@@ -147,5 +147,10 @@ export function makeDefaultOwnerNativeGuestStudyManagedRuntime(
     statementTimeoutMs: 2000,
     closeTimeoutMs: 2000,
   });
-  return Object.freeze({ ...actual, newRewardsEnabled, purchaseSafetyMarginSeconds, ordinaryAccount });
+  return Object.freeze({
+    ...actual,
+    newRewardsEnabled,
+    purchaseSafetyMarginSeconds,
+    ordinaryAccount,
+  });
 }

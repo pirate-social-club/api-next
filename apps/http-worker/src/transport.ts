@@ -1036,7 +1036,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           binding.method === context.req.method &&
           path.test(pathname) &&
           (binding.name !== "AddMegapotPoolLeg" ||
-            (options.guestStudy?.mode === "owner_financial" && options.guestStudy.newRewardsEnabled)),
+            (options.guestStudy?.mode === "owner_financial" &&
+              options.guestStudy.newRewardsEnabled)),
       )?.binding;
       let beforeGuestBodyRead: (() => Promise<void>) | undefined;
       if (financialAccount !== undefined) {
