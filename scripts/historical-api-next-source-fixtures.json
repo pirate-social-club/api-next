@@ -319,7 +319,8 @@
     "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts": "bb151935c7f16b5735cb56d5d22831b096fe71dc0ae5309ad04f7b40cb525092",
     "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts": "394e2c7ff328401b217642bcec99fbcd555784d80eaf65573a26d001f5d42faa",
     "packages/platform-cf/src/karaoke-instrumental-policy.pg-fixture.ts": "c95a7bcc720a359f889d361bc56e5ec2e3c636ab7886e6e6451180585a2ab614",
-    "packages/platform-cf/src/guest-learning-row-boundary.pg.test.ts": "a29b0e165643cbb18fd3951ed1214f39339eb080ac5d45f0f91b1b580b664d2c"
+    "packages/platform-cf/src/guest-learning-row-boundary.pg.test.ts": "a29b0e165643cbb18fd3951ed1214f39339eb080ac5d45f0f91b1b580b664d2c",
+    "packages/platform-cf/src/hns-single-owner-readiness-cutover.pg.test.ts": "f9fb76be927d81e157f7cf20f02b9496a3bc22db088e5512176906c5f78d1c41"
   },
   "externalApiOrigins": {
     "packages/application/src/rewards/activity-qualification.ts": "6ca8768ae328c41e3f39b2c83a1b10450128e58d8bfb97f6c30448005f82a553",
@@ -353,7 +354,8 @@
     "packages/domain/src/rewards/reward-claim-intent-binding.ts": "98b3b8d50d36145b4c74df76d593b8e8dbe438571f3b9a878595ba40a140c93f",
     "packages/domain/src/gates-v2/account-age-verification-policy.ts": "f7d675188d203109e0305d0e8b315d28eb2ed342aa29c559a9f070f09d5f5404",
     "packages/domain/src/community/join-intent-binding.ts": "c9c297c7c21e5793377afb48a282cb4dfb7d5c1701c29987f7b6b9fe508c8397",
-    "packages/domain/src/rewards/activity-qualification.ts": "c9ce90f204cc0375e49defcedfda27d82e3da767a1f97ffc8de72838703468a1"
+    "packages/domain/src/rewards/activity-qualification.ts": "c9ce90f204cc0375e49defcedfda27d82e3da767a1f97ffc8de72838703468a1",
+    "db/postgres/roles.sql.example": "ed8e86e08920f9989072edbc7508c56ce6944d20d95a43515dd272aa57fee090"
   },
   "effectVersion": "4.0.0-rc.109"
 }

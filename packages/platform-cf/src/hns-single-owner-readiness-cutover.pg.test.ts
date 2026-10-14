@@ -1373,9 +1373,22 @@ suite("HNS single-owner readiness cutover on PostgreSQL 17", () => {
             "SELECT count(*)::text AS count FROM pg_roles WHERE rolname IN ('api_next_app','api_next_operator')",
           );
           expect(existing.rows[0]?.count).toBe("0");
-          const template = await Bun.file(
+          const currentTemplate = await Bun.file(
             new URL("../../../db/postgres/roles.sql.example", import.meta.url),
           ).text();
+          // This is the accepted 0263 ceremony, before the ordinary-account
+          // function-grant block was added. Require the entire rendered template
+          // to be byte-exact source3ef; all original role/probe oracles remain.
+          const template = currentTemplate.replace(
+            /-- Migrations 0247-0265 make every function they define owner-only and infer no\n[\s\S]*?-- Ordinary account function grants end\n\n/u,
+            "",
+          );
+          if (
+            createHash("sha256").update(template).digest("hex") !==
+            "5943908e11c296e21a3e0b689657b0b72f91eecb3db475f1a49e6dbc690f0fb1"
+          ) {
+            throw new Error("Accepted3ef historical role template changed");
+          }
           await admin.query("BEGIN");
           try {
             await admin.query(`SET LOCAL search_path TO ${quote(schema)}, public`);

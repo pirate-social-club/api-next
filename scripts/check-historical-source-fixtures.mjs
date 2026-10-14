@@ -10,7 +10,7 @@ const catalogPath = resolve(root, "scripts/historical-api-next-source-fixtures.j
 const bytes = readFileSync(catalogPath);
 if (
   createHash("sha256").update(bytes).digest("hex") !==
-  "f823e9f39b21e811e468a0e0f5b802c6fec6c7affb1cabd206fea9b58890213f"
+  "abc26b99d2031216858232630edc8394bfa78bd7e7204b659e1718fd22cdbc7a"
 )
   throw new Error(
     "Reviewed historical fixture catalogue changed; independent source closure review required",
