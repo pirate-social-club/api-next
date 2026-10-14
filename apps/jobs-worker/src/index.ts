@@ -70,6 +70,7 @@ import {
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -764,10 +765,15 @@ export function makeJobsWorkerDeclarations(
   }
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
-  if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
-  if (learnerAudio !== undefined) {
-    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery));
-  }
+  const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
+  const studyJob =
+    learnerAudio === undefined
+      ? undefined
+      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+  if (megapotJob !== undefined && studyJob !== undefined) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  } else if (megapotJob !== undefined) declarations.push(megapotJob);
+  else if (studyJob !== undefined) declarations.push(studyJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }
