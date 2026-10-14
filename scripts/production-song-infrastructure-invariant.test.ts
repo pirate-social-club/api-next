@@ -239,7 +239,7 @@ describe("disabled production song infrastructure", () => {
     // These require production provider evidence; staging values are not a substitute.
     expect(configs.http.vars.VIDEO_STREAM_CUSTOMER_HOST).toBe("");
     expect(configs.http.vars.VIDEO_STREAM_SIGNING_KEY_ID).toBe("");
-    expect(configs.media.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe("");
+    expect(configs.media.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe("https://video-source.pirate.sc");
     expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("");
   });
 

@@ -71,6 +71,9 @@
       "name": "pirate-video-source-gateway-production",
       "workers_dev": false,
       "preview_urls": false,
+      "routes": [
+        { "pattern": "video-source.pirate.sc", "custom_domain": true }
+      ],
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
