@@ -31,6 +31,12 @@ const production = JSON.parse(
 function productionEnv(getByName: (name: string) => unknown): JobsWorkerEnv {
   return {
     ...production.vars,
+    // These tests isolate HNS and learner recovery from other v1 lanes.
+    MEDIA_PROCESSING_ENABLED: "false",
+    VIDEO_ANALYSIS_ENABLED: "false",
+    VIDEO_DELIVERY_ENABLED: "false",
+    SONG_VIDEO_PCM_ADMISSION_ENABLED: "false",
+    KARAOKE_FINALIZATION_RECOVERY_ENABLED: "false",
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
     CF_VERSION_METADATA: { id: "production-test", tag: "", timestamp: "2026-09-05T00:00:00Z" },
     CRON_LOCK: { getByName } as JobsWorkerEnv["CRON_LOCK"],
@@ -127,23 +133,28 @@ describe("production HNS renewal scheduling", () => {
     ]);
   });
 
-  it("admits HNS renewal and bound learner-audio recovery while product gates stay off", async () => {
+  it("keeps HNS and learner recovery independently selectable with the v1 minute wakeup", async () => {
     const env = productionEnv(() => ({}));
     const ownership = makeHnsRouteRevalidationComposition(env);
     expect(ownership).toEqual({ enabled: false });
-    expect(production.triggers.crons).toEqual(["*/30 * * * *"]);
+    expect(production.triggers.crons).toEqual(["* * * * *"]);
     expect(env.LEARNER_AUDIO).toBeDefined();
     for (const flag of [
       "COMMUNITY_MAINTENANCE_ENABLED",
+      "DATA_REGISTRATION_ENABLED",
+      "MEGAPOT_REWARDS_ENABLED",
+    ])
+      expect(production.vars[flag]).toBe("false");
+    for (const flag of [
       "MEDIA_PROCESSING_ENABLED",
       "VIDEO_ANALYSIS_ENABLED",
       "VIDEO_DELIVERY_ENABLED",
       "SONG_VIDEO_PCM_ADMISSION_ENABLED",
-      "DATA_REGISTRATION_ENABLED",
-      "MEGAPOT_REWARDS_ENABLED",
       "KARAOKE_FINALIZATION_RECOVERY_ENABLED",
-    ])
-      expect(production.vars[flag]).toBe("false");
+    ]) {
+      expect(production.vars[flag]).toBe("true");
+      expect(env[flag as keyof JobsWorkerEnv]).toBe("false");
+    }
     const declarations = makeJobsWorkerDeclarations(
       {},
       "https://rpc.invalid/",
