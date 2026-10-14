@@ -1,91 +1,114 @@
-# Paused production v1 source checklist
+# Paused production v1 release checklist
 
-Prepared from `main` at `b8efd833af7e9729c1e988f81aa8804776cf74fe`.
-This PR prepares HTTP/jobs/media configuration for songs, videos, account Study
-and instrumental Karaoke. All existing v1 product gates stay OFF, including
-both PCM admission switches and CloudConvert rendering. Rewards and
-`GUEST_STUDY_SERVING_ENABLED` are explicitly OFF. HNS, Telegram, database
-migrations, contracts and generated clients are unchanged. No live provider
-state has been verified or changed here. The local coordinator retains the
-credentials, provider operations, database, DNS and deployment queue.
+This source successor prepares the ordinary `pirate.sc` web release on API
+`78280f7662438e7afded89382eadaaceb40c0396`. It enables only song upload and
+playback, song-backed videos, account Study and instrumental Karaoke in the
+production candidate. Rewards, guest serving, Telegram, DATA registration,
+song-source recording, spoken rerecording and unrelated maintenance stay off.
+Default and staging configurations are unchanged. This source PR neither
+lifts the October 10 production pause nor deploys or migrates anything.
 
-- [ ] **Storage and Worker resources:** verify canonical account
-  `08a4c22cf52e2ecae883e36f80a33f4a`, private production ingress/immutable/derived
-  R2 buckets and `pirate-learner-audio-production` (shared by HTTP and jobs).
-  Verify media-processing primary queue/DLQ and the media/video-analysis/Study
-  Workflows against their production names and owning Workers in the configs.
-  Jobs' Karaoke binding must target `pirate-http-worker-production`. HTTP's
-  `SONG_PLAYBACK_RATE_LIMITER` and `VIDEO_PLAYBACK_RATE_LIMITER` both use
-  `VideoPlaybackRateLimiterDO`; creating that class through appended migration
-  `v6` requires a **full HTTP deploy**, never a gradual version rollout. Verify
-  deployed migration history first; `v1`–`v5` are retained verbatim.
-  The learner-audio binding also admits retained spoken-answer recovery on the
-  existing jobs cron even with product flags OFF; verify its database privileges
-  and retained work before a later deployment. The HNS cron cadence is unchanged.
-- [ ] **Gateway and database drift:** all four production source configurations
-  already use Hyperdrive `0c215865d7994c92b940d905f54ece37`. Verify the serving
-  versions, production database/schema and serving-role privileges, including
-  the source gateway's grant/excerpt/PCM-admission reads. A different deployed
-  Hyperdrive is runtime drift to reconcile locally, not another source ID fix.
-  Gateway deployment/existence and reachable `VIDEO_SOURCE_GATEWAY_ORIGIN` are
-  **unknown**. Its source disables workers.dev and declares no custom route;
-  the coordinator must select and verify public capability-only ingress for
-  provider GETs. Do not invent a workers.dev URL or expose storage credentials.
-- [ ] **Provider values:** `VIDEO_STREAM_CUSTOMER_HOST`,
-  `VIDEO_STREAM_SIGNING_KEY_ID` and production `ACRCLOUD_IDENTIFY_HOST` are
-  **unknown** and remain empty. Verify the production Stream key/JWK pairing,
-  account scope and ACRCloud project region. Verify provider access, quotas and
-  the staging-matched Study model `google/gemini-3.8-flash`; configuration is
-  not evidence of live availability. The prepared video safety policy is
-  `sampled_frame_openai_v1`.
-- [ ] **Exact credential distribution:** verify/install only the names below
-  using existing secret tooling. No values are present in this PR. Production
-  Infisical admission is optional inventory, not provisioning or activation;
-  Wrangler declarations describe the prepared candidate. Compare installed
-  names with the candidate before any later deployment.
+Jobs wakes every minute for media maintenance and practice recovery. The HNS
+root-health job retains its own half-hour due schedule and existing production
+root custody. A fresh HNS connection and phone resolver are outside the first
+ordinary-host web release gate. Preserve the existing HNS ingress and renewal.
 
-| Owning Worker | Prepared v1 credential declarations |
+The local coordinator owns the one deployment queue. The historical pinned
+HNS-only runner is not the execution path for this release. Use the maintained
+API and Solid deployment tools with reviewed sources, fresh readiness and a
+compatible rollback. Do not build another release runner.
+
+1. Confirm the scoped production release decision and exact tested API and
+   Solid revisions. Take a PlanetScale backup branch before production
+   migrations. On an isolated production copy, rehearse the same procedure
+   already proven on staging: verify the contiguous ledger, apply the exact
+   missing suffix and incremental serving-role grants, then run restricted-role
+   registration, Study/Karaoke, media and source-gateway preflights. The latest
+   production observation was ledger 243 and the prepared source ends at 265;
+   verify that suffix 0244–0265 still applies. Dormant guest schema ships with
+   guest serving off. This PR adds no migration or grant.
+2. Recheck production resources and retained work before execution. The
+   canonical account is `08a4c22cf52e2ecae883e36f80a33f4a`; existing production
+   ingress, immutable, derived and learner-audio buckets, queues and Workflows
+   were observed on October 14. All production source configurations use
+   Hyperdrive `0c215865d7994c92b940d905f54ece37`. Reconfirm the actual database,
+   serving principal, resource names and queue/Workflow ownership. Inventory
+   retained Study/spoken-answer recovery and media work before Jobs receives
+   `LEARNER_AUDIO` and minute ticks. Do not replay or terminate retained work
+   implicitly. Jobs' Karaoke binding targets `pirate-http-worker-production`.
+3. Distribute credentials only through maintained managed tooling. All thirteen
+   formerly absent v1 entries were prepared in `prod/services/api-next` and
+   independently read back on October 14; no Worker synchronization occurred.
+   The new immutable-bucket read pair and account-scoped Stream token passed
+   bounded provider reads. The one-key R2 listing found no object, so an object
+   GET remains an acceptance check. Recheck provider availability, quotas and
+   the Stream signing JWK/key pairing before deployment. Public configuration
+   uses canonical Stream host `customer-ma1pwa54r5492drw.cloudflarestream.com`,
+   key `f9429a3e99739200172de35e525f6d75` and ACR identify host
+   `identify-eu-west-1.acrcloud.com`. A successful signed ACR request verified
+   that project region. No secret belongs in public vars or this document.
+4. Apply the rehearsed production database suffix and incremental grants after
+   confirming the backup. Run restricted-role checks against the actual main
+   database before any dependent Worker deployment. The serving role also
+   needs the reviewed `UPDATE` grant on `api_next.recovery_inspection_cursors`
+   for the existing alignment cursor; preserve its progress and grant no
+   unnecessary `INSERT`. Rehearse this narrow privilege alongside the ordinary
+   function grants. Compare installed secret
+   names with the exact candidate declarations below. Deploy the capability-only
+   source gateway through the maintained provenance tool and verify
+   `https://video-source.pirate.sc`, then deploy Media and Jobs in that order.
+   PR 610 declares the gateway custom domain and Media origin; the gateway was
+   absent at the last runtime read. It exposes authorized provider GETs and
+   keeps workers.dev and preview URLs disabled. Recheck route ownership before
+   deployment. Uploads remain closed at HTTP during these prerequisites.
+5. Coordinate database PCM admission after gateway/Media/Jobs readiness and
+   before final HTTP activation. Source enables both
+   `SONG_VIDEO_PCM_ADMISSION_ENABLED` switches and HTTP
+   `VIDEO_PCM_REFERENCE_GATE_ENABLED`; the live database
+   `media_song_video_pcm_admission_policy.enabled` is a separate control.
+   Before activation, verify migration 0247's instrumental qualification
+   policy, learner-audio archival/deletion, Study transcription and Karaoke
+   finalization/recovery privileges. Newly generated PCM, master and published
+   instrumental checks belong to the post-activation song canary below.
+6. Build the exact paired Solid source and preserve its same-origin `/api`
+   proxy, host-only cookies, CSRF and authenticated Karaoke WebSocket forwarding.
+   The last accepted Solid revision is
+   `32c35aa7e1223027fd46cf32eaecd38ed688d305`; recheck the selected revision and
+   ingress composition fingerprint against the existing HNS gateway manifest.
+   Any gateway rotation remains a paired coordinator operation. Use Solid's
+   `scripts/deploy-production-with-hns-guard.mjs` and API's
+   `scripts/deploy-worker-with-provenance.ts`. HTTP appends DO migration `v6`
+   for the two playback rate-limiter bindings using
+   `VideoPlaybackRateLimiterDO`; this requires a full HTTP deploy, not a
+   gradual version rollout. Preserve migrations `v1`–`v5` and confirm the
+   currently served migration history before executing.
+7. Run the ordinary-host happy path on one serving source pair: sign in, open
+   a community, upload a new song with both mandatory stems, complete Study
+   and instrumental Karaoke, upload two song-backed videos and decode them on
+   Home. Recheck presigned browser PUT authorization and readable ETags. Live
+   production ingress CORS already allows `https://pirate.sc`, `PUT`,
+   `Content-Type` and exposed `ETag`; no CORS mutation is needed for this
+   ordinary-host release. The checked-in wildcard PUT-only policy remains a
+   separately applicable proposal. API/session CORS is unchanged. Confirm
+   Rewards, guest serving and Telegram remain off and existing HNS ingress
+   still works. On the newly uploaded song, verify automatic timing,
+   version-bound 48 kHz stereo PCM, CloudConvert master, published instrumental
+   and video-ready readback before accepting the two new song-backed videos.
+
+| Owning Worker | Exact v1 credential declarations |
 | --- | --- |
 | HTTP | Existing ingress PUT presigner pair and `OPENAI_API_KEY`; `ELEVENLABS_API_KEY`, `OPENROUTER_API_KEY`; `SONG_PLAYBACK_R2_ACCESS_KEY_ID`, `SONG_PLAYBACK_R2_SECRET_ACCESS_KEY`, `SONG_PLAYBACK_SOURCE_HMAC_BASE64`; `VIDEO_STREAM_SIGNING_JWK_BASE64`, `VIDEO_PLAYBACK_SOURCE_HMAC_BASE64` |
 | Jobs | `VIDEO_WORKFLOW_READ_TOKEN` alongside the existing funding RPC |
 | Media | `CLOUDCONVERT_RENDER_API_KEY`, `VIDEO_WORKFLOW_READ_TOKEN`, `VIDEO_STREAM_API_TOKEN`, `ACRCLOUD_ACCESS_KEY`, `ACRCLOUD_ACCESS_SECRET`, `ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `QENCODE_API_KEY` |
 
-The song GET pair must be scoped to production immutable objects, separate
-from ingress upload credentials. The CloudConvert runtime key is media-only
-with `task.read`/`task.write`; it never substitutes the operator's
-`CLOUDCONVERT_API_KEY`. Retain existing HNS credentials unchanged. No Rewards,
-guest, Telegram or operator credential expansion is included.
+The song GET pair is scoped to production immutable objects and separate from
+upload credentials. CloudConvert's runtime key is media-only with
+`task.read`/`task.write`; it does not substitute the operator key. Keep all
+existing HNS credentials unchanged. No production Rewards or other financial
+credential expansion is included.
 
-- [ ] **PCM admission and instrumental Karaoke:** coordinator verifies the
-  existing migration suffix and runtime-role admission with maintained
-  database preflights; this PR adds/applies no SQL migration. Verify
-  `media_song_video_pcm_admission_policy.enabled` separately from jobs/media
-  `SONG_VIDEO_PCM_ADMISSION_ENABLED` and HTTP `VIDEO_PCM_REFERENCE_GATE_ENABLED`.
-  Both Worker switches and the HTTP gate are OFF in source; live database policy
-  and migration/grant readiness are **unknown**. Later activation must coordinate
-  the database policy and both Worker switches. Require a newly uploaded song's automatic timing,
-  version-bound 48 kHz stereo PCM reference, video-ready readback, verified
-  CloudConvert master and playback before admitting song-video traffic.
-  Verify the existing instrumental qualification policy (migration `0247`),
-  published instrumental artifact, account Study audio archive/transcription,
-  Karaoke finalization/recovery and learner-audio deletion privileges.
-- [ ] **Upload-ingress CORS proposal:** maintained
-  `infra/cloudflare/song-production/media-ingress-production-cors.json` now
-  proposes origin `*`, method `PUT` only, allowed header `Content-Type`, exposed
-  `ETag`, and a 3,600-second preflight cache. Live bucket CORS is **unknown**;
-  only the coordinator applies and reads it back. API/session CORS stays
-  unchanged. Verify a presigned browser PUT from the paired production Solid
-  origin before uploads are enabled.
-- [ ] **Paired Solid/gateway change and later execution:** Solid owner prepares
-  its same-origin `/api` proxy, including authenticated Karaoke WebSocket
-  forwarding, host-only cookies and CSRF, against this API candidate. Retain
-  HNS ingress/handle-host routing. Review the resulting Solid ingress
-  composition fingerprint against the HNS gateway manifest and both gateway
-  deployment references; any required gateway/Solid update is paired and owned
-  by the coordinator. Exact paired Solid head and live gateway manifest are
-  **unknown**. Use API `scripts/deploy-worker-with-provenance.ts` and Solid
-  `scripts/deploy-production-with-hns-guard.mjs` after accepted source and a
-  coordinator release decision. The historical HNS-only pinned runner is not
-  this v1 release. Preserve their existing guards and record serving/rollback
-  versions. No new runner, merge, auto-merge or deployment is authorized by
-  this preparation PR.
+Record every serving revision, full-deploy migration tag, release result and
+rollback candidate. After suffix 265 and DO v6, rollback must use a tested
+schema-compatible source; do not restore ledger 243 or delete the DO class.
+Preserve the backup and historical evidence. Stop on a failed readiness or
+journey check and recover through the maintained tools.

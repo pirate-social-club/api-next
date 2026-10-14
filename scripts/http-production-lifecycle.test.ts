@@ -19,9 +19,9 @@ const config = BunRuntime.JSONC.parse(
   await BunRuntime.file(new URL("../apps/http-worker/wrangler.jsonc", import.meta.url)).text(),
 ) as Configuration;
 
-test("paused production prepares the complete HTTP lifecycle for the coordinator's full deploy", () => {
+test("production v1 includes the complete HTTP lifecycle for the coordinator's full deploy", () => {
   const production = config.env.production;
-  expect(production.vars?.VIDEO_DELIVERY_ENABLED).toBe("false");
+  expect(production.vars?.VIDEO_DELIVERY_ENABLED).toBe("true");
   expect(production.migrations?.map(({ tag }) => tag)).toEqual([
     "v1",
     "v2",

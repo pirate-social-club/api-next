@@ -236,11 +236,11 @@
         "binding": "IMAGE_TRANSFORMATIONS"
       },
       "vars": {
-        "OPENAI_MODERATION_ENABLED": "false",
-    "MEDIA_PROCESSING_ENABLED": "false",
-        "VIDEO_ANALYSIS_ENABLED": "false",
-        "VIDEO_DELIVERY_ENABLED": "false",
-        "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "false",
+        "OPENAI_MODERATION_ENABLED": "true",
+    "MEDIA_PROCESSING_ENABLED": "true",
+        "VIDEO_ANALYSIS_ENABLED": "true",
+        "VIDEO_DELIVERY_ENABLED": "true",
+        "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "true",
         "VIDEO_SAFETY_GATE": "sampled_frame_openai_v1",
         // Verify the production gateway ingress with the coordinator. Do not
         // infer a reachable workers.dev origin while workers_dev is disabled.
@@ -250,11 +250,11 @@
         "VIDEO_WORKFLOW_SCRIPT_NAME": "pirate-media-processor-worker-production",
         "DATA_REGISTRATION_ENABLED": "false",
         "SONG_SOURCE_RECORDING_ENABLED": "false",
-        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "false",
+        "SONG_VIDEO_PCM_ADMISSION_ENABLED": "true",
         "ACRCLOUD_CONSOLE_ORIGIN": "",
         "ACRCLOUD_SOURCE_BUCKET_ID": "",
         "DATA_REGISTRATION_CHAIN_ID": "1315",
-        "ACRCLOUD_IDENTIFY_HOST": ""
+        "ACRCLOUD_IDENTIFY_HOST": "identify-eu-west-1.acrcloud.com"
       },
       "secrets": {
         "required": [

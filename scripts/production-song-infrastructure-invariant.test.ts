@@ -40,37 +40,38 @@ const configs = {
   gateway: productionOf(await readJsonc("apps/video-source-gateway/wrangler.jsonc")),
 };
 
-describe("disabled production song infrastructure", () => {
-  test("keeps production song runtime gates disabled with the independent HNS cron", () => {
+describe("narrow production v1 song infrastructure", () => {
+  test("enables the v1 media and practice gates while excluding financial and guest serving", () => {
     expect(configs.http.vars).toMatchObject({
-      MEDIA_UPLOADS_ENABLED: "false",
-      SONG_PLAYBACK_ENABLED: "false",
-      VIDEO_DELIVERY_ENABLED: "false",
-      VIDEO_SONG_REFERENCE_ENABLED: "false",
-      VIDEO_PCM_REFERENCE_GATE_ENABLED: "false",
-      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "false",
-      STUDY_GENERATION_ENABLED: "false",
-      STUDY_PROFILE_COVERAGE_ENABLED: "false",
+      MEDIA_UPLOADS_ENABLED: "true",
+      SONG_PLAYBACK_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      VIDEO_SONG_REFERENCE_ENABLED: "true",
+      VIDEO_PCM_REFERENCE_GATE_ENABLED: "true",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "true",
+      STUDY_GENERATION_ENABLED: "true",
+      STUDY_PROFILE_COVERAGE_ENABLED: "true",
       STUDY_SPOKEN_RERECORD_ENABLED: "false",
       GUEST_STUDY_SERVING_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.jobs.vars).toMatchObject({
       COMMUNITY_MAINTENANCE_ENABLED: "false",
-      MEDIA_PROCESSING_ENABLED: "false",
-      VIDEO_ANALYSIS_ENABLED: "false",
-      VIDEO_DELIVERY_ENABLED: "false",
-      SONG_VIDEO_PCM_ADMISSION_ENABLED: "false",
-      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "false",
+      MEDIA_PROCESSING_ENABLED: "true",
+      VIDEO_ANALYSIS_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "true",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "true",
       DATA_REGISTRATION_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.media.vars).toMatchObject({
-      MEDIA_PROCESSING_ENABLED: "false",
-      VIDEO_ANALYSIS_ENABLED: "false",
-      VIDEO_DELIVERY_ENABLED: "false",
-      VIDEO_CLOUDCONVERT_RENDER_ENABLED: "false",
-      SONG_VIDEO_PCM_ADMISSION_ENABLED: "false",
+      OPENAI_MODERATION_ENABLED: "true",
+      MEDIA_PROCESSING_ENABLED: "true",
+      VIDEO_ANALYSIS_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      VIDEO_CLOUDCONVERT_RENDER_ENABLED: "true",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "true",
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
@@ -81,7 +82,7 @@ describe("disabled production song infrastructure", () => {
     });
     expect(configs.jobs.vars.HNS_ROOT_HEALTH_RENEWAL_ENABLED).toBe("true");
     expect(configs.jobs.vars.HNS_OWNERSHIP_ENABLED).toBe("false");
-    expect(configs.jobs.triggers).toEqual({ crons: ["*/30 * * * *"] });
+    expect(configs.jobs.triggers).toEqual({ crons: ["* * * * *"] });
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
@@ -202,8 +203,8 @@ describe("disabled production song infrastructure", () => {
     ]);
   });
 
-  test("prepares v1 provider declarations on their owning Workers while processing stays off", () => {
-    expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("false");
+  test("pins v1 providers and credential declarations on their owning Workers", () => {
+    expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("true");
     expect((configs.media.secrets as JsonRecord).required).toEqual([
       "CLOUDCONVERT_RENDER_API_KEY",
       "VIDEO_WORKFLOW_READ_TOKEN",
@@ -236,11 +237,13 @@ describe("disabled production song infrastructure", () => {
         VIDEO_WORKFLOW_SCRIPT_NAME: "pirate-media-processor-worker-production",
       });
     }
-    // These require production provider evidence; staging values are not a substitute.
-    expect(configs.http.vars.VIDEO_STREAM_CUSTOMER_HOST).toBe("");
-    expect(configs.http.vars.VIDEO_STREAM_SIGNING_KEY_ID).toBe("");
+    // These public values are bound to the reviewed canonical-account provider evidence.
+    expect(configs.http.vars.VIDEO_STREAM_CUSTOMER_HOST).toBe(
+      "customer-ma1pwa54r5492drw.cloudflarestream.com",
+    );
+    expect(configs.http.vars.VIDEO_STREAM_SIGNING_KEY_ID).toBe("f9429a3e99739200172de35e525f6d75");
     expect(configs.media.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe("https://video-source.pirate.sc");
-    expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("");
+    expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("identify-eu-west-1.acrcloud.com");
   });
 
   test("prepares wildcard upload-ingress CORS with only PUT and Content-Type", async () => {
