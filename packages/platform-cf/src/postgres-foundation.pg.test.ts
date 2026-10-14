@@ -921,6 +921,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         RETURNS text LANGUAGE sql SECURITY DEFINER
         SET search_path TO pg_catalog, ${quoteIdentifier(schema)}, pg_temp
         AS $$ SELECT pg_catalog.lower(input_value) $$;
+        CREATE FUNCTION portable_schema_first_example() RETURNS integer LANGUAGE sql SECURITY DEFINER
+        SET search_path TO ${quoteIdentifier(schema)}, pg_catalog, pg_temp
+        AS $$ SELECT portable_catalog_example(11) $$;
         CREATE FUNCTION portable_legacy_example() RETURNS integer LANGUAGE sql
         SET search_path TO ${quoteIdentifier(schema)}, pg_temp AS $$ SELECT 3 $$;`);
       const definitions = await admin.query<{ definition: string }>(
@@ -929,7 +932,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)`,
         [schema],
       );
-      expect(definitions.rows).toHaveLength(3);
+      expect(definitions.rows).toHaveLength(4);
       const nativeCatalog = await catalogForSchema(admin, schema);
       const target = schemaIdentifier();
       await admin.query(`CREATE SCHEMA ${quoteIdentifier(target)}`);
@@ -965,14 +968,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         expect(
           (
             await admin.query(`SELECT portable_catalog_example(7) AS integer_result,
-          portable_catalog_example('MiXeD'::text) AS text_result,portable_legacy_example() AS legacy_result`)
+          portable_catalog_example('MiXeD'::text) AS text_result,portable_legacy_example() AS legacy_result,portable_schema_first_example() AS schema_first_result`)
           ).rows,
-        ).toEqual([{ integer_result: 8, text_result: "mixed", legacy_result: 3 }]);
+        ).toEqual([
+          { integer_result: 8, text_result: "mixed", legacy_result: 3, schema_first_result: 12 },
+        ]);
         expect(
           (
             await admin.query(`SELECT count(*)::int AS count FROM pg_proc p
           JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pg_catalog'
-          AND p.proname IN ('portable_catalog_example','portable_legacy_example')`)
+          AND p.proname IN ('portable_catalog_example','portable_legacy_example','portable_schema_first_example')`)
           ).rows,
         ).toEqual([{ count: 0 }]);
       } finally {

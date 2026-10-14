@@ -183,9 +183,13 @@ suite("Ordinary serving-role function grants", () => {
       const migrations = await loadPostgresMigrations();
       const first = migrations.findIndex((m) => m.version.startsWith("0247_"));
       expect(first).toBe(246);
-      expect(Number(migrations.at(-1)?.version.slice(0, 4))).toBe(
-        SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last,
-      );
+      // Later unrelated migrations retain this reviewed function block.
+      expect(
+        migrations.some(
+          (migration) =>
+            Number(migration.version.slice(0, 4)) === SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last,
+        ),
+      ).toBe(true);
       for (const migration of migrations.slice(0, first)) await admin.query(migration.sql);
       const template = await readFile(
         new URL("../../../db/postgres/roles.sql.example", import.meta.url),
@@ -213,7 +217,12 @@ suite("Ordinary serving-role function grants", () => {
 
       // Every private function 0247-0265 define is classified exactly once.
       const defined = new Set<string>();
-      for (const migration of migrations.slice(first))
+      for (const migration of migrations
+        .slice(first)
+        .filter(
+          (entry) =>
+            Number(entry.version.slice(0, 4)) <= SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last,
+        ))
         for (const match of migration.sql.matchAll(
           /CREATE (?:OR REPLACE )?FUNCTION ([a-z0-9_]+)\(/gu,
         ))

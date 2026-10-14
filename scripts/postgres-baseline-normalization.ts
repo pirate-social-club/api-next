@@ -5,9 +5,11 @@ export function normalizePostgresBaselineDump(dump: string): string {
   let functionHeader = false;
   let functionDeclaration: Readonly<{ name: string; arguments: string }> | undefined;
   let catalogFirstFunction: Readonly<{ name: string; arguments: string }> | undefined;
+  let schemaFirstFunction: Readonly<{ name: string; arguments: string }> | undefined;
   const sqlLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
   const catalogFirstAlter = (
     declaration: Readonly<{ name: string; arguments: string }>,
+    catalogFirst = true,
   ): string => {
     // pg_dump's declaration arguments are pg_get_function_arguments output,
     // including defaults. Select that exact overload in the unchanged target
@@ -28,7 +30,9 @@ export function normalizePostgresBaselineDump(dump: string): string {
       "    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace",
       `    WHERE n.nspname=target_schema AND p.proname=${name}`,
       `      AND pg_catalog.pg_get_function_arguments(p.oid)=${argumentsLiteral};`,
-      "  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',",
+      catalogFirst
+        ? "  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',"
+        : "  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',",
       "    target_schema,target_function.proname,target_function.identity_arguments,target_schema);",
       "END",
       `${delimiter};`,
@@ -66,6 +70,18 @@ export function normalizePostgresBaselineDump(dump: string): string {
       )
         throw new Error("Unsupported catalog-first portable function declaration");
       catalogFirstFunction = functionDeclaration;
+    }
+    if (
+      portableFunctionSearchPath !== undefined &&
+      catalogFirstFunction === undefined &&
+      /^SET search_path (?:TO|=) '[^']+', 'pg_catalog'(?:,|$)/u.test(trimmed)
+    ) {
+      if (
+        functionDeclaration === undefined ||
+        !/^SET search_path (?:TO|=) '[^']+', 'pg_catalog', 'pg_temp'$/u.test(trimmed)
+      )
+        throw new Error("Unsupported schema-first catalog portable function declaration");
+      schemaFirstFunction = functionDeclaration;
     }
     if (
       topLevel &&
@@ -141,12 +157,17 @@ export function normalizePostgresBaselineDump(dump: string): string {
     if (delimiter !== undefined && dollarDelimiter === undefined) {
       if (catalogFirstFunction !== undefined)
         normalized.push(catalogFirstAlter(catalogFirstFunction));
+      if (schemaFirstFunction !== undefined)
+        normalized.push(catalogFirstAlter(schemaFirstFunction, false));
       catalogFirstFunction = undefined;
+      schemaFirstFunction = undefined;
       functionDeclaration = undefined;
     }
   }
   if (catalogFirstFunction !== undefined)
     throw new Error("Unclosed catalog-first portable function body");
+  if (schemaFirstFunction !== undefined)
+    throw new Error("Unclosed schema-first catalog portable function body");
 
   const body = normalized
     .join("\n")
