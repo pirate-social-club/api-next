@@ -60,7 +60,7 @@ export const financialImplementedSource =
 export { Browser, disclosure, json, startBody };
 export const ordinaryOrigin = "https://community.example";
 export const source = { communityId: "study-community", postId: "study-post" };
-export const implementedSource =
+const implementedSource =
   guestLearningNames.every(
     (name) => guestParticipationRegistry[name].implementation !== "disabled",
   ) &&
