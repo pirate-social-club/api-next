@@ -30,7 +30,7 @@ import {
 import {
   type GuestStudyManagedBindings,
   makeDefaultGuestStudyManagedRuntime,
-  makeDefaultOwnerRewardGuestStudyManagedRuntime,
+  makeDefaultOwnerNativeGuestStudyManagedRuntime,
 } from "./guest-study-managed-bindings.ts";
 import { Browser, json, startBody } from "./guest-study-private-journey.pg-fixture.ts";
 import {
@@ -49,7 +49,7 @@ import {
 import { createHttpWorker } from "./transport.ts";
 
 type ManagedServingName = GuestStudyServingName | OwnerRewardGuestStudyServingName;
-const financialImplementedSource =
+export const financialImplementedSource =
   guestLearningNames.every(
     (name) => guestParticipationRegistry[name].implementation !== "disabled",
   ) &&
@@ -122,6 +122,7 @@ export async function defaultWorkerFixture(
     },
   ) => Promise<void>,
   financialSource?: OwnerFinancialGuestStudyReadinessSource,
+  newRewardsEnabled = true,
 ) {
   if (financialSource !== undefined && financialSource !== ownerFinancialGuestStudyReadinessSource)
     throw new Error("Fixture requires the actual adopted compiled financial source object");
@@ -237,7 +238,7 @@ export async function defaultWorkerFixture(
           ...(financialSource === undefined
             ? {}
             : {
-                GUEST_STUDY_REWARDS_ENABLED: "true",
+                GUEST_STUDY_REWARDS_ENABLED: newRewardsEnabled ? "true" : "false",
                 CONTROL_PLANE: { connectionString: ordinaryPrincipal?.url ?? "" },
                 MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
               }),
@@ -284,7 +285,7 @@ export async function defaultWorkerFixture(
           const actual = selectedBindings(configuration);
           const currentConfiguration = actual.GUEST_STUDY_RUNTIME_CONFIGURATION;
           if (financialSource !== undefined) {
-            const managed = makeDefaultOwnerRewardGuestStudyManagedRuntime(actual, "test");
+            const managed = makeDefaultOwnerNativeGuestStudyManagedRuntime(actual, "test");
             if (managed === null) throw new Error("Financial default factory unexpectedly inert");
             const graph = await makeOwnerRewardGuestStudyServingComposition({
               managed,

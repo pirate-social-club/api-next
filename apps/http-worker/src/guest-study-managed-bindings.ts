@@ -14,7 +14,7 @@ import type { OwnerRewardGuestStudyManagedRuntime } from "./owner-reward-guest-s
 export interface GuestStudyManagedBindings extends GuestStudyManagedControlPlaneBindings {
   readonly GUEST_STUDY_SERVING_ENABLED?: string;
   readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
-  /** Nonsecret future release selector; absent/false retains canonical practice16. */
+  /** Trusted NEW reward-admission selector; absent/false keeps practice and original recovery on current native267. */
   readonly GUEST_STUDY_REWARDS_ENABLED?: string;
   readonly CONTROL_PLANE?: unknown;
   /** Existing trusted server policy also used by jobs. Never body/client config. */
@@ -55,8 +55,8 @@ export function makeDefaultGuestStudyManagedRuntime(
   for (const name of guestLearningNames)
     if (guestParticipationRegistry[name].implementation === "disabled")
       throw new Error("Guest Study implementation declarations remain disabled");
-  // Practice transport still excludes accounting names and native profile
-  // verification rejects every unexpected effective financial privilege.
+  // These are shared learning dependencies. The current production factory
+  // separately verifies the exact five-principal native267 source profile.
   const ordinaryProductOrigin = productOrigin(bindings.GUEST_STUDY_PRODUCT_ORIGIN);
   const bucket = bindings.LEARNER_AUDIO;
   if (
@@ -109,9 +109,21 @@ export function makeDefaultOwnerRewardGuestStudyManagedRuntime(
   environment: string,
 ): OwnerRewardGuestStudyManagedRuntime | null {
   if (!ownerFinancialGuestStudySelected(bindings, environment)) return null;
+  return makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, environment);
+}
+/** Current source composition is selected explicitly, never by probing a SQL
+ * phase or falling back to a historical namespace. Learning has no reward flag,
+ * account, persona, membership or Palm prerequisite. Original financial recovery
+ * retains its source authority when NEW reward admission is disabled.
+ */
+export function makeDefaultOwnerNativeGuestStudyManagedRuntime(
+  bindings: GuestStudyManagedBindings,
+  environment: string,
+): OwnerRewardGuestStudyManagedRuntime | null {
+  const newRewardsEnabled = ownerFinancialGuestStudySelected(bindings, environment);
   const actual = makeDefaultGuestStudyManagedRuntime(bindings, environment);
-  if (actual === null) throw new Error("Financial Guest Study managed bindings unavailable");
-  const raw = bindings.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS;
+  if (actual === null) return null;
+  const raw = newRewardsEnabled ? bindings.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS : undefined;
   // Missing/malformed policy has no NEW financial quote; original recovery does
   // not require it. This is not a server default or client-provided number.
   const purchaseSafetyMarginSeconds =
@@ -135,5 +147,5 @@ export function makeDefaultOwnerRewardGuestStudyManagedRuntime(
     statementTimeoutMs: 2000,
     closeTimeoutMs: 2000,
   });
-  return Object.freeze({ ...actual, purchaseSafetyMarginSeconds, ordinaryAccount });
+  return Object.freeze({ ...actual, newRewardsEnabled, purchaseSafetyMarginSeconds, ordinaryAccount });
 }

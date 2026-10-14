@@ -1,11 +1,11 @@
-// Future positive source suite: all current declarations remain untouched/off.
+// Current managed267 Worker practice-only regression with NEW rewards disabled in the owned fixture.
 import { describe, expect, mock, test } from "bun:test";
 import {
   GuestAuthorityV1,
   GuestLearnerAudioDeletionV1,
   GuestLearningRetentionV1,
   GuestStudyAnswerResultV1,
-  GuestStudyPreparedContentV1,
+  GuestStudyPreparedContentV2,
   GuestStudySessionV1,
 } from "@pirate/contracts";
 import { Schema } from "effect";
@@ -14,24 +14,35 @@ import {
   Browser,
   defaultWorkerFixture,
   disclosure,
-  implementedSource,
+  financialImplementedSource,
   json,
   ordinaryOrigin,
   type RequestOptions,
   source,
   startBody,
 } from "./guest-study-default-worker.pg-fixture.ts";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { ownerFinancialGuestStudyReadinessSource } from "../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts";
 import { createHttpWorker } from "./transport.ts";
 
 // Same Node test-platform stand-in as maintained production Worker suites.
 // It supplies no authority, handler, DB, cryptography, readiness or provider result.
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
 const { createProductionHttpWorker } = await import("./composition.ts");
-const suite = pgUrl && implementedSource ? describe : describe.skip;
-if (pgUrl && !implementedSource)
-  process.stdout.write(
-    "Canonical Guest Worker positive suite skipped: actual learning declarations remain disabled.\n",
-  );
+const suite = pgUrl ? describe : describe.skip;
+if (pgUrl && !financialImplementedSource)
+  throw new Error("Current native267 Worker regression requires actual implemented learning/accounting source");
+async function currentNativeSource() {
+  const raw = await readFile(new URL("../../../packages/platform-cf/src/owner-financial-guest-study-readiness-source.ts", import.meta.url));
+  expect(createHash("sha256").update(raw).digest("hex")).toBe("0004224eb102647f822690b1be630962a696ee312375af91d44ccbe4ce89cfca");
+  const value = ownerFinancialGuestStudyReadinessSource;
+  if (value === null) throw new Error("Actual compiled current financial native source required");
+  expect(value.candidate.ledger).toHaveLength(267);
+  expect(value.candidate.native_function_bodies).toHaveLength(423);
+  expect(value.candidate.profiles.ordinaryAccount.functions).toHaveLength(124);
+  return value;
+}
 async function body<S extends Schema.ConstraintDecoder<unknown>>(
   response: Response,
   schema: S,
@@ -70,7 +81,7 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
       let publicPreparedCalls = 0;
       const uncomposed = createHttpWorker({
         handlers: {
-          GetPublicStudyPreparedContentV1: async () => {
+          GetPublicGuestStudyPreparedContentV2: async () => {
             publicPreparedCalls++;
             throw new Error("Ordinary public handler must not bypass managed Guest readiness");
           },
@@ -79,7 +90,7 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
       const refusedPrepared = await f.request(
         uncomposed,
         new Browser(),
-        "GetPublicStudyPreparedContentV1",
+        "GetPublicGuestStudyPreparedContentV2",
         { path: source },
       );
       expect(refusedPrepared.status).toBe(404);
@@ -89,13 +100,15 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
       expect(await f.snapshot()).toEqual(before);
       const worker = await f.makeWorker(),
         browser = new Browser();
-      const preview = await f.request(worker, browser, "GetPublicStudyPreparedContentV1", {
+      const preview = await f.request(worker, browser, "GetPublicGuestStudyPreparedContentV2", {
         path: source,
       });
       expect(preview.status).toBe(200);
-      expect((await body(preview, GuestStudyPreparedContentV1)).disclosure.version).toBe(
-        disclosure.version,
-      );
+      const practicePrepared = await body(preview, GuestStudyPreparedContentV2);
+      expect(practicePrepared.disclosure.version).toBe(disclosure.version);
+      expect(practicePrepared.reward_preview).toBeNull();
+      expect(practicePrepared.reward_preview_terms_hash).toBeNull();
+      expect(f.bindings.GUEST_STUDY_REWARDS_ENABLED).toBe("false");
       const proof = await bootstrap(
         browser,
         (name, input) => f.request(worker, browser, name, input),
@@ -170,7 +183,7 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
         expect(after[field]).toBe(before[field]);
       expect(after.checkpoints).toBe(1);
       expect(f.providerCalls()).toBe(1);
-    });
+    }, await currentNativeSource(), false);
   }, 120000);
   test("genuine Access RSA plus HMAC attach Guest proof to initiating app origin and refuse cross-origin proof/name-host forwarding", async () => {
     await defaultWorkerFixture(async (f) => {
@@ -236,7 +249,7 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
       expect(f.providerCalls()).toBe(0);
       expect(f.objects.size).toBe(0);
       expect(hns.keyReads()).toBe(1);
-    });
+    }, await currentNativeSource(), false);
   }, 120000);
   test("real createProductionHttpWorker selects default binding graph without Guest runtime injection", async () => {
     await defaultWorkerFixture(async (f) => {
@@ -268,6 +281,6 @@ suite("canonical default managed Guest Worker/native/HNS journey", () => {
         expect(after[field]).toBe(before[field]);
       expect(f.providerCalls()).toBe(0);
       expect(f.objects.size).toBe(0);
-    });
+    }, await currentNativeSource(), false);
   }, 120000);
 });

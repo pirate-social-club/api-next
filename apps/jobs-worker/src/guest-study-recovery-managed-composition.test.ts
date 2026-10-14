@@ -12,6 +12,9 @@ describe("Default Guest jobs managed selection", () => {
       throw new Error("inert recovery touched managed binding");
     };
     const bindings: GuestStudyRecoveryManagedBindings = {
+      get CONTROL_PLANE() {
+        return closed();
+      },
       get GUEST_STUDY_PUBLIC_READ() {
         return closed();
       },

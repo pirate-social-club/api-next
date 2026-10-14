@@ -3,6 +3,7 @@ import { projectPracticePreparedGuestStudyContentV2 } from "./guest-practice-pre
 import {
   type GuestStudyManagedBindings,
   makeDefaultOwnerRewardGuestStudyManagedRuntime,
+  makeDefaultOwnerNativeGuestStudyManagedRuntime,
   ownerFinancialGuestStudySelected,
 } from "./guest-study-managed-bindings.ts";
 
@@ -65,6 +66,34 @@ describe("Financial Guest selector retains inert and practice authority", () => 
       ),
     ).toThrow();
     expect(reads).toBe(0);
+  });
+  test("current native source factory retains learning with NEW rewards disabled and never reads the purchase policy", () => {
+    let policyReads = 0;
+    const bindings: GuestStudyManagedBindings = {
+      GUEST_STUDY_SERVING_ENABLED: "true",
+      GUEST_STUDY_REWARDS_ENABLED: "false",
+      GUEST_STUDY_PRODUCT_ORIGIN: "https://community.example",
+      LEARNER_AUDIO: { put: async () => ({ size: 0 }), delete: async () => {} },
+      CONTROL_PLANE: { connectionString: "postgres://ordinary.invalid/db" },
+      GUEST_STUDY_PUBLIC_READ: { connectionString: "postgres://public.invalid/db" },
+      GUEST_STUDY_CONTROLLED_LEARNING: { connectionString: "postgres://learning.invalid/db" },
+      GUEST_STUDY_CRON: { connectionString: "postgres://cron.invalid/db" },
+      GUEST_STUDY_READINESS_OBSERVER: { connectionString: "postgres://observer.invalid/db" },
+      get MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS() {
+        policyReads++;
+        throw new Error("Disabled NEW rewards must not read purchase policy");
+      },
+    };
+    const actual = makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, "test");
+    expect(actual).not.toBeNull();
+    expect(actual?.newRewardsEnabled).toBe(false);
+    expect(actual?.purchaseSafetyMarginSeconds).toBeNull();
+    expect(actual?.schema).toBe("api_next");
+    expect(ownerFinancialGuestStudySelected(bindings, "test")).toBe(false);
+    expect(policyReads).toBe(0);
+    for (const environment of ["production", "prod", "unknown"])
+      expect(() => makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, environment)).toThrow("nonproduction");
+    expect(makeDefaultOwnerNativeGuestStudyManagedRuntime({}, "production")).toBeNull();
   });
   test("actual practice availability and disclosure surviveV2 without a reward/hash; nonnull rewards and private extras refuse", () => {
     const actual = {

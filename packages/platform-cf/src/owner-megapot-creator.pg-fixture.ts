@@ -493,7 +493,12 @@ export async function creatorFixture(
 }
 export type CreatorFixture = Parameters<Parameters<typeof creatorFixture>[0]>[0];
 
-export async function prepareCreatorSource(f: CreatorFixture, suffix: string) {
+/** Same accepted source preparation body, usable with the existing five-principal
+ * owned fixture; no extra role, privilege or runtime capability is required. */
+export async function prepareCreatorSource(
+  f: Pick<CreatorFixture, "admin" | "adminRuntime" | "ordinaryRuntime">,
+  suffix: string,
+) {
   // Genuine original operator/deployment prerequisites, only this owned schema.
   await f.admin.query("BEGIN");
   let configured = false;

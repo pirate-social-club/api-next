@@ -149,6 +149,8 @@ export const noBaselinePostgresTestSuites = [
   // and four-principal Worker groups; neither uses the reusable rendered baseline.
   "packages/platform-cf/src/owner-megapot-creator.pg.test.ts",
   "apps/http-worker/src/owner-financial-default-worker.pg.test.ts",
+  "apps/http-worker/src/current267-legacy-v2-preservation.pg.test.ts",
+  "apps/jobs-worker/src/guest-study-recovery-current267.pg.test.ts",
   "packages/platform-cf/src/owner-megapot-positive-native.pg.test.ts",
   "packages/platform-cf/src/activity-qualification-repository.pg.test.ts",
   "packages/platform-cf/src/owner-megapot-snapshot-codec.pg.test.ts",

@@ -1035,7 +1035,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         ({ binding, path }) =>
           binding.method === context.req.method &&
           path.test(pathname) &&
-          (binding.name !== "AddMegapotPoolLeg" || options.guestStudy?.mode === "owner_financial"),
+          (binding.name !== "AddMegapotPoolLeg" ||
+            (options.guestStudy?.mode === "owner_financial" && options.guestStudy.newRewardsEnabled)),
       )?.binding;
       let beforeGuestBodyRead: (() => Promise<void>) | undefined;
       if (financialAccount !== undefined) {
@@ -1205,7 +1206,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           // admission before cookies/body work, not an endpoint/auth override.
           if (
             binding.name === "AddMegapotPoolLeg" &&
-            options.guestStudy?.mode === "owner_financial"
+            options.guestStudy?.mode === "owner_financial" &&
+            options.guestStudy.newRewardsEnabled
           )
             await options.guestStudy.verifyProspectiveLegCreationIngress();
           const authorization = context.req.header("authorization");

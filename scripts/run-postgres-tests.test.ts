@@ -168,6 +168,17 @@ describe("PostgreSQL test discovery", () => {
       expect(nativeCount).toBe(3);
       expect(postgresTestFileWeight(file, nativeCount)).toBe(60);
     }
+    // Two exact current267 suites own one fresh native fixture each; retain the
+    // existing independent category model until actual whole-file costs exist.
+    for (const file of [
+      "apps/http-worker/src/current267-legacy-v2-preservation.pg.test.ts",
+      "apps/jobs-worker/src/guest-study-recovery-current267.pg.test.ts",
+    ]) {
+      const nativeSource = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
+      const nativeCount = postgresTestSourceCallCount(nativeSource);
+      expect(nativeCount).toBe(1);
+      expect(postgresTestFileWeight(file, nativeCount)).toBe(20);
+    }
     // The full current four-case readiness group is measured as one complete
     // file; alias discovery never restores the old one-call weight20.
     expect(

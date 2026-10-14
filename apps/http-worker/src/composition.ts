@@ -269,11 +269,8 @@ import { makeDanceReferenceHandlers } from "./dance-reference-handlers.ts";
 import { makeProductionDanceReferenceServices } from "./dance-reference-production-composition.ts";
 import {
   type GuestStudyManagedBindings,
-  makeDefaultGuestStudyManagedRuntime,
-  makeDefaultOwnerRewardGuestStudyManagedRuntime,
-  ownerFinancialGuestStudySelected,
+  makeDefaultOwnerNativeGuestStudyManagedRuntime,
 } from "./guest-study-managed-bindings.ts";
-import { makeGuestStudyServingComposition } from "./guest-study-serving-composition.ts";
 import { makeHandleNationalityAuthoringHandlers } from "./handle-nationality-authoring-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsActivationCurrentView } from "./hns-activation-current-view-composition.ts";
@@ -1724,7 +1721,7 @@ export async function createProductionHttpWorker(
             clock: { now: Effect.sync(() => Date.now()) },
             ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
             store:
-              guestStudy?.mode === "owner_financial"
+              guestStudy?.mode === "owner_financial" && guestStudy.newRewardsEnabled
                 ? guestStudy.prospectiveRewardOfferStore
                 : makeControlPlaneSongRewardOfferStore(controlPlane),
             fundingStore: rewardFundingStore,
@@ -1857,15 +1854,8 @@ export async function createProductionHttpWorker(
         ? {}
         : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
     };
-    if (ownerFinancialGuestStudySelected(bindings, config.API_NEXT_ENV)) {
-      const managed = makeDefaultOwnerRewardGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
-      return makeOwnerRewardGuestStudyServingComposition({
-        ...inputs,
-        ...(managed === null ? {} : { managed }),
-      });
-    }
-    const managed = makeDefaultGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
-    return makeGuestStudyServingComposition({
+    const managed = makeDefaultOwnerNativeGuestStudyManagedRuntime(bindings, config.API_NEXT_ENV);
+    return makeOwnerRewardGuestStudyServingComposition({
       ...inputs,
       ...(managed === null ? {} : { managed }),
     });

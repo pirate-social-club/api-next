@@ -11,7 +11,6 @@ import { Schema } from "effect";
 import { makeOwnerRewardGuestStudyRecoveryComposition } from "./owner-reward-study-source-recovery-composition.ts";
 import {
   type GuestStudyRecoveryComposition,
-  makeGuestStudyRecoveryComposition,
 } from "./study-source-recovery-composition.ts";
 
 export interface GuestStudyRecoveryManagedBindings extends GuestStudyManagedControlPlaneBindings {
@@ -46,39 +45,35 @@ export async function makeDefaultGuestStudyRecoveryComposition(
   )
     throw new Error("Guest recovery learner-audio binding unavailable");
   const actual = makeGuestStudyManagedControlPlanes(bindings);
-  let ordinaryAccount: ReturnType<typeof makeHyperdriveControlPlaneLayer> | undefined;
-  if (financial === "true") {
-    const core = Schema.decodeUnknownSync(
-      Schema.Struct({ connectionString: Schema.NonEmptyString }),
-    )(bindings.CONTROL_PLANE);
-    if (core.connectionString.trim() !== core.connectionString)
-      throw new Error("Ordinary Account database binding unavailable");
-    ordinaryAccount = makeHyperdriveControlPlaneLayer(core, {
-      connectTimeoutMs: 3000,
-      statementTimeoutMs: 2000,
-      closeTimeoutMs: 2000,
-    });
-  }
+  // Installed current267 source is explicit, independent of NEW admission.
+  // Existing liabilities/unknown commits/audio cleanup retain original recovery
+  // when the NEW rewards flag is absent/false. No purchase/funding job is added.
+  const core = Schema.decodeUnknownSync(
+    Schema.Struct({ connectionString: Schema.NonEmptyString }),
+  )(bindings.CONTROL_PLANE);
+  if (core.connectionString.trim() !== core.connectionString)
+    throw new Error("Ordinary Account database binding unavailable");
+  const ordinaryAccount = makeHyperdriveControlPlaneLayer(core, {
+    connectTimeoutMs: 3000,
+    statementTimeoutMs: 2000,
+    closeTimeoutMs: 2000,
+  });
   const readiness = makeGuestStudyManagedReadiness(
     {
       ...actual,
-      ...(ordinaryAccount === undefined ? {} : { ordinaryAccount }),
+      ordinaryAccount,
       workerLearnerAudioBinding: bucket,
       selectedLearnerAudioBinding: bucket,
     },
-    { roleProfile: financial === "true" ? "owner_financial" : "practice" },
+    { roleProfile: "owner_financial" },
   );
   await readiness.verify();
-  if (financial === "true") {
-    if (ordinaryAccount === undefined)
-      throw new Error("Verified ordinary Account recovery binding unavailable");
-    // This exact layer participated in the five-principal native inspection.
-    // Practice callback presence supplies no Account financial authority.
-    return Object.freeze(
-      Object.assign(makeOwnerRewardGuestStudyRecoveryComposition(actual.cron, bucket), {
-        accountOriginalAdmissionRuntime: ordinaryAccount,
-      }),
-    );
-  }
-  return makeGuestStudyRecoveryComposition(actual.cron, bucket);
+  // This exact Account layer participated in the five-principal native
+  // inspection; Guest recovery still exclusively uses the distinct cron layer.
+  // Existing bounded stages consume only original captured/reconciliation rows.
+  return Object.freeze(
+    Object.assign(makeOwnerRewardGuestStudyRecoveryComposition(actual.cron, bucket), {
+      accountOriginalAdmissionRuntime: ordinaryAccount,
+    }),
+  );
 }

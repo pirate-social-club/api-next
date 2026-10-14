@@ -10,7 +10,7 @@ import {
   makeOwnerGuestStudyService,
   makeOwnerSpokenSuccessProtocol,
 } from "@pirate/application/use-cases/guest-learning";
-import { guestParticipationRegistry } from "@pirate/contracts";
+import { guestParticipationRegistry, NotFound } from "@pirate/contracts";
 import { makeControlPlanePreparedGuestStudyContentStore } from "@pirate/platform-cf/guest-prepared-study-content-store";
 import { makeGuestRecoveryAudioDeletionStores } from "@pirate/platform-cf/guest-recovery-deletion-store";
 import { makeControlPlanePreparedGuestRewardContentStore } from "@pirate/platform-cf/guest-reward-prepared-content-store";
@@ -109,6 +109,8 @@ type Archive = Parameters<typeof makeOwnerSpokenFencedArchiveStage>;
  */
 export interface OwnerRewardGuestStudyManagedRuntime {
   readonly learning: Runtime;
+  /** Trusted process selector for NEW reward admission, independent of native source readiness. */
+  readonly newRewardsEnabled: boolean;
   /** Explicit trusted server configuration, never request/body/hash-derived. */
   readonly purchaseSafetyMarginSeconds: unknown;
   readonly ordinaryAccount: Runtime;
@@ -164,6 +166,12 @@ export async function makeOwnerRewardGuestStudyServingComposition(
     if (guestParticipationRegistry[name].implementation === "disabled")
       throw new Error("Financial accounting implementation declarations remain disabled");
   const m = input.managed;
+  if (typeof m.newRewardsEnabled !== "boolean")
+    throw new Error("Explicit NEW reward-admission selection unavailable");
+  // Null disables current quotes and NEW starts. The unchanged stores reconcile
+  // immutable original starts and finish existing participation before requiring
+  // current margin/configuration; flag loss cannot replace or erase an outcome.
+  const purchaseSafetyMarginSeconds = m.newRewardsEnabled ? m.purchaseSafetyMarginSeconds : null;
   const readiness = makeGuestStudyManagedReadiness(
     {
       learning: m.learning,
@@ -194,7 +202,7 @@ export async function makeOwnerRewardGuestStudyServingComposition(
     disclosure,
     policy,
     () => `guest_start_${crypto.randomUUID()}`,
-    m.purchaseSafetyMarginSeconds,
+    purchaseSafetyMarginSeconds,
   );
   const ordinaryGuestMutations = makeControlPlaneOwnerStudyMutations(m.learning, {
     rawPolicy: policy,
@@ -206,7 +214,7 @@ export async function makeOwnerRewardGuestStudyServingComposition(
   const rewardPrepared = makeControlPlanePreparedGuestRewardContentStore(
     m.publicRead,
     disclosure,
-    m.purchaseSafetyMarginSeconds,
+    purchaseSafetyMarginSeconds,
   );
   const acceptedContinuation = makeControlPlaneOwnerSpokenCapturedContinuationStore(m.learning);
   const reward = makeControlPlaneGuestRewardStudyContinuations(m.learning, {
@@ -265,7 +273,7 @@ export async function makeOwnerRewardGuestStudyServingComposition(
     controlPlane: m.learning,
     retryAfterSeconds: m.retryAfterSeconds,
   });
-  const margin = m.purchaseSafetyMarginSeconds;
+  const margin = purchaseSafetyMarginSeconds;
   const accountStudy = makeOwnerAccountStudyComposition({
     authority,
     facade: makeControlPlaneOwnerAccountStudyFacade(
@@ -334,9 +342,11 @@ export async function makeOwnerRewardGuestStudyServingComposition(
   });
   return Object.freeze({
     mode: "owner_financial" as const,
+    newRewardsEnabled: m.newRewardsEnabled,
     requestAuthentication: checkedAuthentication,
     prospectiveRewardOfferStore,
     async verifyProspectiveLegCreationIngress() {
+      if (!m.newRewardsEnabled) throw new NotFound({ message: "Endpoint not found" });
       await readiness.verify();
     },
     // Cron remains a distinct role/graph owned by cron composition. No browser
