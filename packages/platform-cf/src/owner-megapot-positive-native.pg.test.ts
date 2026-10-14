@@ -106,8 +106,11 @@ async function setupPool(
   // funding effect, drawing, learner source and reward row is produced below by
   // the actual accepted source methods with their triggers enabled.
   await f.admin.query(
-    `INSERT INTO reward_asset_whitelist(chain_id,token_address,decimals,symbol,asset_kind,environment,status,
-  policy_version,activated_at,plain_erc20_verified_at) VALUES(84532,$1,6,'USDC','settlement_usdc','staging','active','base-sepolia-usdc-v1',clock_timestamp(),clock_timestamp())`,
+    `WITH fixture_clock AS MATERIALIZED (SELECT clock_timestamp() AS at)
+  INSERT INTO reward_asset_whitelist(chain_id,token_address,decimals,symbol,asset_kind,environment,status,
+  policy_version,activated_at,plain_erc20_verified_at)
+  SELECT 84532,$1,6,'USDC','settlement_usdc','staging','active','base-sepolia-usdc-v1',at,at
+  FROM fixture_clock`,
     [address("1")],
   );
   await f.admin.query(
