@@ -23,9 +23,7 @@ import {
   q,
   run,
 } from "./account-study-producer.pg-fixture.ts";
-import {
-  seedVeryRewardEvidence,
-} from "./activity-participation-composed-identity.pg-fixture.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { makeHistoricalControlledStudyV2Store3ef as makeControlledAccountStudyV2Store } from "./historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts";
 import { makeHistoricalMegapotCommitmentCoordinator3ef as makeMegapotCommitmentCoordinator } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
 import { makeHistoricalMegapotCommitmentStore3ef as makeControlPlaneMegapotCommitmentStore } from "./historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts";
@@ -159,7 +157,8 @@ async function fingerprint(f: Fixture) {
 function accountStudy(f: Fixture, accountId: string, personaId: string) {
   // Actual default driver, genuine controlled Account reserve/capture/provider
   // checkpoint/archive/finalizer; no direct qualification or archive row seed.
-  if (f.sourcePrefix !== "historical262") throw new Error("Explicit historical262 source fixture required");
+  if (f.sourcePrefix !== "historical262")
+    throw new Error("Explicit historical262 source fixture required");
   const runtime = makeDirectPostgresControlPlaneLayer(f.runtimeUrl, { closeTimeoutMs: 2000 });
   const store = makeControlledAccountStudyV2Store(runtime);
   const tasks: Promise<unknown>[] = [];

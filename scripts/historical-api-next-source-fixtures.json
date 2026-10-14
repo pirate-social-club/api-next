@@ -1,0 +1,358 @@
+{
+  "format": "exact-immutable-same-api-historical-fixture-entry-catalog-v1",
+  "acceptedCommit": "3ef1f879783b1eaa816bb21ecc0c5253e92375f8",
+  "prefix": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/",
+  "rawFiles": [
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/activity-qualification-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/activity-qualification-repository.ts",
+      "gitBlob": "30e1c03e7227cfb3e063d84236bdca91eb906593",
+      "sha256": "72fd33c61f453453265668b2de53a1ee18aaf5add5ac9d9f464fc5717d8764e4",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/bounded-audio-transaction.ts",
+      "acceptedPath": "packages/platform-cf/src/bounded-audio-transaction.ts",
+      "gitBlob": "49282066ba687448beb074ea920163db5af3c41b",
+      "sha256": "50d758d6b537eeb76c921de2e15cd8b45b2f503261c99c6f4da9b5e6becbc334",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/community-join-intent-resolver.ts",
+      "acceptedPath": "packages/platform-cf/src/community-join-intent-resolver.ts",
+      "gitBlob": "788bbc33f9e914d608469db62bb04875450415d3",
+      "sha256": "efb97ee69c076f3e16cf1e29ba60a1ce0a2b2ff561cbded02afdf9213e6a060e",
+      "relativeDependencies": [
+        "./gates-v2-community.ts",
+        "./nationality-ceremony-store.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/control-plane-error-classification.ts",
+      "acceptedPath": "packages/platform-cf/src/control-plane-error-classification.ts",
+      "gitBlob": "6306f83bf712467f655fdee9d0ec5a39d4c40395",
+      "sha256": "33b22807aa0c26e6e17060ff4c06ecf0317ba93f829de74606119770d4f82ac9",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/controlled-account-study-store.ts",
+      "acceptedPath": "packages/platform-cf/src/controlled-account-study-store.ts",
+      "gitBlob": "dab070ddaeb2a834a9339abf1f2c02b98f7c3e27",
+      "sha256": "df58c824159ea39666c8a127937cd4e4c63dd6025f9ea1f878d7e6f1ecd794f9",
+      "relativeDependencies": [
+        "./learner-audio-producer-store.ts",
+        "./study-v2-repository.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/custody-solvency-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/custody-solvency-repository.ts",
+      "gitBlob": "dd69c39df51c3bb1f968938fe611193e8bf4cacf",
+      "sha256": "b41d0b2fdff24c4d69eae0d135aca10d93cec16aa9383f37c64ab67d9baca307",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/document-ceremony-store.ts",
+      "acceptedPath": "packages/platform-cf/src/document-ceremony-store.ts",
+      "gitBlob": "4bcdf6e6855a6dc4363d639602c4fdfe5d5f8a26",
+      "sha256": "71ed340eed87720b06b7c774083a98ae6715c791bb5fc5203423a5ac66d7924f",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/gates-v2-community.ts",
+      "acceptedPath": "packages/platform-cf/src/gates-v2-community.ts",
+      "gitBlob": "4f6e58643f83340932104ddbb72223d96898b4cf",
+      "sha256": "e6d06cdba46b7192d6d8be7bcc7d5c04cf898705c730f67a914f103b60f3481b",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/hns-authority-diagnostics.ts",
+      "acceptedPath": "packages/platform-cf/src/hns-authority-diagnostics.ts",
+      "gitBlob": "339f487c5a28b89a05b270b13d5b1dcdfa9e576e",
+      "sha256": "4d191285028e13b84bfdebba19f8c5f838ed6c6a69a172748a4f9479f85ca63c",
+      "relativeDependencies": [
+        "./worker-request-diagnostics.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/learner-audio-account-lock.ts",
+      "acceptedPath": "packages/platform-cf/src/learner-audio-account-lock.ts",
+      "gitBlob": "505e55ddb5541828273b1aafbc8511173887c156",
+      "sha256": "32c084fd23d850e6fb3e7ef1208708b9f889d1e22bf372090634b1f93f4a662f",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/learner-audio-captured-io.ts",
+      "acceptedPath": "packages/platform-cf/src/learner-audio-captured-io.ts",
+      "gitBlob": "d87158d3ef53efc14a06eb344d78ecf209911c2a",
+      "sha256": "b6374184911172dd2c2ae7e09f3f15f31c9b00e173c4ed3ea43b0d9372fde0f6",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/learner-audio-producer-store.ts",
+      "acceptedPath": "packages/platform-cf/src/learner-audio-producer-store.ts",
+      "gitBlob": "eb1ef02b07c52b9d3edb355cc316e9bd6d05f93e",
+      "sha256": "8f4cca2b6278172ec33d31922bb0b56899daea20348b0afdba0b3b255110d311",
+      "relativeDependencies": [
+        "./bounded-audio-transaction.ts",
+        "./learner-audio-captured-io.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-allocation-coordinator.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-allocation-coordinator.ts",
+      "gitBlob": "e66631ee1bcd7d7cc53ba84b162f18a7c2c689dc",
+      "sha256": "f907a6177e59ef3a9427d3836f85442ca267dd8cd6ef48987a3385424d0e4dae",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-allocation-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-allocation-repository.ts",
+      "gitBlob": "9c64c56dfa2eaad4caccfe0e064f86543d69b301",
+      "sha256": "75a7f1897f686af3707f025cb4486c37b48c20185015d762989e21654f1c9dbe",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-claim-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-claim-repository.ts",
+      "gitBlob": "4e679bc299800381aa121a7c57ff737b5166fd60",
+      "sha256": "6632908fdbec71356d4aa9016d5e593ce984195c51f3486270f417192ba6b432",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-commitment-coordinator.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-commitment-coordinator.ts",
+      "gitBlob": "68dd1ca8b01a1ab4995ec12e740907afbbf3077a",
+      "sha256": "2b1f12ebf2a04df16e9195379740652b81b2119533b7bd4d9934675cd5368e3f",
+      "relativeDependencies": [
+        "./reward-operations-control.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-commitment-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-commitment-repository.ts",
+      "gitBlob": "b310a03bd982dfb5d4a7eeba5a0bf0fc1147ec1e",
+      "sha256": "71a257fb92f547c18bb8b16d2e61cfa1582794f188819968483de0818a24b1b4",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-cutoff-coordinator.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-cutoff-coordinator.ts",
+      "gitBlob": "77f943ebb4907656543d4291691f68997ad31717",
+      "sha256": "aa5a97ecb75f131067a6bcdee6135095d401745e4ee138b51168f6470dad327b",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-cutoff-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-cutoff-repository.ts",
+      "gitBlob": "bc002cf8633b134f609390efa4476d75d8de5cf2",
+      "sha256": "2b24ce04430b8f34027102c0939fa1dfcfdbf5d858c98035095f42fef6da27f1",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-drawing-observation-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-drawing-observation-repository.ts",
+      "gitBlob": "912487927651fb50cb43718bfaeb7bcc17958fae",
+      "sha256": "a7c72132766084e761b24f096b1883bbfecc5ca39de919ba90c8bfefaa0d4370",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-purchase-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-purchase-repository.ts",
+      "gitBlob": "309ae7518fa8691f8867be76e496d19612ede6b3",
+      "sha256": "1d878e2429e806244fd1f1749581eee67f12d23f23ea2505708ef841fc23b0ba",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-sweep-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-sweep-repository.ts",
+      "gitBlob": "25148c9bdec472a08550f9347bb2d6bbecfe283c",
+      "sha256": "eddaa5032d00828e39f67c4ac9540307c45a6f3643058c4728e1b16c0633ae01",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/megapot-v2.ts",
+      "acceptedPath": "packages/platform-cf/src/megapot-v2.ts",
+      "gitBlob": "5562e3ed1aff1cb956584c198ab281b152b22256",
+      "sha256": "c6eed7d0876ab97dbc345a5b8229c1764190aa9d0d3a0be2bbef238bd785f267",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/nationality-ceremony-store.ts",
+      "acceptedPath": "packages/platform-cf/src/nationality-ceremony-store.ts",
+      "gitBlob": "4f0fb6a0758714876ad35a0c7585e91df770f68a",
+      "sha256": "a5683c6a258ecff28c8f18fcabcddf45b6402b50997bcfe08b30122cff957114",
+      "relativeDependencies": [
+        "./document-ceremony-store.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/persona-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/persona-repository.ts",
+      "gitBlob": "6f502ea7e383029a48ee7ef840dc96f707466149",
+      "sha256": "aad7effab1d45e959a5055369e34de621d2bbfe8df6386bd531d158bc0ab3c6e",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/postgres.ts",
+      "acceptedPath": "packages/platform-cf/src/postgres.ts",
+      "gitBlob": "168ac5efea5ec46849bf3b3cdf27c6053fdeaea5",
+      "sha256": "6d5b625c0313a89e41b4bf7794fb75c8dc63b7adb19d3dbe8b514184edc57a27",
+      "relativeDependencies": [
+        "./hns-authority-diagnostics.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-claim-verification-intent.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-claim-verification-intent.ts",
+      "gitBlob": "cf86e0738921d5edfbc5a1f9da241e0318915a3f",
+      "sha256": "312d3a57f8f450a0c25126df6477016d551120322309a2525be6ab16c7fe460a",
+      "relativeDependencies": [
+        "./community-join-intent-resolver.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-obligation-authority.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-obligation-authority.ts",
+      "gitBlob": "0dfe7817d4052f99cab2eacbaba1ea6c18d76411",
+      "sha256": "c1994b436f27332db35fa399788f81fd9c162c861ed381d3c2f9b34e9361cf91",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-operations-control.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-operations-control.ts",
+      "gitBlob": "4695657ceed3ed8518c5ea59af3a343aed9b4e7a",
+      "sha256": "15c4de2b58a571d1282fe30387b07795329d649ec88f02f5e20c973a97e61a01",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-payout-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-payout-repository.ts",
+      "gitBlob": "bf5b5e54ac733cd20a5ca39a031e29a9d30230d3",
+      "sha256": "eb9175d07c75d9c17f425745b4dcd85489a520a90161648c2b5c45f06db86cd5",
+      "relativeDependencies": [
+        "./control-plane-error-classification.ts",
+        "./reward-obligation-authority.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-projection-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-projection-repository.ts",
+      "gitBlob": "1f26f6a29117dcb4a8449de16551ccd2c95df5ba",
+      "sha256": "58f2b1a39c55945ad868a4ebf78b7e36e362deef5b852cfd46bb8a464907591b",
+      "relativeDependencies": [
+        "./reward-claim-verification-intent.ts",
+        "./reward-qualification-policy.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/reward-qualification-policy.ts",
+      "acceptedPath": "packages/platform-cf/src/reward-qualification-policy.ts",
+      "gitBlob": "fcaca9e03f43784049deb14c083e34648379e038",
+      "sha256": "49d273464c4986124eacff9475717e42a9868f7730347c2270f0ded293e5433e",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/rewards-composed-chain.pg-fixture.ts",
+      "acceptedPath": "packages/platform-cf/src/rewards-composed-chain.pg-fixture.ts",
+      "gitBlob": "ac4d5a57bee010ea1fe718ff6c1f3f2e63ca8b3e",
+      "sha256": "c3483686a03da36fdfe19fa4909f96f3cbed4d279aa890ac5e30bb17fb6556ac",
+      "relativeDependencies": [
+        "./custody-solvency-repository.ts",
+        "./megapot-allocation-coordinator.ts",
+        "./megapot-allocation-repository.ts",
+        "./megapot-claim-repository.ts",
+        "./megapot-purchase-repository.ts",
+        "./megapot-sweep-repository.ts",
+        "./megapot-v2.ts",
+        "./postgres.ts",
+        "./reward-payout-repository.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/study-v2-item-projection.ts",
+      "acceptedPath": "packages/platform-cf/src/study-v2-item-projection.ts",
+      "gitBlob": "3b4c9a081948f0ff0679dc989b327057270da7bd",
+      "sha256": "fc921572e76f0bbd36ee8f950dc8c83ba0788bc3d37ee48fa4c0b582a2995e50",
+      "relativeDependencies": []
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/study-v2-repository.ts",
+      "acceptedPath": "packages/platform-cf/src/study-v2-repository.ts",
+      "gitBlob": "0f916be63eca3b9a0749606db12e619b0c41573f",
+      "sha256": "f9a0ace4ab1be5160b04246f01db67288c3005a3eeee201a9d3510391d97d193",
+      "relativeDependencies": [
+        "./activity-qualification-repository.ts",
+        "./learner-audio-account-lock.ts",
+        "./learner-audio-producer-store.ts",
+        "./study-v2-item-projection.ts"
+      ]
+    },
+    {
+      "path": "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/worker-request-diagnostics.ts",
+      "acceptedPath": "packages/platform-cf/src/worker-request-diagnostics.ts",
+      "gitBlob": "4ef2e8ebda444a61699e9c54747715772a0bdcfb",
+      "sha256": "e2cedc2d586102b58f42c4adab1aa122e9442f6faca437429c9b6bc99655db32",
+      "relativeDependencies": []
+    }
+  ],
+  "authoredFixtureFiles": {
+    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/index.pg-fixture.ts": "d1dd8211ed4bc06534896698f13cbb96d25ca005394f1d10e49f6f245d132efc",
+    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/financial.pg-fixture.ts": "087c6ad76b9dfe9bc2babc54320f9b6d246df85bb91baea16fc861cab584fe5c",
+    "packages/platform-cf/src/historical-api-next-3ef1f879.pg-fixture/persona-helpers.pg-fixture.ts": "ce0f3b18ff53dae40c8887655439cab0de1867f0445cba6d6eee4743769658b4"
+  },
+  "approvedTestCallers": {
+    "packages/platform-cf/src/disabled-owner-accounting.pg.test.ts": "834028303ece224b8025b2b63e6fd0927303047ac362fcebdc38d7468188bceb",
+    "packages/platform-cf/src/study-participation-owner-preservation.pg.test.ts": "f42a50896c2057bda47c4b7f42b39e801f760b416c9265658f45d4fca76fb1be",
+    "packages/platform-cf/src/karaoke-instrumental-policy.pg-fixture.ts": "3e09bce1cea1272c20201ed80970e86bb367333120cf2c0e411fed794e321895"
+  },
+  "externalApiOrigins": {
+    "packages/application/src/rewards/activity-qualification.ts": "6ca8768ae328c41e3f39b2c83a1b10450128e58d8bfb97f6c30448005f82a553",
+    "packages/application/src/ports.ts": "2db26a9d7d32d9beb3ddea88b85a254280b9ae79a4f63681c1221f41f1c22d6f",
+    "packages/application/src/rewards/custody-solvency.ts": "18abdd6090a376c6f93fa04dd2b7e3a570d6ce4400342408821e32060de757cf",
+    "packages/application/src/rewards/megapot-allocation.ts": "fc24e582abd3711a6b2d501bc4016c131942227d283b17097f16e42a8d885057",
+    "packages/application/src/rewards/megapot-claim.ts": "18df990c1a031a3bcdb1bb7d942e5d26a8f1f778c2770d549b973f26d914ccf4",
+    "packages/application/src/rewards/megapot-commitment.ts": "4e602cba9390f515ee7dd5d19d83d52c4da77a4ebc6640f3f0fd8ee67bccf50d",
+    "packages/application/src/rewards/megapot-cutoff.ts": "a08f276e8e2f063757907aba59e55de856308241c4dbdc2dea6849dcc6368dac",
+    "packages/application/src/rewards/reward-projections.ts": "aba8c137a90e0935c473ece45a1291a16096ed5bfe11575d08ad0c040f3b07a2",
+    "packages/application/src/rewards/megapot-drawing-observation.ts": "cd73ac18f176c3e60195e548d964c30ba3b6a3ef48ab1f7c9be871dc1daa1389",
+    "packages/application/src/rewards/megapot-purchase.ts": "22d3e4e08cbf733b359e9a91783e17e7442124fec391b74cfa275e14f97a2499",
+    "packages/application/src/rewards/megapot-sweep.ts": "850123aeee62d15d564451ee8fa9509d41d557f02102a8e46f2d3cf12efe6100",
+    "packages/application/src/use-cases/personas.ts": "99094fd925804cce02a966341facd85650a588cf442f4eed031dd0b2c6e07b6d",
+    "packages/application/src/rewards/reward-payout.ts": "eaf852c4e22b865aea5b8bf737376940caa0096faba60c9dad1f0cfa4119fd1f",
+    "packages/application/src/rewards/reward-operations.ts": "e544bad488da4b1f61fc9e36393d11c9936853cda53468554fed03a7cfece243",
+    "packages/application/src/study-v2-service.ts": "487255021df16d3a6d3d5d2203a811018f1c72e9888eb8a1857b02965dba8c06",
+    "packages/application/src/study-shared-lesson-mutation.ts": "b56085c7e417a4b7d866303135476fb712d56c243d90ee6f6856d17a6376183f",
+    "packages/application/src/study-shared-lesson-engine.ts": "6615bc83053134719cb5287fb3ee0cfd64e0f76f652b73cd36ebd294526df57c",
+    "packages/application/src/study-spoken-result-projection.ts": "7ce0ae604668feb87cd80ebd0fc6a81849be5199341a08ff84283d255dec0e3f",
+    "packages/contracts/src/rewards-qualification.ts": "f40b6ed3635b911306c6c029b0d49aa5dd081dd0ea2b4c2a9e5f143ddcf33588",
+    "packages/contracts/src/personas.ts": "9e7a142cecb6a0b382ca6d2b0e4b4fd0f8f4c1c5e45096ef8a224447cd993bed",
+    "packages/contracts/src/rewards-song-offers.ts": "0befaa264e46d2a2673d85b531c420c7540c268190e34731aabc3ac9e55f315f",
+    "packages/contracts/src/study-v2.ts": "99a7967f8fcb34aee0ed374f77299232a8658bd3669ef130459ecef4ca184409",
+    "packages/domain/src/community/gate-policy-compiler.ts": "162aec3cf42ed08427993acdb94a23454ae6171884c09b55482bc1bc0f1d7ef6",
+    "packages/domain/src/gates-v2/evaluator.ts": "44f769cc0cbca06cf61a3902724d25eb3ddbd7be67b17425fab9b3f0c32e6659",
+    "packages/domain/src/gates-v2/human-membership-evaluator.ts": "729b70c0268b588a17d24433756f73eba1d32785153f0d65974aca5342231e57",
+    "packages/domain/src/rewards/megapot-pool.ts": "f3b09b66486176ee49182c4b6cea4b81e21cd5c1d1d0557fbf29d3897e2d867a",
+    "packages/domain/src/gates-v2/nationality-evaluator.ts": "4b6de533b754d31edd5ac4ceaca932248e2423ed15b9b8cf5740640898acf495",
+    "packages/domain/src/gates-v2/nationality-policy.ts": "b3dcd7c9227b01d6ca4f46935599eeb67fb4cba68b1231c40e5d60129be86b3b",
+    "packages/domain/src/rewards/reward-claim-intent-binding.ts": "98b3b8d50d36145b4c74df76d593b8e8dbe438571f3b9a878595ba40a140c93f",
+    "packages/domain/src/gates-v2/account-age-verification-policy.ts": "f7d675188d203109e0305d0e8b315d28eb2ed342aa29c559a9f070f09d5f5404",
+    "packages/domain/src/community/join-intent-binding.ts": "c9c297c7c21e5793377afb48a282cb4dfb7d5c1701c29987f7b6b9fe508c8397",
+    "packages/domain/src/rewards/activity-qualification.ts": "c9ce90f204cc0375e49defcedfda27d82e3da767a1f97ffc8de72838703468a1"
+  },
+  "effectVersion": "4.0.0-rc.109"
+}

@@ -3,7 +3,10 @@ import { confirmPersonaEvmWallet, prepareActivityPersona } from "@pirate/applica
 import { Effect } from "effect";
 import { COMMUNITY_ID, addressFor } from "../activity-participation-composed.pg-fixture.ts";
 import type { Runtime } from "../activity-participation-composed-drivers.pg-fixture.ts";
-import { makeControlPlanePersonaStore, makeControlPlanePersonaWalletStore } from "./persona-repository.ts";
+import {
+  makeControlPlanePersonaStore,
+  makeControlPlanePersonaWalletStore,
+} from "./persona-repository.ts";
 export const prepareHistoricalIdentity3ef = (runtime: Runtime) => {
   const services = {
     store: makeControlPlanePersonaStore(runtime),
