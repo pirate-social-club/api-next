@@ -220,6 +220,11 @@ async function seedPrerequisites(admin: Client) {
   await admin.query("SET session_replication_role = replica");
   try {
     await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other')");
+    await admin.query("SET session_replication_role = origin");
+    for (const accountId of ["winner", "other"]) {
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+    }
+    await admin.query("SET session_replication_role = replica");
     await admin.query(
       `INSERT INTO reward_asset_whitelist (
          chain_id, token_address, decimals, symbol, asset_kind, environment, status,

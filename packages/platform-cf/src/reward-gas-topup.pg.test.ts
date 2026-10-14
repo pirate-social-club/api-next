@@ -114,6 +114,11 @@ async function seedPrerequisites(admin: Client) {
   await admin.query("SET session_replication_role = replica");
   try {
     await admin.query("INSERT INTO users (user_id) VALUES ('winner'), ('other'), ('third')");
+    await admin.query("SET session_replication_role = origin");
+    for (const accountId of ["winner", "other", "third"]) {
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [accountId]);
+    }
+    await admin.query("SET session_replication_role = replica");
     for (const [index, row] of FIXTURES.entries()) {
       const credit = `credit-${row.persona}`;
       const assignment = `assignment-${row.persona}`;
