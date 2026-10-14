@@ -1879,7 +1879,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       // Current native payout locks require the original Account source owner.
       // Use the existing canonical-account provisioner before financial work;
       // this creates no share, credit, claim or replacement participation.
-      await admin.query("SELECT provision_account_participation_owner_v1($1)", [identity.accountId]);
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [
+        identity.accountId,
+      ]);
       expect(
         (
           await admin.query<{ owners: number }>(
