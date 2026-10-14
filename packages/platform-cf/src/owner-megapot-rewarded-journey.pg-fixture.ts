@@ -130,6 +130,162 @@ const mixedAccountDiagnosticClientFactory: PostgresClientFactory = (_url, config
   };
 };
 
+// Genuine default Guest client diagnostic only. Custom owning-COMMIT fault
+// clients retain their original factory and never pass through this wrapper.
+const guestNativePhase = (text: string) => {
+  if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return text;
+  if (text.startsWith("SELECT reserve_guest_prepared_study_start_v1("))
+    return "native-start.reserve";
+  if (text.startsWith("SELECT prepare_guest_study_start_v1(")) return "native-start.prepare";
+  if (
+    text.startsWith("SELECT commit_guest_study_start_v1(") ||
+    text.startsWith("SELECT commit_guest_study_start_with_rewards_v1(")
+  )
+    return "native-start.commit";
+  return "other-statement";
+};
+type GuestDiagnosticStartState = "reserved" | "completed" | "refused";
+const guestNativeStartState = (value: unknown): GuestDiagnosticStartState | null => {
+  if (value === null || typeof value !== "object") return null;
+  const kind = Reflect.get(value, "kind");
+  if (kind === "resource_refused") return "refused";
+  const resolved = kind === "start_outcome" ? Reflect.get(value, "outcome") : value;
+  if (resolved === null || typeof resolved !== "object") return null;
+  const state = Reflect.get(resolved, "state");
+  if (state === "reserved" || state === "completed") return state;
+  if (state === "known_aborted") return "refused";
+  // A preparation candidate/reservation is not a resolved original outcome.
+  return null;
+};
+const guestNativeDiagnosticClientFactory: PostgresClientFactory = (_url, config) => {
+  const client = new Client(config);
+  // Exact default no-log observer, installed before connect through final end.
+  client.on("error", () => undefined);
+  let transactionStartedAt: number | null = null;
+  let lastStartState: GuestDiagnosticStartState | null = null;
+  const timings = (queryStartedAt: number | null) => {
+    const now = performance.now();
+    const safeElapsed = (startedAt: number | null) => {
+      if (startedAt === null) return null;
+      const elapsed = Math.ceil(now - startedAt);
+      return Number.isSafeInteger(elapsed) && elapsed >= 0 ? elapsed : null;
+    };
+    const queryWallMilliseconds = safeElapsed(queryStartedAt);
+    const transactionWallMilliseconds = safeElapsed(transactionStartedAt);
+    return {
+      queryWallMilliseconds,
+      transactionWallMilliseconds,
+      queryWallAtLeast2s: queryWallMilliseconds === null ? null : queryWallMilliseconds >= 2000,
+      transactionWallAtLeast3s:
+        transactionWallMilliseconds === null ? null : transactionWallMilliseconds >= 3000,
+    };
+  };
+  return {
+    connection: client.connection,
+    connect: () => client.connect(),
+    end: () => client.end(),
+    query: async ({ text, values }) => {
+      let queryStartedAt: number | null = null;
+      let phase: ReturnType<typeof guestNativePhase> = "other-statement";
+      try {
+        queryStartedAt = performance.now();
+        phase = guestNativePhase(text);
+      } catch {
+        // Metadata preparation cannot prevent a genuine driver query.
+      }
+      try {
+        const result = await client.query({
+          text,
+          values: values === undefined ? [] : [...values],
+        });
+        try {
+          if (phase === "BEGIN") {
+            transactionStartedAt = queryStartedAt;
+            lastStartState = null;
+          }
+          if (phase.startsWith("native-start.")) {
+            const row = result.rows.length === 1 ? result.rows[0] : null;
+            const nativeState = guestNativeStartState(
+              row !== null && typeof row === "object" ? Reflect.get(row, "result") : null,
+            );
+            if (nativeState !== null) lastStartState = nativeState;
+            console.info(
+              JSON.stringify({
+                fixture: "guest-default-native-phase",
+                event: "query_acknowledged",
+                phase,
+                nativeStartState: nativeState,
+                ...timings(queryStartedAt),
+              }),
+            );
+          } else if (phase === "BEGIN" || phase === "COMMIT" || phase === "ROLLBACK") {
+            const command = result.command;
+            console.info(
+              JSON.stringify({
+                fixture: "guest-default-native-phase",
+                event: "query_acknowledged",
+                phase,
+                driverCommand:
+                  command === "BEGIN" || command === "COMMIT" || command === "ROLLBACK"
+                    ? command
+                    : null,
+                nativeStartState: lastStartState,
+                ...timings(queryStartedAt),
+              }),
+            );
+          }
+        } catch {
+          // Best-effort metadata never changes a genuine successful result.
+        }
+        if (phase === "COMMIT" || phase === "ROLLBACK") {
+          transactionStartedAt = null;
+          lastStartState = null;
+        }
+        return result;
+      } catch (error) {
+        try {
+          const code =
+            error !== null && typeof error === "object" ? Reflect.get(error, "code") : null;
+          const where =
+            error !== null && typeof error === "object" ? Reflect.get(error, "where") : null;
+          const frames: Array<{ functionName: string; line: number }> = [];
+          if (typeof where === "string") {
+            for (const match of where.matchAll(
+              /PL\/pgSQL function ([a-z][a-z0-9_]{0,199})\([^\n]*?\) line ([0-9]{1,5}) at/gu,
+            )) {
+              const functionName = match[1];
+              const line = Number(match[2]);
+              if (
+                functionName !== undefined &&
+                mixedAccountNativeNames.has(functionName) &&
+                Number.isSafeInteger(line) &&
+                line > 0 &&
+                line <= 99999 &&
+                frames.length < 8
+              )
+                frames.push({ functionName, line });
+            }
+          }
+          console.error(
+            JSON.stringify({
+              fixture: "guest-default-native-phase",
+              event: "query_refused",
+              phase,
+              sqlState: typeof code === "string" && /^[A-Z0-9]{5}$/u.test(code) ? code : null,
+              nativeFrames: frames,
+              nativeStartState: lastStartState,
+              ...timings(queryStartedAt),
+            }),
+          );
+        } catch {
+          // Getter, extraction or logging errors cannot replace the driver error.
+        }
+        throw error;
+      }
+    },
+  };
+};
+
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(s: S, v: unknown): S["Type"] =>
   Schema.decodeUnknownSync(s, { onExcessProperty: "error" })(v);
 const controlled = [
@@ -369,6 +525,7 @@ export async function rewardedFixture(
       });
       const guestRuntime = makeDirectPostgresControlPlaneLayer(f.guestUrl, {
         closeTimeoutMs: 2000,
+        clientFactory: guestNativeDiagnosticClientFactory,
       });
       const retained: Array<{
         task: Promise<unknown>;
@@ -432,7 +589,8 @@ export async function rewardedFixture(
       const servicesFor = (clientFactory?: PostgresClientFactory) => {
         const runtime = makeDirectPostgresControlPlaneLayer(f.guestUrl, {
           closeTimeoutMs: 2000,
-          ...(clientFactory === undefined ? {} : { clientFactory }),
+          clientFactory:
+            clientFactory === undefined ? guestNativeDiagnosticClientFactory : clientFactory,
         });
         const base = makeControlPlaneOwnerStudyMutations(runtime, {
           rawPolicy: policy,
