@@ -43,7 +43,7 @@ async function currentNativeSource() {
     ),
   );
   expect(createHash("sha256").update(raw).digest("hex")).toBe(
-    "0004224eb102647f822690b1be630962a696ee312375af91d44ccbe4ce89cfca",
+    "3ce70c69413d3747cae654a0bc0cb47a2f827a596c7de07d41d0516e4b4193e2",
   );
   const value = ownerFinancialGuestStudyReadinessSource;
   if (value === null) throw new Error("Actual compiled current financial native source required");
