@@ -61,8 +61,9 @@ guest, Telegram or operator credential expansion is included.
   database preflights; this PR adds/applies no SQL migration. Verify
   `media_song_video_pcm_admission_policy.enabled` separately from jobs/media
   `SONG_VIDEO_PCM_ADMISSION_ENABLED` and HTTP `VIDEO_PCM_REFERENCE_GATE_ENABLED`.
-  All remain paused here; activation must coordinate the database policy and
-  both Worker switches. Require a newly uploaded song's automatic timing,
+  Both Worker switches and the HTTP gate are OFF in source; live database policy
+  and migration/grant readiness are **unknown**. Later activation must coordinate
+  the database policy and both Worker switches. Require a newly uploaded song's automatic timing,
   version-bound 48 kHz stereo PCM reference, video-ready readback, verified
   CloudConvert master and playback before admitting song-video traffic.
   Verify the existing instrumental qualification policy (migration `0247`),
