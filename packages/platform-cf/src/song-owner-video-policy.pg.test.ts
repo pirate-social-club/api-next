@@ -40,6 +40,31 @@ async function withSchema<A>(use: (admin: Client, scopedUrl: string) => Promise<
   });
 }
 
+async function withInitializerSchema<A>(
+  use: (admin: Client, scopedUrl: string) => Promise<A>,
+): Promise<A> {
+  if (!connectionString) throw new Error("initializer test URL missing");
+  const schema = `song_initializer_${crypto.randomUUID().replaceAll("-", "")}`;
+  const quoted = quoteIdentifier(schema);
+  const admin = new Client({ connectionString });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE SCHEMA ${quoted}`);
+    await admin.query(`SET search_path TO ${quoted}`);
+    const scopedUrl = connectionForSchema(connectionString, schema);
+    await applyPostgresTestBaselineConnection({ connectionString: scopedUrl });
+    await admin.query("ALTER TABLE media_publication_projections DISABLE TRIGGER USER");
+    await admin.query(
+      "ALTER TABLE media_publication_projections ENABLE TRIGGER media_publication_song_owner_policy_initialize",
+    );
+    return await use(admin, scopedUrl);
+  } finally {
+    await admin.query("SET search_path TO public");
+    await admin.query(`DROP SCHEMA IF EXISTS ${quoted} CASCADE`);
+    await admin.end();
+  }
+}
+
 async function seedIdentity(admin: Client): Promise<void> {
   await admin.query("SET session_replication_role = replica");
   try {
@@ -70,6 +95,8 @@ async function seedSong(
   admin: Client,
   suffix: string,
   licensePreset: "commercial-remix" | "commercial-use" | "non-commercial",
+  publicationClient: Client = admin,
+  canonicalOwner = "owner-account",
 ): Promise<void> {
   const postId = `song-${suffix}`;
   const submissionId = `submission-${suffix}`;
@@ -82,11 +109,16 @@ async function seedSong(
          status, visibility, title, created_at, updated_at,
          author_declared_rating, content_rating
        ) VALUES (
-         'community-1', $1, 'owner-account', 'owner-persona', 'song',
+         'community-1', $1, $3, $4, 'song',
          'published', 'public', $2, clock_timestamp(), clock_timestamp(),
          'general', 'general'
        )`,
-      [postId, `Song ${suffix}`],
+      [
+        postId,
+        `Song ${suffix}`,
+        canonicalOwner,
+        canonicalOwner === "owner-account" ? "owner-persona" : "other-persona",
+      ],
     );
     await admin.query(
       `INSERT INTO media_post_submissions (
@@ -132,7 +164,7 @@ async function seedSong(
     await admin.query("SET session_replication_role = origin");
   }
 
-  await admin.query(
+  await publicationClient.query(
     `INSERT INTO media_publication_projections (
        submission_id, community_id, actor_user_id, author_persona_id,
        operation_id, post_id, creation_revision, audio_revision,
@@ -177,6 +209,103 @@ async function currentPolicy(admin: Client, postId: string): Promise<PolicyRow> 
 }
 
 suite("song owner derivative-video policy persistence", () => {
+  test("restricted publication initializes private policy without exposing its trigger", async () => {
+    await withInitializerSchema(async (admin, scopedUrl) => {
+      await seedIdentity(admin);
+      const role = `song_policy_initializer_runtime_${crypto.randomUUID().replaceAll("-", "")}`;
+      const quotedRole = quoteIdentifier(role);
+      const schema = (await admin.query<{ schema: string }>("SELECT current_schema() AS schema"))
+        .rows[0]?.schema;
+      if (!schema) throw new Error("initializer fixture schema missing");
+      const quotedSchema = quoteIdentifier(schema);
+      const runtime = new Client({ connectionString: scopedUrl });
+      await admin.query(`CREATE ROLE ${quotedRole} NOLOGIN`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA ${quotedSchema} TO ${quotedRole}`);
+        await admin.query(`GRANT SELECT ON posts,media_submission_terms TO ${quotedRole}`);
+        await admin.query(`GRANT UPDATE(post_id) ON posts TO ${quotedRole}`);
+        await admin.query(`GRANT UPDATE(submission_id) ON media_submission_terms TO ${quotedRole}`);
+        await admin.query(`GRANT INSERT ON media_publication_projections TO ${quotedRole}`);
+        await runtime.connect();
+        await runtime.query(`SET ROLE ${quotedRole}`);
+        // The reusable dump omits ACLs. Restore the predecessor's invoker
+        // boundary, then apply the actual successor bytes and verify its seal.
+        await admin.query("ALTER FUNCTION initialize_song_owner_policy_v1() SECURITY INVOKER");
+        await admin.query(
+          `GRANT EXECUTE ON FUNCTION initialize_song_owner_policy_v1() TO PUBLIC,${quotedRole}`,
+        );
+        await expect(
+          seedSong(admin, "invoker-before-migration", "non-commercial", runtime),
+        ).rejects.toMatchObject({ code: "42501" });
+        await admin.query(
+          await Bun.file(
+            new URL(
+              "../../../db/postgres/migrations/0266_private_song_policy_initialization.sql",
+              import.meta.url,
+            ),
+          ).text(),
+        );
+        const privileges = (
+          await runtime.query(
+            `SELECT has_table_privilege(current_user,'song_owner_policies','INSERT,UPDATE,DELETE') AS head_write,
+                  has_table_privilege(current_user,'song_owner_policy_revisions','INSERT,UPDATE,DELETE') AS revision_write,
+                  has_function_privilege(current_user,'initialize_song_owner_policy_v1()','EXECUTE') AS initializer_execute`,
+          )
+        ).rows[0];
+        expect(privileges).toEqual({
+          head_write: false,
+          revision_write: false,
+          initializer_execute: false,
+        });
+        await seedSong(admin, "restricted-initializer", "non-commercial", runtime);
+        expect(await currentPolicy(admin, "song-restricted-initializer")).toMatchObject({
+          owner_account_id: "owner-account",
+          policy_revision: "1",
+          derivative_video: "allowed",
+        });
+        await expect(
+          runtime.query("INSERT INTO song_owner_policies DEFAULT VALUES"),
+        ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+          runtime.query("INSERT INTO song_owner_policy_revisions DEFAULT VALUES"),
+        ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+          seedSong(admin, "wrong-owner-initializer", "non-commercial", runtime, "other-account"),
+        ).rejects.toThrow("canonical published song owner");
+        const metadata = (
+          await admin.query(
+            `SELECT p.prosecdef,p.proconfig,p.proowner=c.relowner AS anchored_owner
+             FROM pg_proc p JOIN pg_class c ON c.oid='media_publication_projections'::regclass
+            WHERE p.oid='initialize_song_owner_policy_v1()'::regprocedure`,
+          )
+        ).rows[0];
+        expect(metadata.prosecdef).toBe(true);
+        expect(metadata.anchored_owner).toBe(true);
+        expect(metadata.proconfig).toHaveLength(1);
+        expect(metadata.proconfig[0].replaceAll('"', "")).toBe(
+          `search_path=${schema}, pg_catalog, pg_temp`,
+        );
+        await runtime.query("CREATE TEMP TABLE counterfeit_projection (community_id text)");
+        await expect(
+          runtime.query(
+            "CREATE TRIGGER counterfeit_initializer AFTER INSERT ON counterfeit_projection FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1()",
+          ),
+        ).rejects.toMatchObject({ code: "42501" });
+        await admin.query("CREATE TEMP TABLE owner_counterfeit_projection (community_id text)");
+        await admin.query(
+          "CREATE TRIGGER owner_counterfeit_initializer AFTER INSERT ON owner_counterfeit_projection FOR EACH ROW EXECUTE FUNCTION initialize_song_owner_policy_v1()",
+        );
+        await expect(
+          admin.query("INSERT INTO owner_counterfeit_projection VALUES ('community-1')"),
+        ).rejects.toThrow("canonical publication trigger");
+      } finally {
+        await runtime.end().catch(() => undefined);
+        await admin.query(`DROP OWNED BY ${quotedRole}`);
+        await admin.query(`DROP ROLE ${quotedRole}`);
+      }
+    });
+  });
+
   test("publication creates one exact owner policy with license-derived defaults", async () => {
     await withSchema(async (admin, scopedUrl) => {
       await seedIdentity(admin);

@@ -40,6 +40,39 @@ async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
   });
 }
 
+// This is a permission fixture only. The normal qualification guards and both
+// installed reward projectors stay enabled; no financial write is granted.
+async function withRestrictedQualificationRole<A>(
+  admin: Client,
+  use: () => Promise<A>,
+): Promise<A> {
+  const role = `ordinary_qualification_${crypto.randomUUID().replaceAll("-", "")}`;
+  const quoted = quoteIdentifier(role);
+  const schema = (await admin.query<{ schema: string }>("SELECT current_schema() AS schema"))
+    .rows[0]?.schema;
+  if (!schema) throw new Error("qualification fixture schema missing");
+  await admin.query(`CREATE ROLE ${quoted} NOLOGIN`);
+  try {
+    await admin.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${quoted}`);
+    await admin.query(
+      `GRANT SELECT ON ALL TABLES IN SCHEMA ${quoteIdentifier(schema)} TO ${quoted}`,
+    );
+    await admin.query(`GRANT INSERT ON activity_qualifications TO ${quoted}`);
+    await admin.query(`GRANT UPDATE (session_id) ON study_sessions, karaoke_sessions TO ${quoted}`);
+    await admin.query(`GRANT UPDATE (attempt_id) ON karaoke_attempts TO ${quoted}`);
+    await admin.query(`SET ROLE ${quoted}`);
+    const permissions = await admin.query<{ leg: boolean; drawing: boolean }>(
+      "SELECT has_any_column_privilege(current_user,'song_reward_offer_legs','UPDATE') AS leg, has_any_column_privilege(current_user,'megapot_pool_drawings','UPDATE') AS drawing",
+    );
+    expect(permissions.rows).toEqual([{ leg: false, drawing: false }]);
+    return await use();
+  } finally {
+    await admin.query("RESET ROLE");
+    await admin.query(`DROP OWNED BY ${quoted}`);
+    await admin.query(`DROP ROLE ${quoted}`);
+  }
+}
+
 async function seedAccountSong(
   admin: Client,
   suffix: string,
@@ -281,8 +314,9 @@ suite("Postgres 17 activity qualification persistence", () => {
             WHERE session_id='study-session-1'`,
           [completedAt],
         );
-        await admin.query(
-          `INSERT INTO activity_qualifications (
+        await withRestrictedQualificationRole(admin, () =>
+          admin.query(
+            `INSERT INTO activity_qualifications (
              qualification_id, account_id, persona_id, community_id, post_id,
              audio_revision, activity_key, study_session_id, score_bps,
              qualification_policy_version_id, qualified_at, streak_day,
@@ -294,13 +328,14 @@ suite("Postgres 17 activity qualification persistence", () => {
              '{"kind":"study_session_first_pass_v2","qualifying_exercise_count":2,"first_pass_correct":2,"required_correct":2}'::jsonb,
              $5
            )`,
-          [
-            identity.accountId,
-            identity.personaId,
-            identity.communityId,
-            identity.postId,
-            completedAt,
-          ],
+            [
+              identity.accountId,
+              identity.personaId,
+              identity.communityId,
+              identity.postId,
+              completedAt,
+            ],
+          ),
         );
         await admin.query("COMMIT");
       } catch (error) {
@@ -388,8 +423,9 @@ suite("Postgres 17 activity qualification persistence", () => {
           WHERE session_id='karaoke-session-1'`,
         [completedAt],
       );
-      await admin.query(
-        `INSERT INTO activity_qualifications (
+      await withRestrictedQualificationRole(admin, () =>
+        admin.query(
+          `INSERT INTO activity_qualifications (
            qualification_id, account_id, persona_id, community_id, post_id,
            audio_revision, activity_key, karaoke_session_id, karaoke_attempt_id,
            score_bps, qualification_policy_version_id, qualified_at,
@@ -400,14 +436,15 @@ suite("Postgres 17 activity qualification persistence", () => {
            'karaoke_qualification_v1@1', $5,
            ($5::timestamptz AT TIME ZONE 'UTC')::date, $6::jsonb, $5
          )`,
-        [
-          identity.accountId,
-          identity.personaId,
-          identity.communityId,
-          identity.postId,
-          completedAt,
-          JSON.stringify(evidence),
-        ],
+          [
+            identity.accountId,
+            identity.personaId,
+            identity.communityId,
+            identity.postId,
+            completedAt,
+            JSON.stringify(evidence),
+          ],
+        ),
       );
       await expect(
         admin.query(
