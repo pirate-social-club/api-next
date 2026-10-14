@@ -14,6 +14,7 @@ import jobsWorker, {
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
 } from "../../apps/jobs-worker/src/index";
+import { MEGAPOT_REWARDS_CYCLE_LANE } from "../../apps/jobs-worker/src/megapot-rewards-cycle";
 import {
   STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
   STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
@@ -41,6 +42,56 @@ function productionEnv(getByName: (name: string) => unknown): JobsWorkerEnv {
 const dueAt = Date.UTC(2026, 8, 5, 17, 30);
 
 describe("production HNS renewal scheduling", () => {
+  it.each(["false", "true"] as const)(
+    "the real handler admits Account Study and HNS with Rewards %s and guest serving off",
+    async (rewardsEnabled) => {
+      const acquisitions: string[] = [];
+      const workerEnv: JobsWorkerEnv & { GUEST_STUDY_SERVING_ENABLED: "false" } = {
+        ...productionEnv((name) => ({
+          tryAcquireWithFence: async () => {
+            acquisitions.push(name);
+            return null;
+          },
+        })),
+        API_NEXT_ENV: "staging",
+        MEGAPOT_REWARDS_ENABLED: rewardsEnabled,
+        MEGAPOT_CHAIN_ID: "84532",
+        ...(rewardsEnabled === "true"
+          ? {
+              MEGAPOT_V2_RPC_URL: "https://rpc.invalid/",
+              MEGAPOT_CUSTODY_PRIVATE_KEY: `0x${"11".repeat(32)}`,
+              MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: "https://commitments.invalid",
+              MEGAPOT_COMMITMENTS: {} as R2Bucket,
+            }
+          : {}),
+        GUEST_STUDY_SERVING_ENABLED: "false",
+      };
+      const waits: Promise<unknown>[] = [];
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        throw new Error("Refused leases must not perform provider work");
+      });
+      try {
+        expect(workerEnv.LEARNER_AUDIO).toBeDefined();
+        expect(workerEnv.HNS_ROOT_HEALTH_RENEWAL_ENABLED).toBe("true");
+        expect(workerEnv.GUEST_STUDY_SERVING_ENABLED).toBe("false");
+        await jobsWorker.scheduled(
+          { scheduledTime: dueAt, cron: production.triggers.crons[0] } as ScheduledEvent,
+          workerEnv,
+          {
+            waitUntil: (promise: Promise<unknown>) => waits.push(promise),
+          } as unknown as ExecutionContext,
+        );
+        await Promise.all(waits);
+        expect(acquisitions.sort()).toEqual([
+          `scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`,
+          `scheduled-cron-main:${rewardsEnabled === "true" ? MEGAPOT_REWARDS_CYCLE_LANE : STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+        ]);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
   it("active ownership renewal retains its separate lane alongside learner-audio recovery", async () => {
     const acquisitions: string[] = [];
     const env: JobsWorkerEnv = {
