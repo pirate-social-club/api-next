@@ -20,6 +20,7 @@ import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-t
 import type { MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type { MegapotV2Transaction } from "./megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { rewardFinancialSourceDiagnosticClientFactory } from "./reward-financial-source-diagnostic.pg-fixture.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { makeRewardWinnerSendChain, type RewardWinnerSendRpc } from "./reward-winner-send-chain.ts";
 import { makeControlPlaneRewardWinnerSendStore } from "./reward-winner-send-repository.ts";
@@ -553,7 +554,9 @@ suite("Postgres 17 Megapot winner send record", () => {
     await admin.query(`SET search_path TO "${schema}"`);
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
     await seedPrerequisites(admin);
-    layer = makeDirectPostgresControlPlaneLayer(scoped);
+    layer = makeDirectPostgresControlPlaneLayer(scoped, {
+      clientFactory: rewardFinancialSourceDiagnosticClientFactory,
+    });
     store = makeControlPlaneRewardWinnerSendStore(layer);
     service = serviceWith({});
     chain.history(WALLETS.w1, 5);

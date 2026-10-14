@@ -24,6 +24,7 @@ import {
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "./megapot-v2-signer.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { rewardFinancialSourceDiagnosticClientFactory } from "./reward-financial-source-diagnostic.pg-fixture.ts";
 import {
   deriveRewardGasTopupEffectId,
   makeRewardGasTopupCoordinator,
@@ -334,7 +335,9 @@ suite("Postgres 17 Megapot winner gas top-up", () => {
     await admin.query(`SET search_path TO "${schema}"`);
     await applyPostgresTestBaselineConnection({ rewardsRunning: true, connectionString: scoped });
     await seedPrerequisites(admin);
-    layer = makeDirectPostgresControlPlaneLayer(scoped);
+    layer = makeDirectPostgresControlPlaneLayer(scoped, {
+      clientFactory: rewardFinancialSourceDiagnosticClientFactory,
+    });
     let sequence = 0;
     requester = makeRewardGasTopupRequester({
       store: makeControlPlaneRewardGasTopupRequestStore(layer),
