@@ -160,6 +160,38 @@ export function makeControlPlaneOwnerMegapotSettlementStore(
           },
           catch: () => bad("owner-settlement.isolation.verify"),
         });
+        if (label === "owner-settlement.allocation.credit") {
+          yield* tx.execute({
+            label: "owner-settlement.allocation.planner.set",
+            text: "SELECT set_config('plan_cache_mode','force_generic_plan',true)",
+            values: [],
+            readonly: true,
+          });
+          const planner = yield* tx.execute<unknown>({
+            label: "owner-settlement.allocation.planner.verify",
+            text: "SELECT current_setting('plan_cache_mode') AS plan_cache_mode,current_setting('transaction_timeout') AS transaction,current_setting('lock_timeout') AS lock,current_setting('statement_timeout') AS statement,current_setting('idle_in_transaction_session_timeout') AS idle,current_setting('transaction_read_only') AS readonly,current_setting('transaction_isolation') AS isolation",
+            values: [],
+            readonly: true,
+          });
+          yield* Effect.try({
+            try: () => {
+              if (planner.rows.length !== 1) throw new Error();
+              strict(
+                Schema.Struct({
+                  plan_cache_mode: Schema.Literal("force_generic_plan"),
+                  transaction: Schema.Literal("3s"),
+                  lock: Schema.Literal("250ms"),
+                  statement: Schema.Literal("2s"),
+                  idle: Schema.Literal("2s"),
+                  readonly: Schema.Literal("off"),
+                  isolation: Schema.Literal("read committed"),
+                }),
+                planner.rows[0],
+              );
+            },
+            catch: () => bad("owner-settlement.allocation.planner.verify"),
+          });
+        }
         const result = yield* tx.execute<unknown>({ label, text, values, readonly: false });
         return yield* Effect.try({
           try: () => {
