@@ -7,6 +7,7 @@ import { telegramOidcOutbound } from "./telegram-oidc-outbound.ts";
 // exact subpaths come from the same maintained manifests as the other pools.
 const privateAliases: Record<string, string> = {};
 for (const subpath of [
+  "account-owner-reward-hooks",
   "media-processing-cloudflare",
   "media-processing-store",
   "namespace-ownership/hns-owner-service-binding",
