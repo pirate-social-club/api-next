@@ -288,6 +288,7 @@ suite("Reward obligation attestation pinning", () => {
 
       for (const account of ["pin-winner", "pin-successor", "pin-sponsor"]) {
         await admin.query("INSERT INTO users (user_id) VALUES ($1)", [account]);
+        await admin.query("SELECT provision_account_participation_owner_v1($1)", [account]);
       }
       const winner = await prepareIdentity(layer)("pin-winner", "pin-winner");
       await confirmWallet(layer)("pin-winner", winner.persona_id);

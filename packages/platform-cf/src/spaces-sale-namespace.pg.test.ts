@@ -1543,6 +1543,7 @@ suite("Spaces sale-namespace activation and Taproot storage", () => {
       await configureSpacesNetwork(admin);
       const account = "taproot-retiree";
       await seedAccount(admin, account, { humanEvidence: false });
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [account]);
       await createActivePersonaFixture(admin, {
         accountId: account,
         personaId: "persona-retiring",

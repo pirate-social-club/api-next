@@ -266,6 +266,7 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      await admin.query("SELECT provision_account_participation_owner_v1($1)", [actor.userId]);
       const creationStore = storeFor(connection, 86_400, "create-new");
 
       const created = await Effect.runPromise(

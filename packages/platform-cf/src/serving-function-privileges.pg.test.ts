@@ -180,7 +180,14 @@ suite("Ordinary serving-role function grants", () => {
       await admin.query("BEGIN");
       await admin.query(`CREATE SCHEMA ${schema}`);
       await admin.query(`SET search_path TO ${schema}, pg_temp`);
-      const migrations = await loadPostgresMigrations();
+      // This ceremony owns the genuine historical prefix through its frozen265
+      // function-grant contract; complete financial267 has separate admission.
+      const migrations = (await loadPostgresMigrations()).filter(
+        ({ version }) => Number(version.slice(0, 4)) <= SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last,
+      );
+      expect(migrations.map(({ version }) => Number(version.slice(0, 4)))).toEqual(
+        Array.from({ length: SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last }, (_, index) => index + 1),
+      );
       const first = migrations.findIndex((m) => m.version.startsWith("0247_"));
       expect(first).toBe(246);
       expect(Number(migrations.at(-1)?.version.slice(0, 4))).toBe(
