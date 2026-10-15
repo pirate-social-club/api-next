@@ -587,6 +587,13 @@
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
         "VERY_OAUTH_ENABLED": "false",
+        // Ordinary Palm candidate: reuse the public working ZK identifier.
+        // Production requires its own sealing key and fresh ceremony acceptance.
+        "VERY_WEB_ENABLED": "true",
+        "VERY_WEB_APP_ID": "fa6bb1db-51dd-4673-915a-b945e7a895a0",
+        "VERY_WEB_API_URL": "https://api.very.org/api/v1",
+        "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
+        "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
         "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
@@ -637,6 +644,7 @@
           "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "VERY_WEB_SEALING_KEY",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
           "OPENAI_API_KEY",

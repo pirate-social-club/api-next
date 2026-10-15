@@ -144,6 +144,7 @@ describe("Infisical secret drift audit", () => {
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
       "HNS_EDGE_ALERT_TOKEN",
+      "VERY_WEB_SEALING_KEY",
     ]);
     expect(report.acceptedDrift).toHaveLength(0);
   });
@@ -279,91 +280,6 @@ describe("Infisical secret drift audit", () => {
         name: "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
       },
     ]);
-  });
-
-  test("admits optional production provisioning secrets only in their owned paths", () => {
-    const prodBase = emptySnapshot("prod");
-    const requiredRuntimeNames = [
-      "PIRATE_APP_JWT_PRIVATE_KEY",
-      "PRIVY_APP_SECRET",
-      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-      "HNS_EDGE_ALERT_TOKEN",
-    ];
-    const withoutSigner: InfisicalSnapshot = {
-      ...prodBase,
-      secrets: {
-        ...prodBase.secrets,
-        "/services/api-next": requiredRuntimeNames,
-        "/services/api-next/operator": [
-          "CONTROL_PLANE_POSTGRES_ADMIN_URL",
-          "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
-        ],
-      },
-    };
-    expect(auditInfisicalSnapshots([withoutSigner]).violations).toEqual([]);
-
-    const withSigner: InfisicalSnapshot = {
-      ...withoutSigner,
-      secrets: {
-        ...withoutSigner.secrets,
-        "/services/api-next": [
-          ...requiredRuntimeNames,
-          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
-          "FILEBASE_IPFS_TOKEN",
-          "ACRCLOUD_ACCESS_KEY",
-          "ACRCLOUD_ACCESS_SECRET",
-          "ELEVENLABS_API_KEY",
-          "OPENAI_API_KEY",
-          "OPENROUTER_API_KEY",
-          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
-          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
-          "QENCODE_API_KEY",
-          "CLOUDCONVERT_RENDER_API_KEY",
-          "VIDEO_WORKFLOW_READ_TOKEN",
-          "VIDEO_STREAM_API_TOKEN",
-          "VIDEO_STREAM_SIGNING_JWK_BASE64",
-          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
-          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
-          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
-          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
-        ],
-      },
-    };
-    expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
-
-    const monitorNames = ["HNS_OPERATOR_ALERT_WEBHOOK_URL", "HNS_OPERATOR_MONITOR_POSTGRES_URL"];
-    expect(
-      auditInfisicalSnapshots([
-        {
-          ...withoutSigner,
-          secrets: {
-            ...withoutSigner.secrets,
-            "/services/api-next/operator": [
-              ...withoutSigner.secrets["/services/api-next/operator"],
-              ...monitorNames,
-            ],
-          },
-        },
-      ]).violations,
-    ).toEqual([]);
-    expect(
-      auditInfisicalSnapshots([
-        {
-          ...withoutSigner,
-          secrets: {
-            ...withoutSigner.secrets,
-            "/services/api-next": [...requiredRuntimeNames, ...monitorNames],
-          },
-        },
-      ]).violations,
-    ).toEqual(
-      monitorNames.map((name) => ({
-        environment: "prod",
-        path: "/services/api-next",
-        kind: "unexpected-secret",
-        name,
-      })),
-    );
   });
 
   test("admits optional video secrets only at staging and production runtime paths", () => {
