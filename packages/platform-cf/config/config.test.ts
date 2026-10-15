@@ -608,9 +608,7 @@ describe("config system (000 §9)", () => {
     expect(production?.secrets?.required).toContain("HNS_EDGE_ALERT_TOKEN");
     expect(production?.vars?.HNS_EDGE_STATUS_ENABLED).toBe("false");
     expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
-    expect(production?.vars?.CORS_ORIGIN).toBe(
-      "https://app.pirate,https://pirate.app,https://pirate.sc",
-    );
+    expect(production?.vars?.CORS_ORIGIN).toBe("https://app.pirate,https://pirate.sc");
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
     expect(production?.services).toEqual([
       {
