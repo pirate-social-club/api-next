@@ -17,6 +17,7 @@ import {
 import {
   createOpaquePostSlugCandidate,
   createPostSlugCandidate,
+  postSlugCanonicalPath,
   selectPostSlugSource,
 } from "@pirate/application/post-slug";
 import type {
@@ -173,6 +174,7 @@ const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
   const publicReason = stringValue(row, "public_reason_code");
   const postId = stringValue(row, "published_post_id");
   const reviewRef = stringValue(row, "review_ref");
+  const postPath = postSlugCanonicalPath(stringValue(row, "canonical_post_slug") ?? "");
   if (
     !validId(submissionId) ||
     !["text_post", "comment", "reply"].includes(surface ?? "") ||
@@ -202,8 +204,8 @@ const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
             },
     published_resource:
       typedStatus === "published"
-        ? typedSurface === "text_post" && validId(postId)
-          ? { kind: "post", post_id: postId, href: `/posts/${postId}` }
+        ? typedSurface === "text_post" && validId(postId) && postPath !== null
+          ? { kind: "post", post_id: postId, href: postPath }
           : typedSurface !== "text_post" && validId(stringValue(row, "published_comment_id"))
             ? {
                 kind: "comment",
@@ -249,7 +251,9 @@ const finalById = (transaction: Transaction, submissionId: string, actorUserId?:
     text: `SELECT community_id, submission_id, actor_user_id, surface, idempotency_key,
                   request_hash, status, public_reason_code, published_post_id,
                   published_comment_id, review_ref, created_at, updated_at,
-                  response_snapshot_bytes, response_snapshot_sha256
+                  response_snapshot_bytes, response_snapshot_sha256,
+                  (SELECT slug FROM post_slug_aliases
+                    WHERE post_id = text_content_submissions.published_post_id) AS canonical_post_slug
              FROM text_content_submissions
             WHERE submission_id = $1 ${actorUserId === undefined ? "" : "AND actor_user_id = $2"}
             FOR UPDATE`,
@@ -506,6 +510,7 @@ const responseSnapshot = (input: {
   readonly status: "published" | "manual_review" | "blocked";
   readonly reasonCode: "review_required" | "moderation_unavailable" | "policy_violation" | null;
   readonly postId: string | null;
+  readonly postPath: string | null;
   readonly commentId: string | null;
   readonly reviewRef: string | null;
   readonly at: string;
@@ -528,8 +533,8 @@ const responseSnapshot = (input: {
         : { decision: "blocked", reason_code: "policy_violation" },
   published_resource:
     input.status === "published"
-      ? input.surface === "text_post" && input.postId !== null
-        ? { kind: "post", post_id: input.postId, href: `/posts/${input.postId}` }
+      ? input.surface === "text_post" && input.postId !== null && input.postPath !== null
+        ? { kind: "post", post_id: input.postId, href: input.postPath }
         : input.surface !== "text_post" && input.commentId !== null
           ? { kind: "comment", comment_id: input.commentId, href: `/comments/${input.commentId}` }
           : null
@@ -801,19 +806,6 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           const targetPostId = target.surface === "text_post" ? null : target.postId;
           const targetParentCommentId = target.surface === "reply" ? target.parentCommentId : null;
           const reviewRef = status === "manual_review" ? makeId("review") : null;
-          const snapshot = responseSnapshot({
-            submissionId,
-            surface,
-            status,
-            reasonCode: publicResult.reason_code,
-            postId,
-            commentId,
-            reviewRef,
-            at,
-          });
-          if (textContentSubmissionInvariant(snapshot) !== null)
-            return yield* Effect.fail(failure("commit", "invalid-row"));
-          const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
 
           if (restrictedEvidence !== undefined) {
             const evidence = restrictedEvidence;
@@ -919,6 +911,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             }
           }
 
+          let postPath: string | null = null;
           if (postId !== null) {
             const visibility = body.visibility ?? "public";
             yield* transaction.execute({
@@ -957,13 +950,18 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                     postType: "text",
                   })
                 : createOpaquePostSlugCandidate("text");
-            yield* ensurePostSlugAliasInTransaction(transaction, { postId, candidate }).pipe(
+            const alias = yield* ensurePostSlugAliasInTransaction(transaction, {
+              postId,
+              candidate,
+            }).pipe(
               Effect.mapError((error) =>
                 error instanceof PublicPostSlugRepositoryError
                   ? failure("commit", "invalid-row")
                   : error,
               ),
             );
+            postPath = postSlugCanonicalPath(alias.slug);
+            if (postPath === null) return yield* Effect.fail(failure("commit", "invalid-row"));
           }
           if (commentId !== null) {
             const commentTarget = target.surface === "text_post" ? null : target;
@@ -1037,6 +1035,21 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               readonly: false,
             });
           }
+          const snapshot = responseSnapshot({
+            submissionId,
+            surface,
+            status,
+            reasonCode: publicResult.reason_code,
+            postId,
+            postPath,
+            commentId,
+            reviewRef,
+            at,
+          });
+          if (textContentSubmissionInvariant(snapshot) !== null)
+            return yield* Effect.fail(failure("commit", "invalid-row"));
+          const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+
           yield* transaction.execute({
             label: "text-post.commit.submission",
             text: `INSERT INTO text_content_submissions (
