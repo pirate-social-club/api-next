@@ -34,6 +34,9 @@ export class StudyV2CommandRejected extends Data.TaggedError("StudyV2CommandReje
     | "invalid-input"
     | "not-found"
     | "provider-unavailable"
+    | "provider-outcome-unknown"
+    | "provider-refused"
+    | "recording-too-short"
     | "submission-kind-mismatch"
     | "transcript-evidence-expired"
     | "transcript-evidence-mismatch"
@@ -67,9 +70,16 @@ export type StudyBatchTranscript = Readonly<{
 
 export type LearnerAudioProviderRetention = "not_stored" | "stored";
 
+/** Ordinary attempts may retry an explicitly unsuccessful response. This is
+ * not a billing assertion and does not change OwnerAware paid-call policy. */
+export type StudyProviderRefusalStatus = 400 | 401 | 403 | 413 | 415 | 422 | 429;
+export const STUDY_MIN_RECORDING_DURATION_MS = 1000;
+
 export class StudyBatchTranscriptionFailed extends Data.TaggedError(
   "StudyBatchTranscriptionFailed",
 )<{
+  readonly outcome?: "unknown" | "known_failed";
+  readonly httpStatus?: number;
   readonly reason:
     | "invalid-response"
     | "misconfigured"

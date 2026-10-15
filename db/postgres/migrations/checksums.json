@@ -267,6 +267,7 @@
     "0264_legacy_learner_audio_producer_disposition.sql": "04a395bef0a06e3a405387123ec85ccdd3f4503b202cb365154375e6d7186097",
     "0265_account_karaoke_unclaimed_cancellation.sql": "337b5469bdf01595413349517f1c0750530280a4a38ac8fd007a2d2e3c4e106f",
     "0266_private_song_policy_initialization.sql": "848a8951e393947fad99048e718e37d763de0730a0a7f89b8ba04db5f95839cc",
-    "0267_ordinary_qualification_without_reward_locks.sql": "4a37a3d4c4a78adcd8c783908472261772b4fdef08ae66d550f458c16913b651"
+    "0267_ordinary_qualification_without_reward_locks.sql": "4a37a3d4c4a78adcd8c783908472261772b4fdef08ae66d550f458c16913b651",
+    "0268_study_provider_refusal_recovery.sql": "956d24790d736e36113003c8d3bc41d374303bc4b062c961228b854ecfdfd24b"
   }
 }

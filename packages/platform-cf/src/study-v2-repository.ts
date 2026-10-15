@@ -47,7 +47,11 @@ const failed = (reason: StudyV2StoreFailed["reason"]) => new StudyV2StoreFailed(
 const rejected = (reason: StudyV2CommandRejected["reason"]) =>
   new StudyV2CommandRejected({ reason });
 
-const mapControlPlaneError = (error: ControlPlaneError): StudyV2StoreFailed => {
+const mapControlPlaneError = (
+  error: ControlPlaneError,
+): StudyV2StoreFailed | StudyV2CommandRejected => {
+  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "SP001")
+    return rejected("provider-outcome-unknown");
   if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return failed("outcome-unknown");
   if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
     return failed("outcome-unknown");
@@ -118,7 +122,8 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
                   study_profile_revision, source_set_revision, selection_policy_revision,
                   qualification_policy_revision, timezone, status, created_at, completed_at
                   , current_session_item_id, current_presented_at, presentation_count,
-                  completion_reason
+                  completion_reason,
+                  read_account_study_spoken_block_private_v1(account_id,session_id,community_id) AS spoken_submission
              FROM study_sessions_v2
             WHERE session_id=$1 AND account_id=$2 AND community_id=$3
               AND active_activity_persona(account_id,persona_id,community_id)
@@ -172,6 +177,7 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
     try: () =>
       decode(StudySessionV2, {
         object: "study_session_v2",
+        spoken_submission: row.spoken_submission === undefined ? null : json(row.spoken_submission),
         session_id: text(row, "session_id"),
         persona_id: text(row, "persona_id"),
         community_id: text(row, "community_id"),
@@ -769,6 +775,13 @@ export const makeControlPlaneStudyV2Repository = (
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
+        if (controlledAudio)
+          yield* db.execute({
+            label: "study-v2.spoken.context-provider-fence",
+            text: "SELECT require_account_study_spoken_available_private_v1($1,$2,$3)",
+            values: [input.accountId, input.sessionId, input.sessionItemId],
+            readonly: true,
+          });
         const selected = yield* db.execute<Row>({
           label: "study-v2.spoken.context",
           text: `SELECT i.item_snapshot, e.private_grader, profile.dominant_language,
@@ -872,7 +885,15 @@ export const makeControlPlaneStudyV2Repository = (
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            if (controlledAudio) yield* capturedAudioPreflight(transaction, input.accountId);
+            if (controlledAudio) {
+              yield* capturedAudioPreflight(transaction, input.accountId);
+              yield* transaction.execute({
+                label: "study-v2.spoken.provider-fence",
+                text: "SELECT require_account_study_spoken_available_private_v1($1,$2,$3)",
+                values: [input.accountId, input.sessionId, input.sessionItemId],
+                readonly: false,
+              });
+            }
             if (admission !== undefined) yield* admission.authorize(transaction, input);
             yield* lockLearnerAudioAccount(transaction, input.accountId);
             // A committed command replays by exact account, payload and

@@ -175,7 +175,7 @@ suite("Ordinary serving-role function grants", () => {
     let bridgeCreated = false;
     try {
       // Staging's order: the serving role was provisioned before 0247, then
-      // 0247-0265 revoked their functions from it, then the ceremony applies
+      // 0247-0268 revoked their functions from it, then the ceremony applies
       // only the incremental function block.
       await admin.query("BEGIN");
       await admin.query(`CREATE SCHEMA ${schema}`);
@@ -215,7 +215,7 @@ suite("Ordinary serving-role function grants", () => {
           ])
         ).rows;
 
-      // Every private function 0247-0265 define is classified exactly once.
+      // Every private function 0247-0268 define is classified exactly once.
       const defined = new Set<string>();
       for (const migration of migrations
         .slice(first)

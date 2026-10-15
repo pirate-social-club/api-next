@@ -81,6 +81,10 @@ const producerFunctions = [
   "guard_account_audio_provider_call_private_v1()",
   "begin_account_spoken_provider_private_v1(text)",
   "mark_account_spoken_provider_unknown_private_v1(text)",
+  "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
+  "read_account_study_spoken_block_private_v1(text,text,text)",
+  "require_account_study_spoken_available_private_v1(text,text,text)",
+
   "learner_audio_producer_component_has_history_private_v1(text[])",
   "find_account_spoken_success_private_v1(text,text,text,integer,text,text,text,bigint,integer)",
   "load_account_spoken_success_private_v1(text)",
@@ -109,6 +113,10 @@ const controlledFunctions = [
   "find_account_spoken_success_private_v1(text,text,text,integer,text,text,text,bigint,integer)",
   "begin_account_spoken_provider_private_v1(text)",
   "mark_account_spoken_provider_unknown_private_v1(text)",
+  "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
+  "read_account_study_spoken_block_private_v1(text,text,text)",
+  "require_account_study_spoken_available_private_v1(text,text,text)",
+
   "persist_account_spoken_success_private_v1(text,jsonb)",
   "load_account_spoken_success_private_v1(text)",
   "require_account_spoken_success_private_v1(text,jsonb)",
@@ -146,7 +154,7 @@ async function migrations() {
     throw new Error("Exactly one adopted ordinary producer migration is required");
   const candidate = candidates[0];
   if (candidate === undefined) throw new Error("Adopted producer migration absent");
-  const end = Number(candidate.slice(0, 4));
+  const end = Number(names.at(-1)?.slice(0, 4));
   const chosen = names.filter((n) => Number(n.slice(0, 4)) <= end);
   expect(chosen.map((n) => Number(n.slice(0, 4)))).toEqual(
     Array.from({ length: end }, (_, i) => i + 1),
@@ -314,7 +322,7 @@ export async function fixture(
     ).toEqual(packet.all.map(({ version, checksum }) => ({ version, checksum })));
     expect(
       (await admin.query("SELECT phase FROM guest_learning_schema_phase WHERE singleton")).rows,
-    ).toEqual([{ phase: "practice_only_owner_audio_producer_history_v5" }]);
+    ).toEqual([{ phase: "practice_only_owner_legacy_audio_settlement_history_v6" }]);
     await admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
     const runtimeUrl = new URL(scoped);
     runtimeUrl.username = role;
