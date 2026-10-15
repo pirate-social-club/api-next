@@ -8,7 +8,7 @@ import {
 
 const bucket = (env as unknown as { AVATAR_TEST_SEALED: R2Bucket }).AVATAR_TEST_SEALED;
 const id = `song-pcm-${"a".repeat(64)}`;
-function fixture(deadline = Date.now() + 60_000, job: string | null = "job-one") {
+function fixture(deadline = Date.now() + 60_000, job: string | null = "job-one", fresh = false) {
   let row: SongPcmAdmission = {
     admission_id: id,
     song_post_id: "song",
@@ -16,9 +16,9 @@ function fixture(deadline = Date.now() + 60_000, job: string | null = "job-one")
     audio_revision: "1",
     canonical_audio_sha256: "b".repeat(64),
     audio_asset_ref: "media://immutable/song.mp3",
-    state: "processing",
+    state: fresh ? "pending" : "processing",
     provider_job_id: job,
-    provider_create_started_at: new Date(Date.now() - 1000),
+    provider_create_started_at: fresh ? null : new Date(Date.now() - 1000),
     provider_wait_deadline: new Date(deadline),
     cleanup_completed_at: null,
     failure_code: null,
@@ -37,6 +37,14 @@ function fixture(deadline = Date.now() + 60_000, job: string | null = "job-one")
       events.push("release");
     },
     get: async () => row,
+    beginCreate: async () => {
+      row = { ...row, state: "processing", provider_create_started_at: new Date() };
+      events.push("begin-create");
+      return row;
+    },
+    grant: async () => {
+      events.push("grant");
+    },
     attachJob: async (_a: SongPcmAdmission, jobId: string) => {
       row = { ...row, provider_job_id: jobId };
       events.push("attach");
@@ -54,6 +62,21 @@ function fixture(deadline = Date.now() + 60_000, job: string | null = "job-one")
   };
   return { repository, events, row: () => row };
 }
+async function freshFixture() {
+  const f = fixture(Date.now() + 60_000, null, true);
+  const objectKey = "source/song.mp3";
+  const object = await bucket.put(objectKey, new Uint8Array([1, 2, 3, 4]));
+  if (object === null) throw new Error("test source upload refused");
+  f.repository.source = async () => ({
+    objectKey,
+    objectVersion: object.version,
+    objectEtag: object.etag,
+    byteLength: object.size,
+    durationMs: 1000,
+    identity: "upload_version",
+  });
+  return f;
+}
 const job = { id: "job-one", tag: id, status: "processing" };
 function dependencies(
   f: ReturnType<typeof fixture>,
@@ -69,6 +92,71 @@ function dependencies(
 }
 
 describe("durable PCM admission observation", () => {
+  it("records a 402 refusal without leaking provider content or recreating the job", async () => {
+    const f = await freshFixture();
+    const calls: string[] = [];
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const deps = dependencies(f, async (_url, init) => {
+        calls.push(init.method ?? "GET");
+        return init.method === "POST"
+          ? new Response("private-key https://provider.example/?secret=capability", { status: 402 })
+          : Response.json({ data: [] });
+      });
+      expect(await consumeSongPcmAdmission({ admission_id: id }, deps)).toBe("ack");
+      expect(f.row().state).toBe("refused");
+      expect(f.row().failure_code).toBe("provider_rejected");
+      expect(await consumeSongPcmAdmission({ admission_id: id }, deps)).toBe("ack");
+      expect(calls).toEqual(["POST", "GET", "GET"]);
+      expect(f.events.filter((event) => event === "begin-create")).toHaveLength(1);
+      expect(JSON.parse(log.mock.calls[0]?.[0] as string)).toEqual({
+        event: "song_pcm_admission_provider_create_failed",
+        admission_id: id,
+        provider_outcome: "rejected",
+        http_status: 402,
+      });
+      expect(log).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-key|https:|secret|test-only/u);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each([503, null])(
+    "records uncertain create status %s and reconciles without another POST",
+    async (status) => {
+      const f = await freshFixture();
+      const calls: string[] = [];
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const deps = dependencies(f, async (_url, init) => {
+          calls.push(init.method ?? "GET");
+          if (init.method !== "POST") return Response.json({ data: [] });
+          if (status === null) throw new TypeError("private-key https://provider.example/?secret");
+          return new Response("private-key https://provider.example/?secret", { status });
+        });
+        expect(await consumeSongPcmAdmission({ admission_id: id }, deps)).toBe("retry");
+        expect(await consumeSongPcmAdmission({ admission_id: id }, deps)).toBe("retry");
+        expect(calls).toEqual(["POST", "GET", "GET"]);
+        expect(f.row().state).toBe("processing");
+        expect(f.row().provider_create_started_at).not.toBeNull();
+        expect(f.row().provider_job_id).toBeNull();
+        expect(f.row().failure_code).toBeNull();
+        expect(f.events).toEqual(["begin-create", "grant", "release", "release"]);
+        expect(log).toHaveBeenCalledOnce();
+        expect(JSON.parse(log.mock.calls[0]?.[0] as string)).toEqual({
+          event: "song_pcm_admission_provider_create_failed",
+          admission_id: id,
+          provider_outcome: "uncertain",
+          ...(status === null ? {} : { http_status: status }),
+        });
+        expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-key|https:|secret|test-only/u);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("waits for processing before the deadline without another create", async () => {
     const f = fixture();
     const calls: string[] = [];

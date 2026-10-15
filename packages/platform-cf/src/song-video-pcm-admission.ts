@@ -144,6 +144,18 @@ export async function consumeSongPcmAdmission(
         await repo.attachJob(a, created.id);
         a = { ...a, provider_job_id: created.id };
       } catch (error) {
+        // Preserve only closed transport facts; provider bodies, URLs and keys stay private.
+        console.error(
+          JSON.stringify({
+            event: "song_pcm_admission_provider_create_failed",
+            admission_id: a.admission_id,
+            provider_outcome:
+              error instanceof CloudConvertTransportError ? error.outcome : "uncertain",
+            ...(error instanceof CloudConvertTransportError && error.status !== undefined
+              ? { http_status: error.status }
+              : {}),
+          }),
+        );
         if (error instanceof CloudConvertTransportError && error.outcome === "rejected")
           return await refuse(a, "provider_rejected");
         // An uncertain acknowledgement is resolved by the exact tag below.
