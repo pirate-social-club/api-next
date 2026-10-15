@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { MODERATION_PLATFORM_FLOOR_V1, MODERATION_POLICY_CATEGORIES_V1 } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
@@ -12,6 +13,7 @@ import {
   backfillActivePersonaWalletFixtures,
 } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -973,6 +975,28 @@ suite("community moderation authority and policy migration", () => {
       });
       expect(membersAlias?.slug).toMatch(/^post-[0-9abcdefghjkmnpqrstvwxyz]{10}$/u);
       expect(membersAlias?.slug).not.toBe("held-title");
+      const textStore = makeControlPlaneTextSubmissionStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      for (const [submissionId, alias] of [
+        ["moderation-runtime-general", generalAlias],
+        ["moderation-runtime-members", membersAlias],
+      ] as const) {
+        if (alias === undefined) throw new Error("missing approved alias");
+        const current = await Effect.runPromise(
+          textStore.getForAuthor({
+            submissionId,
+            actor: { kind: "user", userId: "moderation-runtime-member" },
+          }),
+        );
+        const path = postSlugCanonicalPath(alias.slug);
+        if (path === null) throw new Error("invalid approved alias");
+        expect(current?.published_resource).toEqual({
+          kind: "post",
+          post_id: alias.post_id,
+          href: path,
+        });
+      }
 
       const firstReport = await Effect.runPromise(
         store.reportTarget({

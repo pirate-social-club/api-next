@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { CreatePostBody, M2Actor, TextPostSubmissionDocument } from "@pirate/application";
+import { postSlugCanonicalPath } from "@pirate/application/post-slug";
 import { evaluateTextModerationV2 } from "@pirate/application/text-moderation-runtime";
 import { createCommentReply } from "@pirate/application/use-cases/content/comments-replies";
 import { canonicalBodyHash } from "@pirate/application/use-cases/content/common";
@@ -39,7 +40,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
-const testCount = 12;
+const testCount = 13;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
@@ -496,7 +497,43 @@ suite("Postgres 17 terminal text submission repository", () => {
         const postId =
           first.published_resource?.kind === "post" ? first.published_resource.post_id : undefined;
         if (postId === undefined) throw new Error("missing published post");
-        if (rating === "adult_18") adultPostId = postId;
+        expect(postId).toStartWith("post_");
+        const alias = (
+          await admin.query<{ slug: string }>(
+            "SELECT slug FROM post_slug_aliases WHERE post_id=$1",
+            [postId],
+          )
+        ).rows[0];
+        if (alias === undefined) throw new Error("missing canonical alias");
+        const canonicalPath = postSlugCanonicalPath(alias.slug);
+        if (canonicalPath === null) throw new Error("invalid canonical alias");
+        expect(first.published_resource?.href).toBe(canonicalPath);
+        expect(first.published_resource?.href).not.toBe(`/posts/${postId}`);
+        if (rating === "adult_18") {
+          adultPostId = postId;
+          expect(alias.slug).toMatch(/^post-[0-9abcdefghjkmnpqrstvwxyz]{10}$/u);
+        } else {
+          expect(canonicalPath).toBe("/posts/terminal-text");
+          const route = await Effect.runPromise(
+            Effect.scoped(
+              getPublicPostCanonicalRouteById(
+                { postId },
+                {
+                  contentStore: makeControlPlaneContentStore(runtime),
+                  publicPostRouteStore: makeControlPlanePublicPostSlugStore(runtime),
+                },
+              ),
+            ),
+          );
+          expect(route).toMatchObject({
+            kind: "content",
+            route: { canonical_path: canonicalPath },
+          });
+        }
+        const current = await Effect.runPromise(
+          getTextContentSubmission({ submissionId: first.submission_id, actor }, services),
+        );
+        expect(current.published_resource).toEqual(first.published_resource);
         const replay = await Effect.runPromise(
           createTextPost({ communityId: "text-community", actor, body: postBody }, services),
         );
@@ -531,6 +568,24 @@ suite("Postgres 17 terminal text submission repository", () => {
           ),
         );
         expect(reply.status).toBe("published");
+        for (const response of [comment, reply]) {
+          if (response.published_resource?.kind !== "comment")
+            throw new Error("missing comment resource");
+          expect(response.published_resource.href).toBe(
+            `/comments/${response.published_resource.comment_id}`,
+          );
+          const current = await Effect.runPromise(
+            getTextContentSubmission({ submissionId: response.submission_id, actor }, services),
+          );
+          expect(current.published_resource).toEqual(response.published_resource);
+        }
+        const commentReplay = await Effect.runPromise(
+          createCommentReply(
+            { surface: "comment", targetId: postId, actor, body: commentBody },
+            services,
+          ),
+        );
+        expect(snapshotBytes(commentReplay)).toEqual(snapshotBytes(comment));
       }
       const rows = await admin.query(
         `SELECT publication_mode,status,author_declared_rating,resulting_content_rating,policy_revision_id,platform_policy_revision_id,community_policy_revision_id,evidence_ref FROM text_content_submissions ORDER BY author_declared_rating,surface`,
@@ -609,6 +664,47 @@ suite("Postgres 17 terminal text submission repository", () => {
       });
     });
   }, 30_000);
+  test("returns the allocated Unicode slug, including collisions, in creation and replay", async () => {
+    await withSchema(async (admin, connection) => {
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const services = {
+        textPostStore: makeControlPlaneTextSubmissionStore(runtime),
+        personaStore: makeControlPlanePersonaStore(runtime),
+        textModerationProvider: provider,
+      };
+      const paths: string[] = [];
+      for (const key of ["unicode-first", "unicode-collision"]) {
+        const postBody = { ...body, title: "世界の歌", idempotency_key: key };
+        const first = await Effect.runPromise(
+          createTextPost({ communityId: "text-community", actor, body: postBody }, services),
+        );
+        if (first.published_resource?.kind !== "post") throw new Error("missing post");
+        const alias = (
+          await admin.query<{ slug: string }>(
+            "SELECT slug FROM post_slug_aliases WHERE post_id=$1",
+            [first.published_resource.post_id],
+          )
+        ).rows[0];
+        if (alias === undefined) throw new Error("missing canonical alias");
+        const path = postSlugCanonicalPath(alias.slug);
+        if (path === null) throw new Error("invalid canonical alias");
+        expect(first.published_resource.href).toBe(path);
+        expect(first.published_resource.href).toStartWith("/posts/%");
+        paths.push(first.published_resource.href);
+        const current = await Effect.runPromise(
+          getTextContentSubmission({ submissionId: first.submission_id, actor }, services),
+        );
+        expect(current.published_resource).toEqual(first.published_resource);
+        const replay = await Effect.runPromise(
+          createTextPost({ communityId: "text-community", actor, body: postBody }, services),
+        );
+        expect(snapshotBytes(replay)).toEqual(snapshotBytes(first));
+      }
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(paths[0]).toBe(`/posts/${encodeURIComponent("世界の歌")}`);
+    });
+  }, 30_000);
+
   test("commits a current V2 evaluation with complete restricted evidence", async () => {
     await withSchema(async (admin, connection) => {
       const requestHash = await Effect.runPromise(
@@ -1168,6 +1264,89 @@ suite("Postgres 17 terminal text submission repository", () => {
       expect(databaseBytes(persisted.rows[0].response_snapshot_bytes)).toEqual(bytes);
       expect(persisted.rows[0].response_snapshot_sha256).toBe(sha256(bytes));
     }, historicalReplayMigrations);
+    await withSchema(async (admin, connection) => {
+      const postId = "post_historical-published";
+      const historical: TextPostSubmissionDocument = {
+        submission_id: "submission-historical-published",
+        href: "/text-content-submissions/submission-historical-published",
+        surface: "text_post",
+        status: "published",
+        result: { decision: "allow", reason_code: null },
+        published_resource: { kind: "post", post_id: postId, href: `/posts/${postId}` },
+        review_ref: null,
+        created_at: "2026-08-21T12:00:00.000Z",
+        updated_at: "2026-08-21T12:00:00.000Z",
+      };
+      const bytes = snapshotBytes(historical);
+      await admin.query(
+        `INSERT INTO posts (community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,body,created_at,updated_at)
+         VALUES ('text-community',$1,$2,$3,'text','published','public','historical text',now(),now())`,
+        [postId, actor.userId, actorPersonaId],
+      );
+      await admin.query(
+        "INSERT INTO post_slug_aliases (slug,post_id,slug_policy_version) VALUES ('historical-text',$1,'post-slug-v1')",
+        [postId],
+      );
+      await admin.query(
+        `INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at)
+         VALUES ('text-community','feed-historical-published',$1,0,now())`,
+        [postId],
+      );
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+          community_id,submission_id,operation_id,actor_user_id,author_persona_id,surface,idempotency_key,
+          request_hash,status,moderation_decision,policy_revision_id,policy_hash,input_sha256,
+          internal_reason_codes,published_post_id,created_at,updated_at,response_snapshot_bytes,response_snapshot_sha256
+        ) VALUES ('text-community',$1,'operation-historical-published',$2,$3,'text_post','historical-published-key',
+          $4,'published','allow','text-moderation-policy-v1',$5,$6,'[]'::jsonb,$7,$8,$8,$9,$10)`,
+        [
+          historical.submission_id,
+          actor.userId,
+          actorPersonaId,
+          "a".repeat(64),
+          policyHash,
+          inputSha,
+          postId,
+          historical.created_at,
+          bytes,
+          sha256(bytes),
+        ],
+      );
+      const current = await runStore(connection, (store) =>
+        store.getForAuthor({
+          submissionId: historical.submission_id,
+          actor,
+        }),
+      );
+      expect(current).toEqual({
+        ...historical,
+        published_resource: {
+          kind: "post",
+          post_id: postId,
+          href: "/posts/historical-text",
+        },
+      });
+      const replay = await runStore(connection, (store) =>
+        store.replay({
+          communityId: "text-community",
+          actor,
+          personaId: actorPersonaId,
+          surface: "text_post",
+          idempotencyKey: "historical-published-key",
+          requestHash: "a".repeat(64),
+        }),
+      );
+      if (replay.kind !== "replay") throw new Error("expected historical published replay");
+      expect(snapshotBytes(replay.snapshot)).toEqual(bytes);
+      const persisted = (
+        await admin.query(
+          "SELECT response_snapshot_bytes,response_snapshot_sha256 FROM text_content_submissions WHERE submission_id=$1",
+          [historical.submission_id],
+        )
+      ).rows[0];
+      expect(databaseBytes(persisted.response_snapshot_bytes)).toEqual(bytes);
+      expect(persisted.response_snapshot_sha256).toBe(sha256(bytes));
+    }, historicalReplayMigrations);
   }, 30_000);
 
   test("returns the current GET state while replaying the original held POST response", async () => {
@@ -1255,6 +1434,9 @@ suite("Postgres 17 terminal text submission repository", () => {
         [actor.userId, actorPersonaId],
       );
       await admin.query(
+        "INSERT INTO post_slug_aliases (slug,post_id,slug_policy_version) VALUES ('terminal-text','text-order5-approved','post-slug-v1')",
+      );
+      await admin.query(
         `UPDATE text_moderation_cases
             SET status = 'approved', resolved_by_user_id = 'moderator-order5',
                 updated_at = clock_timestamp() + interval '1 millisecond'
@@ -1287,6 +1469,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         published_resource: {
           kind: "post",
           post_id: "text-order5-approved",
+          href: "/posts/terminal-text",
         },
       });
       let replayModerationCalls = 0;
