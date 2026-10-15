@@ -1,5 +1,5 @@
 /**
- * Function EXECUTE the ordinary serving role needs after migrations 0247-0265.
+ * Function EXECUTE the ordinary serving role needs after migrations 0247-0268.
  *
  * Those migrations make every function they define owner-only and infer no
  * role grant. Ordinary account code calls the functions below directly, so the
@@ -10,6 +10,19 @@
  * the matching grant block, and a test keeps the two equal.
  */
 export const SERVING_FUNCTION_EXECUTE_GRANTS = [
+  {
+    signature: "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
+    purpose: "account spoken Study recovery",
+  },
+  {
+    signature: "read_account_study_spoken_block_private_v1(text,text,text)",
+    purpose: "account spoken Study recovery",
+  },
+  {
+    signature: "require_account_study_spoken_available_private_v1(text,text,text)",
+    purpose: "account spoken Study recovery",
+  },
+
   {
     signature: "provision_account_participation_owner_v1(text)",
     purpose: "registration and Telegram learner birth",
@@ -96,8 +109,9 @@ export const SERVING_FUNCTION_EXECUTE_GRANTS = [
   },
 ] as const satisfies readonly { signature: string; purpose: string }[];
 
-/** Owner-only functions from migrations 0247-0265 the serving role must not execute. */
+/** Owner-only functions from migrations 0247-0268 the serving role must not execute. */
 export const SERVING_FUNCTION_EXECUTE_DENIALS = [
+  "initialize_song_owner_policy_v1()",
   // The attempt host exposes this deletion stop, but nothing calls it yet.
   "require_captured_audio_deletion_stop_private_v1(jsonb)",
   "acknowledge_guest_rotation_v1(text,text[],text,text,text)",
@@ -249,7 +263,7 @@ export const SERVING_FUNCTION_EXECUTE_DENIALS = [
 ] as const;
 
 /** First and last migrations whose private functions these lists classify. */
-export const SERVING_FUNCTION_PRIVILEGE_MIGRATIONS = { first: 247, last: 265 } as const;
+export const SERVING_FUNCTION_PRIVILEGE_MIGRATIONS = { first: 247, last: 268 } as const;
 
 /**
  * SELECT-only facts from the executing connection, including inherited access.

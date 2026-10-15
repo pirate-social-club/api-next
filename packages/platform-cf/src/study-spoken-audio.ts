@@ -127,8 +127,17 @@ export function makeElevenLabsStudyBatchTranscriber(
               if (controller.signal.aborted) throw failure("timeout");
               throw error;
             }
-            if (response.status === 429) throw failure("rate-limited");
-            if (!response.ok) throw failure("unavailable");
+            if (!response.ok) {
+              // Headers establish an explicit refusal for these closed statuses.
+              // 408/409 and every 5xx remain uncertain. No body is retained.
+              throw new StudyBatchTranscriptionFailed({
+                reason: response.status === 429 ? "rate-limited" : "unavailable",
+                outcome: [400, 401, 403, 413, 415, 422, 429].includes(response.status)
+                  ? "known_failed"
+                  : "unknown",
+                httpStatus: response.status,
+              });
+            }
             // The deadline stays armed through body consumption and decoding:
             // a provider that sends headers and stalls its body still fails at
             // the configured timeout and releases the stream.

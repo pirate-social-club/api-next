@@ -6503,6 +6503,57 @@
                         "guest_study_session_v1"
                       ]
                     },
+                    "spoken_submission": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "provider_outcome_unknown"
+                              ]
+                            },
+                            "session_item_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "attempt_number": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "next_action": {
+                              "type": "string",
+                              "enum": [
+                                "operator_review"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "session_item_id",
+                            "attempt_number",
+                            "next_action"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "session_id": {
                       "type": "string",
                       "allOf": [
@@ -8293,6 +8344,57 @@
                                 "guest_study_session_v1"
                               ]
                             },
+                            "spoken_submission": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "state": {
+                                      "type": "string",
+                                      "enum": [
+                                        "provider_outcome_unknown"
+                                      ]
+                                    },
+                                    "session_item_id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "maxLength": 128
+                                        }
+                                      ]
+                                    },
+                                    "attempt_number": {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    "next_action": {
+                                      "type": "string",
+                                      "enum": [
+                                        "operator_review"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "state",
+                                    "session_item_id",
+                                    "attempt_number",
+                                    "next_action"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "session_id": {
                               "type": "string",
                               "allOf": [
@@ -10080,6 +10182,57 @@
                       "type": "string",
                       "enum": [
                         "guest_study_session_v1"
+                      ]
+                    },
+                    "spoken_submission": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "provider_outcome_unknown"
+                              ]
+                            },
+                            "session_item_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "attempt_number": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "next_action": {
+                              "type": "string",
+                              "enum": [
+                                "operator_review"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "session_item_id",
+                            "attempt_number",
+                            "next_action"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "session_id": {
@@ -12567,6 +12720,57 @@
                           "type": "string",
                           "enum": [
                             "guest_study_session_v1"
+                          ]
+                        },
+                        "spoken_submission": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "provider_outcome_unknown"
+                                  ]
+                                },
+                                "session_item_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "attempt_number": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "next_action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "operator_review"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "state",
+                                "session_item_id",
+                                "attempt_number",
+                                "next_action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "session_id": {
@@ -189408,6 +189612,57 @@
                         "study_session_v2"
                       ]
                     },
+                    "spoken_submission": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "provider_outcome_unknown"
+                              ]
+                            },
+                            "session_item_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "attempt_number": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "next_action": {
+                              "type": "string",
+                              "enum": [
+                                "operator_review"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "session_item_id",
+                            "attempt_number",
+                            "next_action"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "session_id": {
                       "type": "string",
                       "allOf": [
@@ -190594,6 +190849,57 @@
                       "type": "string",
                       "enum": [
                         "study_session_v2"
+                      ]
+                    },
+                    "spoken_submission": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "provider_outcome_unknown"
+                              ]
+                            },
+                            "session_item_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "attempt_number": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "next_action": {
+                              "type": "string",
+                              "enum": [
+                                "operator_review"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "session_item_id",
+                            "attempt_number",
+                            "next_action"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "session_id": {
@@ -192407,6 +192713,57 @@
                           "type": "string",
                           "enum": [
                             "study_session_v2"
+                          ]
+                        },
+                        "spoken_submission": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "provider_outcome_unknown"
+                                  ]
+                                },
+                                "session_item_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 128
+                                    }
+                                  ]
+                                },
+                                "attempt_number": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "next_action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "operator_review"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "state",
+                                "session_item_id",
+                                "attempt_number",
+                                "next_action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "session_id": {
