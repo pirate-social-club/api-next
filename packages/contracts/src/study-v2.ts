@@ -165,6 +165,18 @@ export type StudyLessonV2 = Schema.Schema.Type<typeof StudyLessonV2>;
 
 export const StudySessionV2 = Schema.Struct({
   object: Schema.Literal("study_session_v2"),
+  /** Current reads always supply this projection; retained historical results
+   * may predate it and must remain recoverable without rewriting evidence. */
+  spoken_submission: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        state: Schema.Literal("provider_outcome_unknown"),
+        session_item_id: Identifier,
+        attempt_number: PositiveInteger,
+        next_action: Schema.Literal("operator_review"),
+      }),
+    ),
+  ),
   session_id: Identifier,
   persona_id: Identifier,
   community_id: Identifier,

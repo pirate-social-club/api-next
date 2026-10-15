@@ -3194,13 +3194,21 @@ BEGIN
   'sourceOwnerId',source_id,'artifactId',prior.artifact_id,'sourceKind','study','attemptRef',prior.attempt_ref,
   'commandRef',prior.command_ref,'reservationRef',prior.reservation_ref,'capturedRevision',prior.captured_revision,
   'objectRef',prior.expected_object_ref,'contentDigest',prior.content_digest,'contentType',prior.content_type,'byteSize',prior.byte_size,'durationMs',prior.duration_ms); END IF;
+ -- This SQLSTATE names only unresolved provider generations, never general
+ -- storage/checkpoint constraints. Reclaim is rolled back with this refusal.
+ IF EXISTS(SELECT 1 FROM learner_audio_account_producer_captures c
+   JOIN learner_audio_account_provider_calls p USING(upload_attempt_id)
+   WHERE c.owner_id=source_id AND c.command_ref=p_command
+     AND p.state IN('registered','started','unknown')
+     AND NOT EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints cp
+       WHERE cp.upload_attempt_id=c.upload_attempt_id)) THEN
+   RAISE EXCEPTION 'Study provider outcome requires review' USING ERRCODE='SP001'; END IF;
  -- All unresolved older generations block reclaim; lease expiry is no I/O fact.
  IF EXISTS(SELECT 1 FROM learner_audio_account_producer_captures c JOIN learner_audio_upload_attempts u USING(upload_attempt_id)
   WHERE c.owner_id=source_id AND c.command_ref=p_command AND (u.io_state<>'closed' OR u.cleanup_required))
   OR EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints cp JOIN learner_audio_account_producer_captures c USING(upload_attempt_id)
    WHERE c.owner_id=source_id AND c.command_ref=p_command)
-  OR EXISTS(SELECT 1 FROM learner_audio_account_producer_captures c JOIN learner_audio_account_provider_calls p USING(upload_attempt_id)
-   WHERE c.owner_id=source_id AND c.command_ref=p_command AND p.state IN('registered','started','unknown')) THEN
+ THEN
   RAISE EXCEPTION 'prior captured generation requires reconciliation'; END IF;
  generation_ref:=jsonb_build_array('account_study_audio_generation_v1',p_command,p_lease)::TEXT;
  SELECT COALESCE((SELECT f.revision FROM learner_audio_owner_fences f WHERE f.owner_id=source_id),0) INTO revision;
@@ -8066,11 +8074,17 @@ CREATE FUNCTION guard_account_audio_provider_call_private_v1() RETURNS trigger
     AS $$
 BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'provider outcome evidence retained'; END IF;
- IF (to_jsonb(NEW)-ARRAY['state','resolved_at']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','resolved_at']) THEN RAISE EXCEPTION 'provider identity differs'; END IF;
- IF OLD.state IN('known_failed','succeeded') AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN RAISE EXCEPTION 'terminal provider outcome differs'; END IF;
+ IF (to_jsonb(NEW)-ARRAY['state','resolved_at','refusal_http_status']) IS DISTINCT FROM
+    (to_jsonb(OLD)-ARRAY['state','resolved_at','refusal_http_status']) THEN
+   RAISE EXCEPTION 'provider identity differs'; END IF;
+ IF OLD.refusal_http_status IS NOT NULL AND NEW.refusal_http_status IS DISTINCT FROM OLD.refusal_http_status THEN
+   RAISE EXCEPTION 'provider refusal evidence differs'; END IF;
+ IF OLD.state IN('known_failed','succeeded') AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+   RAISE EXCEPTION 'terminal provider outcome differs'; END IF;
  IF NOT ((OLD.state='registered' AND NEW.state IN('registered','started','known_failed'))
   OR (OLD.state IN('started','unknown') AND NEW.state IN('unknown','known_failed','succeeded'))
-  OR (OLD.state IN('known_failed','succeeded') AND NEW.state=OLD.state)) THEN RAISE EXCEPTION 'provider state transition differs'; END IF;
+  OR (OLD.state IN('known_failed','succeeded') AND NEW.state=OLD.state)) THEN
+   RAISE EXCEPTION 'provider state transition differs'; END IF;
  RETURN NEW;
 END $$;
 DO $baseline_function_path$
@@ -23422,6 +23436,38 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION read_account_study_spoken_block_private_v1(p_account text, p_session text, p_community text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT jsonb_build_object('state','provider_outcome_unknown','session_item_id',c.session_item_id,
+   'attempt_number',c.attempt_number,'next_action','operator_review')
+ FROM study_sessions_v2 s
+ JOIN learner_audio_account_producer_captures c ON c.session_id=s.session_id
+   AND c.account_id=s.account_id AND c.owner_id=s.participation_owner_id AND c.source_kind='study'
+   AND c.session_item_id=s.current_session_item_id
+ JOIN learner_audio_account_provider_calls p USING(upload_attempt_id)
+ JOIN study_spoken_answer_commands command ON command.command_id=c.command_ref
+ WHERE s.account_id=p_account AND s.session_id=p_session AND s.community_id=p_community AND s.status='active'
+  AND active_activity_persona(s.account_id,s.persona_id,s.community_id)
+  AND can_account_access_activity_song(s.account_id,s.community_id,s.post_id)
+  AND (p.state='unknown' OR (p.state IN('registered','started') AND command.lease_expires_at<=clock_timestamp()))
+  AND NOT EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints cp WHERE cp.upload_attempt_id=c.upload_attempt_id)
+ ORDER BY c.created_at,c.upload_attempt_id LIMIT 1
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_account_study_spoken_block_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_community text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION read_captured_learner_audio_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25627,6 +25673,30 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='require_account_spoken_success_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_success jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION require_account_study_spoken_available_private_v1(p_account text, p_session text, p_item text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE blocked JSONB; community TEXT;
+BEGIN
+ SELECT community_id INTO community FROM study_sessions_v2 WHERE session_id=p_session AND account_id=p_account;
+ blocked:=read_account_study_spoken_block_private_v1(p_account,p_session,community);
+ IF blocked->>'session_item_id'=p_item THEN
+   RAISE EXCEPTION 'Study provider outcome requires review' USING ERRCODE='SP001'; END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_account_study_spoken_available_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_item text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -28296,6 +28366,64 @@ BEGIN
   RETURN control_record.revision+1;
 END
 $$;
+
+CREATE FUNCTION settle_account_spoken_provider_refusal_private_v1(p_capture jsonb, p_status integer) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload_id TEXT; captured learner_audio_account_producer_captures%ROWTYPE;
+ provider learner_audio_account_provider_calls%ROWTYPE; command study_spoken_answer_commands%ROWTYPE;
+ artifact learner_audio_artifacts%ROWTYPE; upload learner_audio_upload_attempts%ROWTYPE;
+ at_time TIMESTAMPTZ:=clock_timestamp();
+BEGIN
+ IF p_status IS NULL OR p_status NOT IN(400,401,403,413,415,422,429) THEN
+   RAISE EXCEPTION 'explicit unsuccessful response required'; END IF;
+ upload_id:=require_captured_learner_audio_private_v1(p_capture);
+ SELECT * INTO STRICT captured FROM learner_audio_account_producer_captures
+  WHERE upload_attempt_id=upload_id AND source_kind='study';
+ PERFORM lock_original_account_audio_source_private_v1(captured.account_id);
+ PERFORM require_captured_learner_audio_private_v1(p_capture);
+ SELECT * INTO STRICT provider FROM learner_audio_account_provider_calls WHERE upload_attempt_id=upload_id FOR UPDATE;
+ IF provider.state='known_failed' AND provider.refusal_http_status=p_status THEN RETURN; END IF;
+ -- Unknown means there is no retained conclusive response. Only a separately
+ -- reviewed operator reconciliation may resolve it; this callback cannot.
+ IF provider.owner_id<>captured.owner_id OR provider.state<>'started'
+  OR EXISTS(SELECT 1 FROM learner_audio_account_spoken_checkpoints WHERE upload_attempt_id=upload_id)
+  OR EXISTS(SELECT 1 FROM learner_audio_upload_terminal_facts WHERE upload_attempt_id=upload_id) THEN
+   RAISE EXCEPTION 'provider refusal conflicts with retained outcome'; END IF;
+ SELECT * INTO STRICT command FROM study_spoken_answer_commands WHERE command_id=captured.command_ref FOR UPDATE;
+ SELECT * INTO STRICT artifact FROM learner_audio_artifacts WHERE learner_audio_artifact_id=captured.artifact_id FOR UPDATE;
+ SELECT * INTO STRICT upload FROM learner_audio_upload_attempts WHERE upload_attempt_id=upload_id FOR UPDATE;
+ IF command.state<>'reserved' OR ROW(command.account_id,command.participation_owner_id,command.lease_token,
+   command.attempt_id,command.learner_audio_artifact_id,command.request_hash,command.audio_digest,
+   command.session_id,command.session_item_id,command.attempt_number,command.idempotency_key)
+   IS DISTINCT FROM ROW(captured.account_id,captured.owner_id,captured.producer_generation,
+   captured.attempt_ref,captured.artifact_id,captured.request_hash,captured.content_digest,
+   captured.session_id,captured.session_item_id,captured.attempt_number,captured.idempotency_key)
+  OR artifact.account_id IS DISTINCT FROM captured.account_id OR artifact.participation_owner_id<>captured.owner_id
+  OR artifact.recording_state<>'pending' OR artifact.content_digest<>captured.content_digest
+  OR upload.io_state<>'registered' OR upload.cleanup_required THEN
+   RAISE EXCEPTION 'provider refusal generation or storage differs'; END IF;
+ IF NOT close_unclaimed_learner_audio_private_v1(upload_id) THEN
+   RAISE EXCEPTION 'provider refusal cannot close claimed storage'; END IF;
+ UPDATE learner_audio_account_provider_calls SET state='known_failed',resolved_at=at_time,refusal_http_status=p_status
+   WHERE upload_attempt_id=upload_id;
+ UPDATE study_spoken_answer_commands SET state='retryable_failed',completed_at=at_time,
+   provider_failure_kind='provider_refused' WHERE command_id=captured.command_ref;
+ UPDATE learner_audio_artifacts SET recording_state='failed' WHERE learner_audio_artifact_id=captured.artifact_id;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_account_spoken_provider_refusal_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_capture jsonb, p_status integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION settle_guest_audio_io_private_v1(p_capture jsonb, p_disposition text, p_known boolean) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
@@ -40844,7 +40972,10 @@ CREATE TABLE learner_audio_account_provider_calls (
     state text NOT NULL,
     created_at timestamp with time zone NOT NULL,
     resolved_at timestamp with time zone,
+    refusal_http_status integer,
+    CONSTRAINT account_provider_refusal_terminal CHECK (((refusal_http_status IS NULL) OR (state = 'known_failed'::text))),
     CONSTRAINT learner_audio_account_provider_calls_check CHECK (((state = ANY (ARRAY['known_failed'::text, 'succeeded'::text])) = (resolved_at IS NOT NULL))),
+    CONSTRAINT learner_audio_account_provider_calls_refusal_http_status_check CHECK ((refusal_http_status = ANY (ARRAY[400, 401, 403, 413, 415, 422, 429]))),
     CONSTRAINT learner_audio_account_provider_calls_state_check CHECK ((state = ANY (ARRAY['registered'::text, 'started'::text, 'unknown'::text, 'known_failed'::text, 'succeeded'::text])))
 );
 

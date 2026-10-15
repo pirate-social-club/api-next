@@ -62,6 +62,34 @@ describe("Study spoken-audio adapters", () => {
     ).rejects.toMatchObject({ reason: "rate-limited" });
   });
 
+  test("retains only closed unsuccessful status facts and leaves ambiguous responses unknown", async () => {
+    for (const status of [400, 401, 403, 408, 409, 413, 415, 422, 429, 500, 503]) {
+      let calls = 0;
+      const provider = makeElevenLabsStudyBatchTranscriber({
+        apiKey: "private-key",
+        fetch: async () => {
+          calls++;
+          return new Response("private-body-and-transcript", { status });
+        },
+      });
+      const error = await Effect.runPromise(
+        Effect.flip(
+          provider.transcribe({
+            audio: new Uint8Array([1]),
+            contentType: "audio/webm",
+            languageHint: null,
+          }),
+        ),
+      );
+      expect(error).toMatchObject({
+        httpStatus: status,
+        outcome: [400, 401, 403, 413, 415, 422, 429].includes(status) ? "known_failed" : "unknown",
+      });
+      expect(JSON.stringify(error)).not.toContain("private");
+      expect(calls).toBe(1);
+    }
+  });
+
   test("fails a stalled response body at the deadline and releases the stream", async () => {
     let cancelled = false;
     const stalled = new ReadableStream<Uint8Array>({

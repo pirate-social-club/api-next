@@ -1,5 +1,5 @@
 import {
-  ControlPlaneDb,
+  type ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
   StudyV2CommandRejected,
@@ -136,6 +136,28 @@ export const makeAccountControlledSpokenProtocol = (
         ),
       );
       if (!started) return yield* new StudyV2CommandRejected({ reason: "command-in-flight" });
+    }),
+    providerFailed: Effect.fn("accountSpokenProtocol.providerFailed")(function* (
+      capture: Parameters<ControlledAccountSpokenProtocol["providerFailed"]>[0],
+      httpStatus: Parameters<ControlledAccountSpokenProtocol["providerFailed"]>[1],
+    ) {
+      const settle = short((tx) =>
+        tx.execute({
+          label: "account-spoken.provider.failed",
+          text: "SELECT settle_account_spoken_provider_refusal_private_v1($1::jsonb,$2)",
+          values: [JSON.stringify(capture), httpStatus],
+          readonly: false,
+        }),
+      );
+      // Recover only this exact idempotent receipt after a lost COMMIT answer.
+      // One bounded database replay never reacquires a lease or calls a provider.
+      yield* settle.pipe(
+        Effect.catch((error) =>
+          error._tag === "StudyV2StoreFailed" && error.reason === "outcome-unknown"
+            ? settle
+            : Effect.fail(error),
+        ),
+      );
     }),
     providerUnknown: Effect.fn("accountSpokenProtocol.providerUnknown")(function* (
       capture: Parameters<ControlledAccountSpokenProtocol["providerUnknown"]>[0],

@@ -8,8 +8,10 @@ import { Clock, IdGen } from "./ports.ts";
 import { gradeStudySpokenTranscript } from "./study-shared-lesson-engine.ts";
 import {
   type makeStudyV2Service,
+  STUDY_MIN_RECORDING_DURATION_MS,
   type StudyAudioArchiveResult,
   type StudyBatchTranscriber,
+  type StudyProviderRefusalStatus,
   type StudySpokenAnswerContext,
   type StudySpokenAnswerReservation,
   StudyV2CommandRejected,
@@ -45,6 +47,10 @@ export interface ControlledAccountSpokenProtocol {
     input: AccountSpokenInput,
   ) => Effect.Effect<AccountSpokenSavedSuccess | null, StudyV2Failure>;
   beginProvider: (capture: LearnerAudioUploadCapture) => Effect.Effect<void, StudyV2Failure>;
+  providerFailed: (
+    capture: LearnerAudioUploadCapture,
+    httpStatus: StudyProviderRefusalStatus,
+  ) => Effect.Effect<void, StudyV2Failure>;
   providerUnknown: (capture: LearnerAudioUploadCapture) => Effect.Effect<void, StudyV2Failure>;
   persistSuccess: (
     capture: LearnerAudioUploadCapture,
@@ -177,6 +183,11 @@ export const makeControlledAccountSpokenService = (
         const result = yield* protocol.finalize(recovered.capture, recovered.success, archive);
         return yield* publicResult(input, result);
       }
+      // Preserve previously accepted short recordings above. This is a product
+      // floor on reported duration, not a decoded-duration or provider guarantee.
+      if (!Number.isSafeInteger(input.audioDurationMs)) return yield* reject("invalid-input");
+      if (input.audioDurationMs < STUDY_MIN_RECORDING_DURATION_MS)
+        return yield* reject("recording-too-short");
       // Missing current provider configuration refuses NEW work before reservation
       // or provider admission, without blocking an already accepted checkpoint.
       if (transcriber === null) return yield* reject("provider-unavailable");
@@ -220,10 +231,22 @@ export const makeControlledAccountSpokenService = (
               : context.dominantLanguage,
         })
         .pipe(
-          Effect.catch(() =>
-            protocol
-              .providerUnknown(reservation.capture)
-              .pipe(Effect.flatMap(() => Effect.fail(reject("provider-unavailable")))),
+          Effect.catch(
+            Effect.fn("controlledAccountSpoken.providerFailure")(function* (failure) {
+              if (
+                failure.outcome === "known_failed" &&
+                failure.httpStatus !== undefined &&
+                [400, 401, 403, 413, 415, 422, 429].includes(failure.httpStatus)
+              ) {
+                yield* protocol.providerFailed(
+                  reservation.capture,
+                  failure.httpStatus as StudyProviderRefusalStatus,
+                );
+                return yield* reject("provider-refused");
+              }
+              yield* protocol.providerUnknown(reservation.capture);
+              return yield* reject("provider-outcome-unknown");
+            }),
           ),
         );
       const policy = yield* Effect.try({
