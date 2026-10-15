@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://pirate.sc"],
+        "methods": ["GET"]
+      }
+    }
+  ]
+}
