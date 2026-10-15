@@ -62,6 +62,12 @@ const privateTables = [
   "learner_audio_account_spoken_checkpoints",
   "learner_audio_account_provider_calls",
 ] as const;
+type FixtureRevision = "original-producer" | "current";
+const refusalFunctions = [
+  "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
+  "read_account_study_spoken_block_private_v1(text,text,text)",
+  "require_account_study_spoken_available_private_v1(text,text,text)",
+] as const;
 // Every function owned by the new producer migration, including trigger/private
 // helpers, is probed BEFORE any controlled EXECUTE grant is introduced.
 const producerFunctions = [
@@ -81,10 +87,6 @@ const producerFunctions = [
   "guard_account_audio_provider_call_private_v1()",
   "begin_account_spoken_provider_private_v1(text)",
   "mark_account_spoken_provider_unknown_private_v1(text)",
-  "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
-  "read_account_study_spoken_block_private_v1(text,text,text)",
-  "require_account_study_spoken_available_private_v1(text,text,text)",
-
   "learner_audio_producer_component_has_history_private_v1(text[])",
   "find_account_spoken_success_private_v1(text,text,text,integer,text,text,text,bigint,integer)",
   "load_account_spoken_success_private_v1(text)",
@@ -113,10 +115,6 @@ const controlledFunctions = [
   "find_account_spoken_success_private_v1(text,text,text,integer,text,text,text,bigint,integer)",
   "begin_account_spoken_provider_private_v1(text)",
   "mark_account_spoken_provider_unknown_private_v1(text)",
-  "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
-  "read_account_study_spoken_block_private_v1(text,text,text)",
-  "require_account_study_spoken_available_private_v1(text,text,text)",
-
   "persist_account_spoken_success_private_v1(text,jsonb)",
   "load_account_spoken_success_private_v1(text)",
   "require_account_spoken_success_private_v1(text,jsonb)",
@@ -130,7 +128,7 @@ const controlledFunctions = [
   "fail_account_audio_delete_private_v1(text,bigint)",
 ] as const;
 
-async function migrations() {
+async function migrations(revision: FixtureRevision) {
   const directory = new URL("../../../db/postgres/migrations/", import.meta.url);
   const manifest = Schema.decodeUnknownSync(
     Schema.Struct({
@@ -154,7 +152,9 @@ async function migrations() {
     throw new Error("Exactly one adopted ordinary producer migration is required");
   const candidate = candidates[0];
   if (candidate === undefined) throw new Error("Adopted producer migration absent");
-  const end = Number(names.at(-1)?.slice(0, 4));
+  // Historical readiness extends the original producer itself. Current account
+  // tests use the complete refusal-recovery chain, with no SQL supplements.
+  const end = revision === "original-producer" ? Number(candidate.slice(0, 4)) : 268;
   const chosen = names.filter((n) => Number(n.slice(0, 4)) <= end);
   expect(chosen.map((n) => Number(n.slice(0, 4)))).toEqual(
     Array.from({ length: end }, (_, i) => i + 1),
@@ -247,12 +247,14 @@ export type Fixture = {
 };
 export async function fixture(
   use: (f: Fixture) => Promise<void>,
-  options: Readonly<{ schema?: "api_next" }> = {},
+  options: Readonly<{ schema?: "api_next"; revision?: FixtureRevision }> = {},
 ) {
   if (!pgUrl) throw new Error("Owned Postgres URL missing");
   if (!["127.0.0.1", "localhost"].includes(new URL(pgUrl).hostname))
     throw new Error("Owned loopback PostgreSQL required");
-  const packet = await migrations(),
+  const revision = options.revision ?? "current";
+  const recoveryFunctions = revision === "current" ? refusalFunctions : [];
+  const packet = await migrations(revision),
     suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = options.schema ?? `account_capture_${suffix}`,
     role = `account_capture_login_${suffix}`;
@@ -322,7 +324,14 @@ export async function fixture(
     ).toEqual(packet.all.map(({ version, checksum }) => ({ version, checksum })));
     expect(
       (await admin.query("SELECT phase FROM guest_learning_schema_phase WHERE singleton")).rows,
-    ).toEqual([{ phase: "practice_only_owner_legacy_audio_settlement_history_v6" }]);
+    ).toEqual([
+      {
+        phase:
+          revision === "current"
+            ? "practice_only_owner_legacy_audio_settlement_history_v6"
+            : "practice_only_owner_audio_producer_history_v5",
+      },
+    ]);
     await admin.query("SELECT require_guest_practice_only_schema_phase_v1()");
     const runtimeUrl = new URL(scoped);
     runtimeUrl.username = role;
@@ -385,7 +394,7 @@ export async function fixture(
       await expect(serving.query(`SELECT 1 FROM ${q(table)} LIMIT 1`)).rejects.toMatchObject({
         code: "42501",
       });
-    for (const signature of producerFunctions) {
+    for (const signature of [...producerFunctions, ...recoveryFunctions]) {
       const rows = await admin.query(
         "SELECT p.proowner=c.relowner AS same_owner,p.pronamespace=c.relnamespace AS same_namespace,p.proconfig,has_function_privilege($1,p.oid,'EXECUTE') AS allowed FROM pg_proc p CROSS JOIN pg_class c WHERE p.oid=$2::regprocedure AND c.oid='participation_owners'::regclass",
         [role, `${schema}.${signature}`],
@@ -464,7 +473,7 @@ export async function fixture(
       "megapot_pool_drawings",
     ])
       await admin.query(`GRANT UPDATE ON ${q(table)} TO ${q(role)}`);
-    for (const signature of controlledFunctions)
+    for (const signature of [...controlledFunctions, ...recoveryFunctions])
       await admin.query(`GRANT EXECUTE ON FUNCTION ${schema}.${signature} TO ${q(role)}`);
     const f: Fixture = {
       admin,

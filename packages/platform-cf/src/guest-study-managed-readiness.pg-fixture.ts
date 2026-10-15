@@ -74,6 +74,7 @@ export async function readinessFixture(
   use: (f: ReadinessFixture) => Promise<void>,
   options: Readonly<{ schema?: "api_next" }> = {},
 ): Promise<void> {
+  const accountOptions = { ...options, revision: "original-producer" as const };
   await accountFixture(async (f) => {
     const identities: Principal[] = [],
       restorations: Array<() => Promise<unknown>> = [];
@@ -420,5 +421,5 @@ export async function readinessFixture(
         "Owned readiness cleanup incomplete",
       );
     if (primaryFailed) throw primaryFailure;
-  }, options);
+  }, accountOptions);
 }

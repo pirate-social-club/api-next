@@ -110,7 +110,10 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   value: unknown,
 ): S["Type"] => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
 
+// Captured account audio owns this private projection. The plain store also
+// serves immutable pre-capture migration fixtures and the isolated guest adapter.
 const readSession = Effect.fn("readStudyV2Session")(function* (
+  controlledAudio: boolean,
   db: ControlPlaneTransaction,
   input: { accountId: string; communityId: string; sessionId: string },
 ) {
@@ -123,7 +126,11 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
                   qualification_policy_revision, timezone, status, created_at, completed_at
                   , current_session_item_id, current_presented_at, presentation_count,
                   completion_reason,
-                  read_account_study_spoken_block_private_v1(account_id,session_id,community_id) AS spoken_submission
+                  ${
+                    controlledAudio
+                      ? "read_account_study_spoken_block_private_v1(account_id,session_id,community_id)"
+                      : "NULL::jsonb"
+                  } AS spoken_submission
              FROM study_sessions_v2
             WHERE session_id=$1 AND account_id=$2 AND community_id=$3
               AND active_activity_persona(account_id,persona_id,community_id)
@@ -177,7 +184,12 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
     try: () =>
       decode(StudySessionV2, {
         object: "study_session_v2",
-        spoken_submission: row.spoken_submission === undefined ? null : json(row.spoken_submission),
+        ...(controlledAudio
+          ? {
+              spoken_submission:
+                row.spoken_submission === undefined ? null : json(row.spoken_submission),
+            }
+          : {}),
         session_id: text(row, "session_id"),
         persona_id: text(row, "persona_id"),
         community_id: text(row, "community_id"),
@@ -595,7 +607,7 @@ export const makeControlPlaneStudyV2Repository = (
               return yield* rejected("not-found");
             }
             if (replayRow !== undefined) {
-              const session = yield* readSession(transaction, {
+              const session = yield* readSession(controlledAudio, transaction, {
                 accountId: input.accountId,
                 communityId: input.communityId,
                 sessionId: text(replayRow, "session_id"),
@@ -748,7 +760,7 @@ export const makeControlPlaneStudyV2Repository = (
                 readonly: false,
               });
             }
-            const session = yield* readSession(transaction, {
+            const session = yield* readSession(controlledAudio, transaction, {
               accountId: input.accountId,
               communityId: input.communityId,
               sessionId: input.sessionId,
@@ -762,11 +774,11 @@ export const makeControlPlaneStudyV2Repository = (
     mapErrors(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        if (admission === undefined) return yield* readSession(db, input);
+        if (admission === undefined) return yield* readSession(controlledAudio, db, input);
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* admission.authorize(transaction, input);
-            return yield* readSession(transaction, input);
+            return yield* readSession(controlledAudio, transaction, input);
           }),
         );
       }),
@@ -1346,7 +1358,7 @@ export const makeControlPlaneStudyV2Repository = (
               assessment: input.rerecordAssessment,
             });
             if (spokenAttempt.kind === "ungraded_rerecord") {
-              const session = yield* readSession(transaction, input);
+              const session = yield* readSession(controlledAudio, transaction, input);
               if (session === null) return yield* rejected("not-found");
               const result = decode(StudyAnswerResultV2, {
                 object: "study_answer_result_v2",
@@ -1637,7 +1649,7 @@ export const makeControlPlaneStudyV2Repository = (
                 remainingUnresolvedCards: integer(remainingRow, "count"),
               },
             );
-            const session = yield* readSession(transaction, input);
+            const session = yield* readSession(controlledAudio, transaction, input);
             if (session === null) return yield* rejected("not-found");
             const result = decode(StudyAnswerResultV2, {
               object: "study_answer_result_v2",
@@ -1691,7 +1703,7 @@ export const makeControlPlaneStudyV2Repository = (
               const row = replay.rows[0] as Row;
               if (text(row, "request_hash") !== input.requestHash)
                 return yield* rejected("idempotency-conflict");
-              const session = yield* readSession(transaction, input);
+              const session = yield* readSession(controlledAudio, transaction, input);
               if (session === null) return yield* rejected("not-found");
               const item = session.items.find(
                 ({ session_item_id }) => session_item_id === input.sessionItemId,
@@ -2027,7 +2039,7 @@ export const makeControlPlaneStudyV2Repository = (
                 remainingUnresolvedCards: integer(remainingRow, "count"),
               },
             );
-            const session = yield* readSession(transaction, input);
+            const session = yield* readSession(controlledAudio, transaction, input);
             if (session === null) return yield* rejected("not-found");
             return {
               object: "study_answer_result_v2",
