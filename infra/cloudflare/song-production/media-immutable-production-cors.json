@@ -2,7 +2,7 @@
   "rules": [
     {
       "allowed": {
-        "origins": ["https://pirate.sc"],
+        "origins": ["*"],
         "methods": ["GET"]
       }
     }
