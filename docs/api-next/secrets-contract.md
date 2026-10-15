@@ -17,6 +17,53 @@ and its operator credential contract are retired.
 
 Date of inventory: 2026-08-25.
 
+## Production Palm candidate — 2026-10-15
+
+This source contract prepares the existing `very.web` ZK transport for ordinary
+production joining. It does not record a production activation, installed key,
+permission grant or successful Palm ceremony. Earlier inventory and deployment
+statements below remain dated history.
+
+Production HTTP declares `VERY_WEB_ENABLED=true` and the public application ID
+`fa6bb1db-51dd-4673-915a-b945e7a895a0`, already demonstrated by real staging
+ceremonies. It retains `https://api.very.org/api/v1`,
+`https://verify.very.org/api/v1/verify` and `https://bridge.very.org/api/v1` as
+the public API, proof verifier and encrypted bridge endpoints. These values
+belong in Wrangler vars, not Infisical. Reusing this public identifier under
+the existing `pirate-social` relying-party scope is the reviewed candidate;
+fresh production provider acceptance is still required. The selected widget
+and bridge transport requires no OAuth client secret or registered HTTPS
+callback. The current [ZK guide](https://very.org/docs/developers/zk-integration)
+does not establish a separate production app-registration or origin-allowlist
+step. Do not substitute the separate OAuth setup procedure for this transport.
+
+`VERY_WEB_SEALING_KEY` is required at `prod:/services/api-next` and in production
+HTTP `secrets.required`. It is a server-only AES-GCM key whose string must encode
+to exactly 32 UTF-8 bytes. Generate and provision production material
+independently through the reviewed credential workflow; never copy the staging
+key. Only the HTTP Worker consumes it. It is not a provider-issued OAuth secret,
+a public var, an operator fixture or an input for Jobs or media Workers. Missing
+or malformed enabled-provider configuration prevents HTTP startup, and the
+name-only inventory audit reports a missing production key until it is
+provisioned. Inventory admission alone neither creates nor uploads a key.
+
+The optional `PRODUCTION_E2E_CREATOR_EMAIL`, `PRODUCTION_E2E_CREATOR_OTP`,
+`PRODUCTION_E2E_PARTICIPANT_EMAIL` and `PRODUCTION_E2E_PARTICIPANT_OTP` names are
+admitted only at `prod:/services/api-next/operator`. These existing fixture
+names are an explicit exception to the general environment-free naming rule
+below. They must never be synchronized to any Worker or declared as Worker
+vars or secrets. Presence is not proof of populated values, valid login, a
+distinct participant account or an eligible Palm identity.
+
+The release coordinator separately owns the independent production sealing key,
+effective-role privilege review and rehearsal, deployment and real participant
+ceremony. The source candidate leaves staging intent intact, including its
+prepared Rewards pilot. It does not enable production Rewards, Telegram,
+guest serving, nationality, Self, ZKPassport, Spaces or OAuth. A successful
+production join requires authoritative completion, evidence, subject binding,
+gate decision, membership and fulfilled-intent readback; a packaged Worker is
+not acceptance evidence.
+
 ## Production HTTP activation — 2026-08-25
 
 The production HTTP Worker is `pirate-http-worker-production` in canonical

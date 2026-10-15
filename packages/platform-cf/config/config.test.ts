@@ -522,7 +522,7 @@ describe("config system (000 §9)", () => {
     };
     const staging = config.env?.staging;
     const production = config.env?.production;
-    const environments = [config, staging];
+    const environments = [config, staging, production];
     for (const environment of environments) {
       expect(environment?.vars?.VERY_OAUTH_ENABLED).toBe("false");
       expect(environment?.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
@@ -531,13 +531,42 @@ describe("config system (000 §9)", () => {
       expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }
-    // Development and production keep Very web fail-closed. Staging alone
-    // carries the operator-authorized Very web app.
+    // The public ZK identifier is shared; each environment must supply its
+    // own confidential sealing key. Development remains disabled.
     expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
-    expect(staging?.vars?.VERY_WEB_ENABLED).toBe("true");
-    expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
-    expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
-    expect(production?.vars?.VERY_WEB_APP_ID).toBeUndefined();
+    expect(config.secrets?.required ?? []).not.toContain("VERY_WEB_SEALING_KEY");
+    for (const environment of [staging, production]) {
+      expect(environment?.vars).toMatchObject({
+        VERY_WEB_ENABLED: "true",
+        VERY_WEB_APP_ID: "fa6bb1db-51dd-4673-915a-b945e7a895a0",
+        VERY_WEB_API_URL: "https://api.very.org/api/v1",
+        VERY_WEB_VERIFY_URL: "https://verify.very.org/api/v1/verify",
+        VERY_WEB_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
+      });
+      expect(environment?.vars).not.toHaveProperty("VERY_WEB_SEALING_KEY");
+      expect(environment?.secrets?.required).toContain("VERY_WEB_SEALING_KEY");
+    }
+    expect(production?.vars).toMatchObject({
+      MEGAPOT_REWARDS_ENABLED: "false",
+      GUEST_STUDY_SERVING_ENABLED: "false",
+      SELF_PASS_ENABLED: "false",
+      VERY_OAUTH_ENABLED: "false",
+      AVATAR_AUTHORING_ENABLED: "false",
+      CORS_ORIGIN: "https://app.pirate,https://pirate.sc",
+    });
+    expect(JSON.parse(production?.vars?.TELEGRAM_CONFIG_JSON ?? "{}")).toMatchObject({
+      enabled: false,
+      linking_enabled: false,
+      practice_enabled: false,
+    });
+    for (const name of [
+      "ZKPASSPORT_ENABLED",
+      "NATIONALITY_AUTHORING_ENABLED",
+      "SPACES_RUNTIME_ENABLED",
+    ]) {
+      expect(production?.vars?.[name]).toBeUndefined();
+    }
+    expect(staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(config.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
     expect(config.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     expect(staging?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
