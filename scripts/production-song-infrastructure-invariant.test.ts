@@ -262,4 +262,23 @@ describe("narrow production v1 song infrastructure", () => {
       },
     ]);
   });
+
+  test("admits ordinary signed playback without opening immutable media writes", async () => {
+    const policy = JSON.parse(
+      await Bun.file(
+        "infra/cloudflare/song-production/media-immutable-production-cors.json",
+      ).text(),
+    ) as { rules: readonly { allowed: { origins: string[]; methods: string[] } }[] };
+    const allowed = (origin: string, method: string) =>
+      policy.rules.some(
+        (rule) => rule.allowed.origins.includes(origin) && rule.allowed.methods.includes(method),
+      );
+    expect(allowed("https://pirate.sc", "GET")).toBe(true);
+    for (const origin of ["*", "https://web-next-staging.pirate.sc", "https://untrusted.example"]) {
+      expect(allowed(origin, "GET")).toBe(false);
+    }
+    for (const method of ["PUT", "POST", "DELETE"]) {
+      expect(allowed("https://pirate.sc", method)).toBe(false);
+    }
+  });
 });
