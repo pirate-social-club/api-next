@@ -3250,6 +3250,9 @@ DECLARE
   qualification TEXT;
 BEGIN
   IF TG_TABLE_NAME='study_sessions_v2' THEN
+    -- Accepted0254 guest Study is practice-only with explicit original ownership.
+    -- The validated owner discriminator, never nullable account fields, selects it.
+    IF NEW.participation_owner_kind='guest' THEN RETURN NEW; END IF;
     SELECT s.account_id,s.persona_id,s.community_id,s.post_id,s.audio_revision,
       s.session_id,NULL::text AS attempt_id,s.completed_at,'study'::text AS activity_key
       INTO STRICT source FROM study_sessions_v2 s WHERE s.session_id=NEW.session_id

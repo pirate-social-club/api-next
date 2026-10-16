@@ -269,6 +269,7 @@
     "0266_private_song_policy_initialization.sql": "848a8951e393947fad99048e718e37d763de0730a0a7f89b8ba04db5f95839cc",
     "0267_ordinary_qualification_without_reward_locks.sql": "4a37a3d4c4a78adcd8c783908472261772b4fdef08ae66d550f458c16913b651",
     "0268_study_provider_refusal_recovery.sql": "956d24790d736e36113003c8d3bc41d374303bc4b062c961228b854ecfdfd24b",
-    "0269_activity_completion_decisions.sql": "1c6d65e20d5f0301691b4f758becb7efc90d4e1af9749a5c6083d7c0791b999b"
+    "0269_activity_completion_decisions.sql": "1c6d65e20d5f0301691b4f758becb7efc90d4e1af9749a5c6083d7c0791b999b",
+    "0270_activity_completion_guest_study_owner.sql": "d520e1af330bd20f8ff808e0f5331ec834b4a61b7b9e182a842d50e2cab4cf60"
   }
 }

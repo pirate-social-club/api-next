@@ -11,6 +11,7 @@ import {
   ActivityProgressV1,
 } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
+import { activityStreakCandidatesSql } from "./activity-streak-candidates-sql.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 const storage = () => new ActivityQualificationStorageFailed({ reason: "invalid-row" });
@@ -165,13 +166,13 @@ export const makeControlPlaneActivityCompletionRepository = () => ({
         WHERE u.user_id=$1 AND u.status='active'
           ${song ? "AND can_account_access_activity_song($1,$2,$3)" : "AND $3::text IS NULL"}
       ), bounds AS (SELECT *,today-(extract(isodow FROM today)::int-1) AS start_day FROM authority),
-      ranked AS (
-        SELECT s.account_id,p.persona_id,rank() OVER(ORDER BY s.current_count DESC,s.best_count DESC) AS rank
-        FROM ${song ? "song_streaks" : "community_streaks"} s
-        JOIN persona_activity_presentations p ON p.account_id=s.account_id AND p.community_id=s.community_id
-        JOIN persona_profiles profile ON profile.persona_id=p.persona_id
-        WHERE s.community_id=$2 ${song ? "AND s.post_id=$3" : ""} AND s.active_until_at>$4::timestamptz
-          AND active_activity_persona(s.account_id,p.persona_id,s.community_id)
+      candidates AS (${activityStreakCandidatesSql(song ? "song" : "community", {
+        communityId: "$2",
+        postId: "$3",
+        readAt: "$4",
+      })}), ranked AS (
+        SELECT account_id,persona_id,rank() OVER(ORDER BY current_count DESC,best_count DESC) AS rank
+        FROM candidates
       ) SELECT b.*,b.start_day+6 AS end_day,s.current_count,s.best_count,s.total_days,s.started_day,s.last_day,
         s.active_until_at>$4::timestamptz AS alive,r.rank,r.persona_id AS standing_persona_id,
         (SELECT jsonb_agg(jsonb_build_object('day',to_char(b.start_day+n,'YYYY-MM-DD'),'earned',EXISTS(

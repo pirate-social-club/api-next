@@ -1,9 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
 import { type ControlPlaneDb, prepareActivityPersona } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations.ts";
 import { proveActivityCompletionForwardAcl } from "./activity-completion-acl.pg-fixture.ts";
 import { makeControlPlaneActivityCompletionRepository } from "./activity-completion-repository.ts";
 import {
@@ -18,6 +20,7 @@ import {
 } from "./activity-participation-composed-drivers.pg-fixture.ts";
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
 import { makeControlPlaneActivityQualificationRepository } from "./activity-qualification-repository.ts";
+import { proveActivityStreakRankingPopulation } from "./activity-streak-ranking.pg-fixture.ts";
 import { prepareSinger } from "./karaoke-instrumental-policy.pg-fixture.ts";
 import { makeControlPlaneKaraokeRepository } from "./karaoke-repository.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
@@ -46,23 +49,11 @@ suite("persisted private activity completion projections", () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
     try {
-      await applyPostgresTestBaselineConnection({ connectionString: scoped.toString() });
-      // Parent owns baseline generation. This test also runs against the unchanged
-      // predecessor baseline by applying only the new forward migration locally.
-      if (
-        (await admin.query("SELECT to_regclass('activity_completion_decisions') AS relation"))
-          .rows[0]?.relation === null
-      ) {
-        await admin.query(
-          await readFile(
-            new URL(
-              "../../../db/postgres/migrations/0269_activity_completion_decisions.sql",
-              import.meta.url,
-            ),
-            "utf8",
-          ),
-        );
-      }
+      await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: await loadPostgresMigrations(),
+        expectedLedger: [],
+      });
       const runtime = makeDirectPostgresControlPlaneLayer(scoped.toString());
       const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
         Effect.runPromise(effect.pipe(Effect.provide(runtime)));
@@ -332,6 +323,8 @@ suite("persisted private activity completion projections", () => {
       expect((await run(reads.getCompletion(studyInput))).timezone).toBe("UTC");
       expect(await study.replaySpokenCommand(final.command)).toEqual(final.result);
 
+      await proveActivityStreakRankingPopulation({ admin, runtime, accountId, personaId, readAt });
+
       await admin.query("UPDATE personas SET status='suspended' WHERE persona_id=$1", [personaId]);
       await expect(run(reads.getCompletion(studyInput))).rejects.toMatchObject({
         reason: "not-found",
@@ -366,7 +359,7 @@ suite("persisted private activity completion projections", () => {
     }
     completedTestCount += 1;
   }, 180_000);
-  test("preserves forward-migration ACLs for a real restricted login and controlled ordinary completion", async () => {
+  test("preserves forward ACLs and restricted account completion while genuine guest completion survives the forward owner repair", async () => {
     if (connectionString === undefined) throw new Error("test URL missing");
     await proveActivityCompletionForwardAcl(connectionString);
     completedTestCount += 1;
