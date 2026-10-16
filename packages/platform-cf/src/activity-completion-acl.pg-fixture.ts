@@ -68,11 +68,12 @@ export async function proveActivityCompletionForwardAcl(connectionString: string
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `activity_completion_${suffix}`;
   const role = `activity_completion_acl_${suffix}`;
+  const password = crypto.randomUUID().replaceAll("-", "");
   const scoped = new URL(connectionString);
   scoped.searchParams.set("options", `-c search_path=${schema}`);
   const login = new URL(scoped);
   login.username = role;
-  login.password = "";
+  login.password = password;
   const admin = new Client({
     connectionString,
     connectionTimeoutMillis: 5000,
@@ -144,7 +145,7 @@ export async function proveActivityCompletionForwardAcl(connectionString: string
       expectedLedger: [],
     });
     await admin.query(
-      `CREATE ROLE ${q(role)} LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS`,
+      `CREATE ROLE ${q(role)} LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS PASSWORD '${password}'`,
     );
     roleCreated = true;
     expect(
