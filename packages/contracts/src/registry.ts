@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { activityCompletionRegistry } from "./activity-completion.ts";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
@@ -166,6 +167,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...activityCompletionRegistry,
   ...guestParticipationRegistry,
   GetPublicProfileActivity,
   ListPopularCommunities,

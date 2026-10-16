@@ -421,6 +421,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-text-submission-suite-complete
           /tmp/api-next-control-plane-postgres-persona-suite-complete
           /tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete
+          /tmp/api-next-control-plane-postgres-activity-completion-suite-complete
           /tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete
           /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete
@@ -462,6 +463,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-text-submission-suite-complete
           CONTROL_PLANE_POSTGRES_PERSONA_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-persona-suite-complete
           CONTROL_PLANE_POSTGRES_REWARDS_QUALIFICATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete
+          CONTROL_PLANE_POSTGRES_ACTIVITY_COMPLETION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-activity-completion-suite-complete
           CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_COMMUNITY_THREADS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete

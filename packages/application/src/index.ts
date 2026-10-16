@@ -35,6 +35,7 @@ export * from "./owner-learner-audio-deletion.ts";
 export * from "./owner-reward-credit-ports.ts";
 export * from "./owner-spoken-success-protocol.ts";
 export * from "./ports.ts";
+export * from "./rewards/activity-completion.ts";
 export * from "./rewards/activity-qualification.ts";
 export * from "./rewards/custody-solvency.ts";
 export * from "./rewards/megapot-allocation.ts";

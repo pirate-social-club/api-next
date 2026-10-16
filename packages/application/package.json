@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./use-cases/rewards/activity-completion": "./src/use-cases/rewards/activity-completion.ts",
     "./telegram": "./src/telegram/index.ts",
     ".": "./src/index.ts",
     "./use-cases/account-erasure-orchestration": "./src/use-cases/account-erasure-orchestration.ts",
