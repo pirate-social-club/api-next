@@ -1272,6 +1272,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "action_grants",
         "action_intents",
         "active_subject_key_bindings",
+        "activity_completion_decisions",
         "activity_qualifications",
         "activity_registry",
         "age_verification_ceremony_attempts",

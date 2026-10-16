@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-manifest.ts";
+import {
+  freshSchemaPostgresTestSuites,
+  postgresGeneralSuiteCostEstimates,
+} from "./postgres-test-suite-manifest.ts";
 import {
   partitionPostgresRecoveryFiles,
   partitionPostgresTestFiles,
@@ -12,6 +15,7 @@ import {
   requiredPostgresLockTableEntries,
   shardPostgresTestFiles,
 } from "./run-postgres-tests.ts";
+import { POSTGRES_TEST_SENTINELS } from "./verify-postgres-test-sentinels.ts";
 
 describe("PostgreSQL lock capacity preflight", () => {
   test("a default postgres:17 server is refused before any suite starts", () => {
@@ -53,6 +57,36 @@ describe("PostgreSQL lock capacity preflight", () => {
 });
 
 describe("PostgreSQL test discovery", () => {
+  test("requires activity completion in the audited shard and CI completion-marker controls", async () => {
+    const file = "packages/platform-cf/src/activity-completion-repository.pg.test.ts";
+    expect(freshSchemaPostgresTestSuites).toContain(file);
+    const tracked = Bun.spawnSync(["git", "ls-files", "*.pg.test.ts"]);
+    expect(tracked.exitCode).toBe(0);
+    const candidates = tracked.stdout.toString().split("\n").filter(Boolean);
+    expect(candidates).toContain(file);
+    const { general } = partitionPostgresTestFiles(candidates);
+    const audited = partitionPostgresRecoveryFiles(general).audited;
+    const weights = Object.fromEntries(
+      audited.map((path) => [path, postgresTestFileWeight(path, 1)]),
+    );
+    const shards = shardPostgresTestFiles(audited, postgresGeneralShardCount, weights);
+    expect(shards.flat().filter((path) => path === file)).toHaveLength(1);
+    const marker = POSTGRES_TEST_SENTINELS.find(
+      (sentinel) => sentinel.name === "postgres activity completion",
+    );
+    if (marker === undefined) throw new Error("required activity completion marker is absent");
+    expect(marker.contents).toBe(
+      "api-next-control-plane-postgres-activity-completion-suite-complete\n",
+    );
+    const ci = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
+    const defaultPath = "/tmp/api-next-control-plane-postgres-activity-completion-suite-complete";
+    expect(ci).toContain(`          ${defaultPath}\n`);
+    expect(ci).toContain(
+      `CONTROL_PLANE_POSTGRES_ACTIVITY_COMPLETION_TEST_SENTINEL: ${defaultPath}`,
+    );
+    expect(ci).toContain("path: /tmp/api-next-control-plane-postgres-*-suite-complete");
+    expect(ci).toContain("run: bun run verify:postgres-sentinels");
+  });
   test("allows the complete general suite fifteen minutes", () => {
     expect(postgresTestTimeoutMilliseconds).toEqual({
       isolated: 120_000,

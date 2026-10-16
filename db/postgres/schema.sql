@@ -3241,6 +3241,58 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION capture_activity_completion_decision_private_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  source RECORD;
+  qualification TEXT;
+BEGIN
+  IF TG_TABLE_NAME='study_sessions_v2' THEN
+    SELECT s.account_id,s.persona_id,s.community_id,s.post_id,s.audio_revision,
+      s.session_id,NULL::text AS attempt_id,s.completed_at,'study'::text AS activity_key
+      INTO STRICT source FROM study_sessions_v2 s WHERE s.session_id=NEW.session_id
+      AND s.status='completed';
+    SELECT q.qualification_id INTO qualification FROM activity_qualifications q
+      WHERE q.activity_key='study' AND q.study_session_id=source.session_id
+        AND q.account_id=source.account_id AND q.persona_id=source.persona_id
+        AND q.community_id=source.community_id AND q.post_id=source.post_id
+        AND q.audio_revision=source.audio_revision AND q.qualified_at=source.completed_at;
+  ELSE
+    SELECT s.account_id,s.persona_id,s.community_id,s.post_id,s.audio_revision,
+      s.session_id,a.attempt_id,a.completed_at,'karaoke'::text AS activity_key
+      INTO STRICT source FROM karaoke_sessions s JOIN karaoke_attempts a
+        ON a.session_id=s.session_id AND a.attempt_id=s.attempt_id
+      WHERE a.attempt_id=NEW.attempt_id AND s.status='completed';
+    SELECT q.qualification_id INTO qualification FROM activity_qualifications q
+      WHERE q.activity_key='karaoke' AND q.karaoke_session_id=source.session_id
+        AND q.karaoke_attempt_id=source.attempt_id
+        AND q.account_id=source.account_id AND q.persona_id=source.persona_id
+        AND q.community_id=source.community_id AND q.post_id=source.post_id
+        AND q.audio_revision=source.audio_revision AND q.qualified_at=source.completed_at;
+  END IF;
+  INSERT INTO activity_completion_decisions(activity_key,session_id,attempt_id,account_id,
+    persona_id,community_id,post_id,audio_revision,qualification_id,outcome,decided_at)
+  VALUES(source.activity_key,source.session_id,source.attempt_id,source.account_id,
+    source.persona_id,source.community_id,source.post_id,source.audio_revision,qualification,
+    CASE WHEN qualification IS NULL THEN 'not_qualified' ELSE 'qualified' END,source.completed_at);
+  RETURN NEW;
+END;
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_activity_completion_decision_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION capture_guest_audio_retention_private_v1() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -35632,6 +35684,26 @@ CREATE TABLE active_subject_key_bindings (
     CONSTRAINT active_subject_key_bindings_binding_epoch_check CHECK ((binding_epoch > 0))
 );
 
+CREATE TABLE activity_completion_decisions (
+    activity_key text NOT NULL,
+    session_id text NOT NULL,
+    attempt_id text,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    qualification_id text,
+    outcome text NOT NULL,
+    decided_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT activity_completion_decisions_activity_key_check CHECK ((activity_key = ANY (ARRAY['study'::text, 'karaoke'::text]))),
+    CONSTRAINT activity_completion_decisions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT activity_completion_decisions_check CHECK ((((activity_key = 'study'::text) AND (attempt_id IS NULL)) OR ((activity_key = 'karaoke'::text) AND (attempt_id IS NOT NULL)))),
+    CONSTRAINT activity_completion_decisions_check1 CHECK (((outcome = 'qualified'::text) = (qualification_id IS NOT NULL))),
+    CONSTRAINT activity_completion_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['qualified'::text, 'not_qualified'::text])))
+);
+
 CREATE TABLE activity_qualifications (
     qualification_id text NOT NULL,
     account_id text NOT NULL,
@@ -46649,6 +46721,12 @@ ALTER TABLE ONLY active_subject_key_bindings
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_subject_user_unique UNIQUE (subject_key_id, user_id);
 
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_pkey PRIMARY KEY (activity_key, session_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_qualification_id_key UNIQUE (qualification_id);
+
 ALTER TABLE ONLY activity_qualifications
     ADD CONSTRAINT activity_qualifications_pkey PRIMARY KEY (qualification_id);
 
@@ -50341,6 +50419,8 @@ CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELE
 
 CREATE TRIGGER activity_00_telegram_practice_not_rewarded BEFORE INSERT OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION reject_telegram_practice_qualification();
 
+CREATE TRIGGER activity_completion_decisions_immutable BEFORE DELETE OR UPDATE ON activity_completion_decisions FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
+
 CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
 
 CREATE TRIGGER activity_qualifications_project_asset_bonus_claim AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_asset_bonus_claim_from_qualification();
@@ -50958,6 +51038,8 @@ CREATE TRIGGER hns_safe_ownership_proof_append_only BEFORE DELETE OR UPDATE ON h
 CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON identity_credentials FOR EACH ROW EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
 
 CREATE TRIGGER karaoke_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_attempts FOR EACH ROW EXECUTE FUNCTION guard_karaoke_attempt();
+
+CREATE CONSTRAINT TRIGGER karaoke_completion_decision AFTER UPDATE ON karaoke_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'active'::text) AND (new.status = 'completed'::text))) EXECUTE FUNCTION capture_activity_completion_decision_private_v1();
 
 CREATE TRIGGER karaoke_recordings_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_recordings FOR EACH ROW EXECUTE FUNCTION guard_karaoke_recording();
 
@@ -51695,6 +51777,8 @@ CREATE TRIGGER study_translation_quality_policies_immutable BEFORE DELETE OR UPD
 
 CREATE TRIGGER study_unit_exercise_eligibility_immutable BEFORE DELETE OR UPDATE ON study_unit_exercise_eligibility FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
+CREATE CONSTRAINT TRIGGER study_v2_completion_decision AFTER UPDATE ON study_sessions_v2 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'active'::text) AND (new.status = 'completed'::text))) EXECUTE FUNCTION capture_activity_completion_decision_private_v1();
+
 CREATE TRIGGER subject_key_binding_events_append_only BEFORE DELETE OR UPDATE ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER subject_key_binding_events_project AFTER INSERT ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_project_subject_key_binding();
@@ -51799,6 +51883,18 @@ ALTER TABLE ONLY action_intents
 
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_event_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_qualification_id_fkey FOREIGN KEY (qualification_id) REFERENCES activity_qualifications(qualification_id);
 
 ALTER TABLE ONLY activity_qualifications
     ADD CONSTRAINT activity_qualifications_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.120.0",
+  "sourceBranch": "feat/activity-completion-projections",
+  "sourceBase": "d1a01d8b47eb9bebb736b1222c887735d94df837",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds ordinary activity completion, progress and presentation projections from persisted qualification decisions. Completed nonqualifying attempts remain distinct from qualification; missing historical decisions are unknown. Reads preserve privacy and do not mutate decisions or historical receipts. No financial activation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.120.0.tgz",
+    "sha256": "4a3acbc91610120e34deb5ed8f4e5da059baa1286a481b3a541ec546466469d0"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.120.0",
+    "sourceIdentifier": "api-next-contracts@40d2c1d2756381fbe6c8d6d18b5169a503e911f4f81e07109e194e1c79c8d119",
+    "openapiSha256": "40d2c1d2756381fbe6c8d6d18b5169a503e911f4f81e07109e194e1c79c8d119",
+    "clientSha256": "290a8e5c134f5110af6b0c1fdaee44f158be38659a70dd47ea2d2b6a1e09c9d7"
+  },
+  "validation": {
+    "status": "Local full check/test, baseline generation/freshness and package verification passed; focused restricted-LOGIN PostgreSQL proof passed. Required exact-commit hosted CI, deployed-role and consuming Solid acceptance remain pending.",
+    "unitPass": 6082,
+    "unitSkip": 3,
+    "storagePass": 24,
+    "nodeEntrypointPass": 22,
+    "workerdPass": 247,
+    "focusedPostgresPass": 2,
+    "focusedPostgresAssertions": 143
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.120.0",
+    "behavior": "Consume authoritative completion and new-day decisions, week scope and private progress independently from ranked standing. Persist persona presentation mutation identity across unknown outcomes; do not infer qualification from completion or manufacture historical decisions."
+  }
+}
