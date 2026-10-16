@@ -7,6 +7,7 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
 import { type Fixture, harness } from "./account-study-producer.pg-fixture.ts";
+import { proveGuestStudyCompletionOwnerRepair } from "./activity-completion-guest-study.pg-fixture.ts";
 import { makeControlPlaneActivityCompletionStore } from "./activity-completion-repository.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientFactory } from "./postgres.ts";
@@ -85,6 +86,7 @@ export async function proveActivityCompletionForwardAcl(connectionString: string
     statement_timeout: 15000,
   });
   const clients = new Set<Client>();
+  const sqlFailures: Array<{ code: unknown; table: unknown; column: unknown }> = [];
   const drainers: Array<() => Promise<unknown>> = [];
   let schemaCreated = false,
     roleCreated = false,
@@ -105,6 +107,12 @@ export async function proveActivityCompletionForwardAcl(connectionString: string
         try {
           return await client.query({ text, values: values === undefined ? [] : [...values] });
         } catch (error) {
+          if (error !== null && typeof error === "object")
+            sqlFailures.push({
+              code: Reflect.get(error, "code"),
+              table: Reflect.get(error, "table"),
+              column: Reflect.get(error, "column"),
+            });
           // Only statement/constraint metadata from this synthetic owned schema.
           if (error !== null && typeof error === "object")
             console.error("activity-acl-statement", {
@@ -287,6 +295,16 @@ export async function proveActivityCompletionForwardAcl(connectionString: string
       },
       destructiveCleanupDeferred: () => false,
     };
+    await proveGuestStudyCompletionOwnerRepair({
+      admin,
+      serving,
+      role,
+      schema,
+      lines,
+      runtime: f.runtime(),
+      connectionString: scoped.toString(),
+      sqlFailures,
+    });
     const objects = new Map<string, Uint8Array>();
     const ordinary = harness(f, {
       put: async (key, bytes) => {

@@ -162,3 +162,28 @@ handoff are unchanged. No source or test result proves a production deployment.
 The five source facts require no further product ruling. Historical missing
 decisions cannot be recovered honestly. Dance admission, UI result routing and
 financial results remain in their owning lanes.
+
+## Forward guest-owner repair
+
+Accepted0269 observed every completed Study session, including genuine guest
+sessions admitted by0254 with explicit `participation_owner_kind='guest'` and
+null account/persona IDs. Its account-only decision INSERT therefore rejected
+the guest's final transaction. Branch-local0270 replaces only the private
+observer function, skips the explicit Study guest-owner branch and re-pins the
+definer path. Account qualification/time/identity joins and the Karaoke branch
+are unchanged. Karaoke sessions retain mandatory account/persona ownership;
+there is no admitted guest Karaoke branch to skip. No null-field shortcut,
+error swallowing, guest activation or historical rewrite is introduced.
+
+The existing registered activity suite now uses maintained migrations rather
+than a rendered baseline. Its restricted SCRAM-capable fixture bootstraps and
+confirms a genuine guest, captures a real four-card prepared lesson and answers
+through the maintained owner-aware producer. An accepted0269 negative control
+fails the final COMMIT with23502 on the account-only decision table and leaves
+three committed answers. Applying0270 normally against that populated269 ledger
+lets the exact final-answer retry commit a completed guest session. It creates
+no account completion decision, qualification or day credit, and replay stays
+immutable. Function OID/owner/ACL/SECURITY DEFINER/pinned path are identical across
+the repair. Subsequent real restricted account completion and existing qualified/
+nonqualified account Study and qualified Karaoke coverage remain required. This is
+isolated source proof; parent owns baseline, broad gates, CI and deployment.
