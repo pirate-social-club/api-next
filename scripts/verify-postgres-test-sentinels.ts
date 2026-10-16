@@ -8,6 +8,20 @@ export type PostgresSentinel = {
 
 export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
   {
+    name: "notifications hardening",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_NOTIFICATIONS_HARDENING_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-notifications-hardening-suite-complete",
+    contents: "notifications-hardening-postgres-complete\n",
+  },
+  {
+    name: "recipient-private notifications",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_NOTIFICATIONS_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-notifications-suite-complete",
+    contents: "notifications-postgres-complete\n",
+  },
+  {
     name: "rating reconciliation",
     path:
       process.env.CONTROL_PLANE_POSTGRES_RATING_RECONCILIATION_SENTINEL ??

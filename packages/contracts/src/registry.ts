@@ -14,6 +14,7 @@ export const Health = endpoint({
   response: Schema.Struct({ status: Schema.Literal("ok") }),
 });
 
+import { ResolveCommentNavigationV1 } from "./comment-navigation.ts";
 import { ListPostComments } from "./comment-thread.ts";
 import {
   CommitCommunityCreationIntent,
@@ -69,6 +70,7 @@ import {
 } from "./karaoke.ts";
 import { DeleteMyLearnerAudio } from "./learner-audio.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
+import { ListMyNotifications, ReadMyNotification } from "./notifications.ts";
 import {
   ConfirmPersonaEvmWallet,
   CreatePersona,
@@ -295,6 +297,9 @@ export const registry = {
   GetPublicPostCanonicalRouteById,
   GetPublicPostSitemap,
   ListPostComments,
+  ResolveCommentNavigationV1,
+  ListMyNotifications,
+  ReadMyNotification,
   CreateSongPlaybackAccess,
   CreateKaraokePlaybackAccess,
   ClaimVideoOutcome,

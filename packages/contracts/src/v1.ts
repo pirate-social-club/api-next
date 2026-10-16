@@ -617,14 +617,14 @@ export const VideoSoundtrackProjectionV1 = Schema.Union([
     kind: Schema.Literal("original_audio"),
     original_sound_id: Schema.String,
     origin_video_post_id: Schema.String,
-    origin_author_persona_id: PersonaIdV1,
+    origin_author_persona_id: Schema.NullOr(PersonaIdV1),
   }),
   Schema.Struct({
     kind: Schema.Literal("song_reference"),
     song_reference: Schema.Struct({
       song_post_id: Schema.String,
       song_title: Schema.String,
-      song_author_persona_id: PersonaIdV1,
+      song_author_persona_id: Schema.NullOr(PersonaIdV1),
     }),
     /** The soundtrack is the canonical song interval; the capture's audio is discarded. */
     render_mode: Schema.Literal("canonical_replace"),

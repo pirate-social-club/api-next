@@ -261,7 +261,7 @@ const postLocalizationFromRows = (
   };
 };
 
-const postFromRow = (row: Row): PostDocument | null => {
+export const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
   const community = stringValue(row, "community_id");
   const author = stringValue(row, "author_user_id");

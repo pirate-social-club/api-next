@@ -34,6 +34,7 @@ export const reusablePostgresTestSuites = [
 ] as const;
 
 export const freshSchemaPostgresTestSuites = [
+  "tests/postgres/notifications-hardening.pg.test.ts",
   "packages/platform-cf/src/karaoke-instrumental-policy.pg.test.ts",
   "packages/platform-cf/src/reward-unsigned-purchase-recovery.pg.test.ts",
   "packages/platform-cf/src/sidebar-profile-reads.pg.test.ts",
@@ -57,6 +58,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/activity-participation-preparation.pg.test.ts",
   "packages/platform-cf/src/account-age-verification.pg.test.ts",
   "packages/platform-cf/src/comment-thread-repository.pg.test.ts",
+  "packages/platform-cf/src/notifications-repository.pg.test.ts",
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
   "apps/http-worker/src/hns-community-activation.pg.test.ts",
   "apps/http-worker/src/hns-owner-recovery-production.pg.test.ts",

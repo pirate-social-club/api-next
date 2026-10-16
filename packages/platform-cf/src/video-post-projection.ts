@@ -103,8 +103,15 @@ const soundtrackFromRow = (row: Row): PublicVideoPostProjection["soundtrack"] | 
   if (row.video_intent === "original_audio") {
     const originalSoundId = requiredText(row, "video_original_sound_id");
     const originVideoPostId = requiredText(row, "video_origin_post_id");
-    const originAuthorPersonaId = requiredText(row, "video_origin_author_persona_id");
-    if (originalSoundId === null || originVideoPostId === null || originAuthorPersonaId === null)
+    const originAuthorPersonaId =
+      row.video_origin_author_persona_id === null
+        ? null
+        : requiredText(row, "video_origin_author_persona_id");
+    if (
+      originalSoundId === null ||
+      originVideoPostId === null ||
+      (originAuthorPersonaId === null && row.video_origin_author_persona_id !== null)
+    )
       return null;
     return {
       kind: "original_audio",
@@ -116,8 +123,16 @@ const soundtrackFromRow = (row: Row): PublicVideoPostProjection["soundtrack"] | 
   if (row.video_intent === "song_reference") {
     const songPostId = requiredText(row, "video_song_post_id");
     const songTitle = requiredText(row, "video_song_title");
-    const songAuthorPersonaId = requiredText(row, "video_song_author_persona_id");
-    if (songPostId === null || songTitle === null || songAuthorPersonaId === null) return null;
+    const songAuthorPersonaId =
+      row.video_song_author_persona_id === null
+        ? null
+        : requiredText(row, "video_song_author_persona_id");
+    if (
+      songPostId === null ||
+      songTitle === null ||
+      (songAuthorPersonaId === null && row.video_song_author_persona_id !== null)
+    )
+      return null;
     return {
       kind: "song_reference",
       song_reference: {

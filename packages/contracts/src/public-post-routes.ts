@@ -3,7 +3,7 @@ import { AgeLockedResourceV1 } from "./age-access.ts";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, InternalError, NotFound, RateLimited } from "./errors.ts";
-import { LocaleQuery, LocalizedPost } from "./v1.ts";
+import { LocaleQuery, LocalizedPost, VideoPostProjectionV1 } from "./v1.ts";
 
 const PUBLIC_POST_PATH_PREFIX = "/posts/";
 
@@ -107,6 +107,29 @@ export const PublicPostSitemapQueryV1 = Schema.Struct({
 });
 export type PublicPostSitemapQueryV1 = Schema.Schema.Type<typeof PublicPostSitemapQueryV1>;
 
+export const PublicVideoPostDetailResultV1 = Schema.Struct({
+  kind: Schema.Literal("content"),
+  post_id: Schema.String,
+  content: Schema.Struct({
+    ...LocalizedPost.fields,
+    post: Schema.Struct({
+      ...LocalizedPost.fields.post.fields,
+      post_type: Schema.Literal("video"),
+    }),
+    video: VideoPostProjectionV1,
+  }),
+  route: Schema.Null,
+}).check(
+  Schema.makeFilter(
+    (result) =>
+      result.content.post.post_type === "video" &&
+      result.post_id === result.content.post.id &&
+      result.content.canonical_path === undefined &&
+      result.content.song_presentation === undefined &&
+      result.content.karaoke_capability === undefined,
+  ),
+);
+
 export const PublicPostRouteResultV1 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("content"),
@@ -115,11 +138,12 @@ export const PublicPostRouteResultV1 = Schema.Union([
     route: Schema.NullOr(PublicPostRouteV1),
   }).check(
     Schema.makeFilter((result) =>
-      result.post_id === result.content.post.id
+      result.content.post.post_type !== "video" && result.post_id === result.content.post.id
         ? undefined
         : "Public post route identity must match the projected post identity",
     ),
   ),
+  PublicVideoPostDetailResultV1,
   Schema.Struct({
     kind: Schema.Literal("age_locked"),
     locked: AgeLockedResourceV1,

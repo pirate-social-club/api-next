@@ -27,6 +27,10 @@ import {
   type VideoSubmissionState,
 } from "../../domain/src/video-submission.ts";
 import { mediaProcessingPhysicalObjectKey } from "./media-immutable-object-key.ts";
+import {
+  ensureExactVideoReceiptAliasInTransaction,
+  requireVideoPublicationIdentityInTransaction,
+} from "./video-publication-identity.ts";
 import { insertVideoStageFact } from "./video-stage-fact-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -284,7 +288,18 @@ function findSubmission(executor: Executor, input: { clause: string; values: rea
     if (result.rows.length === 0) return null;
     if (result.rows.length !== 1 || result.rows[0] === undefined)
       throw new Error("invalid video submission cardinality");
-    return submissionFromRow(result.rows[0]);
+    const record = submissionFromRow(result.rows[0]);
+    if (record.state.status === "published") {
+      const proof = yield* executor.execute<{ owned: boolean }>({
+        label: "video-publication.identity.reconcile",
+        text: "SELECT reconcile_video_publication_identity_v1($1,$2,$3) AS owned",
+        values: [record.state.submissionId, record.state.operationId, record.state.postId],
+        readonly: true,
+      });
+      if (proof.rows.length !== 1 || proof.rows[0]?.owned !== true)
+        throw new Error("Published video identity requires reconciliation");
+    }
+    return record;
   });
 }
 
@@ -2226,6 +2241,12 @@ function publishTransaction(input: VideoPublishBundle) {
         if (membership !== null) return membership;
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
+        const identity = {
+          submissionId: current.state.submissionId,
+          operationId: current.state.operationId,
+          postId,
+        };
+        yield* requireVideoPublicationIdentityInTransaction(tx, identity);
         const contentRating = yield* currentVideoContentRating(
           tx,
           current.state.submissionId,
@@ -2252,6 +2273,7 @@ function publishTransaction(input: VideoPublishBundle) {
           ],
           readonly: false,
         });
+        yield* ensureExactVideoReceiptAliasInTransaction(tx, identity);
         // Home lists posts from this projection. Song and text publication
         // write it in the same transaction; a published video must too.
         yield* tx.execute({
@@ -2912,6 +2934,12 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
         });
         const postId = input.state.postId;
         if (postId === null) throw new Error("video publication post missing");
+        const identity = {
+          submissionId: current.state.submissionId,
+          operationId: current.state.operationId,
+          postId,
+        };
+        yield* requireVideoPublicationIdentityInTransaction(tx, identity);
         const video = current.state.video;
         // The song's rating is a lower bound at commit, not only at decision: a
         // song that became adult-only while the master rendered makes this
@@ -2943,6 +2971,7 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
           ],
           readonly: false,
         });
+        yield* ensureExactVideoReceiptAliasInTransaction(tx, identity);
         // Home lists posts from this projection. Song and text publication
         // write it in the same transaction; a published video must too.
         yield* tx.execute({
