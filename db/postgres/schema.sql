@@ -2391,6 +2391,40 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION authorized_comment_branch_v1(p_viewer text, p_comment text) RETURNS TABLE(community_id text, post_id text, comment_id text, path_ids text[], ancestor_ids text[], target_rating_allowed boolean)
+    LANGUAGE sql STABLE
+    AS $$
+ WITH RECURSIVE ancestry AS (
+   SELECT c.community_id,c.post_id,c.comment_id,c.parent_comment_id,c.depth,c.depth AS target_depth,
+     c.status,c.content_rating,0 AS hops,ARRAY[c.comment_id] AS seen,FALSE AS cycle
+     FROM comments c WHERE c.comment_id=p_comment
+   UNION ALL
+   SELECT c.community_id,c.post_id,c.comment_id,c.parent_comment_id,c.depth,a.target_depth,
+     c.status,c.content_rating,a.hops+1,a.seen||c.comment_id,c.comment_id=ANY(a.seen)
+     FROM comments c JOIN ancestry a ON c.comment_id=a.parent_comment_id
+     WHERE c.community_id=a.community_id AND c.post_id=a.post_id AND a.hops<8 AND NOT a.cycle
+ ), valid AS (
+   SELECT COUNT(*)=MAX(target_depth)+1 AND COUNT(DISTINCT comment_id)=COUNT(*)
+     AND bool_and(target_depth BETWEEN 0 AND 8 AND depth=target_depth-hops AND NOT cycle AND status='published')
+     AND bool_or(depth=0 AND parent_comment_id IS NULL AND hops=target_depth)
+     AND bool_and(hops=0 OR can_account_view_content_rating_v1(p_viewer,content_rating)) AS allowed
+   FROM ancestry
+ ) SELECT target.community_id,target.post_id,target.comment_id,
+   ARRAY(SELECT a.comment_id FROM ancestry a ORDER BY a.hops DESC),
+   ARRAY(SELECT a.comment_id FROM ancestry a WHERE a.hops>0 ORDER BY a.hops DESC),
+   can_account_view_content_rating_v1(p_viewer,target.content_rating)
+ FROM ancestry target JOIN posts p ON p.community_id=target.community_id AND p.post_id=target.post_id
+ JOIN communities community ON community.community_id=p.community_id
+ JOIN users viewer ON viewer.user_id=p_viewer AND viewer.status='active'
+ WHERE target.hops=0 AND (SELECT allowed FROM valid)
+   AND p.status='published' AND community.status='active'
+   AND (p.post_type<>'video' OR EXISTS(SELECT 1 FROM video_detail_access_v1(p_viewer,p.post_id) v WHERE v.non_age_allowed AND v.age_allowed))
+   AND can_account_view_content_rating_v1(p_viewer,p.content_rating)
+   AND (p.visibility='public' OR (p.visibility='members_only' AND EXISTS (
+     SELECT 1 FROM community_memberships m WHERE m.community_id=p.community_id
+       AND m.user_id=p_viewer AND m.status='member')))
+$$;
+
 CREATE FUNCTION begin_account_spoken_provider_private_v1(p_upload text) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -3236,6 +3270,61 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='capture_account_study_audio_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_command text, p_lease text, p_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION capture_activity_completion_decision_private_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  source RECORD;
+  qualification TEXT;
+BEGIN
+  IF TG_TABLE_NAME='study_sessions_v2' THEN
+    -- Accepted0254 guest Study is practice-only with explicit original ownership.
+    -- The validated owner discriminator, never nullable account fields, selects it.
+    IF NEW.participation_owner_kind='guest' THEN RETURN NEW; END IF;
+    SELECT s.account_id,s.persona_id,s.community_id,s.post_id,s.audio_revision,
+      s.session_id,NULL::text AS attempt_id,s.completed_at,'study'::text AS activity_key
+      INTO STRICT source FROM study_sessions_v2 s WHERE s.session_id=NEW.session_id
+      AND s.status='completed';
+    SELECT q.qualification_id INTO qualification FROM activity_qualifications q
+      WHERE q.activity_key='study' AND q.study_session_id=source.session_id
+        AND q.account_id=source.account_id AND q.persona_id=source.persona_id
+        AND q.community_id=source.community_id AND q.post_id=source.post_id
+        AND q.audio_revision=source.audio_revision AND q.qualified_at=source.completed_at;
+  ELSE
+    SELECT s.account_id,s.persona_id,s.community_id,s.post_id,s.audio_revision,
+      s.session_id,a.attempt_id,a.completed_at,'karaoke'::text AS activity_key
+      INTO STRICT source FROM karaoke_sessions s JOIN karaoke_attempts a
+        ON a.session_id=s.session_id AND a.attempt_id=s.attempt_id
+      WHERE a.attempt_id=NEW.attempt_id AND s.status='completed';
+    SELECT q.qualification_id INTO qualification FROM activity_qualifications q
+      WHERE q.activity_key='karaoke' AND q.karaoke_session_id=source.session_id
+        AND q.karaoke_attempt_id=source.attempt_id
+        AND q.account_id=source.account_id AND q.persona_id=source.persona_id
+        AND q.community_id=source.community_id AND q.post_id=source.post_id
+        AND q.audio_revision=source.audio_revision AND q.qualified_at=source.completed_at;
+  END IF;
+  INSERT INTO activity_completion_decisions(activity_key,session_id,attempt_id,account_id,
+    persona_id,community_id,post_id,audio_revision,qualification_id,outcome,decided_at)
+  VALUES(source.activity_key,source.session_id,source.attempt_id,source.account_id,
+    source.persona_id,source.community_id,source.post_id,source.audio_revision,qualification,
+    CASE WHEN qualification IS NULL THEN 'not_qualified' ELSE 'qualified' END,source.completed_at);
+  RETURN NEW;
+END;
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='capture_activity_completion_decision_private_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -5889,6 +5978,69 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION delete_recipient_notification_inbox_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.status='deleted' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    DELETE FROM notification_inbox WHERE recipient_user_id=NEW.user_id;
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION deliver_comment_notification_v1(p_fact text) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE fact content_publication_outbox%ROWTYPE; prior notification_publication_deliveries%ROWTYPE;
+  actor_id TEXT; recipient_id TEXT; target_id TEXT; inbox_id TEXT; delivered BOOLEAN:=FALSE;
+BEGIN
+ SELECT * INTO fact FROM content_publication_outbox WHERE outbox_event_id=p_fact FOR UPDATE;
+ IF NOT FOUND OR fact.event_type<>'comment_notification' THEN RAISE EXCEPTION 'comment notification fact required'; END IF;
+ SELECT * INTO prior FROM notification_publication_deliveries WHERE source_event_id=p_fact;
+ IF FOUND THEN
+   -- Reconcile a valid receipt written by an earlier producer without its
+   -- private acknowledgement; do not leave it at the head of recovery forever.
+   IF NOT fact.inbox_delivery_recorded THEN
+     UPDATE content_publication_outbox SET state='published',
+       published_at=COALESCE(published_at,clock_timestamp()),inbox_delivery_recorded=TRUE WHERE outbox_event_id=p_fact;
+   END IF;
+   RETURN jsonb_build_object('processed',FALSE,'delivered',prior.outcome='delivered');
+ END IF;
+ SELECT c.author_user_id,
+   CASE WHEN c.parent_comment_id IS NULL THEN post.author_user_id ELSE parent.author_user_id END,c.comment_id
+ INTO actor_id,recipient_id,target_id
+ FROM text_content_submissions submission
+ JOIN comments c ON c.community_id=submission.community_id AND c.comment_id=submission.published_comment_id
+ JOIN posts post ON post.community_id=c.community_id AND post.post_id=c.post_id
+ LEFT JOIN comments parent ON parent.community_id=c.community_id AND parent.post_id=c.post_id AND parent.comment_id=c.parent_comment_id
+ WHERE submission.community_id=fact.community_id AND submission.submission_id=fact.submission_id
+   AND submission.status='published' AND submission.surface IN('comment','reply')
+   AND c.author_user_id=submission.actor_user_id
+   AND c.comment_id=fact.comment_id AND c.post_id=submission.target_post_id
+   AND c.parent_comment_id IS NOT DISTINCT FROM submission.target_parent_comment_id;
+ IF actor_id IS NOT NULL AND recipient_id IS NOT NULL AND actor_id<>recipient_id
+   AND EXISTS(SELECT 1 FROM users WHERE user_id=actor_id AND status='active') THEN
+   -- Lock before allocating delivery_order. Serializes concurrent recipient
+   -- deliveries and account erasure without relying on a timestamp checkpoint.
+   -- SHARE is compatible with actor FK locks: opposite-recipient publications
+   -- must not upgrade each other's account key-share locks into a deadlock.
+   PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||recipient_id,0));
+   PERFORM 1 FROM users WHERE user_id IN(actor_id,recipient_id) ORDER BY user_id FOR SHARE;
+   IF FOUND AND eligible_comment_notification_recipient_v1(p_fact)=recipient_id THEN
+     INSERT INTO notification_inbox(recipient_user_id,source_event_id) VALUES(recipient_id,p_fact)
+       ON CONFLICT(recipient_user_id,source_event_id) DO NOTHING RETURNING notification_id INTO inbox_id;
+     IF inbox_id IS NULL THEN SELECT notification_id INTO inbox_id FROM notification_inbox
+       WHERE recipient_user_id=recipient_id AND source_event_id=p_fact; END IF;
+     delivered:=TRUE;
+   END IF;
+ END IF;
+ INSERT INTO notification_publication_deliveries(source_event_id,outcome,notification_id)
+   VALUES(p_fact,CASE WHEN delivered THEN 'delivered' ELSE 'suppressed' END,inbox_id);
+ UPDATE content_publication_outbox SET state='published',published_at=COALESCE(published_at,clock_timestamp()),inbox_delivery_recorded=TRUE
+   WHERE outbox_event_id=p_fact;
+ RETURN jsonb_build_object('processed',TRUE,'delivered',delivered);
+END $$;
+
 CREATE FUNCTION discover_guest_authority_v1(expected_origin text, proved_ids text[], context_selected_id text, expected_owner_id text, previous_credential_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -6140,6 +6292,25 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status <> 'verified'
      AND binding.verified_evidence_ref IS NULL
+$$;
+
+CREATE FUNCTION eligible_comment_notification_recipient_v1(p_fact text) RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+ SELECT recipient.user_id FROM content_publication_outbox fact
+ JOIN text_content_submissions submission ON submission.community_id=fact.community_id
+   AND submission.submission_id=fact.submission_id AND submission.status='published'
+ JOIN comments c ON c.community_id=fact.community_id AND c.comment_id=fact.comment_id
+   AND c.comment_id=submission.published_comment_id AND c.post_id=submission.target_post_id
+   AND c.parent_comment_id IS NOT DISTINCT FROM submission.target_parent_comment_id
+   AND c.author_user_id=submission.actor_user_id
+ JOIN posts post ON post.community_id=c.community_id AND post.post_id=c.post_id AND post.post_type IN('text','song')
+ LEFT JOIN comments parent ON parent.community_id=c.community_id AND parent.post_id=c.post_id AND parent.comment_id=c.parent_comment_id
+ JOIN users actor ON actor.user_id=c.author_user_id AND actor.status='active'
+ JOIN users recipient ON recipient.user_id=CASE WHEN c.parent_comment_id IS NULL THEN post.author_user_id ELSE parent.author_user_id END
+   AND recipient.status='active' AND recipient.user_id<>actor.user_id
+ WHERE fact.outbox_event_id=p_fact AND fact.event_type='comment_notification' AND submission.surface IN('comment','reply')
+   AND EXISTS(SELECT 1 FROM authorized_comment_branch_v1(recipient.user_id,c.comment_id) WHERE target_rating_allowed)
 $$;
 
 CREATE FUNCTION encode_hns_root_readiness_observation_request_v1(input_session_id text) RETURNS TABLE(request_bytes bytea, request_sha256 text)
@@ -6406,6 +6577,34 @@ BEGIN
   RETURN QUERY SELECT CASE WHEN first_proof THEN 'queued' ELSE 'replayed' END::text;
 END;
 $_$;
+
+CREATE FUNCTION ensure_exact_video_receipt_alias_v1(p_submission text, p_operation text, p_post text) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE existing_slug post_slug_aliases%ROWTYPE; existing_post post_slug_aliases%ROWTYPE; inserted BOOLEAN;
+BEGIN
+ PERFORM require_video_publication_identity_v1(p_submission,p_operation,p_post);
+ IF NOT EXISTS(SELECT 1 FROM posts WHERE post_id=p_post AND post_type='video') THEN
+   RAISE EXCEPTION 'owned video Post required before alias';
+ END IF;
+ IF NOT video_detail_id_safe_v1(p_post) OR p_post<>normalize(p_post,NFKC) OR post_slug_utf16_code_units(p_post) NOT BETWEEN 1 AND 80
+   OR octet_length(p_post)>320 OR p_post~'[[:space:][:cntrl:]]'
+   OR strpos(p_post,'%')>0 OR strpos(p_post,'/')>0 OR strpos(p_post,E'\\')>0
+   OR p_post IN ('.','..') THEN RETURN 'invalid-key'; END IF;
+ INSERT INTO post_slug_aliases(slug,post_id,slug_policy_version)
+ VALUES(p_post,p_post,'video-receipt-exact-v1') ON CONFLICT DO NOTHING;
+ inserted := FOUND;
+ SELECT * INTO existing_slug FROM post_slug_aliases WHERE slug=p_post;
+ SELECT * INTO existing_post FROM post_slug_aliases WHERE post_id=p_post;
+ IF existing_slug.post_id=p_post AND existing_post.slug=p_post
+   AND existing_slug.slug_policy_version IN ('post-slug-v1','video-receipt-exact-v1') THEN
+   RETURN CASE WHEN inserted THEN 'inserted' ELSE 'already-exact' END;
+ END IF;
+ IF existing_slug.post_id IS NOT NULL AND existing_slug.post_id<>p_post THEN RETURN 'slug-collision'; END IF;
+ IF existing_post.slug IS NOT NULL AND existing_post.slug<>p_post THEN RETURN 'different-existing-alias'; END IF;
+ -- A conflict invisible to this command snapshot must never become success.
+ RETURN 'unknown';
+END $$;
 
 CREATE FUNCTION ensure_handle_persona_public_footprint_v1(input_persona_id text, input_occurred_at timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
@@ -8403,6 +8602,26 @@ BEGIN
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
+
+CREATE FUNCTION guard_comment_notification_fact_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN
+   IF OLD.event_type='comment_notification' THEN RAISE EXCEPTION 'notification fact provenance is immutable'; END IF;
+   RETURN OLD;
+ END IF;
+ IF OLD.event_type='comment_notification' OR NEW.event_type='comment_notification' THEN
+   IF (to_jsonb(NEW)-ARRAY['state','published_at','inbox_delivery_recorded']) IS DISTINCT FROM
+      (to_jsonb(OLD)-ARRAY['state','published_at','inbox_delivery_recorded'])
+     OR (OLD.state='published' AND (NEW.state IS DISTINCT FROM OLD.state OR NEW.published_at IS DISTINCT FROM OLD.published_at))
+     OR (OLD.inbox_delivery_recorded AND NOT NEW.inbox_delivery_recorded)
+     OR (NEW.inbox_delivery_recorded AND NOT EXISTS(SELECT 1 FROM notification_publication_deliveries WHERE source_event_id=NEW.outbox_event_id)) THEN
+     RAISE EXCEPTION 'notification fact provenance is immutable';
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_comment_publication_rating_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -11063,6 +11282,23 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION guard_exact_video_alias_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF NEW.slug_policy_version='video-receipt-exact-v1' AND
+   (NEW.slug<>NEW.post_id OR NOT video_detail_id_safe_v1(NEW.slug) OR NEW.slug<>normalize(NEW.slug,NFKC) OR NOT EXISTS (
+      SELECT 1 FROM posts p JOIN media_post_submissions s
+       ON s.community_id=p.community_id AND p.idempotency_key='video-publication:'||s.operation_id
+      WHERE p.post_id=NEW.post_id AND p.post_type='video' AND s.media_kind='video'
+       AND (s.post_id=p.post_id OR (s.post_id IS NULL
+         AND video_publication_post_id_v1(s.submission_id,s.operation_id)=p.post_id))
+       AND (p.author_user_id=s.actor_user_id OR (p.author_user_id IS NULL AND NOT EXISTS(
+         SELECT 1 FROM users source_actor WHERE source_actor.user_id=s.actor_user_id AND source_actor.status='active')))
+   )) THEN RAISE EXCEPTION 'exact video alias must bind its owned video identity'; END IF;
+ RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_first_persona_handle_reservation() RETURNS trigger
     LANGUAGE plpgsql
@@ -14658,6 +14894,77 @@ CREATE FUNCTION guard_nationality_requirement_state_update() RETURNS trigger
     RETURN NEW;
   END; $$;
 
+CREATE FUNCTION guard_notification_delivery_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'notification delivery history is immutable'; END IF;
+ IF TG_OP='UPDATE' THEN
+   IF (to_jsonb(NEW)-'notification_id') IS DISTINCT FROM (to_jsonb(OLD)-'notification_id')
+     OR OLD.notification_id IS NULL OR NEW.notification_id IS NOT NULL
+     OR EXISTS(SELECT 1 FROM notification_inbox WHERE notification_id=OLD.notification_id) THEN
+     RAISE EXCEPTION 'notification delivery history is immutable';
+   END IF;
+   RETURN NEW;
+ END IF;
+ IF NOT EXISTS(SELECT 1 FROM content_publication_outbox WHERE outbox_event_id=NEW.source_event_id AND event_type='comment_notification') THEN
+   RAISE EXCEPTION 'notification delivery source provenance required';
+ END IF;
+ IF NEW.outcome='delivered' THEN
+   IF NEW.notification_id IS NULL OR NOT EXISTS(
+     SELECT 1 FROM notification_inbox inbox WHERE inbox.notification_id=NEW.notification_id
+       AND inbox.source_event_id=NEW.source_event_id
+       AND inbox.recipient_user_id=eligible_comment_notification_recipient_v1(NEW.source_event_id)
+   ) THEN RAISE EXCEPTION 'notification delivery inbox provenance required'; END IF;
+ ELSE
+   IF NEW.notification_id IS NOT NULL OR eligible_comment_notification_recipient_v1(NEW.source_event_id) IS NOT NULL THEN
+     RAISE EXCEPTION 'notification suppression provenance required';
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_notification_inbox_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN
+    IF EXISTS(SELECT 1 FROM users WHERE user_id=OLD.recipient_user_id AND status<>'deleted') THEN
+      RAISE EXCEPTION 'notification inbox deletion requires account erasure';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF TG_OP='UPDATE' THEN
+    IF (to_jsonb(NEW)-'read_at') IS DISTINCT FROM (to_jsonb(OLD)-'read_at')
+      OR (OLD.read_at IS NOT NULL AND NEW.read_at IS DISTINCT FROM OLD.read_at) THEN
+      RAISE EXCEPTION 'notification identity and first read timestamp are immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- Serialize recording with account deletion; never resurrect erased inboxes.
+  PERFORM 1 FROM users WHERE user_id=NEW.recipient_user_id AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'active notification recipient required'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM content_publication_outbox fact
+    JOIN text_content_submissions submission
+      ON submission.community_id=fact.community_id AND submission.submission_id=fact.submission_id
+    JOIN comments c ON c.community_id=fact.community_id AND c.comment_id=fact.comment_id
+    JOIN posts post ON post.community_id=c.community_id AND post.post_id=c.post_id
+    LEFT JOIN comments parent ON parent.community_id=c.community_id AND parent.post_id=c.post_id AND parent.comment_id=c.parent_comment_id
+    WHERE fact.outbox_event_id=NEW.source_event_id AND fact.event_type='comment_notification'
+      AND submission.status='published' AND submission.surface IN('comment','reply')
+      AND submission.published_comment_id=c.comment_id
+      AND submission.target_post_id=c.post_id
+      AND submission.target_parent_comment_id IS NOT DISTINCT FROM c.parent_comment_id
+      AND post.post_type IN('text','song')
+      AND c.author_user_id=submission.actor_user_id AND c.author_user_id<>NEW.recipient_user_id
+      AND NEW.recipient_user_id=CASE WHEN c.parent_comment_id IS NULL THEN post.author_user_id ELSE parent.author_user_id END
+      AND EXISTS(SELECT 1 FROM users actor WHERE actor.user_id=c.author_user_id AND actor.status='active')
+      AND EXISTS(SELECT 1 FROM authorized_comment_branch_v1(NEW.recipient_user_id,c.comment_id) WHERE target_rating_allowed)
+  ) THEN RAISE EXCEPTION 'authorized persisted comment notification recipient required'; END IF;
+  RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_operator_managed_root_registry_current_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -17612,6 +17919,53 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_video_alias_audit_run_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'video alias audit runs are retained'; END IF;
+ IF (to_jsonb(NEW)-ARRAY['cursor_created_at','cursor_post_id','complete']) IS DISTINCT FROM
+    (to_jsonb(OLD)-ARRAY['cursor_created_at','cursor_post_id','complete'])
+    OR (OLD.complete AND NEW IS DISTINCT FROM OLD)
+    OR (OLD.cursor_created_at IS NOT NULL AND (NEW.cursor_created_at IS NULL OR
+       (NEW.cursor_created_at,NEW.cursor_post_id)<(OLD.cursor_created_at,OLD.cursor_post_id)))
+    OR (NEW.cursor_created_at,NEW.cursor_post_id)>(NEW.upper_created_at,NEW.upper_post_id) THEN
+   RAISE EXCEPTION 'video alias audit assignment and checkpoint are immutable/monotonic';
+ END IF;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_video_post_identity_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF OLD.post_type='video' AND EXISTS(SELECT 1 FROM media_post_submissions s WHERE s.media_kind='video'
+   AND (s.post_id=OLD.post_id OR OLD.idempotency_key='video-publication:'||s.operation_id))
+   AND ROW(NEW.post_id,NEW.community_id,NEW.post_type,NEW.idempotency_key)
+   IS DISTINCT FROM ROW(OLD.post_id,OLD.community_id,OLD.post_type,OLD.idempotency_key) THEN
+   RAISE EXCEPTION 'video Post publication identity is immutable';
+ END IF;
+ RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_video_publication_identity_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF NEW.media_kind='video' THEN
+   IF TG_OP='UPDATE' AND (NEW.submission_id IS DISTINCT FROM OLD.submission_id
+     OR NEW.operation_id IS DISTINCT FROM OLD.operation_id
+     OR (OLD.post_id IS NOT NULL AND NEW.post_id IS DISTINCT FROM OLD.post_id)) THEN
+     RAISE EXCEPTION 'video publication durable identity is immutable';
+   END IF;
+   IF NEW.post_id IS NOT NULL AND (TG_OP='INSERT' OR OLD.post_id IS NULL)
+     AND NEW.post_id IS DISTINCT FROM video_publication_post_id_v1(NEW.submission_id,NEW.operation_id) THEN
+     RAISE EXCEPTION 'unbound video publication must use its fixed identity';
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION guard_wallet_send_mode() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19948,6 +20302,53 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_parent text, p_cursor text) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+ WITH access AS MATERIALIZED (
+   SELECT p.community_id FROM posts p JOIN communities community USING(community_id)
+   JOIN users viewer ON viewer.user_id=p_viewer AND viewer.status='active'
+   WHERE p.post_id=p_post AND p.status='published' AND community.status='active'
+     AND (p.post_type<>'video' OR EXISTS(SELECT 1 FROM video_detail_access_v1(p_viewer,p.post_id) v WHERE v.non_age_allowed AND v.age_allowed))
+     AND can_account_view_content_rating_v1(p_viewer,p.content_rating)
+     AND (p.visibility='public' OR (p.visibility='members_only' AND EXISTS(
+       SELECT 1 FROM community_memberships m WHERE m.community_id=p.community_id
+         AND m.user_id=p_viewer AND m.status='member')))
+ ), authorized AS MATERIALIZED (
+   SELECT access.community_id,p_parent IS NULL OR EXISTS(
+     SELECT 1 FROM authorized_comment_branch_v1(p_viewer,p_parent) branch
+       WHERE branch.community_id=access.community_id AND branch.post_id=p_post
+         AND branch.target_rating_allowed) AS parent_allowed FROM access
+ ), anchor AS MATERIALIZED (
+   SELECT c.comment_id,c.created_at FROM comments c JOIN access USING(community_id)
+   WHERE c.post_id=p_post AND c.parent_comment_id IS NOT DISTINCT FROM p_parent AND c.comment_id=p_cursor
+ ), page AS MATERIALIZED (
+   SELECT c.comment_id,c.created_at,
+     CASE WHEN NOT can_account_view_content_rating_v1(p_viewer,c.content_rating) THEN
+       jsonb_build_object('kind','age_locked','content_rating','adult_18',
+         'next_action',jsonb_build_object('kind','verify_minimum_age','minimum_age',18))
+     ELSE jsonb_build_object('comment_id',c.comment_id,'parent_comment_id',c.parent_comment_id,
+       'body',c.body,'author_persona',CASE WHEN EXISTS(SELECT 1 FROM users author
+         WHERE author.user_id=c.author_user_id AND author.status='active')
+         THEN public_persona_projection(c.author_persona_id) ELSE NULL END,
+       'depth',c.depth,'reply_count',(SELECT count(*) FROM comments reply WHERE reply.community_id=c.community_id
+         AND reply.post_id=c.post_id AND reply.parent_comment_id=c.comment_id AND reply.status='published'),
+       'status','published','content_rating',c.content_rating,'created_at',c.created_at) END AS item
+   FROM comments c JOIN authorized a USING(community_id)
+   WHERE a.parent_allowed AND c.post_id=p_post AND c.parent_comment_id IS NOT DISTINCT FROM p_parent
+     AND c.status='published' AND (p_cursor IS NULL OR
+       (c.created_at,c.comment_id)>(SELECT created_at,comment_id FROM anchor))
+   ORDER BY c.created_at,c.comment_id LIMIT 21
+ ), shown AS (SELECT * FROM page ORDER BY created_at,comment_id LIMIT 20)
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM access) THEN jsonb_build_object('kind','post_not_found')
+   WHEN NOT EXISTS(SELECT 1 FROM authorized WHERE parent_allowed) THEN jsonb_build_object('kind','comment_not_found')
+   WHEN p_cursor IS NOT NULL AND NOT EXISTS(SELECT 1 FROM anchor) THEN jsonb_build_object('kind','invalid_cursor')
+   ELSE jsonb_build_object('kind','available','document',jsonb_build_object(
+     'items',COALESCE((SELECT jsonb_agg(item ORDER BY created_at,comment_id) FROM shown),'[]'::jsonb),
+     'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
+       (SELECT comment_id FROM shown ORDER BY created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END)) END
+$$;
+
 CREATE FUNCTION load_account_spoken_success_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -22110,6 +22511,51 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION process_video_alias_audit_batch_v1(p_run uuid, p_plan text) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE run video_alias_audit_runs_v1%ROWTYPE; s media_post_submissions%ROWTYPE;
+ before_row JSONB; after_row JSONB; receipts JSONB; disposition TEXT; n INTEGER:=0;
+BEGIN
+ SELECT * INTO STRICT run FROM video_alias_audit_runs_v1 WHERE run_id=p_run FOR UPDATE;
+ IF run.plan_sha256<>p_plan THEN RAISE EXCEPTION 'video alias audit plan mismatch'; END IF;
+ IF run.complete THEN RETURN 0; END IF;
+ FOR s IN SELECT * FROM media_post_submissions WHERE media_kind='video' AND status='published'
+   AND (run.cursor_created_at IS NULL OR (created_at,post_id)>(run.cursor_created_at,run.cursor_post_id))
+   AND (created_at,post_id)<=(run.upper_created_at,run.upper_post_id)
+   ORDER BY created_at,post_id LIMIT 50 FOR UPDATE
+ LOOP
+   SELECT COALESCE(jsonb_agg(to_jsonb(a) ORDER BY a.slug),'[]') INTO before_row FROM post_slug_aliases a WHERE a.post_id=s.post_id OR a.slug=s.post_id;
+   SELECT jsonb_build_object('submission',s.response_snapshot_sha256,'commands',COALESCE(
+     (SELECT jsonb_agg(response_snapshot_sha256 ORDER BY endpoint_template,idempotency_key)
+       FROM media_submission_command_replays WHERE submission_id=s.submission_id),'[]')) INTO receipts;
+   IF s.post_id IS NULL THEN disposition:='invalid-key';
+   ELSIF run.mode='materialize' THEN
+     BEGIN
+       disposition:=ensure_exact_video_receipt_alias_v1(s.submission_id,s.operation_id,s.post_id);
+     EXCEPTION WHEN raise_exception THEN disposition:='invalid-provenance'; END;
+   ELSE
+     disposition:=CASE
+       WHEN EXISTS(SELECT 1 FROM post_slug_aliases WHERE slug=s.post_id AND post_id=s.post_id) THEN 'already-exact'
+       WHEN EXISTS(SELECT 1 FROM post_slug_aliases WHERE slug=s.post_id AND post_id<>s.post_id) THEN 'slug-collision'
+       WHEN EXISTS(SELECT 1 FROM post_slug_aliases WHERE post_id=s.post_id AND slug<>s.post_id) THEN 'different-existing-alias'
+       WHEN NOT video_detail_id_safe_v1(s.post_id) OR s.post_id<>normalize(s.post_id,NFKC) OR post_slug_utf16_code_units(s.post_id) NOT BETWEEN 1 AND 80
+         OR s.post_id~'[[:space:][:cntrl:]%/\\]' OR s.post_id IN('.','..') THEN 'invalid-key'
+       ELSE 'missing' END;
+   END IF;
+   SELECT COALESCE(jsonb_agg(to_jsonb(a) ORDER BY a.slug),'[]') INTO after_row FROM post_slug_aliases a WHERE a.post_id=s.post_id OR a.slug=s.post_id;
+   INSERT INTO video_alias_audit_items_v1(run_id,submission_id,operation_id,post_id,outcome,before_binding,after_binding,receipt_digests)
+   VALUES(p_run,s.submission_id,s.operation_id,s.post_id,disposition,before_row,after_row,receipts);
+   UPDATE video_alias_audit_runs_v1 SET cursor_created_at=s.created_at,cursor_post_id=s.post_id WHERE run_id=p_run;
+   n:=n+1;
+ END LOOP;
+ IF n<50 OR EXISTS(SELECT 1 FROM video_alias_audit_runs_v1 WHERE run_id=p_run
+   AND (cursor_created_at,cursor_post_id)=(upper_created_at,upper_post_id)) THEN
+   UPDATE video_alias_audit_runs_v1 SET complete=TRUE WHERE run_id=p_run;
+ END IF;
+ RETURN n;
+END $$;
+
 CREATE FUNCTION project_asset_bonus_claim_from_qualification() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -23322,6 +23768,14 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
      AND persona.status = 'active'
 $$;
 
+CREATE FUNCTION publish_comment_notification_inbox_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ PERFORM deliver_comment_notification_v1(NEW.outbox_event_id);
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION raise_text_rating_with_descendants_v1(target_community_id text, target_kind text, target_resource_id text, transition_at timestamp with time zone) RETURNS integer
     LANGUAGE plpgsql
     AS $$
@@ -24252,6 +24706,37 @@ BEGIN
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
+
+CREATE FUNCTION readable_notification_source_v1(p_recipient text, p_fact text) RETURNS TABLE(community_id text, post_id text, comment_id text, parent_comment_id text, occurred_at timestamp with time zone)
+    LANGUAGE sql STABLE
+    AS $$
+ SELECT c.community_id,c.post_id,c.comment_id,c.parent_comment_id,fact.created_at
+ FROM content_publication_outbox fact
+ JOIN text_content_submissions submission ON submission.community_id=fact.community_id
+   AND submission.submission_id=fact.submission_id AND submission.status='published'
+   AND submission.published_comment_id=fact.comment_id AND submission.surface IN('comment','reply')
+ JOIN comments c ON c.community_id=fact.community_id AND c.comment_id=fact.comment_id
+   AND c.post_id=submission.target_post_id
+   AND c.parent_comment_id IS NOT DISTINCT FROM submission.target_parent_comment_id
+ JOIN posts post ON post.community_id=c.community_id AND post.post_id=c.post_id AND post.post_type IN('text','song')
+ WHERE fact.outbox_event_id=p_fact AND fact.event_type='comment_notification'
+   AND EXISTS(SELECT 1 FROM authorized_comment_branch_v1(p_recipient,c.comment_id) WHERE target_rating_allowed)
+$$;
+
+CREATE FUNCTION reconcile_video_publication_identity_v1(p_submission text, p_operation text, p_post text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+ SELECT EXISTS(SELECT 1 FROM media_post_submissions s
+ JOIN posts p ON p.post_id=s.post_id AND p.community_id=s.community_id AND p.post_type='video'
+   AND p.idempotency_key='video-publication:'||s.operation_id
+ JOIN media_publication_projections pub ON pub.submission_id=s.submission_id AND pub.operation_id=s.operation_id
+   AND pub.community_id=s.community_id AND pub.post_id=s.post_id AND pub.media_kind='video'
+   AND pub.creation_revision=s.creation_revision AND pub.video_revision=s.video_revision AND pub.analysis_revision=s.analysis_revision
+ WHERE s.submission_id=p_submission AND s.operation_id=p_operation AND s.post_id=p_post AND s.status='published' AND s.media_kind='video'
+   AND (s.post_id<>video_publication_post_id_v1(s.submission_id,s.operation_id) OR EXISTS(
+     SELECT 1 FROM post_slug_aliases a WHERE a.slug=s.post_id AND a.post_id=s.post_id))
+ )
+$$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
     LANGUAGE plpgsql
@@ -26924,6 +27409,41 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION require_video_publication_identity_v1(p_submission text, p_operation text, p_post text) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE s media_post_submissions%ROWTYPE; p posts%ROWTYPE; expected TEXT;
+BEGIN
+ SELECT * INTO STRICT s FROM media_post_submissions WHERE submission_id=p_submission FOR UPDATE;
+ IF s.media_kind<>'video' OR s.operation_id<>p_operation THEN
+   RAISE EXCEPTION 'video publication source identity mismatch';
+ END IF;
+ expected := COALESCE(s.post_id,video_publication_post_id_v1(s.submission_id,s.operation_id));
+ IF p_post IS DISTINCT FROM expected THEN RAISE EXCEPTION 'video publication identity mismatch'; END IF;
+ SELECT * INTO p FROM posts WHERE post_id=p_post FOR SHARE;
+ IF FOUND AND (p.community_id<>s.community_id OR p.post_type<>'video'
+   OR p.idempotency_key IS DISTINCT FROM 'video-publication:'||s.operation_id
+   OR (p.author_user_id IS DISTINCT FROM s.actor_user_id AND NOT(p.author_user_id IS NULL
+     AND NOT EXISTS(SELECT 1 FROM users WHERE user_id=s.actor_user_id AND status='active')))) THEN
+   RAISE EXCEPTION 'video publication Post identity collision';
+ END IF;
+ RETURN expected;
+END $$;
+
+CREATE FUNCTION require_video_terminal_exact_alias_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+ IF NEW.media_kind='video' AND NEW.status='published' AND
+   (TG_OP='INSERT' OR OLD.status IS DISTINCT FROM 'published') AND NOT EXISTS (
+     SELECT 1 FROM post_slug_aliases a JOIN media_publication_projections p ON p.post_id=a.post_id
+     WHERE a.slug=NEW.post_id AND a.post_id=NEW.post_id AND p.submission_id=NEW.submission_id
+       AND p.operation_id=NEW.operation_id AND p.creation_revision=NEW.creation_revision
+       AND p.video_revision=NEW.video_revision AND p.media_kind='video'
+   ) THEN RAISE EXCEPTION 'terminal video publication requires exact alias and projection'; END IF;
+ RETURN NEW;
+END $$;
+
 CREATE FUNCTION reserve_guest_prepared_study_start_v1(p_access jsonb, p_operation jsonb, p_community text, p_post text, p_session_id text, p_target text, p_band text, p_fingerprint text, p_policy jsonb, p_operation_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -27384,6 +27904,46 @@ BEGIN
     existing.dns_zone_activation_id, existing.fence_token,
     existing.lease_expires_at, NULL::BIGINT;
 END;
+$$;
+
+CREATE FUNCTION resolve_comment_navigation_v1(p_viewer text, p_comment text) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+ SELECT jsonb_build_object('post_type',p.post_type,'post_id',p.post_id,'post_slug',alias.slug,'document',CASE WHEN NOT branch.target_rating_allowed THEN
+   jsonb_build_object('kind','age_locked','content_rating','adult_18',
+     'next_action',jsonb_build_object('kind','verify_minimum_age','minimum_age',18))
+ ELSE jsonb_build_object('kind','available','post_id',branch.post_id,'community_id',branch.community_id,
+   'target_comment_id',branch.comment_id,'ancestor_comment_ids',to_jsonb(branch.ancestor_ids),
+   'windows',(SELECT jsonb_agg(w.document ORDER BY path.ordinal)
+     FROM unnest(branch.path_ids) WITH ORDINALITY AS path(id,ordinal)
+     JOIN comments node ON node.comment_id=path.id AND node.community_id=branch.community_id AND node.post_id=branch.post_id
+     CROSS JOIN LATERAL (
+       WITH page AS MATERIALIZED (
+         SELECT c.comment_id,c.created_at,CASE WHEN NOT can_account_view_content_rating_v1(p_viewer,c.content_rating) THEN
+           jsonb_build_object('kind','age_locked','content_rating','adult_18',
+             'next_action',jsonb_build_object('kind','verify_minimum_age','minimum_age',18))
+         ELSE jsonb_build_object('comment_id',c.comment_id,'parent_comment_id',c.parent_comment_id,
+           'body',c.body,'author_persona',CASE WHEN EXISTS(SELECT 1 FROM users author WHERE author.user_id=c.author_user_id AND author.status='active') THEN public_persona_projection(c.author_persona_id) ELSE NULL END,'depth',c.depth,
+           'reply_count',(SELECT count(*) FROM comments reply WHERE reply.community_id=c.community_id
+             AND reply.post_id=c.post_id AND reply.parent_comment_id=c.comment_id AND reply.status='published'),
+           'status','published','content_rating',c.content_rating,'created_at',c.created_at) END AS item
+         FROM comments c WHERE c.community_id=branch.community_id AND c.post_id=branch.post_id
+           AND c.parent_comment_id IS NOT DISTINCT FROM node.parent_comment_id AND c.status='published'
+           AND (c.created_at,c.comment_id)>=(node.created_at,node.comment_id)
+         ORDER BY c.created_at,c.comment_id LIMIT 21
+       ), shown AS (SELECT * FROM page ORDER BY created_at,comment_id LIMIT 20)
+       SELECT jsonb_build_object('parent_comment_id',node.parent_comment_id,'branch_comment_id',node.comment_id,
+         'items',(SELECT jsonb_agg(item ORDER BY created_at,comment_id) FROM shown),
+         'earlier_items_omitted',EXISTS(SELECT 1 FROM comments earlier WHERE earlier.community_id=branch.community_id
+           AND earlier.post_id=branch.post_id AND earlier.parent_comment_id IS NOT DISTINCT FROM node.parent_comment_id
+           AND earlier.status='published' AND (earlier.created_at,earlier.comment_id)<(node.created_at,node.comment_id)),
+         'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
+           (SELECT comment_id FROM shown ORDER BY created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END) AS document
+     ) w)) END)
+ FROM authorized_comment_branch_v1(p_viewer,p_comment) branch
+ JOIN posts p ON p.community_id=branch.community_id AND p.post_id=branch.post_id AND p.post_type IN('text','song','video')
+ LEFT JOIN post_slug_aliases alias ON alias.post_id=p.post_id
+ WHERE p.post_type='video' OR alias.slug IS NOT NULL
 $$;
 
 CREATE FUNCTION resolve_guest_audio_io_capture_private_v1(p_source jsonb, p_operation jsonb, p_artifact text, p_reservation text, p_revision bigint, p_digest text) RETURNS jsonb
@@ -28783,6 +29343,32 @@ CREATE FUNCTION spaces_sale_namespace_readiness_reason_v1(input_network text, in
       database_now
     ) AS facts
 $$;
+
+CREATE FUNCTION start_video_alias_audit_v1(p_run uuid, p_plan text, p_mode text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE upper_row media_post_submissions%ROWTYPE;
+BEGIN
+ IF p_mode NOT IN('inventory','materialize') THEN RAISE EXCEPTION 'invalid video alias audit mode'; END IF;
+ IF EXISTS(SELECT 1 FROM media_post_submissions WHERE media_kind='video' AND status='published' AND post_id IS NULL) THEN
+   RAISE EXCEPTION 'invalid published video identity blocks alias inventory';
+ END IF;
+ -- Replayed start is an exact immutable assignment, never a new boundary.
+ IF EXISTS(SELECT 1 FROM video_alias_audit_runs_v1 WHERE run_id=p_run) THEN
+   IF NOT EXISTS(SELECT 1 FROM video_alias_audit_runs_v1 WHERE run_id=p_run AND plan_sha256=p_plan AND mode=p_mode) THEN
+     RAISE EXCEPTION 'video alias audit identity mismatch';
+   END IF;
+   RETURN;
+ END IF;
+ IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='media_post_submissions'::regclass
+   AND tgname='media_video_terminal_exact_alias' AND tgenabled='O') THEN
+   RAISE EXCEPTION 'fixed publication fence required before alias inventory';
+ END IF;
+ SELECT * INTO upper_row FROM media_post_submissions WHERE media_kind='video' AND status='published'
+ ORDER BY created_at DESC,post_id DESC LIMIT 1;
+ INSERT INTO video_alias_audit_runs_v1(run_id,plan_sha256,mode,upper_created_at,upper_post_id,complete)
+ VALUES(p_run,p_plan,p_mode,upper_row.created_at,upper_row.post_id,upper_row.post_id IS NULL);
+END $$;
 
 CREATE FUNCTION track_handle_authored_content_footprint_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -35499,6 +36085,128 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION video_detail_access_v1(p_viewer text, p_post text) RETURNS TABLE(non_age_allowed boolean, age_allowed boolean)
+    LANGUAGE sql STABLE
+    AS $$
+ WITH candidates AS (SELECT COALESCE(
+   p.status='published' AND c.status='active'
+   AND video_detail_id_safe_v1(p.post_id)
+   AND (p_viewer IS NULL OR EXISTS(SELECT 1 FROM users u WHERE u.user_id=p_viewer AND u.status='active'))
+   AND (p.visibility='public' OR (p.visibility='members_only' AND EXISTS(
+     SELECT 1 FROM community_memberships m WHERE m.community_id=p.community_id AND m.user_id=p_viewer AND m.status='member')))
+   AND s.status='published' AND s.media_kind='video' AND s.video_intent IN('original_audio','song_reference')
+   AND s.community_id=pub.community_id AND s.post_id=pub.post_id AND s.operation_id=pub.operation_id
+   AND p.idempotency_key='video-publication:'||pub.operation_id
+   AND (p.author_user_id=s.actor_user_id OR (p.author_user_id IS NULL AND NOT EXISTS(
+     SELECT 1 FROM users source_actor WHERE source_actor.user_id=s.actor_user_id AND source_actor.status='active')))
+   AND s.creation_revision=pub.creation_revision AND s.video_revision=pub.video_revision
+   AND s.analysis_revision=pub.analysis_revision
+   AND d.operation_id=pub.operation_id AND d.community_id=pub.community_id
+   AND d.actor_user_id=pub.actor_user_id AND s.actor_user_id=pub.actor_user_id
+   AND analysis.operation_id=pub.operation_id AND analysis.community_id=pub.community_id
+   AND analysis.actor_user_id=pub.actor_user_id
+   -- Analysis always describes the sealed CAPTURE, including song-reference
+   -- work. Its rendered accepted MASTER is a distinct asset/digest below.
+   AND analysis.video_revision=capture.video_revision AND analysis.canonical_video_sha256=capture.canonical_sha256
+   AND capture.operation_id=pub.operation_id AND capture.community_id=pub.community_id
+   AND capture.actor_user_id=pub.actor_user_id
+   AND capture_object.submission_id=pub.submission_id AND capture_object.operation_id=pub.operation_id
+   AND capture_object.community_id=pub.community_id AND capture_object.actor_user_id=pub.actor_user_id
+   AND capture_object.author_persona_id IS NOT DISTINCT FROM pub.author_persona_id
+   AND capture_object.canonical_sha256=capture.canonical_sha256
+   AND capture_object.size_bytes=capture.size_bytes AND capture_object.content_type=capture.content_type
+   AND published_object.submission_id=pub.submission_id AND published_object.operation_id=pub.operation_id
+   AND published_object.community_id=pub.community_id AND published_object.actor_user_id=pub.actor_user_id
+   AND published_object.author_persona_id IS NOT DISTINCT FROM pub.author_persona_id
+   AND published_object.canonical_sha256=pub.canonical_video_sha256
+   AND ((s.video_intent='original_audio' AND pub.video_asset_ref=capture.immutable_ref
+       AND pub.canonical_video_sha256=capture.canonical_sha256 AND pub.original_sound_id IS NOT NULL
+       AND pub.song_video_plan_id IS NULL AND pub.song_video_master_revision_id IS NULL)
+     OR (s.video_intent='song_reference' AND pub.original_sound_id IS NULL AND EXISTS(
+       SELECT 1 FROM media_song_video_render_plans plan
+       JOIN media_song_video_accepted_masters accepted ON accepted.plan_id=plan.plan_id
+       JOIN media_song_video_masters master ON master.plan_id=accepted.plan_id AND master.master_revision_id=accepted.master_revision_id
+       WHERE plan.plan_id=pub.song_video_plan_id AND plan.submission_id=pub.submission_id
+         AND master.master_revision_id=pub.song_video_master_revision_id AND master.plan_submission_id=pub.submission_id
+         AND master.source_immutable_ref=capture.immutable_ref AND master.source_sha256=capture.canonical_sha256
+         AND master.verified_object_key=pub.video_asset_ref AND master.master_sha256=pub.canonical_video_sha256
+         AND master.master_sha256<>capture.canonical_sha256
+         AND published_object.size_bytes=master.master_byte_length AND published_object.content_type='video/mp4'
+         AND published_object.object_version=master.verified_object_version AND published_object.etag=master.verified_object_etag
+         AND EXISTS(SELECT 1 FROM media_video_song_references edge WHERE edge.submission_id=pub.submission_id
+           AND edge.operation_id=pub.operation_id AND edge.creation_revision=pub.creation_revision
+           AND edge.actor_account_id=pub.actor_user_id AND edge.post_id=pub.post_id
+           AND edge.plan_id=plan.plan_id AND edge.master_revision_id=master.master_revision_id
+           AND edge.song_post_id=plan.song_post_id AND edge.audio_revision=plan.audio_revision))))
+   AND d.video_revision=pub.video_revision AND d.analysis_revision=pub.analysis_revision
+   AND pub.decision_revision<=pub.creation_revision
+   AND r.rights_basis=CASE s.video_intent WHEN 'song_reference' THEN 'derivative' ELSE 'original' END
+   AND NOT EXISTS(SELECT 1 FROM media_video_safety_evidence e WHERE e.submission_id=pub.submission_id
+     AND e.video_revision=pub.video_revision AND e.creation_revision BETWEEN pub.decision_revision AND pub.creation_revision AND e.platform_held)
+   AND (d.outcome='publish' OR (d.outcome='review' AND EXISTS(SELECT 1 FROM media_video_review_holds h
+     WHERE h.submission_id=pub.submission_id AND h.creation_revision=pub.decision_revision AND h.status='approved')))
+   AND NOT EXISTS(SELECT 1 FROM media_video_review_holds h WHERE h.submission_id=pub.submission_id
+     AND h.creation_revision BETWEEN pub.decision_revision AND pub.creation_revision AND h.status<>'approved')
+   AND (s.video_intent<>'song_reference' OR EXISTS(
+     SELECT 1 FROM media_video_song_references edge
+     JOIN posts song ON song.post_id=edge.song_post_id AND song.community_id=edge.song_community_id
+     JOIN communities song_community ON song_community.community_id=song.community_id AND song_community.status='active'
+     WHERE edge.submission_id=pub.submission_id AND edge.post_id=pub.post_id
+       AND edge.plan_id=pub.song_video_plan_id AND edge.master_revision_id=pub.song_video_master_revision_id
+       AND song.status='published' AND song.post_type='song'
+       AND (song.visibility='public' OR EXISTS(SELECT 1 FROM community_memberships m
+         WHERE m.community_id=song.community_id AND m.user_id=p_viewer AND m.status='member')))),FALSE) AS non_age_allowed,
+   COALESCE(can_account_view_content_rating_v1(p_viewer,p.content_rating)
+     AND can_account_view_content_rating_v1(p_viewer,d.effective_content_rating)
+     AND (s.video_intent<>'song_reference' OR EXISTS(SELECT 1 FROM media_video_song_references edge
+       JOIN posts song ON song.community_id=edge.song_community_id AND song.post_id=edge.song_post_id
+       WHERE edge.submission_id=pub.submission_id AND edge.post_id=pub.post_id
+       AND edge.plan_id=pub.song_video_plan_id AND edge.master_revision_id=pub.song_video_master_revision_id
+       AND can_account_view_content_rating_v1(p_viewer,song.content_rating))),FALSE) AS age_allowed
+ FROM posts p JOIN communities c ON c.community_id=p.community_id
+ LEFT JOIN media_publication_projections pub ON pub.post_id=p.post_id AND pub.community_id=p.community_id AND pub.media_kind='video'
+   AND p.idempotency_key='video-publication:'||pub.operation_id
+ LEFT JOIN media_post_submissions s ON s.submission_id=pub.submission_id
+ LEFT JOIN media_video_publication_decisions d ON d.submission_id=pub.submission_id AND d.creation_revision=pub.decision_revision
+ LEFT JOIN media_video_analyses analysis ON analysis.submission_id=pub.submission_id AND analysis.analysis_revision=pub.analysis_revision
+ LEFT JOIN media_video_revisions capture ON capture.submission_id=pub.submission_id AND capture.video_revision=pub.video_revision
+ LEFT JOIN media_immutable_objects capture_object ON capture_object.immutable_ref=capture.immutable_ref
+ LEFT JOIN media_immutable_objects published_object ON published_object.immutable_ref=pub.video_asset_ref
+ LEFT JOIN media_video_rights r ON r.submission_id=pub.submission_id
+ WHERE p.post_id=p_post AND p.post_type='video')
+ SELECT count(*)=1 AND COALESCE(bool_and(non_age_allowed),FALSE),
+   count(*)=1 AND COALESCE(bool_and(age_allowed),FALSE) FROM candidates
+$$;
+
+CREATE FUNCTION video_detail_id_safe_v1(p_id text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+ SELECT p_id<>'' AND post_slug_utf16_code_units(p_id)<=512 AND p_id NOT IN('.','..')
+   AND p_id!~'[[:space:][:cntrl:]]'
+   AND strpos(p_id,'%')=0 AND strpos(p_id,'/')=0 AND strpos(p_id,E'\\')=0
+   AND strpos(p_id,'?')=0 AND strpos(p_id,'#')=0
+   AND NOT EXISTS(SELECT 1 FROM regexp_split_to_table(p_id,'') chars(character)
+     WHERE ascii(character)<32 OR ascii(character) BETWEEN 127 AND 159 OR ascii(character)=65279)
+$$;
+
+CREATE FUNCTION video_detail_persona_v1(p_persona text) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+ SELECT public_persona_projection(persona.persona_id) FROM personas persona
+ JOIN users account ON account.user_id=persona.account_id AND account.status='active'
+ WHERE persona.persona_id=p_persona AND persona.status='active'
+$$;
+
+CREATE FUNCTION video_publication_post_id_v1(p_submission text, p_operation text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $$
+ SELECT 'post-' || encode(sha256(
+   convert_to('pirate/video-publication-post-id/v1','UTF8') || decode('00','hex') ||
+   int4send(octet_length(convert_to(p_submission,'UTF8'))) || convert_to(p_submission,'UTF8') ||
+   int4send(octet_length(convert_to(p_operation,'UTF8'))) || convert_to(p_operation,'UTF8')
+ ),'hex')
+$$;
+
 CREATE TABLE account_age_verification_current (
     account_id text NOT NULL,
     intent_id text NOT NULL,
@@ -35630,6 +36338,26 @@ CREATE TABLE active_subject_key_bindings (
     activated_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT active_subject_key_bindings_binding_epoch_check CHECK ((binding_epoch > 0))
+);
+
+CREATE TABLE activity_completion_decisions (
+    activity_key text NOT NULL,
+    session_id text NOT NULL,
+    attempt_id text,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    qualification_id text,
+    outcome text NOT NULL,
+    decided_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT activity_completion_decisions_activity_key_check CHECK ((activity_key = ANY (ARRAY['study'::text, 'karaoke'::text]))),
+    CONSTRAINT activity_completion_decisions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT activity_completion_decisions_check CHECK ((((activity_key = 'study'::text) AND (attempt_id IS NULL)) OR ((activity_key = 'karaoke'::text) AND (attempt_id IS NOT NULL)))),
+    CONSTRAINT activity_completion_decisions_check1 CHECK (((outcome = 'qualified'::text) = (qualification_id IS NOT NULL))),
+    CONSTRAINT activity_completion_decisions_outcome_check CHECK ((outcome = ANY (ARRAY['qualified'::text, 'not_qualified'::text])))
 );
 
 CREATE TABLE activity_qualifications (
@@ -37873,6 +38601,7 @@ CREATE TABLE content_publication_outbox (
     state text DEFAULT 'pending'::text NOT NULL,
     created_at timestamp with time zone NOT NULL,
     published_at timestamp with time zone,
+    inbox_delivery_recorded boolean DEFAULT false NOT NULL,
     CONSTRAINT content_publication_outbox_event_type_check CHECK ((event_type = ANY (ARRAY['comment_published'::text, 'comment_notification'::text, 'comment_cache_invalidation'::text]))),
     CONSTRAINT content_publication_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
     CONSTRAINT content_publication_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'published'::text, 'failed'::text]))),
@@ -43469,6 +44198,34 @@ CREATE TABLE nationality_requirement_states (
     CONSTRAINT nationality_requirement_states_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE notification_inbox (
+    notification_id text DEFAULT (gen_random_uuid())::text NOT NULL,
+    delivery_order bigint NOT NULL,
+    recipient_user_id text NOT NULL,
+    source_event_id text NOT NULL,
+    delivered_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    read_at timestamp with time zone,
+    CONSTRAINT notification_inbox_check CHECK (((read_at IS NULL) OR (read_at >= delivered_at))),
+    CONSTRAINT notification_inbox_notification_id_check CHECK ((notification_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text))
+);
+
+ALTER TABLE notification_inbox ALTER COLUMN delivery_order ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME notification_inbox_delivery_order_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+CREATE TABLE notification_publication_deliveries (
+    source_event_id text NOT NULL,
+    outcome text NOT NULL,
+    notification_id text,
+    processed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT notification_publication_deliveries_outcome_check CHECK ((outcome = ANY (ARRAY['delivered'::text, 'suppressed'::text])))
+);
+
 CREATE TABLE observations (
     observation_id text NOT NULL,
     user_id text NOT NULL,
@@ -43930,7 +44687,7 @@ CREATE TABLE post_slug_aliases (
     post_id text NOT NULL,
     slug_policy_version text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT post_slug_aliases_policy_check CHECK ((slug_policy_version = 'post-slug-v1'::text)),
+    CONSTRAINT post_slug_aliases_policy_check CHECK ((slug_policy_version = ANY (ARRAY['post-slug-v1'::text, 'video-receipt-exact-v1'::text]))),
     CONSTRAINT post_slug_aliases_slug_check CHECK (((slug <> ''::text) AND (slug = btrim(slug)) AND ((post_slug_utf16_code_units(slug) >= 1) AND (post_slug_utf16_code_units(slug) <= 80)) AND (octet_length(slug) <= 320) AND (slug !~ '[[:space:][:cntrl:]]'::text) AND (strpos(slug, '%'::text) = 0) AND (strpos(slug, '/'::text) = 0) AND (strpos(slug, '\'::text) = 0) AND (slug <> ALL (ARRAY['.'::text, '..'::text]))))
 );
 
@@ -46477,6 +47234,48 @@ CREATE TABLE verification_start_reservations (
     CONSTRAINT verification_start_reservations_state_check CHECK ((state = ANY (ARRAY['acquired'::text, 'released'::text, 'finalized'::text])))
 );
 
+CREATE TABLE video_alias_audit_items_v1 (
+    run_id uuid NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    post_id text,
+    outcome text NOT NULL,
+    before_binding jsonb NOT NULL,
+    after_binding jsonb NOT NULL,
+    receipt_digests jsonb NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT video_alias_audit_items_v1_outcome_check CHECK ((outcome = ANY (ARRAY['inserted'::text, 'already-exact'::text, 'missing'::text, 'invalid-key'::text, 'slug-collision'::text, 'different-existing-alias'::text, 'invalid-provenance'::text, 'unknown'::text])))
+);
+
+CREATE TABLE video_alias_audit_runs_v1 (
+    run_id uuid NOT NULL,
+    plan_sha256 text NOT NULL,
+    mode text NOT NULL,
+    upper_created_at timestamp with time zone,
+    upper_post_id text,
+    cursor_created_at timestamp with time zone,
+    cursor_post_id text,
+    complete boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT video_alias_audit_runs_v1_check CHECK (((upper_created_at IS NULL) = (upper_post_id IS NULL))),
+    CONSTRAINT video_alias_audit_runs_v1_check1 CHECK (((cursor_created_at IS NULL) = (cursor_post_id IS NULL))),
+    CONSTRAINT video_alias_audit_runs_v1_mode_check CHECK ((mode = ANY (ARRAY['inventory'::text, 'materialize'::text]))),
+    CONSTRAINT video_alias_audit_runs_v1_plan_sha256_check CHECK ((plan_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE video_notification_cutovers_v1 (
+    singleton boolean DEFAULT true NOT NULL,
+    plan_sha256 text NOT NULL,
+    alias_run_id uuid NOT NULL,
+    paired_solid_sha256 text NOT NULL,
+    cutover_source_sha256 text NOT NULL,
+    committed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT video_notification_cutovers_v1_cutover_source_sha256_check CHECK ((cutover_source_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT video_notification_cutovers_v1_paired_solid_sha256_check CHECK ((paired_solid_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT video_notification_cutovers_v1_plan_sha256_check CHECK ((plan_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT video_notification_cutovers_v1_singleton_check CHECK (singleton)
+);
+
 CREATE TABLE wallet_sponsored_sends (
     send_id text NOT NULL,
     account_id text NOT NULL,
@@ -46648,6 +47447,12 @@ ALTER TABLE ONLY active_subject_key_bindings
 
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_subject_user_unique UNIQUE (subject_key_id, user_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_pkey PRIMARY KEY (activity_key, session_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_qualification_id_key UNIQUE (qualification_id);
 
 ALTER TABLE ONLY activity_qualifications
     ADD CONSTRAINT activity_qualifications_pkey PRIMARY KEY (qualification_id);
@@ -48788,6 +49593,18 @@ ALTER TABLE ONLY nationality_requirement_states
 ALTER TABLE ONLY nationality_requirement_states
     ADD CONSTRAINT nationality_requirement_states_pkey PRIMARY KEY (action_kind, intent_id, requirement_kind);
 
+ALTER TABLE ONLY notification_inbox
+    ADD CONSTRAINT notification_inbox_delivery_order_key UNIQUE (delivery_order);
+
+ALTER TABLE ONLY notification_inbox
+    ADD CONSTRAINT notification_inbox_pkey PRIMARY KEY (notification_id);
+
+ALTER TABLE ONLY notification_inbox
+    ADD CONSTRAINT notification_inbox_recipient_user_id_source_event_id_key UNIQUE (recipient_user_id, source_event_id);
+
+ALTER TABLE ONLY notification_publication_deliveries
+    ADD CONSTRAINT notification_publication_deliveries_pkey PRIMARY KEY (source_event_id);
+
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_id_user_unique UNIQUE (observation_id, user_id);
 
@@ -49655,6 +50472,15 @@ ALTER TABLE ONLY verification_start_reservations
 ALTER TABLE ONLY verification_start_reservations
     ADD CONSTRAINT verification_start_reservations_pkey PRIMARY KEY (reservation_id);
 
+ALTER TABLE ONLY video_alias_audit_items_v1
+    ADD CONSTRAINT video_alias_audit_items_v1_pkey PRIMARY KEY (run_id, submission_id);
+
+ALTER TABLE ONLY video_alias_audit_runs_v1
+    ADD CONSTRAINT video_alias_audit_runs_v1_pkey PRIMARY KEY (run_id);
+
+ALTER TABLE ONLY video_notification_cutovers_v1
+    ADD CONSTRAINT video_notification_cutovers_v1_pkey PRIMARY KEY (singleton);
+
 CREATE INDEX account_aliases_canonical_idx ON account_aliases USING btree (canonical_user_id);
 
 CREATE INDEX action_challenges_intent_status_idx ON action_challenges USING btree (action_intent_id, status, expires_at DESC);
@@ -49704,6 +50530,8 @@ CASE
 END), idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key <> ''::text));
 
 CREATE UNIQUE INDEX comments_comment_id_global_unique ON comments USING btree (comment_id);
+
+CREATE INDEX comments_navigation_window_v1_idx ON comments USING btree (community_id, post_id, parent_comment_id, created_at, comment_id) WHERE (status = 'published'::text);
 
 CREATE INDEX comments_parent_created_idx ON comments USING btree (community_id, parent_comment_id, created_at, comment_id);
 
@@ -50001,9 +50829,13 @@ CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx ON media_transcript_a
 
 CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
 
+CREATE INDEX media_video_alias_inventory_order_v1_idx ON media_post_submissions USING btree (created_at, post_id) WHERE ((media_kind = 'video'::text) AND (status = 'published'::text));
+
 CREATE INDEX media_video_analysis_outbox_eligible_idx ON media_video_analysis_outbox USING btree (created_at, effect_identity) WHERE ((state = ANY (ARRAY['pending'::text, 'retry_wait'::text])) OR ((state = 'launched'::text) AND (instance_missing_at IS NOT NULL)));
 
 CREATE INDEX media_video_enrichment_eligible ON media_video_enrichment_outbox USING btree (enrichment_kind, lease_expires_at, created_at, effect_identity) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text]));
+
+CREATE UNIQUE INDEX media_video_owned_post_v1_uidx ON media_post_submissions USING btree (post_id) WHERE ((media_kind = 'video'::text) AND (post_id IS NOT NULL));
 
 CREATE INDEX media_video_publication_wakeups_pending_idx ON media_video_publication_wakeups USING btree (last_attempt_at NULLS FIRST, created_at, wakeup_identity) WHERE (delivered_at IS NULL);
 
@@ -50036,6 +50868,12 @@ CREATE INDEX moderation_reports_status_idx ON moderation_reports USING btree (co
 CREATE INDEX namespace_ownership_completion_attempts_lease_idx ON namespace_ownership_completion_attempts USING btree (state, lease_expires_at);
 
 CREATE INDEX namespace_ownership_start_reservations_lease_idx ON namespace_ownership_start_reservations USING btree (state, lease_expires_at);
+
+CREATE INDEX notification_inbox_recipient_order_idx ON notification_inbox USING btree (recipient_user_id, delivery_order DESC);
+
+CREATE INDEX notification_inbox_unread_recipient_idx ON notification_inbox USING btree (recipient_user_id, source_event_id) WHERE (read_at IS NULL);
+
+CREATE INDEX notification_publication_source_idx ON content_publication_outbox USING btree (created_at, outbox_event_id) WHERE ((event_type = 'comment_notification'::text) AND (NOT inbox_delivery_recorded));
 
 CREATE INDEX observations_chain_asset_observed_idx ON observations USING btree (user_id, chain_id, asset_caip19, observed_at DESC);
 
@@ -50261,6 +51099,8 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE INDEX video_alias_audit_unresolved_v1_idx ON video_alias_audit_items_v1 USING btree (run_id) WHERE (outcome <> ALL (ARRAY['inserted'::text, 'already-exact'::text]));
+
 CREATE UNIQUE INDEX wallet_sponsored_sends_open_wallet_uidx ON wallet_sponsored_sends USING btree (chain_id, sender_address) WHERE (status = ANY (ARRAY['reserved'::text, 'submitting'::text, 'submitted'::text, 'held'::text]));
 
 CREATE OR REPLACE VIEW retained_comment_rating_base_v1 AS
@@ -50341,6 +51181,8 @@ CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELE
 
 CREATE TRIGGER activity_00_telegram_practice_not_rewarded BEFORE INSERT OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION reject_telegram_practice_qualification();
 
+CREATE TRIGGER activity_completion_decisions_immutable BEFORE DELETE OR UPDATE ON activity_completion_decisions FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
+
 CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
 
 CREATE TRIGGER activity_qualifications_project_asset_bonus_claim AFTER INSERT ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION project_asset_bonus_claim_from_qualification();
@@ -50364,6 +51206,10 @@ CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE
 CREATE TRIGGER assertions_append_only BEFORE DELETE OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertions_validate_binding BEFORE INSERT OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_assertion_binding();
+
+CREATE TRIGGER comment_notification_fact_guard BEFORE DELETE OR UPDATE ON content_publication_outbox FOR EACH ROW EXECUTE FUNCTION guard_comment_notification_fact_v1();
+
+CREATE TRIGGER comment_notification_inbox_publication AFTER INSERT ON content_publication_outbox FOR EACH ROW WHEN ((new.event_type = 'comment_notification'::text)) EXECUTE FUNCTION publish_comment_notification_inbox_v1();
 
 CREATE TRIGGER comment_publication_rating_guard_v1 BEFORE INSERT OR UPDATE OF content_rating ON comment_publication_projection FOR EACH ROW EXECUTE FUNCTION guard_comment_publication_rating_v1();
 
@@ -50959,6 +51805,8 @@ CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR
 
 CREATE TRIGGER karaoke_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_attempts FOR EACH ROW EXECUTE FUNCTION guard_karaoke_attempt();
 
+CREATE CONSTRAINT TRIGGER karaoke_completion_decision AFTER UPDATE ON karaoke_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'active'::text) AND (new.status = 'completed'::text))) EXECUTE FUNCTION capture_activity_completion_decision_private_v1();
+
 CREATE TRIGGER karaoke_recordings_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_recordings FOR EACH ROW EXECUTE FUNCTION guard_karaoke_recording();
 
 CREATE TRIGGER karaoke_runtime_session_authority_guard BEFORE UPDATE ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_runtime_session_authority();
@@ -51211,6 +52059,8 @@ CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON
 
 CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
+CREATE TRIGGER media_video_fixed_publication_identity BEFORE INSERT OR UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_video_publication_identity_v1();
+
 CREATE TRIGGER media_video_outcome_claim_guard BEFORE INSERT OR DELETE OR UPDATE ON media_video_outcome_claims FOR EACH ROW EXECUTE FUNCTION guard_media_video_outcome_claim();
 
 CREATE TRIGGER media_video_reservation_song_plan_guard BEFORE DELETE OR UPDATE ON media_video_reservation_song_plans FOR EACH ROW EXECUTE FUNCTION guard_media_video_reservation_song_plan();
@@ -51232,6 +52082,8 @@ CREATE CONSTRAINT TRIGGER media_video_song_reference_rating_floor AFTER INSERT O
 CREATE TRIGGER media_video_stage_fact_immutable BEFORE UPDATE ON media_video_stage_facts FOR EACH ROW EXECUTE FUNCTION media_video_stage_fact_immutable();
 
 CREATE TRIGGER media_video_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW WHEN ((old.media_kind = 'video'::text)) EXECUTE FUNCTION guard_media_video_submission_update_rating_v2();
+
+CREATE CONSTRAINT TRIGGER media_video_terminal_exact_alias AFTER INSERT OR UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_video_terminal_exact_alias_v1();
 
 CREATE CONSTRAINT TRIGGER megapot_allocation_batch_exact AFTER INSERT ON megapot_allocation_batches DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_allocation_batch();
 
@@ -51349,6 +52201,10 @@ CREATE TRIGGER nationality_requirement_state_provider_guard BEFORE INSERT OR UPD
 
 CREATE TRIGGER nationality_requirement_state_update_guard BEFORE UPDATE ON nationality_requirement_states FOR EACH ROW EXECUTE FUNCTION guard_nationality_requirement_state_update();
 
+CREATE TRIGGER notification_delivery_guard BEFORE INSERT OR DELETE OR UPDATE ON notification_publication_deliveries FOR EACH ROW EXECUTE FUNCTION guard_notification_delivery_v1();
+
+CREATE TRIGGER notification_inbox_guard BEFORE INSERT OR DELETE OR UPDATE ON notification_inbox FOR EACH ROW EXECUTE FUNCTION guard_notification_inbox_v1();
+
 CREATE TRIGGER observations_append_only BEFORE DELETE OR UPDATE ON observations FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER operator_managed_root_registry_current_change_guard BEFORE DELETE OR UPDATE ON operator_managed_root_registry_current FOR EACH ROW EXECUTE FUNCTION guard_operator_managed_root_registry_current_change();
@@ -51410,6 +52266,8 @@ CREATE TRIGGER platform_referral_revenue_append_only BEFORE DELETE OR UPDATE ON 
 CREATE TRIGGER platform_sponsorship_budget_entries_append_only BEFORE DELETE OR UPDATE ON platform_sponsorship_budget_entries FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER policy_versions_append_only BEFORE DELETE OR UPDATE ON policy_versions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER post_slug_aliases_exact_video_guard BEFORE INSERT ON post_slug_aliases FOR EACH ROW EXECUTE FUNCTION guard_exact_video_alias_v1();
 
 CREATE TRIGGER post_slug_aliases_immutable BEFORE DELETE OR UPDATE ON post_slug_aliases FOR EACH ROW EXECUTE FUNCTION reject_post_slug_alias_mutation();
 
@@ -51695,6 +52553,8 @@ CREATE TRIGGER study_translation_quality_policies_immutable BEFORE DELETE OR UPD
 
 CREATE TRIGGER study_unit_exercise_eligibility_immutable BEFORE DELETE OR UPDATE ON study_unit_exercise_eligibility FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
+CREATE CONSTRAINT TRIGGER study_v2_completion_decision AFTER UPDATE ON study_sessions_v2 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'active'::text) AND (new.status = 'completed'::text))) EXECUTE FUNCTION capture_activity_completion_decision_private_v1();
+
 CREATE TRIGGER subject_key_binding_events_append_only BEFORE DELETE OR UPDATE ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER subject_key_binding_events_project AFTER INSERT ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_project_subject_key_binding();
@@ -51755,7 +52615,17 @@ CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status O
 
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
+CREATE TRIGGER users_delete_notification_inbox AFTER UPDATE OF status ON users FOR EACH ROW EXECUTE FUNCTION delete_recipient_notification_inbox_v1();
+
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
+
+CREATE TRIGGER video_alias_audit_items_immutable BEFORE DELETE OR UPDATE ON video_alias_audit_items_v1 FOR EACH ROW EXECUTE FUNCTION reject_post_slug_alias_mutation();
+
+CREATE TRIGGER video_alias_audit_runs_guard BEFORE DELETE OR UPDATE ON video_alias_audit_runs_v1 FOR EACH ROW EXECUTE FUNCTION guard_video_alias_audit_run_v1();
+
+CREATE TRIGGER video_notification_cutovers_immutable BEFORE DELETE OR UPDATE ON video_notification_cutovers_v1 FOR EACH ROW EXECUTE FUNCTION reject_post_slug_alias_mutation();
+
+CREATE TRIGGER video_post_publication_identity BEFORE UPDATE ON posts FOR EACH ROW EXECUTE FUNCTION guard_video_post_identity_v1();
 
 CREATE TRIGGER wallet_sponsored_send_mode_guard BEFORE INSERT ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_send_mode();
 
@@ -51799,6 +52669,18 @@ ALTER TABLE ONLY action_intents
 
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_event_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY activity_completion_decisions
+    ADD CONSTRAINT activity_completion_decisions_qualification_id_fkey FOREIGN KEY (qualification_id) REFERENCES activity_qualifications(qualification_id);
 
 ALTER TABLE ONLY activity_qualifications
     ADD CONSTRAINT activity_qualifications_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -54029,6 +54911,18 @@ ALTER TABLE ONLY namespace_ownership_start_reservations
 ALTER TABLE ONLY namespace_ownership_start_reservations
     ADD CONSTRAINT namespace_ownership_start_reservations_requirement_fk FOREIGN KEY (creation_intent_id, requirement_kind) REFERENCES community_creation_requirement_states(intent_id, requirement_kind);
 
+ALTER TABLE ONLY notification_inbox
+    ADD CONSTRAINT notification_inbox_recipient_user_id_fkey FOREIGN KEY (recipient_user_id) REFERENCES users(user_id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY notification_inbox
+    ADD CONSTRAINT notification_inbox_source_event_id_fkey FOREIGN KEY (source_event_id) REFERENCES content_publication_outbox(outbox_event_id);
+
+ALTER TABLE ONLY notification_publication_deliveries
+    ADD CONSTRAINT notification_publication_deliveries_notification_id_fkey FOREIGN KEY (notification_id) REFERENCES notification_inbox(notification_id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY notification_publication_deliveries
+    ADD CONSTRAINT notification_publication_deliveries_source_event_id_fkey FOREIGN KEY (source_event_id) REFERENCES content_publication_outbox(outbox_event_id);
+
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
@@ -55027,6 +55921,12 @@ ALTER TABLE ONLY verification_start_reservations
 
 ALTER TABLE ONLY verification_start_reservations
     ADD CONSTRAINT verification_start_reservations_creation_ceremony_fk FOREIGN KEY (actor_id, creation_intent_id, creation_requirement_kind, creation_generation, intent_id) REFERENCES community_creation_ceremony_attempts(actor_id, intent_id, requirement_kind, generation, ceremony_intent_id);
+
+ALTER TABLE ONLY video_alias_audit_items_v1
+    ADD CONSTRAINT video_alias_audit_items_v1_run_id_fkey FOREIGN KEY (run_id) REFERENCES video_alias_audit_runs_v1(run_id);
+
+ALTER TABLE ONLY video_notification_cutovers_v1
+    ADD CONSTRAINT video_notification_cutovers_v1_alias_run_id_fkey FOREIGN KEY (alias_run_id) REFERENCES video_alias_audit_runs_v1(run_id);
 
 CREATE POLICY guest_raw_account_child_gate_v1 ON study_attempts_v2 AS RESTRICTIVE USING ((EXISTS ( SELECT 1
    FROM study_session_items_v2 i

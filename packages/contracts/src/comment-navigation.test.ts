@@ -8,7 +8,7 @@ test("navigation is authenticated and uses the existing bare age variant without
     kind: "age_locked",
     content_rating: "adult_18",
     next_action: { kind: "verify_minimum_age", minimum_age: 18 },
-  };
+  } as const;
   const decode = Schema.decodeUnknownSync(ResolveCommentNavigationV1.response, {
     onExcessProperty: "error",
   });

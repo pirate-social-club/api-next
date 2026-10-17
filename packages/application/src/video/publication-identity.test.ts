@@ -11,12 +11,12 @@ test("fixed UTF8/u32be SHA256 vectors, with unambiguous lengths", async () => {
     ["源-é", "操作-🎵", "post-21cfcadf3727492bb4401cd7ba0fff4e14629d7a883b82102f66d851182340e9"],
     ["ab", "c", "post-2ef70802d134bf058d8f61fe22ee3c51094a428c8c500acec78e12d1b48533a2"],
     ["a", "bc", "post-598e87f428629761fffb1c8478b6803f1659fa2600cf297408cd9054c162027c"],
-  ];
+  ] as const;
   for (const [submissionId, operationId, expected] of vectors)
     expect(
       await videoPublicationPostId({
-        submissionId: submissionId as string,
-        operationId: operationId as string,
+        submissionId,
+        operationId,
         postId: null,
       }),
     ).toBe(expected);

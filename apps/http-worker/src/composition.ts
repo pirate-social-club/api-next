@@ -64,6 +64,7 @@ import {
 } from "@pirate/contracts";
 import { compileAccountAgeVerificationPolicy } from "@pirate/domain";
 import { makeControlPlaneAccountAgeVerification } from "@pirate/platform-cf/account-age-verification";
+import { makeControlPlaneActivityCompletionStore } from "@pirate/platform-cf/activity-completion-repository";
 import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { type AvatarBindings, makeAvatarStorage } from "@pirate/platform-cf/avatar-storage";
@@ -252,6 +253,7 @@ import {
   makeTelegramServices,
   type TelegramBindings,
 } from "../../../packages/platform-cf/src/telegram-runtime.ts";
+import { makeActivityCompletionHandlers } from "./activity-completion-handlers.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { assertSupportedAuthPolicies, supportedAuthPolicy } from "./auth-policy.ts";
 import { makeAvatarHandlers } from "./avatar-handlers.ts";
@@ -1493,6 +1495,10 @@ export async function createProductionHttpWorker(
         Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
     },
   });
+  const activityCompletionHandlers = makeActivityCompletionHandlers({
+    clock: { now: Effect.sync(() => Date.now()) },
+    store: makeControlPlaneActivityCompletionStore(controlPlane),
+  });
   const studySpokenServices = makeProductionStudySpokenServices(bindings, dependencies);
   const capturedStudy =
     studySpokenServices === undefined
@@ -1889,6 +1895,7 @@ export async function createProductionHttpWorker(
       ...personaHandlers,
       ...spacesTaprootHandlers,
       ...activityQualificationHandlers,
+      ...activityCompletionHandlers,
       ...karaokeReadinessHandlers,
       ...karaokeHandlers,
       ...studyV2Handlers,

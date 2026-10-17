@@ -12,6 +12,7 @@ export interface OpenApiDocument {
   readonly openapi: "3.1.0";
   readonly info: OpenApiInfo;
   readonly paths: Record<string, Record<string, JsonSchema>>;
+  readonly components?: { readonly schemas: Record<string, JsonSchema> };
 }
 
 function requestSchemas(endpoint: EndpointDefinition): EndpointRequest | undefined {
@@ -20,8 +21,8 @@ function requestSchemas(endpoint: EndpointDefinition): EndpointRequest | undefin
 
 /**
  * Effect v4's own JSON Schema conversion — no AST sniffing. The generator
- * deliberately keeps schemas inline (small surface, no named component
- * reuse yet); if definitions grow, hoist them into `components/schemas`.
+ * returns a standalone schema with local definition ownership. Published
+ * OpenAPI rebases references separately; client-local roots stay local.
  */
 export function schemaToOpenApi(value: unknown): JsonSchema {
   const document = Schema.toJsonSchemaDocument(value as Schema.Schema<unknown>);
@@ -30,6 +31,65 @@ export function schemaToOpenApi(value: unknown): JsonSchema {
     schema.$defs = document.definitions as Record<string, JsonSchema>;
   }
   return schema;
+}
+
+/** The slot, rather than a shared Effect identifier, owns each namespace. */
+function componentName(slot: readonly string[]): string {
+  // Escaping underscores too is injective and keeps OpenAPI's component alphabet.
+  return JSON.stringify(slot).replace(
+    /[^a-zA-Z0-9.-]/g,
+    (character) => `_${character.charCodeAt(0).toString(16)}_`,
+  );
+}
+
+function publishedReferences(value: JsonSchema, root: string): JsonSchema {
+  const childSchema = (child: unknown): unknown =>
+    isRecord(child) ? publishedReferences(child, root) : child;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => {
+      if (key === "$ref") {
+        if (typeof child !== "string" || !child.startsWith("#/$defs/")) {
+          throw new Error(`Unsupported generated schema reference: ${String(child)}`);
+        }
+        return [key, `${root}/${child.slice(2).split("/").map(encodeURIComponent).join("/")}`];
+      }
+      if (
+        ["$defs", "definitions", "properties", "patternProperties", "dependentSchemas"].includes(
+          key,
+        ) &&
+        isRecord(child)
+      ) {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(child).map(([name, schema]) => [name, childSchema(schema)]),
+          ),
+        ];
+      }
+      if (["anyOf", "oneOf", "allOf", "prefixItems"].includes(key) && Array.isArray(child)) {
+        return [key, child.map(childSchema)];
+      }
+      if (
+        [
+          "items",
+          "additionalProperties",
+          "contains",
+          "not",
+          "if",
+          "then",
+          "else",
+          "propertyNames",
+          "unevaluatedProperties",
+          "unevaluatedItems",
+          "contentSchema",
+        ].includes(key)
+      ) {
+        return [key, childSchema(child)];
+      }
+      // Annotation payloads and property/definition names are data.
+      return [key, child];
+    }),
+  );
 }
 
 const genericErrorDetailsSchema: JsonSchema = {
@@ -64,7 +124,10 @@ const wireErrorBodySchema = (
  * error union. Status/code are read from a throwaway instance because the
  * catalog stores them as instance fields, not statics.
  */
-function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<string, JsonSchema> {
+function errorResponses(
+  errors: readonly ApiErrorCtor[] | undefined,
+  schema: (value: unknown, slot: readonly string[]) => JsonSchema,
+): Record<string, JsonSchema> {
   const responses: Record<string, JsonSchema> = {};
   for (const Ctor of errors ?? []) {
     const instance = new Ctor({} as never) as ApiError;
@@ -78,7 +141,7 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
           candidateInstance.status === instance.status && candidate.detailsSchema !== undefined
         );
       })
-      .map((candidate) => schemaToOpenApi(candidate.detailsSchema));
+      .map((candidate, index) => schema(candidate.detailsSchema, ["error", status, String(index)]));
     const statusErrors = (errors ?? []).filter((candidate) => {
       const candidateInstance = new candidate({} as never) as ApiError;
       return candidateInstance.status === instance.status;
@@ -162,14 +225,29 @@ export function generateOpenApi(
 ): OpenApiDocument {
   const endpoints = endpointList(source);
   const paths: Record<string, Record<string, JsonSchema>> = {};
+  const schemas: Record<string, JsonSchema> = {};
   endpoints.forEach((endpoint, index) => {
     const pathName = openApiPath(endpoint.path);
+    const schema = (value: unknown, slot: readonly string[]): JsonSchema => {
+      const local = schemaToOpenApi(value);
+      if (local.$defs === undefined) return local;
+      const name = componentName([endpoint.method, pathName, ...slot]);
+      const published = publishedReferences(local, `#/components/schemas/${name}`);
+      const definitions = { $defs: published.$defs };
+      const existing = schemas[name];
+      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(definitions)) {
+        throw new Error(`Conflicting OpenAPI definition namespace: ${name}`);
+      }
+      schemas[name] = definitions;
+      const { $defs: _definitions, ...inline } = published;
+      return inline;
+    };
     const path = paths[pathName] ?? {};
     paths[pathName] = path;
     const request = requestSchemas(endpoint);
-    const pathSchema = request?.path ? schemaToOpenApi(request.path) : undefined;
-    const querySchema = request?.query ? schemaToOpenApi(request.query) : undefined;
-    const headersSchema = request?.headers ? schemaToOpenApi(request.headers) : undefined;
+    const pathSchema = request?.path ? schema(request.path, ["path"]) : undefined;
+    const querySchema = request?.query ? schema(request.query, ["query"]) : undefined;
+    const headersSchema = request?.headers ? schema(request.headers, ["headers"]) : undefined;
     const pathProperties = (pathSchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
     const queryProperties =
       (querySchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
@@ -219,7 +297,13 @@ export function generateOpenApi(
         {
           description: "Success",
           ...(endpoint.responseRepresentation === undefined
-            ? { content: { "application/json": { schema: schemaToOpenApi(endpoint.response) } } }
+            ? {
+                content: {
+                  "application/json": {
+                    schema: schema(endpoint.response, ["response", String(status)]),
+                  },
+                },
+              }
             : {
                 headers: {
                   ETag: { required: true, schema: { type: "string" } },
@@ -251,7 +335,7 @@ export function generateOpenApi(
               required: request.bodyRequired !== false,
               content: request.rawBodyContentTypes
                 ? {
-                    "application/json": { schema: schemaToOpenApi(request.body) },
+                    "application/json": { schema: schema(request.body, ["body"]) },
                     ...Object.fromEntries(
                       request.rawBodyContentTypes.map((contentType) => [
                         contentType,
@@ -268,7 +352,7 @@ export function generateOpenApi(
                       schema:
                         request.bodyEncoding === "raw-bytes"
                           ? { type: "string", format: "binary" }
-                          : schemaToOpenApi(request.body),
+                          : schema(request.body, ["body"]),
                     },
                   },
               ...(request.maxBodyBytes === undefined
@@ -279,7 +363,7 @@ export function generateOpenApi(
         : {}),
       responses: {
         ...successResponses,
-        ...errorResponses(endpoint.errors),
+        ...errorResponses(endpoint.errors, schema),
       },
       "x-auth": endpoint.auth,
       ...(endpoint.implementation === undefined
@@ -289,7 +373,12 @@ export function generateOpenApi(
       "x-errors": endpoint.errors?.map((error) => error.name) ?? [],
     };
   });
-  return { openapi: "3.1.0", info, paths };
+  return {
+    openapi: "3.1.0",
+    info,
+    paths,
+    ...(Object.keys(schemas).length ? { components: { schemas } } : {}),
+  };
 }
 
 export interface RouteBinding {
@@ -376,7 +465,9 @@ function jsonSchemaToType(
   if (depth > 32) return "unknown";
 
   if (typeof value.$ref === "string") {
-    const name = value.$ref.startsWith("#/$defs/") ? value.$ref.slice("#/$defs/".length) : "";
+    const name = value.$ref.startsWith("#/$defs/")
+      ? value.$ref.slice("#/$defs/".length).replaceAll("~1", "/").replaceAll("~0", "~")
+      : "";
     const definitions = isRecord(root.$defs) ? root.$defs : undefined;
     const target = name === "" || definitions === undefined ? undefined : definitions[name];
     if (!isRecord(target) || resolving.has(name)) return "unknown";
@@ -828,7 +919,8 @@ function record(value: unknown): value is Record<string, unknown> {
 function schemaError(value: unknown, schema: JsonSchema, path: string, root: JsonSchema): string | undefined {
   if (typeof schema.$ref === "string") {
     const defs = record(root.$defs) ? root.$defs : undefined;
-    const target = typeof defs === "object" && defs !== null ? defs[schema.$ref.slice("#/$defs/".length)] : undefined;
+    const name = schema.$ref.startsWith("#/$defs/") ? schema.$ref.slice("#/$defs/".length).replaceAll("~1", "/").replaceAll("~0", "~") : "";
+    const target = typeof defs === "object" && defs !== null ? defs[name] : undefined;
     if (!record(target)) return "missing schema definition";
     return schemaError(value, target, path, root);
   }

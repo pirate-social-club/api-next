@@ -9,6 +9,12 @@ import { JobContext } from "../../apps/jobs-worker/src/registry.ts";
 import { withInbox } from "../../packages/platform-cf/src/notifications.pg-fixture.ts";
 import { makeControlPlaneNotificationStore } from "../../packages/platform-cf/src/notifications-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../packages/platform-cf/src/postgres.ts";
+import {
+  grantNotificationVideoReads,
+  notificationRoleImmutableHistory,
+  verifyNotificationFirstDelivery,
+  verifyNotificationRoleAccess,
+} from "./notifications-role-access.pg-fixture.ts";
 
 const sourceReads = [
   "users",
@@ -57,13 +63,21 @@ export async function exerciseNotificationRoles() {
         return url.toString();
       };
       const grant = async (sql: string) => f.admin.query(sql);
-      for (const role of [http, jobs, forward])
-        await grant(`GRANT SELECT ON ${sourceReads.join(",")} TO ${role}`);
+      for (const role of [http, jobs, forward]) {
+        // Forward inbox SELECT/INSERT/UPDATE must come from its pre-DDL
+        // defaults, not an explicit replacement grant in this callback.
+        const reads =
+          role === forward
+            ? sourceReads.filter((table) => table !== "notification_inbox")
+            : sourceReads;
+        await grant(`GRANT SELECT ON ${reads.join(",")} TO ${role}`);
+      }
+      await grantNotificationVideoReads(f.admin, [http, jobs, forward]);
       for (const role of [http, forward])
         await grant(`GRANT SELECT ON ${navigationReads.join(",")} TO ${role}`);
       await grant(`GRANT UPDATE(read_at) ON notification_inbox TO ${http}`);
+      await grant(`GRANT SELECT ON notification_publication_deliveries TO ${jobs}`);
       for (const role of [jobs, forward]) {
-        await grant(`GRANT SELECT ON notification_publication_deliveries TO ${role}`);
         // SELECT FOR SHARE requires UPDATE on at least one users column. The
         // existing production shared runtime has UPDATE; this dedicated Jobs
         // fixture confines that grant to status rather than all columns.
@@ -89,6 +103,28 @@ export async function exerciseNotificationRoles() {
       await grant(
         `GRANT UPDATE(state,state_hash,secret_ciphertext) ON telegram_link_transactions TO ${deletion}`,
       );
+      const clients = new Map<string, Client>();
+      for (const [role, caller] of [
+        [http, "http"],
+        [jobs, "jobs"],
+        [deletion, "deletion"],
+        [forward, "forward"],
+      ] as const) {
+        const client = new Client({ connectionString: login(role) });
+        await client.connect();
+        connected.push(client);
+        clients.set(role, client);
+        await verifyNotificationRoleAccess(client, role, caller, [
+          ...sourceReads,
+          ...navigationReads,
+          "notification_publication_deliveries",
+        ]);
+      }
+      const clientFor = (role: string) => {
+        const client = clients.get(role);
+        if (!client) throw new Error("authenticated fixture client missing");
+        return client;
+      };
       const runtimes = Object.fromEntries(
         roles.map((role) => [role, makeDirectPostgresControlPlaneLayer(login(role))]),
       );
@@ -145,22 +181,34 @@ export async function exerciseNotificationRoles() {
       await f.admin.query(
         "ALTER TABLE content_publication_outbox ENABLE TRIGGER comment_notification_inbox_publication",
       );
+      await verifyNotificationFirstDelivery(f.admin, missed.eventId, false);
       await runJob(jobs);
+      await verifyNotificationFirstDelivery(f.admin, missed.eventId, true);
       const after = await worker.request("https://worker.test/me/notifications", { headers });
       expect(after.status).toBe(200);
       expect(((await after.json()) as { unread_count: number }).unread_count).toBe(1);
       await f.admin.query(
         "ALTER TABLE content_publication_outbox DISABLE TRIGGER comment_notification_inbox_publication",
       );
-      await f.publish("acl-defaults");
+      const inherited = await f.publish("acl-defaults");
       await f.admin.query(
         "ALTER TABLE content_publication_outbox ENABLE TRIGGER comment_notification_inbox_publication",
       );
+      await verifyNotificationFirstDelivery(f.admin, inherited.eventId, false);
       await runJob(forward); // INSERT/UPDATE on new tables inherited before migration
+      await verifyNotificationFirstDelivery(f.admin, inherited.eventId, true);
+      const afterForward = await worker.request("https://worker.test/me/notifications", {
+        headers,
+      });
+      expect(afterForward.status).toBe(200);
+      expect(await afterForward.json()).toMatchObject({ unread_count: 2 });
+      const immutableHistory = await notificationRoleImmutableHistory(f.admin);
       const evidence = (
         await f.admin.query(
-          `SELECT has_table_privilege($1,'notification_inbox','INSERT') AS inbox_insert,
+          `SELECT has_table_privilege($1,'notification_inbox','SELECT') AS inbox_select,
+      has_table_privilege($1,'notification_inbox','INSERT') AS inbox_insert,
       has_table_privilege($1,'notification_inbox','UPDATE') AS inbox_update,
+      has_table_privilege($1,'notification_publication_deliveries','SELECT') AS receipt_select,
       has_table_privilege($1,'notification_publication_deliveries','INSERT') AS receipt_insert,
       has_table_privilege($1,'notification_publication_deliveries','UPDATE') AS receipt_update,
       has_table_privilege($1,'notification_publication_deliveries','DELETE') AS receipt_delete`,
@@ -168,18 +216,24 @@ export async function exerciseNotificationRoles() {
         )
       ).rows[0];
       expect(evidence).toEqual({
+        inbox_select: true,
         inbox_insert: true,
         inbox_update: true,
+        receipt_select: true,
         receipt_insert: true,
         receipt_update: true,
         receipt_delete: false,
       });
-      const forwardClient = new Client({ connectionString: login(forward) });
-      await forwardClient.connect();
-      connected.push(forwardClient);
+      const forwardClient = clientFor(forward);
       await expect(
         forwardClient.query(
           "UPDATE notification_publication_deliveries SET outcome='suppressed' WHERE source_event_id=$1",
+          [missed.eventId],
+        ),
+      ).rejects.toThrow("immutable");
+      await expect(
+        forwardClient.query(
+          "UPDATE content_publication_outbox SET created_at=created_at+interval '1 second' WHERE outbox_event_id=$1",
           [missed.eventId],
         ),
       ).rejects.toThrow("immutable");
@@ -189,9 +243,7 @@ export async function exerciseNotificationRoles() {
       await expect(
         forwardClient.query("DELETE FROM notifications_acl_forward_probe"),
       ).rejects.toThrow("permission denied");
-      const httpClient = new Client({ connectionString: login(http) });
-      await httpClient.connect();
-      connected.push(httpClient);
+      const httpClient = clientFor(http);
       await expect(
         httpClient.query(
           "UPDATE content_publication_outbox SET state='failed' WHERE outbox_event_id=$1",
@@ -201,9 +253,7 @@ export async function exerciseNotificationRoles() {
       await expect(httpClient.query("DELETE FROM notification_inbox")).rejects.toThrow(
         "permission denied",
       );
-      const deleteClient = new Client({ connectionString: login(deletion) });
-      await deleteClient.connect();
-      connected.push(deleteClient);
+      const deleteClient = clientFor(deletion);
       await expect(deleteClient.query("DELETE FROM notification_inbox")).rejects.toThrow("erasure");
       await deleteClient.query("UPDATE users SET status='deleted' WHERE user_id='inbox-owner'");
       expect(
@@ -216,7 +266,9 @@ export async function exerciseNotificationRoles() {
       const erased = await worker.request("https://worker.test/me/notifications", { headers });
       expect(erased.status).toBe(200);
       expect(await erased.json()).toMatchObject({ items: [], unread_count: 0 });
+      expect(await notificationRoleImmutableHistory(f.admin)).toEqual(immutableHistory);
       await runJob(jobs);
+      expect(await notificationRoleImmutableHistory(f.admin)).toEqual(immutableHistory);
       await Bun.write(
         `.wrangler/adopted-source-agent/review-fixes-acl-${crypto.randomUUID()}.json`,
         JSON.stringify(
@@ -226,6 +278,10 @@ export async function exerciseNotificationRoles() {
             inherited: evidence,
             actualHttpListRead: true,
             actualJobsRecovery: true,
+            actualJobsFirstDelivery: true,
+            actualForwardFirstDelivery: true,
+            initialization: "full_migrations",
+            allFourPrivateEvidenceDenials: true,
             actualDeletedAccountTrigger: true,
             roleClasses: ["http", "jobs", "deletion", "forward-default-shared-runtime"],
             rolesAreDisposable: true,
@@ -252,7 +308,7 @@ export async function exerciseNotificationRoles() {
           await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO ${role}`);
         }
         // Same table default as the accepted operational example, applied BEFORE
-        // 0269 exists. No production role or global/default public ACL is touched.
+        // application DDL0001..0273. No production role or global/public default ACL is touched.
         await admin.query(
           `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT SELECT,INSERT,UPDATE ON TABLES TO ${forward}`,
         );
@@ -262,5 +318,6 @@ export async function exerciseNotificationRoles() {
         throw error;
       }
     },
+    "full_migrations",
   );
 }

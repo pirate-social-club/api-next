@@ -19,7 +19,7 @@ export const readCommentThread = Effect.fn("readCommentThread")(
   function* (input: CommentThreadInput) {
     const db = yield* ControlPlaneDb;
     const rows = yield* db.withTransaction((transaction) =>
-      transaction.execute({
+      transaction.execute<{ result: unknown }>({
         label: "comments.thread.list",
         text: "SELECT list_post_comment_children_v1($1,$2,$3,$4) AS result",
         values: [

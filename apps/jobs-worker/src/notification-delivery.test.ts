@@ -22,6 +22,54 @@ const context: JobContext["Service"] = {
   adapterSafety: { markAbortedOrFenced: () => undefined, isProven: () => true },
 };
 const sink = { environment: "development" as const };
+test("read metadata covers the real SQL video invoker closure and inbox reconciliation without claiming private evidence", async () => {
+  const destination = await Bun.file(
+    new URL(
+      "../../../db/postgres/migrations/0272_notifications_video_destination.sql",
+      import.meta.url,
+    ),
+  ).text();
+  const access = destination.match(
+    /CREATE FUNCTION video_detail_access_v1\([\s\S]*?AS \$\$([\s\S]*?)\$\$;/u,
+  )?.[1];
+  if (!access) throw new Error("Actual video access function required for metadata review");
+  const relations = new Set(
+    Array.from(access.matchAll(/\b(?:FROM|JOIN)\s+(media_[a-z0-9_]+)/giu), (match) => match[1]),
+  );
+  expect(relations.size).toBe(13);
+  const job = makeNotificationDeliveryJob(sink);
+  for (const relation of relations) {
+    if (!relation) throw new Error("Actual video relation name required");
+    expect(job.reads).toContain(`postgres:${relation}`);
+    expect(job.writes).not.toContain(`postgres:${relation}`);
+  }
+  const inbox = await Bun.file(
+    new URL("../../../db/postgres/migrations/0271_notifications_inbox.sql", import.meta.url),
+  ).text();
+  const delivery = inbox.match(
+    /CREATE FUNCTION deliver_comment_notification_v1\([\s\S]*?AS \$\$([\s\S]*?)\$\$;/u,
+  )?.[1];
+  if (!delivery) throw new Error("Actual delivery function required for metadata review");
+  expect(delivery).toMatch(/SELECT notification_id INTO inbox_id FROM notification_inbox/u);
+  expect(job.reads).toContain("postgres:notification_inbox");
+  expect(new Set(job.reads).size).toBe(job.reads.length);
+  const privateAudit = await Bun.file(
+    new URL(
+      "../../../db/postgres/migrations/0273_notifications_video_alias_audit.sql",
+      import.meta.url,
+    ),
+  ).text();
+  const privateTables = Array.from(
+    privateAudit.matchAll(/CREATE TABLE (video_[a-z0-9_]+)/gu),
+    (match) => match[1],
+  );
+  expect(privateTables).toHaveLength(3);
+  for (const table of privateTables) {
+    if (!table) throw new Error("Actual private evidence table required");
+    expect(job.reads).not.toContain(`postgres:${table}`);
+    expect(job.writes).not.toContain(`postgres:${table}`);
+  }
+});
 test("production composition registers recovery and its run executes bounded persisted source selection and delivery", async () => {
   const declarations = makeJobsWorkerDeclarations(
     sink,

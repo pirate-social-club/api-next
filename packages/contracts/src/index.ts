@@ -1,3 +1,4 @@
+export * from "./activity-completion.ts";
 export * from "./age-access.ts";
 export * from "./age-verification.ts";
 export * from "./auth.ts";

@@ -6,8 +6,6 @@ import {
   attachSongVideoMasterAndPublish,
   moderateVideoSubmission,
   type VideoPublicationCommitServices,
-  type VideoPublicationServices,
-  type VideoPublicationStore,
   type VideoSubmissionRecord,
 } from "../../application/src/video/publication.ts";
 import { videoPublicationPostId } from "../../application/src/video/publication-identity.ts";
@@ -22,6 +20,10 @@ import {
   type VideoSubmissionState,
   type VideoTrustedAnalysis,
 } from "../../domain/src/video-submission.ts";
+import {
+  notificationsVideoPublicationServicesFixture,
+  notificationsVideoPublicationStoreFixture,
+} from "./notifications-video-publication-test-fixture.ts";
 import { operationId, submissionId, trustedAnalysis } from "./video-publication.pg-fixture.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 
@@ -108,7 +110,8 @@ for (const intent of ["original_audio", "song_reference"] as const) {
     let record = prepared(intent);
     const ids: string[] = [];
     const publish = async (input: { state: VideoSubmissionState }) => {
-      ids.push(input.state.postId as string);
+      if (input.state.postId === null) throw new Error("Publication identity required");
+      ids.push(input.state.postId);
       throw new Error("exact alias collision: rollback");
     };
     const services: VideoPublicationCommitServices = {
@@ -116,13 +119,15 @@ for (const intent of ["original_audio", "song_reference"] as const) {
       randomUuid: () => {
         throw new Error("publication must not allocate random ID");
       },
-      store: {
+      store: notificationsVideoPublicationStoreFixture({
         getSubmissionByOperation: async () => record,
         publish,
         publishSongReference: publish,
-      } as VideoPublicationStore,
+      }),
     };
-    const input = { submissionId, analysis: record.state.analysis as VideoTrustedAnalysis };
+    const analysis = record.state.analysis;
+    if (analysis === null) throw new Error("Prepared analysis required");
+    const input = { submissionId, analysis };
     await expect(acceptTrustedVideoAnalysis(input, services)).rejects.toThrow(
       "exact alias collision",
     );
@@ -152,22 +157,26 @@ for (const intent of ["original_audio", "song_reference"] as const) {
       randomUuid: () => {
         throw new Error("random ID forbidden");
       },
-      store: {
+      store: notificationsVideoPublicationStoreFixture({
         getSubmissionByOperation: async () => record,
         publish,
         publishSongReference: publish,
-      } as VideoPublicationStore,
+      }),
     };
-    const input = { submissionId, analysis: record.state.analysis as VideoTrustedAnalysis };
+    const analysis = record.state.analysis;
+    if (analysis === null) throw new Error("Prepared analysis required");
+    const input = { submissionId, analysis };
     await expect(acceptTrustedVideoAnalysis(input, services)).rejects.toThrow(
       "acknowledgement lost",
     );
     const result = await acceptTrustedVideoAnalysis(input, services);
+    const postId = record.state.postId;
+    if (postId === null) throw new Error("Committed publication identity required");
     expect(result).toMatchObject({
       status: "published",
       published_resource: {
-        post_id: record.state.postId,
-        href: `/posts/${encodeURIComponent(record.state.postId as string)}`,
+        post_id: postId,
+        href: `/posts/${encodeURIComponent(postId)}`,
       },
     });
     expect(calls).toBe(1);
@@ -192,20 +201,23 @@ test("real owner-approval application entry retains the source key and uses the 
       },
     },
   };
-  let selected: string | null = null;
-  const store = {
+  const selected: { postId: string | null } = { postId: null };
+  const store = notificationsVideoPublicationStoreFixture({
     getSubmissionForModerator: async () => record,
     getSubmissionByOperation: async () => record,
     moderate: async () => {
       record = { ...record, state: { ...ready, approvedHolds: ["safety"] } };
       return { kind: "none" as const };
     },
-    publish: async (input: { state: VideoSubmissionState }) => {
-      selected = input.state.postId;
+    publish: async (input) => {
+      selected.postId = input.state.postId;
       return { ...record, state: input.state };
     },
-  } as VideoPublicationStore;
-  const services = { store, nowIso: () => record.updatedAt } as VideoPublicationServices;
+  });
+  const services = notificationsVideoPublicationServicesFixture({
+    store,
+    nowIso: () => record.updatedAt,
+  });
   await moderateVideoSubmission(
     {
       submissionId,
@@ -224,8 +236,12 @@ test("real owner-approval application entry retains the source key and uses the 
     { submissionId, analysis: ready.analysis },
     services,
   );
-  expect(selected).toBe(await videoPublicationPostId(ready));
-  expect(result).toMatchObject({ status: "published", published_resource: { post_id: selected } });
+  if (selected.postId === null) throw new Error("Approved publication identity required");
+  expect(selected.postId).toBe(await videoPublicationPostId(ready));
+  expect(result).toMatchObject({
+    status: "published",
+    published_resource: { post_id: selected.postId },
+  });
 });
 
 test("actual publication store reconciles persisted Post/projection/alias ownership on published reload without writes", async () => {
@@ -290,7 +306,7 @@ test("owner-approved song-reference render completion uses the same fixed public
     },
   };
   const ids: string[] = [];
-  const store = {
+  const store = notificationsVideoPublicationStoreFixture({
     getSubmissionForModerator: async () => record,
     getSubmissionByOperation: async () => record,
     moderate: async () => {
@@ -300,17 +316,21 @@ test("owner-approved song-reference render completion uses the same fixed public
       };
       return { kind: "none" as const };
     },
-    attachSongVideoMaster: async (input: { nextState: VideoSubmissionState }) => {
+    attachSongVideoMaster: async (input) => {
       record = { ...record, state: input.nextState };
       return record;
     },
-    publishSongReference: async (input: { state: VideoSubmissionState }) => {
-      ids.push(input.state.postId as string);
+    publishSongReference: async (input) => {
+      if (input.state.postId === null) throw new Error("Rendered publication identity required");
+      ids.push(input.state.postId);
       record = { ...record, state: input.state };
       return record;
     },
-  } as VideoPublicationStore;
-  const services = { store, nowIso: () => record.updatedAt } as VideoPublicationServices;
+  });
+  const services = notificationsVideoPublicationServicesFixture({
+    store,
+    nowIso: () => record.updatedAt,
+  });
   await moderateVideoSubmission(
     {
       submissionId,

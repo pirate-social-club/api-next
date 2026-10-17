@@ -4,6 +4,9 @@ import { makeControlPlaneCommunityModerationStore } from "./community-moderation
 import { withInbox } from "./notifications.pg-fixture.ts";
 import { makeControlPlaneNotificationStore } from "./notifications-repository.ts";
 import { registerVideoNotificationPostgresCases } from "./notifications-video.pg-cases.ts";
+import { registerVideoAdmissionMatrixPostgresCases } from "./notifications-video-admission-matrix.pg-cases.ts";
+import { registerVideoDeepPostgresCases } from "./notifications-video-deep.pg-cases.ts";
+import { registerVideoSnapshotPostgresCases } from "./notifications-video-snapshot.pg-cases.ts";
 import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository.ts";
 
 const connection = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -15,7 +18,7 @@ afterAll(async () => {
   const sentinel =
     process.env.CONTROL_PLANE_POSTGRES_NOTIFICATIONS_TEST_SENTINEL ??
     "/tmp/api-next-control-plane-postgres-notifications-suite-complete";
-  if (completed === 20) {
+  if (completed === 35) {
     await Bun.write(sentinel, "notifications-postgres-complete\n");
     expect(await Bun.file(sentinel).text()).toBe("notifications-postgres-complete\n");
     console.info("Notifications PostgreSQL completion sentinel validated");
@@ -23,6 +26,15 @@ afterAll(async () => {
 });
 
 registerVideoNotificationPostgresCases(() => {
+  completed++;
+});
+registerVideoSnapshotPostgresCases(() => {
+  completed++;
+});
+registerVideoAdmissionMatrixPostgresCases(() => {
+  completed++;
+});
+registerVideoDeepPostgresCases(() => {
   completed++;
 });
 
@@ -153,7 +165,7 @@ suite("persisted recipient-private inbox", () => {
             ),
           ).rejects.toThrow("authorized persisted comment notification recipient required");
         }
-        const controls = [];
+        const controls: Awaited<ReturnType<typeof publishComment>>[] = [];
         for (const type of ["text", "song"]) {
           const root = await publishComment(`${type}-root`, `${type}-post`);
           const reply = await publishComment(`${type}-reply`, `${type}-post`, root.commentId);
@@ -439,6 +451,11 @@ suite("persisted recipient-private inbox", () => {
   test("depth-eight lookup positions nine bounded sibling windows and ordinary hidden-anchor continuation across readers", async () => {
     await withInbox(async ({ admin, run, navigation, seedComment, runtime }) => {
       const branch = Array.from({ length: 9 }, (_, depth) => `nav-${depth}-020`);
+      const rootId = branch[0];
+      const parentId = branch[7];
+      const targetId = branch[8];
+      if (!rootId || !parentId || !targetId)
+        throw new Error("Complete depth-eight branch required");
       for (let depth = 0; depth < 9; depth++)
         for (let index = 0; index < 45; index++)
           await seedComment(
@@ -453,19 +470,22 @@ suite("persisted recipient-private inbox", () => {
         "UPDATE comments SET content_rating='adult_18' WHERE comment_id IN ('nav-0-021','nav-1-001')",
       );
       const result = await run(
-        navigation.resolve({ viewerUserId: "inbox-owner", commentId: branch[8] as string }),
+        navigation.resolve({ viewerUserId: "inbox-owner", commentId: targetId }),
       );
       if (result.kind !== "available") throw new Error("available branch required");
       expect(result.post_path).toBe("/posts/inbox-post");
       expect(result.ancestor_comment_ids).toEqual(branch.slice(0, 8));
       expect(result.windows).toHaveLength(9);
       result.windows.forEach((window, depth) => {
-        expect(window.branch_comment_id).toBe(branch[depth]);
-        expect(window.parent_comment_id).toBe(branch[depth - 1] ?? null);
+        const branchId = branch[depth];
+        const ancestorId = depth === 0 ? null : branch[depth - 1];
+        if (!branchId || ancestorId === undefined) throw new Error("Positioned branch required");
+        expect(window.branch_comment_id).toBe(branchId);
+        expect(window.parent_comment_id).toBe(ancestorId);
         expect(window.items).toHaveLength(20);
         expect(window.earlier_items_omitted).toBe(depth > 0);
         expect(window.next_cursor).toBe(`nav-${depth}-039`);
-        expect(window.items[0]).toMatchObject({ comment_id: branch[depth], depth });
+        expect(window.items[0]).toMatchObject({ comment_id: branchId, depth });
       });
       expect(result.windows[0]?.items[1]).toEqual({
         kind: "age_locked",
@@ -486,21 +506,21 @@ suite("persisted recipient-private inbox", () => {
           threads.list({
             viewerUserId: "inbox-owner",
             postId: "inbox-post",
-            parentCommentId: branch[0],
+            parentCommentId: rootId,
             cursor: "nav-0-039",
           }),
         ),
       ).rejects.toThrow("Invalid comment cursor");
       await admin.query("UPDATE comments SET status='removed' WHERE comment_id=$1", [branch[4]]);
       await expect(
-        run(navigation.resolve({ viewerUserId: "inbox-owner", commentId: branch[8] as string })),
+        run(navigation.resolve({ viewerUserId: "inbox-owner", commentId: targetId })),
       ).rejects.toThrow("Comment not found");
       await expect(
         run(
           threads.list({
             viewerUserId: "inbox-owner",
             postId: "inbox-post",
-            parentCommentId: branch[7],
+            parentCommentId: parentId,
           }),
         ),
       ).rejects.toThrow("Comment not found");

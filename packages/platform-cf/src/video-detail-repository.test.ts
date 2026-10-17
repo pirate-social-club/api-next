@@ -183,6 +183,7 @@ test("owned video codec and generated result reject normalized targets and metad
   for (const id of [".", "..", "a/b", "a\\b", "a%2f", "a?x", "a#x", "a\u0000", " a", "\ud800"])
     expect(videoPostDetailPath(id)).toBeNull();
   const path = videoPostDetailPath("動画-é");
+  if (path === null) throw new Error("Valid owned video path required");
   expect(path).toBe(`/post/${encodeURIComponent("動画-é")}`);
   expect(Schema.decodeUnknownSync(VideoPostDetailPathV1)(path)).toBe(path);
   for (const path of ["/post/%2e%2e", "/post/a%2fb", "/post/a/b", "/posts/a"])

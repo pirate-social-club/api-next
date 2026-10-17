@@ -6,12 +6,113 @@ the shared runtime receives existing-table SELECT/INSERT/UPDATE/DELETE and
 forward table defaults SELECT/INSERT/UPDATE. New objects do not inherit DELETE.
 Notifications adds invoker functions, not a privileged definer or a new binding.
 
+## Completed local role proof — 2026-10-17 supersession
+
+Parent ran exact source98 `6271bb2a8629bb35d9146f3602edb222196d921f505250ceab200a2de70adb53`
+after independent preexecution acceptance: hardening6 passed418 assertions,
+108.974427s whole-file wall, exit0/new exact fence/cleanup0|0|0; logSHA256
+`a34e2283c8ee975fad2eb37b5dc8fdd1353480c9dc65e847d49b432e719c7eb9`.
+All four SCRAM LOGIN classes completed effective private denials, real HTTP/read,
+first Jobs and inherited-forward delivery, deletion/Telegram and history checks.
+Native35 separately passed1348 assertions,229.024078s, exact fence/cleanup0|0|0;
+its log and source receipts are bound in the [video handoff](notifications-video-source-handoff.md).
+Wrong-password28P01/positive LOGIN controls passed. These completed local proofs
+supersede the earlier UNRUN/unmeasured status; the prior5/1 failure and194323ms
+observation remain historical. Imported-fixture changes require fresh measurement.
+Required full/general6/recovery/HNS/PG18, final committed migration/role review,
+actual serving-role authority, paired Solid, inventory/cutover and live holds remain.
+
+## Current four-role proof boundary — 2026-10-17 supersession
+
+Current merge order is Notifications0271, video destination0272 and private
+alias audit0273; the cutover remains a separate operator-only candidate. This
+dated section supersedes earlier provisional0269 and UNRUN/status descriptions
+below without rewriting their historical receipts. No managed grant, role,
+schema, runtime policy or cutover is changed by this local proof-source repair.
+
+Historical predecessor: parent's exact incoming92/97 native35 SCRAM suite
+passed1348 assertions with its
+new exact fence (logSHA `dcfc4240da56fb5275b0bd90b6db5f218304cad915e757ab7655033652c69abd`).
+The separate six-case hardening suite failed5pass/1fail/52 assertions, no marker
+(logSHA `c1b1dc3807777dfe68703b76699a90ff96a94e3ad0b9f7742ffdc541f45ca6bd`).
+HTTP list expected200 but returned500/notifications.list42501 before later
+Jobs/deletion/default probes. Parent's separate non-owner SCRAM reproduction
+observed the first denied relation `media_song_video_render_plans`; that is not
+the complete dependency closure or a live-grant defect. Its history/index case
+passed; that failed run supplied no successful hardening whole-file observation
+or combined41 proof.
+All parent diagnostic processes ended with zero clients/schemas/temporary roles.
+
+**This four-role workflow completed in source98's hardening6 run above.** The existing
+`exerciseNotificationRoles` now selects `withInbox(..., ..., "full_migrations")`.
+The unchanged maintained initializer proves an empty unique schema (no application
+relations/functions/types/ledger) before and after the existing pre-DDL role/default
+callback, checks the same creator/scoped search path, loads checksums and applies
+all0001..0273 with an empty expected ledger, then verifies the exact resulting
+ledger/ownership. Parent text casts and final-migration guard remain unchanged.
+There is no baseline first,0273 replay, forged ledger, disabled default or
+fixture-owned ACL revocation. Ordinary behavior baseline policy stays unchanged.
+
+`tests/postgres/notifications-role-access.pg-fixture.ts` owns explicit SELECT
+grants on these reviewed invoker dependencies for HTTP, Jobs and forward runtime:
+
+```text
+media_publication_projections    media_post_submissions
+media_video_publication_decisions media_video_analyses
+media_video_revisions            media_immutable_objects
+media_video_rights               media_video_safety_evidence
+media_video_review_holds         media_song_video_render_plans
+media_song_video_accepted_masters media_song_video_masters
+media_video_song_references
+```
+
+The exact chain is readable_notification_source_v1 → authorized_comment_branch_v1
+→ video_detail_access_v1. New explicit grants confer no media writes or audit
+authority. Jobs read metadata also includes these13 relations and the existing
+inbox read needed for delivery reconciliation; its schedule/run/writes/retry and
+financial gating are unchanged. Existing source/privacy/age/persona reads remain.
+HTTP retains only UPDATE(read_at) on inbox. Forward inbox/receipt SELECT/INSERT/
+UPDATE must come from the existing pre-DDL table defaults, not explicit grants
+that could disguise broken inheritance. Those broad shared-runtime defaults
+remain trusted capabilities; this fixture neither narrows them by ad hoc revokes
+nor proposes them as new serving authority.
+
+Real distinct non-owner/non-superuser LOGIN connections verify effective EXECUTE
+on authorized_comment_branch_v1(text,text), video_detail_access_v1(text,text),
+video_detail_id_safe_v1(text), post_slug_utf16_code_units(text),
+can_account_view_content_rating_v1(text,text), current_account_age_capability_v1(text)
+and current_account_age_evidence_v2(text); HTTP additionally checks
+readable_notification_source_v1(text,text), Jobs/forward deliver_comment_notification_v1(text)
+and eligible_comment_notification_recipient_v1(text). Existing PUBLIC EXECUTE may
+satisfy these exact functions. No blanket or new function grant is added; a failed
+effective check must name the missing capability for parent review.
+
+All four callers check effective table and column privilege absence on the three
+private tables, function EXECUTE absence on the two audit mutators and audit-run
+trigger function, no object ownership/owner membership, and actual42501 reads,
+DML/complete-run/item/cutover forgery and function calls. Migration0273 must supply
+the cleanup, including the forward defaults. No runtime receives operator grants.
+Private operator workflow rights remain separate in the table below.
+
+Required positives remain actual HTTP list/count/read, a fresh receipt-free and
+inbox-free fact delivered for the first time by each real Jobs and forward LOGIN,
+inherited inbox/receipt writes, terminal source/receipt mutation denial, an
+unrelated fixture-owner-created table accepting forward INSERT/UPDATE and refusing DELETE,
+HTTP source-ack/delete denial, and actual account-status-trigger erasure under
+the existing Telegram grants. Erasure may only null receipt references; fact and
+terminal history snapshots must remain identical. Test-owned synthetic missed
+publication setup is unchanged; these checks create no new producer policy.
+Source98 supplies the completed disposable first-time Jobs/forward/deletion/
+private-denial proof. Actual serving ownership/inheritance remains held; no
+local role fixture, prior native35 pass or source inspection clears it. The six/35-case
+counts/fences,6000-history plans, deadlines/locks and capacity slice are unchanged.
+
 The focused test creates four task-unique `notifications_acl_<random>` LOGIN
 roles only on the dedicated disposable fixture. Their random role-only
 passwords stay in memory and are removed with the roles, so the same fixture
 can run under the maintained CI password authentication without reusing or
 recording the administrator credential. Its forward role receives the
-existing table default **before migration 0269 creates the new tables**. The
+existing table default **before full0001..0273 application DDL**. The
 test executes real HTTP list/read transport and repositories, the actual Jobs
 declaration/repository, and an account-status deletion that invokes the actual
 Telegram fence and Notifications cleanup triggers. Authentication is an owned
@@ -81,7 +182,7 @@ be a serving runtime; unresolved effective authority blocks admission. This
 candidate neither assumes safe owner membership nor silently reconfigures it.
 All SQL remains unapplied pending that independent final migration/role review.
 
-`notifications-video-acl.pg-fixture.ts` adds UNRUN proof source to the maintained
+`notifications-video-acl.pg-fixture.ts` supplies proof source to the maintained
 Notifications partition: real separate LOGIN runtime/operator connections,
 direct plus inherited named table/function defaults installed before candidates,
 PUBLIC table defaults, actual forged complete-run/item/cutover DML and mutator
@@ -96,5 +197,42 @@ escaped the provided layer's lifetime and used an already closed session.
 That failed case is not completed role/workflow proof. The successor runs the
 entire audit action inside its operator layer, and drain/cutover/reconciliation
 inside the separately trusted migration layer. No ACL or adapter is weakened.
-Parent alone reruns and records the proof on fresh synthetic fixtures; the
-repaired successor is UNRUN and no completed serving-role acceptance is claimed.
+Parent subsequently proved the exact73-path repair with20pass/560assertions and
+the precise completion sentinel, including that controlled LOGIN workflow. Its
+receipt remains distinct from the failed predecessor and from the current merge.
+The current role case additionally performs real delivered-video list/read,
+first-read replay, recovery/duplicate delivery and account erasure under the
+non-owner runtime LOGIN, preserving terminal outcomes and nulling only the erased
+inbox reference. Parent's fresh79-path35-case run passed this LOGIN case and the
+other19 prior cases, but all15 new matrix cases failed at immutable persona
+binding before their intended behavior (20pass/15fail/574 assertions, exit1,
+no marker). In that earlier fixture, initial delivery used the administrative
+fixture; empty
+recovery and terminal replay do not prove first-time Jobs delivery privileges.
+That positive role proof was then open; source98's separate hardening case now
+supplies it locally. Parent later passed the exact80-path
+35-case source, then generated baseline/reset/foundation-catalog artifacts. The
+exact83-path run returned34pass/1fail/1259assertions,exit1,no marker: the ACL
+case failed its first private-table privilege denial before the remaining
+denial/operator workflow. The baseline strips privileges and lacks0273's one-shot
+ACL block; existing functions previously caused that migration to be skipped.
+This is fixture-initialization evidence, not a live ACL defect.
+
+The ACL case alone now selects explicit full maintained migrations. It requires
+catalog checks showing no relations/functions/types/ledger before and after
+the unchanged pre-DDL callback creates its LOGIN roles, inherited membership and
+hostile schema-scoped forward defaults. Admin and scoped connections must agree
+on schema and creating role. The checksum loader supplies all0001–0273 and the
+maintained runner receives an exact empty expected ledger. Exact resulting
+ledger checksums and ledger/private-table ownership are verified before the
+existing denial assertions and separate operator grants/cutover. No test-owned
+revocations, defaults disabling or ledger fabrication are added. Existing
+prepositive operator grant isolation and unrelated forward-default probes stay
+unchanged. This initialization and controlled workflow completed in source98's
+native35 run; baseline privilege parity and actual serving admission remain unproved.
+
+Ordinary behavior fixtures continue using the privilege-stripped generated
+baseline. This repair establishes no effective-privilege parity for baseline
+replay and changes no generation/security-projection policy. Parent alone
+executes fresh synthetic fixtures; actual serving-role ownership, inheritance,
+final migration review and admission still require independent proof.

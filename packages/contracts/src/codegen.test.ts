@@ -12,7 +12,9 @@ import {
 } from "./errors.ts";
 import { Cents } from "./money.ts";
 import { diffBreaking, type OpenApiDocument } from "./openapi-diff.ts";
+import { PublicPostRouteResultV1, PublicPostRouteV1 } from "./public-post-routes.ts";
 import { registry } from "./registry.ts";
+import { LocalizedPost, VideoPostProjectionV1, VideoSoundtrackProjectionV1 } from "./v1.ts";
 
 const fixture = endpoint({
   method: "POST",
@@ -23,6 +25,294 @@ const fixture = endpoint({
   errors: [RateLimited],
 });
 const fixtureDoc = () => generateOpenApi([fixture]);
+
+type TestSchema = Record<string, unknown>;
+const responseDocument = (schema: TestSchema): OpenApiDocument => ({
+  openapi: "3.1.0",
+  info: { title: "reference ownership", version: "1" },
+  paths: {
+    "/reference": {
+      get: {
+        operationId: "get_reference",
+        responses: {
+          "200": { content: { "application/json": { schema } } },
+        },
+      },
+    },
+  },
+});
+const responseEndpoint = (response: Schema.Top, path = "/reference") =>
+  endpoint({
+    method: "GET",
+    path,
+    auth: Auth.public(),
+    response,
+  });
+
+describe("published schema reference ownership", () => {
+  test("shared definition names remain independent across operations and request locations", () => {
+    const string = Schema.Struct({ value: Schema.String }).annotate({ identifier: "Shared" });
+    const number = Schema.Struct({ value: Schema.Number }).annotate({ identifier: "Shared" });
+    const source = (second: Schema.Top) => [
+      responseEndpoint(Schema.Struct({ a: string, b: string }), "/first"),
+      endpoint({
+        method: "POST",
+        path: "/second",
+        auth: Auth.public(),
+        request: {
+          query: Schema.Struct({ a: string, b: string }),
+          body: Schema.Struct({ a: number, b: number }),
+        },
+        response: Schema.Struct({ a: second, b: second }),
+      }),
+    ];
+    const before = generateOpenApi(source(number));
+    expect(Object.keys(before.components?.schemas ?? {})).toHaveLength(4);
+    expect(diffBreaking(before, structuredClone(before))).toEqual([]);
+    const after = generateOpenApi(source(string));
+    expect(diffBreaking(before, after)).toEqual([
+      "response POST /second: enum constraint removed at a.value",
+      "response POST /second: enum constraint removed at b.value",
+    ]);
+    const standalone = schemaToOpenApi(Schema.Struct({ a: string, b: string }));
+    expect(standalone.$defs).toHaveProperty("Shared");
+    expect(JSON.stringify(standalone)).toContain("#/$defs/Shared");
+    expect(JSON.stringify(before)).not.toContain('"$ref":"#/$defs/');
+  });
+
+  test("JSON Pointer escaping survives publication and standalone client decoding", async () => {
+    const shared = Schema.Struct({ value: Schema.String }).annotate({ identifier: "a/~b % #" });
+    const spec = responseEndpoint(Schema.Struct({ first: shared, second: shared }), "/escaped");
+    const document = generateOpenApi([spec]);
+    expect(diffBreaking(document, structuredClone(document))).toEqual([]);
+    const text = generateClient({ Escaped: spec });
+    expect(text).toContain("readonly first: { readonly value: string }");
+    const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(text);
+    const generated = await import(`data:text/javascript;base64,${btoa(javascript)}`);
+    let payload: unknown = { first: { value: "one" }, second: { value: "two" } };
+    const client = generated.createPirateApiClient("https://fixture.invalid", {
+      fetchImpl: async () => Response.json(payload),
+    });
+    expect(await client.get_escaped()).toEqual(payload);
+    payload = { first: { value: 1 }, second: { value: "two" } };
+    await expect(client.get_escaped()).rejects.toMatchObject({
+      _tag: "ApiClientResponseValidationError",
+      operation: "get_escaped",
+      path: "expected string",
+    });
+  });
+
+  test("retained inline definitions require explicit historical ownership and stay byte-exact", () => {
+    const shared = Schema.Struct({ value: Schema.String }).annotate({ identifier: "Shared" });
+    const schema = Schema.Struct({ first: shared, second: shared });
+    const retained = responseDocument(schemaToOpenApi(schema));
+    const bytes = JSON.stringify(retained);
+    const published = generateOpenApi([responseEndpoint(schema)]);
+    expect(() => diffBreaking(retained, published)).toThrow("Unresolved OpenAPI schema reference");
+    expect(
+      diffBreaking(retained, published, { oldSchemaReferences: "embedded-definitions" }),
+    ).toEqual([]);
+    expect(JSON.stringify(retained)).toBe(bytes);
+    expect(() =>
+      diffBreaking(published, retained, { oldSchemaReferences: "embedded-definitions" }),
+    ).toThrow("Unresolved OpenAPI schema reference");
+  });
+
+  test("schema keywords used as property names are not mistaken for references or annotations", () => {
+    const shared = Schema.Struct({
+      $ref: Schema.String,
+      const: Schema.Struct({ value: Schema.String }),
+    }).annotate({ identifier: "Keywords" });
+    const document = generateOpenApi([responseEndpoint(Schema.Struct({ a: shared, b: shared }))]);
+    expect(diffBreaking(document, structuredClone(document))).toEqual([]);
+    const changed = Schema.Struct({
+      $ref: Schema.String,
+      const: Schema.Struct({ value: Schema.NullOr(Schema.String) }),
+    }).annotate({ identifier: "Keywords" });
+    const candidate = generateOpenApi([
+      responseEndpoint(Schema.Struct({ a: changed, b: changed })),
+    ]);
+    expect(diffBreaking(document, candidate)).toEqual([
+      "response GET /reference: type changed from string to null at a.const.value",
+      "response GET /reference: type changed from string to null at b.const.value",
+    ]);
+  });
+
+  test("nested definitions and productive recursive references terminate and still detect changes", () => {
+    const schema: TestSchema = {
+      $ref: "#/components/schemas/Tree/$defs/Node",
+    };
+    const make = (type: string): OpenApiDocument => ({
+      ...responseDocument(schema),
+      components: {
+        schemas: {
+          Tree: {
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  children: {
+                    type: "array",
+                    items: { $ref: "#/components/schemas/Tree/$defs/Node" },
+                  },
+                  value: { $ref: "#/components/schemas/Tree/$defs/Nested/$defs/Value" },
+                },
+                required: ["children", "value"],
+                additionalProperties: false,
+              },
+              Nested: { $defs: { Value: { type } } },
+            },
+          },
+        },
+      },
+    });
+    expect(diffBreaking(make("string"), make("string"))).toEqual([]);
+    expect(diffBreaking(make("string"), make("number"))).toEqual([
+      "response GET /reference: type changed from string to number at value",
+    ]);
+    interface Tree {
+      readonly value: string;
+      readonly children: ReadonlyArray<Tree>;
+    }
+    const tree: Schema.Codec<Tree> = Schema.Struct({
+      value: Schema.String,
+      children: Schema.Array(Schema.suspend((): Schema.Codec<Tree> => tree)),
+    });
+    const emitted = generateOpenApi([responseEndpoint(tree)]);
+    expect(diffBreaking(emitted, structuredClone(emitted))).toEqual([]);
+  });
+
+  test("unresolved, external, non-schema, invalid pointer and unproductive cycle references fail closed", () => {
+    const valid = responseDocument({ type: "string" });
+    for (const reference of [
+      "#/$defs/missing",
+      "https://fixture.invalid/schema",
+      "#/info",
+      "#/bad~2pointer",
+      "#/bad%ZZ",
+    ]) {
+      const invalid = responseDocument({ $ref: reference });
+      expect(() => diffBreaking(valid, invalid)).toThrow(/OpenAPI/);
+    }
+    const cycle = {
+      ...responseDocument({ $ref: "#/components/schemas/A" }),
+      components: {
+        schemas: { A: { $ref: "#/components/schemas/B" }, B: { $ref: "#/components/schemas/A" } },
+      },
+    };
+    expect(() => diffBreaking(valid, cycle)).toThrow("Unproductive OpenAPI reference cycle");
+    const extra = structuredClone(valid);
+    extra.paths["/new"] = {
+      get: {
+        responses: {
+          "200": { content: { "application/json": { schema: { $ref: "#/$defs/missing" } } } },
+        },
+      },
+    };
+    expect(() => diffBreaking(valid, extra)).toThrow("Unresolved OpenAPI schema reference");
+    expect(() => diffBreaking(valid, responseDocument({ $dynamicRef: "#node" }))).toThrow(
+      "Unsupported OpenAPI reference keyword",
+    );
+    const siblings = { ...valid, components: { schemas: { Text: { type: "string" } } } };
+    expect(() =>
+      diffBreaking(valid, {
+        ...siblings,
+        paths: responseDocument({ $ref: "#/components/schemas/Text", minLength: 1 }).paths,
+      }),
+    ).toThrow("Unsupported OpenAPI $ref sibling");
+  });
+
+  test("retained public route shape reports both author fields and preserves age/video alternatives", () => {
+    const [original, song] = VideoSoundtrackProjectionV1.members;
+    const oldSoundtrack = Schema.Union([
+      Schema.Struct({ ...original.fields, origin_author_persona_id: Schema.String }),
+      Schema.Struct({
+        ...song.fields,
+        song_reference: Schema.Struct({
+          ...song.fields.song_reference.fields,
+          song_author_persona_id: Schema.String,
+        }),
+      }),
+    ]);
+    const oldVideo = Schema.Struct({ ...VideoPostProjectionV1.fields, soundtrack: oldSoundtrack });
+    const oldPost = Schema.Struct({
+      ...LocalizedPost.fields,
+      video: Schema.optional(Schema.NullOr(oldVideo)),
+    });
+    const oldContent = Schema.Struct({
+      kind: Schema.Literal("content"),
+      post_id: Schema.String,
+      content: oldPost,
+      route: Schema.NullOr(PublicPostRouteV1),
+    });
+    const age = PublicPostRouteResultV1.members[2];
+    const retained = responseDocument(schemaToOpenApi(Schema.Union([oldContent, age])));
+    const current = generateOpenApi([responseEndpoint(PublicPostRouteResultV1)]);
+    const context = { oldSchemaReferences: "embedded-definitions" } as const;
+    expect(diffBreaking(retained, current, context)).toEqual([
+      "response GET /reference: type changed from string to null at content.video.soundtrack.origin_author_persona_id",
+      "response GET /reference: type changed from string to null at content.video.soundtrack.song_reference.song_author_persona_id",
+    ]);
+    const video = PublicPostRouteResultV1.members[1];
+    const strictVideo = Schema.Struct({
+      ...video.fields,
+      content: Schema.Struct({
+        ...video.fields.content.fields,
+        video: oldVideo,
+      }),
+    });
+    const specialization = generateOpenApi([
+      responseEndpoint(Schema.Union([oldContent, strictVideo, age])),
+    ]);
+    expect(diffBreaking(retained, specialization, context)).toEqual([]);
+    const changedAge = Schema.Struct({
+      ...age.fields,
+      locked: Schema.Struct({
+        ...age.fields.locked.fields,
+        content_rating: Schema.String,
+      }),
+    });
+    const ageChanged = generateOpenApi([
+      responseEndpoint(Schema.Union([oldContent, strictVideo, changedAge])),
+    ]);
+    expect(diffBreaking(specialization, ageChanged)).toEqual([
+      "response GET /reference: enum constraint removed at locked.content_rating",
+    ]);
+    const removedAge = generateOpenApi([responseEndpoint(Schema.Union([oldContent, strictVideo]))]);
+    expect(diffBreaking(current, removedAge)).toEqual([]);
+    // Removing an existing output alternative is allowed; adding it back must
+    // detect the locked payload, rather than claiming content was newly added.
+    expect(diffBreaking(specialization, removedAge)).toEqual([]);
+    expect(diffBreaking(removedAge, specialization).length).toBeGreaterThan(0);
+  });
+
+  test("request and response union directions remain opposite with referenced alternatives", () => {
+    const a = Schema.Struct({ kind: Schema.Literal("a"), value: Schema.String }).annotate({
+      identifier: "A",
+    });
+    const b = Schema.Struct({ kind: Schema.Literal("b"), value: Schema.Number }).annotate({
+      identifier: "B",
+    });
+    const source = (both: boolean) =>
+      endpoint({
+        method: "POST",
+        path: "/union",
+        auth: Auth.public(),
+        request: { body: Schema.Struct({ first: both ? Schema.Union([a, b]) : a, second: a }) },
+        response: Schema.Struct({ first: both ? Schema.Union([a, b]) : a, second: a }),
+      });
+    const narrow = generateOpenApi([source(false)]);
+    const wide = generateOpenApi([source(true)]);
+    expect(
+      diffBreaking(narrow, wide).every((message) => message.startsWith("response POST /union:")),
+    ).toBe(true);
+    expect(diffBreaking(narrow, wide).length).toBeGreaterThan(0);
+    expect(
+      diffBreaking(wide, narrow).every((message) => message.startsWith("request POST /union:")),
+    ).toBe(true);
+    expect(diffBreaking(wide, narrow).length).toBeGreaterThan(0);
+  });
+});
 
 describe("codegen pipeline", () => {
   test("registry round-trips: every endpoint appears in OpenAPI, route table, client", () => {
@@ -438,7 +728,7 @@ describe("openapi breaking-change diff", () => {
 
     expect(diffBreaking(withEnum(["a", "b"]), withEnum(["a"]))).toEqual([]);
     expect(diffBreaking(withEnum(["a"]), withEnum(["a", "b"]))).toContain(
-      'response POST /echo/{message}: enum value added: "b"',
+      'response POST /echo/{message}: enum value added: "b" at message',
     );
   });
 

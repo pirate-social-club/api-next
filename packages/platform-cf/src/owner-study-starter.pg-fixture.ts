@@ -345,7 +345,7 @@ export async function fixture(use: (f: Fixture) => Promise<void>) {
   }
 }
 
-export async function pendingGuest(f: Fixture, serial: number) {
+export async function pendingGuest(f: Pick<Fixture, "admin">, serial: number) {
   const credentialId = bytesBase64Url(randomBytes(16)),
     digest = hash(randomBytes(32));
   const ownerId = `owner_00000000-0000-0000-0000-${String(serial).padStart(12, "0")}`;
@@ -361,7 +361,7 @@ export async function pendingGuest(f: Fixture, serial: number) {
   return { ownerId, credentialId, digest };
 }
 export async function confirmGuest(
-  f: Fixture,
+  f: Pick<Fixture, "admin">,
   proof: Awaited<ReturnType<typeof pendingGuest>>,
   carried: readonly Awaited<ReturnType<typeof pendingGuest>>[] = [proof],
 ) {
@@ -406,7 +406,7 @@ export async function confirmGuest(
     digest: proof.digest,
   };
 }
-export async function seedGuest(f: Fixture, serial: number) {
+export async function seedGuest(f: Pick<Fixture, "admin">, serial: number) {
   return await confirmGuest(f, await pendingGuest(f, serial));
 }
 export async function reserve(f: Fixture, access: GuestLearningAccess, key: string, units = 24) {
@@ -497,7 +497,12 @@ export async function financialFingerprint(f: Fixture) {
     ).rows;
   return rows;
 }
-export async function translation(f: Fixture, index: number, helper: string, band: "A1" | "B1") {
+export async function translation(
+  f: Pick<Fixture, "admin">,
+  index: number,
+  helper: string,
+  band: "A1" | "B1",
+) {
   const id = `translation-${helper}-${band}-${index}`;
   const patch = {
     exercise_version_id: id,

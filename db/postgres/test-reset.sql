@@ -18,6 +18,7 @@ TRUNCATE TABLE
   "action_grants",
   "action_intents",
   "active_subject_key_bindings",
+  "activity_completion_decisions",
   "activity_qualifications",
   "activity_registry",
   "age_verification_ceremony_attempts",
@@ -362,6 +363,8 @@ TRUNCATE TABLE
   "namespace_ownership_start_reservations",
   "nationality_ceremony_attempts",
   "nationality_requirement_states",
+  "notification_inbox",
+  "notification_publication_deliveries",
   "observations",
   "operator_managed_root_registry_current",
   "operator_managed_root_registry_versions",
@@ -514,6 +517,9 @@ TRUNCATE TABLE
   "users",
   "verification_completion_attempts",
   "verification_start_reservations",
+  "video_alias_audit_items_v1",
+  "video_alias_audit_runs_v1",
+  "video_notification_cutovers_v1",
   "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
 

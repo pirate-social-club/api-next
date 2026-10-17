@@ -27,7 +27,7 @@ export function makeNotificationDeliveryStoreFromDb(db: ControlPlaneDb["Service"
     sourceEventId: string;
   }) {
     const rows = yield* db.withTransaction((tx) =>
-      tx.execute({
+      tx.execute<{ result: unknown }>({
         label: "notifications.deliver",
         text: "SELECT deliver_comment_notification_v1($1) AS result",
         values: [input.sourceEventId],

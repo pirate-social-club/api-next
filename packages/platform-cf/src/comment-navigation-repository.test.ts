@@ -13,7 +13,7 @@ const locked = {
   kind: "age_locked",
   content_rating: "adult_18",
   next_action: { kind: "verify_minimum_age", minimum_age: 18 },
-};
+} as const;
 const document = {
   kind: "available",
   post_id: "post",

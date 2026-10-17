@@ -3,10 +3,13 @@ import { canonicalBodyHash } from "@pirate/application/use-cases/content/common"
 import { canonicalTextModerationInput } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommentNavigationStore } from "./comment-navigation-repository.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneNotificationStore } from "./notifications-repository.ts";
+import {
+  initializeNotificationsInboxSchema,
+  type NotificationsInboxInitialization,
+} from "./notifications-schema-init.pg-fixture.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository.ts";
@@ -15,6 +18,7 @@ const connection = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 export async function withInbox(
   use: (fixture: Awaited<ReturnType<typeof setup>>) => Promise<void>,
   beforeMigration?: (admin: Client, schema: string, url: string) => Promise<() => Promise<void>>,
+  initialization: NotificationsInboxInitialization = "baseline",
 ) {
   if (!connection) throw new Error("Postgres test URL required");
   const schema = `api_next_notifications_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -25,35 +29,43 @@ export async function withInbox(
   url.searchParams.set("options", `-c search_path=${schema}`);
   let cleanup: (() => Promise<void>) | undefined;
   try {
-    // Configure forward ACLs before either an old baseline plus 0269 or a
-    // regenerated baseline containing 0269 creates the new tables.
-    cleanup = await beforeMigration?.(admin, schema, url.toString());
-    await applyPostgresTestBaselineConnection({ connectionString: url.toString() });
+    await initializeNotificationsInboxSchema({
+      mode: initialization,
+      admin,
+      schema,
+      connectionString: url.toString(),
+      beforeApplicationDdl: async () => {
+        cleanup = await beforeMigration?.(admin, schema, url.toString());
+      },
+    });
     await admin.query(`SET search_path TO "${schema}"`);
-    // Provisional migration is applied after the tracked baseline. The parent
-    // regenerates the baseline only after its disposable PG17 review.
-    const installed = await admin.query("SELECT to_regclass('notification_inbox') AS installed");
-    if (installed.rows[0].installed === null)
-      await admin.query(
-        await Bun.file(
-          new URL("../../../db/postgres/migrations/0269_notifications_inbox.sql", import.meta.url),
-        ).text(),
-      );
-    // Candidate-only overlay until the parent resolves actual migration order.
-    // A regenerated accepted baseline must already contain these functions.
-    const video = await admin.query(
-      "SELECT to_regprocedure('video_publication_post_id_v1(text,text)') AS installed",
-    );
-    if (video.rows[0].installed === null) {
-      for (const candidate of [
-        "notifications-video-destination.sql",
-        "notifications-video-alias-audit.sql",
-      ]) {
+    if (initialization === "baseline") {
+      // Compatibility with older behavior baselines only. An integrated
+      // generated baseline already contains these objects; it is not ACL proof.
+      const installed = await admin.query("SELECT to_regclass('notification_inbox') AS installed");
+      if (installed.rows[0].installed === null)
         await admin.query(
           await Bun.file(
-            new URL(`../../../db/postgres/candidates/${candidate}`, import.meta.url),
+            new URL(
+              "../../../db/postgres/migrations/0271_notifications_inbox.sql",
+              import.meta.url,
+            ),
           ).text(),
         );
+      const video = await admin.query(
+        "SELECT to_regprocedure('video_publication_post_id_v1(text,text)') AS installed",
+      );
+      if (video.rows[0].installed === null) {
+        for (const candidate of [
+          "0272_notifications_video_destination.sql",
+          "0273_notifications_video_alias_audit.sql",
+        ]) {
+          await admin.query(
+            await Bun.file(
+              new URL(`../../../db/postgres/migrations/${candidate}`, import.meta.url),
+            ).text(),
+          );
+        }
       }
     }
     await use(await setup(admin, url.toString()));

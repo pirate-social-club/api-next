@@ -22,6 +22,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "notifications-postgres-complete\n",
   },
   {
+    name: "postgres activity completion",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_ACTIVITY_COMPLETION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-activity-completion-suite-complete",
+    contents: "api-next-control-plane-postgres-activity-completion-suite-complete\n",
+  },
+  {
     name: "rating reconciliation",
     path:
       process.env.CONTROL_PLANE_POSTGRES_RATING_RECONCILIATION_SENTINEL ??

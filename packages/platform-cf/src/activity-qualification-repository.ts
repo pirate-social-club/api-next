@@ -22,6 +22,7 @@ import {
   recomputeActivityStreak,
 } from "@pirate/domain";
 import { Effect, type Layer, Schema } from "effect";
+import { activityStreakCandidatesSql } from "./activity-streak-candidates-sql.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -1226,28 +1227,23 @@ const leaderboard = (
 
       const rows = yield* db.execute<Row>({
         label: "activity-qualification.leaderboard.read",
-        text: `WITH ranked AS (
-                 SELECT streak.community_id, streak.account_id, streak.current_count,
-                        streak.best_count, streak.started_day, streak.last_day,
-                        streak.total_days, presentation.persona_id,
+        text: `WITH candidates AS (${activityStreakCandidatesSql(
+          postId === null ? "community" : "song",
+          {
+            communityId: "$1",
+            postId: "$2",
+            readAt: postId === null ? "$2" : "$3",
+          },
+        )}), ranked AS (
+                 SELECT candidates.*,
                         rank() OVER (
-                          ORDER BY streak.current_count DESC, streak.best_count DESC
+                          ORDER BY current_count DESC, best_count DESC
                         ) AS rank
-                   FROM ${postId === null ? "community_streaks" : "song_streaks"} AS streak
-                   JOIN persona_activity_presentations AS presentation
-                     ON presentation.community_id=streak.community_id
-                    AND presentation.account_id=streak.account_id
-                  WHERE streak.community_id=$1
-                    ${postId === null ? "" : "AND streak.post_id=$2"}
-                    AND streak.active_until_at > $${postId === null ? "2" : "3"}::timestamptz
+                   FROM candidates
                )
-               SELECT ranked.*, profile.display_name, profile.avatar_ref,
+               SELECT ranked.*,
                       handle.display_identifier AS primary_public_handle
                  FROM ranked
-                 JOIN personas AS persona ON persona.persona_id=ranked.persona_id
-                                      AND persona.account_id=ranked.account_id
-                                      AND persona.status='active'
-                 JOIN persona_profiles AS profile ON profile.persona_id=ranked.persona_id
                  LEFT JOIN LATERAL (
                    SELECT candidate.display_identifier
                      FROM handle_grants AS candidate

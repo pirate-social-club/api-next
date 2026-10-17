@@ -1,4 +1,4 @@
-/** Parent's predecessor LOGIN workflow failed; repaired successor is UNRUN here.
+/** ACL-only full-migration fixture; repaired initialization is UNRUN.
  * Parent alone executes on its disposable PG fixture. */
 import { expect } from "bun:test";
 import { Effect } from "effect";
@@ -222,9 +222,93 @@ export async function proveNotificationsVideoPrivateAcl(
           )
         ).rows,
       ).toEqual([{ value: 7, function_value: 7 }]);
+      // Real post-cutover video delivery/read/recovery/erasure under this LOGIN,
+      // after private table/function revocation and without owner membership.
+      const videos = (
+        await f.admin.query<{ post_id: string; community_id: string; author_user_id: string }>(
+          "SELECT post_id,community_id,author_user_id FROM posts WHERE post_type='video' AND status='published'",
+        )
+      ).rows;
+      expect(videos).toHaveLength(1);
+      const video = videos[0];
+      if (!video) throw new Error("Published video role fixture required");
+      const posted = await f.submit(
+        "acl-video-current",
+        undefined,
+        "inbox-author",
+        false,
+        video.post_id,
+        video.community_id,
+      );
+      if (posted.kind !== "created" && posted.kind !== "replay")
+        throw new Error("Real video comment publication required");
+      const fact = (
+        await f.admin.query<{ outbox_event_id: string }>(
+          "SELECT outbox_event_id FROM content_publication_outbox WHERE submission_id=$1 AND event_type='comment_notification'",
+          [posted.snapshot.submission_id],
+        )
+      ).rows[0];
+      if (!fact) throw new Error("Real video notification fact required");
+      const serving = makeControlPlaneNotificationStore(
+        makeDirectPostgresControlPlaneLayer(runtimeUrl),
+      );
+      const page = await f.run(serving.list({ recipientUserId: video.author_user_id }));
+      expect(page.unread_count).toBe(1);
+      expect(page.items).toHaveLength(1);
+      const item = page.items[0];
+      if (!item) throw new Error("Role-readable video inbox item required");
+      const read = await f.run(
+        serving.read({
+          recipientUserId: video.author_user_id,
+          notificationId: item.notification_id,
+        }),
+      );
+      expect(
+        await f.run(
+          serving.read({
+            recipientUserId: video.author_user_id,
+            notificationId: item.notification_id,
+          }),
+        ),
+      ).toEqual(read);
+      expect(await f.run(serving.recover())).toMatchObject({ examined: 0, processed: 0 });
+      expect(await f.run(serving.deliver({ sourceEventId: fact.outbox_event_id }))).toEqual({
+        processed: false,
+        delivered: true,
+      });
+      const terminal = (
+        await f.admin.query(
+          "SELECT to_jsonb(d)-'notification_id' AS retained FROM notification_publication_deliveries d WHERE source_event_id=$1",
+          [fact.outbox_event_id],
+        )
+      ).rows;
+      await runtime.query("UPDATE users SET status='deleted' WHERE user_id=$1", [
+        video.author_user_id,
+      ]);
+      expect(
+        (
+          await f.admin.query(
+            "SELECT notification_id,to_jsonb(d)-'notification_id' AS retained FROM notification_publication_deliveries d WHERE source_event_id=$1",
+            [fact.outbox_event_id],
+          )
+        ).rows,
+      ).toEqual([{ notification_id: null, retained: terminal[0].retained }]);
+      expect(
+        (
+          await runtime.query(
+            "SELECT count(*)::int AS n FROM notification_inbox WHERE recipient_user_id=$1",
+            [video.author_user_id],
+          )
+        ).rows[0].n,
+      ).toBe(0);
+      expect(await f.run(serving.deliver({ sourceEventId: fact.outbox_event_id }))).toEqual({
+        processed: false,
+        delivered: true,
+      });
+      await denied("SELECT * FROM video_notification_cutovers_v1");
     },
     async (admin, schema, scopedUrl) => {
-      // BEFORE baseline and BOTH candidates: exercise direct plus inherited
+      // BEFORE all application migrations: exercise direct plus inherited
       // named table/function defaults, and PUBLIC table defaults.
       await admin.query(`CREATE ROLE "${inheritedRole}" NOLOGIN`);
       for (const role of [runtimeRole, operatorRole])
@@ -255,5 +339,6 @@ export async function proveNotificationsVideoPrivateAcl(
         }
       };
     },
+    "full_migrations",
   );
 }

@@ -29,22 +29,50 @@ test("private Guest stages are absent unless a reviewed composition is supplied"
     guest: null,
     released: 0,
   });
+  let guestCompositionCalls = 0;
+  const guestComposition = makeGuestStudyRecoveryComposition(
+    inertGuestRuntime,
+    inertGuestDeleteBucket,
+  );
+  const declarations = makeJobsWorkerDeclarations(
+    {},
+    "https://rpc.example",
+    { enabled: false },
+    "development",
+    null,
+    false,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    () => {
+      guestCompositionCalls++;
+      return guestComposition();
+    },
+  );
+  expect(declarations.map(({ name, lane, writes }) => ({ name, lane, writes }))).toEqual([
+    {
+      name: "notifications.recover-publications",
+      lane: "notification-delivery",
+      writes: [
+        "postgres:notification_inbox",
+        "postgres:notification_publication_deliveries",
+        "postgres:content_publication_outbox",
+      ],
+    },
+  ]);
   expect(
-    makeJobsWorkerDeclarations(
-      {},
-      "https://rpc.example",
-      { enabled: false },
-      "development",
-      null,
-      false,
-      undefined,
-      undefined,
-      false,
-      undefined,
-      undefined,
-      makeGuestStudyRecoveryComposition(inertGuestRuntime, inertGuestDeleteBucket),
-    ),
+    declarations
+      .flatMap(({ reads, writes }) => [...reads, ...writes])
+      .filter(
+        (resource) =>
+          resource.startsWith("postgres:guest_") ||
+          resource.startsWith("postgres:learner_audio_") ||
+          !resource.startsWith("postgres:"),
+      ),
   ).toEqual([]);
+  expect(guestCompositionCalls).toBe(0);
 });
 test("one real combined registry declaration owns shared tables and raw storage is unused", async () => {
   let deletes = 0,

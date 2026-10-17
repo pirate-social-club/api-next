@@ -1,5 +1,27 @@
 # Notifications → inline comment navigation intake
 
+## Current consumer guidance — 2026-10-17 supersession
+
+The parent-adopted [video destination contract](video-notification-navigation-contract-candidate.md),
+SHA256 `36e74a67ee280677436ff0d7ea7d1fd6243db3dc9432645a23a2402e2d03ec19`,
+extends this intake. It supersedes the earlier text/song-only destination and
+"video awaits an owned contract" guidance. The [video source handoff](notifications-video-source-handoff.md)
+owns the implemented API/producer boundaries, historical proof and remaining
+admission work. Video remains in adopted v1 scope. Implemented source does not
+authorize the controlled eligibility cutover, serving installation, fresh links
+or consuming Solid/runtime acceptance. Sealed historical records stay unchanged.
+
+Local-proof supersession, 2026-10-17: parent executed exact source98 after its
+independent preexecution acceptance. Native35 passed1348 assertions and hardening6
+passed418, both with fresh exact fences and zero remaining fixture resources.
+The disposable role proof includes real HTTP list/read, first Jobs and forward
+deliveries, private-evidence denial and deletion/history retention. The
+[video source handoff](notifications-video-source-handoff.md) binds source/log/timing
+receipts; [runtime privileges](notifications-runtime-privileges.md) bounds the role
+proof. Earlier UNRUN/unmeasured and5/1-failure statuses are historical.
+Required full/committed review, actual six-shard CI, consumer, serving-role,
+cutover and live gates remain pending; no fresh link or contract behavior changes.
+
 Parent-authored accepted contract: workspace
 .archive/v1-functional-repair-successor-20261015/adopted-feature-dispatch-20261016/comment-reply-navigation-contract-accepted.md.
 SHA256: 0b9b8c4282957eb7c190c7d97a68be13607e73f64c1cc8d53c03108ff87b4bba.
@@ -27,14 +49,32 @@ It refuses duplicate/cyclic/missing/foreign ancestry, wrong root/depth, depth
 above eight, unpublished target/ancestors, inactive viewer/community, unreadable
 post/membership/age and unsupported destinations. Target-only age denial returns
 only existing bare AgeLockedResourceV1; post/ancestor denial returns NotFound.
-Missing/invalid aliases and types outside existing text/song readers use the
-same redacted NotFound. post_path uses a real alias and the owned path encoder.
-Notifications currently suppress new delivery and omit current list/unread/read
-targets for unsupported parent types, including video, while preserving all
-historical facts, receipts/hrefs and terminal delivery outcomes. Video coverage
-remains held pending a real owned video-navigation contract; this source repair
-does not cut the feature by owner decision or establish MVP/runtime acceptance.
-It is authenticated navigation data, separate from public metadata eligibility.
+Text/song retain real persisted aliases and their owned canonical path encoder.
+Video `post_path` is the owned `/post/:postId`, independently of alias presence.
+The generated GetPublicPostCanonicalRouteById detail operation has an explicit
+video content/projection branch with `route:null`; it supplies no SEO/canonical,
+sitemap or song-activity metadata. Existing text/song metadata rules remain.
+
+Historical video `/posts/<encoded ID>` hrefs require literal persisted logical
+aliases. The generated GetPublicPostBySlug read resolves only that exact record
+and its recorded video identity under the same video guard. Never interpret a
+segment as an ID, fall through after a failed alias lookup, suffix/reassign a
+collision or require an alias for primary-ID detail. The alias may render the
+same video with `route:null`; it creates no canonical claim. Missing/invalid
+aliases, unsafe IDs and unsupported readers return redacted NotFound.
+Both video selectors share statement-snapshot current publication/revision,
+rights/hold/safety, membership, lifecycle and age authorization/projection.
+Existing detail age response is wrapped; navigation target-only age stays bare.
+
+The predecessor eligibility policy still suppresses video delivery and omits
+current video list/unread/read targets until the separately reviewed atomic
+old-policy drain/cutover and paired serving admission. Source includes that
+controlled successor; alias materialization alone never activates eligibility
+or event fan-out. After admitted cutover, delivery/list/unread/read share current
+video/branch authorization and redact access loss consistently. Old facts,
+receipt/href bytes and terminal outcomes remain immutable: no reset, re-enqueue
+or backfill of suppressed/omitted video events. This is a hold, not a feature cut.
+Authenticated navigation data remains separate from public metadata eligibility.
 Deleted-account author identity is null while retained published text stays
 readable. Every response is private/no-store; GET does not mark read.
 
@@ -50,12 +90,19 @@ The consuming Solid successor must implement these behaviors together:
 1. /comments/:id is a resolving entry alias with authenticated safe sign-in
    return. Resolve and enter post_path + ?comment=<encoded target>. No standalone
    comment content, fabricated ID URL or fragment-only destination.
-2. Preserve the comment query through canonical post redirects and use existing
-   authenticated text/song detail readers. Public SEO/metadata eligibility
-   stays separate from authenticated post_path.
+2. Preserve the comment query through text/song canonical redirects and retain
+   their existing authenticated readers/metadata. Consume the generated video
+   detail branch at primary `/post/:postId`, even without an alias. Exact-alias
+   video entry must establish its recorded post_id and match the resolver's
+   identity/primary path; raw alias equality is not identity proof. Plain public
+   video detail may render when independently authorized; a comment selector
+   uses the normal guarded sign-in/return and authenticated resolver. No public
+   comment-window preload or new video metadata follows from `route:null`.
 3. Seed all bounded windows, expand ancestors in order, render then focus/scroll
-   the actual inline target. Expose earlier omission and a View all reset for
-   ordinary root/thread lists. Never scan pages linearly.
+   the actual inline target on text, song and video. Detect the exact rendered
+   target; a fragment, player alone or missing target is not success. Expose
+   earlier omission and a View all reset for ordinary root/thread lists. Never
+   scan pages linearly.
 4. Bind SSR/hydration/cache/async state to session and target. Sign-out, account
    change, cancellation, NotFound, branch access/age loss must discard stale
    results/previews. No public caching or metadata for authenticated windows.
@@ -67,10 +114,15 @@ The consuming Solid successor must implement these behaviors together:
 Consuming evidence must cover beyond-first-page roots/replies, depth eight,
 equal timestamps, arrivals/hidden anchors, authorized cross-reader cursor use,
 membership/session changes, moderation/age loss, community closure, account
-erasure, missing/invalid aliases, unsupported parent readers and unauthenticated
-entry/return.
+erasure, missing/invalid/colliding aliases, primary video without an alias,
+literal historical video entry, unsupported readers and unauthenticated entry/return.
+Pending/unavailable playback must retain independently authorized inline reading;
+unrelated vote failures must not erase it. Rights/holds, both video age floors,
+reference privacy and deletion must fence detail, windows, continuations and focus.
 
-This writer changed no Solid source and enabled no fresh links. Parent must
-publish a new immutable generated client, obtain paired Solid intake/acceptance
-and reconcile fresh-link/capability activation. The full MVP requires durable
-delivery and a reachable intended inline target in the consuming Solid runtime.
+This writer changed no Solid source and enabled no fresh links. Parent prepared
+and package-verified immutable client0.121.0; its release/provenance binding and
+paired Solid intake/acceptance remain parent-owned. Follow the current video
+source handoff for exact gate failures and held cutover/serving eligibility.
+The full MVP requires durable delivery and a reachable intended inline target in
+the consuming Solid runtime.

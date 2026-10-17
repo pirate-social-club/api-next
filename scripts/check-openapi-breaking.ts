@@ -1,8 +1,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { diffBreaking, type OpenApiDocument } from "@pirate/contracts";
 
 const MAX_BASELINE_DOCUMENT_BYTES = 16 * 1024 * 1024;
+const RETAINED_BASELINE_SHA = "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799";
+const RETAINED_OPENAPI_SHA256 = "40d2c1d2756381fbe6c8d6d18b5169a503e911f4f81e07109e194e1c79c8d119";
+const verifiedRetainedBaselines = new WeakSet<OpenApiDocument>();
 
 export type BaselineEvent = "pull_request" | "push";
 
@@ -38,6 +42,32 @@ export interface BreakingChangePolicy {
 }
 
 const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+/** Tooling-only interpretation of one retained generator representation. */
+export function parseBaselineDocument(resolvedSha: string, rawText: string): OpenApiDocument {
+  if (!FULL_COMMIT_SHA.test(resolvedSha)) {
+    throw new Error(`Resolved baseline SHA must be a full lowercase commit SHA: ${resolvedSha}`);
+  }
+  const retained = resolvedSha === RETAINED_BASELINE_SHA;
+  if (
+    retained &&
+    createHash("sha256").update(rawText, "utf8").digest("hex") !== RETAINED_OPENAPI_SHA256
+  ) {
+    throw new Error(`Retained OpenAPI baseline artifact identity mismatch at ${resolvedSha}`);
+  }
+  // Identity is checked on raw UTF-8 before parsing, never on reserialized JSON.
+  const document = JSON.parse(rawText) as OpenApiDocument;
+  if (retained) {
+    const freeze = (value: unknown): void => {
+      if (typeof value !== "object" || value === null) return;
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    };
+    freeze(document);
+    verifiedRetainedBaselines.add(document);
+  }
+  return document;
+}
 
 function validateBreakingChangePolicy(
   policy: BreakingChangePolicy,
@@ -168,7 +198,15 @@ export function filterAllowedBreakingChanges(
     throw new Error(`Resolved baseline SHA must be a full lowercase commit SHA: ${baselineSha}`);
   }
   const waivers = validateBreakingChangePolicy(policy);
-  const violations = diffBreaking(oldDoc, newDoc);
+  const retained = baselineSha === RETAINED_BASELINE_SHA;
+  if (retained && !verifiedRetainedBaselines.has(oldDoc)) {
+    throw new Error("Retained OpenAPI baseline requires verified raw artifact ownership");
+  }
+  const violations = diffBreaking(
+    oldDoc,
+    newDoc,
+    retained ? { oldSchemaReferences: "embedded-definitions" } : {},
+  );
 
   // Map "METHOD /path" of removed operations back to their old operation ids
   // so a declared deprecation can retire exactly one entry.
@@ -275,19 +313,25 @@ function readBaselineDocument(baseSha: string, documentPath: string): BaselineDo
 // bootstrap case; all other baseline failures are fatal.
 const path = "apps/http-worker/src/generated/openapi.json";
 
-async function main(): Promise<void> {
-  const args = Bun.argv.slice(2);
+export async function runBreakingCheck(
+  args: readonly string[],
+  readBaseline: typeof readBaselineDocument = readBaselineDocument,
+  isAncestorOfHead: (commitSha: string) => boolean = isCommitAncestorOfHead,
+): Promise<void> {
   if (args.length !== 2 || args[0] !== "--base-sha" || args[1] === undefined) {
     throw new Error("Usage: bun scripts/check-openapi-breaking.ts --base-sha <commit>");
   }
   const baseSha = args[1];
-  const baseline = readBaselineDocument(baseSha, path);
+  const baseline = readBaseline(baseSha, path);
   if (baseline.text === undefined) {
+    if (baseline.resolvedSha === RETAINED_BASELINE_SHA) {
+      throw new Error("Retained OpenAPI baseline is missing its required artifact");
+    }
     console.log(`No ${path} existed at baseline ${baseSha}; treating as bootstrap.`);
     return;
   }
 
-  const oldDoc = JSON.parse(baseline.text) as OpenApiDocument;
+  const oldDoc = parseBaselineDocument(baseline.resolvedSha, baseline.text);
   const newDoc = JSON.parse(
     await readFile(process.env.OPENAPI_DOCUMENT_PATH ?? path, "utf8"),
   ) as OpenApiDocument;
@@ -298,7 +342,7 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as BreakingChangePolicy;
-  assertNoObsoleteBreakingChangeWaivers(policy, baseline.resolvedSha, isCommitAncestorOfHead);
+  assertNoObsoleteBreakingChangeWaivers(policy, baseline.resolvedSha, isAncestorOfHead);
   const breaks = filterAllowedBreakingChanges(oldDoc, newDoc, policy, baseline.resolvedSha);
   if (breaks.length > 0) {
     console.error(
@@ -310,7 +354,7 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main().catch((error: unknown) => {
+  runBreakingCheck(Bun.argv.slice(2)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
   });
