@@ -7,7 +7,9 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { makeControlPlaneSessionProductReadiness } from "./identity-repository.ts";
 import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   insertStudySongFixture,
@@ -367,6 +369,43 @@ suite("restricted Telegram practice identity", () => {
           racedGrant.accountId,
         ]),
       ).toBe(1);
+      // A recovered learner's association names its own promotable reservation, so a new
+      // bot keeps extending that same account instead of isolating the sender.
+      await startChat("study-community", "888");
+      const recovering = await open("study-community", "123", "888");
+      const recovered = restrictedGrant(await recovering.learners.enroll(recovering.lease));
+      await admin.query(
+        "INSERT INTO telegram_account_associations(telegram_user_id,account_id) VALUES('888',$1)",
+        [recovered.accountId],
+      );
+      await startChat("second-community", "888");
+      const recoveredElsewhere = await open("second-community", "456", "888");
+      expect(
+        restrictedGrant(await recoveredElsewhere.learners.enroll(recoveredElsewhere.lease))
+          .accountId,
+      ).toBe(recovered.accountId);
+      expect(await count("telegram_restricted_learners WHERE telegram_user_id='888'")).toBe(1);
+      // An ordinary session never admits a restricted account, even once its wallet is active.
+      const recoveredPersona = String(
+        (
+          await admin.query(
+            "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
+            [recovered.accountId],
+          )
+        ).rows[0]?.persona_id,
+      );
+      await activatePendingPersonaFixtures(admin, [recoveredPersona]);
+      expect(
+        await count(
+          "persona_wallet_assignments WHERE persona_id=$1 AND chain_account_kind='evm' AND status='active'",
+          [recoveredPersona],
+        ),
+      ).toBe(1);
+      expect(
+        await Effect.runPromise(
+          makeControlPlaneSessionProductReadiness(runtime).isReady(recovered.accountId),
+        ),
+      ).toBe(false);
       await connectBot("fourth-community", "1011");
       await startChat("fourth-community", "555");
       const exhausted = await open("fourth-community", "1011", "555");
