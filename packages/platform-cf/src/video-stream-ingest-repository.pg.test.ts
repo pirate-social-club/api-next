@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { videoPublicationPostId } from "../../application/src/video/publication-identity.ts";
 import { consumeVideoStreamIngest } from "../../application/src/video/stream-ingest.ts";
 import {
   prepareVideoStreamCopy,
@@ -30,6 +31,8 @@ import {
 } from "./video-publication.pg-fixture.ts";
 import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
@@ -40,7 +43,7 @@ async function fixture(
   use: (input: Awaited<ReturnType<typeof published>>, admin: Client) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres configuration missing");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_video_stream_ingest_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -68,8 +71,8 @@ async function published(connection: string) {
     decision,
     nextState: attachVideoDecision(finalized.state, analysis, decision),
   });
-  const publication = publishOriginalVideo(ready.state, "post-video-ingest");
-  await store.publish({
+  const publication = publishOriginalVideo(ready.state, await videoPublicationPostId(ready.state));
+  const persisted = await store.publish({
     observedEventSequence: ready.eventSequence,
     state: publication.state,
     decision,
@@ -84,11 +87,17 @@ async function published(connection: string) {
       canonicalSha256: frame.sha256,
     })),
   });
+  if (
+    "kind" in persisted ||
+    persisted.state.status !== "published" ||
+    persisted.state.postId === null
+  )
+    throw new Error("Fixture video publication missing");
   const ingest = makeVideoStreamIngestStore(layer, {
     leaseOwner: "delivery-fixture",
     leaseMs: 60_000,
   });
-  return { layer, ingest };
+  return { layer, ingest, postId: persisted.state.postId };
 }
 
 const deadlines = (now: number) => ({
@@ -104,9 +113,9 @@ const expire = (admin: Client) =>
 suite("video Stream ingest durable PostgreSQL", () => {
   test("publication access admits anonymous general video and denies adult, platform and open review holds", async () => {
     for (const mode of ["general", "adult", "platform", "review"] as const) {
-      await fixture(async ({ layer }, admin) => {
+      await fixture(async ({ layer, postId }, admin) => {
         const authorize = makeVideoPublicationAuthorization(layer);
-        const input = { postId: "post-video-ingest", communityId: community };
+        const input = { postId, communityId: community };
         if (mode === "adult")
           await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
             input.postId,
@@ -298,14 +307,14 @@ suite("video Stream ingest durable PostgreSQL", () => {
   });
 
   test("lost copy and lost completion responses converge on one encode and durable ready", async () => {
-    await fixture(async ({ layer, ingest }, admin) => {
+    await fixture(async ({ layer, ingest, postId }, admin) => {
       let copies = 0;
       const playbackAuthority = makeVideoPlaybackAuthority(layer);
       const resolve = (
-        postId = "post-video-ingest",
+        targetPostId = postId,
         communityId = community,
         playbackRef = "c".repeat(32),
-      ) => Effect.runPromise(playbackAuthority({ postId, communityId, playbackRef }));
+      ) => Effect.runPromise(playbackAuthority({ postId: targetPostId, communityId, playbackRef }));
       let ready = false;
       const services = {
         store: ingest,
@@ -358,12 +367,12 @@ suite("video Stream ingest durable PostgreSQL", () => {
         [operationId],
       );
       const communityId = String(publication.rows[0].community_id);
-      expect(await resolve("post-video-ingest", communityId)).toEqual({
+      expect(await resolve(postId, communityId)).toEqual({
         providerVideoId: "c".repeat(32),
       });
       expect(await resolve("foreign", communityId)).toBeNull();
-      expect(await resolve("post-video-ingest", "foreign")).toBeNull();
-      expect(await resolve("post-video-ingest", communityId, "d".repeat(32))).toBeNull();
+      expect(await resolve(postId, "foreign")).toBeNull();
+      expect(await resolve(postId, communityId, "d".repeat(32))).toBeNull();
       expect(
         (
           await admin.query(
@@ -381,11 +390,8 @@ suite("video Stream ingest durable PostgreSQL", () => {
         ).rows[0],
       ).toEqual({ state: "ready", provider_video_id: "c".repeat(32) });
       expect(
-        (
-          await admin.query(
-            "SELECT count(*)::int AS n FROM posts WHERE post_id='post-video-ingest'",
-          )
-        ).rows[0].n,
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_id=$1", [postId]))
+          .rows[0].n,
       ).toBe(1);
     });
   });
@@ -487,7 +493,7 @@ suite("video Stream ingest durable PostgreSQL", () => {
   });
 
   test("encoding failure atomically stops enrichment and preserves the published Post", async () => {
-    await fixture(async ({ ingest }, admin) => {
+    await fixture(async ({ ingest, postId }, admin) => {
       expect(
         await consumeVideoStreamIngest(effectIdentity, {
           store: ingest,
@@ -528,10 +534,13 @@ suite("video Stream ingest durable PostgreSQL", () => {
         ).rows[0].state,
       ).toBe("failed");
       expect(
-        (await admin.query("SELECT status FROM posts WHERE post_id='post-video-ingest'")).rows[0]
-          .status,
+        (await admin.query("SELECT status FROM posts WHERE post_id=$1", [postId])).rows[0].status,
       ).toBe("published");
       expect(await ingest.claim(effectIdentity)).toBeNull();
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

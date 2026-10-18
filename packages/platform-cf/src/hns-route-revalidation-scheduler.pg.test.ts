@@ -1,10 +1,12 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 mock.module("cloudflare:workers", () => ({
   DurableObject: class DurableObject {},
@@ -49,7 +51,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (client: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_hns_route_revalidation_scheduler_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -797,4 +799,8 @@ suite("HNS scheduler SQL regressions (Postgres)", () => {
       });
     });
   }, 30_000);
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

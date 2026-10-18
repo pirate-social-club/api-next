@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "./postgres-test-baseline.ts";
 import {
   loadPublicProfileBackfillPgDriver,
@@ -10,6 +10,8 @@ import {
 } from "./public-profile-backfill-pg.ts";
 import { runVeryStagingCommunityFixture } from "./very-staging-community-fixture.ts";
 import type { VeryStagingFixtureOptions } from "./very-staging-community-fixture-options.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -46,7 +48,7 @@ async function withSchema<A>(
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   if (PgClientConstructor === undefined) throw new Error("package-local pg driver unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "scripts_very_staging_community_fixture_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -142,4 +144,8 @@ suite("Very staging community fixture against Postgres 17", () => {
       ).toMatchObject({ status: "already_deactivated" });
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

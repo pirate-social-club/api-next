@@ -46,6 +46,7 @@ import {
 } from "../media/submission-service.ts";
 import type { M2Actor } from "../ports.ts";
 import type { PersonaRecord } from "../use-cases/personas.ts";
+import { videoPublicationPostId } from "./publication-identity.ts";
 import {
   type FrozenSongReservationPlan,
   freezeSongReservationPlan,
@@ -1481,7 +1482,7 @@ async function publishPreparedVideo(
   if (analysis === null || decision === null || decision.outcome.kind !== "publish") {
     throw new Conflict({ message: "Video publication is not ready" });
   }
-  const postId = record.state.postId ?? `post-${uuid(services)}`;
+  const postId = await videoPublicationPostId(record.state);
   const poster = analysis.frames.extracted[0];
   if (analysis.audio.intent === "song_reference") {
     const published = publishSongReferenceVideo(record.state, postId);

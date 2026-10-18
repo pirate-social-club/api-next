@@ -246,16 +246,13 @@ const feedItemFromRow = (
     return ageLockedResource();
   }
 
-  const canonicalPath =
-    visibility === "public" && contentRating === "general" && canonicalSlug !== null
-      ? postSlugCanonicalPath(canonicalSlug)
-      : null;
-  if (
+  const canonicalEligible =
+    (postType === "text" || postType === "song") &&
     visibility === "public" &&
-    contentRating === "general" &&
-    canonicalSlug !== null &&
-    canonicalPath === null
-  ) {
+    contentRating === "general";
+  const canonicalPath =
+    canonicalEligible && canonicalSlug !== null ? postSlugCanonicalPath(canonicalSlug) : null;
+  if (canonicalEligible && canonicalSlug !== null && canonicalPath === null) {
     return null;
   }
 

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.122.0",
+  "sourceBranch": "feat/v1-notifications-inbox",
+  "sourceBase": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Notifications and visibility-aware comment/reply destinations, including reviewed video detail and truthful nullable soundtrack-author redaction. Published OpenAPI references now use owned document-root addresses; standalone client definition pointers decode escapes. Video delivery still requires reviewed cutover. No financial activation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.122.0.tgz",
+    "sha256": "f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.122.0",
+    "sourceIdentifier": "api-next-contracts@0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3",
+    "openapiSha256": "0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3",
+    "clientSha256": "a6431a6a9e7e71c7c0ec0a057c91d2e8069075f9a77986baf75d6923965cc221"
+  },
+  "validation": {
+    "status": "Prepared locally after independent core/caller review; final source/full/CI gates and consumer/declared transition remain pending. Not deployed acceptance.",
+    "toolingSource104": "2a61d73e0b41042b5a326fec562a2f4e398288f1315f2e335291731c321689a3",
+    "coreReview": "d48d55a80680ef6ad50aa57f5ae2e8f31234b86fecaf846161f132f6274b0368",
+    "callerReview": "7a3cd16b9635f2ee6fc1151ec7d963bf375eb1aac32087a232713dbdbfb42c7c",
+    "compatibility": "Fourteen nullable-author changes across seven operations remain undeclared; empty policy preserved.",
+    "finalCommittedMigrationReview": "pending",
+    "pairedSolid": "pending",
+    "liveAcceptance": "pending"
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.122.0",
+    "behavior": "Handle both nullable soundtrack-author fields without reconstructing identity; preserve authorized inline threads, immutable historical receipts and exact target navigation. Verify the accepted consumer transition before declaring deprecation and do not enable video delivery before cutover."
+  }
+}

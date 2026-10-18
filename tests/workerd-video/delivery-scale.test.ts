@@ -47,7 +47,6 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
       for (let i = 0; i < videoItems; i++) {
         const operationId = `media-operation-scale-${i}`;
         const submissionId = `media-submission-scale-${i}`;
-        const postId = `post-scale-${i}`;
         const f = await finalizedFixture(connection, null, {
           operationId,
           submissionId,
@@ -80,7 +79,7 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
             ] as const,
           },
         };
-        await acceptTrustedVideoAnalysis(
+        const published = await acceptTrustedVideoAnalysis(
           { submissionId, analysis },
           {
             store: f.store,
@@ -88,6 +87,9 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
             randomUuid: () => `scale-${i}`,
           },
         );
+        expect(published.status).toBe("published");
+        if (published.status !== "published") throw new Error("Scale video did not publish");
+        const postId = published.published_resource.post_id;
         // Fixture setup, excluded from measurements. Consumer correctness is covered
         // by the separate composed drill; never infer live readiness from this setup.
         await admin.query(
@@ -98,13 +100,14 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
           "UPDATE media_video_stream_ingests SET state='ready',creator_marker=$2,source_sha256=$3,provider_video_id=$4,acceptance_deadline_ms=1000,encoding_deadline_ms=2000 WHERE operation_id=$1",
           [operationId, "a".repeat(64), videoSha256, (i + 1).toString(16).padStart(32, "0")],
         );
-        await admin.query(
+        const projected = await admin.query(
           // Distinct ranks isolate join cost from the existing second-precision
           // cursor's same-rank subsecond pagination loss (not a delivery change).
           // Publication already projects each video; set its distinct rank.
-          "INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at) VALUES ($1,$2,$3,$4,clock_timestamp()) ON CONFLICT (community_id,post_id) DO UPDATE SET rank_score=EXCLUDED.rank_score",
-          [community, `feed-scale-${i}`, postId, i + 10],
+          "UPDATE home_feed_projection SET rank_score=$3 WHERE community_id=$1 AND post_id=$2",
+          [community, postId, i + 10],
         );
+        expect(projected.rowCount).toBe(1);
         posts.push(postId);
         objects.add(`video-analysis/${operationId}/v1/c1/a1/poster.jpg`);
       }

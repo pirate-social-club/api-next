@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
+  disposeReusablePostgresTestSchemaOwners,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
   assertRewardsShutdownInventory,
@@ -10,6 +11,9 @@ import {
 } from "../../../scripts/rewards-binding-deploy-preflight.ts";
 import { seedMegapotAuthority } from "./rewards-composed-pool.pg-fixture.ts";
 import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts";
+
+const emptySchema = createReusablePostgresTestSchemaOwner();
+const fundedSchema = createReusablePostgresTestSchemaOwner();
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -25,7 +29,7 @@ const scoped = (schema: string) => {
 suite("reward binding shutdown database proof", () => {
   test("a zero-owed upload holds pause until completion and running control refuses shutdown", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await emptySchema.run({
       baseConnectionString: url,
       schemaName: "reward_binding_empty",
       use: async ({ admin, schema }) => {
@@ -82,7 +86,7 @@ suite("reward binding shutdown database proof", () => {
 
   test("actual funded leg and open offer remain visible even while paused; missing inventory cannot deploy", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await fundedSchema.run({
       baseConnectionString: url,
       schemaName: "reward_binding_funded",
       use: async ({ admin, schema }) => {
@@ -124,4 +128,8 @@ suite("reward binding shutdown database proof", () => {
       },
     });
   }, 30000);
+});
+
+afterAll(async () => {
+  await disposeReusablePostgresTestSchemaOwners(emptySchema, fundedSchema);
 });

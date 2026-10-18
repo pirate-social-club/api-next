@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type {
   HnsRouteRevalidationCompletionAttemptReservation,
@@ -13,10 +13,12 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlaneRouteRevalidationCompletionStore } from "./route-revalidation-completion-repository";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -37,7 +39,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function withSchema<A>(use: (client: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_route_revalidation_completion_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -959,4 +961,8 @@ suite("route revalidation completion repository", () => {
       });
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

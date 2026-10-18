@@ -5,13 +5,15 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
 import { createWalletBackedAccountFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeControlPlanePlatformPirateHandleStore } from "./platform-pirate-handle-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlanePublicProfileStore } from "./public-profile-repository.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -84,7 +86,7 @@ const account = (userId: string, handleId: string, label: string) => ({
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_public_profile_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -389,6 +391,7 @@ suite("Postgres 17 public profile by handle", () => {
   });
 
   afterAll(async () => {
+    await reusableSchema.dispose();
     if (connectionString !== undefined && completedTestCount === 3) {
       await Bun.write(sentinelPath, sentinelContents);
     }

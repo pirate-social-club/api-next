@@ -1,7 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { env as testEnv } from "cloudflare:test";
-import { Effect } from "effect";
+import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
+import { Effect, Layer } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import {
   HNS_ROOT_HEALTH_RENEWAL_JOB,
@@ -10,6 +11,7 @@ import {
 import jobsWorker, {
   buildJobRegistry,
   groupDueJobsByLane,
+  handleScheduled,
   type JobsWorkerEnv,
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
@@ -48,8 +50,58 @@ function productionEnv(getByName: (name: string) => unknown): JobsWorkerEnv {
 const dueAt = Date.UTC(2026, 8, 5, 17, 30);
 
 describe("production HNS renewal scheduling", () => {
+  it("runs the registered Notifications handler through the kernel and its real DO lease", async () => {
+    const statements: ControlPlaneStatement[] = [];
+    const db: ControlPlaneDb["Service"] = {
+      execute: () => Effect.die("Notifications recovery must remain transactional"),
+      withTransaction: (use) =>
+        use({
+          execute: <Row>(statement: ControlPlaneStatement) => {
+            statements.push(statement);
+            const rows: unknown[] =
+              statement.label === "notifications.recover.facts"
+                ? [{ outbox_event_id: "workerd-notification-fact" }]
+                : [{ result: { processed: true, delivered: true } }];
+            return Effect.succeed({ rows: rows as Row[], rowCount: rows.length });
+          },
+        }),
+    };
+    const [job] = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.invalid/",
+      { enabled: false },
+      "production",
+      null,
+      false,
+    );
+    if (!job) throw new Error("Notifications declaration required");
+    expect(job.name).toBe("notifications.recover-publications");
+    const locks = (testEnv as unknown as { CRON_LOCK: JobsWorkerEnv["CRON_LOCK"] }).CRON_LOCK;
+    const env = productionEnv((name) => locks.getByName(name));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("Notifications inbox recovery must not call a provider");
+    });
+    try {
+      const result = await handleScheduled(env, job.lane, job, Date.now(), {
+        runtime: Layer.succeed(ControlPlaneDb, db),
+      });
+      expect(result.acquired).toBe(true);
+      expect(result.timedOut).toBe(false);
+      expect(result.leaseAfterRun).toBeNull();
+      expect(
+        statements.map(({ label, readonly, values }) => ({ label, readonly, values })),
+      ).toEqual([
+        { label: "notifications.recover.facts", readonly: true, values: [] },
+        { label: "notifications.deliver", readonly: false, values: ["workerd-notification-fact"] },
+      ]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it.each(["false", "true"] as const)(
-    "the real handler admits Account Study and HNS with Rewards %s and guest serving off",
+    "the real handler admits Notifications, Account Study and HNS with Rewards %s and guest serving off",
     async (rewardsEnabled) => {
       const acquisitions: string[] = [];
       const workerEnv: JobsWorkerEnv & { GUEST_STUDY_SERVING_ENABLED: "false" } = {
@@ -91,7 +143,9 @@ describe("production HNS renewal scheduling", () => {
         expect(acquisitions.sort()).toEqual([
           `scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`,
           `scheduled-cron-main:${rewardsEnabled === "true" ? MEGAPOT_REWARDS_CYCLE_LANE : STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+          "scheduled-cron-main:notification-delivery",
         ]);
+        expect(waits).toHaveLength(1);
         expect(fetchSpy).not.toHaveBeenCalled();
       } finally {
         fetchSpy.mockRestore();
@@ -130,6 +184,7 @@ describe("production HNS renewal scheduling", () => {
     expect(acquisitions.sort()).toEqual([
       "scheduled-cron-main:hns-route-revalidation",
       `scheduled-cron-main:${STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+      "scheduled-cron-main:notification-delivery",
     ]);
   });
 
@@ -167,23 +222,33 @@ describe("production HNS renewal scheduling", () => {
       env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
     );
     expect(declarations.map(({ name }) => name)).toEqual([
+      "notifications.recover-publications",
       HNS_ROOT_HEALTH_RENEWAL_JOB,
       STUDY_SPOKEN_ANSWER_RECOVERY_JOB,
     ]);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     expect([...groupDueJobsByLane(registry, dueAt).keys()]).toEqual([
+      "notification-delivery",
       HNS_ROOT_HEALTH_RENEWAL_LANE,
       STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
     ]);
     expect([...groupDueJobsByLane(registry, dueAt + 60_000).keys()]).toEqual([
+      "notification-delivery",
       STUDY_SPOKEN_ANSWER_RECOVERY_LANE,
     ]);
     expect(
-      makeJobsWorkerDeclarations({}, "https://rpc.invalid/", ownership, "production", null, false),
-    ).toEqual([]);
+      makeJobsWorkerDeclarations(
+        {},
+        "https://rpc.invalid/",
+        ownership,
+        "production",
+        null,
+        false,
+      ).map(({ name, lane }) => ({ name, lane })),
+    ).toEqual([{ name: "notifications.recover-publications", lane: "notification-delivery" }]);
   });
 
-  it("the real handler attempts only HNS and learner recovery leases, with no effects on refusal", async () => {
+  it("the real handler attempts Notifications, HNS and learner recovery leases, with no effects on refusal", async () => {
     const acquisitions: string[] = [];
     const unexpectedCalls: string[] = [];
     const env = productionEnv((name) => ({
@@ -213,7 +278,9 @@ describe("production HNS renewal scheduling", () => {
       expect(acquisitions.sort()).toEqual([
         `scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`,
         `scheduled-cron-main:${STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
+        "scheduled-cron-main:notification-delivery",
       ]);
+      expect(waits).toHaveLength(1);
       expect(unexpectedCalls).toEqual([]);
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {

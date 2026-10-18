@@ -1327,6 +1327,28 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
                   values: [communityId, submissionId, targetResourceId, at, afterRating],
                   readonly: false,
                 });
+                // Same publication fact as direct publication, in this commit.
+                // Command replay snapshots remain immutable and are not rebuilt.
+                yield* transaction.execute({
+                  label: "community-moderation.approve-comment-notification",
+                  text: `INSERT INTO content_publication_outbox (
+                    outbox_event_id,community_id,submission_id,comment_id,event_type,effect_key,payload,created_at
+                  ) VALUES ($1,$2,$3,$4,'comment_notification',$5,$6::jsonb,$7)
+                  ON CONFLICT (effect_key) DO NOTHING`,
+                  values: [
+                    makeId("outbox"),
+                    communityId,
+                    submissionId,
+                    targetResourceId,
+                    `${submissionId}:comment_notification`,
+                    JSON.stringify({
+                      comment_id: targetResourceId,
+                      parent_comment_id: targetParentId,
+                    }),
+                    at,
+                  ],
+                  readonly: false,
+                });
               }
             } else if (input.action === "raise_rating_to_adult_18") {
               if (targetResourceId === null) {

@@ -50,7 +50,14 @@ function scheduledWorkerEnv(hns: Partial<JobsWorkerEnv> = {}): JobsWorkerEnv {
       tag: "",
       timestamp: "2026-08-30T05:00:00.000Z",
     },
-    CRON_LOCK: env.CRON_LOCK,
+    // This non-due entrypoint fixture models the minute-by-minute inbox lane
+    // leased elsewhere. Its failure/drain behavior has a focused handler test.
+    CRON_LOCK: {
+      getByName: (name: string) =>
+        name.endsWith(":notification-delivery")
+          ? { tryAcquireWithFence: async () => null }
+          : env.CRON_LOCK.getByName(name),
+    } as JobsWorkerEnv["CRON_LOCK"],
     CONTROL_PLANE: {
       connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
     },
@@ -262,7 +269,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       false,
     );
 
-    expect(declarations).toEqual([]);
+    expect(declarations.map((job) => job.name)).toEqual(["notifications.recover-publications"]);
   });
 
   it("registers the Megapot custody machine as one exclusive writer lane", async () => {
@@ -401,7 +408,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       },
     });
     await jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits));
-    // waitUntil is after Telegram setup and all remaining maintenance/snapshot scheduling.
+    // The drain is registered before Telegram setup and covers all started work.
     expect(waits).toHaveLength(1);
     await expect(Promise.all(waits)).resolves.toBeDefined();
     let retries = 0;

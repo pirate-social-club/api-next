@@ -3,12 +3,14 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -31,7 +33,7 @@ const connectionForSchema = (raw: string, schema: string): string => {
 
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_feed_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -66,7 +68,7 @@ async function insertProjectedPost(
   admin: Client,
   input: {
     readonly id: string;
-    readonly postType?: "text" | "image" | "link" | "file" | "crosspost";
+    readonly postType?: "text" | "song" | "image" | "link" | "file" | "crosspost";
     readonly community?: "com_alpha" | "com_hidden";
     readonly status?: "published" | "processing";
     readonly visibility?: "public" | "members_only";
@@ -132,6 +134,35 @@ suite("Postgres 17 home feed repository", () => {
           follower_count: 1,
         },
       ]);
+      // Real persisted text/song aliases retain public canonical metadata.
+      await insertProjectedPost(admin, { id: "post_song", postType: "song" });
+      await admin.query(
+        "UPDATE posts SET content_rating='general' WHERE post_id IN ('post_public','post_song')",
+      );
+      await admin.query(`INSERT INTO post_slug_aliases(slug,post_id,slug_policy_version)
+        VALUES('owned-text','post_public','post-slug-v1'),('owned-song','post_song','post-slug-v1')`);
+      for (const input of [{ query: {} }, { query: {}, viewerUserId: "usr_member" }]) {
+        const current = await Effect.runPromise(Effect.scoped(store.listHome(input)));
+        for (const [id, path] of [
+          ["post_public", "/posts/owned-text"],
+          ["post_song", "/posts/owned-song"],
+        ] as const) {
+          const item = current.items.find((item) => "post" in item && item.post.post.id === id);
+          if (!item || !("post" in item))
+            throw new Error("Owned text/song canonical control missing");
+          expect(item.post.canonical_path).toBe(path);
+        }
+      }
+      // Invalid logical aliases are rejected by persisted storage, not repaired
+      // on GET or inserted by disabling immutable alias guards.
+      for (const postId of ["post_members", "post_processing"]) {
+        await expect(
+          admin.query(
+            "INSERT INTO post_slug_aliases(slug,post_id,slug_policy_version) VALUES('invalid/path',$1,'post-slug-v1')",
+            [postId],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
     });
     completedTestCount += 1;
   });
@@ -322,6 +353,7 @@ suite("Postgres 17 home feed repository", () => {
   });
 
   afterAll(async () => {
+    await reusableSchema.dispose();
     if (connectionString !== undefined && completedTestCount === 6) {
       await Bun.write(sentinelPath, sentinelContents);
     }

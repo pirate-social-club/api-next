@@ -19,7 +19,7 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
@@ -30,6 +30,8 @@ import {
 } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -68,7 +70,7 @@ async function withSchema<A>(
   use: (input: { readonly admin: Client; readonly scopedConnection: string }) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_activity_qualification_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -2370,4 +2372,6 @@ suite("Postgres 17 activity qualification repository", () => {
   });
 });
 
-afterAll(() => undefined);
+afterAll(async () => {
+  await reusableSchema.dispose();
+});

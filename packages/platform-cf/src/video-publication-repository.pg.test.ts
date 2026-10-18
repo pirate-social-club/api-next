@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { getVideoPlaybackAccess } from "../../application/src/video/playback-access.ts";
 import {
@@ -67,6 +67,8 @@ import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts"
 import { makeVideoThumbnailStore } from "./video-thumbnail-repository.ts";
 import { makeVideoThumbnailVerifier } from "./video-thumbnail-verifier.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
@@ -83,7 +85,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_video_publication_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -1568,7 +1570,10 @@ suite("video publication PostgreSQL", () => {
       if (soundtrackApproved === null) throw new Error("soundtrack-approved video missing");
       ready = soundtrackApproved;
       expect(ready.state).toMatchObject({ status: "processing", phase: "publish" });
-      const publication = publishOriginalVideo(ready.state, "post-video-publication");
+      const publication = publishOriginalVideo(
+        ready.state,
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
+      );
       if (ready.state.decision === null) throw new Error("approved video decision missing");
       const bundle = {
         observedEventSequence: ready.eventSequence,
@@ -1599,7 +1604,7 @@ suite("video publication PostgreSQL", () => {
       await store.publish(bundle);
       const resolvePoster = makeVideoPosterAuthority(layer);
       const posterIdentity = {
-        postId: "post-video-publication",
+        postId: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
         communityId: community,
         artifactRef: analysis.frames.extracted[0].artifactRef,
       };
@@ -1627,30 +1632,35 @@ suite("video publication PostgreSQL", () => {
       }
       const authorize = makeVideoPublicationAuthorization(layer);
       const access = () =>
-        Effect.runPromise(authorize({ postId: "post-video-publication", communityId: community }));
+        Effect.runPromise(
+          authorize({
+            postId: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
+            communityId: community,
+          }),
+        );
       expect(await access()).toBe(true);
       expect(
         await Effect.runPromise(authorize({ postId: "absent-video", communityId: community })),
       ).toBe(false);
       await admin.query("UPDATE posts SET visibility='members_only' WHERE post_id=$1", [
-        "post-video-publication",
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
       ]);
       expect(await access()).toBe(false);
       expect(
         await Effect.runPromise(
           authorize({
-            postId: "post-video-publication",
+            postId: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
             communityId: community,
             viewerUserId: actor,
           }),
         ),
       ).toBe(true);
       await admin.query("UPDATE posts SET visibility='public',status='hidden' WHERE post_id=$1", [
-        "post-video-publication",
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
       ]);
       expect(await access()).toBe(false);
       await admin.query("UPDATE posts SET status='published' WHERE post_id=$1", [
-        "post-video-publication",
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
       ]);
       const approvedHold = await admin.query(
         "SELECT action_id,evidence_ref FROM media_video_review_holds WHERE submission_id=$1 AND creation_revision=1 AND hold_kind='safety'",
@@ -1689,7 +1699,7 @@ suite("video publication PostgreSQL", () => {
       // Publication itself projects the video into Home.
       const projection = await admin.query(
         `SELECT feed_item_id FROM home_feed_projection
-          WHERE community_id=$1 AND post_id='post-video-publication'`,
+          WHERE community_id=$1 AND post_id='post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e'`,
         [community],
       );
       expect(projection.rows).toHaveLength(1);
@@ -1699,7 +1709,7 @@ suite("video publication PostgreSQL", () => {
         Effect.scoped(
           contentStore.getPost({
             communityId: community,
-            postId: "post-video-publication",
+            postId: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
             viewerUserId: actor,
           }),
         ),
@@ -1710,7 +1720,8 @@ suite("video publication PostgreSQL", () => {
       const publicVideo = {
         soundtrack: {
           kind: "original_audio",
-          origin_video_post_id: "post-video-publication",
+          origin_video_post_id:
+            "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
           origin_author_persona_id: persona,
         },
         playback: { status: "pending" },
@@ -1724,27 +1735,35 @@ suite("video publication PostgreSQL", () => {
       // Home lists a video only once Stream can play it.
       const feedIds = (feed: typeof projectedFeed) =>
         feed.items.map((item) => (item as { post?: { post?: { id?: string } } }).post?.post?.id);
-      expect(feedIds(projectedFeed)).not.toContain("post-video-publication");
+      expect(feedIds(projectedFeed)).not.toContain(
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
+      );
       await admin.query(
         `UPDATE media_video_stream_ingests
             SET state='ready',creator_marker=$2,source_sha256=$3,provider_video_id=$4,
                 acceptance_deadline_ms=1000,encoding_deadline_ms=2000
           WHERE operation_id=(SELECT operation_id FROM media_publication_projections
-                               WHERE community_id=$1 AND post_id='post-video-publication')`,
+                               WHERE community_id=$1 AND post_id='post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e')`,
         [community, "c".repeat(64), "d".repeat(64), "e".repeat(32)],
       );
       const readyFeed = await Effect.runPromise(
         Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
       );
-      expect(feedIds(readyFeed)).toContain("post-video-publication");
+      expect(feedIds(readyFeed)).toContain(
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
+      );
       const readyItem = readyFeed.items.find(
         (item) =>
           (item as { post?: { post?: { id?: string } } }).post?.post?.id ===
-          "post-video-publication",
+          "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
       );
       expect(readyItem).toMatchObject({
         post: {
-          post: { id: "post-video-publication", post_type: "video", body: null },
+          post: {
+            id: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
+            post_type: "video",
+            body: null,
+          },
           video: {
             playback: { status: "ready", provider: "stream", playback_ref: "e".repeat(32) },
           },
@@ -1754,14 +1773,14 @@ suite("video publication PostgreSQL", () => {
       await admin.query(
         `INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at)
          SELECT community_id, feed_item_id, post_id, 0, clock_timestamp() FROM home_feed_projection
-          WHERE community_id=$1 AND post_id='post-video-publication'
+          WHERE community_id=$1 AND post_id='post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e'
          ON CONFLICT (community_id,post_id) DO NOTHING`,
         [community],
       );
       expect(
         (
           await admin.query(
-            "SELECT count(*)::int AS n FROM home_feed_projection WHERE community_id=$1 AND post_id='post-video-publication'",
+            "SELECT count(*)::int AS n FROM home_feed_projection WHERE community_id=$1 AND post_id='post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e'",
             [community],
           )
         ).rows[0],
@@ -1788,7 +1807,7 @@ suite("video publication PostgreSQL", () => {
         song_edges: number;
       }>(
         `SELECT
-          (SELECT count(*)::int FROM posts WHERE post_id='post-video-publication') AS posts,
+          (SELECT count(*)::int FROM posts WHERE post_id='post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e') AS posts,
           (SELECT count(*)::int FROM media_video_rights WHERE submission_id=$1) AS rights,
           (SELECT count(*)::int FROM media_video_original_sounds WHERE submission_id=$1) AS sounds,
           (SELECT count(*)::int FROM data_registration_operations WHERE submission_id=$1
@@ -1821,7 +1840,8 @@ suite("video publication PostgreSQL", () => {
       expect(rights.rows[0]?.royalty_allocations).toEqual([
         { recipient_id: persona, share_bps: 10_000 },
       ]);
-      const registrationOperationId = "data-registration:1315:post-video-publication:1";
+      const registrationOperationId =
+        "data-registration:1315:post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e:1";
       const operation =
         await makeDataRegistrationStore(layer).getOperation(registrationOperationId);
       if (operation === null) throw new Error("video DATA operation fixture missing");
@@ -1839,7 +1859,7 @@ suite("video publication PostgreSQL", () => {
         originalSoundId: publication.originalSound.originalSoundId,
       });
       await admin.query("UPDATE posts SET content_rating='adult_18' WHERE post_id=$1", [
-        "post-video-publication",
+        "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
       ]);
       expect(await access()).toBe(false);
       expect(
@@ -1847,7 +1867,7 @@ suite("video publication PostgreSQL", () => {
       ).toMatchObject({ contentRating: "adult_18" });
       await expect(
         admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [
-          "post-video-publication",
+          "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
         ]),
       ).rejects.toThrow("current content rating cannot be lowered");
       expect(
@@ -1855,7 +1875,7 @@ suite("video publication PostgreSQL", () => {
           Effect.scoped(
             contentStore.getPost({
               communityId: community,
-              postId: "post-video-publication",
+              postId: "post-e5ebfc820a4b4a119b7945c30f46f001ea0599b779d3ef5042589aa4e1add53e",
               viewerUserId: actor,
             }),
           ),
@@ -2719,4 +2739,8 @@ suite("video publication wakeup delivery", () => {
       expect(await reservationState()).toBe("claimed");
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.121.0",
+  "sourceBranch": "feat/v1-notifications-inbox",
+  "sourceBase": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Private Notifications inbox and read state with visibility-aware comment/reply destinations. Video delivery still requires its separately reviewed admission and cutover. No financial activation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.121.0.tgz",
+    "sha256": "70c02f0a2fdc7913db52b82a627b1b0bf76e9c3d2eeb7a19770ac5f2f6d138f3"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.121.0",
+    "sourceIdentifier": "api-next-contracts@5e2b660bd7dae2b1e840d47dda2610dd0ed8bb0a2f835a8da278296f2990450c",
+    "openapiSha256": "5e2b660bd7dae2b1e840d47dda2610dd0ed8bb0a2f835a8da278296f2990450c",
+    "clientSha256": "280f26c9d99cc03d74d3c9d73bc63d68726f95c9241adaa0e27d7a3ebb0067b3"
+  },
+  "validation": {
+    "status": "Prepared immutable client; package verification and required final-source/full gates remain pending. This is not deployed acceptance.",
+    "fixtureSource85": "9df20c278f90b40a93e0918a60def1b7180980a16761afada71cbb0df0aa895b",
+    "notificationsPostgres35": "Passed with exact marker; see retained parent receipts.",
+    "finalCommittedMigrationReview": "pending",
+    "pairedSolid": "pending",
+    "liveAcceptance": "pending"
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.121.0",
+    "behavior": "Use owned inbox/read operations and current authorized target navigation; preserve inline threads and immutable historical receipts. Do not infer hidden content or enable unsupported video delivery before cutover."
+  }
+}

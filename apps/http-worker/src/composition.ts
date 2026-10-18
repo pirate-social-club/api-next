@@ -69,6 +69,7 @@ import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/
 import { makeControlPlaneAgeAccessStore } from "@pirate/platform-cf/age-access-repository";
 import { type AvatarBindings, makeAvatarStorage } from "@pirate/platform-cf/avatar-storage";
 import { makeAvatarStore } from "@pirate/platform-cf/avatar-store";
+import { makeControlPlaneCommentNavigationStore } from "@pirate/platform-cf/comment-navigation-repository";
 import { makeCommentThreadStore } from "@pirate/platform-cf/comment-thread-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
@@ -156,6 +157,7 @@ import {
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "@pirate/platform-cf/namespace-ownership-start-repository";
 import { resolveNationalityAuthoring } from "@pirate/platform-cf/nationality-authoring";
+import { makeControlPlaneNotificationStore } from "@pirate/platform-cf/notifications-repository";
 import {
   makeOpenAiTextModerationProvider,
   OPENAI_MODERATION_BASE_URL,
@@ -235,6 +237,7 @@ import {
   validVeryWebOptions,
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
+import { makeControlPlaneVideoDetailStore } from "@pirate/platform-cf/video-detail-repository";
 import {
   makeR2VideoMultipartGateway,
   type R2VideoMultipartControl,
@@ -255,6 +258,7 @@ import { makeActivityQualificationHandlers } from "./activity-qualification-hand
 import { assertSupportedAuthPolicies, supportedAuthPolicy } from "./auth-policy.ts";
 import { makeAvatarHandlers } from "./avatar-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
+import { makeCommentNavigationHandler } from "./comment-navigation-handler.ts";
 import { makeCommentThreadHandler } from "./comment-thread-handler.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import { makeLegacyModerationActionCompatibility } from "./community-moderation-compatibility.ts";
@@ -291,6 +295,7 @@ import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-han
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
+import { makeNotificationHandlers } from "./notification-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makePlatformPirateHandleHandlers } from "./platform-pirate-handle-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
@@ -1284,6 +1289,7 @@ export async function createProductionHttpWorker(
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
   const publicPostRouteHandlers = makePublicPostRouteHandlers({
+    videoDetailStore: makeControlPlaneVideoDetailStore(controlPlane),
     publicPostRouteStore: makeControlPlanePublicPostSlugStore(controlPlane),
     contentStore,
   });
@@ -1867,6 +1873,10 @@ export async function createProductionHttpWorker(
     handlers: {
       ...productHandlers,
       ListPostComments: makeCommentThreadHandler(makeCommentThreadStore(controlPlane)),
+      ResolveCommentNavigationV1: makeCommentNavigationHandler(
+        makeControlPlaneCommentNavigationStore(controlPlane),
+      ),
+      ...makeNotificationHandlers(makeControlPlaneNotificationStore(controlPlane)),
       ...telegramHandlers,
       GetPublicCommunityThreads: makePublicCommunityThreadsHandler({
         publicCommunityThreadsStore: makeControlPlanePublicCommunityThreadsStore(controlPlane),

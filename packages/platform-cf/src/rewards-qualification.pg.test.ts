@@ -2,10 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -28,7 +30,7 @@ const connectionForSchema = (raw: string, schema: string): string => {
 
 async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_rewards_qualification_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -572,6 +574,7 @@ suite("Postgres 17 activity qualification persistence", () => {
 });
 
 afterAll(async () => {
+  await reusableSchema.dispose();
   if (required && completedTestCount === testCount) {
     await Bun.write(sentinelPath, sentinelContents);
   }

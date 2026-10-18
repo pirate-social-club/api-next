@@ -8,6 +8,7 @@ import {
 import { Effect } from "effect";
 import type { ContentStoreService, LocalizedPostDocument } from "../../ports.ts";
 import { hasDescriptivePostSlugPolicy, isLogicalPostSlug } from "../../post-slug.ts";
+import type { VideoDetailStore } from "./video-detail.ts";
 
 export type PublicPostLiveRecord = Readonly<{
   readonly alias: Readonly<{ readonly slug: string; readonly postId: string }>;
@@ -55,6 +56,7 @@ export interface PublicPostRouteStoreService {
 }
 
 export type PublicPostRouteServices = Readonly<{
+  readonly videoDetailStore?: VideoDetailStore;
   readonly publicPostRouteStore: PublicPostRouteStoreService;
   readonly contentStore: Pick<ContentStoreService, "getPost">;
 }>;
@@ -69,7 +71,7 @@ const storeFailure = (error: unknown): BadRequest | InternalError => {
       : undefined;
   return reason === "invalid-input" || reason === "invalid-cursor"
     ? new BadRequest({ message: "Invalid public post route request" })
-    : new InternalError({ message: "Public post route lookup failed" });
+    : new InternalError({ message: "Public post route lookup failed", cause: error });
 };
 
 const notFound = (): NotFound => new NotFound({ message: "Post not found" });
@@ -160,6 +162,17 @@ export const getPublicPostBySlug = Effect.fn("getPublicPostBySlug")(function* (
   if (!isLogicalPostSlug(input.slug)) {
     return yield* new BadRequest({ message: "Invalid public post slug" });
   }
+  if (services.videoDetailStore !== undefined) {
+    const video = yield* services.videoDetailStore
+      .read({
+        selector: { kind: "alias", value: input.slug },
+        ...(input.viewerUserId === undefined ? {} : { viewerUserId: input.viewerUserId }),
+        ...(input.locale === undefined ? {} : { locale: input.locale }),
+      })
+      .pipe(Effect.mapError(storeFailure));
+    if (video.kind === "result") return video.result;
+    if (video.kind === "not_found") return yield* notFound();
+  }
   const live = yield* services.publicPostRouteStore
     .getBySlug({
       slug: input.slug,
@@ -185,6 +198,17 @@ export const getPublicPostCanonicalRouteById = Effect.fn("getPublicPostCanonical
       input.postId.includes("\u0000")
     ) {
       return yield* new BadRequest({ message: "Invalid post identifier" });
+    }
+    if (services.videoDetailStore !== undefined) {
+      const video = yield* services.videoDetailStore
+        .read({
+          selector: { kind: "post_id", value: input.postId },
+          ...(input.viewerUserId === undefined ? {} : { viewerUserId: input.viewerUserId }),
+          ...(input.locale === undefined ? {} : { locale: input.locale }),
+        })
+        .pipe(Effect.mapError(storeFailure));
+      if (video.kind === "result") return video.result;
+      if (video.kind === "not_found") return yield* notFound();
     }
     const live = yield* services.publicPostRouteStore
       .getCanonicalRouteByPostId({

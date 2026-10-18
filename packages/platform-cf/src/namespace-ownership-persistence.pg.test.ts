@@ -49,13 +49,14 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-namespace-ownership-suite-complete\n";
 let completedTestCount = 0;
-const { applyPostgresTestBaselineConnection, withReusablePostgresTestSchema } =
+const { applyPostgresTestBaselineConnection, createReusablePostgresTestSchemaOwner } =
   connectionString === undefined
     ? {
         applyPostgresTestBaselineConnection: undefined,
-        withReusablePostgresTestSchema: undefined,
+        createReusablePostgresTestSchemaOwner: undefined,
       }
     : await import("../../../scripts/postgres-test-baseline.ts");
+const reusableSchema = createReusablePostgresTestSchemaOwner?.();
 
 const SHA = "a".repeat(64);
 const SHA_B = "b".repeat(64);
@@ -1129,11 +1130,11 @@ async function withSchema<A>(
   if (
     connectionString === undefined ||
     applyPostgresTestBaselineConnection === undefined ||
-    withReusablePostgresTestSchema === undefined
+    reusableSchema === undefined
   ) {
     throw new Error("Postgres test configuration is unavailable");
   }
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_namespace_ownership_persistence_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -3484,6 +3485,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
   }, 20_000);
 
   afterAll(async () => {
+    await reusableSchema?.dispose();
     if (connectionString !== undefined && completedTestCount === namespacePersistenceTestCount) {
       await Bun.write(sentinelPath, sentinelContents);
     }

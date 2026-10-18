@@ -73,17 +73,23 @@ export async function verifyPostgresLockCapacity(connectionString: string): Prom
 
 const namespaceOwnershipTest =
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts";
-const dockerRecoveryTests = ["scripts/staging-persona-phased-reset.pg.test.ts"] as const;
+const localRecoveryTests = [
+  "scripts/staging-persona-phased-reset.pg.test.ts",
+  "scripts/staging-karaoke-release-database.pg.test.ts",
+  "scripts/staging-persona-prepare-reset.pg.test.ts",
+  "scripts/staging-persona-reset-denied-grants.pg.test.ts",
+  "scripts/staging-persona-reconstruct.pg.test.ts",
+] as const;
 const hnsRegtestTests = [
   "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
   "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",
 ] as const;
 
-/** CI's audited runners cannot use Docker. Local general/all partitions
- * still cover every file; CI splits exactly these recovery transport suites
- * into a separately required job, never an optional skip flag. */
+/** These fixtures require literal loopback /postgres to own disposable databases
+ * and roles; phased reset also needs Docker client transport. CI's separately
+ * required recovery job supplies both. Local general/all still cover every file. */
 export function partitionPostgresRecoveryFiles(files: readonly string[]) {
-  for (const file of dockerRecoveryTests) {
+  for (const file of localRecoveryTests) {
     if (!files.includes(file))
       throw new Error(`tracked PostgreSQL recovery suite is missing ${file}`);
   }
@@ -91,11 +97,11 @@ export function partitionPostgresRecoveryFiles(files: readonly string[]) {
     if (!files.includes(file)) throw new Error(`tracked HNS regtest suite is missing ${file}`);
   }
   return {
-    recovery: [...dockerRecoveryTests],
+    recovery: [...localRecoveryTests],
     hnsRegtest: [...hnsRegtestTests],
     audited: files.filter(
       (file) =>
-        !dockerRecoveryTests.some((recovery) => recovery === file) &&
+        !localRecoveryTests.some((recovery) => recovery === file) &&
         !hnsRegtestTests.some((regtest) => regtest === file),
     ),
   };
@@ -110,7 +116,7 @@ export const postgresTestTimeoutMilliseconds = {
   general: 900_000,
 } as const;
 
-export const postgresGeneralShardCount = 5;
+export const postgresGeneralShardCount = 6;
 
 // Weight units approximate tenths of a second from the first baseline-reuse benchmark:
 // reusable suites pay once for installation, then once per reset and test; other suites

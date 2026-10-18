@@ -1,10 +1,10 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, test as bunTest, describe, expect } from "bun:test";
 import { createHash } from "node:crypto";
-import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { claimHostRenderAttempt } from "../../../scripts/song-video-render-host.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeCloudConvertRenderRepository } from "./song-video-cloudconvert-repository.ts";
+import { createSongVideoRenderFixture } from "./song-video-render-repository.pg-fixture.ts";
 import {
   acceptMaster,
   persistRenderPlan,
@@ -55,11 +55,11 @@ const basePlan = {
 const CANONICAL_INTERVAL = "f".repeat(64);
 
 suite("song video render persistence", () => {
-  const schema = `song_video_${crypto.randomUUID().replaceAll("-", "")}`;
-  const admin = new Client({ connectionString });
-  const scoped = new URL(connectionString ?? "postgresql://unused/unused");
-  scoped.searchParams.set("options", `-c search_path=${schema}`);
-  const client = new Client({ connectionString: scoped.toString() });
+  const fixture = createSongVideoRenderFixture(connectionString);
+  const { admin, client, scoped } = fixture;
+  const test = (name: string, use: () => Promise<void>, timeout?: number) =>
+    bunTest(name, () => fixture.run(use), timeout);
+  afterAll(() => fixture.dispose());
   let sourceImmutableRef = "";
   let storedSourceSha256 = "";
 
@@ -138,17 +138,16 @@ suite("song video render persistence", () => {
   };
 
   beforeAll(async () => {
-    await admin.connect();
-    await admin.query(`CREATE SCHEMA "${schema}"`);
-    await admin.query(`SET search_path TO "${schema}"`);
-    await runPostgresMigrations({ connectionString: scoped.toString() });
-    await seedVideoActors(admin);
-    await seedSongOwner(admin);
-    // Each test's source is sealed by the real publication store rather than
-    // inserted past its guard, so the binding is checked against rows the
-    // system itself created.
-    await seedPublishedSongFixture(admin, song);
-    await client.connect();
+    await fixture.initialize(async () => {
+      await runPostgresMigrations({ connectionString: scoped.toString() });
+      await seedVideoActors(admin);
+      await seedSongOwner(admin);
+      // Each test's source is sealed by the real publication store rather than
+      // inserted past its guard, so the binding is checked against rows the
+      // system itself created.
+      await seedPublishedSongFixture(admin, song);
+      await client.connect();
+    });
   }, 180_000);
 
   test("CloudConvert intent and job identity are durable and cannot authorize a second create", async () => {
@@ -166,7 +165,7 @@ suite("song video render persistence", () => {
       rendererIdentity: "cloudconvert-song-video-pcm-v1",
     });
     const connect = async () => {
-      const connection = new Client({ connectionString: scoped.toString() });
+      const connection = fixture.newClient();
       await connection.connect();
       return connection;
     };
@@ -178,7 +177,7 @@ suite("song video render persistence", () => {
     expect(initial?.createStarted).toBe(false);
     expect(await renderStore.beginExecution(attempt)).toBe(false);
     await repository.bindPcm(attempt.attemptId, CANONICAL_INTERVAL);
-    const claims = await Promise.all([
+    const claims = await fixture.all([
       repository.beginCreate(attempt.attemptId),
       repository.beginCreate(attempt.attemptId),
     ]);
@@ -450,10 +449,10 @@ suite("song video render persistence", () => {
 
       // Two connections, two overlapping serializable transactions. A single
       // client would serialize these and prove only sequential exclusion.
-      const second = new Client({ connectionString: scoped.toString() });
+      const second = fixture.newClient();
       await second.connect();
       try {
-        const [first, other] = await Promise.all([
+        const [first, other] = await fixture.all([
           acceptMaster(client, {
             planId: "plan-race",
             masterRevisionId: "master-race-a",
@@ -617,8 +616,8 @@ suite("song video render persistence", () => {
       // Interleave two serializable transactions by hand. Promise.all alone does
       // not establish that they overlapped; this drives the overlap explicitly
       // and records what PostgreSQL actually raises.
-      const a = new Client({ connectionString: scoped.toString() });
-      const b = new Client({ connectionString: scoped.toString() });
+      const a = fixture.newClient();
+      const b = fixture.newClient();
       await a.connect();
       await b.connect();
       const raised: { code?: string; message: string }[] = [];
@@ -1187,7 +1186,7 @@ suite("song video render persistence", () => {
     );
     const renderStore = makeSongVideoRenderStore({
       connect: async () => {
-        const connection = new Client({ connectionString: scoped.toString() });
+        const connection = fixture.newClient();
         await connection.connect();
         return connection;
       },

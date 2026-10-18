@@ -1,14 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
 import { makeTelegramStudyStore } from "./telegram-study-store.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -23,7 +25,7 @@ async function fixture(
   ) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres configuration missing");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "telegram_store_pg_test",
     use: async ({ admin, schema }) => {
@@ -605,4 +607,8 @@ suite("community Telegram persistence", () => {
         preference: { locale: "ka", explicit: true },
       });
     }));
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

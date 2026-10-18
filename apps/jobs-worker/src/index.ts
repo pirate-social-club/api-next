@@ -67,6 +67,7 @@ import {
   MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
+import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
@@ -87,7 +88,7 @@ import {
 } from "./spaces-reconciliation-composition.ts";
 import { makeSpacesRootObservationJob } from "./spaces-root-observation";
 import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
-import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
+import type { GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -745,7 +746,9 @@ export function makeJobsWorkerDeclarations(
   spacesReconciliation?: SpacesReconciliationComposition,
   guestStudyRecovery?: GuestStudyRecoveryComposition,
 ) {
-  const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
+  const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
+    makeNotificationDeliveryJob(sink),
+  ];
   if (communityMaintenanceEnabled) {
     declarations.push(
       makeCommunityCatalogIntegrityJob(sink),
@@ -882,79 +885,114 @@ export default {
     const mediaMaintenance = makeMediaMaintenance(env, runtime);
     const dataRegistrationMaintenance = makeDataRegistrationMaintenance(env, runtime);
     const danceReferenceMaintenance = makeDanceReferenceMaintenance(env, runtime);
-    const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
-      handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
-    );
-    const telegram = await makeTelegramServices(env, runtime);
-    if (telegram !== null) scheduledWork.push(runTelegramMaintenance(telegram));
-    if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
-    if (dataRegistrationMaintenance !== null) {
-      scheduledWork.push(dataRegistrationMaintenance());
-    }
-    if (danceReferenceMaintenance !== null) {
-      scheduledWork.push(danceReferenceMaintenance());
-    }
-    if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
-      scheduledWork.push(
-        runSongPipelineOutboxAlertTick(
-          sink,
-          Effect.all(
-            [
-              collectSongPipelineTerminalAlerts(
-                runtime,
-                {
-                  media: mediaMaintenance !== null,
-                  data: dataRegistrationMaintenance !== null,
-                },
-                {
-                  ...(env.MEDIA_PROCESSING_WORKFLOW === undefined
-                    ? {}
-                    : { media: env.MEDIA_PROCESSING_WORKFLOW }),
-                  ...(env.DATA_REGISTRATION_WORKFLOW === undefined
-                    ? {}
-                    : { data: env.DATA_REGISTRATION_WORKFLOW }),
-                },
-              ),
-              collectSongPipelineOutboxAlerts(
-                runtime,
-                {
-                  media: mediaMaintenance !== null,
-                  data: dataRegistrationMaintenance !== null,
-                },
-                {
-                  scheduledTime: event.scheduledTime,
-                  environment: config.API_NEXT_ENV,
-                  ...(sink.log === undefined ? {} : { log: sink.log }),
-                  ...(sink.delivery === undefined ? {} : { claimSnapshot: sink.delivery.markSent }),
-                  ...(sink.delivery === undefined
-                    ? {}
-                    : { compensateSnapshot: sink.delivery.compensate }),
-                },
-              ),
-            ],
-            { concurrency: 1 },
-          ).pipe(Effect.map(([terminal, outbox]) => terminal + outbox)),
-        ),
-      );
-    }
-    scheduledWork.push(
-      runPipelineBalanceSnapshots({
-        runtime,
-        sink,
-        environment: config.API_NEXT_ENV,
-        scheduledTime: event.scheduledTime,
-        data: dataBalance,
-        megapot:
-          megapot === null
-            ? null
-            : {
-                attestationId: megapot.attestationId,
-                rpcUrl: megapot.rpcUrl,
-                chainId: config.MEGAPOT_CHAIN_ID,
-                reserveFloorWei: megapot.nativeGasReserveFloorWei,
-              },
+    // Register the lifetime before starting any lane or awaiting later setup.
+    // Observe each rejection immediately; report only after registration and
+    // every started sibling have completed, including when setup itself fails.
+    const scheduledWork: Promise<PromiseSettledResult<unknown>>[] = [];
+    let finishRegistration: () => void = () => undefined;
+    const registration = new Promise<void>((resolve) => {
+      finishRegistration = resolve;
+    });
+    ctx.waitUntil(
+      registration.then(async () => {
+        const results = await Promise.all(scheduledWork);
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failures.length > 0)
+          throw new AggregateError(
+            failures.map((result) => result.reason),
+            "Scheduled work failed",
+          );
       }),
     );
-    await ctx.waitUntil(Promise.all(scheduledWork));
+    const register = (task: Promise<unknown>) => {
+      scheduledWork.push(
+        task.then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason) => ({ status: "rejected" as const, reason }),
+        ),
+      );
+    };
+    try {
+      for (const [lane, laneJobs] of dueByLane)
+        register(handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }));
+      const telegram = await makeTelegramServices(env, runtime);
+      if (telegram !== null) register(runTelegramMaintenance(telegram));
+      if (mediaMaintenance !== null) register(mediaMaintenance());
+      if (dataRegistrationMaintenance !== null) {
+        register(dataRegistrationMaintenance());
+      }
+      if (danceReferenceMaintenance !== null) {
+        register(danceReferenceMaintenance());
+      }
+      if (mediaMaintenance !== null || dataRegistrationMaintenance !== null) {
+        register(
+          runSongPipelineOutboxAlertTick(
+            sink,
+            Effect.all(
+              [
+                collectSongPipelineTerminalAlerts(
+                  runtime,
+                  {
+                    media: mediaMaintenance !== null,
+                    data: dataRegistrationMaintenance !== null,
+                  },
+                  {
+                    ...(env.MEDIA_PROCESSING_WORKFLOW === undefined
+                      ? {}
+                      : { media: env.MEDIA_PROCESSING_WORKFLOW }),
+                    ...(env.DATA_REGISTRATION_WORKFLOW === undefined
+                      ? {}
+                      : { data: env.DATA_REGISTRATION_WORKFLOW }),
+                  },
+                ),
+                collectSongPipelineOutboxAlerts(
+                  runtime,
+                  {
+                    media: mediaMaintenance !== null,
+                    data: dataRegistrationMaintenance !== null,
+                  },
+                  {
+                    scheduledTime: event.scheduledTime,
+                    environment: config.API_NEXT_ENV,
+                    ...(sink.log === undefined ? {} : { log: sink.log }),
+                    ...(sink.delivery === undefined
+                      ? {}
+                      : { claimSnapshot: sink.delivery.markSent }),
+                    ...(sink.delivery === undefined
+                      ? {}
+                      : { compensateSnapshot: sink.delivery.compensate }),
+                  },
+                ),
+              ],
+              { concurrency: 1 },
+            ).pipe(Effect.map(([terminal, outbox]) => terminal + outbox)),
+          ),
+        );
+      }
+      register(
+        runPipelineBalanceSnapshots({
+          runtime,
+          sink,
+          environment: config.API_NEXT_ENV,
+          scheduledTime: event.scheduledTime,
+          data: dataBalance,
+          megapot:
+            megapot === null
+              ? null
+              : {
+                  attestationId: megapot.attestationId,
+                  rpcUrl: megapot.rpcUrl,
+                  chainId: config.MEGAPOT_CHAIN_ID,
+                  reserveFloorWei: megapot.nativeGasReserveFloorWei,
+                },
+        }),
+      );
+    } catch (error) {
+      register(Promise.reject(error));
+    } finally {
+      finishRegistration();
+    }
   },
 };

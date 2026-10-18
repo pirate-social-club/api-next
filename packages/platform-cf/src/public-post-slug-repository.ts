@@ -16,7 +16,7 @@ import { Data, Effect, type Layer } from "effect";
 export type PostSlugAliasRecord = Readonly<{
   slug: string;
   postId: string;
-  slugPolicyVersion: typeof POST_SLUG_POLICY_VERSION;
+  slugPolicyVersion: typeof POST_SLUG_POLICY_VERSION | "video-receipt-exact-v1";
   createdAt: string;
 }>;
 
@@ -214,7 +214,8 @@ const aliasRecord = (row: Row): PostSlugAliasRecord | null => {
     typeof postId !== "string" ||
     postId.length === 0 ||
     postId.trim() !== postId ||
-    policy !== POST_SLUG_POLICY_VERSION ||
+    (policy !== POST_SLUG_POLICY_VERSION && policy !== "video-receipt-exact-v1") ||
+    (policy === "video-receipt-exact-v1" && slug !== postId) ||
     createdAt === null
   ) {
     return null;
@@ -257,6 +258,7 @@ const liveRecordFromRow = (
     !validId(postId) ||
     !validId(communityId) ||
     alias.postId !== postId ||
+    (alias.slugPolicyVersion === "video-receipt-exact-v1" && postType !== "video") ||
     postType === null ||
     !POST_TYPES.has(postType) ||
     status === null ||
@@ -284,6 +286,7 @@ const liveRecordFromRow = (
     ratingViewAllowed &&
     (normalizedVisibility === "public" || isMember);
   const routeEligible =
+    (postType === "text" || postType === "song") &&
     normalizedStatus === "published" &&
     normalizedCommunityStatus === "active" &&
     normalizedVisibility === "public" &&
@@ -425,6 +428,7 @@ const sitemapStatement = (cursor: SitemapCursor | null, limit: number) => ({
             AND p.status = 'published'
             AND p.visibility = 'public'
             AND p.content_rating = 'general'
+            AND p.post_type IN ('text','song')
             AND ($1::timestamptz IS NULL
               OR a.created_at > $1::timestamptz
               OR (a.created_at = $1::timestamptz
@@ -452,6 +456,7 @@ const sitemapAliasFromRow = (
         : undefined;
   if (
     alias === null ||
+    alias.slugPolicyVersion !== POST_SLUG_POLICY_VERSION ||
     cursorCreatedAt === null ||
     postStatus !== "published" ||
     postVisibility !== "public" ||

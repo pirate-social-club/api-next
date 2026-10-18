@@ -8,11 +8,13 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCommunityPurchaseFundingProducerStore } from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -35,7 +37,7 @@ async function withSchema<A>(
   options: Readonly<{ readonly verificationRequired?: boolean }> = {},
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName:
       "packages_platform_cf_src_community_purchase_funding_producer_repository_pg_test_ts",
@@ -404,4 +406,6 @@ suite("community purchase funding producer repository", () => {
   });
 });
 
-afterAll(() => undefined);
+afterAll(async () => {
+  await reusableSchema.dispose();
+});
