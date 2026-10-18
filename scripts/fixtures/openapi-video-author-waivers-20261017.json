@@ -1,0 +1,74 @@
+{
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /public/personas/{personaId}/activity: type changed from string to null at items.items.content.video.soundtrack.origin_author_persona_id",
+        "response GET /public/personas/{personaId}/activity: type changed from string to null at items.items.content.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_publicPersonasPersonaIdActivity",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /posts/{postId}: type changed from string to null at video.soundtrack.origin_author_persona_id",
+        "response GET /posts/{postId}: type changed from string to null at video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_postsPostId",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /feed/home/public: type changed from string to null at items.items.post.video.soundtrack.origin_author_persona_id",
+        "response GET /feed/home/public: type changed from string to null at items.items.post.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_feedHomePublic",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /public-communities/{communityRef}/feed: type changed from string to null at items.items.video.soundtrack.origin_author_persona_id",
+        "response GET /public-communities/{communityRef}/feed: type changed from string to null at items.items.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_publicCommunitiesCommunityRefFeed",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /feed/home: type changed from string to null at items.items.post.video.soundtrack.origin_author_persona_id",
+        "response GET /feed/home: type changed from string to null at items.items.post.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_feedHome",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /public/posts/by-slug: type changed from string to null at content.video.soundtrack.origin_author_persona_id",
+        "response GET /public/posts/by-slug: type changed from string to null at content.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_publicPostsBySlug",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    },
+    {
+      "baselineSha": "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799",
+      "expectedViolations": [
+        "response GET /public/posts/by-id/{postId}/canonical-route: type changed from string to null at content.video.soundtrack.origin_author_persona_id",
+        "response GET /public/posts/by-id/{postId}/canonical-route: type changed from string to null at content.video.soundtrack.song_reference.song_author_persona_id"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_publicPostsByIdPostIdCanonicalRoute",
+      "reason": "docs/api-next/openapi-breaking-change-waivers.md#2026-10-17-video-author-redaction-deprecation: adopted current-persona redaction permits only the two named required author strings to be null. Source/OpenAPI 0cfc6b10f84ff0445fc7952e49672d5f381a737d8c5ef608ccbca8a74b7563c3; immutable client 0.122.0 tar f8e20a02368394ca0c41d29b0e4723ee3519057659c54c2e318002ea2e7f6c34; source-only Solid54 consumer readiness accepted, independent policy review and paired serving pending."
+    }
+  ]
+}

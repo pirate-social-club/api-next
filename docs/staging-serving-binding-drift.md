@@ -45,3 +45,24 @@ the target checkout's scripts/telegram-activation-preflight.ts, so a c28 release
 does not silently acquire localization migration 0240's permission contract.
 The binding preview accepts the same option. Use an admitted checkout and
 preserve exact source and tooling identities in the release packet.
+
+
+## Preserving disabled staging Rewards (2026-10-18)
+
+Normal staging HTTP and Jobs deployments require exactly one valid plain-text
+MEGAPOT_REWARDS_ENABLED on every traffic-bearing version. Missing, malformed,
+duplicate or mixed values refuse. If every version has the exact bytes false,
+the effective candidate preserves false even when the tracked candidate is true.
+The receipt and candidate digest describe that effective false value. The final
+serving recheck, Rewards shutdown/control/inventory lock and exact Wrangler
+--var MEGAPOT_REWARDS_ENABLED:false upload all use the same value, alongside
+the existing exact Telegram override.
+
+This is preservation of an already-disabled binding, not activation authority
+or a general flag override. The existing persisted pause, liability inventory
+and upload-time control lock remain mandatory. Launched lifecycle policy still
+refuses an effective off binding. Serving true uses the existing normal tracked
+configuration, drift and lifecycle checks. Production, other Worker configs,
+HNS verifier selection, credentials and financial/runtime holds are unchanged.
+A serving change to true during the final read refuses before upload; no upload
+retry or fallback is added.

@@ -333,26 +333,23 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
         "origin/main",
       ]),
     ).toEqual(input);
-    expect(() =>
-      parseWorkerDeploymentArgs([
-        "--config",
-        input.configPath,
-        "--env",
-        "staging",
-        "--message",
-        "handwritten",
-      ]),
-    ).toThrow("unknown deployment argument: --message");
-    expect(() =>
-      parseWorkerDeploymentArgs([
-        "--config",
-        input.configPath,
-        "--env",
-        "staging",
-        "--accepted-main-ref",
-        "topic-branch",
-      ]),
-    ).toThrow("unknown deployment argument: --accepted-main-ref");
+    for (const [argument, value] of [
+      ["--message", "handwritten"],
+      ["--accepted-main-ref", "topic-branch"],
+      ["--var", "MEGAPOT_REWARDS_ENABLED:true"],
+      ["--var", "MEGAPOT_REWARDS_ENABLED:false"],
+      ["--disabled-rewards", "false"],
+    ])
+      expect(() =>
+        parseWorkerDeploymentArgs([
+          "--config",
+          input.configPath,
+          "--env",
+          "staging",
+          argument ?? "",
+          value ?? "",
+        ]),
+      ).toThrow(`unknown deployment argument: ${argument}`);
   });
 
   test("verifies an accepted exact clean tree and tracked config", async () => {
