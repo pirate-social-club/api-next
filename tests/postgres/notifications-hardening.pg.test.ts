@@ -9,6 +9,7 @@ import {
 import { withInbox } from "../../packages/platform-cf/src/notifications.pg-fixture.ts";
 import { NOTIFICATION_PAGE_SQL } from "../../packages/platform-cf/src/notifications-repository.ts";
 import { createActivePersonaFixture } from "../../packages/platform-cf/src/persona-wallet.pg-fixture.ts";
+import { registerNotificationAccountErasureCases } from "./notifications-account-erasure.pg-cases.ts";
 import {
   gate,
   pinnedRuntime,
@@ -23,7 +24,7 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connection)
 const suite = connection ? describe : describe.skip;
 let completed = 0;
 afterAll(async () => {
-  if (completed !== 6) return;
+  if (completed !== 7) return;
   const sentinel =
     process.env.CONTROL_PLANE_POSTGRES_NOTIFICATIONS_HARDENING_TEST_SENTINEL ??
     "/tmp/api-next-control-plane-postgres-notifications-hardening-suite-complete";
@@ -182,9 +183,8 @@ suite("notification review regressions", () => {
         "INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,body,created_at,updated_at) VALUES ('other-community','other-post','inbox-author',$1,'text','published','public','Body',now(),now())",
         ["other-inbox-author"],
       );
-      const clients = await Promise.all([transactionClient(f.url), transactionClient(f.url)]);
-      const [firstClient, secondClient] = clients;
-      if (!firstClient || !secondClient) throw new Error("two transaction clients required");
+      const clients: Awaited<ReturnType<typeof transactionClient>>[] = [];
+      const failures: unknown[] = [];
       const ready = gate();
       let arrivals = 0;
       const hook = async (label: string) => {
@@ -194,7 +194,11 @@ suite("notification review regressions", () => {
         }
       };
       try {
-        await Promise.all([
+        const firstClient = await transactionClient(f.url);
+        clients.push(firstClient);
+        const secondClient = await transactionClient(f.url);
+        clients.push(secondClient);
+        const publications = [
           f.submit(
             "cross-a",
             undefined,
@@ -213,32 +217,69 @@ suite("notification review regressions", () => {
             "other-community",
             pinnedRuntime(secondClient, hook),
           ),
-        ]);
+        ].map((publication) =>
+          publication.catch((error: unknown) => {
+            ready.release();
+            throw error;
+          }),
+        );
+        const published = await Promise.allSettled(publications);
+        const publicationFailures = published.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (publicationFailures.length === 1) throw publicationFailures[0];
+        if (publicationFailures.length > 1)
+          throw new AggregateError(publicationFailures, "Concurrent publications failed", {
+            cause: publicationFailures[0],
+          });
         expect(arrivals).toBe(2);
-        await Promise.all(clients.map((client) => client.query("COMMIT")));
+        const commits = await Promise.allSettled(clients.map((client) => client.query("COMMIT")));
+        const commitFailures = commits.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (commitFailures.length === 1) throw commitFailures[0];
+        if (commitFailures.length > 1)
+          throw new AggregateError(commitFailures, "Concurrent commits failed", {
+            cause: commitFailures[0],
+          });
         expect((await f.run(f.store.list({ recipientUserId: "inbox-owner" }))).unread_count).toBe(
           1,
         );
         expect((await f.run(f.store.list({ recipientUserId: "inbox-author" }))).unread_count).toBe(
           1,
         );
+      } catch (error) {
+        failures.push(error);
       } finally {
         ready.release();
-        for (const client of clients) {
-          await client.query("ROLLBACK");
-          await client.end();
-        }
+        const rollbacks = await Promise.allSettled(
+          clients.map((client) => client.query("ROLLBACK")),
+        );
+        const closes = await Promise.allSettled(clients.map(async (client) => client.end()));
+        for (const result of [...rollbacks, ...closes])
+          if (result.status === "rejected") failures.push(result.reason);
       }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, "Concurrent publication/cleanup failed", {
+          cause: failures[0],
+        });
     });
     completed++;
   }, 120000);
 
   test("publication waiting behind committed erasure cannot resurrect a deleted recipient inbox", async () => {
     await withInbox(async (f) => {
-      const deletion = await transactionClient(f.url),
-        publication = await transactionClient(f.url);
+      const clients: Awaited<ReturnType<typeof transactionClient>>[] = [];
+      const failures: unknown[] = [];
+      let settled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      let pendingAwaited = false;
       const entered = gate();
       try {
+        const deletion = await transactionClient(f.url);
+        clients.push(deletion);
+        const publication = await transactionClient(f.url);
+        clients.push(publication);
         await deletion.query("UPDATE users SET status='deleted' WHERE user_id='inbox-owner'");
         const pid = (await publication.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
         const pending = f.submit(
@@ -252,6 +293,7 @@ suite("notification review regressions", () => {
             if (label === "text-submission.commit.outbox.comment_notification") entered.release();
           }),
         );
+        settled = Promise.allSettled([pending]);
         await entered.promise;
         let blocked = false;
         for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
@@ -262,6 +304,7 @@ suite("notification review regressions", () => {
         }
         expect(blocked).toBe(true);
         await deletion.query("COMMIT");
+        pendingAwaited = true;
         await pending;
         await publication.query("COMMIT");
         expect(
@@ -274,12 +317,30 @@ suite("notification review regressions", () => {
         expect(
           (await f.admin.query("SELECT count(*)::int AS n FROM notification_inbox")).rows[0].n,
         ).toBe(0);
+      } catch (error) {
+        failures.push(error);
       } finally {
-        for (const client of [deletion, publication]) {
-          await client.query("ROLLBACK");
-          await client.end();
+        // Release the deletion lock before draining the publication it can block.
+        try {
+          await clients[0]?.query("ROLLBACK");
+        } catch (error) {
+          failures.push(error);
         }
+        const results = await settled;
+        if (!pendingAwaited)
+          for (const result of results ?? [])
+            if (result.status === "rejected") failures.push(result.reason);
+        try {
+          await clients[1]?.query("ROLLBACK");
+        } catch (error) {
+          failures.push(error);
+        }
+        const closes = await Promise.allSettled(clients.map(async (client) => client.end()));
+        for (const result of closes) if (result.status === "rejected") failures.push(result.reason);
       }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, "Erasure race/cleanup failed", { cause: failures[0] });
     });
     completed++;
   }, 120000);
@@ -509,4 +570,8 @@ suite("notification review regressions", () => {
     await exerciseNotificationRoles();
     completed++;
   }, 120000);
+});
+
+registerNotificationAccountErasureCases(() => {
+  completed++;
 });

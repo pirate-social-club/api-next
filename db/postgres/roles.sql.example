@@ -50,6 +50,20 @@ REVOKE UPDATE, DELETE, TRUNCATE ON telegram_restricted_learners,
 REVOKE ALL ON telegram_restricted_bot_affirmations FROM api_next_app;
 -- Telegram linking deletion grants end
 
+-- Migration 0271's account-status trigger is SECURITY INVOKER. Identify every
+-- actual account-status executor through its serving connection; api_next_app
+-- is an example, not a production role name. In the approved owned schema,
+-- retain its existing USAGE and SELECT on users/notification_inbox and apply
+-- only this incremental grant after 0271-0273. This policy grants no receipt
+-- UPDATE; prove the native ON DELETE SET NULL/guard chain with that minimal
+-- authority before serving (the prepared regression is not an execution receipt).
+-- Hold ALL existing account-status writers throughout migration/grant/effective
+-- preflight admission. A new Worker or disabled feature flag does not fence old
+-- writers. Do not extend forward DELETE defaults, memberships or other tables.
+-- Notifications account erasure grants begin
+GRANT DELETE ON notification_inbox TO api_next_app;
+-- Notifications account erasure grants end
+
 -- Money evidence and derived receipts are append-only even if a deployment
 -- role is accidentally broader than the repository methods.
 REVOKE UPDATE, DELETE ON

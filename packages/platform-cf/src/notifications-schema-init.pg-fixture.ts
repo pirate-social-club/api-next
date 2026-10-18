@@ -32,8 +32,14 @@ const inspectSql = `SELECT current_user::text AS creating_role,
   pg_catalog.to_regclass(pg_catalog.format('%I.schema_migrations',$1::text))::text AS ledger
   FROM pg_catalog.pg_namespace n WHERE n.nspname=$1::text`;
 
-async function inspectSchema(admin: Pick<Client, "query">, schema: string) {
-  const result = await admin.query<SchemaInspection>(inspectSql, [schema]);
+type SchemaInspectionClient = {
+  connect(): Promise<void>;
+  query(sql: string, values: string[]): Promise<{ rows: SchemaInspection[] }>;
+  end(): Promise<void>;
+};
+
+async function inspectSchema(admin: Pick<SchemaInspectionClient, "query">, schema: string) {
+  const result = await admin.query(inspectSql, [schema]);
   const row = result.rows[0];
   if (result.rows.length !== 1 || !row) throw new Error("Dedicated schema is missing");
   return row;
@@ -51,14 +57,37 @@ function requireEmptySchema(state: SchemaInspection, schema: string, creator?: s
   expect(state.ledger).toBeNull();
 }
 
-async function inspectScopedConnection(connectionString: string, schema: string) {
-  const client = new Client({ connectionString });
-  await client.connect();
+export async function inspectScopedConnection(
+  connectionString: string,
+  schema: string,
+  client: SchemaInspectionClient = new Client({ connectionString }),
+) {
+  let outcome: { kind: "inspected"; value: SchemaInspection } | { kind: "failed"; error: unknown } =
+    { kind: "failed", error: undefined };
+  let closeFailed = false;
+  let closeFailure: unknown;
   try {
-    return await inspectSchema(client, schema);
+    await client.connect();
+    outcome = { kind: "inspected", value: await inspectSchema(client, schema) };
+  } catch (error) {
+    outcome = { kind: "failed", error };
   } finally {
-    await client.end();
+    try {
+      await client.end();
+    } catch (error) {
+      closeFailed = true;
+      closeFailure = error;
+    }
   }
+  if (outcome.kind === "failed") {
+    if (closeFailed)
+      throw new AggregateError([outcome.error, closeFailure], "Scoped inspection/close failed", {
+        cause: outcome.error,
+      });
+    throw outcome.error;
+  }
+  if (closeFailed) throw closeFailure;
+  return outcome.value;
 }
 
 const maintainedInitialization = {

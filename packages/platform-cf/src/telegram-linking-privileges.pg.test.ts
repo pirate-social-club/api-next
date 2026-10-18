@@ -3,7 +3,15 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { emptyTelegramStudyState } from "@pirate/application/telegram-study";
 import { Client } from "pg";
-import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import {
+  notificationErasureOperatorGrant,
+  prepareHistoricalTelegramErasureSchema,
+} from "../../../tests/postgres/notifications-account-erasure.pg-cases.ts";
+import {
+  assertNotificationErasurePrivileges,
+  NOTIFICATION_ERASURE_PRIVILEGES_SQL,
+  notificationErasurePrivilegeParameters,
+} from "./notification-erasure-privileges.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   assertTelegramActivationPrivileges,
@@ -31,50 +39,46 @@ suite("Telegram linking runtime privileges", () => {
     const schema = `telegram_acl_${suffix}`;
     const runtimeRole = `telegram_runtime_${suffix}`;
     const readerRole = `telegram_reader_${suffix}`;
+    const runtimePassword = randomUUID().replaceAll("-", "");
+    const readerPassword = randomUUID().replaceAll("-", "");
     const admin = new Client({ connectionString });
     await admin.connect();
     const scoped = (role: string) => {
       const url = new URL(connectionString);
-      url.searchParams.set("options", `-c search_path=${schema},pg_temp -c role=${role}`);
+      url.username = role;
+      url.password = role === runtimeRole ? runtimePassword : readerPassword;
+      url.searchParams.set("options", `-c search_path=${schema}`);
       return url.toString();
     };
     const runtime = new Client({ connectionString: scoped(runtimeRole) });
     const reader = new Client({ connectionString: scoped(readerRole) });
     try {
-      await admin.query("BEGIN");
       await admin.query(`CREATE SCHEMA ${schema}`);
-      await admin.query(`SET search_path TO ${schema}, pg_temp`);
-      const migrations = await loadPostgresMigrations();
-      const linking = migrations.findIndex(
-        (m) => m.version === "0237_telegram_learner_linking.sql",
-      );
-      expect(linking).toBeGreaterThan(0);
-      for (const migration of migrations.slice(0, linking)) await admin.query(migration.sql);
       const template = await readFile(
         new URL("../../../db/postgres/roles.sql.example", import.meta.url),
         "utf8",
       );
-      // Execute the documented provisioning prefix before new linking tables exist.
-      // It grants DELETE on existing tables but only SELECT/INSERT/UPDATE by default.
-      const provisioning = template.split("-- Canonical M3")[0];
-      if (!provisioning) throw new Error("Runtime role provisioning is missing");
-      await admin.query(
-        provisioning
-          .replaceAll("api_next_app", runtimeRole)
-          .replaceAll("SCHEMA public", `SCHEMA ${schema}`),
-      );
-      await admin.query(`CREATE ROLE ${readerRole} NOLOGIN`);
-      await admin.query(`GRANT USAGE ON SCHEMA ${schema} TO ${readerRole}`);
-      // Retain an unrelated money-table denial through the bounded repair.
-      await admin.query(`REVOKE DELETE ON megapot_pool_shares FROM ${runtimeRole}`);
-      for (const migration of migrations.slice(linking)) await admin.query(migration.sql);
-      await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${schema} TO ${readerRole}`);
-      await admin.query("COMMIT");
+      await prepareHistoricalTelegramErasureSchema({
+        admin,
+        schema,
+        baseUrl: connectionString,
+        runtimeRole,
+        readerRole,
+        runtimePassword,
+        readerPassword,
+        template,
+      });
       await runtime.connect();
       await reader.connect();
       expect((await runtime.query("SELECT current_user AS role")).rows).toEqual([
         { role: runtimeRole },
       ]);
+      expect((await runtime.query("SELECT session_user AS role")).rows).toEqual([
+        { role: runtimeRole },
+      ]);
+      expect(
+        (await reader.query("SELECT current_user AS role,session_user AS login")).rows,
+      ).toEqual([{ role: readerRole, login: readerRole }]);
       // Migration 0246's definer trigger function is runnable by its trigger alone.
       expect(
         (
@@ -241,6 +245,23 @@ suite("Telegram linking runtime privileges", () => {
         await expect(runtime.query(`DELETE FROM ${table} WHERE FALSE`)).rejects.toMatchObject({
           code: "42501",
         });
+      // The actual bounded operational policy repairs the later invoker DELETE.
+      // No direct receipt UPDATE is granted to make the FK action pass.
+      const erasureFacts = async () =>
+        (
+          await runtime.query(NOTIFICATION_ERASURE_PRIVILEGES_SQL, [
+            ...notificationErasurePrivilegeParameters(schema),
+          ])
+        ).rows;
+      const missingErasure = await erasureFacts();
+      expect(() => assertNotificationErasurePrivileges(missingErasure)).toThrow();
+      await expect(
+        runtime.query("UPDATE users SET status='deleted' WHERE user_id='deleted-learner'"),
+      ).rejects.toMatchObject({ code: "42501" });
+      const erasureGrant = await notificationErasureOperatorGrant(runtimeRole);
+      await admin.query(erasureGrant);
+      await admin.query(erasureGrant);
+      expect(assertNotificationErasurePrivileges(await erasureFacts())).toBe(runtimeRole);
       await store.unlink(browser, "321");
       await runtime.query("UPDATE users SET status='deleted' WHERE user_id='deleted-learner'");
       expect((await admin.query("SELECT * FROM telegram_account_associations")).rows).toHaveLength(

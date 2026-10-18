@@ -236,3 +236,101 @@ baseline. This repair establishes no effective-privilege parity for baseline
 replay and changes no generation/security-projection policy. Parent alone
 executes fresh synthetic fixtures; actual serving-role ownership, inheritance,
 final migration review and admission still require independent proof.
+
+## 2026-10-17 current invoker erasure policy successor — UNRUN
+
+This section supersedes earlier current-instructions wording about deletion
+authority; historical receipts above remain unchanged. Parent's original109
+general2 run failed192pass/1fail with42501: the pre0237 Telegram runtime can
+UPDATE users.status but its SELECT/INSERT/UPDATE forward defaults omit DELETE
+on the later0271 inbox. Even an empty inbox reaches that invoker DELETE and
+rolls the account/Telegram transaction back. This is a real authority gap.
+Parent's separate harness38 proof passed8/28 with both markers and all four
+schemas absent; it did not prove wholePG, ACLs or this successor.
+
+The separately delimited Notifications block in roles.sql.example adds only
+DELETE on notification_inbox to the explicitly observed account-status executor.
+Existing schema USAGE, SELECT on users/inbox and existing Telegram capabilities
+remain prerequisites. It grants no receipt UPDATE, private evidence authority,
+TRUNCATE, consent/money deletion, owner membership or forward DELETE default.
+The prepared native test must establish that the FK's ON DELETE SET NULL and
+immutable receipt guard work without a caller receipt-column UPDATE grant.
+
+The maintained serving-function preflight now reads the effective Notifications
+catalog facts from the same actual LOGIN connection and repeatable-read,
+read-only transaction as its unchanged function admission. It observes effective
+UPDATE(users.status); a status executor needs the direct, nondelegable inbox
+DELETE and required SELECTs. Other callers must lack inbox DELETE. Missing
+objects/guards, unexpected retained DELETE/TRUNCATE, private table/function
+access, PUBLIC authority, unsafe defaults, inherited reachable authority,
+owner-equivalence, elevated role flags or a changed session identity refuse.
+These facts are read-only; the preflight never applies grants or creates roles.
+Existing Telegram/function gates remain independently required.
+
+Every existing account-status writer must be held by the parent throughout
+migration271–273, bounded grant and effective preflight of each actual serving
+identity. Inventory all such connections, including Jobs/forward roles whose
+row-lock grant makes status writable. A flag or deploying a new Worker does
+not fence an already serving old writer. No technical global fence is supplied
+by this source repair; unresolved writer inventory or control blocks admission.
+
+Prepared native proof is registered, **UNRUN on these bytes**:
+
+- The old Telegram test now authenticates distinct SCRAM LOGINs. A genuinely
+  empty owned schema is initialized by the maintained checksum loader/runner
+  through0236, actual documented historical provisioning, then0237–0273.
+  Empty expected and exact intermediate/final273-entry ledgers are checked;
+  no baseline-first replay, forged ledger or private fixture revocation is used.
+  All previous unlink/cleanup/consent/money/inheritance assertions remain.
+- Hardening now requires7 completions and the unchanged exact marker. Its new
+  case proves missing-authority atomic rollback for empty/populated recipients,
+  the actual operator block, Telegram fencing, active-account direct DELETE
+  refusal, receipt-reference-only nulling, retained receipt/fact/response bytes,
+  repeat/recovery without resurrection, and restricted/default/inherited
+  negatives. The existing four-role case also consumes the actual block and
+  removes its former explicit receipt UPDATE. All six old cases remain.
+
+Parent alone executes these SQL/LOGIN proofs and final serving inventory. Old
+source98 six-case/35-case passes are historical, not these seven/39-case results.
+Their larger transitive graphs require fresh whole-file planning observations;
+no cost, shard, timeout, lock or sentinel bound changes were made here. Required
+full gates, realPG/PG18/HNS/CI, final committed271–273 migration review, exact
+client/paired consumer/serving acceptance and controlled cutover remain held.
+
+## 2026-10-17 trigger-shape admission repair — native proof UNRUN
+
+Independent core157 review found a static false-admission defect: guards_valid
+checked enabled/function/owner/invoker bindings but omitted trigger shape, and
+bool_and could ignore a NULL comparison when an expected function was missing.
+Parent's full check/test later passed on exact core157; that receipt does not
+close this finding or prove native erasure/ACL behavior.
+
+The successor requires all four expected functions explicitly and coalesces
+each complete required guard comparison to false before aggregation. It matches
+retained0271 trigger event/timing/ROW bits, exact update columns, zero arguments
+and empty argument bytes, no WHEN/transition relation, ordinary nondeferred
+nonpartition-child status, and the existing function/owner/invoker/enabled checks.
+users_delete_notification_inbox remains AFTER UPDATE OF status FOR EACH ROW
+with no trigger WHEN; its deleted-status/changed-status condition remains inside
+the unchanged retained function. Inbox/delivery retain BEFORE INSERT/UPDATE/
+DELETE ROW coverage; fact immutability retains BEFORE UPDATE/DELETE ROW coverage.
+No migration, function body, grant, receipt UPDATE or operational authority changes.
+
+The existing seventh erasure case now calls a focused catalog fixture after the
+bounded grant and before normal restricted-LOGIN erasure positives. Forty
+committed owner-side perturbations cover each guard's missing trigger/function,
+UPDATE, timing, ROW, WHEN, arguments and update-column restrictions; relevant
+DELETE/INSERT omissions, unrestricted users UPDATE, rebound and combined
+missing/rebound function cases are distinct. Only catalog reads occur while
+guards are weakened. The real LOGIN must see guards_valid=false on every row,
+refusal specifically for guards, and all other capability facts unchanged.
+Each variant restores the captured definition and retained function OID/name/
+owner once, then verifies the complete catalog/capability snapshot before the
+original FK/history/denial workflow. Cleanup failures preserve the primary error.
+
+All forty catalog negatives and normal native positives remain **UNRUN**.
+Hardening7, native39, feed6, Telegram1 and exact markers/bounds remain unchanged.
+Fresh independent successor readiness, parent realPG/full gates/timing/CI,
+final committed271–273 review, immutable0.122/consumer/paired serving and
+history/alias/drain/cutover admission remain required. Existing writer-control,
+Rewards/pilot/financial/credential/physical-proof/MainnetSafe STOP holds remain.

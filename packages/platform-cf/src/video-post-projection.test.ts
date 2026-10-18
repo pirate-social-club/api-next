@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { videoPostProjectionFromRow } from "./video-post-projection.ts";
+import { videoPostProjectionFromRow, videoPostProjectionSelect } from "./video-post-projection.ts";
 
 const projectionRow = (overrides: Readonly<Record<string, unknown>> = {}) => ({
   video_media_kind: "video",
@@ -17,6 +17,50 @@ const projectionRow = (overrides: Readonly<Record<string, unknown>> = {}) => ({
 });
 
 describe("video Post projection row mapping", () => {
+  test("both soundtrack authors use the shared current-lifecycle selector", () => {
+    expect(videoPostProjectionSelect).toContain(
+      "video_detail_persona_v1(origin_post.author_persona_id)->>'persona_id'",
+    );
+    expect(videoPostProjectionSelect).toContain(
+      "video_detail_persona_v1(song_post.author_persona_id)->>'persona_id'",
+    );
+    expect(videoPostProjectionSelect).not.toContain("  origin_post.author_persona_id AS");
+    expect(videoPostProjectionSelect).not.toContain("  song_post.author_persona_id AS");
+  });
+  test("redacted authors remain required nullable fields without losing soundtrack associations", () => {
+    expect(
+      videoPostProjectionFromRow(projectionRow({ video_origin_author_persona_id: null }))
+        ?.soundtrack,
+    ).toEqual({
+      kind: "original_audio",
+      original_sound_id: "original-sound-1",
+      origin_video_post_id: "post-video-1",
+      origin_author_persona_id: null,
+    });
+    const song = {
+      video_intent: "song_reference",
+      video_song_post_id: "retained-song",
+      video_song_title: "Retained title",
+      video_song_author_persona_id: null,
+    };
+    expect(videoPostProjectionFromRow(projectionRow(song))?.soundtrack).toEqual({
+      kind: "song_reference",
+      render_mode: "canonical_replace",
+      song_reference: {
+        song_post_id: "retained-song",
+        song_title: "Retained title",
+        song_author_persona_id: null,
+      },
+    });
+    expect(
+      videoPostProjectionFromRow(projectionRow({ video_origin_author_persona_id: undefined })),
+    ).toBeNull();
+    expect(
+      videoPostProjectionFromRow(
+        projectionRow({ ...song, video_song_author_persona_id: undefined }),
+      ),
+    ).toBeNull();
+  });
   test("exhausted delivery is unavailable without exposing its private recovery evidence", () => {
     const projection = videoPostProjectionFromRow(
       projectionRow({

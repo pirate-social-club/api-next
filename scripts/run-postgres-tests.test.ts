@@ -57,6 +57,35 @@ describe("PostgreSQL lock capacity preflight", () => {
 });
 
 describe("PostgreSQL test discovery", () => {
+  test("routes every tracked local recovery-target importer exclusively through recovery", async () => {
+    const tracked = Bun.spawnSync(["git", "ls-files", "-z", "*.pg.test.ts"]);
+    expect(tracked.exitCode).toBe(0);
+    const files = tracked.stdout.toString().split("\0").filter(Boolean);
+    const general = partitionPostgresTestFiles(files).general;
+    const callers: string[] = [];
+    for (const file of files) {
+      const source = await Bun.file(file).text();
+      if (/from\s*["'][^"']*staging-persona-recovery-test-target(?:\.ts)?["']/u.test(source))
+        callers.push(file);
+    }
+    expect(callers).toHaveLength(5);
+    const partition = partitionPostgresRecoveryFiles(general);
+    expect([...partition.recovery].sort()).toEqual([...callers].sort());
+    for (const caller of callers) {
+      expect(partition.audited).not.toContain(caller);
+      expect(partition.hnsRegtest).not.toContain(caller);
+      expect(() =>
+        partitionPostgresRecoveryFiles(general.filter((file) => file !== caller)),
+      ).toThrow("recovery suite is missing");
+    }
+    expect([...partition.recovery, ...partition.hnsRegtest, ...partition.audited].sort()).toEqual(
+      [...general].sort(),
+    );
+    expect(
+      new Set([...partition.recovery, ...partition.hnsRegtest, ...partition.audited]).size,
+    ).toBe(general.length);
+  });
+
   test("requires activity completion in the audited shard and CI completion-marker controls", async () => {
     const file = "packages/platform-cf/src/activity-completion-repository.pg.test.ts";
     expect(freshSchemaPostgresTestSuites).toContain(file);
@@ -119,12 +148,12 @@ describe("PostgreSQL test discovery", () => {
     expect(shards.every((shard) => shard.length === 1)).toBe(true);
   });
 
-  test("uses completed source98 Notifications whole-file costs without discounting fewer entry calls", async () => {
+  test("uses completed source158 Notifications whole-file costs without discounting fewer entry calls", async () => {
     // Entry-call growth is automatic; imported fixture growth still needs a
     // fresh whole-file observation bound to its exact source graph.
     for (const [file, sourceCallCount, milliseconds] of [
-      ["packages/platform-cf/src/notifications-repository.pg.test.ts", 12, 229_025],
-      ["tests/postgres/notifications-hardening.pg.test.ts", 6, 108_975],
+      ["packages/platform-cf/src/notifications-repository.pg.test.ts", 12, 237_112],
+      ["tests/postgres/notifications-hardening.pg.test.ts", 6, 124_263],
     ] as const) {
       const cost = postgresGeneralSuiteCostEstimates[file];
       if (cost === undefined)
@@ -167,9 +196,8 @@ describe("PostgreSQL test discovery", () => {
       .toString()
       .split("\0")
       .filter((file) => file.length > 0);
-    const audited = partitionPostgresRecoveryFiles(
-      partitionPostgresTestFiles(files).general,
-    ).audited;
+    const partition = partitionPostgresRecoveryFiles(partitionPostgresTestFiles(files).general);
+    const audited = partition.audited;
     const entries = await Promise.all(
       audited.map(
         async (file) =>
@@ -209,7 +237,7 @@ describe("PostgreSQL test discovery", () => {
         auditedFiles: audited.length,
         sixShardMilliseconds: totals.map((weight) => weight * 100),
         insufficientFiveShardMilliseconds: fiveTotals.map((weight) => weight * 100),
-        notificationsWholeFileObservations: "completed-source98; planning only",
+        notificationsWholeFileObservations: "completed-source158; planning only",
       }),
     );
     const four = shardPostgresTestFiles(audited, 4, weights);
@@ -218,7 +246,11 @@ describe("PostgreSQL test discovery", () => {
     );
     expect(Math.max(...fourTotals) * 100).toBeGreaterThanOrEqual(880_000);
     for (const [file, cost] of Object.entries(postgresGeneralSuiteCostEstimates)) {
-      expect(audited).toContain(file);
+      expect(
+        [...partition.audited, ...partition.recovery, ...partition.hnsRegtest].filter(
+          (path) => path === file,
+        ),
+      ).toHaveLength(1);
       expect(Number.isSafeInteger(cost.milliseconds) && cost.milliseconds > 0).toBe(true);
       expect(Number.isSafeInteger(cost.sourceCallCount) && cost.sourceCallCount > 0).toBe(true);
     }
@@ -284,7 +316,13 @@ describe("PostgreSQL test discovery", () => {
     expect([...partition.isolated, ...partition.general].sort()).toEqual([...files].sort());
     expect(partition.general).not.toContain(partition.isolated[0]);
     const ci = partitionPostgresRecoveryFiles(partition.general);
-    expect(ci.recovery).toEqual(["scripts/staging-persona-phased-reset.pg.test.ts"]);
+    expect(ci.recovery).toEqual([
+      "scripts/staging-persona-phased-reset.pg.test.ts",
+      "scripts/staging-karaoke-release-database.pg.test.ts",
+      "scripts/staging-persona-prepare-reset.pg.test.ts",
+      "scripts/staging-persona-reset-denied-grants.pg.test.ts",
+      "scripts/staging-persona-reconstruct.pg.test.ts",
+    ]);
     expect(ci.hnsRegtest).toEqual([
       "packages/platform-cf/src/hns-lifecycle-composed-path.pg.test.ts",
       "packages/platform-cf/src/hns-service-loop-entrypoint.pg.test.ts",

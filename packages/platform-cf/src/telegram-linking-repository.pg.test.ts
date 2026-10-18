@@ -1,13 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { TelegramLinkBrowser } from "@pirate/application/telegram-linking";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connectionString)
@@ -28,7 +30,7 @@ async function fixture(
   ) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres test URL required");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "telegram_linking_pg_test",
     use: async ({ admin, schema }) => {
@@ -330,4 +332,8 @@ suite("Telegram linking lifecycle fences", () => {
       ).toEqual([{ state: "cancelled", secret_ciphertext: null }]);
       expect(await store.resolveGrant("music", "123", "epoch", "321")).toBeNull();
     }));
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

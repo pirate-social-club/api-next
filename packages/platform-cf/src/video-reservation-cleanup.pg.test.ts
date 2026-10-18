@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { mediaSha256Bytes } from "../../application/src/media/submission-service.ts";
 import { createOriginalVideoSubmission } from "../../domain/src/video-submission.ts";
@@ -9,6 +9,8 @@ import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { actor, community, persona, seedVideoActors } from "./video-publication.pg-fixture.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 import { makeVideoReservationCleanup } from "./video-reservation-cleanup.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -18,7 +20,7 @@ const suite = url ? describe : describe.skip;
 suite("video reservation cleanup PostgreSQL", () => {
   test("aborts expired uploads, retries uncertain abort, skips live and manifested reservations", async () => {
     if (!url) throw new Error("missing URL");
-    await withReusablePostgresTestSchema({
+    await reusableSchema.run({
       baseConnectionString: url,
       schemaName: "video_reservation_cleanup_pg_test",
       use: async ({ admin, schema }) => {
@@ -161,4 +163,8 @@ suite("video reservation cleanup PostgreSQL", () => {
       },
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

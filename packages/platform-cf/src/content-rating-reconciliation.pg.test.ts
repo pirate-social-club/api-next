@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
   attachVideoDecision,
@@ -20,6 +20,8 @@ import {
 } from "./video-publication.pg-fixture.ts";
 import { makeVideoSafetyEvidenceStore } from "./video-safety-evidence-repository.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
   throw new Error("PostgreSQL test URL required");
@@ -30,7 +32,7 @@ const sentinel =
 let completed = 0;
 async function fixture(use: (admin: Client) => Promise<void>) {
   if (url === undefined) throw new Error("PostgreSQL test URL required");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: url,
     schemaName: "content_rating_reconciliation_pg",
     use: async ({ admin, schema }) => {
@@ -343,6 +345,7 @@ suite("retained content rating reconciliation", () => {
     });
   });
   afterAll(async () => {
+    await reusableSchema.dispose();
     if (url !== undefined && completed === 4)
       await Bun.write(
         sentinel,

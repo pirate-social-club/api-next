@@ -244,8 +244,19 @@ export async function admitMatrix(f: VideoMatrixFixture) {
 
 export async function matrixClient(url: string) {
   const client = new Client({ connectionString: url });
-  await client.connect();
-  return client;
+  try {
+    await client.connect();
+    return client;
+  } catch (error) {
+    try {
+      await client.end();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Matrix client acquisition/close failed", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }
 
 /** Hooks observe actual native operations. They never retry, substitute rows,

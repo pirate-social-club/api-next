@@ -70,6 +70,79 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E {
 }
 
 describe("home feed Postgres repository", () => {
+  test.each(["video-exact-id", "not/a/canonical-slug"])(
+    "ready video stays readable without canonical metadata even with alias %s",
+    async (canonicalSlug) => {
+      for (const viewer of [undefined, "member-1"]) {
+        const calls: ControlPlaneStatement[] = [];
+        const output = await Effect.runPromise(
+          makeControlPlaneFeedRepository()
+            .listHome({
+              query: {},
+              ...(viewer === undefined ? {} : { viewerUserId: viewer }),
+            })
+            .pipe(
+              Effect.provideService(
+                ControlPlaneDb,
+                fakeDb(
+                  () => [
+                    feedRow(0, {
+                      post_type: "video",
+                      body: null,
+                      canonical_slug: canonicalSlug,
+                      video_media_kind: "video",
+                      video_intent: "original_audio",
+                      video_caption: "Ready caption",
+                      video_original_sound_id: "retained-original",
+                      video_origin_post_id: "post_0",
+                      video_origin_author_persona_id: null,
+                      video_stream_state: "ready",
+                      video_playback_ref: "ready-stream",
+                      video_thumbnail_state: "ready",
+                      video_thumbnail_artifact_ref: "media://thumbnail/ready",
+                      video_data_registration_state: "registered",
+                    }),
+                  ],
+                  calls,
+                ),
+              ),
+            ),
+        );
+        expect(output.items).toHaveLength(1);
+        expect(output.items[0]).not.toHaveProperty("post.canonical_path");
+        expect(output.items[0]).toMatchObject({
+          post: {
+            post: { id: "post_0", post_type: "video" },
+            video: {
+              playback: { status: "ready" },
+              soundtrack: { kind: "original_audio", origin_author_persona_id: null },
+            },
+          },
+        });
+        expect(calls).toHaveLength(1);
+      }
+    },
+  );
+  test.each(["text", "song"])(
+    "%s canonical eligibility still validates persisted aliases",
+    async (postType) => {
+      const repository = makeControlPlaneFeedRepository();
+      const read = (slug: string) =>
+        repository.listHome({ query: {} }).pipe(
+          Effect.provideService(
+            ControlPlaneDb,
+            fakeDb(() => [feedRow(0, { post_type: postType, canonical_slug: slug })], []),
+          ),
+        );
+      expect((await Effect.runPromise(read("owned-valid-slug"))).items[0]).toHaveProperty(
+        "post.canonical_path",
+        "/posts/owned-valid-slug",
+      );
+      expect(failureOf(await Effect.runPromiseExit(read("invalid/slug")))).toMatchObject({
+        reason: "invalid-row",
+      });
+    },
+  );
   test.each([null, "not_started", "bound"])(
     "returns private-evidence-free pending video with ingest state %j",
     async (streamState) => {

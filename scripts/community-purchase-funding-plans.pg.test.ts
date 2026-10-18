@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 
 import {
   loadPublicProfileBackfillPgDriver,
@@ -26,12 +26,13 @@ const baselineModule =
       });
 const PgClientConstructor = pgModule?.Client;
 const applyPostgresTestBaselineConnection = baselineModule?.applyPostgresTestBaselineConnection;
-const withReusablePostgresTestSchema = baselineModule?.withReusablePostgresTestSchema;
+const createReusablePostgresTestSchemaOwner = baselineModule?.createReusablePostgresTestSchemaOwner;
+const reusableSchema = createReusablePostgresTestSchemaOwner?.();
 const suite =
   connectionString === undefined ||
   PgClientConstructor === undefined ||
   applyPostgresTestBaselineConnection === undefined ||
-  withReusablePostgresTestSchema === undefined
+  reusableSchema === undefined
     ? describe.skip
     : describe;
 
@@ -55,13 +56,10 @@ async function withSchema<A>(
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   if (PgClientConstructor === undefined) throw new Error("package-local pg driver unavailable");
-  if (
-    applyPostgresTestBaselineConnection === undefined ||
-    withReusablePostgresTestSchema === undefined
-  ) {
+  if (applyPostgresTestBaselineConnection === undefined || reusableSchema === undefined) {
     throw new Error("PostgreSQL baseline helper is unavailable");
   }
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "scripts_community_purchase_funding_plans_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -283,4 +281,8 @@ suite("Postgres 17 community purchase funding plans", () => {
       expect(rows.rows[0]?.count).toBe("0");
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema?.dispose();
 });

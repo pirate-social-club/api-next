@@ -6,6 +6,7 @@ import { makeControlPlaneNotificationStore } from "./notifications-repository.ts
 import { registerVideoNotificationPostgresCases } from "./notifications-video.pg-cases.ts";
 import { registerVideoAdmissionMatrixPostgresCases } from "./notifications-video-admission-matrix.pg-cases.ts";
 import { registerVideoDeepPostgresCases } from "./notifications-video-deep.pg-cases.ts";
+import { registerVideoReaderPostgresCases } from "./notifications-video-reader.pg-cases.ts";
 import { registerVideoSnapshotPostgresCases } from "./notifications-video-snapshot.pg-cases.ts";
 import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository.ts";
 
@@ -18,7 +19,7 @@ afterAll(async () => {
   const sentinel =
     process.env.CONTROL_PLANE_POSTGRES_NOTIFICATIONS_TEST_SENTINEL ??
     "/tmp/api-next-control-plane-postgres-notifications-suite-complete";
-  if (completed === 35) {
+  if (completed === 39) {
     await Bun.write(sentinel, "notifications-postgres-complete\n");
     expect(await Bun.file(sentinel).text()).toBe("notifications-postgres-complete\n");
     console.info("Notifications PostgreSQL completion sentinel validated");
@@ -35,6 +36,9 @@ registerVideoAdmissionMatrixPostgresCases(() => {
   completed++;
 });
 registerVideoDeepPostgresCases(() => {
+  completed++;
+});
+registerVideoReaderPostgresCases(() => {
   completed++;
 });
 

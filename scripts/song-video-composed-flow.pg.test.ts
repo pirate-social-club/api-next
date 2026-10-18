@@ -67,7 +67,7 @@ import { makeVideoThumbnailStore } from "../packages/platform-cf/src/video-thumb
 import { makeVideoThumbnailVerifier } from "../packages/platform-cf/src/video-thumbnail-verifier.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "./postgres-test-baseline.ts";
 import {
   makeLocalPinnedFfmpegSongVideoEngine,
@@ -79,6 +79,8 @@ import {
 } from "./song-video-local-render.ts";
 import { claimHostRenderAttempt, executeHostRenderAttempt } from "./song-video-render-host.ts";
 import { makeLocalPinnedFfmpegVideoAnalysisEngine } from "./video-analysis-ffmpeg.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 /**
  * The composed song-backed video path, end to end on one machine: interval
@@ -858,7 +860,7 @@ async function operationOf(composed: Composed, submissionId: string): Promise<st
 
 async function inSchema(use: (admin: Client, schema: string, directory: string) => Promise<void>) {
   if (connectionString === undefined) throw new Error("unreachable");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "scripts_song_video_composed_flow_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -1851,6 +1853,7 @@ suite("composed song-backed video: reserve, render, publish, play", () => {
   }, 600_000);
 
   afterAll(async () => {
+    await reusableSchema.dispose();
     if (completedTestCount === 14) await Bun.write(sentinelPath, sentinelContents);
   });
 });

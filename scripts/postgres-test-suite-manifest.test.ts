@@ -11,7 +11,7 @@ describe("PostgreSQL test suite isolation manifest", () => {
     const tracked = Bun.spawnSync(["git", "ls-files", "*.pg.test.ts"]);
     expect(tracked.exitCode).toBe(0);
     const files = tracked.stdout.toString().split("\n").filter(Boolean).sort();
-    const classified = [...classifiedPostgresTestSuites].sort();
+    const classified: string[] = [...classifiedPostgresTestSuites].sort();
 
     expect(new Set(classified).size).toBe(classified.length);
     expect(classified).toEqual(files);
@@ -31,7 +31,10 @@ describe("PostgreSQL test suite isolation manifest", () => {
     for (const file of reusablePostgresTestSuites) {
       const source = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
       if (
-        !source.includes("withReusablePostgresTestSchema") &&
+        !(
+          source.includes("createReusablePostgresTestSchemaOwner") &&
+          /await reusableSchema\??\.dispose\(\)/u.test(source)
+        ) &&
         !source.includes("resetPostgresTestBaseline")
       ) {
         missing.push(file);

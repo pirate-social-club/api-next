@@ -11,15 +11,16 @@ import { makeHnsIncidentHsdReadsV1 } from "../../../apps/hns-authority-provision
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 
 /**
- * Incident evidence against a live chain, read-only.
+ * Incident evidence against a controlled regtest chain.
  *
  * This is the step that must be right before anything is authorized: which
  * transaction published what the name currently carries, whether those bytes
  * are the ones the owner was asked to publish, and whether the operation's own
- * authority is still there. Every read here is a read; nothing in this file
- * mutates a name, a zone, or an operation.
+ * authority is still there. Evidence gathering reads the result, but fixture
+ * preparation below creates a wallet address, progresses a name and mines blocks.
  *
- * Skips unless both a PostgreSQL URL and a reachable regtest node are present.
+ * Skips in explicit pg-only context, or unless PostgreSQL and reachable regtest
+ * are present. Running this case requires separately admitted chain progression.
  */
 
 import {

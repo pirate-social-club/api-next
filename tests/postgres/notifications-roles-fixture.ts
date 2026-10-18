@@ -9,6 +9,7 @@ import { JobContext } from "../../apps/jobs-worker/src/registry.ts";
 import { withInbox } from "../../packages/platform-cf/src/notifications.pg-fixture.ts";
 import { makeControlPlaneNotificationStore } from "../../packages/platform-cf/src/notifications-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../packages/platform-cf/src/postgres.ts";
+import { notificationErasureOperatorGrant } from "./notifications-account-erasure.pg-cases.ts";
 import {
   grantNotificationVideoReads,
   notificationRoleImmutableHistory,
@@ -90,15 +91,11 @@ export async function exerciseNotificationRoles() {
         `GRANT INSERT ON notification_inbox,notification_publication_deliveries TO ${jobs}`,
       );
       await grant(
-        `GRANT SELECT ON users,notification_inbox,notification_publication_deliveries,telegram_bot_grants,telegram_link_transactions,telegram_account_associations TO ${deletion}`,
+        `GRANT SELECT ON users,notification_inbox,telegram_bot_grants,telegram_link_transactions,telegram_account_associations TO ${deletion}`,
       );
       await grant(`GRANT UPDATE(status) ON users TO ${deletion}`);
-      await grant(
-        `GRANT DELETE ON notification_inbox,telegram_account_associations TO ${deletion}`,
-      );
-      await grant(
-        `GRANT UPDATE(notification_id) ON notification_publication_deliveries TO ${deletion}`,
-      );
+      await grant(`GRANT DELETE ON telegram_account_associations TO ${deletion}`);
+      await grant(await notificationErasureOperatorGrant(deletion));
       await grant(`GRANT UPDATE(active,revision) ON telegram_bot_grants TO ${deletion}`);
       await grant(
         `GRANT UPDATE(state,state_hash,secret_ciphertext) ON telegram_link_transactions TO ${deletion}`,
@@ -111,8 +108,8 @@ export async function exerciseNotificationRoles() {
         [forward, "forward"],
       ] as const) {
         const client = new Client({ connectionString: login(role) });
-        await client.connect();
         connected.push(client);
+        await client.connect();
         clients.set(role, client);
         await verifyNotificationRoleAccess(client, role, caller, [
           ...sourceReads,
@@ -295,11 +292,24 @@ export async function exerciseNotificationRoles() {
     async (admin, schema) => {
       const created: string[] = [];
       const cleanup = async () => {
-        for (const client of connected) await client.end();
-        for (const role of created.reverse()) {
-          await admin.query(`DROP OWNED BY ${role}`);
-          await admin.query(`DROP ROLE ${role}`);
+        const closes = await Promise.allSettled(connected.map(async (client) => client.end()));
+        const failures = closes.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        // A failed close must not trigger destructive cleanup of that caller's role.
+        if (failures.length === 0) {
+          try {
+            for (const role of created.reverse()) {
+              await admin.query(`DROP OWNED BY ${role}`);
+              await admin.query(`DROP ROLE ${role}`);
+            }
+          } catch (error) {
+            failures.push(error);
+          }
         }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1)
+          throw new AggregateError(failures, "Role fixture cleanup failed", { cause: failures[0] });
       };
       try {
         for (const role of roles) {
@@ -314,7 +324,13 @@ export async function exerciseNotificationRoles() {
         );
         return cleanup;
       } catch (error) {
-        await cleanup();
+        try {
+          await cleanup();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], "Role setup/cleanup failed", {
+            cause: error,
+          });
+        }
         throw error;
       }
     },

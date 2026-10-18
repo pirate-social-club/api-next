@@ -1,8 +1,12 @@
-/** Complete socket-free services; every unconfigured capability fails fast. */
+/** Complete fail-fast service doubles plus an explicitly invoked persisted
+ * reader fixture. Importing this module performs no database/provider work. */
 import type {
   VideoPublicationServices,
   VideoPublicationStore,
 } from "../../application/src/video/publication.ts";
+import { consumeVideoStreamIngest } from "../../application/src/video/stream-ingest.ts";
+import type { withInbox } from "./notifications.pg-fixture.ts";
+import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts";
 
 function unexpected(method: string): never {
   throw new Error(`Unexpected video publication fixture call: ${method}`);
@@ -66,4 +70,47 @@ export function notificationsVideoPublicationServicesFixture(
     randomUuid: () => unexpected("randomUuid"),
     ...overrides,
   };
+}
+
+/** Real publication and Stream-ingest state transitions; only the external
+ * transport observations are deterministic ports, never a provider proof. */
+export async function readyNotificationVideoForReaders(
+  f: Parameters<Parameters<typeof withInbox>[0]>[0],
+  postId: string,
+): Promise<void> {
+  const publication = await f.admin.query<{ operation_id: string }>(
+    "SELECT operation_id FROM media_publication_projections WHERE post_id=$1 AND media_kind='video'",
+    [postId],
+  );
+  const operation = publication.rows[0]?.operation_id;
+  if (publication.rows.length !== 1 || !operation)
+    throw new Error("Real video publication required");
+  let copies = 0;
+  const now = Date.now();
+  const result = await consumeVideoStreamIngest(`video-enrichment:${operation}:stream`, {
+    store: makeVideoStreamIngestStore(f.runtime, {
+      leaseOwner: "notification-reader-fixture",
+      leaseMs: 60_000,
+    }),
+    nowMs: () => now,
+    deadlines: (at) => ({ acceptanceDeadlineMs: at + 30_000, encodingDeadlineMs: at + 300_000 }),
+    transport: {
+      copy: async (input) => {
+        if (!input.requireSignedURLs || input.downloadsEnabled)
+          throw new Error("Unsafe fixture copy policy");
+        copies += 1;
+      },
+      observe: async (identity) => [
+        {
+          ...identity,
+          providerVideoId: "c".repeat(32),
+          encoding: "ready",
+          requireSignedURLs: true,
+          downloadsEnabled: false,
+        },
+      ],
+    },
+  });
+  if (result !== "ready" || copies !== 1)
+    throw new Error("Real video ingest did not become ready once");
 }

@@ -75,53 +75,58 @@ export function registerVideoSnapshotPostgresCases(completed: () => void) {
             (SELECT jsonb_agg(to_jsonb(d) ORDER BY source_event_id) FROM notification_publication_deliveries d) AS deliveries`)
             ).rows;
           const history = await receipts();
-          const locker = await matrixClient(f.url);
-          const writer = await matrixClient(f.url);
-          const key = BigInt(
-            `0x${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
-          ).toString();
-          const gates = [
-            matrixSnapshotRuntime(f.url, key),
-            matrixSnapshotRuntime(f.url, key),
-            matrixSnapshotRuntime(f.url, key),
-          ] as const;
-          await locker.query("BEGIN");
-          await locker.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
-          const settle = <A>(promise: Promise<A>) =>
-            promise.then(
-              (value) => ({ ok: true as const, value }),
-              (error: unknown) => ({ ok: false as const, error }),
-            );
-          const pending = [
-            settle(
-              f.run(
-                makeControlPlaneVideoDetailStore(gates[0].runtime).read({
-                  selector: { kind: "post_id", value: postId },
-                  viewerUserId: "inbox-owner",
-                }),
-              ),
-            ),
-            settle(
-              f.run(
-                makeControlPlaneVideoDetailStore(gates[1].runtime).read({
-                  selector: { kind: "alias", value: postId },
-                  viewerUserId: "inbox-owner",
-                }),
-              ),
-            ),
-            settle(
-              f.run(
-                makeControlPlaneCommentNavigationStore(gates[2].runtime).resolve({
-                  viewerUserId: "inbox-owner",
-                  commentId: target.comment_id,
-                }),
-              ),
-            ),
-          ] as const;
+          const clients: Awaited<ReturnType<typeof matrixClient>>[] = [];
+          const pendingReads: Promise<{ ok: boolean; error?: unknown }>[] = [];
           let originalError: unknown;
           let failed = false;
           const cleanupFailures: unknown[] = [];
           try {
+            const locker = await matrixClient(f.url);
+            clients.push(locker);
+            const writer = await matrixClient(f.url);
+            clients.push(writer);
+            const key = BigInt(
+              `0x${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+            ).toString();
+            const gates = [
+              matrixSnapshotRuntime(f.url, key),
+              matrixSnapshotRuntime(f.url, key),
+              matrixSnapshotRuntime(f.url, key),
+            ] as const;
+            await locker.query("BEGIN");
+            await locker.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+            const settle = <A>(promise: Promise<A>) =>
+              promise.then(
+                (value) => ({ ok: true as const, value }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
+            const pending = [
+              settle(
+                f.run(
+                  makeControlPlaneVideoDetailStore(gates[0].runtime).read({
+                    selector: { kind: "post_id", value: postId },
+                    viewerUserId: "inbox-owner",
+                  }),
+                ),
+              ),
+              settle(
+                f.run(
+                  makeControlPlaneVideoDetailStore(gates[1].runtime).read({
+                    selector: { kind: "alias", value: postId },
+                    viewerUserId: "inbox-owner",
+                  }),
+                ),
+              ),
+              settle(
+                f.run(
+                  makeControlPlaneCommentNavigationStore(gates[2].runtime).resolve({
+                    viewerUserId: "inbox-owner",
+                    commentId: target.comment_id,
+                  }),
+                ),
+              ),
+            ] as const;
+            pendingReads.push(...pending);
             const pids = await Promise.all(gates.map((gate) => gate.backend));
             expect(new Set(pids).size).toBe(3);
             await waitForMatrixSnapshots(f.admin, pids);
@@ -257,12 +262,11 @@ export function registerVideoSnapshotPostgresCases(completed: () => void) {
             originalError = error;
             failed = true;
           } finally {
-            const cleanup = await Promise.allSettled([
-              writer.query("ROLLBACK"),
-              locker.query("ROLLBACK"),
-            ]);
-            const reads = await Promise.all(pending);
-            const closes = await Promise.allSettled([writer.end(), locker.end()]);
+            const cleanup = await Promise.allSettled(
+              clients.map((client) => client.query("ROLLBACK")),
+            );
+            const reads = await Promise.all(pendingReads);
+            const closes = await Promise.allSettled(clients.map(async (client) => client.end()));
             cleanupFailures.push(
               ...[...cleanup, ...closes]
                 .filter((row) => row.status === "rejected")

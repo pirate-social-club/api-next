@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { makeControlPlaneMegapotWorkStore } from "@pirate/platform-cf/megapot-work-repository";
 import { makeDirectPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Effect } from "effect";
-import { withReusablePostgresTestSchema } from "../../../scripts/postgres-test-baseline.ts";
+import { createReusablePostgresTestSchemaOwner } from "../../../scripts/postgres-test-baseline.ts";
 import { type MegapotRewardsRuntime, runMegapotRewardsCycle } from "./megapot-rewards-cycle.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -21,7 +23,7 @@ for (const total of [10, 11, 20])
     `every one of ${total} unresolved transfers is observed in turn under the time budget`,
     async () => {
       if (!url) throw new Error("Postgres required");
-      await withReusablePostgresTestSchema({
+      await reusableSchema.run({
         baseConnectionString: url,
         schemaName: "megapot_rewards_funding_fairness",
         use: async ({ admin, connectionString }) => {
@@ -127,3 +129,7 @@ for (const total of [10, 11, 20])
     },
     60_000,
   );
+
+afterAll(async () => {
+  await reusableSchema.dispose();
+});

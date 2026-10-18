@@ -1,16 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { makeRewardOperationsGuard } from "../../../apps/http-worker/src/reward-operations-guard.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { bytes32, hash, seedMegapotAuthority } from "./rewards-composed-pool.pg-fixture.ts";
 import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -31,7 +33,7 @@ const pause = (client: Client, paused: boolean) =>
 suite("HTTP database reward admission", () => {
   test("stale running reads cannot create liabilities; previously issued funding still settles", async () => {
     if (!url) throw Error("Test URL required");
-    await withReusablePostgresTestSchema({
+    await reusableSchema.run({
       baseConnectionString: url,
       schemaName: "reward_http_admission",
       use: async ({ admin, schema }) => {
@@ -400,4 +402,8 @@ suite("HTTP database reward admission", () => {
       await admin.end();
     }
   }, 15000);
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

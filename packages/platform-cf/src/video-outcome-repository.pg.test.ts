@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { claimVideoOutcome } from "../../application/src/use-cases/video-outcomes.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -20,6 +20,8 @@ import {
   videoSha256,
 } from "./video-publication.pg-fixture.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined)
   throw new Error("Postgres test URL required");
@@ -27,7 +29,7 @@ const suite = connectionString === undefined ? describe.skip : describe;
 
 async function fixture(use: (admin: Client, connection: string) => Promise<void>) {
   if (connectionString === undefined) throw new Error("Postgres test URL required");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "video_outcome_repository",
     use: async ({ admin, schema }) => {
@@ -253,4 +255,8 @@ suite("permanent author video outcome claims on PostgreSQL", () => {
       expect((await claim(connection)).display_permission).toBe(false);
     });
   }, 30_000);
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

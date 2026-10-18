@@ -17,11 +17,22 @@ export const gate = () => {
 };
 export async function transactionClient(url: string) {
   const client = new Client({ connectionString: url });
-  await client.connect();
-  await client.query(
-    "BEGIN; SET LOCAL statement_timeout='8s'; SET LOCAL idle_in_transaction_session_timeout='10s'",
-  );
-  return client;
+  try {
+    await client.connect();
+    await client.query(
+      "BEGIN; SET LOCAL statement_timeout='8s'; SET LOCAL idle_in_transaction_session_timeout='10s'",
+    );
+    return client;
+  } catch (error) {
+    try {
+      await client.end();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Transaction client acquisition/close failed", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }
 export function pinnedRuntime(
   client: Client,

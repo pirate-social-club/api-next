@@ -38,9 +38,13 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number): Promis
   return check();
 }
 
-async function queryProbe(admin: Client, runId: string): Promise<readonly ProbeRow[]> {
+async function queryProbe(
+  admin: Client,
+  relation: string,
+  runId: string,
+): Promise<readonly ProbeRow[]> {
   const result = await admin.query<ProbeRow>({
-    text: "SELECT run_id, phase FROM api_next_pg17_abort_probe WHERE run_id = $1",
+    text: `SELECT run_id, phase FROM ${relation} WHERE run_id = $1`,
     values: [runId],
   });
   return result.rows;
@@ -50,10 +54,50 @@ function runId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
+async function withProbe(run: (admin: Client, relation: string) => Promise<void>): Promise<void> {
+  if (connectionString === undefined) throw new Error("test URL was not configured");
+  const admin = new Client({ connectionString });
+  // Never adopt the fixed forensic table; qualify our fresh target for both gateway search paths.
+  const relation = `"public"."api_next_pg17_abort_probe_${crypto.randomUUID().replaceAll("-", "")}"`;
+  let created = false;
+  const failures: unknown[] = [];
+  try {
+    await admin.connect();
+    await admin.query(`CREATE TABLE ${relation} (
+      run_id TEXT PRIMARY KEY,
+      phase TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    created = true;
+    await run(admin, relation);
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    if (created) {
+      try {
+        await admin.query(`DROP TABLE ${relation}`);
+        const remaining = await admin.query<{ present: string | null }>(
+          "SELECT to_regclass($1)::text AS present",
+          [relation],
+        );
+        if (remaining.rows[0]?.present !== null)
+          failures.push(new Error("owned abort probe survived cleanup"));
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      await admin.end();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "abort probe work or cleanup failed");
+}
+
 suite("Postgres 17 control-plane harness", () => {
   test("proves backend termination, rollback, commit, and ordinary rollback", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
-    const admin = new Client({ connectionString });
     const abortedId = runId("aborted");
     const committedId = runId("committed");
     const rolledBackId = runId("rolled_back");
@@ -67,22 +111,13 @@ suite("Postgres 17 control-plane harness", () => {
         }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connectionString))),
       );
 
-    try {
-      await admin.connect();
-      await admin.query(`
-        CREATE TABLE IF NOT EXISTS api_next_pg17_abort_probe (
-          run_id TEXT PRIMARY KEY,
-          phase TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-      `);
-
+    await withProbe(async (admin, relation) => {
       const abortedProgram = runAdapter((db) =>
         db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* transaction.execute({
               label: "harness.insert-aborted",
-              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              text: `INSERT INTO ${relation} (run_id, phase) VALUES ($1, $2)`,
               values: [abortedId, "aborted"],
               readonly: false,
             });
@@ -106,34 +141,38 @@ suite("Postgres 17 control-plane harness", () => {
         ),
       );
       const abortedFiber = Effect.runFork(Effect.flip(abortedProgram));
-      expect(await waitFor(async () => backendPid !== undefined, 2_000)).toBe(true);
-      if (backendPid === undefined) throw new Error("adapter never returned a backend pid");
+      try {
+        expect(await waitFor(async () => backendPid !== undefined, 2_000)).toBe(true);
+        if (backendPid === undefined) throw new Error("adapter never returned a backend pid");
 
-      const backendTerminated = await waitFor(async () => {
-        const activity = await admin.query<{ pid: number }>({
-          text: "SELECT pid FROM pg_stat_activity WHERE pid = $1",
-          values: [backendPid],
-        });
-        return activity.rows.length === 0;
-      }, 15_000);
-      expect(backendTerminated).toBe(true);
-      const abortedError = await Effect.runPromise(Fiber.join(abortedFiber));
-      expect(abortedError).toMatchObject({ _tag: "TimeoutError" });
-      expect(await queryProbe(admin, abortedId)).toEqual([]);
+        const backendTerminated = await waitFor(async () => {
+          const activity = await admin.query<{ pid: number }>({
+            text: "SELECT pid FROM pg_stat_activity WHERE pid = $1",
+            values: [backendPid],
+          });
+          return activity.rows.length === 0;
+        }, 15_000);
+        expect(backendTerminated).toBe(true);
+        const abortedError = await Effect.runPromise(Fiber.join(abortedFiber));
+        expect(abortedError).toMatchObject({ _tag: "TimeoutError" });
+        expect(await queryProbe(admin, relation, abortedId)).toEqual([]);
+      } finally {
+        await Effect.runPromise(Fiber.interrupt(abortedFiber));
+      }
 
       await Effect.runPromise(
         runAdapter((db) =>
           db.withTransaction((transaction) =>
             transaction.execute({
               label: "harness.insert-committed",
-              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              text: `INSERT INTO ${relation} (run_id, phase) VALUES ($1, $2)`,
               values: [committedId, "committed"],
               readonly: false,
             }),
           ),
         ),
       );
-      expect(await queryProbe(admin, committedId)).toEqual([
+      expect(await queryProbe(admin, relation, committedId)).toEqual([
         { run_id: committedId, phase: "committed" },
       ]);
 
@@ -142,7 +181,7 @@ suite("Postgres 17 control-plane harness", () => {
           Effect.gen(function* () {
             yield* transaction.execute({
               label: "harness.insert-rolled-back",
-              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              text: `INSERT INTO ${relation} (run_id, phase) VALUES ($1, $2)`,
               values: [rolledBackId, "rolled-back"],
               readonly: false,
             });
@@ -151,30 +190,15 @@ suite("Postgres 17 control-plane harness", () => {
         ),
       );
       await expect(Effect.runPromise(rollbackProgram)).rejects.toBe("expected body failure");
-      expect(await queryProbe(admin, rolledBackId)).toEqual([]);
-    } finally {
-      await admin.query({
-        text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = ANY($1)",
-        values: [[abortedId, committedId, rolledBackId]],
-      });
-      await admin.end();
-    }
+      expect(await queryProbe(admin, relation, rolledBackId)).toEqual([]);
+    });
     completedTestCount += 1;
   }, 20_000);
 
   test("enforces the gateway authority adapter as read-only in PostgreSQL", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
-    const admin = new Client({ connectionString });
     const rejectedId = runId("gateway_readonly");
-    try {
-      await admin.connect();
-      await admin.query(`
-        CREATE TABLE IF NOT EXISTS api_next_pg17_abort_probe (
-          run_id TEXT PRIMARY KEY,
-          phase TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-      `);
+    await withProbe(async (admin, relation) => {
       const program = Effect.scoped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -184,47 +208,40 @@ suite("Postgres 17 control-plane harness", () => {
             values: [],
             readonly: true,
           });
+          const probe = yield* db.execute<ProbeRow>({
+            label: "gateway.readonly-probe",
+            text: `SELECT run_id, phase FROM ${relation}`,
+            values: [],
+            readonly: true,
+          });
           const insertion = yield* Effect.flip(
             db.execute({
               label: "gateway.mislabeled-write",
-              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              text: `INSERT INTO ${relation} (run_id, phase) VALUES ($1, $2)`,
               values: [rejectedId, "must-not-write"],
               readonly: true,
             }),
           );
-          return { mode, insertion };
+          return { mode, probe, insertion };
         }).pipe(Effect.provide(makeReadOnlyPostgresControlPlaneLayer(connectionString))),
       );
       const result = await Effect.runPromise(program);
       expect(result.mode.rows).toEqual([{ transaction_read_only: "on" }]);
+      expect(result.probe.rows).toEqual([]);
       expect(result.insertion).toMatchObject({
         _tag: "ControlPlaneStatementFailed",
+        sqlState: "25006",
         outcomeCertainty: "completed",
       });
-      expect(await queryProbe(admin, rejectedId)).toEqual([]);
-    } finally {
-      await admin.query({
-        text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = $1",
-        values: [rejectedId],
-      });
-      await admin.end();
-    }
+      expect(await queryProbe(admin, relation, rejectedId)).toEqual([]);
+    });
     completedTestCount += 1;
   });
 
   test("uses the direct gateway startup settings without weakening PostgreSQL read-only mode", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
-    const admin = new Client({ connectionString });
     const rejectedId = runId("gateway_direct_readonly");
-    try {
-      await admin.connect();
-      await admin.query(`
-        CREATE TABLE IF NOT EXISTS api_next_pg17_abort_probe (
-          run_id TEXT PRIMARY KEY,
-          phase TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-      `);
+    await withProbe(async (admin, relation) => {
       const result = await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -238,33 +255,35 @@ suite("Postgres 17 control-plane harness", () => {
               values: [],
               readonly: true,
             });
+            const probe = yield* db.execute<ProbeRow>({
+              label: "gateway.direct-readonly-probe",
+              text: `SELECT run_id, phase FROM ${relation}`,
+              values: [],
+              readonly: true,
+            });
             const insertion = yield* Effect.flip(
               db.execute({
                 label: "gateway.direct-mislabeled-write",
-                text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+                text: `INSERT INTO ${relation} (run_id, phase) VALUES ($1, $2)`,
                 values: [rejectedId, "must-not-write"],
                 readonly: true,
               }),
             );
-            return { settings, insertion };
+            return { settings, probe, insertion };
           }).pipe(Effect.provide(makeReadOnlyPostgresGatewayAuthorityLayer(connectionString))),
         ),
       );
       expect(result.settings.rows).toEqual([
         { transaction_read_only: "on", search_path: "api_next,pg_catalog" },
       ]);
+      expect(result.probe.rows).toEqual([]);
       expect(result.insertion).toMatchObject({
         _tag: "ControlPlaneStatementFailed",
+        sqlState: "25006",
         outcomeCertainty: "completed",
       });
-      expect(await queryProbe(admin, rejectedId)).toEqual([]);
-    } finally {
-      await admin.query({
-        text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = $1",
-        values: [rejectedId],
-      });
-      await admin.end();
-    }
+      expect(await queryProbe(admin, relation, rejectedId)).toEqual([]);
+    });
     completedTestCount += 1;
   });
 

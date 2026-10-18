@@ -21,7 +21,7 @@ import { runMediaAlignmentOperatorRecovery } from "../../../scripts/media-alignm
 import { runOperatorReprocess } from "../../../scripts/media-operator-reprocess.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import {
   alignmentRecoveryTerminalMessage,
@@ -74,6 +74,8 @@ import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository";
 import { authorizeSongPlayback } from "./song-playback-authority.ts";
 import { makeSongSourceRecordingRepository } from "./song-source-recording-repository";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -236,7 +238,7 @@ async function withCurrentSchema<A>(
   populated = true,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_media_persistence_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -8718,5 +8720,6 @@ suite("song moderation races finish through the real repository and runner", () 
 });
 
 afterAll(async () => {
+  await reusableSchema.dispose();
   if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });

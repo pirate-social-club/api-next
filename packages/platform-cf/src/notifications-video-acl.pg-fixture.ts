@@ -308,21 +308,6 @@ export async function proveNotificationsVideoPrivateAcl(
       await denied("SELECT * FROM video_notification_cutovers_v1");
     },
     async (admin, schema, scopedUrl) => {
-      // BEFORE all application migrations: exercise direct plus inherited
-      // named table/function defaults, and PUBLIC table defaults.
-      await admin.query(`CREATE ROLE "${inheritedRole}" NOLOGIN`);
-      for (const role of [runtimeRole, operatorRole])
-        await admin.query(
-          `CREATE ROLE "${role}" LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`,
-        );
-      await admin.query(`GRANT "${inheritedRole}" TO "${runtimeRole}"`);
-      await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${runtimeRole}","${operatorRole}"`);
-      await admin.query(
-        `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${runtimeRole}","${inheritedRole}",PUBLIC`,
-      );
-      await admin.query(
-        `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT EXECUTE ON FUNCTIONS TO "${runtimeRole}","${inheritedRole}"`,
-      );
       const loginUrl = (role: string) => {
         const url = new URL(scopedUrl);
         url.username = role;
@@ -331,14 +316,87 @@ export async function proveNotificationsVideoPrivateAcl(
       };
       runtimeUrl = loginUrl(runtimeRole);
       operatorUrl = loginUrl(operatorRole);
-      return async () => {
-        for (const client of clients) await client.end();
-        for (const role of [runtimeRole, operatorRole, inheritedRole]) {
-          await admin.query(`DROP OWNED BY "${role}"`);
-          await admin.query(`DROP ROLE "${role}"`);
-        }
-      };
+      return provisionNotificationsVideoAclRoles({
+        admin,
+        schema,
+        runtimeRole,
+        inheritedRole,
+        operatorRole,
+        password,
+        clients,
+      });
     },
     "full_migrations",
   );
+}
+
+// The real pre-DDL callback and offline fault tests use this same provisioning path.
+export async function provisionNotificationsVideoAclRoles({
+  admin,
+  schema,
+  runtimeRole,
+  inheritedRole,
+  operatorRole,
+  password,
+  clients,
+}: {
+  admin: { query(sql: string): Promise<unknown> };
+  schema: string;
+  runtimeRole: string;
+  inheritedRole: string;
+  operatorRole: string;
+  password: string;
+  clients: readonly { end(): Promise<void> }[];
+}) {
+  const created: string[] = [];
+  const cleanup = async () => {
+    const closes = await Promise.allSettled(clients.map(async (client) => client.end()));
+    const failures: unknown[] = closes.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    // Failed closure retains the roles; a failed DDL stops further role removal.
+    if (failures.length === 0) {
+      try {
+        for (const role of [runtimeRole, operatorRole, inheritedRole]) {
+          if (!created.includes(role)) continue;
+          await admin.query(`DROP OWNED BY "${role}"`);
+          await admin.query(`DROP ROLE "${role}"`);
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Video ACL cleanup failed", { cause: failures[0] });
+  };
+  try {
+    // BEFORE all application migrations: preserve direct/inherited and PUBLIC defaults.
+    await admin.query(`CREATE ROLE "${inheritedRole}" NOLOGIN`);
+    created.push(inheritedRole);
+    for (const role of [runtimeRole, operatorRole]) {
+      await admin.query(
+        `CREATE ROLE "${role}" LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION`,
+      );
+      created.push(role);
+    }
+    await admin.query(`GRANT "${inheritedRole}" TO "${runtimeRole}"`);
+    await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${runtimeRole}","${operatorRole}"`);
+    await admin.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${runtimeRole}","${inheritedRole}",PUBLIC`,
+    );
+    await admin.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT EXECUTE ON FUNCTIONS TO "${runtimeRole}","${inheritedRole}"`,
+    );
+    return cleanup;
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Video ACL setup/cleanup failed", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }

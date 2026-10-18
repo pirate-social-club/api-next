@@ -23,12 +23,15 @@ export async function withInbox(
   if (!connection) throw new Error("Postgres test URL required");
   const schema = `api_next_notifications_${crypto.randomUUID().replaceAll("-", "")}`;
   const admin = new Client({ connectionString: connection });
-  await admin.connect();
-  await admin.query(`CREATE SCHEMA "${schema}"`);
-  const url = new URL(connection);
-  url.searchParams.set("options", `-c search_path=${schema}`);
+  let schemaCreated = false;
   let cleanup: (() => Promise<void>) | undefined;
+  const failures: unknown[] = [];
   try {
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    schemaCreated = true;
+    const url = new URL(connection);
+    url.searchParams.set("options", `-c search_path=${schema}`);
     await initializeNotificationsInboxSchema({
       mode: initialization,
       admin,
@@ -69,14 +72,30 @@ export async function withInbox(
       }
     }
     await use(await setup(admin, url.toString()));
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+    if (schemaCreated) {
+      try {
+        await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     try {
       await cleanup?.();
-    } finally {
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       await admin.end();
+    } catch (error) {
+      failures.push(error);
     }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Inbox setup/body/cleanup failed", { cause: failures[0] });
 }
 
 async function setup(admin: Client, url: string) {

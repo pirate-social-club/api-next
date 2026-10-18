@@ -14,7 +14,7 @@ import {
 } from "../../../scripts/postgres-migrations.ts";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
@@ -46,6 +46,8 @@ import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts
 import { makeControlPlaneSongOwnerPolicyStore } from "./song-owner-video-policy-repository.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined) {
@@ -73,7 +75,7 @@ async function withSchema<A>(
   use: (admin: Client, scopedConnection: string) => Promise<A>,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_rewards_song_offers_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -4648,6 +4650,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
 });
 
 afterAll(async () => {
+  await reusableSchema.dispose();
   if (required && completedTestCount === testCount) {
     await Bun.write(sentinelPath, sentinelContents);
   }

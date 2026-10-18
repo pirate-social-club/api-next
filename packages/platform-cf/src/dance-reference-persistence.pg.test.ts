@@ -15,11 +15,13 @@ import { Cause, Effect, Exit } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDanceReferenceStore } from "./dance-reference-authoring-repository.ts";
 import { makeDanceReferenceProcessingStore } from "./dance-reference-processing-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -53,7 +55,7 @@ async function withSchema(
   run: (admin: Client, schema: string) => Promise<void>,
 ): Promise<void> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_dance_reference_persistence_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -1527,6 +1529,7 @@ suite("Dance reference shadow persistence", () => {
 });
 
 afterAll(async () => {
+  await reusableSchema.dispose();
   if (required && completedTestCount === testCount) {
     await Bun.write(sentinelPath, sentinelContents);
   }

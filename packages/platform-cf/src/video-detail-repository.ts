@@ -39,7 +39,7 @@ SELECT p.detail_kind, p.post_id,
    'viewer_vote',(SELECT v.vote_value FROM post_votes v WHERE v.post_id=p.post_id AND v.community_id=p.community_id AND v.user_id=$3),
    'viewer_is_author',COALESCE(p.author_user_id=$3,FALSE)) END AS engagement
 FROM classified p
-LEFT JOIN LATERAL (SELECT ${videoPostProjectionSelect.replace("origin_post.author_persona_id AS", "(video_detail_persona_v1(origin_post.author_persona_id)->>'persona_id') AS").replace("song_post.author_persona_id AS", "(video_detail_persona_v1(song_post.author_persona_id)->>'persona_id') AS")}
+LEFT JOIN LATERAL (SELECT ${videoPostProjectionSelect}
 FROM (SELECT 1) projection_anchor
 ${videoPostProjectionJoins.replace("AND video_projection.media_kind = 'video'", "AND video_projection.media_kind = 'video' AND p.idempotency_key='video-publication:'||video_projection.operation_id")}
 WHERE p.detail_kind='content') video_fields ON TRUE`;

@@ -2,7 +2,10 @@
 import { expect, test } from "bun:test";
 import type { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import { initializeNotificationsInboxSchema } from "./notifications-schema-init.pg-fixture.ts";
+import {
+  initializeNotificationsInboxSchema,
+  inspectScopedConnection,
+} from "./notifications-schema-init.pg-fixture.ts";
 
 type Operations = NonNullable<Parameters<typeof initializeNotificationsInboxSchema>[1]>;
 type Inspection = Awaited<ReturnType<Operations["inspectScoped"]>>;
@@ -237,3 +240,72 @@ for (const incomplete of [{ dryRun: true }, { partialApply: true }])
     await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow();
     expect(p.events).not.toContain("exact-resulting-ledger");
   });
+
+for (const stage of ["connect", "inspect"] as const)
+  for (const primary of [new Error("scoped inspection failed"), undefined])
+    for (const closeFails of [false, true])
+      test(`scoped ${stage} refusal (${primary === undefined ? "undefined" : "Error"}) retains primary with close failure=${closeFails}`, async () => {
+        const events: string[] = [];
+        const closeError = new Error("scoped close failed");
+        const client = {
+          connect: async () => {
+            events.push("connect");
+            if (stage === "connect") throw primary;
+          },
+          query: async () => {
+            events.push("inspect");
+            throw primary;
+          },
+          end: async () => {
+            events.push("end");
+            if (closeFails) throw closeError;
+          },
+        };
+        const [outcome] = await Promise.allSettled([
+          inspectScopedConnection(connectionString, schema, client),
+        ]);
+        if (!outcome || outcome.status !== "rejected") throw new Error("Expected scoped refusal");
+        expect(events).toEqual(
+          stage === "connect" ? ["connect", "end"] : ["connect", "inspect", "end"],
+        );
+        if (closeFails) {
+          expect(outcome.reason).toBeInstanceOf(AggregateError);
+          if (!(outcome.reason instanceof AggregateError)) throw new Error("Expected aggregate");
+          expect(outcome.reason.cause).toBe(primary);
+          expect(outcome.reason.errors).toHaveLength(2);
+          expect(outcome.reason.errors[0]).toBe(primary);
+          expect(outcome.reason.errors[1]).toBe(closeError);
+        } else expect(outcome.reason).toBe(primary);
+      });
+
+test("actual scoped inspection returns its row only after one successful close", async () => {
+  const events: string[] = [];
+  const result = await inspectScopedConnection(connectionString, schema, {
+    connect: async () => {
+      events.push("connect");
+    },
+    query: async (_sql, values) => {
+      events.push("inspect");
+      expect(values).toEqual([schema]);
+      return { rows: [inspection] };
+    },
+    end: async () => {
+      events.push("end");
+    },
+  });
+  expect(result).toBe(inspection);
+  expect(events).toEqual(["connect", "inspect", "end"]);
+});
+
+test("a close-only failure after actual scoped inspection stays a failure", async () => {
+  const closeError = new Error("scoped close failed");
+  await expect(
+    inspectScopedConnection(connectionString, schema, {
+      connect: async () => undefined,
+      query: async () => ({ rows: [inspection] }),
+      end: async () => {
+        throw closeError;
+      },
+    }),
+  ).rejects.toBe(closeError);
+});

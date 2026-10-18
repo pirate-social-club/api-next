@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { videoPublicationPostId } from "../../application/src/video/publication-identity.ts";
 import { consumeVideoThumbnail } from "../../application/src/video/thumbnail-enrichment.ts";
 import {
   attachVideoDecision,
@@ -20,6 +21,8 @@ import {
 } from "./video-publication.pg-fixture.ts";
 import { makeVideoThumbnailStore } from "./video-thumbnail-repository.ts";
 import { makeVideoThumbnailVerifier } from "./video-thumbnail-verifier.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined)
@@ -52,8 +55,8 @@ async function published(connection: string) {
     decision,
     nextState: attachVideoDecision(finalized.state, trusted, decision),
   });
-  const publication = publishOriginalVideo(ready.state, "post-video-thumbnail");
-  await store.publish({
+  const publication = publishOriginalVideo(ready.state, await videoPublicationPostId(ready.state));
+  const persisted = await store.publish({
     observedEventSequence: ready.eventSequence,
     state: publication.state,
     decision,
@@ -65,14 +68,24 @@ async function published(connection: string) {
       canonicalSha256: frame.sha256,
     })),
   });
-  return { layer, store: makeVideoThumbnailStore(layer, { leaseMs: 60_000 }) };
+  if (
+    "kind" in persisted ||
+    persisted.state.status !== "published" ||
+    persisted.state.postId === null
+  )
+    throw new Error("Fixture video publication missing");
+  return {
+    layer,
+    store: makeVideoThumbnailStore(layer, { leaseMs: 60_000 }),
+    postId: persisted.state.postId,
+  };
 }
 
 async function fixture(
   use: (input: Awaited<ReturnType<typeof published>>, admin: Client) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres configuration missing");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_video_thumbnail_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -170,7 +183,7 @@ suite("video thumbnail durable PostgreSQL", () => {
     });
   });
   test("storage outage retains recovery lease; missing poster stops without undoing publication", async () => {
-    await fixture(async ({ layer, store }, admin) => {
+    await fixture(async ({ layer, store, postId }, admin) => {
       const resolveArtifact = makeVideoPosterAuthority(layer);
       const unavailable = makeVideoThumbnailVerifier({
         resolveArtifact,
@@ -194,8 +207,7 @@ suite("video thumbnail durable PostgreSQL", () => {
       );
       expect(await store.claim(effectIdentity)).toBeNull();
       expect(
-        (await admin.query("SELECT status FROM posts WHERE post_id='post-video-thumbnail'")).rows[0]
-          .status,
+        (await admin.query("SELECT status FROM posts WHERE post_id=$1", [postId])).rows[0].status,
       ).toBe("published");
       // Serving still resolves the original authoritative identity; failure never
       // replaces it with an error URL or creates another artifact/publication.
@@ -216,4 +228,8 @@ suite("video thumbnail durable PostgreSQL", () => {
       ).not.toBeNull();
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

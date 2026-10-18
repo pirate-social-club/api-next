@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { getVideoPlaybackAccess } from "../../application/src/video/playback-access.ts";
 import {
@@ -67,6 +67,8 @@ import { makeVideoStreamIngestStore } from "./video-stream-ingest-repository.ts"
 import { makeVideoThumbnailStore } from "./video-thumbnail-repository.ts";
 import { makeVideoThumbnailVerifier } from "./video-thumbnail-verifier.ts";
 
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
@@ -83,7 +85,7 @@ function scopedConnection(raw: string, schema: string): string {
 
 async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("Postgres test configuration is unavailable");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_video_publication_repository_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -2737,4 +2739,8 @@ suite("video publication wakeup delivery", () => {
       expect(await reservationState()).toBe("claimed");
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

@@ -262,3 +262,48 @@ The direct-publisher fixture in the existing broader video PG suite now uses the
 fixed golden identity for its unchanged source keys. That suite still requires
 the parent-integrated migration/baseline before execution.
 No source or live whole-v1 acceptance is claimed.
+
+## 2026-10-17 shared-reader and erasure successor — source only
+
+This dated section supersedes prior current handoff instructions where they
+conflict; sealed historical results and accepted video36e74a67/text-song0b9b8c42
+contracts, nullable response fields and immutable0.122 artifacts remain exact.
+Shared video projection now obtains both soundtrack-author persona IDs through
+video_detail_persona_v1 inside the feed/GetPost statement snapshot. The detail
+reader uses that same selector directly, without author-expression replacement.
+Association IDs and song title survive current deleted-account/inactive-persona
+redaction. Feed canonical eligibility and invalid-slug rejection apply only to
+public/general text/song; ready video with its producer-persisted exact alias
+remains readable without canonical_path. Primary /post/:postId and literal
+persisted /posts/:slug navigation are unchanged; no guessed-ID fallback or
+metadata contract change is introduced.
+
+The maintained native Notifications suite now requires39 successful cases:
+the original35 plus four real-producer original_audio/song_reference ×
+account-erasure/persona-suspension cases. Each prepares actual ready ingest
+state, checks the persisted exact alias, public/authenticated feeds and authenticated
+GetPost, then gates all three reader statements after snapshot establishment while another
+connection commits the lifecycle change. Held projections must retain the old
+complete author/association tuple; fresh projections must redact only the
+nullable author. Stored association/title, aliases and historical publication/
+receipt/fact bytes remain unchanged. Feed's existing six-case owner/disposal
+mechanism is preserved, with persisted text/song positive and invalid controls.
+All new SQL behavior is prepared **UNRUN by this writer**.
+
+The separate Notifications-only inbox DELETE policy, read-only effective
+serving preflight, historical pre0237 role reproduction and new seven-case
+hardening boundary are specified in notifications-runtime-privileges.md.
+Native FK reference nulling without receipt UPDATE still requires the parent
+run. All current account-status writers must be held until migration, explicit
+bounded grant and effective admission for their actual LOGINs are complete;
+new source or a feature flag alone does not fence older serving writers.
+
+Incoming feature a302d2c8 and the accepted dirty harness38 state were preserved
+outside admitted overlaps. Parent's harness-only8/28 result is distinct from
+the original109 general2 failure192pass/1fail42501 and from this UNRUN successor.
+Earlier source98 planning costs and35/six-case observations are historical;
+the increased39/seven-case transitive graphs need new whole-file measurements
+without weaker bounds. Fullcheck/test, realPG/PG18/HNS/CI, independent final
+numbered271–273 migration/code/role review, exact immutable client/consumer
+binding, paired reachable-target serving and operator cutover remain parent-held.
+No live Notifications, financial, pilot or whole-v1 acceptance is claimed.

@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
 import type { Client } from "pg";
-import { withReusablePostgresTestSchema } from "../../../scripts/postgres-test-baseline.ts";
+import { createReusablePostgresTestSchemaOwner } from "../../../scripts/postgres-test-baseline.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import {
   makeControlPlanePersonaStore,
@@ -12,6 +12,8 @@ import {
   createActivePersonaFixture,
 } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connection = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const suite = connection ? describe : describe.skip;
@@ -30,7 +32,7 @@ const policy = {
 
 async function scenario(use: (h: ReturnType<typeof harness>, admin: Client) => Promise<void>) {
   if (!connection) throw new Error("PostgreSQL test URL required");
-  await withReusablePostgresTestSchema({
+  await reusableSchema.run({
     baseConnectionString: connection,
     schemaName: "community_owner_reservation_pg_test",
     use: async ({ admin, schema }) => {
@@ -300,4 +302,8 @@ suite("community owner reservation and recovery", () => {
       expect(Exit.isFailure(denied)).toBe(true);
     });
   }, 30_000);
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });

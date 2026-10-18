@@ -1,12 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
-  withReusablePostgresTestSchema,
+  createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneSongOwnerPolicyRepository } from "./song-owner-video-policy-repository.ts";
+
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -24,7 +26,7 @@ const connectionForSchema = (raw: string, schema: string): string => {
 
 async function withSchema<A>(use: (admin: Client, scopedUrl: string) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
-  return withReusablePostgresTestSchema({
+  return reusableSchema.run({
     baseConnectionString: connectionString,
     schemaName: "packages_platform_cf_src_song_owner_video_policy_pg_test_ts",
     use: async ({ admin, schema }) => {
@@ -508,4 +510,8 @@ suite("song owner derivative-video policy persistence", () => {
       ).rejects.toThrow("observation replay conflict");
     });
   });
+});
+
+afterAll(async () => {
+  await reusableSchema.dispose();
 });
