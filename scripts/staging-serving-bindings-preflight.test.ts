@@ -6,7 +6,7 @@ import {
   prepareStagingBindingGuard,
 } from "./staging-serving-bindings-preflight.ts";
 import type { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
-import type { CandidateBindings } from "./worker-binding-drift.ts";
+import { type CandidateBindings, compareServingBindings } from "./worker-binding-drift.ts";
 
 const sourceSha = "a".repeat(40);
 const configPath = "apps/jobs-worker/wrangler.jsonc";
@@ -34,9 +34,14 @@ const binding = (text: string) => ({
   type: "plain_text",
   text,
 });
-const candidate = (text: string): CandidateBindings => ({
+const rewardsBinding = (text: string) => ({
+  name: "MEGAPOT_REWARDS_ENABLED",
+  type: "plain_text",
+  text,
+});
+const candidate = (text: string, rewards = "true"): CandidateBindings => ({
   worker_name: "jobs-staging",
-  bindings: [binding(text), telegramBinding],
+  bindings: [binding(text), telegramBinding, rewardsBinding(rewards)],
   runtime,
   required_secrets: [],
 });
@@ -56,6 +61,9 @@ const allowTelegram: typeof withTelegramActivationDeployment = async (
 function fixture(
   options: {
     text?: string;
+    rewards?: string;
+    rewardsRace?: boolean;
+    rewardGuard?: typeof withRewardsBindingDeployment;
     servingRace?: boolean;
     telegram?: string;
     telegramGuard?: typeof withTelegramActivationDeployment;
@@ -73,6 +81,7 @@ function fixture(
   let versionViews = 0;
   let currentSource = sourceSha;
   let currentServing = "serving-version";
+  let currentRewards = options.rewards ?? "true";
   let uploaded = false;
   let candidateReads = 0;
   const cancellation = new AbortController();
@@ -93,6 +102,7 @@ function fixture(
       ]);
     } else if (command.includes("view")) {
       if (++versionViews === 2) {
+        if (options.rewardsRace) currentRewards = "true";
         if (options.sourceRaceDuringRead) currentSource = "b".repeat(40);
         if (options.servingRaceDuringRead) currentServing = "changed-serving-version";
       }
@@ -105,6 +115,7 @@ function fixture(
                 bindings: [
                   binding("true"),
                   { ...telegramBinding, text: options.telegram ?? telegramConfig },
+                  rewardsBinding(currentRewards),
                 ],
               }),
           script_runtime: runtime,
@@ -134,9 +145,10 @@ function fixture(
       runner,
       (text) => diagnostics.push(text),
       undefined,
-      options.controlConnectionLost
-        ? async (_root, _config, _environment, operation) => operation(cancellation.signal)
-        : allowRewards,
+      options.rewardGuard ??
+        (options.controlConnectionLost
+          ? async (_root, _config, _environment, operation) => operation(cancellation.signal)
+          : allowRewards),
       guard,
       options.telegramGuard ?? allowTelegram,
     );
@@ -248,5 +260,69 @@ test("effective Telegram privilege refusal prevents upload", async () => {
     },
   });
   await expect(run.execute()).rejects.toThrow("privilege refused");
+  expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
+});
+
+test("disabled serving receipt, shutdown guard and upload use the same false with Telegram bytes intact", async () => {
+  const telegram = JSON.stringify({
+    version: 1,
+    enabled: true,
+    linking_enabled: false,
+    practice_enabled: false,
+    public_origin: "https://web.example",
+    webhook_origin: "https://api.example",
+    credential_active_version: "v1",
+  });
+  const checked: string[] = [];
+  const run = fixture({
+    rewards: "false",
+    telegram,
+    rewardGuard: async (_root, _config, _env, operation, disabled) => {
+      expect(disabled).toBe("false");
+      checked.push("shutdown-false");
+      return operation();
+    },
+    telegramGuard: async (_root, _config, _env, operation, effective) => {
+      expect(effective).toBe(telegram);
+      checked.push("telegram-exact");
+      return operation();
+    },
+  });
+  const receipt = await run.execute();
+  const effective = {
+    ...candidate("true"),
+    bindings: [binding("true"), { ...telegramBinding, text: telegram }, rewardsBinding("false")],
+  };
+  const preflight = receipt.staging_binding_preflight;
+  if (!preflight) throw Error("Expected effective binding receipt");
+  const expected = compareServingBindings(
+    { source_sha: sourceSha, config_path: configPath, environment: "staging" },
+    effective,
+    [{ version_id: "serving-version", percentage: 100, bindings: effective.bindings, runtime }],
+    new Date(preflight.observed_at),
+  );
+  expect(preflight).toEqual(expected);
+  expect(checked).toEqual(["telegram-exact", "shutdown-false"]);
+  const upload = run.commands.find((command) => command.includes("deploy"));
+  expect(upload?.filter((arg) => arg === "MEGAPOT_REWARDS_ENABLED:false")).toHaveLength(1);
+  expect(upload).not.toContain("MEGAPOT_REWARDS_ENABLED:true");
+  expect(upload).toContain(`TELEGRAM_CONFIG_JSON:${telegram}`);
+});
+
+test("serving Rewards false-to-true movement at the final read refuses before upload", async () => {
+  const run = fixture({ rewards: "false", rewardsRace: true });
+  await expect(run.execute()).rejects.toThrow("changed before upload");
+  expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
+});
+
+test("effective disabled preservation cannot bypass shutdown refusal", async () => {
+  const run = fixture({
+    rewards: "false",
+    rewardGuard: async (_root, _config, _env, _operation, disabled) => {
+      expect(disabled).toBe("false");
+      throw Error("reward binding shutdown refused: unpaid_credits");
+    },
+  });
+  await expect(run.execute()).rejects.toThrow("unpaid_credits");
   expect(run.commands.some((command) => command.includes("deploy"))).toBe(false);
 });

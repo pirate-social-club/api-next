@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import * as BunRuntime from "bun";
 import pg from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
+import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 
 const REWARD_CONFIGS = new Set([
   "apps/http-worker/wrangler.jsonc",
@@ -135,21 +136,26 @@ export async function withRewardsBindingDeployment<T>(
   configPath: string,
   environment: string,
   operation: (signal?: AbortSignal) => Promise<T>,
+  disabledRewards?: "false",
 ): Promise<T> {
+  assertStagingRewardsPreservation(configPath, environment, disabledRewards);
   if (!REWARD_CONFIGS.has(configPath)) return operation();
   const phase = rewardsLifecycle(
     await BunRuntime.file(resolve(root, "docs/rewards-deployment-lifecycle.json")).text(),
     environment,
   );
   if (phase === "launched") {
+    if (disabledRewards !== undefined)
+      throw Error("launched rewards require the effective Worker binding on");
     for (const pairedConfig of REWARD_CONFIGS)
       if (!rewardsBinding(await BunRuntime.file(resolve(root, pairedConfig)).text(), environment))
         throw Error("launched rewards require both tracked Worker bindings on");
   }
-  const enabled = rewardsBinding(
+  const trackedEnabled = rewardsBinding(
     await BunRuntime.file(resolve(root, configPath)).text(),
     environment,
   );
+  const enabled = disabledRewards === "false" ? false : trackedEnabled;
   if (enabled) return operation();
   const connectionString = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL;
   if (!connectionString)

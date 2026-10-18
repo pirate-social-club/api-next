@@ -9,6 +9,7 @@ import {
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import { parseJsonc } from "./secret-drift-audit.ts";
 import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
+import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 import {
   type PrepareStagingBindingGuard,
   prepareStagingBindingGuard,
@@ -408,39 +409,51 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
+  const disabledRewards = bindingGuard?.disabledRewards;
+  assertStagingRewardsPreservation(configPath, input.environment, disabledRewards);
   const deployed = await servingFunctionGuard(repositoryRoot, configPath, () =>
     telegramDeploymentGuard(
       repositoryRoot,
       configPath,
       input.environment,
       () =>
-        rewardDeploymentGuard(repositoryRoot, configPath, input.environment, async (signal) => {
-          if (bindingGuard !== null) {
-            await bindingGuard.recheck();
-            const current = await verifyDeploymentSource(repositoryRoot, input, runner);
-            if (current.sourceSha !== sourceSha)
-              throw Error("deployment source changed before upload");
-          }
-          if (signal?.aborted) throw Error("reward shutdown control connection lost before deploy");
-          return runner(
-            [
-              "bunx",
-              "wrangler",
-              "deploy",
-              "--env",
-              input.environment,
-              "--config",
-              configPath,
-              "--message",
-              message,
-              ...(bindingGuard?.telegramConfig === undefined
-                ? []
-                : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
-            ],
-            repositoryRoot,
-            signal,
-          );
-        }),
+        rewardDeploymentGuard(
+          repositoryRoot,
+          configPath,
+          input.environment,
+          async (signal) => {
+            if (bindingGuard !== null) {
+              await bindingGuard.recheck();
+              const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+              if (current.sourceSha !== sourceSha)
+                throw Error("deployment source changed before upload");
+            }
+            if (signal?.aborted)
+              throw Error("reward shutdown control connection lost before deploy");
+            return runner(
+              [
+                "bunx",
+                "wrangler",
+                "deploy",
+                "--env",
+                input.environment,
+                "--config",
+                configPath,
+                "--message",
+                message,
+                ...(bindingGuard?.telegramConfig === undefined
+                  ? []
+                  : ["--var", `TELEGRAM_CONFIG_JSON:${bindingGuard.telegramConfig}`]),
+                ...(disabledRewards === undefined
+                  ? []
+                  : ["--var", `MEGAPOT_REWARDS_ENABLED:${disabledRewards}`]),
+              ],
+              repositoryRoot,
+              signal,
+            );
+          },
+          disabledRewards,
+        ),
       bindingGuard?.telegramConfig,
       async () => {
         // Run schema admission from the exact deployment source, including older accepted releases.

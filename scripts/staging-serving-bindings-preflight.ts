@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { CommandRunner } from "./deploy-worker-with-provenance.ts";
+import { preserveStagingRewardsConfiguration } from "./staging-rewards-config.ts";
 import { preserveStagingTelegramConfiguration } from "./staging-telegram-config.ts";
 import {
   assertReviewedDrift,
@@ -22,6 +23,7 @@ import { readCandidateBindings } from "./worker-deployment-bindings.ts";
 export type StagingBindingGuard = Readonly<{
   receipt: BindingDriftReceipt;
   telegramConfig?: string;
+  disabledRewards?: "false";
   recheck: () => Promise<void>;
 }>;
 export type PrepareStagingBindingGuard = (
@@ -107,8 +109,13 @@ export async function prepareStagingBindingGuard(
   const collect = async () => {
     const candidate = await candidateReader(root, context.config_path, context.environment);
     const serving = await readServing(root, context, runner);
-    const effective = preserveStagingTelegramConfiguration(context, candidate, serving);
-    return { ...effective, receipt: compareServingBindings(context, effective.candidate, serving) };
+    const telegram = preserveStagingTelegramConfiguration(context, candidate, serving);
+    const rewards = preserveStagingRewardsConfiguration(context, telegram.candidate, serving);
+    return {
+      ...telegram,
+      ...rewards,
+      receipt: compareServingBindings(context, rewards.candidate, serving),
+    };
   };
   const initial = await collect();
   const { receipt } = initial;
@@ -117,6 +124,7 @@ export async function prepareStagingBindingGuard(
   return {
     receipt,
     ...(initial.telegramConfig === undefined ? {} : { telegramConfig: initial.telegramConfig }),
+    ...(initial.disabledRewards === undefined ? {} : { disabledRewards: initial.disabledRewards }),
     recheck: async () => {
       const current = await collect();
       assertUnchangedBaseline(receipt, current.receipt);
