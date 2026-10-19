@@ -1,5 +1,6 @@
 import type { MegapotDrawingObserverCandidate } from "@pirate/application";
-import type { RewardObligationAuthority } from "@pirate/platform-cf";
+import type { RewardObligationAuthority, SongFundingWork } from "@pirate/platform-cf";
+import type { MegapotV2FullRpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { deriveBaseSepoliaMegapotAddress } from "@pirate/platform-cf/megapot-v2-signer";
 import type {
   MegapotChainEffectKind,
@@ -7,6 +8,27 @@ import type {
 } from "@pirate/platform-cf/megapot-work-repository";
 import { Data, Effect, Schema } from "effect";
 import type { MegapotRewardsRuntime } from "./megapot-rewards-cycle.ts";
+
+/** Resolve each V2 work item's ORIGINAL deployment; never silently substitute
+ * the current active lottery or a custody signer/key. */
+export function makeSongFundingRecoveryRouting(input: {
+  environment: string;
+  create: (deployment: SongFundingWork["source"]["deployment"]) => MegapotV2FullRpcClient;
+}) {
+  return (work: SongFundingWork) => {
+    const d = work.source.deployment,
+      i = work.state.receipt.instruction;
+    if (
+      d.environment !== (input.environment === "development" ? "test" : input.environment) ||
+      d.attestationId !== i.attestation_id ||
+      d.chainId !== i.chain_id ||
+      d.usdcAddress !== i.to_token ||
+      d.custodyAddress !== i.recipient_custody
+    )
+      throw new MegapotRewardRoutingRejected({ reason: "attestation-mismatch" });
+    return input.create(d);
+  };
+}
 
 export class MegapotRewardRoutingRejected extends Data.TaggedError("MegapotRewardRoutingRejected")<{
   readonly reason: "invalid-config" | "attestation-mismatch" | "signing-authority-missing";

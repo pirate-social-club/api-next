@@ -14,6 +14,9 @@ CREATE TYPE community_moderation_policy_update_result_v1 AS (
 	policy_revision_id text
 );
 
+CREATE DOMAIN reward_funding_atomic_v2 AS numeric(78,0)
+	CONSTRAINT reward_funding_atomic_v2_check CHECK (((VALUE >= (0)::numeric) AND (VALUE < '115792089237316195423570985008687907853269984665640564039457584007913129639936'::numeric)));
+
 CREATE FUNCTION accept_megapot_participant_claim_v1(input_credit_id text, input_account_id text) RETURNS TABLE(outcome text, claim_status text)
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -157,6 +160,112 @@ BEGIN
   RETURN QUERY SELECT 'accepted'::TEXT, 'accepted'::TEXT;
 END
 $$;
+
+CREATE FUNCTION accept_reward_funding_principal_v2(p jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE c song_megapot_contributions_v2; old reward_incoming_receipts_v2; r JSONB; i JSONB; e JSONB:=p->'evidence';
+  amount reward_funding_atomic_v2; category TEXT; next_state JSONB; leg TEXT; k TEXT;
+BEGIN
+  -- Decode the required proof BEFORE casts, receipt replay or any mutation.
+  -- SQL NULL is not a successful proof; ->> alone also hides JSON type errors.
+  IF jsonb_typeof(p) IS DISTINCT FROM 'object' OR jsonb_typeof(e) IS DISTINCT FROM 'object'
+    OR jsonb_typeof(p->'exactInstruction') IS DISTINCT FROM 'boolean'
+    OR jsonb_typeof(e->'chain_id') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(e->'transfer_log_index') IS DISTINCT FROM 'number' THEN
+    RAISE EXCEPTION 'invalid principal proof shape' USING ERRCODE='PCV11';
+  END IF;
+  FOREACH k IN ARRAY ARRAY['receiptId','contributionId','category','senderAddress','recipientAddress','tokenAddress','instructionHash','attestationHash','policyHash','checkpointBlock','checkpointHash','observedConfirmedNonce'] LOOP
+    IF jsonb_typeof(p->k) IS DISTINCT FROM 'string' THEN RAISE EXCEPTION 'missing or mistyped principal proof field' USING ERRCODE='PCV11'; END IF;
+  END LOOP;
+  FOREACH k IN ARRAY ARRAY['transaction_hash','sender_nonce','block_number','block_hash','block_timestamp','first_observed_at','finalized_at','actual_amount_atomic','attestation_id'] LOOP
+    IF jsonb_typeof(e->k) IS DISTINCT FROM 'string' THEN RAISE EXCEPTION 'missing or mistyped receipt evidence field' USING ERRCODE='PCV11'; END IF;
+  END LOOP;
+  IF (p->>'category' IN ('pool_principal','late_principal')
+    AND length(p->>'receiptId') BETWEEN 1 AND 128 AND length(p->>'contributionId') BETWEEN 1 AND 128
+    AND length(e->>'attestation_id') BETWEEN 1 AND 128
+    AND p->>'senderAddress' ~ '^0x[a-f0-9]{40}$' AND p->>'recipientAddress' ~ '^0x[a-f0-9]{40}$' AND p->>'tokenAddress' ~ '^0x[a-f0-9]{40}$'
+    AND p->>'instructionHash' ~ '^[a-f0-9]{64}$' AND p->>'attestationHash' ~ '^[a-f0-9]{64}$' AND p->>'policyHash' ~ '^[a-f0-9]{64}$'
+    AND p->>'checkpointHash' ~ '^0x[a-f0-9]{64}$' AND e->>'transaction_hash' ~ '^0x[a-f0-9]{64}$' AND e->>'block_hash' ~ '^0x[a-f0-9]{64}$'
+    AND e->>'chain_id' IN ('84532','8453') AND e->>'transfer_log_index' ~ '^(0|[1-9][0-9]{0,15})$'
+    AND p->>'checkpointBlock' ~ '^(0|[1-9][0-9]{0,77})$' AND p->>'observedConfirmedNonce' ~ '^(0|[1-9][0-9]{0,77})$'
+    AND e->>'sender_nonce' ~ '^(0|[1-9][0-9]{0,77})$' AND e->>'block_number' ~ '^(0|[1-9][0-9]{0,77})$'
+    AND e->>'actual_amount_atomic' ~ '^[1-9][0-9]{0,77}$') IS NOT TRUE THEN
+    RAISE EXCEPTION 'invalid principal proof value' USING ERRCODE='PCV11';
+  END IF;
+  IF (e->>'transfer_log_index')::NUMERIC>9007199254740991
+    OR greatest((p->>'checkpointBlock')::NUMERIC,(p->>'observedConfirmedNonce')::NUMERIC,(e->>'sender_nonce')::NUMERIC,(e->>'block_number')::NUMERIC,(e->>'actual_amount_atomic')::NUMERIC)>115792089237316195423570985008687907853269984665640564039457584007913129639935 THEN
+    RAISE EXCEPTION 'principal proof representation overflow' USING ERRCODE='PCV11';
+  END IF;
+  FOREACH k IN ARRAY ARRAY['block_timestamp','first_observed_at','finalized_at'] LOOP
+    IF (e->>k ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$') IS NOT TRUE THEN
+      RAISE EXCEPTION 'invalid principal proof instant' USING ERRCODE='PCV11';
+    END IF;
+    PERFORM (e->>k)::TIMESTAMPTZ;
+  END LOOP;
+  -- Exact incoming key replay precedes current policy/lifecycle business guards.
+  SELECT * INTO old FROM reward_incoming_receipts_v2 WHERE chain_id=(e->>'chain_id')::BIGINT AND transaction_hash=e->>'transaction_hash' AND transfer_log_index=(e->>'transfer_log_index')::BIGINT;
+  IF FOUND THEN
+    IF old.contribution_id<>p->>'contributionId' THEN RAISE EXCEPTION 'receipt already attributed' USING ERRCODE='PCV11'; END IF;
+    RETURN to_jsonb(old);
+  END IF;
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=p->>'contributionId';
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',c.account_id)::text,0));
+  PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=c.community_id AND post_id=c.post_id FOR UPDATE;
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=c.contribution_id FOR UPDATE;
+  r:=c.state->'receipt'; i:=r->'instruction'; leg:=c.pool_leg_id;
+  c.state:=project_song_contribution_state_v2(c.state);
+  PERFORM lock_reward_wallet_nonce_sender_v2((i->>'chain_id')::BIGINT,i->>'from');
+  SELECT * INTO old FROM reward_incoming_receipts_v2 WHERE chain_id=(e->>'chain_id')::BIGINT AND transaction_hash=e->>'transaction_hash' AND transfer_log_index=(e->>'transfer_log_index')::BIGINT;
+  IF FOUND THEN
+    IF old.contribution_id<>c.contribution_id THEN RAISE EXCEPTION 'receipt already attributed' USING ERRCODE='PCV11'; END IF;
+    RETURN to_jsonb(old);
+  END IF;
+  amount:=(e->>'actual_amount_atomic')::reward_funding_atomic_v2;
+  IF (amount>0 AND p->>'senderAddress'=i->>'from'
+    AND p->>'recipientAddress'=i->>'recipient_custody' AND p->>'tokenAddress'=i->>'to_token'
+    AND (e->>'chain_id')::BIGINT=(i->>'chain_id')::BIGINT AND e->>'sender_nonce'=i->>'nonce'
+    AND p->>'instructionHash'=i->>'instruction_hash' AND p->>'attestationHash'=i->>'attestation_hash'
+    AND e->>'attestation_id'=i->>'attestation_id'
+    AND (e->>'block_number')::NUMERIC>(r->'reservation'->>'valid_from_block_exclusive')::NUMERIC
+    AND (p->>'observedConfirmedNonce')::NUMERIC>(i->>'nonce')::NUMERIC
+    AND (p->>'checkpointBlock')::NUMERIC>=(e->>'block_number')::NUMERIC) IS NOT TRUE THEN
+    RAISE EXCEPTION 'principal proof mismatch' USING ERRCODE='PCV11';
+  END IF;
+  category:=CASE WHEN (p->>'exactInstruction')::BOOLEAN AND amount=(i->>'amount_atomic')::NUMERIC
+    AND (e->>'block_timestamp')::TIMESTAMPTZ<(c.state->>'effectiveDeadline')::TIMESTAMPTZ
+    AND (e->>'block_timestamp')::TIMESTAMPTZ<(r->'committed_terms'->>'ends_at')::TIMESTAMPTZ
+    AND (e->>'block_timestamp')::TIMESTAMPTZ>=(r->'committed_terms'->>'starts_at')::TIMESTAMPTZ
+    THEN 'pool_principal' ELSE 'late_principal' END;
+  IF category IS DISTINCT FROM p->>'category' THEN RAISE EXCEPTION 'principal category mismatch' USING ERRCODE='PCV11'; END IF;
+  IF EXISTS(SELECT 1 FROM reward_pool_cohort_seals_v2 WHERE pool_leg_id=leg) AND category='pool_principal' THEN
+    RAISE EXCEPTION 'predeadline receipt contradicts sealed proof; incident reconciliation required' USING ERRCODE='PCV10'; END IF;
+  IF (c.state->>'nonceFinalized')::BOOLEAN THEN RAISE EXCEPTION 'conflicting finalized principal' USING ERRCODE='PCV11'; END IF;
+  INSERT INTO reward_incoming_receipts_v2 VALUES(p->>'receiptId',c.contribution_id,(e->>'chain_id')::BIGINT,e->>'transaction_hash',(e->>'transfer_log_index')::BIGINT,i->>'from',(i->>'nonce')::BIGINT,amount,category,p,transaction_timestamp()) RETURNING * INTO old;
+  IF category='late_principal' THEN
+    INSERT INTO reward_late_principal_liabilities_v2(receipt_id,contribution_id,amount_atomic,original_sender) VALUES(old.receipt_id,c.contribution_id,amount,i->>'from');
+  END IF;
+  next_state:=jsonb_set(jsonb_set(jsonb_set(c.state,'{fundingState}',to_jsonb(CASE WHEN category='pool_principal' THEN 'pool_credited'::TEXT ELSE 'late_principal_owed'::TEXT END)),'{nonceFinalized}','true'),'{revision}',to_jsonb((c.state->>'revision')::BIGINT+1));
+  UPDATE song_megapot_contributions_v2 SET state=next_state WHERE contribution_id=c.contribution_id;
+  -- A finalized actual receipt consumes the original nonce and resolves the
+  -- reservation. Observation time/expiry alone cannot reach this function.
+  UPDATE reward_contribution_reservations_v2 SET disposition=CASE WHEN category='pool_principal' THEN 'converted' ELSE 'closed' END,closure_proof_id=old.receipt_id WHERE contribution_id=c.contribution_id AND disposition='held';
+  UPDATE reward_funding_account_counters_v2 SET active=active-1,admitted=admitted+CASE WHEN category='pool_principal' THEN 1 ELSE 0 END,custody_liabilities=custody_liabilities+1 WHERE account_id=c.account_id AND scope_leg IN ('',c.pool_leg_id);
+  RETURN to_jsonb(old);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='accept_reward_funding_principal_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION acknowledge_guest_rotation_v1(expected_origin text, proved_ids text[], expected_predecessor_credential_id text, successor_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -1265,6 +1374,56 @@ BEGIN
   RETURN QUERY SELECT 'applied'::TEXT, committed.revision, rebound;
 END;
 $$;
+
+CREATE FUNCTION assert_reward_contribution_capacity_v2(snapshot text, r jsonb) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE snap reward_funding_leg_snapshots_v2; p reward_funding_profiles_v2; w reward_funding_schedule_witnesses_v2;
+  funded NUMERIC; free NUMERIC; live NUMERIC; opportunities NUMERIC; committed NUMERIC; amount reward_funding_atomic_v2;
+  d JSONB; deadline_ms NUMERIC; margin NUMERIC; total NUMERIC:=0;
+BEGIN
+  SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=snapshot;
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id;
+  SELECT * INTO STRICT w FROM reward_funding_schedule_witnesses_v2 WHERE witness_id=snap.witness_id;
+  IF NOT snap.costs_reconciled OR snap.refusal IS NOT NULL OR w.valid_until<=clock_timestamp()
+    OR (r->'instruction'->>'expires_at')::TIMESTAMPTZ>=(snap.context->'limits'->>'reservation_deadline_upper_bound')::TIMESTAMPTZ
+    OR (r->'instruction'->>'expires_at')::TIMESTAMPTZ>=(r->'committed_terms'->>'ends_at')::TIMESTAMPTZ
+    OR (snap.context->'limits'->>'latest_allocation_at')::TIMESTAMPTZ<=clock_timestamp() THEN RAISE EXCEPTION 'capacity facts unavailable' USING ERRCODE='PCV05'; END IF;
+  amount:=(r->'instruction'->>'amount_atomic')::reward_funding_atomic_v2;
+  deadline_ms:=extract(epoch FROM (snap.context->'limits'->>'reservation_deadline_upper_bound')::TIMESTAMPTZ)*1000;
+  margin:=(p.capacity_profile->>'safetyMarginMs')::NUMERIC;
+  opportunities:=0;committed:=0;
+  FOR d IN SELECT value FROM jsonb_array_elements(w.schedule->'rows') LOOP
+    IF NOT (r->'committed_terms'->'planned_drawing_ids' ? (d->>'id')) THEN CONTINUE; END IF;
+    IF (d->>'priceAtomic')::NUMERIC<=0 OR (d->>'priceAtomic')::NUMERIC>(r->'committed_terms'->>'ticket_price_ceiling_atomic')::NUMERIC THEN RAISE EXCEPTION 'unproved price' USING ERRCODE='PCV05'; END IF;
+    IF d->>'state'='committed' THEN committed:=committed+(d->>'reservedCostAtomic')::NUMERIC; END IF;
+    IF d->>'state'='uncommitted' AND (d->>'entryCutoff')::NUMERIC<=extract(epoch FROM (r->'committed_terms'->>'ends_at')::TIMESTAMPTZ)*1000
+      AND deadline_ms+margin<=(d->>'entryCutoff')::NUMERIC AND deadline_ms+margin<=(d->>'purchaseDeadline')::NUMERIC THEN
+      opportunities:=opportunities+(d->>'priceAtomic')::NUMERIC;
+    END IF;
+  END LOOP;
+  IF committed<>(snap.budget->>'committedPurchases')::NUMERIC THEN RAISE EXCEPTION 'unreconciled purchase exposure' USING ERRCODE='PCV05'; END IF;
+  SELECT coalesce(sum(x.amount_atomic),0) INTO funded FROM reward_incoming_receipts_v2 x JOIN song_megapot_contributions_v2 c USING(contribution_id) WHERE c.pool_leg_id=r->'target'->>'pool_leg_id' AND x.category='pool_principal';
+  IF funded<>(snap.budget->>'funded')::NUMERIC THEN RAISE EXCEPTION 'stale budget revision' USING ERRCODE='PCV06'; END IF;
+  free:=funded-(snap.budget->>'spent')::NUMERIC-committed-(snap.budget->>'refunded')::NUMERIC-(snap.budget->>'otherObligations')::NUMERIC;
+  SELECT coalesce(sum(amount_atomic),0) INTO live FROM reward_contribution_reservations_v2 WHERE pool_leg_id=r->'target'->>'pool_leg_id' AND disposition='held';
+  IF free<0 OR amount<=0 OR amount>opportunities-free-live OR amount<(snap.context->'limits'->>'minimum_atomic')::NUMERIC OR amount>(snap.context->'limits'->>'maximum_atomic')::NUMERIC THEN RAISE EXCEPTION 'capacity exceeded' USING ERRCODE='PCV07'; END IF;
+  total:=funded+live+amount;
+  IF total>=115792089237316195423570985008687907853269984665640564039457584007913129639936 THEN RAISE EXCEPTION 'aggregate representation overflow' USING ERRCODE='PCV07'; END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='assert_reward_contribution_capacity_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='snapshot text, r jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION is_handle_sales_identifier_v1(input_value text, maximum_bytes integer) RETURNS boolean
     LANGUAGE sql IMMUTABLE
@@ -3081,6 +3240,33 @@ BEGIN
 END;
 $_$;
 
+CREATE FUNCTION bind_reward_contribution_purpose_v2(role_name text, purpose text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE allowed TEXT[]; signature TEXT; trusted TEXT:=current_schema(); target OID; owner OID;
+BEGIN
+  -- SECURITY INVOKER and owner-only EXECUTE: no runtime can bind itself.
+  SELECT oid INTO STRICT target FROM pg_roles WHERE rolname=role_name AND NOT rolsuper AND NOT rolcreaterole AND NOT rolbypassrls;
+  SELECT relowner INTO STRICT owner FROM pg_class WHERE oid='song_megapot_contributions_v2'::regclass;
+  IF pg_has_role(target,owner,'MEMBER') THEN RAISE EXCEPTION 'runtime owns money authority' USING ERRCODE='42501'; END IF;
+  CASE purpose
+    WHEN 'http_commands' THEN allowed:=ARRAY[
+      'load_song_contribution_command_v2(text,text,text)','load_owned_song_contribution_v2(jsonb)',
+      'lock_song_contribution_context_v2(jsonb,text)','create_song_contribution_v2(jsonb,jsonb,text)',
+      'update_song_contribution_command_v2(jsonb,jsonb,jsonb,jsonb)','enqueue_song_contribution_reconciliation_v2(jsonb,jsonb,jsonb)',
+      'load_song_contribution_recovery_v2(jsonb)','lock_reward_wallet_nonce_sender_v2(bigint,text)',
+      'reward_wallet_nonce_context_v2(bigint,text,text)','reserve_reward_funding_wallet_nonce_v2(jsonb)',
+      'load_reward_funding_wallet_nonce_owner_v2(jsonb)'];
+    WHEN 'incoming_observer' THEN allowed:=ARRAY['load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
+    -- Evidence-only seal storage does not grant outgoing/refund completion.
+    WHEN 'cohort_evidence' THEN allowed:=ARRAY['record_reward_pool_cohort_v2(text,text,text,jsonb)'];
+    ELSE RAISE EXCEPTION 'unrecognized funding purpose' USING ERRCODE='42501';
+  END CASE;
+  FOREACH signature IN ARRAY allowed LOOP
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%s TO %I',trusted,signature,role_name);
+  END LOOP;
+END $$;
+
 CREATE FUNCTION can_account_access_activity_song(expected_account_id text, expected_community_id text, expected_post_id text) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
@@ -3156,6 +3342,32 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='cancel_unclaimed_account_karaoke_audio_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_attempt text, p_artifact text, p_capture jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION canonical_reward_funding_array_v2(j jsonb) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE result TEXT;
+BEGIN
+  IF jsonb_typeof(j)='array' THEN
+    SELECT '['||coalesce(string_agg(canonical_reward_funding_array_v2(value),',' ORDER BY ordinal),'')||']' INTO result FROM jsonb_array_elements(j) WITH ORDINALITY AS e(value,ordinal);
+    RETURN result;
+  END IF;
+  IF jsonb_typeof(j)='object' THEN RAISE EXCEPTION 'cohort preimage must be ordered arrays' USING ERRCODE='PCV10'; END IF;
+  RETURN j::TEXT;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='canonical_reward_funding_array_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='j jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -3671,6 +3883,31 @@ BEGIN
     new_generation, input_target_status;
 END;
 $$;
+
+CREATE FUNCTION charge_reward_funding_work_v2(a text, l text, p text, n bigint) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE affected INTEGER;
+BEGIN
+  IF n<=0 THEN RAISE EXCEPTION 'work policy unavailable' USING ERRCODE='PCV04'; END IF;
+  UPDATE reward_funding_work_envelopes_v2 SET used=used+n,reserved=reserved-n WHERE profile_id=p AND valid_until>clock_timestamp()
+    AND (scope,scope_key) IN (('account',a),('leg',l),('global','funding')) AND reserved>=n;
+  GET DIAGNOSTICS affected=ROW_COUNT;
+  IF affected<>3 THEN RAISE EXCEPTION 'work budget exhausted' USING ERRCODE='PCV04'; END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='charge_reward_funding_work_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='a text, l text, p text, n bigint';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION claim_captured_learner_audio_private_v1(p_capture jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -5635,6 +5872,75 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION create_song_contribution_v2(i jsonb, s jsonb, snapshot text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE r JSONB:=s->'receipt'; o JSONB:=s->'owner'; snap reward_funding_leg_snapshots_v2;
+  slot reward_song_slots_v2; p reward_funding_profiles_v2; lease reward_wallet_nonce_leases; amount reward_funding_atomic_v2;
+  leg TEXT:=r->'target'->>'pool_leg_id'; cap BIGINT; active_count BIGINT; affected INTEGER;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
+  SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=snapshot;
+  SELECT * INTO STRICT slot FROM reward_song_slots_v2 WHERE slot_id=snap.slot_id FOR UPDATE;
+  PERFORM lock_reward_wallet_nonce_sender_v2((r->'instruction'->>'chain_id')::BIGINT,r->'instruction'->>'from');
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id;
+  IF NOT p.accepted OR p.valid_until<=clock_timestamp() OR NOT slot.reward_policy_ready THEN RAISE EXCEPTION 'policy unavailable' USING ERRCODE='PCV05'; END IF;
+  IF slot.status<>'open' OR slot.target IS DISTINCT FROM r->'target' OR slot.terms IS DISTINCT FROM r->'committed_terms' THEN RAISE EXCEPTION 'target terms changed' USING ERRCODE='PCV06'; END IF;
+  IF snap.context->'actor' IS DISTINCT FROM o OR i->>'accountId' IS DISTINCT FROM o->>'account_id'
+    OR slot.community_id<>i->>'communityId' OR slot.post_id<>i->>'postId'
+    OR (s->>'revision')::BIGINT<>0 OR s->>'fundingState'<>'instruction_issued' OR (s->>'nonceFinalized')::BOOLEAN
+    OR s->'fundingGrant'<>'null'::JSONB OR s->'cancellationGrant'<>'null'::JSONB OR s->'cancellationHead'<>'null'::JSONB
+    OR s->>'effectiveDeadline' IS DISTINCT FROM r->'instruction'->>'expires_at'
+    OR (r->'instruction'->>'expires_at')::TIMESTAMPTZ<=clock_timestamp() THEN RAISE EXCEPTION 'invalid contribution provenance' USING ERRCODE='PCV02'; END IF;
+  amount:=(r->'instruction'->>'amount_atomic')::reward_funding_atomic_v2;
+  IF amount<=0 OR amount<>(r->'reservation'->>'amount_atomic')::NUMERIC THEN RAISE EXCEPTION 'positive principal required' USING ERRCODE='PCV07'; END IF;
+  PERFORM assert_reward_contribution_capacity_v2(snapshot,r);
+  IF NOT EXISTS(SELECT 1 FROM persona_wallet_assignments a JOIN personas v USING(persona_id,account_id)
+    JOIN persona_community_bindings b USING(persona_id,account_id) WHERE a.assignment_id=o->>'wallet_assignment_id'
+      AND a.account_id=i->>'accountId' AND a.persona_id=o->>'persona_id' AND a.address=o->>'sender_address'
+      AND a.status='active' AND v.status='active' AND b.community_id=i->>'communityId'
+      AND a.hd_wallet_index=(o->>'wallet_index')::BIGINT) THEN RAISE EXCEPTION 'owned community persona required' USING ERRCODE='PCV02'; END IF;
+  SELECT * INTO STRICT lease FROM reward_wallet_nonce_leases WHERE lease_id=r->'reservation'->>'nonce_lease_id';
+  IF lease.source<>'song_funding_v2' OR lease.owner_id<>r->>'contribution_id' OR lease.command_id<>r->>'command_id'
+    OR lease.request_hash<>i->>'hash' OR lease.account_id<>i->>'accountId' OR lease.persona_id<>o->>'persona_id'
+    OR lease.wallet_assignment_id<>o->>'wallet_assignment_id' OR lease.sender_address<>r->'instruction'->>'from'
+    OR lease.nonce<>(r->'instruction'->>'nonce')::BIGINT THEN RAISE EXCEPTION 'original nonce ownership required' USING ERRCODE='PCV02'; END IF;
+  SELECT count(*) INTO active_count FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId' AND NOT (state->>'nonceFinalized')::BOOLEAN;
+  active_count:=active_count+(SELECT count(*) FROM song_reward_leg_funding_effects WHERE funder_account_id=i->>'accountId' AND state IN ('planned','confirming','reconciliation_required','reclaimable_failed'));
+  IF active_count>=(p.policy->>'maxActiveAccount')::BIGINT THEN RAISE EXCEPTION 'account effect limit' USING ERRCODE='PCV08'; END IF;
+  SELECT count(*) INTO cap FROM song_megapot_contributions_v2 WHERE pool_leg_id=leg AND state->>'fundingState'<>'nonce_closed_no_principal';
+  IF cap>=least((p.policy->>'maxLegLiabilities')::BIGINT,(p.policy->>'maxAdmittedLeg')::BIGINT) THEN RAISE EXCEPTION 'leg effect limit' USING ERRCODE='PCV08'; END IF;
+  SELECT count(*) INTO cap FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId' AND pool_leg_id=leg AND NOT (state->>'nonceFinalized')::BOOLEAN;
+  IF cap>=(p.policy->>'maxActiveAccountLeg')::BIGINT THEN RAISE EXCEPTION 'account leg active limit' USING ERRCODE='PCV08'; END IF;
+  SELECT count(*) INTO cap FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId' AND pool_leg_id=leg AND state->>'fundingState'<>'nonce_closed_no_principal';
+  IF cap>=(p.policy->>'maxAdmittedAccountLeg')::BIGINT THEN RAISE EXCEPTION 'account leg lifetime limit' USING ERRCODE='PCV08'; END IF;
+  UPDATE reward_funding_work_envelopes_v2 SET reserved=reserved+(p.policy->>'workPerInstruction')::BIGINT WHERE profile_id=p.profile_id AND valid_until>clock_timestamp()
+    AND (scope,scope_key) IN (('account',i->>'accountId'),('leg',leg),('global','funding')) AND allocated-used-reserved>=(p.policy->>'workPerInstruction')::BIGINT;
+  GET DIAGNOSTICS affected=ROW_COUNT;
+  IF affected<>3 THEN RAISE EXCEPTION 'work envelope unavailable' USING ERRCODE='PCV04'; END IF;
+  INSERT INTO song_megapot_contributions_v2 VALUES(r->>'contribution_id',i->>'accountId',i->>'communityId',i->>'postId',leg,r->>'funding_effect_id',lease.lease_id,p.profile_id,snapshot,s,transaction_timestamp());
+  PERFORM insert_song_contribution_command_v2(i,r);
+  INSERT INTO reward_contribution_reservations_v2 VALUES(r->'reservation'->>'reservation_id',r->>'contribution_id',leg,amount,'held',NULL);
+  INSERT INTO reward_funding_account_counters_v2 VALUES(i->>'accountId','',1,0,0)
+    ON CONFLICT(account_id,scope_leg) DO UPDATE SET active=reward_funding_account_counters_v2.active+1;
+  INSERT INTO reward_funding_account_counters_v2 VALUES(i->>'accountId',leg,1,0,0)
+    ON CONFLICT(account_id,scope_leg) DO UPDATE SET active=reward_funding_account_counters_v2.active+1;
+  INSERT INTO reward_funding_work_envelopes_v2 VALUES('instruction:'||(r->>'contribution_id'),'instruction',r->>'contribution_id',p.profile_id,r->>'contribution_id',(p.policy->>'workPerInstruction')::BIGINT,0,0,p.valid_until,NULL);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='create_song_contribution_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, s jsonb, snapshot text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION current_account_age_capability_v1(target_account_id text) RETURNS text
     LANGUAGE sql STABLE
     AS $$
@@ -6577,6 +6883,45 @@ BEGIN
   RETURN QUERY SELECT CASE WHEN first_proof THEN 'queued' ELSE 'replayed' END::text;
 END;
 $_$;
+
+CREATE FUNCTION enqueue_song_contribution_reconciliation_v2(i jsonb, r jsonb, h jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE c song_megapot_contributions_v2; p reward_funding_profiles_v2; work_id TEXT;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=i->>'contributionId' AND account_id=i->>'accountId' AND community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id;
+  IF r->>'object'='contribution_recovery_command_receipt' THEN
+    IF (jsonb_typeof(r->'work_item_id')='string' AND length(r->>'work_item_id') BETWEEN 1 AND 128) IS NOT TRUE THEN
+      RAISE EXCEPTION 'missing recovery work identity' USING ERRCODE='PCV07';
+    END IF;
+    work_id:=r->>'work_item_id';
+  ELSIF r->>'object'='contribution_observation_command_receipt' THEN
+    -- Observation receipts carry a locator, not a public work_item_id.
+    work_id:='request:'||(r->>'command_id');
+  ELSE RAISE EXCEPTION 'unsupported reconciliation receipt' USING ERRCODE='PCV07'; END IF;
+  IF h<>'null'::JSONB AND h->>'instructionHash' IS DISTINCT FROM c.state->'receipt'->'instruction'->>'instruction_hash'
+    AND NOT EXISTS(SELECT 1 FROM song_megapot_contribution_commands_v2 x WHERE x.contribution_id=c.contribution_id AND x.receipt->>'object'='contribution_cancellation_command_receipt' AND x.receipt->>'instruction_hash'=h->>'instructionHash') THEN RAISE EXCEPTION 'foreign instruction hint' USING ERRCODE='PCV11'; END IF;
+  PERFORM charge_reward_funding_work_v2(c.account_id,c.pool_leg_id,c.profile_id,1);
+  UPDATE reward_funding_work_envelopes_v2 SET used=used+1 WHERE scope='instruction' AND scope_key=c.contribution_id AND allocated-used-reserved>=1;
+  IF NOT FOUND THEN RAISE EXCEPTION 'instruction work exhausted' USING ERRCODE='PCV04'; END IF;
+  INSERT INTO reward_funding_work_envelopes_v2 VALUES(work_id,'reconciliation',r->>'command_id',p.profile_id,c.contribution_id,1,0,0,p.valid_until,h);
+  PERFORM insert_song_contribution_command_v2(i,r);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='enqueue_song_contribution_reconciliation_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, r jsonb, h jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION ensure_exact_video_receipt_alias_v1(p_submission text, p_operation text, p_post text) RETURNS text
     LANGUAGE plpgsql
@@ -15449,6 +15794,36 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_funding_scan_checkpoint_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE prior reward_funding_scan_checkpoints_v2; c song_megapot_contributions_v2;
+BEGIN
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=NEW.contribution_id;
+  IF NEW.previous_checkpoint_id IS NULL THEN
+    IF NEW.from_block<>(c.state->'receipt'->'reservation'->>'valid_from_block_exclusive')::BIGINT+1 THEN RAISE EXCEPTION 'scan must start after original anchor' USING ERRCODE='PCV10'; END IF;
+  ELSE
+    SELECT * INTO STRICT prior FROM reward_funding_scan_checkpoints_v2 WHERE checkpoint_id=NEW.previous_checkpoint_id;
+    IF prior.contribution_id<>NEW.contribution_id OR NEW.from_block<>prior.through_block+1 OR NEW.block_time<prior.block_time THEN RAISE EXCEPTION 'noncontiguous scan proof' USING ERRCODE='PCV10'; END IF;
+  END IF;
+  IF NEW.evidence->>'complete' IS DISTINCT FROM 'true' OR NEW.evidence->>'policy_hash' !~ '^[a-f0-9]{64}$'
+    OR NEW.accepted_finality_at<NEW.block_time THEN RAISE EXCEPTION 'unproved scan finality' USING ERRCODE='PCV10'; END IF;
+  RETURN NEW;
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_reward_funding_scan_checkpoint_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION guard_reward_gas_topup() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -15990,6 +16365,91 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_reward_song_slot_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$ BEGIN
+  IF ROW(NEW.slot_id,NEW.community_id,NEW.post_id) IS DISTINCT FROM ROW(OLD.slot_id,OLD.community_id,OLD.post_id)
+    OR (OLD.target IS NOT NULL AND ROW(NEW.target,NEW.terms,NEW.generation) IS DISTINCT FROM ROW(OLD.target,OLD.terms,OLD.generation))
+    OR (OLD.admission_closed_at IS NOT NULL AND (NEW.admission_closed_at IS DISTINCT FROM OLD.admission_closed_at OR NEW.status='open'))
+    OR NEW.admission_closed_at>clock_timestamp() THEN RAISE EXCEPTION 'immutable slot/terminal boundary' USING ERRCODE='PCV06'; END IF;
+  RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_reward_song_slot_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_reward_wallet_instruction_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE h RECORD;
+BEGIN
+  PERFORM lock_reward_wallet_nonce_sender_v2(NEW.chain_id,NEW.sender_address);
+  SELECT * INTO h FROM reward_wallet_nonce_context_v2(NEW.chain_id,NEW.sender_address,NULL);
+  IF h.blocked_reason IS NOT NULL THEN
+    RAISE EXCEPTION 'wallet has outstanding nonce ownership' USING ERRCODE='PWN02';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION guard_reward_wallet_nonce_lease_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE
+  history RECORD;
+  paused BOOLEAN;
+BEGIN
+  PERFORM lock_reward_wallet_nonce_sender_v2(NEW.chain_id,NEW.sender_address);
+  IF NEW.source='winner_attempt_v1' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM reward_winner_send_attempts a
+        JOIN reward_winner_sends s USING(send_id)
+       WHERE a.send_id=NEW.winner_send_id AND a.attempt=NEW.winner_attempt
+         AND a.nonce=NEW.nonce AND a.account_id=NEW.account_id AND s.account_id=NEW.account_id
+         AND s.persona_id=NEW.persona_id AND s.wallet_assignment_id=NEW.wallet_assignment_id
+         AND s.chain_id=NEW.chain_id AND s.sender_address=NEW.sender_address
+    ) THEN RAISE EXCEPTION 'missing exact winner provenance' USING ERRCODE='PWN01'; END IF;
+  ELSIF NEW.source='song_funding_v2' THEN
+    -- Original community-persona ownership is checked, never a foreign wallet.
+    IF NOT EXISTS (
+      SELECT 1 FROM persona_wallet_assignments w JOIN personas p
+        ON p.account_id=w.account_id AND p.persona_id=w.persona_id
+       WHERE w.assignment_id=NEW.wallet_assignment_id AND w.account_id=NEW.account_id
+         AND w.persona_id=NEW.persona_id AND w.address=NEW.sender_address
+         AND w.chain_account_kind='evm' AND w.status='active' AND p.status='active'
+    ) THEN RAISE EXCEPTION 'foreign or inactive wallet owner' USING ERRCODE='PWN01'; END IF;
+    SELECT c.paused INTO paused FROM reward_operations_control c WHERE singleton FOR SHARE;
+    IF paused IS DISTINCT FROM FALSE THEN
+      RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+    END IF;
+    PERFORM require_reward_run_authority_v1();
+    IF NEW.observed_at_ms > floor(extract(epoch FROM clock_timestamp())*1000)
+       OR floor(extract(epoch FROM clock_timestamp())*1000)-NEW.observed_at_ms > NEW.max_age_ms THEN
+      RAISE EXCEPTION 'stale nonce witness' USING ERRCODE='PWN04';
+    END IF;
+  ELSE RAISE EXCEPTION 'invalid nonce operation' USING ERRCODE='PWN01'; END IF;
+  SELECT * INTO history FROM reward_wallet_nonce_context_v2(
+    NEW.chain_id,NEW.sender_address,NEW.winner_send_id);
+  IF history.blocked_reason IS NOT NULL THEN
+    RAISE EXCEPTION 'outstanding wallet instruction or unknown history' USING ERRCODE='PWN02';
+  END IF;
+  IF history.highest_nonce IS NOT NULL AND NEW.nonce <= history.highest_nonce THEN
+    RAISE EXCEPTION 'nonce already owned or consumed' USING ERRCODE='PWN03';
+  END IF;
+  RETURN NEW;
+END $$;
 
 CREATE FUNCTION guard_reward_winner_send() RETURNS trigger
     LANGUAGE plpgsql
@@ -19554,6 +20014,28 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION insert_song_contribution_command_v2(i jsonb, r jsonb) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$ BEGIN
+  IF r->>'request_hash' IS DISTINCT FROM i->>'hash' THEN RAISE EXCEPTION 'command hash' USING ERRCODE='PCV03'; END IF;
+  INSERT INTO song_megapot_contribution_commands_v2(command_id,account_id,operation,idempotency_key,request_hash,community_id,post_id,contribution_id,receipt,preparation_revision)
+  VALUES(r->>'command_id',i->>'accountId',i->>'operation',i->>'key',i->>'hash',i->>'communityId',i->>'postId',r->>'contribution_id',r,
+    CASE WHEN r->>'object'='contribution_cancellation_command_receipt' THEN (r->>'preparation_revision')::BIGINT END);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='insert_song_contribution_command_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, r jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE TABLE media_post_submissions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -20406,6 +20888,146 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION load_owned_song_contribution_v2(i jsonb) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT project_song_contribution_state_v2(state) FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId'
+    AND community_id=i->>'communityId' AND post_id=i->>'postId' AND contribution_id=i->>'contributionId'
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='load_owned_song_contribution_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE TABLE reward_wallet_nonce_leases (
+    lease_id text NOT NULL,
+    source text NOT NULL,
+    owner_id text NOT NULL,
+    owner_revision integer NOT NULL,
+    command_id text,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    wallet_assignment_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    sender_address text NOT NULL,
+    nonce bigint NOT NULL,
+    request_hash text,
+    winner_send_id text,
+    winner_attempt integer,
+    witness_id text,
+    observed_at_ms bigint,
+    confirmed_block bigint,
+    confirmed_block_hash text,
+    pending_base_block bigint,
+    pending_base_hash text,
+    confirmed_nonce bigint,
+    pending_nonce bigint,
+    freshness_policy_hash text,
+    max_age_ms bigint,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_wallet_nonce_leases_chain_id_check CHECK (((chain_id > 0) AND (chain_id <= '9007199254740991'::bigint))),
+    CONSTRAINT reward_wallet_nonce_leases_command_id_check CHECK (((btrim(command_id) <> ''::text) AND (octet_length(command_id) <= 128))),
+    CONSTRAINT reward_wallet_nonce_leases_confirmed_block_check CHECK ((confirmed_block >= 0)),
+    CONSTRAINT reward_wallet_nonce_leases_confirmed_block_hash_check CHECK ((confirmed_block_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_wallet_nonce_leases_confirmed_nonce_check CHECK ((confirmed_nonce >= 0)),
+    CONSTRAINT reward_wallet_nonce_leases_freshness_policy_hash_check CHECK ((freshness_policy_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_wallet_nonce_leases_lease_id_check CHECK (((btrim(lease_id) <> ''::text) AND (octet_length(lease_id) <= 256))),
+    CONSTRAINT reward_wallet_nonce_leases_max_age_ms_check CHECK (((max_age_ms >= 1) AND (max_age_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT reward_wallet_nonce_leases_nonce_check CHECK ((nonce >= 0)),
+    CONSTRAINT reward_wallet_nonce_leases_observed_at_ms_check CHECK (((observed_at_ms >= 0) AND (observed_at_ms <= '9007199254740991'::bigint))),
+    CONSTRAINT reward_wallet_nonce_leases_owner_id_check CHECK (((btrim(owner_id) <> ''::text) AND (octet_length(owner_id) <= 128))),
+    CONSTRAINT reward_wallet_nonce_leases_owner_revision_check CHECK ((owner_revision > 0)),
+    CONSTRAINT reward_wallet_nonce_leases_pending_base_block_check CHECK ((pending_base_block >= 0)),
+    CONSTRAINT reward_wallet_nonce_leases_pending_base_hash_check CHECK ((pending_base_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_wallet_nonce_leases_pending_nonce_check CHECK ((pending_nonce >= 0)),
+    CONSTRAINT reward_wallet_nonce_leases_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_wallet_nonce_leases_sender_address_check CHECK ((sender_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_wallet_nonce_leases_source_check CHECK ((source = ANY (ARRAY['winner_attempt_v1'::text, 'song_funding_v2'::text]))),
+    CONSTRAINT reward_wallet_nonce_leases_witness_id_check CHECK ((witness_id ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_wallet_nonce_provenance CHECK ((((source = 'winner_attempt_v1'::text) AND (owner_id = winner_send_id) AND (owner_revision = winner_attempt) AND (winner_send_id IS NOT NULL) AND (winner_attempt IS NOT NULL) AND (command_id IS NULL) AND (request_hash IS NULL) AND (witness_id IS NULL) AND (observed_at_ms IS NULL) AND (confirmed_block IS NULL) AND (confirmed_block_hash IS NULL) AND (pending_base_block IS NULL) AND (pending_base_hash IS NULL) AND (confirmed_nonce IS NULL) AND (pending_nonce IS NULL) AND (freshness_policy_hash IS NULL) AND (max_age_ms IS NULL)) OR ((source = 'song_funding_v2'::text) AND (owner_revision = 1) AND (command_id IS NOT NULL) AND (request_hash IS NOT NULL) AND (winner_send_id IS NULL) AND (winner_attempt IS NULL) AND (witness_id IS NOT NULL) AND (observed_at_ms IS NOT NULL) AND (confirmed_block IS NOT NULL) AND (confirmed_block_hash IS NOT NULL) AND (pending_base_block IS NOT NULL) AND (pending_base_hash IS NOT NULL) AND (confirmed_nonce IS NOT NULL) AND (pending_nonce IS NOT NULL) AND (freshness_policy_hash IS NOT NULL) AND (max_age_ms IS NOT NULL) AND (nonce = confirmed_nonce) AND (nonce = pending_nonce) AND (confirmed_block = pending_base_block) AND (confirmed_block_hash = pending_base_hash))))
+);
+
+CREATE FUNCTION load_reward_funding_wallet_nonce_owner_v2(p jsonb) RETURNS SETOF reward_wallet_nonce_leases
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT l.* FROM reward_wallet_nonce_leases l
+   WHERE l.source='song_funding_v2' AND l.lease_id=p->>'lease_id'
+     AND l.owner_id=p->>'owner_id' AND l.command_id=p->>'command_id'
+     AND l.account_id=p->>'account_id' AND l.persona_id=p->>'persona_id'
+     AND l.wallet_assignment_id=p->>'wallet_assignment_id'
+     AND l.chain_id=(p->>'chain_id')::BIGINT AND l.sender_address=p->>'sender_address'
+     AND l.request_hash=p->>'request_hash'
+$$;
+
+CREATE FUNCTION load_song_contribution_command_v2(a text, o text, k text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT jsonb_build_object('requestHash',request_hash,'receipt',receipt)
+  FROM song_megapot_contribution_commands_v2 WHERE account_id=a AND operation=o AND idempotency_key=k
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='load_song_contribution_command_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='a text, o text, k text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION load_song_contribution_recovery_v2(i jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE c song_megapot_contributions_v2; s reward_funding_leg_snapshots_v2; p reward_funding_profiles_v2;
+  owned BOOLEAN; paused BOOLEAN; available BOOLEAN;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
+  PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=i->>'contributionId' AND account_id=i->>'accountId' AND community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
+  PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
+  SELECT * INTO STRICT s FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=c.snapshot_id;
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id FOR SHARE;
+  SELECT EXISTS(SELECT 1 FROM persona_wallet_assignments a JOIN personas v USING(persona_id,account_id) JOIN persona_community_bindings b USING(persona_id,account_id)
+    WHERE a.assignment_id=c.state->'owner'->>'wallet_assignment_id' AND a.account_id=c.account_id AND a.persona_id=c.state->'owner'->>'persona_id' AND a.address=c.state->'owner'->>'sender_address'
+      AND a.status='active' AND v.status='active' AND b.community_id=c.community_id) INTO owned;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  SELECT count(*)=3 INTO available FROM reward_funding_work_envelopes_v2 WHERE profile_id=c.profile_id AND valid_until>clock_timestamp()
+    AND (scope,scope_key) IN (('account',c.account_id),('leg',c.pool_leg_id),('global','funding')) AND reserved>=1;
+  -- Original snapshot attestation timestamps and permanent lease ownership do
+  -- not establish current recovery authority. Fail closed until the accepted
+  -- live recovery-attestation/fresh-nonce producer is integrated and reviewed.
+  RETURN s.recovery_authority || jsonb_build_object('policy',NULL,
+    'originalWalletStillOwned',owned,'boundedWorkAvailable',available,
+    'currentSigningRefusal',CASE WHEN paused IS DISTINCT FROM FALSE THEN 'paused' WHEN NOT p.accepted OR p.valid_until<=clock_timestamp() THEN 'policy_unavailable' ELSE s.recovery_authority->>'currentSigningRefusal' END);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='load_song_contribution_recovery_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION lock_account_audio_group_private_v1(p_original_account text) RETURNS text[]
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -20797,6 +21419,77 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='lock_original_account_audio_source_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION lock_reward_wallet_nonce_sender_v2(p_chain bigint, p_sender text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+BEGIN
+  IF p_chain IS NULL OR p_chain <= 0 OR p_chain > 9007199254740991
+     OR p_sender IS NULL OR p_sender !~ '^0x[0-9a-f]{40}$' THEN
+    RAISE EXCEPTION 'invalid sender identity' USING ERRCODE='PWN01';
+  END IF;
+  -- Preserve the accepted winner lock key; no funding-only competing mutex.
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    'reward-winner-send:'||p_chain::text||':'||p_sender,0));
+END $_$;
+
+CREATE FUNCTION lock_reward_winner_attempt_sender_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE s RECORD;
+BEGIN
+  SELECT chain_id,sender_address INTO STRICT s FROM reward_winner_sends WHERE send_id=NEW.send_id;
+  PERFORM lock_reward_wallet_nonce_sender_v2(s.chain_id,s.sender_address);
+  RETURN NEW;
+END $$;
+
+CREATE FUNCTION lock_song_contribution_context_v2(i jsonb, h text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2; p reward_funding_profiles_v2;
+  w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
+  SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE context_hash=h;
+  SELECT * INTO STRICT slot FROM reward_song_slots_v2 WHERE slot_id=snap.slot_id FOR UPDATE;
+  IF slot.community_id<>i->>'communityId' OR slot.post_id<>i->>'postId' OR snap.context->'actor'->>'account_id'<>i->>'accountId' THEN
+    RAISE EXCEPTION 'private contribution context' USING ERRCODE='PCV02'; END IF;
+  PERFORM lock_reward_wallet_nonce_sender_v2((snap.context->>'chain_id')::BIGINT,snap.context->'actor'->>'sender_address');
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id FOR SHARE;
+  SELECT * INTO STRICT w FROM reward_funding_schedule_witnesses_v2 WHERE witness_id=snap.witness_id;
+  leg:=slot.target->>'pool_leg_id';
+  -- Missing envelopes never create a budget. They are admitted operational inputs.
+  PERFORM 1 FROM reward_funding_work_envelopes_v2 WHERE (scope,scope_key) IN
+    (('account',i->>'accountId'),('leg',leg),('global','funding')) ORDER BY scope,scope_key FOR UPDATE;
+  SELECT jsonb_object_agg(scope,allocated-used-reserved) INTO work FROM reward_funding_work_envelopes_v2
+    WHERE profile_id=p.profile_id AND valid_until>clock_timestamp() AND (scope,scope_key) IN
+    (('account',i->>'accountId'),('leg',leg),('global','funding'));
+  SELECT jsonb_build_object(
+    'activeAccount',count(*) FILTER(WHERE account_id=i->>'accountId' AND NOT (state->>'nonceFinalized')::BOOLEAN)+(SELECT count(*) FROM song_reward_leg_funding_effects WHERE funder_account_id=i->>'accountId' AND state IN ('planned','confirming','reconciliation_required','reclaimable_failed')),
+    'activeAccountLeg',count(*) FILTER(WHERE account_id=i->>'accountId' AND pool_leg_id=leg AND NOT (state->>'nonceFinalized')::BOOLEAN),
+    'legLiabilities',count(*) FILTER(WHERE pool_leg_id=leg AND state->>'fundingState'<>'nonce_closed_no_principal'),
+    'admittedLeg',count(*) FILTER(WHERE pool_leg_id=leg AND state->>'fundingState'='pool_credited'),
+    'admittedAccountLeg',count(*) FILTER(WHERE account_id=i->>'accountId' AND pool_leg_id=leg AND state->>'fundingState'='pool_credited'))
+    INTO counters FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId' OR pool_leg_id=leg;
+  SELECT jsonb_build_object('funded',coalesce((SELECT sum(r.amount_atomic) FROM reward_incoming_receipts_v2 r JOIN song_megapot_contributions_v2 c USING(contribution_id) WHERE c.pool_leg_id=leg AND r.category='pool_principal'),0)::TEXT,
+    'reserved',coalesce((SELECT sum(amount_atomic) FROM reward_contribution_reservations_v2 WHERE pool_leg_id=leg AND disposition='held'),0)::TEXT) INTO principal;
+  RETURN jsonb_build_object('snapshot',to_jsonb(snap),'slot',to_jsonb(slot),'profile',to_jsonb(p),'witness',to_jsonb(w),'counts',counters,'work',work,'principal',principal);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_song_contribution_context_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, h text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -23156,6 +23849,39 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION project_song_contribution_state_v2(s jsonb) RETURNS jsonb
+    LANGUAGE plpgsql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE issued TIMESTAMPTZ:=(s->'receipt'->>'created_at')::TIMESTAMPTZ; deadline TIMESTAMPTZ;
+BEGIN
+  -- Durable first-invalidating history; unpause/reactivation never resurrects
+  -- an issued funding interval. CP1/CP2 exclusion/terminal event producers
+  -- remain a required source integration, not an assumed membership gate.
+  deadline:=least((s->>'effectiveDeadline')::TIMESTAMPTZ,(s->'receipt'->'committed_terms'->>'ends_at')::TIMESTAMPTZ,
+    (SELECT min(changed_at) FROM reward_operations_control_events WHERE paused AND changed_at>=issued),
+    (SELECT tombstoned_at FROM persona_wallet_assignments WHERE assignment_id=s->'owner'->>'wallet_assignment_id'),
+    (SELECT admission_closed_at FROM reward_song_slots_v2 WHERE community_id=s->'receipt'->'target'->>'community_id' AND post_id=s->'receipt'->'target'->>'post_id'),
+    (SELECT retired_at FROM megapot_deployment_attestations WHERE attestation_id=s->'receipt'->'instruction'->>'attestation_id'));
+  s:=jsonb_set(s,'{effectiveDeadline}',to_jsonb(to_char(deadline AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')));
+  IF deadline<=statement_timestamp() AND s->>'fundingState' IN ('instruction_issued','submission_claimed','broadcast_unknown','confirming') THEN
+    s:=jsonb_set(s,'{fundingState}','"expired_reconciling"');
+  END IF;
+  RETURN s;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='project_song_contribution_state_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='s jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION promote_operator_managed_route_from_hns_candidate_v1(input_receipt_id text, input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_route_binding_id text, input_operator_route_activation_id text, input_evidence_ref text, input_candidate_bytes bytea) RETURNS TABLE(outcome text, receipt_id text, evidence_ref text, route_binding_id text, binding_generation bigint, app_host_activation_generation bigint)
     LANGUAGE plpgsql
     AS $_$
@@ -25172,6 +25898,54 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION record_reward_pool_cohort_v2(id text, leg text, hash text, proofs jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE total reward_funding_atomic_v2; members JSONB; ordered_proofs JSONB; actual_hash TEXT;
+BEGIN
+  PERFORM 1 FROM reward_song_slots_v2 WHERE target->>'pool_leg_id'=leg AND status='closing' FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'leg not closing' USING ERRCODE='PCV06'; END IF;
+  IF EXISTS(SELECT 1 FROM song_megapot_contributions_v2 c WHERE c.pool_leg_id=leg AND NOT EXISTS(
+    SELECT 1 FROM reward_funding_scan_checkpoints_v2 s WHERE s.contribution_id=c.contribution_id
+      AND s.block_time>(c.state->>'effectiveDeadline')::TIMESTAMPTZ AND proofs @> jsonb_build_array(s.checkpoint_id))) THEN
+    RAISE EXCEPTION 'incomplete interval closure proof' USING ERRCODE='PCV10'; END IF;
+  SELECT coalesce(sum(r.amount_atomic),0) INTO total FROM reward_incoming_receipts_v2 r JOIN song_megapot_contributions_v2 c USING(contribution_id) WHERE c.pool_leg_id=leg AND r.category='pool_principal';
+  SELECT coalesce(jsonb_agg(jsonb_build_array(c.funding_effect_id,r.receipt_id,r.amount_atomic::TEXT) ORDER BY c.funding_effect_id COLLATE "C"),'[]') INTO members FROM reward_incoming_receipts_v2 r JOIN song_megapot_contributions_v2 c USING(contribution_id) WHERE c.pool_leg_id=leg AND r.category='pool_principal';
+  SELECT coalesce(jsonb_agg(value ORDER BY value COLLATE "C"),'[]') INTO ordered_proofs FROM jsonb_array_elements_text(proofs);
+  actual_hash:=encode(sha256(convert_to(canonical_reward_funding_array_v2(jsonb_build_array('pirate.reward-pool-cohort.evidence.v2',jsonb_build_array(leg,members,ordered_proofs))),'UTF8')),'hex');
+  IF hash IS DISTINCT FROM actual_hash THEN RAISE EXCEPTION 'cohort hash mismatch' USING ERRCODE='PCV10'; END IF;
+  INSERT INTO reward_pool_cohort_seals_v2(seal_id,pool_leg_id,source_hash,pool_principal_atomic,scan_proofs) VALUES(id,leg,hash,total,proofs);
+  INSERT INTO reward_pool_cohort_members_v2 SELECT id,c.contribution_id,r.receipt_id,r.amount_atomic FROM reward_incoming_receipts_v2 r JOIN song_megapot_contributions_v2 c USING(contribution_id) WHERE c.pool_leg_id=leg AND r.category='pool_principal';
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='record_reward_pool_cohort_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, leg text, hash text, proofs jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION record_reward_winner_nonce_lease_v2() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$ BEGIN
+  INSERT INTO reward_wallet_nonce_leases (
+    lease_id,source,owner_id,owner_revision,account_id,persona_id,wallet_assignment_id,
+    chain_id,sender_address,nonce,winner_send_id,winner_attempt
+  ) SELECT 'winner:'||NEW.send_id||':'||NEW.attempt,'winner_attempt_v1',NEW.send_id,NEW.attempt,
+           NEW.account_id,s.persona_id,s.wallet_assignment_id,s.chain_id,s.sender_address,
+           NEW.nonce,NEW.send_id,NEW.attempt
+      FROM reward_winner_sends s WHERE s.send_id=NEW.send_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'missing winner owner' USING ERRCODE='PWN01'; END IF;
+  RETURN NEW;
+END $$;
+
 CREATE FUNCTION register_learner_audio_upload_private_v1(expected_owner text, expected_artifact text, expected_kind text, expected_attempt text, expected_command text, expected_reservation text, expected_object_ref text, upload_id text, expected_captured_revision bigint) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25573,6 +26347,32 @@ BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END
 $$;
+
+CREATE FUNCTION reject_reward_contribution_history_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$ BEGIN
+  RAISE EXCEPTION 'immutable contribution evidence' USING ERRCODE='PCV01';
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reject_reward_contribution_history_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION reject_reward_wallet_nonce_history_change_v2() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$ BEGIN
+  RAISE EXCEPTION 'wallet nonce ownership is append-only';
+END $$;
 
 CREATE FUNCTION reject_telegram_practice_qualification() RETURNS trigger
     LANGUAGE plpgsql
@@ -27906,6 +28706,38 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reserve_reward_funding_wallet_nonce_v2(p jsonb) RETURNS SETOF reward_wallet_nonce_leases
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF jsonb_typeof(p) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'invalid nonce reservation shape' USING ERRCODE='PWN01';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_object_keys(p) AS keys(key) WHERE key <> ALL(ARRAY[
+      'lease_id','owner_id','command_id','account_id','persona_id','wallet_assignment_id',
+      'chain_id','sender_address','request_hash','nonce','witness_id','observed_at_ms',
+      'confirmed_block','confirmed_block_hash','pending_base_block','pending_base_hash',
+      'confirmed_nonce','pending_nonce','freshness_policy_hash','max_age_ms'
+    ])
+  ) THEN RAISE EXCEPTION 'invalid nonce reservation shape' USING ERRCODE='PWN01'; END IF;
+  RETURN QUERY INSERT INTO reward_wallet_nonce_leases (
+    lease_id,source,owner_id,owner_revision,command_id,account_id,persona_id,wallet_assignment_id,
+    chain_id,sender_address,request_hash,nonce,witness_id,observed_at_ms,
+    confirmed_block,confirmed_block_hash,pending_base_block,pending_base_hash,
+    confirmed_nonce,pending_nonce,freshness_policy_hash,max_age_ms
+  ) VALUES (
+    p->>'lease_id','song_funding_v2',p->>'owner_id',1,p->>'command_id',p->>'account_id',
+    p->>'persona_id',p->>'wallet_assignment_id',(p->>'chain_id')::BIGINT,p->>'sender_address',
+    p->>'request_hash',(p->>'nonce')::BIGINT,p->>'witness_id',(p->>'observed_at_ms')::BIGINT,
+    (p->>'confirmed_block')::BIGINT,p->>'confirmed_block_hash',
+    (p->>'pending_base_block')::BIGINT,p->>'pending_base_hash',
+    (p->>'confirmed_nonce')::BIGINT,(p->>'pending_nonce')::BIGINT,
+    p->>'freshness_policy_hash',(p->>'max_age_ms')::BIGINT
+  ) RETURNING *;
+END $$;
+
 CREATE FUNCTION resolve_comment_navigation_v1(p_viewer text, p_comment text) RETURNS jsonb
     LANGUAGE sql STABLE
     AS $$
@@ -28504,6 +29336,36 @@ CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_inp
       AND entry->'policy'->>'qualification_policy_version_id' = version_input)
     FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
 $$;
+
+CREATE FUNCTION reward_wallet_nonce_context_v2(p_chain bigint, p_sender text, p_own_winner text) RETURNS TABLE(highest_nonce bigint, blocked_reason text)
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT (SELECT max(nonce) FROM reward_wallet_nonce_leases WHERE chain_id=p_chain AND sender_address=p_sender),
+    CASE WHEN EXISTS(SELECT 1 FROM song_reward_leg_funding_effects WHERE chain_id=p_chain AND sender_address=p_sender) THEN 'unknown_v1_funding'
+      WHEN EXISTS(SELECT 1 FROM wallet_sponsored_sends WHERE chain_id=p_chain AND sender_address=p_sender)
+        OR EXISTS(SELECT 1 FROM reward_winner_sends WHERE chain_id=p_chain AND sender_address=p_sender AND send_id IS DISTINCT FROM p_own_winner AND status IN ('retryable','pending')) THEN 'other_instruction'
+      WHEN EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND
+        CASE WHEN l.source='song_funding_v2' THEN NOT EXISTS(
+          SELECT 1 FROM song_megapot_contributions_v2 c JOIN reward_incoming_receipts_v2 r USING(contribution_id)
+          WHERE c.nonce_lease_id=l.lease_id AND c.contribution_id=l.owner_id AND c.account_id=l.account_id
+            -- Incoming evidence is uint256; the owned lease nonce remains BIGINT.
+            AND (c.state->>'nonceFinalized')::BOOLEAN AND (r.evidence->>'observedConfirmedNonce')::NUMERIC>l.nonce::NUMERIC)
+        ELSE NOT EXISTS(SELECT 1 FROM reward_winner_send_outcomes o WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt AND o.observed_confirmed_nonce>l.nonce) END) THEN 'outstanding_nonce'
+      ELSE NULL END::TEXT
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reward_wallet_nonce_context_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_chain bigint, p_sender text, p_own_winner text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION run_hns_lifecycle_readiness_cutover_probe_v1(input_executor_id text, input_attempt_id text, input_service_version text, input_expected_bundle_sha256 text, input_measured_bundle_sha256 text, input_process_started_at timestamp with time zone) RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -29519,6 +30381,80 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='transition_guest_spoken_answer_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_transition jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION update_song_contribution_command_v2(i jsonb, b jsonb, s jsonb, r jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE c song_megapot_contributions_v2; plan JSONB; purpose TEXT; policy JSONB;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=i->>'contributionId' AND account_id=i->>'accountId' AND community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
+  PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
+  -- No accepted producer currently proves live, unrevoked recovery attestation
+  -- AND fresh nonce evidence under the original fences. Snapshot/lease facts
+  -- are insufficient. Immutable command replay never reaches this transition.
+  IF r->>'object'='contribution_cancellation_command_receipt'
+    OR (r->>'object'='contribution_submission_claim_receipt' AND r->>'purpose'='nonce_cancellation') THEN
+    RAISE EXCEPTION 'current cancellation recovery evidence unavailable' USING ERRCODE='PCV12';
+  END IF;
+  PERFORM require_reward_run_authority_v1();
+  IF (SELECT paused FROM reward_operations_control WHERE singleton FOR SHARE) IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'paused' USING ERRCODE='PR001'; END IF;
+  IF project_song_contribution_state_v2(c.state) IS DISTINCT FROM b OR (s->>'revision')::BIGINT<>(b->>'revision')::BIGINT+1
+    OR s->'owner' IS DISTINCT FROM b->'owner' OR s->'receipt' IS DISTINCT FROM b->'receipt'
+    OR s->>'effectiveDeadline' IS DISTINCT FROM b->>'effectiveDeadline' OR s->'nonceFinalized' IS DISTINCT FROM b->'nonceFinalized'
+    OR (b->>'nonceFinalized')::BOOLEAN THEN RAISE EXCEPTION 'lifecycle changed' USING ERRCODE='PCV06'; END IF;
+  IF r->>'object'='contribution_submission_claim_receipt' THEN
+    purpose:=r->>'purpose';
+    IF (r->>'valid_until')::TIMESTAMPTZ<=clock_timestamp() THEN RAISE EXCEPTION 'instruction expired' USING ERRCODE='PCV09'; END IF;
+    IF purpose='funding_transfer' THEN
+      IF b->'fundingGrant'<>'null'::JSONB OR b->'cancellationGrant'<>'null'::JSONB OR s->'fundingGrant' IS DISTINCT FROM r
+        OR s->>'fundingState'<>'submission_claimed' OR s->'cancellationGrant' IS DISTINCT FROM b->'cancellationGrant'
+        OR r->>'instruction_hash' IS DISTINCT FROM b->'receipt'->'instruction'->>'instruction_hash'
+        OR r->>'valid_until' IS DISTINCT FROM b->'receipt'->'instruction'->>'expires_at'
+        OR (b->>'effectiveDeadline')::TIMESTAMPTZ<=clock_timestamp() THEN RAISE EXCEPTION 'funding purpose consumed or expired' USING ERRCODE='PCV09'; END IF;
+    ELSIF purpose='nonce_cancellation' THEN
+      plan:=b->'cancellationHead';
+      IF b->'cancellationGrant'<>'null'::JSONB OR plan='null'::JSONB OR s->'cancellationGrant' IS DISTINCT FROM r
+        OR s->>'fundingState' IS DISTINCT FROM b->>'fundingState' OR s->'fundingGrant' IS DISTINCT FROM b->'fundingGrant'
+        OR r->>'instruction_hash' IS DISTINCT FROM plan->>'instruction_hash'
+        OR r->>'valid_until' IS DISTINCT FROM plan->>'dispatch_expires_at'
+        OR r->>'cancellation_preparation_id' IS DISTINCT FROM plan->>'preparation_id'
+        OR r->'cancellation_preparation_revision' IS DISTINCT FROM plan->'preparation_revision' THEN RAISE EXCEPTION 'cancellation purpose consumed or stale' USING ERRCODE='PCV09'; END IF;
+    ELSE RAISE EXCEPTION 'invalid purpose' USING ERRCODE='PCV02'; END IF;
+    IF s->'cancellationHead' IS DISTINCT FROM b->'cancellationHead' OR s->'preparationsUsed' IS DISTINCT FROM b->'preparationsUsed' THEN RAISE EXCEPTION 'claim cannot reprepare' USING ERRCODE='PCV02'; END IF;
+    INSERT INTO reward_funding_submission_claims_v2 VALUES(c.contribution_id,purpose,r->>'command_id',r->>'grant_id',r);
+  ELSIF r->>'object'='contribution_cancellation_command_receipt' THEN
+    SELECT recovery_policy INTO policy FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id AND accepted AND valid_until>clock_timestamp();
+    IF policy IS NULL OR b->'cancellationGrant'<>'null'::JSONB OR s->>'fundingState' IS DISTINCT FROM b->>'fundingState'
+      OR s->'fundingGrant' IS DISTINCT FROM b->'fundingGrant' OR s->'cancellationGrant' IS DISTINCT FROM b->'cancellationGrant'
+      OR s->'cancellationHead' IS DISTINCT FROM r OR (s->>'preparationsUsed')::BIGINT<>(b->>'preparationsUsed')::BIGINT+1
+      OR (s->>'preparationsUsed')::BIGINT>(policy->>'max_preparations_per_contribution')::BIGINT
+      OR r->>'previous_preparation_id' IS DISTINCT FROM b->'cancellationHead'->>'preparation_id'
+      OR r->>'previous_preparation_instruction_hash' IS DISTINCT FROM b->'cancellationHead'->>'instruction_hash'
+      OR r->>'sender' IS DISTINCT FROM b->'receipt'->'instruction'->>'from' OR r->>'recipient'<>r->>'sender'
+      OR r->>'nonce' IS DISTINCT FROM b->'receipt'->'instruction'->>'nonce' OR r->>'data'<>'0x' OR r->>'value_atomic'<>'0'
+      OR (r->>'dispatch_expires_at')::TIMESTAMPTZ<=clock_timestamp()
+      OR (b->'cancellationHead'->>'dispatch_expires_at')::TIMESTAMPTZ>clock_timestamp() THEN RAISE EXCEPTION 'cancellation preparation refused' USING ERRCODE='PCV09'; END IF;
+  ELSE RAISE EXCEPTION 'unsupported command transition' USING ERRCODE='PCV02'; END IF;
+  PERFORM charge_reward_funding_work_v2(c.account_id,c.pool_leg_id,c.profile_id,1);
+  UPDATE reward_funding_work_envelopes_v2 SET used=used+1 WHERE scope='instruction' AND scope_key=c.contribution_id AND allocated-used-reserved>=1;
+  IF NOT FOUND THEN RAISE EXCEPTION 'instruction work exhausted' USING ERRCODE='PCV04'; END IF;
+  UPDATE song_megapot_contributions_v2 SET state=s WHERE contribution_id=c.contribution_id;
+  PERFORM insert_song_contribution_command_v2(i,r);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='update_song_contribution_command_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, b jsonb, s jsonb, r jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -44957,6 +45893,18 @@ CREATE TABLE reward_chain_effects (
     CONSTRAINT reward_chain_effects_version_check CHECK ((version > 0))
 );
 
+CREATE TABLE reward_contribution_reservations_v2 (
+    reservation_id text NOT NULL,
+    contribution_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    amount_atomic reward_funding_atomic_v2 NOT NULL,
+    disposition text NOT NULL,
+    closure_proof_id text,
+    CONSTRAINT reward_contribution_reservations_v2_amount_atomic_check CHECK (((amount_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT reward_contribution_reservations_v2_check CHECK (((disposition = 'held'::text) = (closure_proof_id IS NULL))),
+    CONSTRAINT reward_contribution_reservations_v2_disposition_check CHECK ((disposition = ANY (ARRAY['held'::text, 'converted'::text, 'closed'::text])))
+);
+
 CREATE TABLE reward_eligibility_decisions (
     eligibility_decision_id text NOT NULL,
     leg_id text NOT NULL,
@@ -45011,6 +45959,109 @@ CREATE TABLE reward_erc20_transfer_receipt_evidence (
     CONSTRAINT reward_erc20_transfer_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT reward_erc20_transfer_receipt_evidence_transfer_log_index_check CHECK ((transfer_log_index >= 0)),
     CONSTRAINT reward_erc20_transfer_receipt_evidence_transfer_purpose_check CHECK ((transfer_purpose = ANY (ARRAY['reward_payout'::text, 'reward_refund'::text, 'sponsor_withdrawal'::text])))
+);
+
+CREATE TABLE reward_funding_account_counters_v2 (
+    account_id text NOT NULL,
+    scope_leg text NOT NULL,
+    active bigint NOT NULL,
+    admitted bigint NOT NULL,
+    custody_liabilities bigint NOT NULL,
+    CONSTRAINT reward_funding_account_counters_v2_active_check CHECK ((active >= 0)),
+    CONSTRAINT reward_funding_account_counters_v2_admitted_check CHECK ((admitted >= 0)),
+    CONSTRAINT reward_funding_account_counters_v2_custody_liabilities_check CHECK ((custody_liabilities >= 0))
+);
+
+CREATE TABLE reward_funding_leg_snapshots_v2 (
+    snapshot_id text NOT NULL,
+    slot_id text NOT NULL,
+    profile_id text NOT NULL,
+    witness_id text NOT NULL,
+    context_hash text NOT NULL,
+    context jsonb NOT NULL,
+    budget jsonb NOT NULL,
+    costs_reconciled boolean NOT NULL,
+    refusal text,
+    recovery_authority jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_funding_leg_snapshots_v2_budget_check CHECK ((jsonb_typeof(budget) = 'object'::text)),
+    CONSTRAINT reward_funding_leg_snapshots_v2_context_check CHECK ((jsonb_typeof(context) = 'object'::text)),
+    CONSTRAINT reward_funding_leg_snapshots_v2_context_hash_check CHECK ((context_hash ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT reward_funding_leg_snapshots_v2_recovery_authority_check CHECK ((jsonb_typeof(recovery_authority) = 'object'::text))
+);
+
+CREATE TABLE reward_funding_profiles_v2 (
+    profile_id text NOT NULL,
+    profile_hash text NOT NULL,
+    accepted boolean NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    policy jsonb NOT NULL,
+    capacity_profile jsonb NOT NULL,
+    nonce_policy jsonb NOT NULL,
+    recovery_policy jsonb,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_funding_profiles_v2_capacity_profile_check CHECK ((jsonb_typeof(capacity_profile) = 'object'::text)),
+    CONSTRAINT reward_funding_profiles_v2_nonce_policy_check CHECK ((jsonb_typeof(nonce_policy) = 'object'::text)),
+    CONSTRAINT reward_funding_profiles_v2_nonce_policy_check1 CHECK (((nonce_policy ?& ARRAY['hash'::text, 'maxAgeMs'::text]) AND ((nonce_policy ->> 'hash'::text) ~ '^[a-f0-9]{64}$'::text) AND (((nonce_policy ->> 'maxAgeMs'::text))::bigint > 0))),
+    CONSTRAINT reward_funding_profiles_v2_policy_check CHECK ((jsonb_typeof(policy) = 'object'::text)),
+    CONSTRAINT reward_funding_profiles_v2_policy_check1 CHECK ((policy ?& ARRAY['maxActiveAccount'::text, 'maxActiveAccountLeg'::text, 'maxLegLiabilities'::text, 'maxAdmittedLeg'::text, 'maxAdmittedAccountLeg'::text, 'workPerInstruction'::text, 'economicsPolicyHash'::text, 'gasPolicyHash'::text, 'custodyPolicyHash'::text])),
+    CONSTRAINT reward_funding_profiles_v2_policy_check2 CHECK (((((policy ->> 'maxActiveAccount'::text))::bigint > 0) AND (((policy ->> 'maxActiveAccountLeg'::text))::bigint > 0) AND (((policy ->> 'maxLegLiabilities'::text))::bigint > 0) AND (((policy ->> 'maxAdmittedLeg'::text))::bigint > 0) AND (((policy ->> 'maxAdmittedAccountLeg'::text))::bigint > 0) AND (((policy ->> 'workPerInstruction'::text))::bigint > 0))),
+    CONSTRAINT reward_funding_profiles_v2_profile_hash_check CHECK ((profile_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
+CREATE TABLE reward_funding_scan_checkpoints_v2 (
+    checkpoint_id text NOT NULL,
+    contribution_id text NOT NULL,
+    previous_checkpoint_id text,
+    from_block bigint NOT NULL,
+    through_block bigint NOT NULL,
+    block_hash text NOT NULL,
+    block_time timestamp with time zone NOT NULL,
+    accepted_finality_at timestamp with time zone NOT NULL,
+    evidence jsonb NOT NULL,
+    CONSTRAINT reward_funding_scan_checkpoints_v2_block_hash_check CHECK ((block_hash ~ '^0x[a-f0-9]{64}$'::text)),
+    CONSTRAINT reward_funding_scan_checkpoints_v2_check CHECK ((through_block >= from_block)),
+    CONSTRAINT reward_funding_scan_checkpoints_v2_from_block_check CHECK ((from_block >= 0))
+);
+
+CREATE TABLE reward_funding_schedule_witnesses_v2 (
+    witness_id text NOT NULL,
+    profile_id text NOT NULL,
+    witness_hash text NOT NULL,
+    schedule jsonb NOT NULL,
+    nonce_witness jsonb NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_funding_schedule_witnesses_v2_nonce_witness_check CHECK ((jsonb_typeof(nonce_witness) = 'object'::text)),
+    CONSTRAINT reward_funding_schedule_witnesses_v2_schedule_check CHECK ((jsonb_typeof(schedule) = 'object'::text)),
+    CONSTRAINT reward_funding_schedule_witnesses_v2_witness_hash_check CHECK ((witness_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
+CREATE TABLE reward_funding_submission_claims_v2 (
+    contribution_id text NOT NULL,
+    purpose text NOT NULL,
+    command_id text NOT NULL,
+    grant_id text NOT NULL,
+    receipt jsonb NOT NULL,
+    CONSTRAINT reward_funding_submission_claims_v2_check CHECK ((((receipt ->> 'contribution_id'::text) = contribution_id) AND ((receipt ->> 'purpose'::text) = purpose) AND ((receipt ->> 'command_id'::text) = command_id) AND ((receipt ->> 'grant_id'::text) = grant_id))),
+    CONSTRAINT reward_funding_submission_claims_v2_purpose_check CHECK ((purpose = ANY (ARRAY['funding_transfer'::text, 'nonce_cancellation'::text])))
+);
+
+CREATE TABLE reward_funding_work_envelopes_v2 (
+    work_id text NOT NULL,
+    scope text NOT NULL,
+    scope_key text NOT NULL,
+    profile_id text NOT NULL,
+    contribution_id text,
+    allocated bigint NOT NULL,
+    used bigint NOT NULL,
+    reserved bigint NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    payload jsonb,
+    CONSTRAINT reward_funding_work_envelopes_v2_allocated_check CHECK ((allocated > 0)),
+    CONSTRAINT reward_funding_work_envelopes_v2_check CHECK (((used >= 0) AND (used <= allocated))),
+    CONSTRAINT reward_funding_work_envelopes_v2_check1 CHECK (((reserved >= 0) AND ((used + reserved) <= allocated))),
+    CONSTRAINT reward_funding_work_envelopes_v2_scope_check CHECK ((scope = ANY (ARRAY['account'::text, 'leg'::text, 'global'::text, 'instruction'::text, 'reconciliation'::text])))
 );
 
 CREATE TABLE reward_gas_topup_daily_budgets (
@@ -45073,6 +46124,39 @@ CREATE TABLE reward_gas_topups (
     CONSTRAINT reward_gas_topups_status_check CHECK ((status = ANY (ARRAY['requested'::text, 'broadcast'::text, 'confirmed'::text, 'released'::text]))),
     CONSTRAINT reward_gas_topups_target_balance_wei_check CHECK ((target_balance_wei > (0)::numeric)),
     CONSTRAINT reward_gas_topups_topup_id_check CHECK (((btrim(topup_id) <> ''::text) AND (topup_id = btrim(topup_id)) AND (octet_length(topup_id) <= 128)))
+);
+
+CREATE TABLE reward_incoming_receipts_v2 (
+    receipt_id text NOT NULL,
+    contribution_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    transaction_hash text NOT NULL,
+    transfer_log_index bigint NOT NULL,
+    sender_address text NOT NULL,
+    sender_nonce bigint NOT NULL,
+    amount_atomic reward_funding_atomic_v2 NOT NULL,
+    category text NOT NULL,
+    evidence jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_incoming_receipts_v2_amount_atomic_check CHECK (((amount_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT reward_incoming_receipts_v2_category_check CHECK ((category = ANY (ARRAY['pool_principal'::text, 'late_principal'::text, 'unattributed_principal'::text]))),
+    CONSTRAINT reward_incoming_receipts_v2_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_incoming_receipts_v2_sender_address_check CHECK ((sender_address ~ '^0x[a-f0-9]{40}$'::text)),
+    CONSTRAINT reward_incoming_receipts_v2_sender_nonce_check CHECK ((sender_nonce >= 0)),
+    CONSTRAINT reward_incoming_receipts_v2_transaction_hash_check CHECK ((transaction_hash ~ '^0x[a-f0-9]{64}$'::text)),
+    CONSTRAINT reward_incoming_receipts_v2_transfer_log_index_check CHECK ((transfer_log_index >= 0))
+);
+
+CREATE TABLE reward_late_principal_liabilities_v2 (
+    receipt_id text NOT NULL,
+    contribution_id text NOT NULL,
+    amount_atomic reward_funding_atomic_v2 NOT NULL,
+    original_sender text NOT NULL,
+    paid_atomic reward_funding_atomic_v2 DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_late_principal_liabilities_v2_amount_atomic_check CHECK (((amount_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT reward_late_principal_liabilities_v2_original_sender_check CHECK ((original_sender ~ '^0x[a-f0-9]{40}$'::text)),
+    CONSTRAINT reward_late_principal_liabilities_v2_paid_atomic_check CHECK (((paid_atomic)::numeric = (0)::numeric))
 );
 
 CREATE TABLE reward_ledger_credits (
@@ -45200,6 +46284,27 @@ CREATE TABLE reward_payout_effects (
     CONSTRAINT reward_payout_effects_solvency_observation_id_check CHECK ((btrim(solvency_observation_id) <> ''::text))
 );
 
+CREATE TABLE reward_pool_cohort_members_v2 (
+    seal_id text NOT NULL,
+    contribution_id text NOT NULL,
+    receipt_id text NOT NULL,
+    amount_atomic reward_funding_atomic_v2 NOT NULL,
+    CONSTRAINT reward_pool_cohort_members_v2_amount_atomic_check CHECK (((amount_atomic)::numeric > (0)::numeric))
+);
+
+CREATE TABLE reward_pool_cohort_seals_v2 (
+    seal_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    source_hash text NOT NULL,
+    pool_principal_atomic reward_funding_atomic_v2 NOT NULL,
+    scan_proofs jsonb NOT NULL,
+    financial_ready boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT reward_pool_cohort_seals_v2_financial_ready_check CHECK ((NOT financial_ready)),
+    CONSTRAINT reward_pool_cohort_seals_v2_scan_proofs_check CHECK ((jsonb_typeof(scan_proofs) = 'array'::text)),
+    CONSTRAINT reward_pool_cohort_seals_v2_source_hash_check CHECK ((source_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
 CREATE TABLE reward_refund_effects (
     refund_effect_id text NOT NULL,
     attestation_id text NOT NULL,
@@ -45239,6 +46344,23 @@ CREATE TABLE reward_signer_nonces (
     CONSTRAINT reward_signer_nonces_observed_block_number_check CHECK ((observed_block_number >= 0)),
     CONSTRAINT reward_signer_nonces_observed_pending_nonce_check CHECK ((observed_pending_nonce >= (0)::numeric)),
     CONSTRAINT reward_signer_nonces_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
+CREATE TABLE reward_song_slots_v2 (
+    slot_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    generation bigint NOT NULL,
+    target jsonb,
+    terms jsonb,
+    reward_policy_ready boolean NOT NULL,
+    status text NOT NULL,
+    admission_closed_at timestamp with time zone,
+    CONSTRAINT reward_song_slots_v2_check CHECK (((target IS NULL) = (terms IS NULL))),
+    CONSTRAINT reward_song_slots_v2_check1 CHECK (((status = 'open'::text) = (admission_closed_at IS NULL))),
+    CONSTRAINT reward_song_slots_v2_check2 CHECK (((target IS NULL) OR (((target ->> 'kind'::text) = 'committed'::text) AND ((target ->> 'community_id'::text) = community_id) AND ((target ->> 'post_id'::text) = post_id)))),
+    CONSTRAINT reward_song_slots_v2_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT reward_song_slots_v2_status_check CHECK ((status = ANY (ARRAY['open'::text, 'closing'::text, 'sealed'::text, 'incident'::text])))
 );
 
 CREATE TABLE reward_subject_consumptions (
@@ -45359,6 +46481,47 @@ CREATE TABLE song_dance_presentations (
     CONSTRAINT song_dance_presentation_time_order CHECK ((updated_at >= created_at)),
     CONSTRAINT song_dance_presentations_audio_revision_check CHECK (((audio_revision >= 1) AND (audio_revision <= '9007199254740991'::bigint))),
     CONSTRAINT song_dance_presentations_presentation_revision_check CHECK (((presentation_revision >= 1) AND (presentation_revision <= '9007199254740991'::bigint)))
+);
+
+CREATE TABLE song_megapot_contribution_commands_v2 (
+    command_id text NOT NULL,
+    account_id text NOT NULL,
+    operation text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    contribution_id text NOT NULL,
+    receipt jsonb NOT NULL,
+    preparation_revision bigint,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT song_megapot_contribution_commands_v2_check CHECK ((((receipt ->> 'command_id'::text) = command_id) AND ((receipt ->> 'request_hash'::text) = request_hash) AND ((receipt ->> 'contribution_id'::text) = contribution_id))),
+    CONSTRAINT song_megapot_contribution_commands_v2_operation_check CHECK ((operation = ANY (ARRAY['CreateSongMegapotContributionV2'::text, 'ClaimSongMegapotContributionSubmissionV2'::text, 'ObserveSongMegapotContributionV2'::text, 'RecoverSongMegapotContributionV2'::text, 'PrepareSongMegapotContributionCancellationV2'::text]))),
+    CONSTRAINT song_megapot_contribution_commands_v2_receipt_check CHECK ((jsonb_typeof(receipt) = 'object'::text)),
+    CONSTRAINT song_megapot_contribution_commands_v2_request_hash_check CHECK ((request_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
+CREATE TABLE song_megapot_contributions_v2 (
+    contribution_id text NOT NULL,
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    funding_effect_id text NOT NULL,
+    nonce_lease_id text NOT NULL,
+    profile_id text NOT NULL,
+    snapshot_id text NOT NULL,
+    state jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    CONSTRAINT song_megapot_contributions_v2_check CHECK ((((state -> 'owner'::text) ->> 'account_id'::text) = account_id)),
+    CONSTRAINT song_megapot_contributions_v2_check1 CHECK ((((state -> 'receipt'::text) ->> 'contribution_id'::text) = contribution_id)),
+    CONSTRAINT song_megapot_contributions_v2_check2 CHECK ((((state -> 'receipt'::text) ->> 'funding_effect_id'::text) = funding_effect_id)),
+    CONSTRAINT song_megapot_contributions_v2_check3 CHECK (((((state -> 'receipt'::text) -> 'target'::text) ->> 'community_id'::text) = community_id)),
+    CONSTRAINT song_megapot_contributions_v2_check4 CHECK (((((state -> 'receipt'::text) -> 'target'::text) ->> 'post_id'::text) = post_id)),
+    CONSTRAINT song_megapot_contributions_v2_check5 CHECK (((((state -> 'receipt'::text) -> 'target'::text) ->> 'pool_leg_id'::text) = pool_leg_id)),
+    CONSTRAINT song_megapot_contributions_v2_state_check CHECK ((jsonb_typeof(state) = 'object'::text)),
+    CONSTRAINT song_megapot_contributions_v2_state_check1 CHECK ((((state ->> 'revision'::text))::bigint >= 0)),
+    CONSTRAINT song_megapot_contributions_v2_state_check2 CHECK (((state ->> 'fundingState'::text) = ANY (ARRAY['instruction_issued'::text, 'submission_claimed'::text, 'broadcast_unknown'::text, 'confirming'::text, 'expired_reconciling'::text, 'pool_credited'::text, 'late_principal_owed'::text, 'nonce_closed_no_principal'::text])))
 );
 
 CREATE TABLE song_owner_policies (
@@ -49851,6 +51014,12 @@ ALTER TABLE ONLY reward_chain_effect_transitions
 ALTER TABLE ONLY reward_chain_effects
     ADD CONSTRAINT reward_chain_effects_pkey PRIMARY KEY (effect_id);
 
+ALTER TABLE ONLY reward_contribution_reservations_v2
+    ADD CONSTRAINT reward_contribution_reservations_v2_contribution_id_key UNIQUE (contribution_id);
+
+ALTER TABLE ONLY reward_contribution_reservations_v2
+    ADD CONSTRAINT reward_contribution_reservations_v2_pkey PRIMARY KEY (reservation_id);
+
 ALTER TABLE ONLY reward_eligibility_decisions
     ADD CONSTRAINT reward_eligibility_decisions_pkey PRIMARY KEY (eligibility_decision_id);
 
@@ -49859,6 +51028,48 @@ ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
 
 ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
     ADD CONSTRAINT reward_erc20_transfer_receipt_evidence_pkey PRIMARY KEY (effect_id);
+
+ALTER TABLE ONLY reward_funding_account_counters_v2
+    ADD CONSTRAINT reward_funding_account_counters_v2_pkey PRIMARY KEY (account_id, scope_leg);
+
+ALTER TABLE ONLY reward_funding_leg_snapshots_v2
+    ADD CONSTRAINT reward_funding_leg_snapshots_v2_context_hash_key UNIQUE (context_hash);
+
+ALTER TABLE ONLY reward_funding_leg_snapshots_v2
+    ADD CONSTRAINT reward_funding_leg_snapshots_v2_pkey PRIMARY KEY (snapshot_id);
+
+ALTER TABLE ONLY reward_funding_profiles_v2
+    ADD CONSTRAINT reward_funding_profiles_v2_pkey PRIMARY KEY (profile_id);
+
+ALTER TABLE ONLY reward_funding_profiles_v2
+    ADD CONSTRAINT reward_funding_profiles_v2_profile_hash_key UNIQUE (profile_hash);
+
+ALTER TABLE ONLY reward_funding_scan_checkpoints_v2
+    ADD CONSTRAINT reward_funding_scan_checkpoints__contribution_id_from_block_key UNIQUE (contribution_id, from_block);
+
+ALTER TABLE ONLY reward_funding_scan_checkpoints_v2
+    ADD CONSTRAINT reward_funding_scan_checkpoints_v2_pkey PRIMARY KEY (checkpoint_id);
+
+ALTER TABLE ONLY reward_funding_scan_checkpoints_v2
+    ADD CONSTRAINT reward_funding_scan_checkpoints_v2_previous_checkpoint_id_key UNIQUE (previous_checkpoint_id);
+
+ALTER TABLE ONLY reward_funding_schedule_witnesses_v2
+    ADD CONSTRAINT reward_funding_schedule_witnesses_v2_pkey PRIMARY KEY (witness_id);
+
+ALTER TABLE ONLY reward_funding_submission_claims_v2
+    ADD CONSTRAINT reward_funding_submission_claims_v2_command_id_key UNIQUE (command_id);
+
+ALTER TABLE ONLY reward_funding_submission_claims_v2
+    ADD CONSTRAINT reward_funding_submission_claims_v2_grant_id_key UNIQUE (grant_id);
+
+ALTER TABLE ONLY reward_funding_submission_claims_v2
+    ADD CONSTRAINT reward_funding_submission_claims_v2_pkey PRIMARY KEY (contribution_id, purpose);
+
+ALTER TABLE ONLY reward_funding_work_envelopes_v2
+    ADD CONSTRAINT reward_funding_work_envelopes_v2_pkey PRIMARY KEY (work_id);
+
+ALTER TABLE ONLY reward_funding_work_envelopes_v2
+    ADD CONSTRAINT reward_funding_work_envelopes_v2_scope_scope_key_key UNIQUE (scope, scope_key);
 
 ALTER TABLE ONLY reward_gas_topup_daily_budgets
     ADD CONSTRAINT reward_gas_topup_daily_budgets_pkey PRIMARY KEY (chain_id, budget_day);
@@ -49874,6 +51085,21 @@ ALTER TABLE ONLY reward_gas_topups
 
 ALTER TABLE ONLY reward_gas_topups
     ADD CONSTRAINT reward_gas_topups_pkey PRIMARY KEY (topup_id);
+
+ALTER TABLE ONLY reward_incoming_receipts_v2
+    ADD CONSTRAINT reward_incoming_receipts_v2_chain_id_transaction_hash_trans_key UNIQUE (chain_id, transaction_hash, transfer_log_index);
+
+ALTER TABLE ONLY reward_incoming_receipts_v2
+    ADD CONSTRAINT reward_incoming_receipts_v2_contribution_id_key UNIQUE (contribution_id);
+
+ALTER TABLE ONLY reward_incoming_receipts_v2
+    ADD CONSTRAINT reward_incoming_receipts_v2_pkey PRIMARY KEY (receipt_id);
+
+ALTER TABLE ONLY reward_late_principal_liabilities_v2
+    ADD CONSTRAINT reward_late_principal_liabilities_v2_contribution_id_key UNIQUE (contribution_id);
+
+ALTER TABLE ONLY reward_late_principal_liabilities_v2
+    ADD CONSTRAINT reward_late_principal_liabilities_v2_pkey PRIMARY KEY (receipt_id);
 
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_pkey PRIMARY KEY (credit_id);
@@ -49902,6 +51128,21 @@ ALTER TABLE ONLY reward_payout_effects
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_pkey PRIMARY KEY (payout_effect_id);
 
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_contribution_id_key UNIQUE (contribution_id);
+
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_pkey PRIMARY KEY (seal_id, contribution_id);
+
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_receipt_id_key UNIQUE (receipt_id);
+
+ALTER TABLE ONLY reward_pool_cohort_seals_v2
+    ADD CONSTRAINT reward_pool_cohort_seals_v2_pkey PRIMARY KEY (seal_id);
+
+ALTER TABLE ONLY reward_pool_cohort_seals_v2
+    ADD CONSTRAINT reward_pool_cohort_seals_v2_pool_leg_id_key UNIQUE (pool_leg_id);
+
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_leg_id_funding_effect_id_key UNIQUE (leg_id, funding_effect_id);
 
@@ -49910,6 +51151,12 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_signer_nonces
     ADD CONSTRAINT reward_signer_nonces_pkey PRIMARY KEY (chain_id, signer_address);
+
+ALTER TABLE ONLY reward_song_slots_v2
+    ADD CONSTRAINT reward_song_slots_v2_community_id_post_id_key UNIQUE (community_id, post_id);
+
+ALTER TABLE ONLY reward_song_slots_v2
+    ADD CONSTRAINT reward_song_slots_v2_pkey PRIMARY KEY (slot_id);
 
 ALTER TABLE ONLY wallet_sponsored_sends
     ADD CONSTRAINT reward_sponsored_sends_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
@@ -49931,6 +51178,21 @@ ALTER TABLE ONLY reward_subject_consumptions
 
 ALTER TABLE ONLY reward_uniqueness_authorities
     ADD CONSTRAINT reward_uniqueness_authorities_pkey PRIMARY KEY (campaign_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_chain_id_sender_address_nonce_key UNIQUE (chain_id, sender_address, nonce);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_command_id_key UNIQUE (command_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_pkey PRIMARY KEY (lease_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_source_owner_id_owner_revision_key UNIQUE (source, owner_id, owner_revision);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_witness_id_key UNIQUE (witness_id);
 
 ALTER TABLE ONLY reward_winner_send_attempts
     ADD CONSTRAINT reward_winner_send_attempts_account_id_idempotency_key_key UNIQUE (account_id, idempotency_key);
@@ -49961,6 +51223,24 @@ ALTER TABLE ONLY song_derivative_video_policy_observations
 
 ALTER TABLE ONLY song_derivative_video_policy_observations
     ADD CONSTRAINT song_derivative_video_policy_observations_pkey PRIMARY KEY (operation_id, observed_at_transition, creation_revision);
+
+ALTER TABLE ONLY song_megapot_contribution_commands_v2
+    ADD CONSTRAINT song_megapot_contribution_com_account_id_operation_idempote_key UNIQUE (account_id, operation, idempotency_key);
+
+ALTER TABLE ONLY song_megapot_contribution_commands_v2
+    ADD CONSTRAINT song_megapot_contribution_com_contribution_id_preparation_r_key UNIQUE (contribution_id, preparation_revision);
+
+ALTER TABLE ONLY song_megapot_contribution_commands_v2
+    ADD CONSTRAINT song_megapot_contribution_commands_v2_pkey PRIMARY KEY (command_id);
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_funding_effect_id_key UNIQUE (funding_effect_id);
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_nonce_lease_id_key UNIQUE (nonce_lease_id);
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_pkey PRIMARY KEY (contribution_id);
 
 ALTER TABLE ONLY song_owner_policies
     ADD CONSTRAINT song_owner_policies_community_id_post_id_audio_revision_key UNIQUE (community_id, post_id, audio_revision);
@@ -50975,6 +52255,8 @@ CREATE UNIQUE INDEX reward_winner_sends_credit_live_uidx ON reward_winner_sends 
 
 CREATE UNIQUE INDEX reward_winner_sends_open_sender_uidx ON reward_winner_sends USING btree (chain_id, sender_address) WHERE (status = ANY (ARRAY['retryable'::text, 'pending'::text]));
 
+CREATE INDEX song_megapot_contributions_v2_account ON song_megapot_contributions_v2 USING btree (account_id, pool_leg_id);
+
 CREATE UNIQUE INDEX song_reward_funding_transaction_log_uidx ON song_reward_leg_funding_effects USING btree (chain_id, transaction_hash, log_index) WHERE ((transaction_hash IS NOT NULL) AND (log_index IS NOT NULL));
 
 CREATE INDEX song_reward_offer_actions_resource_idx ON song_reward_offer_actions USING btree (offer_id, leg_id, created_at, action_id);
@@ -51162,6 +52444,14 @@ CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_session_i
 CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_sessions_v2 FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
 
 CREATE TRIGGER a01_learning_source_immutable_v1 BEFORE UPDATE ON study_spoken_answer_commands FOR EACH ROW EXECUTE FUNCTION preserve_learning_source_identity_v1();
+
+CREATE TRIGGER a_reward_wallet_attempt_lock_v2 BEFORE INSERT ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION lock_reward_winner_attempt_sender_v2();
+
+CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
+
+CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
+
+CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 
 CREATE TRIGGER aaa_song_reward_leg_qualification_terms BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION freeze_reward_leg_qualification_terms();
 
@@ -52321,9 +53611,43 @@ CREATE TRIGGER reward_chain_effects_gas_topup_signer BEFORE INSERT ON reward_cha
 
 CREATE TRIGGER reward_chain_effects_gas_topup_terminal_release AFTER UPDATE OF state ON reward_chain_effects FOR EACH ROW WHEN (((new.effect_kind = 'gas_topup'::text) AND (new.state = ANY (ARRAY['terminal_failed'::text, 'reclaimable_failed'::text])) AND (old.state IS DISTINCT FROM new.state))) EXECUTE FUNCTION release_reward_gas_topup_on_terminal_effect();
 
+CREATE TRIGGER reward_contribution_reservations_v2_no_delete BEFORE DELETE ON reward_contribution_reservations_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_contribution_reservations_v2_no_truncate BEFORE TRUNCATE ON reward_contribution_reservations_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
 CREATE TRIGGER reward_eligibility_decisions_append_only BEFORE DELETE OR UPDATE ON reward_eligibility_decisions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_erc20_transfer_receipt_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_erc20_transfer_receipt_evidence FOR EACH ROW EXECUTE FUNCTION guard_reward_erc20_transfer_receipt();
+
+CREATE TRIGGER reward_funding_account_counters_v2_no_delete BEFORE DELETE ON reward_funding_account_counters_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_account_counters_v2_no_truncate BEFORE TRUNCATE ON reward_funding_account_counters_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_leg_snapshots_v2_append_only BEFORE DELETE OR UPDATE ON reward_funding_leg_snapshots_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_leg_snapshots_v2_no_truncate BEFORE TRUNCATE ON reward_funding_leg_snapshots_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_profiles_v2_append_only BEFORE DELETE OR UPDATE ON reward_funding_profiles_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_profiles_v2_no_truncate BEFORE TRUNCATE ON reward_funding_profiles_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_scan_checkpoint_guard_v2 BEFORE INSERT ON reward_funding_scan_checkpoints_v2 FOR EACH ROW EXECUTE FUNCTION guard_reward_funding_scan_checkpoint_v2();
+
+CREATE TRIGGER reward_funding_scan_checkpoints_v2_append_only BEFORE DELETE OR UPDATE ON reward_funding_scan_checkpoints_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_scan_checkpoints_v2_no_truncate BEFORE TRUNCATE ON reward_funding_scan_checkpoints_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_schedule_witnesses_v2_append_only BEFORE DELETE OR UPDATE ON reward_funding_schedule_witnesses_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_schedule_witnesses_v2_no_truncate BEFORE TRUNCATE ON reward_funding_schedule_witnesses_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_submission_claims_v2_append_only BEFORE DELETE OR UPDATE ON reward_funding_submission_claims_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_submission_claims_v2_no_truncate BEFORE TRUNCATE ON reward_funding_submission_claims_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_work_envelopes_v2_no_delete BEFORE DELETE ON reward_funding_work_envelopes_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_funding_work_envelopes_v2_no_truncate BEFORE TRUNCATE ON reward_funding_work_envelopes_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
 
 CREATE TRIGGER reward_gas_topup_wallets_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_gas_topup_wallets FOR EACH ROW EXECUTE FUNCTION guard_reward_gas_topup_wallet();
 
@@ -52334,6 +53658,14 @@ CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_leg_fund
 CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
 
 CREATE TRIGGER reward_http_admission_guard BEFORE INSERT ON song_reward_offers FOR EACH ROW EXECUTE FUNCTION guard_reward_http_admission();
+
+CREATE TRIGGER reward_incoming_receipts_v2_append_only BEFORE DELETE OR UPDATE ON reward_incoming_receipts_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_incoming_receipts_v2_no_truncate BEFORE TRUNCATE ON reward_incoming_receipts_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_late_principal_liabilities_v2_append_only BEFORE DELETE OR UPDATE ON reward_late_principal_liabilities_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_late_principal_liabilities_v2_no_truncate BEFORE TRUNCATE ON reward_late_principal_liabilities_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
 
 CREATE CONSTRAINT TRIGGER reward_ledger_credit_source_pair AFTER INSERT ON reward_ledger_credits DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_ledger_credit_source();
 
@@ -52355,6 +53687,14 @@ CREATE TRIGGER reward_operations_run_lease_events_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
+CREATE TRIGGER reward_pool_cohort_members_v2_append_only BEFORE DELETE OR UPDATE ON reward_pool_cohort_members_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_pool_cohort_members_v2_no_truncate BEFORE TRUNCATE ON reward_pool_cohort_members_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_pool_cohort_seals_v2_append_only BEFORE DELETE OR UPDATE ON reward_pool_cohort_seals_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_pool_cohort_seals_v2_no_truncate BEFORE TRUNCATE ON reward_pool_cohort_seals_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
 CREATE TRIGGER reward_refund_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_refund_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_refund_effect();
 
 CREATE TRIGGER reward_run_lease_admission_guard BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_run_lease_admission();
@@ -52371,11 +53711,25 @@ CREATE TRIGGER reward_run_lease_signature_guard BEFORE UPDATE ON reward_chain_ef
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 
+CREATE TRIGGER reward_song_slot_guard_v2 BEFORE UPDATE ON reward_song_slots_v2 FOR EACH ROW EXECUTE FUNCTION guard_reward_song_slot_v2();
+
+CREATE TRIGGER reward_song_slots_v2_no_delete BEFORE DELETE ON reward_song_slots_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_song_slots_v2_no_truncate BEFORE TRUNCATE ON reward_song_slots_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
 CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
 
 CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE ON reward_uniqueness_authorities FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER reward_wallet_nonce_lease_guard BEFORE INSERT ON reward_wallet_nonce_leases FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_nonce_lease_v2();
+
+CREATE TRIGGER reward_wallet_nonce_leases_append_only BEFORE DELETE OR UPDATE ON reward_wallet_nonce_leases FOR EACH ROW EXECUTE FUNCTION reject_reward_wallet_nonce_history_change_v2();
+
+CREATE TRIGGER reward_wallet_nonce_leases_no_truncate BEFORE TRUNCATE ON reward_wallet_nonce_leases FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_wallet_nonce_history_change_v2();
+
+CREATE TRIGGER reward_winner_attempt_nonce_history_v2 AFTER INSERT ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION record_reward_winner_nonce_lease_v2();
 
 CREATE TRIGGER reward_winner_send_attempts_append_only BEFORE DELETE OR UPDATE ON reward_winner_send_attempts FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
@@ -52400,6 +53754,14 @@ CREATE TRIGGER reward_winner_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON re
 CREATE TRIGGER song_dance_presentations_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_dance_presentations FOR EACH ROW EXECUTE FUNCTION guard_song_dance_presentation();
 
 CREATE TRIGGER song_derivative_video_policy_observations_append_only BEFORE DELETE OR UPDATE ON song_derivative_video_policy_observations FOR EACH ROW EXECUTE FUNCTION guard_song_derivative_video_policy_observations_append_only();
+
+CREATE TRIGGER song_megapot_contribution_commands_v2_append_only BEFORE DELETE OR UPDATE ON song_megapot_contribution_commands_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER song_megapot_contribution_commands_v2_no_truncate BEFORE TRUNCATE ON song_megapot_contribution_commands_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER song_megapot_contributions_v2_no_delete BEFORE DELETE ON song_megapot_contributions_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER song_megapot_contributions_v2_no_truncate BEFORE TRUNCATE ON song_megapot_contributions_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
 
 CREATE TRIGGER song_owner_policy_head_change_guard BEFORE DELETE OR UPDATE ON song_owner_policies FOR EACH ROW EXECUTE FUNCTION validate_song_owner_policy_head_change();
 
@@ -55127,6 +56489,9 @@ ALTER TABLE ONLY reward_chain_effects
 ALTER TABLE ONLY reward_chain_effects
     ADD CONSTRAINT reward_chain_effects_replacement_of_effect_id_fkey FOREIGN KEY (replacement_of_effect_id) REFERENCES reward_chain_effects(effect_id);
 
+ALTER TABLE ONLY reward_contribution_reservations_v2
+    ADD CONSTRAINT reward_contribution_reservations_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
 ALTER TABLE ONLY reward_eligibility_decisions
     ADD CONSTRAINT reward_eligibility_decisions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -55148,6 +56513,36 @@ ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
 ALTER TABLE ONLY reward_erc20_transfer_receipt_evidence
     ADD CONSTRAINT reward_erc20_transfer_receipt_evidence_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
 
+ALTER TABLE ONLY reward_funding_leg_snapshots_v2
+    ADD CONSTRAINT reward_funding_leg_snapshots_v2_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES reward_funding_profiles_v2(profile_id);
+
+ALTER TABLE ONLY reward_funding_leg_snapshots_v2
+    ADD CONSTRAINT reward_funding_leg_snapshots_v2_slot_id_fkey FOREIGN KEY (slot_id) REFERENCES reward_song_slots_v2(slot_id);
+
+ALTER TABLE ONLY reward_funding_leg_snapshots_v2
+    ADD CONSTRAINT reward_funding_leg_snapshots_v2_witness_id_fkey FOREIGN KEY (witness_id) REFERENCES reward_funding_schedule_witnesses_v2(witness_id);
+
+ALTER TABLE ONLY reward_funding_scan_checkpoints_v2
+    ADD CONSTRAINT reward_funding_scan_checkpoints_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_funding_scan_checkpoints_v2
+    ADD CONSTRAINT reward_funding_scan_checkpoints_v2_previous_checkpoint_id_fkey FOREIGN KEY (previous_checkpoint_id) REFERENCES reward_funding_scan_checkpoints_v2(checkpoint_id);
+
+ALTER TABLE ONLY reward_funding_schedule_witnesses_v2
+    ADD CONSTRAINT reward_funding_schedule_witnesses_v2_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES reward_funding_profiles_v2(profile_id);
+
+ALTER TABLE ONLY reward_funding_submission_claims_v2
+    ADD CONSTRAINT reward_funding_submission_claims_v2_command_id_fkey FOREIGN KEY (command_id) REFERENCES song_megapot_contribution_commands_v2(command_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY reward_funding_submission_claims_v2
+    ADD CONSTRAINT reward_funding_submission_claims_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_funding_work_envelopes_v2
+    ADD CONSTRAINT reward_funding_work_envelopes_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY reward_funding_work_envelopes_v2
+    ADD CONSTRAINT reward_funding_work_envelopes_v2_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES reward_funding_profiles_v2(profile_id);
+
 ALTER TABLE ONLY reward_gas_topups
     ADD CONSTRAINT reward_gas_topups_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -55165,6 +56560,15 @@ ALTER TABLE ONLY reward_gas_topups
 
 ALTER TABLE ONLY reward_gas_topups
     ADD CONSTRAINT reward_gas_topups_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
+
+ALTER TABLE ONLY reward_incoming_receipts_v2
+    ADD CONSTRAINT reward_incoming_receipts_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_late_principal_liabilities_v2
+    ADD CONSTRAINT reward_late_principal_liabilities_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_late_principal_liabilities_v2
+    ADD CONSTRAINT reward_late_principal_liabilities_v2_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES reward_incoming_receipts_v2(receipt_id);
 
 ALTER TABLE ONLY reward_ledger_credits
     ADD CONSTRAINT reward_ledger_credits_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -55195,6 +56599,15 @@ ALTER TABLE ONLY reward_payout_effects
 
 ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
+
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES reward_incoming_receipts_v2(receipt_id);
+
+ALTER TABLE ONLY reward_pool_cohort_members_v2
+    ADD CONSTRAINT reward_pool_cohort_members_v2_seal_id_fkey FOREIGN KEY (seal_id) REFERENCES reward_pool_cohort_seals_v2(seal_id);
 
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
@@ -55231,6 +56644,18 @@ ALTER TABLE ONLY reward_subject_consumptions
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_receipt_fk FOREIGN KEY (evidence_receipt_id, subject_key_id, binding_event_id, binding_epoch, user_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_wallet_assignment_id_fkey FOREIGN KEY (wallet_assignment_id) REFERENCES persona_wallet_assignments(assignment_id);
+
+ALTER TABLE ONLY reward_wallet_nonce_leases
+    ADD CONSTRAINT reward_wallet_nonce_leases_winner_send_id_winner_attempt_fkey FOREIGN KEY (winner_send_id, winner_attempt) REFERENCES reward_winner_send_attempts(send_id, attempt);
 
 ALTER TABLE ONLY reward_winner_send_attempts
     ADD CONSTRAINT reward_winner_send_attempts_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
@@ -55279,6 +56704,18 @@ ALTER TABLE ONLY song_derivative_video_policy_observations
 
 ALTER TABLE ONLY song_derivative_video_policy_observations
     ADD CONSTRAINT song_derivative_video_policy_observations_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_megapot_contribution_commands_v2
+    ADD CONSTRAINT song_megapot_contribution_commands_v2_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_nonce_lease_id_fkey FOREIGN KEY (nonce_lease_id) REFERENCES reward_wallet_nonce_leases(lease_id);
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES reward_funding_profiles_v2(profile_id);
+
+ALTER TABLE ONLY song_megapot_contributions_v2
+    ADD CONSTRAINT song_megapot_contributions_v2_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES reward_funding_leg_snapshots_v2(snapshot_id);
 
 ALTER TABLE ONLY song_owner_policies
     ADD CONSTRAINT song_owner_policies_community_id_post_id_audio_revision_ow_fkey FOREIGN KEY (community_id, post_id, audio_revision, owner_account_id, current_policy_revision, current_policy_hash) REFERENCES song_owner_policy_revisions(community_id, post_id, audio_revision, owner_account_id, policy_revision, policy_hash);

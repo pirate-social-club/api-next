@@ -4,6 +4,31 @@ import { Context, Data, type Duration, Effect, Schedule } from "effect";
 
 export type TableKey = `postgres:${string}`;
 
+export const SONG_FUNDING_RECOVERY_WRITES = [
+  "postgres:reward_funding_work_envelopes_v2",
+  "postgres:reward_funding_schedule_witnesses_v2",
+  "postgres:reward_incoming_receipts_v2",
+  "postgres:song_megapot_contributions_v2",
+  "postgres:reward_contribution_reservations_v2",
+  "postgres:reward_funding_account_counters_v2",
+  "postgres:reward_late_principal_liabilities_v2",
+] as const satisfies readonly TableKey[];
+export const SONG_FUNDING_RECOVERY_READS = [
+  ...SONG_FUNDING_RECOVERY_WRITES,
+  "postgres:reward_funding_profiles_v2",
+  "postgres:reward_wallet_nonce_leases",
+  "postgres:megapot_deployment_attestations",
+  "postgres:reward_song_slots_v2",
+  "postgres:song_megapot_contribution_commands_v2",
+  "postgres:persona_wallet_assignments",
+  "postgres:reward_operations_control",
+  "postgres:reward_operations_control_events",
+  "postgres:reward_operations_run_lease",
+  "postgres:reward_pool_cohort_seals_v2",
+  "postgres:personas",
+  "postgres:persona_community_bindings",
+] as const satisfies readonly TableKey[];
+
 export interface JobRuntimeContext {
   readonly owner: string;
   readonly attemptId: string;

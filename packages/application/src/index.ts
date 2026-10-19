@@ -54,6 +54,11 @@ export * from "./rewards/reward-payout.ts";
 export * from "./rewards/reward-projections.ts";
 export * from "./rewards/reward-refund.ts";
 export * from "./rewards/reward-winner-send.ts";
+export {
+  digestFundingPreimageV2,
+  SongContributionFailure,
+  type SongFundingRecoveryWorkPolicy,
+} from "./rewards/song-megapot-contributions.ts";
 export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./song-owner-video-policy.ts";

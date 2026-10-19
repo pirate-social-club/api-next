@@ -7,6 +7,8 @@ SELECT pg_catalog.set_config(
   false
 );
 
+SET LOCAL session_replication_role = replica;
+
 TRUNCATE TABLE
   "account_age_verification_current",
   "account_aliases",
@@ -408,11 +410,21 @@ TRUNCATE TABLE
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
   "reward_chain_effects",
+  "reward_contribution_reservations_v2",
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
+  "reward_funding_account_counters_v2",
+  "reward_funding_leg_snapshots_v2",
+  "reward_funding_profiles_v2",
+  "reward_funding_scan_checkpoints_v2",
+  "reward_funding_schedule_witnesses_v2",
+  "reward_funding_submission_claims_v2",
+  "reward_funding_work_envelopes_v2",
   "reward_gas_topup_daily_budgets",
   "reward_gas_topup_wallets",
   "reward_gas_topups",
+  "reward_incoming_receipts_v2",
+  "reward_late_principal_liabilities_v2",
   "reward_ledger_credits",
   "reward_native_transfer_receipt_evidence",
   "reward_operations_control",
@@ -420,10 +432,14 @@ TRUNCATE TABLE
   "reward_operations_run_lease",
   "reward_operations_run_lease_events",
   "reward_payout_effects",
+  "reward_pool_cohort_members_v2",
+  "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
   "reward_signer_nonces",
+  "reward_song_slots_v2",
   "reward_subject_consumptions",
   "reward_uniqueness_authorities",
+  "reward_wallet_nonce_leases",
   "reward_winner_send_attempts",
   "reward_winner_send_outcomes",
   "reward_winner_send_transactions",
@@ -431,6 +447,8 @@ TRUNCATE TABLE
   "schema_migrations",
   "song_dance_presentations",
   "song_derivative_video_policy_observations",
+  "song_megapot_contribution_commands_v2",
+  "song_megapot_contributions_v2",
   "song_owner_policies",
   "song_owner_policy_revisions",
   "song_reward_bundle_claim_legs",
@@ -522,8 +540,6 @@ TRUNCATE TABLE
   "video_notification_cutovers_v1",
   "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
-
-SET LOCAL session_replication_role = replica;
 
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
