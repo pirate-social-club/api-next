@@ -313,7 +313,7 @@ const caseSelect = `
          moderation_case.case_revision, moderation_case.created_at,
          moderation_case.updated_at, submission.author_persona_id,
          submission.actor_user_id, submission.status AS submission_status,
-         submission.idempotency_key, submission.request_hash,
+         submission.idempotency_key, submission.request_hash, submission.publication_mode,
          submission.target_post_id, submission.target_parent_comment_id,
          submission.author_declared_rating, submission.resulting_content_rating,
          submission.matched_categories, submission.category_decisions,
@@ -341,6 +341,20 @@ const caseSelect = `
      AND comment.comment_id = moderation_case.target_resource_id
     LEFT JOIN text_moderation_evidence AS evidence
       ON evidence.evidence_ref = submission.evidence_ref`;
+
+const policyEvidenceMatchesMode = (row: Row): boolean => {
+  const fields = [
+    "policy_revision_id",
+    "policy_hash",
+    "platform_policy_revision_id",
+    "platform_policy_hash",
+    "community_policy_revision_id",
+    "community_policy_hash",
+  ];
+  return row.publication_mode === "author_declared"
+    ? fields.every((key) => row[key] === null) && row.evidence_ref === null
+    : row.publication_mode === "moderated" && fields.every((key) => stringValue(row, key) !== null);
+};
 
 const recordValue = (value: unknown): Readonly<Record<string, unknown>> | null =>
   Predicate.isObject(value) ? (value as Readonly<Record<string, unknown>>) : null;
@@ -506,12 +520,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
           !Array.isArray(matched) ||
           decisions === null ||
           !["permit", "review", "block"].includes(effective ?? "") ||
-          policyRevision === null ||
-          policyHash === null ||
-          platformRevision === null ||
-          platformHash === null ||
-          communityRevision === null ||
-          communityHash === null
+          !policyEvidenceMatchesMode(row)
         ) {
           return yield* Effect.fail(failure("detail", "invalid-row"));
         }
@@ -1105,12 +1114,7 @@ export function makeControlPlaneCommunityModerationRepository(): RepositoryServi
             const heldTitle = stringValue(row, "held_title");
             const heldBody = stringValue(row, "held_body");
             const heldVisibility = stringValue(row, "held_visibility");
-            if (
-              platformPolicyRevisionId === null ||
-              platformPolicyHash === null ||
-              communityPolicyRevisionId === null ||
-              communityPolicyHash === null
-            ) {
+            if (!policyEvidenceMatchesMode(row)) {
               return yield* Effect.fail(failure("action", "invalid-row"));
             }
             const personas = yield* transaction.execute<Row>({

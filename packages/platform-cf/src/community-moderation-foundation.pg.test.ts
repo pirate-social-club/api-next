@@ -69,6 +69,14 @@ const runtimeMigrations = [
   ...migrations.slice(0, runtimeMigrationIndex + 1),
   postSlugMigration,
   heldVisibilityMigration,
+  ...[
+    "0244_unmoderated_text_publication.sql",
+    "0274_author_declared_text_moderation_actions.sql",
+  ].map((version) => {
+    const migration = migrations.find((candidate) => candidate.version === version);
+    if (migration === undefined) throw new Error(`missing report action migration: ${version}`);
+    return migration;
+  }),
 ];
 
 function schemaName(): string {
@@ -1109,6 +1117,24 @@ suite("community moderation authority and policy migration", () => {
         }),
       );
       expect(hidden).toMatchObject({ action: "hide", target_status: "hidden" });
+      await expect(
+        admin.query(
+          `INSERT INTO community_moderation_actions_v2
+        SELECT (jsonb_populate_record(NULL::community_moderation_actions_v2,
+          to_jsonb(a) || jsonb_build_object('action_id', 'forged-' || a.action_id,
+            'idempotency_key', 'forged-null-policy', 'expected_case_revision', 2,
+            'before_view_state', 'hidden', 'after_view_state', 'resolved',
+            'before_target_status', 'hidden', 'after_target_status', 'published',
+            'action', 'restore', 'platform_policy_revision_id', NULL,
+            'platform_policy_hash', NULL, 'community_policy_revision_id', NULL,
+            'community_policy_hash', NULL, 'evidence_ref', NULL))).*
+        FROM community_moderation_actions_v2 a WHERE a.action_id=$1`,
+          [hidden.action_id],
+        ),
+      ).rejects.toMatchObject({
+        code: "P0001",
+        message: "moderation action policy evidence snapshot is invalid",
+      });
       const restored = await Effect.runPromise(
         store.actOnCase({
           caseRef: restoreReport.case_ref,

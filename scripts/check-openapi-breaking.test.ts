@@ -575,7 +575,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps the active repository policy empty after landed transitions", async () => {
+  test("pins only the pending author-declared moderation evidence deprecation", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
@@ -583,9 +583,25 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    // Landed transitions leave no active allowance. Historical exact-field
-    // declarations and their refusal controls live in the retained fixture.
-    expect(repositoryPolicy).toEqual({ breakingChangeWaivers: [] });
+    // Only the six absent policy fields may change for this pending repair.
+    // Historical transitions remain in the retained fixture, never active policy.
+    expect(repositoryPolicy.breakingChangeWaivers).toHaveLength(1);
+    expect(repositoryPolicy.breakingChangeWaivers[0]).toMatchObject({
+      baselineSha: "10c2116ec8ad8585b8fb61907ef2a2959c938195",
+      kind: "deprecation",
+      operationId: "get_communitiesCommunityIdModerationCasesCaseRef",
+      expectedViolations: [
+        "community_policy_hash",
+        "community_policy_revision",
+        "platform_policy_hash",
+        "platform_policy_revision",
+        "policy_hash",
+        "policy_revision",
+      ].map(
+        (field) =>
+          `response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.${field}`,
+      ),
+    });
     expect("cleanBreakOperations" in repositoryPolicy).toBe(false);
     expect("deprecatedOperations" in repositoryPolicy).toBe(false);
     for (const waiver of repositoryPolicy.breakingChangeWaivers) {

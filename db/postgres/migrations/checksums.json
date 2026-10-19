@@ -273,6 +273,7 @@
     "0270_activity_completion_guest_study_owner.sql": "d520e1af330bd20f8ff808e0f5331ec834b4a61b7b9e182a842d50e2cab4cf60",
     "0271_notifications_inbox.sql": "58f500f731f77214bcd373068568f274c001f861a67fbecdafd12f860d911ae6",
     "0272_notifications_video_destination.sql": "1cf850cb28141f15e43938a4a62cf0cf9ae8c2ceb735f589faa82fec386775ec",
-    "0273_notifications_video_alias_audit.sql": "2379e483f78fcc7aec5730ea3db93c347783cc01e154f4147e73f6d39448c321"
+    "0273_notifications_video_alias_audit.sql": "2379e483f78fcc7aec5730ea3db93c347783cc01e154f4147e73f6d39448c321",
+    "0274_author_declared_text_moderation_actions.sql": "79f054e672bb17f22faa83d04f5808288beddf766b494fb83b399834ba337eff"
   }
 }

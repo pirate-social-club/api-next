@@ -1,3 +1,18 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "10c2116ec8ad8585b8fb61907ef2a2959c938195",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.community_policy_hash",
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.community_policy_revision",
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.platform_policy_hash",
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.platform_policy_revision",
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.policy_hash",
+        "response GET /communities/{communityId}/moderation/cases/{caseRef}: type changed from string to null at evidence.policy_revision"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdModerationCasesCaseRef",
+      "reason": "docs/author-declared-text-moderation.md: author-declared text has no provider policy evidence; return explicit nulls instead of invented policy data. Moderated submissions retain complete evidence. The exact six-field nullable response change is part of the reported moderation 500 repair."
+    }
+  ]
 }
