@@ -16488,11 +16488,20 @@ CREATE FUNCTION guard_reward_wallet_instruction_v2() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE h RECORD;
 BEGIN
   PERFORM lock_reward_wallet_nonce_sender_v2(NEW.chain_id,NEW.sender_address);
-  SELECT * INTO h FROM reward_wallet_nonce_context_v2(NEW.chain_id,NEW.sender_address,NULL);
-  IF h.blocked_reason IS NOT NULL THEN
+  -- Legacy inserts do not allocate a V2 nonce. Retained legacy funding/send
+  -- history remains unknown to the conservative V2 context above, without
+  -- prohibiting another operation admitted by the original legacy protocol.
+  -- Live legacy instructions and unconsumed exact leases still fence every
+  -- path under this same mutex. Closed status never consumes an owned nonce.
+  IF reward_wallet_nonce_ownership_open_v2(NEW.chain_id,NEW.sender_address)
+    OR EXISTS (SELECT 1 FROM reward_winner_sends
+                WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+                  AND status IN ('retryable','pending','settled_unverified'))
+    OR EXISTS (SELECT 1 FROM wallet_sponsored_sends
+                WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+                  AND status IN ('reserved','submitting','submitted','held')) THEN
     RAISE EXCEPTION 'wallet has outstanding nonce ownership' USING ERRCODE='PWN02';
   END IF;
   RETURN NEW;
@@ -27793,6 +27802,26 @@ BEGIN
           ('learner_audio_owner_fences','learner_audio_delete_commands'),FALSE)
           OR (dependency.classid='pg_proc'::regclass AND dependency.objid=
             'prepare_learner_audio_delete_private_v1(text,text,text,text,text[],text,integer,text)'::regprocedure)))
+    -- This exact account-operation column is not a participation/guest owner.
+    -- Positive relation ownership, validated provenance and immutable history
+    -- must still hold; no other owner column or guest FK is exempted below.
+    OR NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_attribute a ON a.attrelid=c.oid
+      WHERE c.oid=to_regclass('reward_wallet_nonce_leases') AND c.relnamespace=trusted_namespace
+        AND c.relowner=trusted_owner AND c.relkind='r' AND a.attname='owner_id'
+        AND a.attnum>0 AND NOT a.attisdropped AND a.atttypid='text'::regtype AND a.attnotnull)
+    OR NOT EXISTS(SELECT 1 FROM pg_constraint p
+      WHERE p.conrelid=to_regclass('reward_wallet_nonce_leases')
+        AND p.conname='reward_wallet_nonce_provenance' AND p.contype='c' AND p.convalidated)
+    OR NOT EXISTS(SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid=to_regclass('reward_wallet_nonce_leases')
+        AND t.tgname='reward_wallet_nonce_leases_append_only' AND NOT t.tgisinternal
+        AND t.tgenabled='O' AND t.tgtype=27
+        AND t.tgfoid=to_regprocedure('reject_reward_wallet_nonce_history_change_v2()'))
+    OR NOT EXISTS(SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid=to_regclass('reward_wallet_nonce_leases')
+        AND t.tgname='reward_wallet_nonce_leases_no_truncate' AND NOT t.tgisinternal
+        AND t.tgenabled='O' AND t.tgtype=34
+        AND t.tgfoid=to_regprocedure('reject_reward_wallet_nonce_history_change_v2()'))
     OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE c.relnamespace=trusted_namespace AND c.relkind IN ('r','p','f','v','m')
@@ -27800,6 +27829,7 @@ BEGIN
         -- Guest source IDs; ordinary account/policy/lease owner fields have
         -- separate accepted authorities and do not reference guest identities.
         AND a.attname ~ '(^|_)owner_id$'
+        AND NOT (c.oid=to_regclass('reward_wallet_nonce_leases') AND a.attname='owner_id')
         AND c.relname NOT IN (
           'participation_owners','guest_credentials','guest_empty_owner_aliases',
           'participation_owner_clocks','guest_learning_preferences',
@@ -29601,18 +29631,26 @@ CREATE FUNCTION reward_wallet_nonce_context_v2(p_chain bigint, p_sender text, p_
     LANGUAGE sql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-  SELECT (SELECT max(nonce) FROM reward_wallet_nonce_leases WHERE chain_id=p_chain AND sender_address=p_sender),
-    CASE WHEN EXISTS(SELECT 1 FROM song_reward_leg_funding_effects WHERE chain_id=p_chain AND sender_address=p_sender) THEN 'unknown_v1_funding'
-      WHEN EXISTS(SELECT 1 FROM wallet_sponsored_sends WHERE chain_id=p_chain AND sender_address=p_sender)
-        OR EXISTS(SELECT 1 FROM reward_winner_sends WHERE chain_id=p_chain AND sender_address=p_sender AND send_id IS DISTINCT FROM p_own_winner AND status IN ('retryable','pending')) THEN 'other_instruction'
-      WHEN EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND
-        CASE WHEN l.source='song_funding_v2' THEN NOT EXISTS(
-          SELECT 1 FROM song_megapot_contributions_v2 c JOIN reward_incoming_receipts_v2 r USING(contribution_id)
-          WHERE c.nonce_lease_id=l.lease_id AND c.contribution_id=l.owner_id AND c.account_id=l.account_id
-            -- Incoming evidence is uint256; the owned lease nonce remains BIGINT.
-            AND (c.state->>'nonceFinalized')::BOOLEAN AND (r.evidence->>'observedConfirmedNonce')::NUMERIC>l.nonce::NUMERIC)
-        ELSE NOT EXISTS(SELECT 1 FROM reward_winner_send_outcomes o WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt AND o.observed_confirmed_nonce>l.nonce) END) THEN 'outstanding_nonce'
-      ELSE NULL END::TEXT
+  SELECT (SELECT max(nonce) FROM reward_wallet_nonce_leases
+           WHERE chain_id=p_chain AND sender_address=p_sender),
+    CASE
+      -- V1 records contain no nonce. Even a hash or a terminal state is NOT
+      -- exact nonce provenance. Reconciliation is later, not a guessed import.
+      WHEN EXISTS (SELECT 1 FROM song_reward_leg_funding_effects
+                    WHERE chain_id=p_chain AND sender_address=p_sender)
+        THEN 'unknown_v1_funding'
+      -- Sponsored history also has no exact EOA nonce in this accepted base.
+      -- Neither abandonment by time nor a missing hash proves it unsigned.
+      WHEN EXISTS (SELECT 1 FROM wallet_sponsored_sends
+                    WHERE chain_id=p_chain AND sender_address=p_sender)
+        OR EXISTS (SELECT 1 FROM reward_winner_sends
+                    WHERE chain_id=p_chain AND sender_address=p_sender
+                      AND send_id IS DISTINCT FROM p_own_winner
+                      AND status IN ('retryable','pending'))
+        THEN 'other_instruction'
+      WHEN reward_wallet_nonce_ownership_open_v2(p_chain,p_sender) THEN 'outstanding_nonce'
+      ELSE NULL
+    END::TEXT
 $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -29622,6 +29660,31 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='reward_wallet_nonce_context_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_chain bigint, p_sender text, p_own_winner text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION reward_wallet_nonce_ownership_open_v2(p_chain bigint, p_sender text) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND
+        CASE WHEN l.source='song_funding_v2' THEN NOT EXISTS(
+          SELECT 1 FROM song_megapot_contributions_v2 c JOIN reward_incoming_receipts_v2 r USING(contribution_id)
+          WHERE c.nonce_lease_id=l.lease_id AND c.contribution_id=l.owner_id AND c.account_id=l.account_id
+            -- Incoming evidence is uint256; the owned lease nonce remains BIGINT.
+            AND (c.state->>'nonceFinalized')::BOOLEAN AND (r.evidence->>'observedConfirmedNonce')::NUMERIC>l.nonce::NUMERIC)
+        ELSE NOT EXISTS(SELECT 1 FROM reward_winner_send_outcomes o WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt AND o.observed_confirmed_nonce>l.nonce) END)
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reward_wallet_nonce_ownership_open_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_chain bigint, p_sender text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -52754,8 +52817,6 @@ CREATE TRIGGER a_reward_wallet_attempt_lock_v2 BEFORE INSERT ON reward_winner_se
 
 CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 
-CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
-
 CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 
 CREATE TRIGGER aaa_song_reward_leg_qualification_terms BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION freeze_reward_leg_qualification_terms();
@@ -54027,6 +54088,8 @@ CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE O
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
 
 CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE ON reward_uniqueness_authorities FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER reward_wallet_instruction_v2 BEFORE INSERT ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 
 CREATE TRIGGER reward_wallet_nonce_lease_guard BEFORE INSERT ON reward_wallet_nonce_leases FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_nonce_lease_v2();
 
