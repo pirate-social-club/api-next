@@ -69,23 +69,23 @@ suite(
     beforeAll(async () => {
       await admin.connect();
       await admin.query(`CREATE SCHEMA "${schema}"; SET search_path TO "${schema}"`);
-      // Remains a genuine274->275 upgrade even after maintained baseline growth.
+      // Remains a genuine275->276 upgrade even after maintained baseline growth.
       // Parent first binds candidate checksums/ordinals; no unregistered loader bypass.
       const migrations = await loadPostgresMigrations();
       const boundary =
-        migrations.findIndex((m) => m.version === "0274_reward_wallet_nonce_authority_v2.sql") + 1;
-      if (boundary !== 274) throw new Error("Expected exact maintained274 prefix");
+        migrations.findIndex((m) => m.version === "0275_reward_wallet_nonce_authority_v2.sql") + 1;
+      if (boundary !== 275) throw new Error("Expected exact maintained275 prefix");
       const prefix = await runPostgresMigrations({
         connectionString: scoped(),
         migrations: migrations.slice(0, boundary),
         expectedLedger: [],
       });
       if (prefix.dryRun) throw new Error("Expected actual isolated migration prefix");
-      expect(prefix.result.currentVersion).toBe("0274_reward_wallet_nonce_authority_v2.sql");
+      expect(prefix.result.currentVersion).toBe("0275_reward_wallet_nonce_authority_v2.sql");
       for (const file of [
-        "0275_song_megapot_contributions_v2.sql",
-        "0276_reward_principal_seals_v2.sql",
-        "0277_reward_contribution_privileges_v2.sql",
+        "0276_song_megapot_contributions_v2.sql",
+        "0277_reward_principal_seals_v2.sql",
+        "0278_reward_contribution_privileges_v2.sql",
       ])
         await admin.query(
           await Bun.file(

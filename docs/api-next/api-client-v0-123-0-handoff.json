@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.123.0",
+  "sourceBranch": "fix/author-declared-text-moderation",
+  "sourceBase": "10c2116ec8ad8585b8fb61907ef2a2959c938195",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Owner moderation case detail preserves all six absent provider policy fields as explicit nulls for author-declared text. Moderated evidence remains complete; no authentication or action contract weakening.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.123.0.tgz",
+    "sha256": "495647e1ecc4f2e5dea16e491c08c33fa45d5fbcdb3e70f327c1038f6dc685cd"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.123.0",
+    "sourceIdentifier": "api-next-contracts@f5dd98cb728f20095f5b8c7c0abd2a1a97d4f75f6841002b32f14f41a0de9d2e",
+    "openapiSha256": "f5dd98cb728f20095f5b8c7c0abd2a1a97d4f75f6841002b32f14f41a0de9d2e",
+    "clientSha256": "dc3b74bb985cc0a5e13e5da8145b3f115da13217f836174a98ee02254600689a"
+  },
+  "validation": {
+    "status": "Prepared locally; independent final source/artifact review, full checks, CI, consuming Solid update and live staging acceptance pending.",
+    "postgres": "18 tests,269 assertions pass; genuine report/detail/hide/restore and strict evidence snapshot rejection.",
+    "pairedSolid": "pending",
+    "liveAcceptance": "pending"
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.123.0",
+    "behavior": "Use the generated client null-capable case response. Keep normal same-origin session and CSRF, owner capability and hide/restore flows. No provider policy data may be fabricated."
+  }
+}

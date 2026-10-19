@@ -161,12 +161,12 @@ export const ModerationCaseEvidenceV1 = Schema.Struct({
   author_declared_rating: ContentRatingV1,
   provider_scores: ModerationCaseProviderScoresV1,
   applied_input_types: ModerationCaseAppliedTypesV1,
-  policy_revision: Schema.String,
-  policy_hash: Schema.String,
-  platform_policy_revision: Schema.String,
-  platform_policy_hash: Schema.String,
-  community_policy_revision: Schema.String,
-  community_policy_hash: Schema.String,
+  policy_revision: Schema.NullOr(Schema.String),
+  policy_hash: Schema.NullOr(Schema.String),
+  platform_policy_revision: Schema.NullOr(Schema.String),
+  platform_policy_hash: Schema.NullOr(Schema.String),
+  community_policy_revision: Schema.NullOr(Schema.String),
+  community_policy_hash: Schema.NullOr(Schema.String),
 });
 
 export const CommunityModerationCasePreviewV1 = Schema.Union([

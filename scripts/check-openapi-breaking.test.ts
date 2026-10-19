@@ -92,7 +92,7 @@ describe("OpenAPI baseline selection", () => {
   });
 });
 
-describe("2026-10-17 candidate video-author deprecation", () => {
+describe("2026-10-17 historical video-author deprecation", () => {
   const baseline = "6cf3018177d05c05b8e8aeaa25e81ec11e5c8799";
   // Independent declaration inventory, not copied from the policy at runtime.
   const targets = [
@@ -122,7 +122,7 @@ describe("2026-10-17 candidate video-author deprecation", () => {
   const readPolicy = (): BreakingChangePolicy =>
     JSON.parse(
       readFileSync(
-        new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+        new URL("./fixtures/openapi-video-author-waivers-20261017.json", import.meta.url),
         "utf8",
       ),
     );
@@ -176,7 +176,7 @@ describe("2026-10-17 candidate video-author deprecation", () => {
     return { openapi: "3.1.0", info: { title: "explicit policy fixtures", version: "1" }, paths };
   };
   // Test-only commit avoids pretending synthetic fixtures have the retained raw
-  // hash. The real repository entries remain bound exclusively to6cf.
+  // hash. The historical entries remain bound exclusively to6cf.
   const fixturePolicy = (): BreakingChangePolicy => ({
     breakingChangeWaivers: readPolicy().breakingChangeWaivers.map((entry) => ({
       ...entry,
@@ -184,7 +184,7 @@ describe("2026-10-17 candidate video-author deprecation", () => {
     })),
   });
 
-  test("repository declaration is exactly seven operations and fourteen named fields", () => {
+  test("historical declaration is exactly seven operations and fourteen named fields", () => {
     const policy = readPolicy();
     expect(policy.breakingChangeWaivers.map(({ reason, ...entry }) => entry)).toEqual(
       targets.map(([operationId, path, prefix]) => ({
@@ -575,7 +575,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps the repository policy free of historical operation-wide allowances", async () => {
+  test("keeps active policy free of consumed one-time waivers", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
@@ -583,16 +583,8 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    // Waivers are one-time allowances bound to an exact baseline; the policy
-    // may hold reviewed entries while a transition is pending, but never a
-    // legacy operation-wide allowance, and never one without its exact diff.
-    expect("cleanBreakOperations" in repositoryPolicy).toBe(false);
-    expect("deprecatedOperations" in repositoryPolicy).toBe(false);
-    for (const waiver of repositoryPolicy.breakingChangeWaivers) {
-      expect(waiver.baselineSha).toMatch(/^[0-9a-f]{40}$/u);
-      expect(waiver.expectedViolations.length).toBeGreaterThan(0);
-      expect(waiver.reason.trim()).not.toBe("");
-    }
+    // The moderation transition has landed. Its historical waiver remains in Git.
+    expect(repositoryPolicy).toEqual({ breakingChangeWaivers: [] });
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

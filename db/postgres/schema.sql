@@ -9448,11 +9448,22 @@ BEGIN
     OR NEW.before_rating <> rating THEN
     RAISE EXCEPTION 'moderation action case revision is stale';
   END IF;
-  IF submission.platform_policy_revision_id <> NEW.platform_policy_revision_id
-    OR submission.platform_policy_hash <> NEW.platform_policy_hash
-    OR submission.community_policy_revision_id <> NEW.community_policy_revision_id
-    OR submission.community_policy_hash <> NEW.community_policy_hash
-    OR submission.evidence_ref IS DISTINCT FROM NEW.evidence_ref THEN
+  IF (submission.publication_mode = 'author_declared' AND (
+      num_nonnulls(submission.policy_revision_id, submission.policy_hash,
+        submission.platform_policy_revision_id, submission.platform_policy_hash,
+        submission.community_policy_revision_id, submission.community_policy_hash,
+        submission.evidence_ref) <> 0
+      OR num_nonnulls(NEW.platform_policy_revision_id, NEW.platform_policy_hash,
+        NEW.community_policy_revision_id, NEW.community_policy_hash, NEW.evidence_ref) <> 0
+    )) OR (submission.publication_mode = 'moderated' AND (
+      num_nonnulls(submission.platform_policy_revision_id, submission.platform_policy_hash,
+        submission.community_policy_revision_id, submission.community_policy_hash) <> 4
+      OR submission.platform_policy_revision_id IS DISTINCT FROM NEW.platform_policy_revision_id
+      OR submission.platform_policy_hash IS DISTINCT FROM NEW.platform_policy_hash
+      OR submission.community_policy_revision_id IS DISTINCT FROM NEW.community_policy_revision_id
+      OR submission.community_policy_hash IS DISTINCT FROM NEW.community_policy_hash
+      OR submission.evidence_ref IS DISTINCT FROM NEW.evidence_ref
+    )) THEN
     RAISE EXCEPTION 'moderation action policy evidence snapshot is invalid';
   END IF;
   IF NEW.action = 'approve_as_general'
@@ -38098,15 +38109,16 @@ CREATE TABLE community_moderation_actions_v2 (
     after_target_status text NOT NULL,
     before_rating text NOT NULL,
     after_rating text NOT NULL,
-    platform_policy_revision_id text NOT NULL,
-    platform_policy_hash text NOT NULL,
-    community_policy_revision_id text NOT NULL,
-    community_policy_hash text NOT NULL,
+    platform_policy_revision_id text,
+    platform_policy_hash text,
+    community_policy_revision_id text,
+    community_policy_hash text,
     evidence_ref text,
     resolved_age_capability text NOT NULL,
     response_snapshot_bytes bytea NOT NULL,
     response_snapshot_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_moderation_action_policy_shape CHECK (((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = 4) OR ((num_nonnulls(platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash) = 0) AND (evidence_ref IS NULL)))),
     CONSTRAINT community_moderation_actions_v2_action_check CHECK ((action = ANY (ARRAY['approve_as_general'::text, 'approve_as_adult_18'::text, 'reject'::text, 'dismiss_report'::text, 'hide'::text, 'raise_rating_to_adult_18'::text, 'restore'::text]))),
     CONSTRAINT community_moderation_actions_v2_after_rating_check CHECK ((after_rating = ANY (ARRAY['general'::text, 'adult_18'::text]))),
     CONSTRAINT community_moderation_actions_v2_after_target_status_check CHECK ((after_target_status = ANY (ARRAY['published'::text, 'hidden'::text, 'blocked'::text]))),
