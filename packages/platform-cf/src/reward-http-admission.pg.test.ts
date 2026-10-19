@@ -6,7 +6,7 @@ import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeDiagnosticPostgresControlPlaneLayer as makeDirectPostgresControlPlaneLayer } from "./postgres-failure-diagnostics.pg-fixture.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { bytes32, hash, seedMegapotAuthority } from "./rewards-composed-pool.pg-fixture.ts";
 import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts";
