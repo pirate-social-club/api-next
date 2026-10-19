@@ -3258,6 +3258,10 @@ BEGIN
       'reward_wallet_nonce_context_v2(bigint,text,text)','reserve_reward_funding_wallet_nonce_v2(jsonb)',
       'load_reward_funding_wallet_nonce_owner_v2(jsonb)'];
     WHEN 'incoming_observer' THEN allowed:=ARRAY['load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
+    WHEN 'funding_recovery_jobs' THEN allowed:=ARRAY[
+      'invalidate_song_recovery_evidence_v2(text,text,text)','require_song_funding_work_lease_v2(text,text)','list_song_funding_work_v2(integer)','claim_song_funding_work_v2(text,text)',
+      'record_song_recovery_evidence_v2(text,text,jsonb)','finish_song_funding_work_v2(text,text,jsonb)',
+      'load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
     -- Evidence-only seal storage does not grant outgoing/refund completion.
     WHEN 'cohort_evidence' THEN allowed:=ARRAY['record_reward_pool_cohort_v2(text,text,text,jsonb)'];
     ELSE RAISE EXCEPTION 'unrecognized funding purpose' USING ERRCODE='42501';
@@ -4472,6 +4476,63 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='claim_learner_audio_upload_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='expected_upload text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION claim_song_funding_work_v2(id text, token text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE w reward_funding_work_envelopes_v2; c song_megapot_contributions_v2; p reward_funding_profiles_v2; k JSONB; attempts BIGINT; field TEXT; value JSONB;
+BEGIN
+  IF (length(token) BETWEEN 1 AND 128) IS NOT TRUE THEN RAISE EXCEPTION 'work token required' USING ERRCODE='PCV07'; END IF;
+  SELECT * INTO w FROM reward_funding_work_envelopes_v2 WHERE work_id=id AND scope='reconciliation';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=w.contribution_id;
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',c.account_id)::TEXT,0));
+  PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=c.community_id AND post_id=c.post_id FOR UPDATE;
+  PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id FOR SHARE;
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id FOR UPDATE;
+  PERFORM require_reward_run_authority_v1();
+  IF (SELECT paused FROM reward_operations_control WHERE singleton FOR SHARE) IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'paused' USING ERRCODE='PR001'; END IF;
+  k:=p.policy->'reconciliation';
+  IF jsonb_typeof(k) IS DISTINCT FROM 'object' OR jsonb_typeof(k->'receipt') IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'work policy unavailable' USING ERRCODE='PCV05'; END IF;
+  FOREACH field IN ARRAY ARRAY['maxAttempts','leaseMs','maximumBlocks','maximumLogs','requiredConfirmations','maximumObservationAgeMs','maximumClockSkewMs'] LOOP
+    value:=CASE WHEN field IN ('requiredConfirmations','maximumObservationAgeMs','maximumClockSkewMs') THEN k->'receipt'->field ELSE k->field END;
+    IF jsonb_typeof(value) IS DISTINCT FROM 'number' OR (value::TEXT ~ '^(0|[1-9][0-9]{0,15})$') IS NOT TRUE THEN RAISE EXCEPTION 'work policy representation unavailable' USING ERRCODE='PCV05'; END IF;
+    IF (value::TEXT)::NUMERIC>9007199254740991 OR (field<>'maximumClockSkewMs' AND (value::TEXT)::NUMERIC<=0) THEN RAISE EXCEPTION 'work policy bound unavailable' USING ERRCODE='PCV05'; END IF;
+  END LOOP;
+  IF (jsonb_typeof(k->'receipt'->'policyHash')='string' AND k->'receipt'->>'policyHash' ~ '^[a-f0-9]{64}$') IS NOT TRUE THEN RAISE EXCEPTION 'receipt policy unavailable' USING ERRCODE='PCV05'; END IF;
+  IF NOT p.accepted OR p.valid_until<=clock_timestamp() OR k IS NULL OR
+    ((k->>'maxAttempts')::BIGINT>0 AND (k->>'leaseMs')::BIGINT>0 AND (k->>'maximumBlocks')::BIGINT>0 AND (k->>'maximumLogs')::BIGINT>0) IS NOT TRUE THEN RAISE EXCEPTION 'work policy unavailable' USING ERRCODE='PCV05'; END IF;
+  IF w.payload->>'status' IN ('complete','exhausted') OR (w.payload->>'leaseUntil')::TIMESTAMPTZ>clock_timestamp() THEN RETURN NULL; END IF;
+  attempts:=coalesce((w.payload->>'attempts')::BIGINT,0);
+  IF attempts>=(k->>'maxAttempts')::BIGINT THEN
+    UPDATE reward_funding_work_envelopes_v2 SET payload=payload||jsonb_build_object('status','exhausted') WHERE work_id=id;
+    RETURN NULL;
+  END IF;
+  IF attempts>0 THEN
+    PERFORM charge_reward_funding_work_v2(c.account_id,c.pool_leg_id,c.profile_id,1);
+    UPDATE reward_funding_work_envelopes_v2 SET used=used+1 WHERE scope='instruction' AND scope_key=c.contribution_id AND allocated-used-reserved>=1;
+    IF NOT FOUND THEN RAISE EXCEPTION 'instruction work exhausted' USING ERRCODE='PCV04'; END IF;
+  END IF;
+  UPDATE reward_funding_work_envelopes_v2 SET used=used+1,allocated=allocated+CASE WHEN attempts>0 THEN 1 ELSE 0 END,
+    payload=coalesce(payload,'{}')||jsonb_build_object('attempts',attempts+1,'status','running','leaseToken',token,
+      'leaseUntil',to_char(least(clock_timestamp()+((k->>'leaseMs')::NUMERIC*interval '1 millisecond'),p.valid_until) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    WHERE work_id=id RETURNING * INTO w;
+  RETURN song_funding_work_packet_v2(w);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_song_funding_work_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, token text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -6907,7 +6968,7 @@ BEGIN
   PERFORM charge_reward_funding_work_v2(c.account_id,c.pool_leg_id,c.profile_id,1);
   UPDATE reward_funding_work_envelopes_v2 SET used=used+1 WHERE scope='instruction' AND scope_key=c.contribution_id AND allocated-used-reserved>=1;
   IF NOT FOUND THEN RAISE EXCEPTION 'instruction work exhausted' USING ERRCODE='PCV04'; END IF;
-  INSERT INTO reward_funding_work_envelopes_v2 VALUES(work_id,'reconciliation',r->>'command_id',p.profile_id,c.contribution_id,1,0,0,p.valid_until,h);
+  INSERT INTO reward_funding_work_envelopes_v2 VALUES(work_id,'reconciliation',r->>'command_id',p.profile_id,c.contribution_id,1,0,0,p.valid_until,jsonb_build_object('hint',h,'attempts',0));
   PERFORM insert_song_contribution_command_v2(i,r);
 END $$;
 DO $baseline_function_path$
@@ -8146,6 +8207,29 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='finish_guest_spoken_answer_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_source text, p_operation jsonb, p_checkpoint text, p_capture jsonb, p_decision jsonb, p_feedback jsonb, p_spoken jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION finish_song_funding_work_v2(id text, token text, result jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  UPDATE reward_funding_work_envelopes_v2 SET payload=payload||jsonb_build_object('status',CASE WHEN result->>'complete'='true' THEN 'complete' ELSE 'unknown' END,'result',result,'leaseUntil',NULL)
+    WHERE work_id=id AND scope='reconciliation' AND payload->>'leaseToken'=token AND payload->>'status'='running'
+      AND (payload->>'leaseUntil')::TIMESTAMPTZ>clock_timestamp();
+  IF NOT FOUND THEN RAISE EXCEPTION 'work fenced' USING ERRCODE='PCV06'; END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='finish_song_funding_work_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, token text, result jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -20047,6 +20131,33 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION invalidate_song_recovery_evidence_v2(id text, token text, reason text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE w reward_funding_work_envelopes_v2; hash TEXT;
+BEGIN
+  PERFORM require_song_funding_work_lease_v2(id,token);
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id;
+  IF (reason IN ('cancellation_recovery_unavailable','attestation_unavailable','outcome_unknown','lifecycle_changed','paused')) IS NOT TRUE THEN RAISE EXCEPTION 'invalid evidence refusal' USING ERRCODE='PCV07'; END IF;
+  hash:=encode(sha256(convert_to(jsonb_build_array(id,token,reason)::TEXT,'UTF8')),'hex');
+  INSERT INTO reward_funding_schedule_witnesses_v2(witness_id,profile_id,witness_hash,schedule,nonce_witness,valid_until)
+    VALUES('recovery-unavailable:'||hash,w.profile_id,hash,jsonb_build_object('kind','cancellation_recovery_unavailable_v2','contributionId',w.contribution_id,'reason',reason,'observedAt',to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),'{}',clock_timestamp())
+    ON CONFLICT(witness_id) DO NOTHING;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='invalidate_song_recovery_evidence_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, token text, reason text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE TABLE media_post_submissions (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -20842,6 +20953,31 @@ CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_pare
        (SELECT comment_id FROM shown ORDER BY created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END)) END
 $$;
 
+CREATE FUNCTION list_song_funding_work_v2(n integer) RETURNS SETOF text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF (n BETWEEN 1 AND 1000) IS NOT TRUE THEN RAISE EXCEPTION 'bounded work limit required' USING ERRCODE='PCV07'; END IF;
+  RETURN QUERY SELECT w.work_id FROM reward_funding_work_envelopes_v2 w JOIN reward_funding_profiles_v2 p USING(profile_id)
+    WHERE w.scope='reconciliation' AND p.accepted AND p.valid_until>clock_timestamp() AND p.policy->'reconciliation' IS NOT NULL
+    AND coalesce(w.payload->>'status','pending') NOT IN ('complete','exhausted')
+    AND (w.payload->>'leaseUntil' IS NULL OR (w.payload->>'leaseUntil')::TIMESTAMPTZ<=clock_timestamp())
+    ORDER BY w.work_id LIMIT n;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='list_song_funding_work_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='n integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION load_account_spoken_success_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -21005,7 +21141,8 @@ CREATE FUNCTION load_song_contribution_recovery_v2(i jsonb) RETURNS jsonb
     SET search_path FROM CURRENT
     AS $$
 DECLARE c song_megapot_contributions_v2; s reward_funding_leg_snapshots_v2; p reward_funding_profiles_v2;
-  owned BOOLEAN; paused BOOLEAN; available BOOLEAN;
+  owned BOOLEAN; paused BOOLEAN; available BOOLEAN; w reward_funding_schedule_witnesses_v2;
+  a megapot_deployment_attestations; current_ok BOOLEAN; instr JSONB; until_at TIMESTAMPTZ;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
@@ -21013,16 +21150,40 @@ BEGIN
   PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
   SELECT * INTO STRICT s FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=c.snapshot_id;
   SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id FOR SHARE;
-  SELECT EXISTS(SELECT 1 FROM persona_wallet_assignments a JOIN personas v USING(persona_id,account_id) JOIN persona_community_bindings b USING(persona_id,account_id)
-    WHERE a.assignment_id=c.state->'owner'->>'wallet_assignment_id' AND a.account_id=c.account_id AND a.persona_id=c.state->'owner'->>'persona_id' AND a.address=c.state->'owner'->>'sender_address'
-      AND a.status='active' AND v.status='active' AND b.community_id=c.community_id) INTO owned;
+  instr:=c.state->'receipt'->'instruction';
+  PERFORM 1 FROM persona_wallet_assignments WHERE assignment_id=instr->>'wallet_assignment_id' FOR SHARE;
+  PERFORM 1 FROM personas WHERE persona_id=c.state->'owner'->>'persona_id' AND account_id=c.account_id FOR SHARE;
+  SELECT * INTO a FROM megapot_deployment_attestations WHERE attestation_id=instr->>'attestation_id' FOR SHARE;
+  SELECT * INTO w FROM reward_funding_schedule_witnesses_v2 WHERE profile_id=c.profile_id
+    AND schedule->>'kind' IN ('cancellation_recovery_v2','cancellation_recovery_unavailable_v2') AND schedule->>'contributionId'=c.contribution_id
+    ORDER BY (schedule->>'observedAt')::TIMESTAMPTZ DESC,(schedule->>'kind'='cancellation_recovery_unavailable_v2') DESC,created_at DESC,witness_id DESC LIMIT 1;
+  SELECT EXISTS(SELECT 1 FROM persona_wallet_assignments wa JOIN personas v USING(persona_id,account_id) JOIN persona_community_bindings b USING(persona_id,account_id)
+    WHERE wa.assignment_id=c.state->'owner'->>'wallet_assignment_id' AND wa.account_id=c.account_id AND wa.persona_id=c.state->'owner'->>'persona_id' AND wa.address=c.state->'owner'->>'sender_address'
+      AND wa.status='active' AND v.status='active' AND b.community_id=c.community_id) INTO owned;
   SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
   SELECT count(*)=3 INTO available FROM reward_funding_work_envelopes_v2 WHERE profile_id=c.profile_id AND valid_until>clock_timestamp()
     AND (scope,scope_key) IN (('account',c.account_id),('leg',c.pool_leg_id),('global','funding')) AND reserved>=1;
-  -- Original snapshot attestation timestamps and permanent lease ownership do
-  -- not establish current recovery authority. Fail closed until the accepted
-  -- live recovery-attestation/fresh-nonce producer is integrated and reviewed.
-  RETURN s.recovery_authority || jsonb_build_object('policy',NULL,
+  until_at:=least(p.valid_until,(p.recovery_policy->>'valid_until')::TIMESTAMPTZ);
+  current_ok:=coalesce(owned AND paused IS FALSE AND p.accepted AND p.recovery_policy IS NOT NULL
+    AND p.recovery_policy->>'attestation_contract_version'='megapot-v2-current-recovery-v1'
+    AND (p.recovery_policy->>'valid_from')::TIMESTAMPTZ<=clock_timestamp() AND until_at>clock_timestamp()
+    AND a.status='active' AND a.retired_at IS NULL AND a.chain_id=(instr->>'chain_id')::BIGINT
+    AND a.usdc_address=instr->>'to_token' AND a.custody_address=instr->>'recipient_custody'
+    AND NOT (c.state->>'nonceFinalized')::BOOLEAN AND w.schedule->>'kind'='cancellation_recovery_v2' AND w.valid_until>clock_timestamp()
+    AND w.schedule->>'profileHash'=p.profile_hash AND w.schedule->>'policyHash'=p.recovery_policy->>'policy_hash'
+    AND w.schedule->>'noncePolicyHash'=p.nonce_policy->>'hash'
+    AND w.schedule->>'instructionHash'=instr->>'instruction_hash' AND w.schedule->>'attestationId'=a.attestation_id
+    AND w.schedule->>'attestationHash'=instr->>'attestation_hash' AND w.schedule->>'walletAssignmentId'=instr->>'wallet_assignment_id'
+    AND w.schedule->>'sender'=instr->>'from' AND w.schedule->>'confirmedNonce'=instr->>'nonce'
+    AND (w.schedule->>'pendingNonce')::NUMERIC>=(instr->>'nonce')::NUMERIC
+    AND (w.schedule->>'observedAt')::TIMESTAMPTZ<=clock_timestamp()
+    AND (w.schedule->>'blockTimestamp')::TIMESTAMPTZ<=clock_timestamp()
+    AND (w.schedule->>'blockTimestamp')::TIMESTAMPTZ+((p.nonce_policy->>'maxAgeMs')::NUMERIC*interval '1 millisecond')>clock_timestamp()
+    AND (w.schedule->>'observedAt')::TIMESTAMPTZ+((p.nonce_policy->>'maxAgeMs')::NUMERIC*interval '1 millisecond')>clock_timestamp(),FALSE);
+  RETURN s.recovery_authority || jsonb_build_object('policy',CASE WHEN current_ok THEN p.recovery_policy ELSE NULL END,
+    'currentEvidence',CASE WHEN current_ok THEN w.schedule ELSE NULL END,
+    'attestationId',instr->>'attestation_id','attestationHash',instr->>'attestation_hash',
+    'attestationValidUntil',to_char(until_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'originalWalletStillOwned',owned,'boundedWorkAvailable',available,
     'currentSigningRefusal',CASE WHEN paused IS DISTINCT FROM FALSE THEN 'paused' WHEN NOT p.accepted OR p.valid_until<=clock_timestamp() THEN 'policy_unavailable' ELSE s.recovery_authority->>'currentSigningRefusal' END);
 END $$;
@@ -25957,6 +26118,66 @@ CREATE FUNCTION record_reward_winner_nonce_lease_v2() RETURNS trigger
   RETURN NEW;
 END $$;
 
+CREATE FUNCTION record_song_recovery_evidence_v2(id text, token text, e jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE c song_megapot_contributions_v2; p reward_funding_profiles_v2; a megapot_deployment_attestations; w reward_funding_work_envelopes_v2; i JSONB; original reward_funding_schedule_witnesses_v2;
+BEGIN
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id AND scope='reconciliation';
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=w.contribution_id;
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',c.account_id)::TEXT,0));
+  PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=c.community_id AND post_id=c.post_id FOR UPDATE;
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=c.contribution_id FOR UPDATE;
+  i:=c.state->'receipt'->'instruction';
+  PERFORM lock_reward_wallet_nonce_sender_v2((i->>'chain_id')::BIGINT,i->>'from');
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id FOR SHARE;
+  SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=i->>'attestation_id' FOR SHARE;
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id FOR UPDATE;
+  IF w.payload->>'leaseToken' IS DISTINCT FROM token OR w.payload->>'status' IS DISTINCT FROM 'running'
+    OR ((w.payload->>'leaseUntil')::TIMESTAMPTZ>clock_timestamp()) IS NOT TRUE THEN RAISE EXCEPTION 'work fenced' USING ERRCODE='PCV06'; END IF;
+  IF (e->>'stateRevision')::BIGINT IS DISTINCT FROM (c.state->>'revision')::BIGINT THEN RAISE EXCEPTION 'recovery source revision changed' USING ERRCODE='PCV06'; END IF;
+  PERFORM require_reward_run_authority_v1();
+  IF (SELECT paused FROM reward_operations_control WHERE singleton FOR SHARE) IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'paused' USING ERRCODE='PR001'; END IF;
+  IF (p.accepted AND p.valid_until>clock_timestamp() AND a.status='active' AND a.retired_at IS NULL
+    AND (p.recovery_policy->>'valid_from')::TIMESTAMPTZ<=clock_timestamp()
+    AND p.recovery_policy->>'attestation_contract_version'='megapot-v2-current-recovery-v1'
+    AND NOT (c.state->>'nonceFinalized')::BOOLEAN AND e->>'kind'='cancellation_recovery_v2'
+    AND e->>'contributionId'=c.contribution_id AND e->>'profileId'=p.profile_id AND e->>'profileHash'=p.profile_hash
+    AND e->>'policyHash'=p.recovery_policy->>'policy_hash' AND e->>'noncePolicyHash'=p.nonce_policy->>'hash'
+    AND e->>'instructionHash'=i->>'instruction_hash' AND e->>'attestationId'=a.attestation_id AND e->>'attestationHash'=i->>'attestation_hash'
+    AND e->>'walletAssignmentId'=i->>'wallet_assignment_id' AND e->>'sender'=i->>'from'
+    AND (e->>'chainId')::BIGINT=a.chain_id AND e->>'token'=a.usdc_address AND e->>'custody'=a.custody_address
+    AND a.chain_id=(i->>'chain_id')::BIGINT AND a.usdc_address=i->>'to_token' AND a.custody_address=i->>'recipient_custody'
+    AND e->>'confirmedNonce'=i->>'nonce' AND (e->>'pendingNonce')::NUMERIC>=(i->>'nonce')::NUMERIC
+    AND (e->>'observedAt')::TIMESTAMPTZ<=clock_timestamp() AND (e->>'validUntil')::TIMESTAMPTZ>clock_timestamp()
+    AND (e->>'blockTimestamp')::TIMESTAMPTZ<=(e->>'observedAt')::TIMESTAMPTZ
+    AND (e->>'observedAt')::TIMESTAMPTZ-(e->>'blockTimestamp')::TIMESTAMPTZ<=((p.nonce_policy->>'maxAgeMs')::NUMERIC*interval '1 millisecond')
+    AND (e->>'validUntil')::TIMESTAMPTZ<=least(p.valid_until,(p.recovery_policy->>'valid_until')::TIMESTAMPTZ,(e->>'observedAt')::TIMESTAMPTZ+((p.nonce_policy->>'maxAgeMs')::NUMERIC*interval '1 millisecond'),(e->>'blockTimestamp')::TIMESTAMPTZ+((p.nonce_policy->>'maxAgeMs')::NUMERIC*interval '1 millisecond'))
+    AND e->>'witnessHash' ~ '^[a-f0-9]{64}$') IS NOT TRUE THEN RAISE EXCEPTION 'recovery evidence unavailable' USING ERRCODE='PCV12'; END IF;
+  PERFORM 1 FROM persona_wallet_assignments WHERE assignment_id=i->>'wallet_assignment_id' AND status='active' AND address=i->>'from' AND account_id=c.account_id FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'wallet retired' USING ERRCODE='PCV12'; END IF;
+  SELECT * INTO original FROM reward_funding_schedule_witnesses_v2 WHERE witness_id='recovery:'||(e->>'witnessHash');
+  IF FOUND THEN
+    IF original.schedule IS DISTINCT FROM e THEN RAISE EXCEPTION 'recovery witness conflict' USING ERRCODE='PCV03'; END IF;
+    RETURN;
+  END IF;
+  INSERT INTO reward_funding_schedule_witnesses_v2(witness_id,profile_id,witness_hash,schedule,nonce_witness,valid_until)
+    VALUES('recovery:'||(e->>'witnessHash'),p.profile_id,e->>'witnessHash',e,'{}',(e->>'validUntil')::TIMESTAMPTZ);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='record_song_recovery_evidence_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, token text, e jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION register_learner_audio_upload_private_v1(expected_owner text, expected_artifact text, expected_kind text, expected_attempt text, expected_command text, expected_reservation text, expected_object_ref text, upload_id text, expected_captured_revision bigint) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -28027,6 +28248,34 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION require_song_funding_work_lease_v2(id text, token text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE w reward_funding_work_envelopes_v2; c song_megapot_contributions_v2;
+BEGIN
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id AND scope='reconciliation';
+  SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=w.contribution_id;
+  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',c.account_id)::TEXT,0));
+  PERFORM 1 FROM reward_song_slots_v2 WHERE community_id=c.community_id AND post_id=c.post_id FOR UPDATE;
+  PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
+  SELECT * INTO STRICT w FROM reward_funding_work_envelopes_v2 WHERE work_id=id FOR UPDATE;
+  IF w.payload->>'leaseToken' IS DISTINCT FROM token OR w.payload->>'status' IS DISTINCT FROM 'running'
+    OR ((w.payload->>'leaseUntil')::TIMESTAMPTZ>clock_timestamp()) IS NOT TRUE THEN RAISE EXCEPTION 'work fenced' USING ERRCODE='PCV06'; END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='require_song_funding_work_lease_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, token text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION require_song_video_projection_edge() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -30068,6 +30317,56 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE TABLE reward_funding_work_envelopes_v2 (
+    work_id text NOT NULL,
+    scope text NOT NULL,
+    scope_key text NOT NULL,
+    profile_id text NOT NULL,
+    contribution_id text,
+    allocated bigint NOT NULL,
+    used bigint NOT NULL,
+    reserved bigint NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    payload jsonb,
+    CONSTRAINT reward_funding_work_envelopes_v2_allocated_check CHECK ((allocated > 0)),
+    CONSTRAINT reward_funding_work_envelopes_v2_check CHECK (((used >= 0) AND (used <= allocated))),
+    CONSTRAINT reward_funding_work_envelopes_v2_check1 CHECK (((reserved >= 0) AND ((used + reserved) <= allocated))),
+    CONSTRAINT reward_funding_work_envelopes_v2_scope_check CHECK ((scope = ANY (ARRAY['account'::text, 'leg'::text, 'global'::text, 'instruction'::text, 'reconciliation'::text])))
+);
+
+CREATE FUNCTION song_funding_work_packet_v2(w reward_funding_work_envelopes_v2) RETURNS jsonb
+    LANGUAGE sql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT jsonb_build_object('workId',(w).work_id,'token',(w).payload->>'leaseToken','payload',(w).payload,
+    'identity',jsonb_build_object('accountId',c.account_id,'communityId',c.community_id,'postId',c.post_id,
+      'contributionId',c.contribution_id,'operation',x.operation,'key',x.idempotency_key,'hash',x.request_hash),
+    'state',project_song_contribution_state_v2(c.state),'profileId',p.profile_id,'profileHash',p.profile_hash,
+    'validUntil',to_char(p.valid_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'policy',CASE WHEN a.status='active' AND a.retired_at IS NULL THEN p.recovery_policy ELSE NULL END,'noncePolicy',p.nonce_policy,'workPolicy',p.policy->'reconciliation',
+    'attestationBlock',a.attestation_block_number::TEXT,'attestationBlockHash',a.attestation_block_hash,
+    'deployment',jsonb_build_object('attestationId',a.attestation_id,'environment',a.environment,'chainId',a.chain_id,
+      'jackpotAddress',a.jackpot_address,'ticketNftAddress',a.ticket_nft_address,'usdcAddress',a.usdc_address,
+      'custodyAddress',a.custody_address,'referrerAddress',a.referrer_address,'jackpotCodeHash',a.jackpot_code_hash,
+      'ticketNftCodeHash',a.ticket_nft_code_hash,'usdcCodeHash',a.usdc_code_hash))
+    FROM song_megapot_contributions_v2 c JOIN reward_funding_profiles_v2 p USING(profile_id)
+    JOIN song_megapot_contribution_commands_v2 x ON x.command_id=(w).scope_key
+    JOIN megapot_deployment_attestations a ON a.attestation_id=c.state->'receipt'->'instruction'->>'attestation_id'
+    WHERE c.contribution_id=(w).contribution_id
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='song_funding_work_packet_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='w reward_funding_work_envelopes_v2';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION spaces_registry_allowed_roots_valid_v1(input_roots text[]) RETURNS boolean
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -30401,17 +30700,18 @@ CREATE FUNCTION update_song_contribution_command_v2(i jsonb, b jsonb, s jsonb, r
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE c song_megapot_contributions_v2; plan JSONB; purpose TEXT; policy JSONB;
+DECLARE c song_megapot_contributions_v2; plan JSONB; purpose TEXT; policy JSONB; authority JSONB;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   SELECT * INTO STRICT c FROM song_megapot_contributions_v2 WHERE contribution_id=i->>'contributionId' AND account_id=i->>'accountId' AND community_id=i->>'communityId' AND post_id=i->>'postId' FOR UPDATE;
   PERFORM lock_reward_wallet_nonce_sender_v2((c.state->'receipt'->'instruction'->>'chain_id')::BIGINT,c.state->'owner'->>'sender_address');
-  -- No accepted producer currently proves live, unrevoked recovery attestation
-  -- AND fresh nonce evidence under the original fences. Snapshot/lease facts
-  -- are insufficient. Immutable command replay never reaches this transition.
   IF r->>'object'='contribution_cancellation_command_receipt'
     OR (r->>'object'='contribution_submission_claim_receipt' AND r->>'purpose'='nonce_cancellation') THEN
-    RAISE EXCEPTION 'current cancellation recovery evidence unavailable' USING ERRCODE='PCV12';
+    authority:=load_song_contribution_recovery_v2(i);
+    IF authority->'policy' IS NULL OR authority->'policy'='null'::JSONB THEN
+      RAISE EXCEPTION 'current cancellation recovery evidence unavailable' USING ERRCODE='PCV12';
+    END IF;
+    policy:=authority->'policy';
   END IF;
   PERFORM require_reward_run_authority_v1();
   IF (SELECT paused FROM reward_operations_control WHERE singleton FOR SHARE) IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'paused' USING ERRCODE='PR001'; END IF;
@@ -30430,6 +30730,11 @@ BEGIN
         OR (b->>'effectiveDeadline')::TIMESTAMPTZ<=clock_timestamp() THEN RAISE EXCEPTION 'funding purpose consumed or expired' USING ERRCODE='PCV09'; END IF;
     ELSIF purpose='nonce_cancellation' THEN
       plan:=b->'cancellationHead';
+      IF plan->>'recovery_policy_hash' IS DISTINCT FROM policy->>'policy_hash'
+        OR plan->>'recovery_attestation_id' IS DISTINCT FROM authority->>'attestationId'
+        OR plan->>'recovery_attestation_hash' IS DISTINCT FROM authority->>'attestationHash'
+        OR plan->>'recovery_attestation_valid_until' IS DISTINCT FROM authority->>'attestationValidUntil' THEN
+        RAISE EXCEPTION 'current recovery authority changed' USING ERRCODE='PCV12'; END IF;
       IF b->'cancellationGrant'<>'null'::JSONB OR plan='null'::JSONB OR s->'cancellationGrant' IS DISTINCT FROM r
         OR s->>'fundingState' IS DISTINCT FROM b->>'fundingState' OR s->'fundingGrant' IS DISTINCT FROM b->'fundingGrant'
         OR r->>'instruction_hash' IS DISTINCT FROM plan->>'instruction_hash'
@@ -30440,7 +30745,12 @@ BEGIN
     IF s->'cancellationHead' IS DISTINCT FROM b->'cancellationHead' OR s->'preparationsUsed' IS DISTINCT FROM b->'preparationsUsed' THEN RAISE EXCEPTION 'claim cannot reprepare' USING ERRCODE='PCV02'; END IF;
     INSERT INTO reward_funding_submission_claims_v2 VALUES(c.contribution_id,purpose,r->>'command_id',r->>'grant_id',r);
   ELSIF r->>'object'='contribution_cancellation_command_receipt' THEN
-    SELECT recovery_policy INTO policy FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id AND accepted AND valid_until>clock_timestamp();
+    IF r->>'recovery_policy_hash' IS DISTINCT FROM policy->>'policy_hash'
+      OR r->>'recovery_attestation_id' IS DISTINCT FROM authority->>'attestationId'
+      OR r->>'recovery_attestation_hash' IS DISTINCT FROM authority->>'attestationHash'
+      OR r->>'recovery_attestation_valid_until' IS DISTINCT FROM authority->>'attestationValidUntil'
+      OR (r->>'dispatch_expires_at')::TIMESTAMPTZ>least((r->>'prepared_at')::TIMESTAMPTZ+(least((policy->>'dispatch_ttl_seconds')::NUMERIC,extract(epoch FROM ((policy->>'valid_until')::TIMESTAMPTZ-(r->>'prepared_at')::TIMESTAMPTZ)),extract(epoch FROM ((authority->>'attestationValidUntil')::TIMESTAMPTZ-(r->>'prepared_at')::TIMESTAMPTZ)))*interval '1 second'),(policy->>'valid_until')::TIMESTAMPTZ,(authority->>'attestationValidUntil')::TIMESTAMPTZ)
+      OR (r->>'prepared_at')::TIMESTAMPTZ>clock_timestamp() THEN RAISE EXCEPTION 'recovery validity mismatch' USING ERRCODE='PCV12'; END IF;
     IF policy IS NULL OR b->'cancellationGrant'<>'null'::JSONB OR s->>'fundingState' IS DISTINCT FROM b->>'fundingState'
       OR s->'fundingGrant' IS DISTINCT FROM b->'fundingGrant' OR s->'cancellationGrant' IS DISTINCT FROM b->'cancellationGrant'
       OR s->'cancellationHead' IS DISTINCT FROM r OR (s->>'preparationsUsed')::BIGINT<>(b->>'preparationsUsed')::BIGINT+1
@@ -46057,23 +46367,6 @@ CREATE TABLE reward_funding_submission_claims_v2 (
     receipt jsonb NOT NULL,
     CONSTRAINT reward_funding_submission_claims_v2_check CHECK ((((receipt ->> 'contribution_id'::text) = contribution_id) AND ((receipt ->> 'purpose'::text) = purpose) AND ((receipt ->> 'command_id'::text) = command_id) AND ((receipt ->> 'grant_id'::text) = grant_id))),
     CONSTRAINT reward_funding_submission_claims_v2_purpose_check CHECK ((purpose = ANY (ARRAY['funding_transfer'::text, 'nonce_cancellation'::text])))
-);
-
-CREATE TABLE reward_funding_work_envelopes_v2 (
-    work_id text NOT NULL,
-    scope text NOT NULL,
-    scope_key text NOT NULL,
-    profile_id text NOT NULL,
-    contribution_id text,
-    allocated bigint NOT NULL,
-    used bigint NOT NULL,
-    reserved bigint NOT NULL,
-    valid_until timestamp with time zone NOT NULL,
-    payload jsonb,
-    CONSTRAINT reward_funding_work_envelopes_v2_allocated_check CHECK ((allocated > 0)),
-    CONSTRAINT reward_funding_work_envelopes_v2_check CHECK (((used >= 0) AND (used <= allocated))),
-    CONSTRAINT reward_funding_work_envelopes_v2_check1 CHECK (((reserved >= 0) AND ((used + reserved) <= allocated))),
-    CONSTRAINT reward_funding_work_envelopes_v2_scope_check CHECK ((scope = ANY (ARRAY['account'::text, 'leg'::text, 'global'::text, 'instruction'::text, 'reconciliation'::text])))
 );
 
 CREATE TABLE reward_gas_topup_daily_budgets (
