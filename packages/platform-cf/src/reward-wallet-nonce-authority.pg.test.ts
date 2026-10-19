@@ -19,6 +19,8 @@ import {
   reserveRewardFundingWalletNonceIn,
 } from "./reward-wallet-nonce-authority.ts";
 import { makeControlPlaneRewardWinnerSendRepository } from "./reward-winner-send-repository.ts";
+import { seedMegapotAuthority } from "./rewards-composed-pool.pg-fixture.ts";
+import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)
@@ -473,5 +475,262 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
       (await admin.query("SELECT count(*)::int AS n FROM reward_wallet_nonce_leases")).rows,
     ).toEqual(before);
     expect(Exit.isFailure(await reserve({ ...i, nowMs: i.nowMs + 1_000_000 }))).toBe(true);
+  });
+
+  test("repeated legacy funding keeps its history while a new V2 grant remains refused", async () => {
+    const identity = await seedSong(admin, "nonce-legacy-funding", `0x${"71".repeat(20)}`);
+    await seedMegapotAuthority(admin);
+    const { legId } = await seedActivePoolLeg(admin, identity, {
+      fallback: false,
+      suffix: "nonce-legacy-funding",
+    });
+    const sender = `0x${"71".repeat(20)}`;
+    const insert = (id: string) =>
+      admin.query(
+        `INSERT INTO song_reward_leg_funding_effects(funding_effect_id,leg_id,funder_account_id,
+        chain_id,token_address,sender_address,recipient_address,expected_amount_atomic,required_confirmations,state)
+       VALUES ($1,$2,$3,84532,$4,$5,$6,1,3,'planned')`,
+        [id, legId, identity.accountId, `0x${"1".repeat(40)}`, sender, `0x${"4".repeat(40)}`],
+      );
+    await insert("legacy-funding-first");
+    await insert("legacy-funding-second");
+    expect(
+      (
+        await admin.query(
+          "SELECT funding_effect_id,state FROM song_reward_leg_funding_effects WHERE sender_address=$1 ORDER BY funding_effect_id",
+          [sender],
+        )
+      ).rows,
+    ).toEqual([
+      { funding_effect_id: "legacy-funding-first", state: "planned" },
+      { funding_effect_id: "legacy-funding-second", state: "planned" },
+    ]);
+    const wallet = (
+      await admin.query<{ assignment_id: string }>(
+        "SELECT assignment_id FROM persona_wallet_assignments WHERE persona_id=$1 AND account_id=$2",
+        [identity.personaId, identity.accountId],
+      )
+    ).rows[0];
+    if (!wallet) throw new Error("owned fixture wallet missing");
+    const i = input("unknown", "legacy-history-no-v2-grant");
+    const p = {
+      ...packet(i),
+      account_id: identity.accountId,
+      persona_id: identity.personaId,
+      wallet_assignment_id: wallet.assignment_id,
+      sender_address: sender,
+    };
+    expect(
+      (
+        await admin.query("SELECT blocked_reason FROM reward_wallet_nonce_context_v2($1,$2,NULL)", [
+          chain,
+          sender,
+        ])
+      ).rows,
+    ).toEqual([{ blocked_reason: "unknown_v1_funding" }]);
+    await expect(
+      admin.query("SELECT * FROM reserve_reward_funding_wallet_nonce_v2($1::jsonb)", [
+        JSON.stringify(p),
+      ]),
+    ).rejects.toMatchObject({ code: "PWN02" });
+    expect(
+      (
+        await admin.query(
+          "SELECT count(*)::int AS n FROM reward_wallet_nonce_leases WHERE sender_address=$1",
+          [sender],
+        )
+      ).rows,
+    ).toEqual([{ n: 0 }]);
+
+    // The real guard still rejects a different producer while V2 owns a nonce.
+    await expect(
+      admin.query(
+        `INSERT INTO song_reward_leg_funding_effects(funding_effect_id,leg_id,funder_account_id,
+       chain_id,token_address,sender_address,recipient_address,expected_amount_atomic,required_confirmations,state)
+       VALUES ('legacy-must-not-race-v2',$1,$2,84532,$3,$4,$5,1,3,'planned')`,
+        [legId, account, `0x${"1".repeat(40)}`, address("v2-first"), custody],
+      ),
+    ).rejects.toMatchObject({ code: "PWN02" });
+  });
+
+  test("later legacy sponsored send is allowed without treating its terminal row as V2 nonce evidence", async () => {
+    const sender = `0x${"72".repeat(20)}`;
+    const identity = await seedSong(admin, "nonce-legacy-sponsored", sender);
+    const wallet = (
+      await admin.query<{ assignment_id: string; privy_wallet_id: string }>(
+        "SELECT assignment_id,privy_wallet_id FROM persona_wallet_assignments WHERE account_id=$1 AND persona_id=$2",
+        [identity.accountId, identity.personaId],
+      )
+    ).rows[0];
+    if (!wallet) throw new Error("owned fixture wallet missing");
+    const insert = (id: string) =>
+      admin.query(
+        `INSERT INTO wallet_sponsored_sends(send_id,account_id,persona_id,wallet_assignment_id,privy_wallet_id,
+        chain_id,sender_address,token_address,recipient_address,amount_atomic,gas_budget_wei,reference_id,
+        idempotency_key,provider_idempotency_key,request_expires_at,status)
+       VALUES($1,$2,$3,$4,$5,84532,$6,$7,$8,1,1,$1,$1,$1,clock_timestamp()+interval '3 minutes','reserved')`,
+        [
+          id,
+          identity.accountId,
+          identity.personaId,
+          wallet.assignment_id,
+          wallet.privy_wallet_id,
+          sender,
+          token,
+          recipient,
+        ],
+      );
+    await insert("nonce_sponsored_first_0001");
+    await admin.query(
+      "UPDATE wallet_sponsored_sends SET status='submitting' WHERE send_id='nonce_sponsored_first_0001'",
+    );
+    await admin.query(
+      "UPDATE wallet_sponsored_sends SET status='submitted',provider_transaction_id='fixture-provider-result',transaction_hash=$1 WHERE send_id='nonce_sponsored_first_0001'",
+      [`0x${"73".repeat(32)}`],
+    );
+    await admin.query(
+      "UPDATE wallet_sponsored_sends SET status='confirmed',block_number=22,block_hash=$1 WHERE send_id='nonce_sponsored_first_0001'",
+      [`0x${"74".repeat(32)}`],
+    );
+    expect(
+      (
+        await admin.query("SELECT blocked_reason FROM reward_wallet_nonce_context_v2($1,$2,NULL)", [
+          chain,
+          sender,
+        ])
+      ).rows,
+    ).toEqual([{ blocked_reason: "other_instruction" }]);
+    const p = {
+      ...packet(input("unknown", "sponsored-history-no-v2")),
+      account_id: identity.accountId,
+      persona_id: identity.personaId,
+      wallet_assignment_id: wallet.assignment_id,
+      sender_address: sender,
+    };
+    await expect(
+      admin.query("SELECT * FROM reserve_reward_funding_wallet_nonce_v2($1::jsonb)", [
+        JSON.stringify(p),
+      ]),
+    ).rejects.toMatchObject({ code: "PWN02" });
+    await insert("nonce_sponsored_second_0002");
+    await expect(insert("nonce_sponsored_third_0003")).rejects.toMatchObject({ code: "PWN02" });
+    expect(
+      (
+        await admin.query(
+          "SELECT send_id,status FROM wallet_sponsored_sends WHERE sender_address=$1 ORDER BY send_id",
+          [sender],
+        )
+      ).rows,
+    ).toEqual([
+      { send_id: "nonce_sponsored_first_0001", status: "confirmed" },
+      { send_id: "nonce_sponsored_second_0002", status: "reserved" },
+    ]);
+    expect(
+      (
+        await admin.query(
+          "SELECT count(*)::int AS n FROM reward_wallet_nonce_leases WHERE sender_address=$1",
+          [sender],
+        )
+      ).rows,
+    ).toEqual([{ n: 0 }]);
+  });
+
+  test("pause and missing required run lease precede the real outstanding-nonce insert refusal", async () => {
+    const identity = await seedSong(admin, "nonce-legacy-precedence", `0x${"75".repeat(20)}`);
+    const { legId } = await seedActivePoolLeg(admin, identity, {
+      fallback: false,
+      suffix: "nonce-legacy-precedence",
+    });
+    await admin.query(
+      `INSERT INTO song_reward_leg_funding_effects(funding_effect_id,leg_id,funder_account_id,
+       chain_id,token_address,sender_address,recipient_address,expected_amount_atomic,required_confirmations,state)
+       VALUES('legacy-precedence-issued',$1,$2,84532,$3,$4,$5,1,3,'planned')`,
+      [legId, identity.accountId, `0x${"1".repeat(40)}`, `0x${"75".repeat(20)}`, custody],
+    );
+    await admin.query("BEGIN");
+    try {
+      const insert = () =>
+        admin.query(
+          `INSERT INTO song_reward_leg_funding_effects(funding_effect_id,leg_id,funder_account_id,
+         chain_id,token_address,sender_address,recipient_address,expected_amount_atomic,required_confirmations,state)
+         VALUES('legacy-precedence-refused',$1,$2,84532,$3,$4,$5,1,3,'planned')`,
+          [legId, account, `0x${"1".repeat(40)}`, address("v2-first"), custody],
+        );
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'nonce_precedence') FROM reward_operations_control WHERE singleton",
+      );
+      await admin.query("SAVEPOINT paused");
+      await expect(insert()).rejects.toMatchObject({ code: "PR001" });
+      await admin.query("ROLLBACK TO SAVEPOINT paused");
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,FALSE,'nonce_precedence') FROM reward_operations_control WHERE singleton",
+      );
+      await admin.query("SET LOCAL pirate.reward_run_lease_requirement_change='deployment'");
+      await admin.query("UPDATE reward_operations_run_lease SET required=TRUE WHERE singleton");
+      await admin.query("SAVEPOINT missing_lease");
+      await expect(insert()).rejects.toMatchObject({ code: "PR001" });
+      await admin.query("ROLLBACK TO SAVEPOINT missing_lease");
+      await admin.query("UPDATE reward_operations_run_lease SET required=FALSE WHERE singleton");
+      await admin.query("SAVEPOINT outstanding_nonce");
+      await expect(insert()).rejects.toMatchObject({ code: "PWN02" });
+      await admin.query("ROLLBACK TO SAVEPOINT outstanding_nonce");
+      // Already-issued observation remains possible even while admissions pause.
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'nonce_precedence') FROM reward_operations_control WHERE singleton",
+      );
+      expect(
+        (
+          await admin.query(
+            "UPDATE song_reward_leg_funding_effects SET state='reconciliation_required' WHERE funding_effect_id='legacy-precedence-issued' RETURNING state",
+          )
+        ).rows,
+      ).toEqual([{ state: "reconciliation_required" }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM song_reward_leg_funding_effects WHERE funding_effect_id='legacy-precedence-refused'",
+          )
+        ).rows,
+      ).toEqual([{ n: 0 }]);
+    } finally {
+      await admin.query("ROLLBACK");
+    }
+  });
+
+  test("audio closure admits exactly the owned operation column and refuses unknown guest dependencies or broken provenance/fences", async () => {
+    expect(
+      (await admin.query("SELECT require_guest_practice_only_schema_phase_v1()")).rowCount,
+    ).toBe(1);
+    for (const mutation of [
+      "ALTER TABLE reward_wallet_nonce_leases ADD COLUMN unexpected_owner_id TEXT",
+      "CREATE TABLE unexpected_guest_relation(owner_id TEXT)",
+      "CREATE TABLE unexpected_guest_fk(source_ref TEXT REFERENCES participation_owners(owner_id))",
+      "ALTER TABLE reward_wallet_nonce_leases ADD CONSTRAINT unexpected_guest_fk FOREIGN KEY(owner_id) REFERENCES participation_owners(owner_id) NOT VALID",
+      "ALTER TABLE reward_wallet_nonce_leases ALTER COLUMN owner_id DROP NOT NULL",
+      "ALTER TABLE reward_wallet_nonce_leases DROP CONSTRAINT reward_wallet_nonce_provenance",
+      "ALTER TABLE reward_wallet_nonce_leases DISABLE TRIGGER reward_wallet_nonce_leases_append_only",
+      "ALTER TABLE reward_wallet_nonce_leases DISABLE TRIGGER reward_wallet_nonce_leases_no_truncate",
+      "ALTER TABLE reward_wallet_nonce_leases RENAME TO unexpected_nonce_relation",
+    ]) {
+      await admin.query("BEGIN");
+      try {
+        await admin.query(mutation);
+        await expect(
+          admin.query("SELECT require_guest_practice_only_schema_phase_v1()"),
+        ).rejects.toMatchObject({ code: "GP003" });
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+    }
+    expect(
+      (await admin.query("SELECT require_guest_practice_only_schema_phase_v1()")).rowCount,
+    ).toBe(1);
+    expect(
+      (
+        await admin.query(`SELECT a.privilege_type FROM pg_proc p
+      CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+      WHERE p.oid='reward_wallet_nonce_ownership_open_v2(bigint,text)'::regprocedure AND a.grantee<>p.proowner`)
+      ).rows,
+    ).toEqual([]);
   });
 });

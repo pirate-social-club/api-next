@@ -94,6 +94,24 @@ BEGIN
     'reward-winner-send:'||p_chain::text||':'||p_sender,0));
 END $$;
 
+-- One predicate owns lease consumption for both legacy instruction fencing
+-- and conservative new-nonce admission. A later principal-evidence migration
+-- extends this predicate; neither caller infers consumption from row status.
+CREATE FUNCTION reward_wallet_nonce_ownership_open_v2(p_chain BIGINT,p_sender TEXT)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM reward_wallet_nonce_leases l
+     WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND (
+       l.source='song_funding_v2'
+       OR NOT EXISTS (
+         SELECT 1 FROM reward_winner_send_outcomes o
+          WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt
+            AND o.observed_confirmed_nonce > l.nonce
+       )
+     )
+  )
+$$;
+
 CREATE FUNCTION reward_wallet_nonce_context_v2(
   p_chain BIGINT,p_sender TEXT,p_own_winner TEXT
 ) RETURNS TABLE(highest_nonce BIGINT,blocked_reason TEXT)
@@ -115,17 +133,7 @@ LANGUAGE sql SECURITY DEFINER AS $$
                       AND send_id IS DISTINCT FROM p_own_winner
                       AND status IN ('retryable','pending'))
         THEN 'other_instruction'
-      WHEN EXISTS (
-        SELECT 1 FROM reward_wallet_nonce_leases l
-         WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND (
-           l.source='song_funding_v2'
-           OR NOT EXISTS (
-             SELECT 1 FROM reward_winner_send_outcomes o
-              WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt
-                AND o.observed_confirmed_nonce > l.nonce
-           )
-         )
-      ) THEN 'outstanding_nonce'
+      WHEN reward_wallet_nonce_ownership_open_v2(p_chain,p_sender) THEN 'outstanding_nonce'
       ELSE NULL
     END::TEXT
 $$;
@@ -208,11 +216,20 @@ CREATE TRIGGER reward_winner_attempt_nonce_history_v2 AFTER INSERT ON reward_win
 -- Taking this lock first also preserves one shared->old-mode-lock order.
 CREATE FUNCTION guard_reward_wallet_instruction_v2() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER AS $$
-DECLARE h RECORD;
 BEGIN
   PERFORM lock_reward_wallet_nonce_sender_v2(NEW.chain_id,NEW.sender_address);
-  SELECT * INTO h FROM reward_wallet_nonce_context_v2(NEW.chain_id,NEW.sender_address,NULL);
-  IF h.blocked_reason IS NOT NULL THEN
+  -- Legacy inserts do not allocate a V2 nonce. Retained legacy funding/send
+  -- history remains unknown to the conservative V2 context above, without
+  -- prohibiting another operation admitted by the original legacy protocol.
+  -- Live legacy instructions and unconsumed exact leases still fence every
+  -- path under this same mutex. Closed status never consumes an owned nonce.
+  IF reward_wallet_nonce_ownership_open_v2(NEW.chain_id,NEW.sender_address)
+    OR EXISTS (SELECT 1 FROM reward_winner_sends
+                WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+                  AND status IN ('retryable','pending','settled_unverified'))
+    OR EXISTS (SELECT 1 FROM wallet_sponsored_sends
+                WHERE chain_id=NEW.chain_id AND sender_address=NEW.sender_address
+                  AND status IN ('reserved','submitting','submitted','held')) THEN
     RAISE EXCEPTION 'wallet has outstanding nonce ownership' USING ERRCODE='PWN02';
   END IF;
   RETURN NEW;
@@ -221,7 +238,9 @@ CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON reward_winner_sen
   FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON wallet_sponsored_sends
   FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
-CREATE TRIGGER a_reward_wallet_instruction_v2 BEFORE INSERT ON song_reward_leg_funding_effects
+-- Existing HTTP pause and run-lease checks sort before this insert-only fence.
+-- Already-issued funding observation/recovery updates keep their old authority.
+CREATE TRIGGER reward_wallet_instruction_v2 BEFORE INSERT ON song_reward_leg_funding_effects
   FOR EACH ROW EXECUTE FUNCTION guard_reward_wallet_instruction_v2();
 CREATE FUNCTION lock_reward_winner_attempt_sender_v2() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER AS $$
@@ -275,6 +294,105 @@ RETURNS SETOF reward_wallet_nonce_leases LANGUAGE sql STABLE SECURITY DEFINER AS
      AND l.request_hash=p->>'request_hash'
 $$;
 
+-- Reconcile the maintained audio closure in this unapplied successor only.
+-- Retain its phase, schema, source ownership, provenance, FK and fence checks.
+SELECT pg_advisory_xact_lock(83000003,1);
+CREATE OR REPLACE FUNCTION require_guest_practice_only_schema_phase_v1()
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE trusted_namespace OID; trusted_owner OID;
+BEGIN
+  SELECT relnamespace,relowner INTO STRICT trusted_namespace,trusted_owner
+    FROM pg_class WHERE oid='participation_owners'::regclass;
+  IF NOT EXISTS(SELECT 1 FROM pg_class WHERE oid='guest_learning_schema_phase'::regclass
+      AND relnamespace=trusted_namespace AND relowner=trusted_owner)
+    OR (SELECT count(*) FROM guest_learning_schema_phase
+      WHERE singleton AND phase='practice_only_owner_legacy_audio_settlement_history_v6')<>1
+    OR EXISTS(SELECT 1 FROM unnest(ARRAY[
+      'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks','guest_learning_preferences','guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents','study_sessions_v2','study_review_items','study_session_items_v2','study_spoken_answer_commands','learner_audio_artifacts','guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts','learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'
+      ]) required_name WHERE NOT EXISTS(SELECT 1 FROM pg_class relation
+      WHERE relation.oid=to_regclass(required_name) AND relation.relnamespace=trusted_namespace
+        AND relation.relowner=trusted_owner AND relation.relkind='r'))
+    OR NOT EXISTS(SELECT 1 FROM pg_class sequence_relation
+      WHERE sequence_relation.oid=to_regclass('learner_audio_fence_revision_v1')
+        AND sequence_relation.relnamespace=trusted_namespace
+        AND sequence_relation.relowner=trusted_owner AND sequence_relation.relkind='S')
+    OR EXISTS(SELECT 1 FROM pg_depend dependency
+      LEFT JOIN pg_attrdef default_expression ON dependency.classid='pg_attrdef'::regclass
+        AND default_expression.oid=dependency.objid
+      LEFT JOIN pg_class consumer_relation ON consumer_relation.oid=CASE
+        WHEN dependency.classid='pg_attrdef'::regclass THEN default_expression.adrelid
+        WHEN dependency.classid='pg_class'::regclass THEN dependency.objid END
+      WHERE dependency.refclassid='pg_class'::regclass
+        AND dependency.refobjid='learner_audio_fence_revision_v1'::regclass
+        AND NOT (COALESCE(consumer_relation.relnamespace=trusted_namespace AND consumer_relation.relname IN
+          ('learner_audio_owner_fences','learner_audio_delete_commands'),FALSE)
+          OR (dependency.classid='pg_proc'::regclass AND dependency.objid=
+            'prepare_learner_audio_delete_private_v1(text,text,text,text,text[],text,integer,text)'::regprocedure)))
+    -- This exact account-operation column is not a participation/guest owner.
+    -- Positive relation ownership, validated provenance and immutable history
+    -- must still hold; no other owner column or guest FK is exempted below.
+    OR NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_attribute a ON a.attrelid=c.oid
+      WHERE c.oid=to_regclass('reward_wallet_nonce_leases') AND c.relnamespace=trusted_namespace
+        AND c.relowner=trusted_owner AND c.relkind='r' AND a.attname='owner_id'
+        AND a.attnum>0 AND NOT a.attisdropped AND a.atttypid='text'::regtype AND a.attnotnull)
+    OR NOT EXISTS(SELECT 1 FROM pg_constraint p
+      WHERE p.conrelid=to_regclass('reward_wallet_nonce_leases')
+        AND p.conname='reward_wallet_nonce_provenance' AND p.contype='c' AND p.convalidated)
+    OR NOT EXISTS(SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid=to_regclass('reward_wallet_nonce_leases')
+        AND t.tgname='reward_wallet_nonce_leases_append_only' AND NOT t.tgisinternal
+        AND t.tgenabled='O' AND t.tgtype=27
+        AND t.tgfoid=to_regprocedure('reject_reward_wallet_nonce_history_change_v2()'))
+    OR NOT EXISTS(SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid=to_regclass('reward_wallet_nonce_leases')
+        AND t.tgname='reward_wallet_nonce_leases_no_truncate' AND NOT t.tgisinternal
+        AND t.tgenabled='O' AND t.tgtype=34
+        AND t.tgfoid=to_regprocedure('reject_reward_wallet_nonce_history_change_v2()'))
+    OR EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE c.relnamespace=trusted_namespace AND c.relkind IN ('r','p','f','v','m')
+        AND a.attnum>0 AND NOT a.attisdropped
+        -- Guest source IDs; ordinary account/policy/lease owner fields have
+        -- separate accepted authorities and do not reference guest identities.
+        AND a.attname ~ '(^|_)owner_id$'
+        AND NOT (c.oid=to_regclass('reward_wallet_nonce_leases') AND a.attname='owner_id')
+        AND c.relname NOT IN (
+          'participation_owners','guest_credentials','guest_empty_owner_aliases',
+          'participation_owner_clocks','guest_learning_preferences',
+          'guest_participation_operations','guest_secret_issuance_operations','guest_attachment_intents',
+          'study_sessions_v2','study_review_items','study_session_items_v2',
+          'study_spoken_answer_commands','learner_audio_artifacts',
+          'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
+    OR EXISTS(SELECT 1 FROM pg_constraint fk JOIN pg_class c ON c.oid=fk.conrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE fk.contype='f' AND fk.confrelid=ANY(ARRAY[
+          'participation_owners'::regclass,'guest_credentials'::regclass,
+          'guest_empty_owner_aliases'::regclass,'participation_owner_clocks'::regclass,
+          'guest_learning_preferences'::regclass,'guest_participation_operations'::regclass,
+          'guest_secret_issuance_operations'::regclass,'guest_attachment_intents'::regclass,
+          'guest_resource_session_reservations'::regclass,'guest_resource_provider_calls'::regclass,
+          'guest_resource_release_receipts'::regclass,
+          'learner_audio_owner_fences'::regclass,'learner_audio_delete_commands'::regclass,'learner_audio_delete_sources'::regclass,'learner_audio_delete_target_artifacts'::regclass,'learner_audio_object_names'::regclass,'learner_audio_upload_attempts'::regclass,'learner_audio_delete_batches'::regclass,'learner_audio_delete_batch_items'::regclass,'learner_audio_deleted_objects'::regclass,'guest_study_spoken_captures'::regclass,'guest_study_spoken_checkpoints'::regclass,'learner_audio_account_producer_captures'::regclass,'learner_audio_upload_terminal_facts'::regclass,'learner_audio_upload_cleanup_commands'::regclass,'learner_audio_account_spoken_checkpoints'::regclass,'learner_audio_account_provider_calls'::regclass])
+        AND c.relnamespace=trusted_namespace AND c.relname NOT IN (
+          'participation_owners','guest_credentials','guest_empty_owner_aliases','participation_owner_clocks',
+          'guest_learning_preferences','guest_participation_operations',
+          'guest_secret_issuance_operations','guest_attachment_intents',
+          'study_sessions_v2','study_review_items','study_session_items_v2',
+          'study_spoken_answer_commands','learner_audio_artifacts',
+          'guest_resource_session_reservations','guest_resource_provider_calls','guest_resource_release_receipts',
+          'learner_audio_owner_fences','learner_audio_delete_commands','learner_audio_delete_sources','learner_audio_delete_target_artifacts','learner_audio_object_names','learner_audio_upload_attempts','learner_audio_delete_batches','learner_audio_delete_batch_items','learner_audio_deleted_objects','guest_study_spoken_captures','guest_study_spoken_checkpoints','learner_audio_account_producer_captures','learner_audio_upload_terminal_facts','learner_audio_upload_cleanup_commands','learner_audio_account_spoken_checkpoints','learner_audio_account_provider_calls','learner_audio_legacy_settlements'))
+    -- Legacy producer settlements are account history only; a guest owner can
+    -- never hold one, so admitting the relation adds no guest liability.
+    OR EXISTS(SELECT 1 FROM learner_audio_legacy_settlements s JOIN participation_owners o USING(owner_id)
+      WHERE o.kind<>'account')
+    OR EXISTS(SELECT 1 FROM pg_class WHERE relnamespace=trusted_namespace
+      AND relname IN ('guest_owner_associations','participation_eligibility_decisions',
+        'megapot_owner_shares','megapot_owner_snapshot_leaves','megapot_owner_allocations',
+        'reward_credit_persona_bindings','reward_credit_recipient_selections'))
+  THEN RAISE EXCEPTION 'owner history closure unavailable' USING ERRCODE='GP003'; END IF;
+END $$;
+
 -- Remove ALL inherited/default direct grants on the new authority, including
 -- DELETE/TRUNCATE/UPDATE. No runtime role receives raw DML or V2 execution.
 -- Only existing actual winner-attempt INSERT roles receive lock/context reads.
@@ -282,6 +400,7 @@ $$;
 DO $permissions$
 DECLARE r TEXT; f RECORD; trusted TEXT := current_schema();
 BEGIN
+  EXECUTE format('ALTER FUNCTION require_guest_practice_only_schema_phase_v1() SET search_path TO pg_catalog,%I,pg_temp',trusted);
   REVOKE ALL ON reward_wallet_nonce_leases FROM PUBLIC CASCADE;
   FOR r IN SELECT DISTINCT pg_get_userbyid(a.grantee)
     FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
@@ -289,7 +408,7 @@ BEGIN
   LOOP EXECUTE format('REVOKE ALL ON %I.reward_wallet_nonce_leases FROM %I CASCADE',trusted,r); END LOOP;
   FOR f IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
     WHERE p.pronamespace=to_regnamespace(trusted) AND p.proname IN (
-      'lock_reward_wallet_nonce_sender_v2','reward_wallet_nonce_context_v2',
+      'lock_reward_wallet_nonce_sender_v2','reward_wallet_nonce_ownership_open_v2','reward_wallet_nonce_context_v2',
       'reject_reward_wallet_nonce_history_change_v2','guard_reward_wallet_nonce_lease_v2',
       'record_reward_winner_nonce_lease_v2','guard_reward_wallet_instruction_v2',
       'lock_reward_winner_attempt_sender_v2','reserve_reward_funding_wallet_nonce_v2',

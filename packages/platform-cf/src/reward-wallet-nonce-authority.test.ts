@@ -96,6 +96,33 @@ const reserve = (input = reservation, options: Parameters<typeof fixture>[0] = {
 };
 
 describe("shared EOA nonce authority (offline)", () => {
+  test("pause/lease admission failure is preserved as PR001, never remapped to nonce ownership", async () => {
+    const paused = new ControlPlaneStatementFailed({
+      label: "nonce",
+      sqlState: "PR001",
+      constraint: null,
+      outcomeCertainty: "completed",
+    });
+    const { exit, queries } = await reserve(reservation, { failure: paused });
+    expect(errors(exit)[0]).toBe(paused);
+    expect(queries.filter((q) => q.label.endsWith("funding.reserve"))).toHaveLength(1);
+  });
+
+  test("private owner recovery under retained V1 history grants no fresh nonce authority", async () => {
+    const f = fixture({ head: { highest_nonce: "4", blocked_reason: "unknown_v1_funding" } });
+    const known = await Effect.runPromise(
+      loadRewardFundingWalletNonceOwnerIn(f.transaction, owner),
+    );
+    expect(known).toEqual({ owner, nonce: 4n, authority: "nonce_ownership_only" });
+    expect(f.queries).toHaveLength(1);
+    const fresh = await Effect.runPromiseExit(
+      reserveRewardFundingWalletNonceIn(f.transaction, reservation),
+    );
+    expect(errors(fresh)).toMatchObject([{ code: "wallet_nonce_busy" }]);
+    expect(f.queries.some((q) => q.label.endsWith("funding.reserve"))).toBe(false);
+    expect(known).not.toHaveProperty("fresh_grant");
+  });
+
   test("new funding uses the shared lock, exact history and one guarded SQL allocation", async () => {
     const { exit, queries } = await reserve();
     expect(Exit.isSuccess(exit)).toBe(true);

@@ -131,21 +131,17 @@ END $$;
 
 
 -- Extend the SAME shared context authority with actual V2 receipt consumption.
--- Original274 winner/V1/sponsored semantics and immutable history stay intact.
-CREATE OR REPLACE FUNCTION reward_wallet_nonce_context_v2(p_chain BIGINT,p_sender TEXT,p_own_winner TEXT)
-RETURNS TABLE(highest_nonce BIGINT,blocked_reason TEXT) LANGUAGE sql SECURITY DEFINER AS $$
-  SELECT (SELECT max(nonce) FROM reward_wallet_nonce_leases WHERE chain_id=p_chain AND sender_address=p_sender),
-    CASE WHEN EXISTS(SELECT 1 FROM song_reward_leg_funding_effects WHERE chain_id=p_chain AND sender_address=p_sender) THEN 'unknown_v1_funding'
-      WHEN EXISTS(SELECT 1 FROM wallet_sponsored_sends WHERE chain_id=p_chain AND sender_address=p_sender)
-        OR EXISTS(SELECT 1 FROM reward_winner_sends WHERE chain_id=p_chain AND sender_address=p_sender AND send_id IS DISTINCT FROM p_own_winner AND status IN ('retryable','pending')) THEN 'other_instruction'
-      WHEN EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND
+-- Both legacy fencing and conservative V2 admission consume this one predicate.
+-- V1/sponsored rows remain unknown in the original new-nonce context, unchanged.
+CREATE OR REPLACE FUNCTION reward_wallet_nonce_ownership_open_v2(p_chain BIGINT,p_sender TEXT)
+RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.chain_id=p_chain AND l.sender_address=p_sender AND
         CASE WHEN l.source='song_funding_v2' THEN NOT EXISTS(
           SELECT 1 FROM song_megapot_contributions_v2 c JOIN reward_incoming_receipts_v2 r USING(contribution_id)
           WHERE c.nonce_lease_id=l.lease_id AND c.contribution_id=l.owner_id AND c.account_id=l.account_id
             -- Incoming evidence is uint256; the owned lease nonce remains BIGINT.
             AND (c.state->>'nonceFinalized')::BOOLEAN AND (r.evidence->>'observedConfirmedNonce')::NUMERIC>l.nonce::NUMERIC)
-        ELSE NOT EXISTS(SELECT 1 FROM reward_winner_send_outcomes o WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt AND o.observed_confirmed_nonce>l.nonce) END) THEN 'outstanding_nonce'
-      ELSE NULL END::TEXT
+        ELSE NOT EXISTS(SELECT 1 FROM reward_winner_send_outcomes o WHERE o.send_id=l.winner_send_id AND o.attempt=l.winner_attempt AND o.observed_confirmed_nonce>l.nonce) END)
 $$;
 
 -- This hash preimage contains arrays/scalars only, matching H/J compact JSON.
@@ -184,7 +180,7 @@ END $$;
 DO $principal_acl$
 DECLARE x RECORD; r RECORD; trusted TEXT:=current_schema();
 BEGIN
-  EXECUTE format('ALTER FUNCTION reward_wallet_nonce_context_v2(bigint,text,text) SET search_path TO pg_catalog,%I,pg_temp',trusted);
+  EXECUTE format('ALTER FUNCTION reward_wallet_nonce_ownership_open_v2(bigint,text) SET search_path TO pg_catalog,%I,pg_temp',trusted);
   FOR x IN SELECT oid,relname,relowner FROM pg_class WHERE relnamespace=to_regnamespace(trusted) AND relname IN ('reward_pool_cohort_seals_v2','reward_pool_cohort_members_v2','reward_late_principal_liabilities_v2') LOOP
     EXECUTE format('REVOKE ALL ON %I.%I FROM PUBLIC CASCADE',trusted,x.relname);
     FOR r IN SELECT DISTINCT pg_get_userbyid(a.grantee) AS name FROM pg_class c CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.oid=x.oid AND a.grantee<>0 AND a.grantee<>x.relowner LOOP EXECUTE format('REVOKE ALL ON %I.%I FROM %I CASCADE',trusted,x.relname,r.name); END LOOP;
