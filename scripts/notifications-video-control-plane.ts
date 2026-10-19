@@ -7,6 +7,44 @@ import {
 } from "../packages/platform-cf/src/notifications-video-admission.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
 
+export const NotificationsVideoAction = Schema.Literals([
+  "start-inventory",
+  "start-materialize",
+  "batch",
+  "status",
+  "drain",
+  "cutover",
+]);
+
+export function runNotificationsVideoAdmissionAction(
+  db: ControlPlaneDb["Service"],
+  action: typeof NotificationsVideoAction.Type,
+  plan: NotificationsVideoAdmissionPlan,
+  source: string,
+) {
+  return Effect.gen(function* () {
+    const store = makeNotificationsVideoAdmissionStore(db);
+    if (action === "drain") return yield* store.drain();
+    if (action === "cutover") return yield* store.cutover(plan, source);
+    if (action === "start-inventory" || action === "start-materialize")
+      return yield* store.startAudit({
+        runId: plan.alias_run_id,
+        planSha256: plan.plan_sha256,
+        mode: action === "start-inventory" ? "inventory" : "materialize",
+      });
+    if (action === "batch")
+      return yield* store.auditBatch({ runId: plan.alias_run_id, planSha256: plan.plan_sha256 });
+    return yield* db.execute({
+      label: "notifications.video.audit.status",
+      text: `SELECT run.run_id::text,run.mode,run.complete,run.cursor_created_at,run.cursor_post_id,item.outcome,count(item.submission_id)::int AS items
+      FROM video_alias_audit_runs_v1 run LEFT JOIN video_alias_audit_items_v1 item ON item.run_id=run.run_id
+      WHERE run.run_id=$1::uuid AND run.plan_sha256=$2 GROUP BY run.run_id,item.outcome ORDER BY item.outcome`,
+      values: [plan.alias_run_id, plan.plan_sha256],
+      readonly: true,
+    });
+  });
+}
+
 export async function runNotificationsVideoControlPlane(
   action: string,
   planPath: string,
@@ -15,37 +53,14 @@ export async function runNotificationsVideoControlPlane(
   const plan = Schema.decodeUnknownSync(NotificationsVideoAdmissionPlan, {
     onExcessProperty: "error",
   })(await Bun.file(planPath).json());
-  if (
-    !["start-inventory", "start-materialize", "batch", "status", "drain", "cutover"].includes(
-      action,
-    )
-  )
-    throw new Error("Unknown video admission action");
+  const admittedAction = Schema.decodeUnknownSync(NotificationsVideoAction)(action);
   const source = await Bun.file(
     new URL("../db/postgres/candidates/notifications-video-cutover.sql", import.meta.url),
   ).text();
   return Effect.runPromise(
     Effect.gen(function* () {
       const db = yield* ControlPlaneDb;
-      const store = makeNotificationsVideoAdmissionStore(db);
-      if (action === "drain") return yield* store.drain();
-      if (action === "cutover") return yield* store.cutover(plan, source);
-      if (action === "start-inventory" || action === "start-materialize")
-        return yield* store.startAudit({
-          runId: plan.alias_run_id,
-          planSha256: plan.plan_sha256,
-          mode: action === "start-inventory" ? "inventory" : "materialize",
-        });
-      if (action === "batch")
-        return yield* store.auditBatch({ runId: plan.alias_run_id, planSha256: plan.plan_sha256 });
-      return yield* db.execute({
-        label: "notifications.video.audit.status",
-        text: `SELECT run.run_id::text,run.mode,run.complete,run.cursor_created_at,run.cursor_post_id,item.outcome,count(item.submission_id)::int AS items
-      FROM video_alias_audit_runs_v1 run LEFT JOIN video_alias_audit_items_v1 item ON item.run_id=run.run_id
-      WHERE run.run_id=$1::uuid AND run.plan_sha256=$2 GROUP BY run.run_id,item.outcome ORDER BY item.outcome`,
-        values: [plan.alias_run_id, plan.plan_sha256],
-        readonly: true,
-      });
+      return yield* runNotificationsVideoAdmissionAction(db, admittedAction, plan, source);
     }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connectionString))),
   );
 }
