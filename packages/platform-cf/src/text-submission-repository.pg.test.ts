@@ -23,10 +23,14 @@ import {
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
+import { makeControlPlaneCommunityModerationStore } from "./community-moderation-repository";
 import { makeControlPlaneContentStore } from "./content-repository";
 import { makeControlPlaneFeedStore } from "./feed-repository";
 import { makeControlPlanePersonaStore } from "./persona-repository";
-import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
+import {
+  activatePendingPersonaFixtures,
+  createActivePersonaFixture,
+} from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository";
@@ -40,7 +44,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
-const testCount = 13;
+const testCount = 14;
 let completedTestCount = 0;
 const migrations = await loadPostgresMigrations();
 type LoadedPostgresMigration = (typeof migrations)[number];
@@ -662,6 +666,183 @@ suite("Postgres 17 terminal text submission repository", () => {
         code: "23514",
         constraint: "text_submission_publication_mode_shape",
       });
+    });
+  }, 30_000);
+  test("reports author-declared posts, comments and replies, opens cases, hides and restores without invented evidence", async () => {
+    await withSchema(async (admin, connection) => {
+      await activatePendingPersonaFixtures(admin);
+      await insertActiveCommunityMembershipFixture(admin, {
+        communityId: "text-community",
+        membershipId: "text-other-membership",
+        userId: otherActor.userId,
+      });
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const services = {
+        textPostStore: makeControlPlaneTextSubmissionStore(runtime),
+        personaStore: makeControlPlanePersonaStore(runtime),
+      };
+      const moderation = makeControlPlaneCommunityModerationStore(runtime);
+      const post = await Effect.runPromise(
+        createTextPost({ communityId: "text-community", actor, body }, services),
+      );
+      if (post.published_resource?.kind !== "post") throw new Error("post did not publish");
+      const postId = post.published_resource.post_id;
+      const comment = await Effect.runPromise(
+        createCommentReply(
+          { surface: "comment", targetId: postId, actor, body: commentBody },
+          services,
+        ),
+      );
+      if (comment.published_resource?.kind !== "comment")
+        throw new Error("comment did not publish");
+      const commentId = comment.published_resource.comment_id;
+      const reply = await Effect.runPromise(
+        createCommentReply(
+          {
+            surface: "reply",
+            targetId: commentId,
+            actor,
+            body: { ...commentBody, idempotency_key: "report-flow-reply" },
+          },
+          services,
+        ),
+      );
+      if (reply.published_resource?.kind !== "comment") throw new Error("reply did not publish");
+      const before = (
+        await admin.query(
+          "SELECT to_jsonb(s) AS row FROM text_content_submissions s ORDER BY submission_id",
+        )
+      ).rows;
+      const factsBefore = (
+        await admin.query("SELECT count(*)::int AS count FROM content_publication_outbox")
+      ).rows;
+      for (const target of [
+        { targetType: "post" as const, targetId: postId },
+        { targetType: "comment" as const, targetId: commentId },
+        { targetType: "comment" as const, targetId: reply.published_resource.comment_id },
+      ]) {
+        const report = await Effect.runPromise(
+          moderation.reportTarget({
+            ...target,
+            actor: otherActor,
+            idempotencyKey: `report-${target.targetId}`,
+            reasonCode: "spam",
+            requestHash: "1".repeat(64),
+          }),
+        );
+        expect(report.status).toBe("open");
+        const read = { communityId: "text-community", caseRef: report.case_ref, actor };
+        const detail = await Effect.runPromise(moderation.getCase(read));
+        expect(detail.case.target_status).toBe("published");
+        expect(detail.preview.kind).toBe("text");
+        expect(detail.evidence).toMatchObject({
+          policy_revision: null,
+          policy_hash: null,
+          platform_policy_revision: null,
+          platform_policy_hash: null,
+          community_policy_revision: null,
+          community_policy_hash: null,
+          provider_scores: {},
+          applied_input_types: {},
+        });
+        await expect(
+          Effect.runPromise(moderation.getCase({ ...read, actor: otherActor })),
+        ).rejects.toMatchObject({ reason: "not-found" });
+        await expect(
+          Effect.runPromise(moderation.getCase({ ...read, communityId: "foreign-community" })),
+        ).rejects.toMatchObject({ reason: "not-found" });
+        const hide = {
+          caseRef: report.case_ref,
+          actor,
+          idempotencyKey: `hide-${target.targetId}`,
+          expectedCaseRevision: 1,
+          action: "hide" as const,
+          requestHash: "2".repeat(64),
+        };
+        await expect(
+          Effect.runPromise(moderation.actOnCase({ ...hide, actor: otherActor })),
+        ).rejects.toMatchObject({ reason: "not-found" });
+        const hidden = await Effect.runPromise(moderation.actOnCase(hide));
+        expect(hidden.target_status).toBe("hidden");
+        expect(await Effect.runPromise(moderation.actOnCase(hide))).toEqual(hidden);
+        const hiddenDetail = await Effect.runPromise(moderation.getCase(read));
+        expect(hiddenDetail.case).toMatchObject({
+          target_status: "hidden",
+          case_revision: 2,
+          permitted_actions: ["restore"],
+        });
+        const table = target.targetType === "post" ? "posts" : "comments";
+        const key = target.targetType === "post" ? "post_id" : "comment_id";
+        expect(
+          (await admin.query(`SELECT status FROM ${table} WHERE ${key}=$1`, [target.targetId]))
+            .rows,
+        ).toEqual([{ status: "hidden" }]);
+        await expect(
+          admin.query(
+            `INSERT INTO community_moderation_actions_v2
+          SELECT (jsonb_populate_record(NULL::community_moderation_actions_v2,
+            to_jsonb(a) || jsonb_build_object('action_id', 'forged-' || a.action_id,
+              'idempotency_key', 'forged-policy', 'expected_case_revision', 2,
+              'before_view_state', 'hidden', 'after_view_state', 'resolved',
+              'before_target_status', 'hidden', 'after_target_status', 'published',
+              'action', 'restore', 'platform_policy_hash', repeat('f',64)))).*
+          FROM community_moderation_actions_v2 a WHERE a.action_id=$1`,
+            [hidden.action_id],
+          ),
+        ).rejects.toMatchObject({
+          code: "P0001",
+          message: "moderation action policy evidence snapshot is invalid",
+        });
+        const restore = {
+          ...hide,
+          idempotencyKey: `restore-${target.targetId}`,
+          action: "restore" as const,
+          expectedCaseRevision: 2,
+          requestHash: "3".repeat(64),
+        };
+        await expect(
+          Effect.runPromise(moderation.actOnCase({ ...restore, expectedCaseRevision: 1 })),
+        ).rejects.toMatchObject({ reason: "conflict" });
+        const restored = await Effect.runPromise(moderation.actOnCase(restore));
+        expect(restored.target_status).toBe("published");
+        expect(await Effect.runPromise(moderation.actOnCase(restore))).toEqual(restored);
+        expect(
+          (await admin.query(`SELECT status FROM ${table} WHERE ${key}=$1`, [target.targetId]))
+            .rows,
+        ).toEqual([{ status: "published" }]);
+      }
+      expect(
+        (
+          await admin.query(
+            "SELECT to_jsonb(s) AS row FROM text_content_submissions s ORDER BY submission_id",
+          )
+        ).rows,
+      ).toEqual(before);
+      expect(
+        (await admin.query("SELECT count(*)::int AS count FROM content_publication_outbox")).rows,
+      ).toEqual(factsBefore);
+      expect(
+        (
+          await admin.query(
+            "SELECT platform_policy_revision_id, platform_policy_hash, community_policy_revision_id, community_policy_hash, evidence_ref FROM community_moderation_actions_v2",
+          )
+        ).rows,
+      ).toEqual(
+        Array.from({ length: 6 }, () => ({
+          platform_policy_revision_id: null,
+          platform_policy_hash: null,
+          community_policy_revision_id: null,
+          community_policy_hash: null,
+          evidence_ref: null,
+        })),
+      );
+      expect(
+        (await admin.query("SELECT comment_count FROM posts WHERE post_id=$1", [postId])).rows,
+      ).toEqual([{ comment_count: 2 }]);
+      expect(
+        (await admin.query("SELECT reply_count FROM comments WHERE comment_id=$1", [commentId]))
+          .rows,
+      ).toEqual([{ reply_count: 1 }]);
     });
   }, 30_000);
   test("returns the allocated Unicode slug, including collisions, in creation and replay", async () => {

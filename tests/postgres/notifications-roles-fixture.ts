@@ -318,7 +318,7 @@ export async function exerciseNotificationRoles() {
           await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO ${role}`);
         }
         // Same table default as the accepted operational example, applied BEFORE
-        // application DDL0001..0273. No production role or global/public default ACL is touched.
+        // application DDL0001..0274. No production role or global/public default ACL is touched.
         await admin.query(
           `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT SELECT,INSERT,UPDATE ON TABLES TO ${forward}`,
         );

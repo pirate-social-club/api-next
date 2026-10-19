@@ -52,7 +52,7 @@ function protocol(
   }
   if (options.ledger === "missing") ledger.pop();
   if (options.ledger === "extra")
-    ledger.push({ version: "0274_unexpected.sql", checksum: "0".repeat(64) });
+    ledger.push({ version: "0275_unexpected.sql", checksum: "0".repeat(64) });
   const query = async (sql: string) => {
     const result = (rows: Record<string, unknown>[] = []) => ({ rows, rowCount: rows.length });
     if (sql.startsWith("SET search_path")) {
@@ -131,12 +131,12 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0273 set", () => {
-  expect(migrations).toHaveLength(273);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0274 set", () => {
+  expect(migrations).toHaveLength(274);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 273 }, (_, i) => i + 1),
+    Array.from({ length: 274 }, (_, i) => i + 1),
   );
-  expect(migrations.at(-1)?.version).toBe("0273_notifications_video_alias_audit.sql");
+  expect(migrations.at(-1)?.version).toBe("0274_author_declared_text_moderation_actions.sql");
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {
@@ -207,7 +207,7 @@ for (const plan of [migrations.slice(0, -1), [secondMigration, ...migrations.sli
   test(`missing or noncontiguous plans are refused before defaults: ${plan.length}`, async () => {
     const p = protocol({ plan });
     await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
-      "complete contiguous 0001..0273 plan",
+      "complete contiguous 0001..0274 plan",
     );
     expect(p.events).toEqual(["checksum-loader"]);
   });
