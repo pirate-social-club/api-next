@@ -78,7 +78,7 @@ async function withDiscovery(
     let rootCount = 0;
     const seed = async (root = "charizard") => {
       rootCount++;
-      const delegation = bech32m.encode("bcrt", [
+      const delegation = bech32m.encode("bcs", [
         1,
         ...bech32m.toWords(new Uint8Array(32).fill(rootCount)),
       ]);
