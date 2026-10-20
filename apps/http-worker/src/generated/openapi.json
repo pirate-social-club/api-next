@@ -74223,6 +74223,40 @@
                               },
                               "created_at": {
                                 "type": "string"
+                              },
+                              "current_availability": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "available"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "temporarily_unavailable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -74245,7 +74279,8 @@
                               "quote_ttl_seconds",
                               "reservation_ttl_seconds",
                               "status",
-                              "created_at"
+                              "created_at",
+                              "current_availability"
                             ],
                             "additionalProperties": false
                           }

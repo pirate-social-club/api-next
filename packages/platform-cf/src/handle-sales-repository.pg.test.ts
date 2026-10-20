@@ -18,6 +18,7 @@ import {
   seedSaleNamespace,
   terms,
 } from "./handle-sales.pg-fixture.ts";
+import { decodePageCursor } from "./handle-sales-page-cursor.ts";
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 import { createActivePersonaFixture } from "./persona-wallet.pg-fixture.ts";
@@ -35,7 +36,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-handle-sales-suite-complete\n";
-const testCount = 5;
+const testCount = 7;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -188,6 +189,76 @@ async function seedHealthySaleDependencies(admin: Client, sellerId: string, comm
     await admin.query("SET session_replication_role = origin");
   }
   return { namespaceAuthorityReference, dnsZoneActivationId, zoneDigest };
+}
+
+async function seedPublicHnsDiscovery(admin: Client, scopedConnection: string) {
+  const sellerId = "discovery-hns-seller";
+  const communityId = "community_00000000-0000-4000-8000-00000000a002";
+  await seedAccount(admin, sellerId);
+  const dependencies = await seedHealthySaleDependencies(admin, sellerId, communityId);
+  const store = makeControlPlaneHandleSalesStore(
+    makeDirectPostgresControlPlaneLayer(scopedConnection),
+  );
+  const activationId = "discovery-hns-activation";
+  await Effect.runPromise(
+    store.createSaleNamespace({
+      accountId: sellerId,
+      communityId,
+      idempotencyKey: activationId,
+      activationId,
+      actionId: activationId,
+      namespaceAuthorityReference: dependencies.namespaceAuthorityReference,
+      expectedNamespaceAuthorityGeneration: 1,
+      dnsZoneActivationId: dependencies.dnsZoneActivationId,
+      expectedDnsZoneActivationGeneration: 1,
+      dedicatedRootReplacementConfirmed: true,
+    }),
+  );
+  const baseTerms = terms(activationId);
+  for (const [index, offeringId] of ["discovery-hns-a", "discovery-hns-b"].entries())
+    await Effect.runPromise(
+      store.createOffering({
+        accountId: sellerId,
+        communityId,
+        idempotencyKey: offeringId,
+        offeringId,
+        actionId: offeringId,
+        terms: {
+          ...baseTerms,
+          label_scope: {
+            ...baseTerms.label_scope,
+            availability: {
+              kind: "length_band_v1",
+              min_label_length: 8 + index * 5,
+              max_label_length: 12 + index * 5,
+            },
+          },
+        },
+      }),
+    );
+  const expireHealth = async () => {
+    const result = await admin.query<{ valid_until: Date }>(
+      `INSERT INTO hns_dns_zone_health_observations
+      SELECT (jsonb_populate_record(NULL::hns_dns_zone_health_observations,
+        to_jsonb(health)||jsonb_build_object('health_generation',2,
+          'checked_at',clock_timestamp(),
+          'valid_until',clock_timestamp()+interval '500 milliseconds'))).*
+        FROM hns_dns_zone_health_observations health
+        WHERE dns_zone_activation_id=$1 AND activation_generation=1 AND health_generation=1
+      RETURNING valid_until`,
+      [dependencies.dnsZoneActivationId],
+    );
+    expect(result.rows).toHaveLength(1);
+    await admin.query("SELECT pg_sleep(0.6)");
+    expect(
+      (
+        await admin.query("SELECT clock_timestamp()>$1::timestamptz AS expired", [
+          result.rows[0]?.valid_until,
+        ])
+      ).rows[0]?.expired,
+    ).toBe(true);
+  };
+  return { store, communityId, activationId, expireHealth };
 }
 
 async function seedHealthyDnsSuccessor(admin: Client, dnsZoneActivationId: string) {
@@ -2001,6 +2072,79 @@ suite("community handle sales on PostgreSQL 17", () => {
           }),
         ),
       ).resolves.toBeNull();
+    });
+    completedTestCount += 1;
+  }, 20_000);
+});
+
+suite("public HNS discovery retains current authorization across pages", () => {
+  test("an expired HNS candidate with a missing current offering pointer fails the page", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const fixture = await seedPublicHnsDiscovery(admin, scopedConnection);
+      expect(
+        (await Effect.runPromise(fixture.store.listOfferings({ communityId: fixture.communityId })))
+          .items,
+      ).toHaveLength(2);
+      await admin.query(
+        `INSERT INTO community_handle_offering_revisions
+        SELECT (jsonb_populate_record(NULL::community_handle_offering_revisions,
+          to_jsonb(revision)||jsonb_build_object('offering_id','orphan-hns-discovery'))).*
+          FROM community_handle_offering_revisions revision
+          WHERE offering_id='discovery-hns-a' AND offering_revision=1`,
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM community_handle_offering_current WHERE offering_id='orphan-hns-discovery'",
+          )
+        ).rows[0]?.n,
+      ).toBe(0);
+      await fixture.expireHealth();
+      expect(
+        (
+          await admin.query(
+            "SELECT EXISTS (SELECT 1 FROM effective_community_handle_sale_namespace_v1($1,clock_timestamp())) AS active",
+            [fixture.activationId],
+          )
+        ).rows[0]?.active,
+      ).toBe(false);
+      await expect(
+        Effect.runPromise(fixture.store.listOfferings({ communityId: fixture.communityId })),
+      ).rejects.toMatchObject({ _tag: "HandleSalesStorageFailed" });
+    });
+    completedTestCount += 1;
+  }, 20_000);
+
+  test("a later HNS public page checks database time after its authorized cursor cutoff", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const fixture = await seedPublicHnsDiscovery(admin, scopedConnection);
+      const first = await Effect.runPromise(
+        fixture.store.listOfferings({ communityId: fixture.communityId, limit: 1 }),
+      );
+      expect(first.items.map((item) => item.offering_id)).toEqual(["discovery-hns-b"]);
+      expect(first.items[0]?.family).toBe("hns");
+      expect(first.items[0]).not.toHaveProperty("current_availability");
+      if (first.next_cursor === null) throw new Error("Real HNS continuation cursor required");
+      const cursor = decodePageCursor(first.next_cursor, "offerings", fixture.communityId);
+      if (cursor === null) throw new Error("Decoded HNS cursor cutoff required");
+      await fixture.expireHealth();
+      const effectiveness = (
+        await admin.query(
+          `SELECT EXISTS (SELECT 1 FROM effective_community_handle_sale_namespace_v1($1,$2::timestamptz)) AS at_cutoff,
+            EXISTS (SELECT 1 FROM effective_community_handle_sale_namespace_v1($1,clock_timestamp())) AS now`,
+          [fixture.activationId, cursor.snapshotCutoff],
+        )
+      ).rows[0];
+      expect(effectiveness).toEqual({ at_cutoff: true, now: false });
+      expect(
+        await Effect.runPromise(
+          fixture.store.listOfferings({
+            communityId: fixture.communityId,
+            limit: 1,
+            cursor: first.next_cursor,
+          }),
+        ),
+      ).toEqual({ items: [], next_cursor: null });
     });
     completedTestCount += 1;
   }, 20_000);

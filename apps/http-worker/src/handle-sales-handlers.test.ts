@@ -67,6 +67,48 @@ const workerWith = (
   });
 };
 
+const publicSpacesOffering = {
+  offering_id: "offering_spaces_discovery",
+  offering_revision: 1,
+  offering_hash: "a".repeat(64),
+  community_id: "community_123e4567-e89b-42d3-a456-426614174055",
+  family: "spaces",
+  namespace_root: "harbor",
+  display_root: "harbor",
+  sale_namespace_activation_id: "activation_spaces_discovery",
+  sale_namespace_activation_generation: 1,
+  label_scope: {
+    kind: "label_rule_v2",
+    label_grammar_id: "spaces_subspace_label_v1",
+    reserved_labels_id: "reserved_spaces_discovery",
+    reserved_labels_revision: 1,
+    reserved_labels_hash: "b".repeat(64),
+    availability: { kind: "length_band_v1", min_label_length: 8, max_label_length: 32 },
+  },
+  allocation: { kind: "first_come_v1" },
+  max_active_grants_per_account: 1,
+  fulfillment: { kind: "spaces_native_v1" },
+  qualification_policy: {
+    kind: "curated_policy_v1",
+    policy_id: "policy_spaces_discovery",
+    policy_revision: 1,
+    policy_hash: "c".repeat(64),
+    provider_binding_hash: "d".repeat(64),
+  },
+  pricing: {
+    kind: "free_v1",
+    pricing_id: "pricing_discovery",
+    pricing_revision: 1,
+    pricing_hash: "e".repeat(64),
+    atomic_amount: "0",
+  },
+  issuance: { family: "spaces", driver_id: "spaces_discovery", driver_version: "1" },
+  quote_ttl_seconds: 120,
+  reservation_ttl_seconds: 120,
+  status: "active",
+  created_at: "2026-10-20T00:00:00.000Z",
+} as const;
+
 describe("handle sales HTTP handlers", () => {
   test("anonymous readiness-bearing offering pages are never cacheable", async () => {
     const app = workerWith(
@@ -79,6 +121,22 @@ describe("handle sales HTTP handlers", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ items: [], next_cursor: null });
   });
+
+  test.each(["available", "temporarily_unavailable"] as const)(
+    "public Spaces offering carries strict %s state without cache or transactional work",
+    async (kind) => {
+      const item = { ...publicSpacesOffering, current_availability: { kind } };
+      const app = workerWith(
+        storeWith({ listOfferings: () => Effect.succeed({ items: [item], next_cursor: null }) }),
+      );
+      const response = await app.request(
+        `/communities/${publicSpacesOffering.community_id}/handle-offerings`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({ items: [item], next_cursor: null });
+    },
+  );
 
   test("routes staging Spaces activation and revision through the Spaces store", async () => {
     const communityId = "community_123e4567-e89b-42d3-a456-426614174055";

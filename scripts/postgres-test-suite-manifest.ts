@@ -90,6 +90,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/handle-nationality-authoring.pg.test.ts",
   "packages/platform-cf/src/handle-nationality-checkout.pg.test.ts",
   "packages/platform-cf/src/spaces-sale-namespace.pg.test.ts",
+  "packages/platform-cf/src/spaces-offering-discovery.pg.test.ts",
   "packages/platform-cf/src/spaces-handle-claims.pg.test.ts",
   "packages/platform-cf/src/spaces-member-recovery-repository.pg.test.ts",
   "packages/platform-cf/src/spaces-owner-proof-repository.pg.test.ts",
