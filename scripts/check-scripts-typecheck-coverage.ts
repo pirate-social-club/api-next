@@ -11,7 +11,7 @@ const workflowDirectory = resolve(repositoryRoot, ".github/workflows");
 // semantically typecheck it. The coverage below is derived from the compiler's
 // own file list for each program, never from include strings; the wiring
 // assertion proves each of these commands is reached from `bun run check`, so
-// deleting a program's `tsc --noEmit` invocation cannot leave its files
+// deleting a program's semantic tsc or tsrs invocation cannot leave its files
 // credited as checked.
 export const programTypechecks: ReadonlyMap<string, readonly string[]> = new Map([
   ["tsconfig.json", ["check"]],
@@ -64,14 +64,15 @@ function commandSegments(command: string): readonly string[] | undefined {
 }
 
 // The repository's supported semantic typecheck is exactly
-// `tsc --noEmit -p CONFIG` or `tsc --noEmit --project CONFIG`. Exact token
+// `tsc --noEmit -p CONFIG` or `tsrs --noEmit -p CONFIG`, also accepting
+// the `--project` spelling for either compiler. Exact token
 // matching rejects extra and duplicate options, so `--noCheck`, listing-only
 // invocations and prefix-named configurations credit nothing.
 function segmentTypechecksConfig(segment: string, config: string): boolean {
   const tokens = segment.trim().split(/\s+/);
   if (tokens.length !== 4) return false;
   const [executable, noEmit, flag, argument] = tokens;
-  if (executable !== "tsc" || noEmit !== "--noEmit") return false;
+  if ((executable !== "tsc" && executable !== "tsrs") || noEmit !== "--noEmit") return false;
   if (flag !== "-p" && flag !== "--project") return false;
   return argument === config;
 }
@@ -197,7 +198,7 @@ export async function main(): Promise<void> {
   if (unwired.length > 0) {
     throw new Error(
       [
-        "Credited typecheck programs are not demonstrably executed by bun run check; restore each `tsc --noEmit -p <config>` in a package script the check chain reaches:",
+        "Credited typecheck programs are not demonstrably executed by bun run check; restore each `tsc --noEmit -p <config>` or `tsrs --noEmit -p <config>` in a package script the check chain reaches:",
         ...unwired.map((path) => `- ${path}`),
       ].join("\n"),
     );

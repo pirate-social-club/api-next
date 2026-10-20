@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  commandTypechecksConfig,
   entryPointsFromTexts,
   findUncovered,
   programTypechecks,
@@ -203,9 +204,26 @@ describe("scripts typecheck coverage", () => {
     });
   });
 
+  test.each(["tsc", "tsrs"])("keeps %s semantic-check recognition strict", (compiler) => {
+    const config = "tsconfig.scripts.json";
+    expect(commandTypechecksConfig(`${compiler} --noEmit -p ${config}`, config)).toBe(true);
+    expect(commandTypechecksConfig(`${compiler} --noEmit --project ${config}`, config)).toBe(true);
+    for (const command of [
+      `${compiler} --noEmit --noCheck -p ${config}`,
+      `${compiler} --noEmit --listFilesOnly -p ${config}`,
+      `${compiler} --noEmit -p ${config}.backup`,
+      `${compiler} --noEmit -p ${config} -p ${config}`,
+      `${compiler}-helper --noEmit -p ${config}`,
+      `echo ${compiler} --noEmit -p ${config}`,
+      `# note && ${compiler} --noEmit -p ${config}`,
+    ]) {
+      expect(commandTypechecksConfig(command, config)).toBe(false);
+    }
+  });
+
   test("runs the scripts program and the coverage regression through check", () => {
     expect(packageJson.scripts["check:scripts"]).toBe(
-      "tsc --noEmit -p tsconfig.scripts.json && bun scripts/check-scripts-typecheck-coverage.ts",
+      "tsrs --noEmit -p tsconfig.scripts.json && bun scripts/check-scripts-typecheck-coverage.ts",
     );
     expect(packageJson.scripts.check?.match(/bun run check:scripts/g)).toHaveLength(1);
   });
