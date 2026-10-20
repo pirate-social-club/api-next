@@ -1,4 +1,5 @@
 import type {
+  CommunityHandleOfferingDiscoveryV1,
   CommunityHandleOfferingManagementItemV3,
   CommunityHandleOfferingV4,
   CreateHandleQuoteResultV3,
@@ -248,7 +249,7 @@ export interface HandleSalesStore {
   readonly listOfferings: (
     input: Readonly<{ communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOfferingV4>,
+    PageResult<CommunityHandleOfferingDiscoveryV1>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getManagementContext: (
