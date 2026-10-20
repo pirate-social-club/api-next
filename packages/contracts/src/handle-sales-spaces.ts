@@ -43,6 +43,11 @@ import { PersonaIdV1 } from "./personas.ts";
 export const SpacesNetworkV1 = Schema.Literals(["mainnet", "testnet4", "regtest"]);
 export type SpacesNetworkV1 = Schema.Schema.Type<typeof SpacesNetworkV1>;
 
+export const SpacesMemberRequestCursorV1 = Schema.String.check(
+  Schema.isMaxLength(2048),
+  Schema.isPattern(/^smr1\.[A-Za-z0-9_-]+$/u),
+);
+
 /** The §2.2 canonical Spaces root rule; IDN roots keep their ACE form. */
 export const SpacesCanonicalRootV1 = Schema.String.check(
   Schema.makeFilter((value) =>
@@ -510,3 +515,71 @@ export const HandleClaimV3 = Schema.Union([
   }),
   HandleSpacesClaimV1,
 ]);
+
+const SpacesMemberRequestActionV1 = Schema.Struct({
+  action_id: BoundedIdentifier,
+  endpoint_template: Schema.Literals(["/handle-quotes", "/handle-reservations", "/handle-claims"]),
+  idempotency_key: IdempotencyKey,
+  request_hash: Sha256Hex,
+  committed_at: CanonicalInstant,
+});
+
+const SpacesMemberRequestContextV1 = Schema.Struct({
+  community_id: BoundedIdentifier,
+  offering_id: BoundedIdentifier,
+  offering_revision: PositiveInteger,
+  offering_hash: Sha256Hex,
+  sale_namespace_activation_id: BoundedIdentifier,
+  sale_namespace_activation_generation: PositiveInteger,
+  owner_persona_id: PersonaIdV1,
+  network: SpacesNetworkV1,
+  namespace_root: SpacesCanonicalRootV1,
+});
+
+/** Current private progress of retained commands, not historical response bytes. */
+export const SpacesMemberRequestReadbackV1 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("quote"),
+    action: SpacesMemberRequestActionV1,
+    context: SpacesMemberRequestContextV1,
+    quote: HandleSpacesQuoteV1,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("reservation"),
+    action: SpacesMemberRequestActionV1,
+    context: SpacesMemberRequestContextV1,
+    reservation: HandleSpacesReservationV1,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("claim"),
+    action: SpacesMemberRequestActionV1,
+    context: SpacesMemberRequestContextV1,
+    claim: HandleSpacesClaimV1,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("quote_refusal"),
+    action: SpacesMemberRequestActionV1,
+    offering_id: BoundedIdentifier,
+    owner_persona_id: PersonaIdV1,
+    immutable_context: Schema.Literal("not_recorded"),
+    result_kind: Schema.Literal("eligibility_required"),
+    reason: Schema.Literals(["evidence_required", "qualification_unsatisfied"]),
+  }),
+]);
+export type SpacesMemberRequestReadbackV1 = Schema.Schema.Type<
+  typeof SpacesMemberRequestReadbackV1
+>;
+
+/** No result of this GET establishes that an uncertain writer has finished. */
+export const SpacesMemberRequestReadbackPageV1 = Schema.Struct({
+  object: Schema.Literal("spaces_member_request_readback_v1"),
+  coverage: Schema.Literal("retained_committed_actions_with_stored_scope"),
+  scope_incomplete_actions: Schema.Literal("omitted_when_scope_unprovable"),
+  unlocated_request_outcome: Schema.Literal("unknown"),
+  new_submission_admission: Schema.Literal("not_established_by_readback"),
+  items: Schema.Array(SpacesMemberRequestReadbackV1).check(Schema.isMaxLength(100)),
+  next_cursor: Schema.NullOr(SpacesMemberRequestCursorV1),
+});
+export type SpacesMemberRequestReadbackPageV1 = Schema.Schema.Type<
+  typeof SpacesMemberRequestReadbackPageV1
+>;

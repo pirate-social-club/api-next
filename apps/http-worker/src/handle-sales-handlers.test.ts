@@ -10,7 +10,7 @@ import {
 } from "@pirate/application/use-cases/handles/spaces-sale-namespaces";
 import { Effect } from "effect";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
-import { createHttpWorker } from "./transport.ts";
+import { createHttpWorker, type Principal } from "./transport.ts";
 
 const rawToken = `hgrt_${"a".repeat(43)}`;
 
@@ -36,13 +36,18 @@ const storeWith = (overrides: Partial<HandleSalesStore>): HandleSalesStore =>
     createReservation: unexpected,
     submitFreeClaim: unexpected,
     getClaim: unexpected,
+    listSpacesMemberRequests: unexpected,
     listPersonaGrants: unexpected,
     getPublicGrant: unexpected,
     getPublicPersona: unexpected,
     ...overrides,
   }) as HandleSalesStore;
 
-const workerWith = (store: HandleSalesStore, spacesSaleNamespaces?: SpacesSaleNamespaceStore) => {
+const workerWith = (
+  store: HandleSalesStore,
+  spacesSaleNamespaces?: SpacesSaleNamespaceStore,
+  principal: Principal = { kind: "user", subject: "account-http" },
+) => {
   let sequence = 0;
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
@@ -57,7 +62,7 @@ const workerWith = (store: HandleSalesStore, spacesSaleNamespaces?: SpacesSaleNa
         reveal: () => Effect.succeed(rawToken),
       },
     }),
-    authenticate: () => ({ kind: "user", subject: "account-http" }),
+    authenticate: () => principal,
     authorize: () => undefined,
   });
 };
@@ -549,5 +554,78 @@ describe("handle sales HTTP handlers", () => {
     expect(await response.json()).toMatchObject({
       error: { code: "bad_request", retryable: false },
     });
+  });
+});
+
+describe("private Spaces member readback HTTP", () => {
+  const empty = {
+    object: "spaces_member_request_readback_v1" as const,
+    coverage: "retained_committed_actions_with_stored_scope" as const,
+    scope_incomplete_actions: "omitted_when_scope_unprovable" as const,
+    unlocated_request_outcome: "unknown" as const,
+    new_submission_admission: "not_established_by_readback" as const,
+    items: [],
+    next_cursor: null,
+  };
+  test("uses only the user principal and preserves all filters without command calls", async () => {
+    const seen: unknown[] = [];
+    const worker = workerWith(
+      storeWith({
+        listSpacesMemberRequests: (input) => {
+          seen.push(input);
+          return Effect.succeed(empty);
+        },
+      }),
+    );
+    const response = await worker.request(
+      "/users/me/spaces-handle-requests?community_id=community-a&offering_id=offering-old&namespace_root=charizard&network=regtest&limit=7&cursor=smr1.YQ",
+      { headers: { authorization: "Bearer test" } },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual(empty);
+    expect(seen).toEqual([
+      {
+        accountId: "account-http",
+        communityId: "community-a",
+        offeringId: "offering-old",
+        namespaceRoot: "charizard",
+        network: "regtest",
+        limit: 7,
+        cursor: "smr1.YQ",
+      },
+    ]);
+    const injected = await worker.request("/users/me/spaces-handle-requests?account_id=foreign", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(injected.status).toBe(400);
+    expect(injected.headers.get("cache-control")).toBe("private, no-store");
+    expect(seen).toHaveLength(1);
+  });
+  test("refuses admin and machine callers even with a permissive authorization test adapter", async () => {
+    for (const kind of ["admin", "agent", "device"] as const) {
+      const response = await workerWith(storeWith({}), undefined, {
+        kind,
+        subject: "foreign",
+      }).request("/users/me/spaces-handle-requests", { headers: { authorization: "Bearer test" } });
+      expect(response.status).toBe(401);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+    }
+    const response = await workerWith(storeWith({})).request("/users/me/spaces-handle-requests");
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+  });
+  test("cursor refusal remains private and does not leak the cursor", async () => {
+    const response = await workerWith(
+      storeWith({
+        listSpacesMemberRequests: () =>
+          Effect.fail(new HandleSalesPageRejected({ reason: "invalid_cursor" })),
+      }),
+    ).request("/users/me/spaces-handle-requests?cursor=smr1.cHJpdmF0ZQ", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.text()).not.toContain("cHJpdmF0ZQ");
   });
 });

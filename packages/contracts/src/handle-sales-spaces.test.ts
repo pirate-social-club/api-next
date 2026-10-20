@@ -7,6 +7,7 @@ import {
   HandleSpacesClaimV1,
   HandleSpacesQuoteV1,
   HandleSpacesReservationV1,
+  SpacesMemberRequestReadbackPageV1,
   SpacesOperatorFundingV1,
   SpacesSaleNamespaceActivationV1,
   SpacesSaleReadinessV1,
@@ -362,5 +363,86 @@ describe("Spaces quote, reservation, and claim contracts", () => {
     expect(
       decodes(CreateHandleSpacesQuoteResultV1, { kind: "quoted", quote, replayed: false }),
     ).toBe(true);
+  });
+});
+
+describe("private Spaces member retained request readback", () => {
+  const action = {
+    action_id: "quote-action-1",
+    endpoint_template: "/handle-quotes",
+    idempotency_key: "quote-key-1",
+    request_hash: "a".repeat(64),
+    committed_at: quote.quoted_at,
+  };
+  const context = {
+    community_id: activation.community_id,
+    offering_id: quote.offering_id,
+    offering_revision: quote.offering_revision,
+    offering_hash: quote.offering_hash,
+    sale_namespace_activation_id: quote.sale_namespace_activation_id,
+    sale_namespace_activation_generation: quote.sale_namespace_activation_generation,
+    owner_persona_id: quote.owner_persona_id,
+    network: quote.recipient.network,
+    namespace_root: quote.handle.namespace_root,
+  };
+  const page = {
+    object: "spaces_member_request_readback_v1",
+    coverage: "retained_committed_actions_with_stored_scope",
+    scope_incomplete_actions: "omitted_when_scope_unprovable",
+    unlocated_request_outcome: "unknown",
+    new_submission_admission: "not_established_by_readback",
+    items: [{ kind: "quote", action, context, quote }],
+    next_cursor: null,
+  };
+  test("requires uncertainty and rejects invented admission or private wallet material", () => {
+    expect(decodes(SpacesMemberRequestReadbackPageV1, page)).toBe(true);
+    expect(decodes(SpacesMemberRequestReadbackPageV1, { ...page, items: [] })).toBe(true);
+    for (const value of [
+      { ...page, new_submission_admission: "allowed" },
+      { ...page, unlocated_request_outcome: "not_started" },
+      { ...page, items: [{ ...page.items[0], context: { ...context, wallet_token: "secret" } }] },
+      { ...page, items: Array.from({ length: 101 }, () => page.items[0]) },
+      { ...page, next_cursor: "other.cursor" },
+    ])
+      expect(decodes(SpacesMemberRequestReadbackPageV1, value)).toBe(false);
+  });
+  test("refused actions remain context-incomplete and scope selectors are closed", () => {
+    expect(
+      decodes(SpacesMemberRequestReadbackPageV1, {
+        ...page,
+        items: [
+          {
+            kind: "quote_refusal",
+            action,
+            offering_id: quote.offering_id,
+            owner_persona_id: quote.owner_persona_id,
+            immutable_context: "not_recorded",
+            result_kind: "eligibility_required",
+            reason: "evidence_required",
+          },
+        ],
+      }),
+    ).toBe(true);
+    const endpoint = handleSalesSpacesRegistry.ListSpacesMemberRequests;
+    expect(endpoint.auth).toEqual({ policy: { kind: "user" } });
+    expect(endpoint.cacheControl).toBe("private, no-store");
+    expect(
+      decodes(endpoint.request.query, {
+        limit: "100",
+        namespace_root: "charizard",
+        network: "regtest",
+      }),
+    ).toBe(true);
+    for (const query of [
+      { account_id: "someone" },
+      { limit: "101" },
+      { limit: "0" },
+      { limit: "1.5" },
+      { network: "signet" },
+      { namespace_root: "Charizard" },
+      { cursor: "bad" },
+    ]) {
+      expect(decodes(endpoint.request.query, query)).toBe(false);
+    }
   });
 });
