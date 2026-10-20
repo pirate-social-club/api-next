@@ -80,6 +80,63 @@ type UpgradeFixture = VideoMatrixFixture &
     upgrade: () => Promise<void>;
   }>;
 
+// Full-schema DROP CASCADE exceeds the default PG18 lock table. Reduce only
+// this disposable schema in small committed groups after the proof; unchanged
+// withInbox still owns final schema removal and role/socket cleanup.
+async function reduceOwnedUpgradeSchema(admin: Client, schema: string, expectedOid: number) {
+  if (!/^api_next_notifications_[0-9a-f]{32}$/u.test(schema))
+    throw new Error("Owned video upgrade schema required for cleanup");
+  const identity = async () =>
+    (
+      await admin.query<{ oid: number; owner: string; actor: string }>(
+        `SELECT oid,pg_get_userbyid(nspowner) AS owner,current_user AS actor
+        FROM pg_catalog.pg_namespace WHERE nspname=$1`,
+        [schema],
+      )
+    ).rows;
+  const initial = await identity();
+  expect(initial).toHaveLength(1);
+  expect(initial[0]).toEqual({ oid: expectedOid, owner: "postgres", actor: "postgres" });
+  for (let batch = 0; batch < 128; batch++) {
+    await admin.query("BEGIN");
+    try {
+      expect(await identity()).toEqual(initial);
+      const group = (
+        await admin.query<{ statement: string }>(
+          `SELECT pg_catalog.format('DROP %s IF EXISTS %I.%I CASCADE',
+            CASE relkind WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'TABLE'
+              WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
+              WHEN 'f' THEN 'FOREIGN TABLE' WHEN 'c' THEN 'TYPE' END,
+            $1::text,relname) AS statement
+          FROM pg_catalog.pg_class WHERE relnamespace=$2::oid
+            AND relkind IN ('r','p','v','m','f','c')
+          ORDER BY CASE relkind WHEN 'v' THEN 0 WHEN 'm' THEN 0
+            WHEN 'r' THEN 1 WHEN 'p' THEN 1 WHEN 'f' THEN 2 WHEN 'c' THEN 3 END,relname
+          LIMIT 10`,
+          [schema, initial[0]?.oid],
+        )
+      ).rows;
+      for (const { statement } of group) await admin.query(statement);
+      const locks = Number(
+        (await admin.query("SELECT count(*)::int AS n FROM pg_locks WHERE pid=pg_backend_pid()"))
+          .rows[0]?.n,
+      );
+      if (!Number.isSafeInteger(locks) || locks > 1000)
+        throw new Error("Video upgrade cleanup lock ceiling exceeded");
+      await admin.query("COMMIT");
+      if (group.length === 0) return;
+    } catch (error) {
+      try {
+        await admin.query("ROLLBACK");
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Video upgrade cleanup rollback failed");
+      }
+      throw error;
+    }
+  }
+  throw new Error("Video upgrade cleanup batch bound exceeded");
+}
+
 export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) => Promise<void>) {
   const base = validateVideoUpgradeTarget(
     process.env.CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_TEST_URL,
@@ -113,6 +170,12 @@ export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) =>
           .rows,
       ).toEqual(prefix);
       const readerUrl = new URL(f.url);
+      const schemaOid = Number(
+        (await f.admin.query("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname=$1", [schema]))
+          .rows[0]?.oid,
+      );
+      if (!Number.isSafeInteger(schemaOid) || schemaOid <= 0)
+        throw new Error("Original owned upgrade schema identity required");
       readerUrl.username = runtimeRole;
       readerUrl.password = password;
       const runtimeClient = new Client({ connectionString: readerUrl.toString() });
@@ -142,15 +205,29 @@ export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) =>
             .rows,
         ).toEqual(migrations.map(({ version, checksum }) => ({ version, checksum })));
       };
-      await use({
-        ...f,
-        runtimeClient,
-        runtimeRole,
-        inheritedRole,
-        readerRuntime: makeDirectPostgresControlPlaneLayer(readerUrl.toString()),
-        upgrade,
-      });
-      expect(upgradeAttempted).toBe(true);
+      const failures: unknown[] = [];
+      try {
+        await use({
+          ...f,
+          runtimeClient,
+          runtimeRole,
+          inheritedRole,
+          readerRuntime: makeDirectPostgresControlPlaneLayer(readerUrl.toString()),
+          upgrade,
+        });
+        expect(upgradeAttempted).toBe(true);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        requireScopedTarget(f.url, schema, base);
+        await reduceOwnedUpgradeSchema(f.admin, schema, schemaOid);
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, "Video upgrade proof and bounded cleanup failed");
     },
     async (admin, schema, scopedUrl) => {
       requireScopedTarget(scopedUrl, schema, base);

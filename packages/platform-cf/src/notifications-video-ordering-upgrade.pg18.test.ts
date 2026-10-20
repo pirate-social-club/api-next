@@ -163,9 +163,12 @@ suite("populated274-to275 video ordering on PostgreSQL18.6", () => {
         expect(fn.body_sha256).not.toBe(beforeFunctions[index]?.body_sha256);
       expect(await readVideoUpgradeHistory(f)).toEqual(beforeHistory);
       const descending = [...orderedRoots].reverse();
+      const firstPageTail = descending[19];
+      if (firstPageTail === undefined)
+        throw new Error("Expected first root page boundary required");
       const first = await readRoots();
       expect(ids(first)).toEqual(descending.slice(0, 20));
-      expect(first.next_cursor).toBe(descending[19]);
+      expect(first.next_cursor).toBe(firstPageTail);
       if (!first.next_cursor) throw new Error("Second root page required");
       const second = await readRoots(first.next_cursor);
       expect(ids(second)).toEqual(descending.slice(20, 40));
