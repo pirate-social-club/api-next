@@ -5,6 +5,10 @@ import {
   makeSpacesCurrentAuthority,
   type SpacesCurrentAuthority,
 } from "@pirate/platform-cf/spaces-current-authority";
+import {
+  makeSpacesDiscoveryAuthority,
+  type SpacesDiscoveryAuthority,
+} from "@pirate/platform-cf/spaces-discovery-authority";
 import { makeSpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import { makeSpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { makeControlPlaneSpacesRegistryStore } from "@pirate/platform-cf/spaces-registry-repository";
@@ -41,7 +45,10 @@ type SpacesOptions = Pick<
   HttpWorkerOptions,
   "spacesRegistry" | "spacesOwnerProof" | "spacesRouteAttachment" | "spacesOperatorAssignments"
 > &
-  Readonly<{ currentSpacesAuthority: SpacesCurrentAuthority }>;
+  Readonly<{
+    currentSpacesAuthority: SpacesCurrentAuthority;
+    spacesDiscoveryAuthority: SpacesDiscoveryAuthority;
+  }>;
 
 /** The owner ceremony and private operator channel are staging-only until pilot acceptance. */
 export function makeSpacesProductionComposition(
@@ -50,7 +57,7 @@ export function makeSpacesProductionComposition(
   environment: "development" | "staging" | "production",
 ): SpacesOptions {
   if (bindings.SPACES_RUNTIME_ENABLED === undefined || bindings.SPACES_RUNTIME_ENABLED === "false")
-    return { currentSpacesAuthority: null };
+    return { currentSpacesAuthority: null, spacesDiscoveryAuthority: null };
   if (bindings.SPACES_RUNTIME_ENABLED !== "true" || environment !== "staging")
     throw new Error("Spaces runtime configuration is invalid");
   const credentials = {
@@ -137,6 +144,9 @@ export function makeSpacesProductionComposition(
       ),
   };
   return {
+    spacesDiscoveryAuthority: makeSpacesDiscoveryAuthority(
+      makeSpacesRootAuthorityObserver(credentials, fetch, 3_000),
+    ),
     currentSpacesAuthority: makeSpacesCurrentAuthority(
       makeSpacesRootAuthorityObserver(credentials, fetch, 3_000),
     ),

@@ -301,6 +301,27 @@ export const CommunityHandleOfferingV4 = Schema.Union([
 ]);
 export type CommunityHandleOfferingV4 = Schema.Schema.Type<typeof CommunityHandleOfferingV4>;
 
+/** Advisory public discovery only; transaction and management terms stay V4. */
+export const CommunityHandleSpacesOfferingDiscoveryV1 = Schema.Struct({
+  ...CommunityHandleSpacesOfferingV1.fields,
+  current_availability: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("available") }),
+    Schema.Struct({ kind: Schema.Literal("temporarily_unavailable") }),
+  ]),
+});
+export type CommunityHandleSpacesOfferingDiscoveryV1 = Schema.Schema.Type<
+  typeof CommunityHandleSpacesOfferingDiscoveryV1
+>;
+
+export const CommunityHandleOfferingDiscoveryV1 = Schema.Union([
+  CommunityHandleOfferingV4.members[0],
+  CommunityHandleOfferingV4.members[1],
+  CommunityHandleSpacesOfferingDiscoveryV1,
+]);
+export type CommunityHandleOfferingDiscoveryV1 = Schema.Schema.Type<
+  typeof CommunityHandleOfferingDiscoveryV1
+>;
+
 export const CommunityHandleOfferingManagementItemV3 = Schema.Struct({
   offering: CommunityHandleOfferingV4,
   effectiveness: CommunityHandleOfferingManagementItemV2.fields.effectiveness,

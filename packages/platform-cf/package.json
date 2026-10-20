@@ -27,6 +27,7 @@
     "./spaces-community-route-attachment-repository": "./src/spaces-community-route-attachment-repository.ts",
     "./spaces-root-observation-targets": "./src/spaces-root-observation-targets.ts",
     "./spaces-current-authority": "./src/spaces-current-authority.ts",
+    "./spaces-discovery-authority": "./src/spaces-discovery-authority.ts",
     "./spaces-root-authority-observer": "./src/spaces-root-authority-observer.ts",
     "./spaces-sale-namespace-repository": "./src/spaces-sale-namespace-repository.ts",
     "./spaces-final-issuance-verifier": "./src/spaces-final-issuance-verifier.ts",

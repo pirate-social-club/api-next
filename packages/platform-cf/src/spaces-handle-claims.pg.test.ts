@@ -495,7 +495,11 @@ suite("Spaces quote, reservation, and atomic claim", () => {
       // The persisted observation is still ready. Only the current authority
       // capability supplies the independent refusal in this hermetic case.
       expect(await databaseReady()).toBe(true);
-      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toEqual([]);
+      // Discovery retains visibility during the verification pause. The
+      // separate strict authority below still rejects every new write.
+      expect((await Effect.runPromise(sales.listOfferings({ communityId }))).items).toMatchObject([
+        { family: "spaces", current_availability: { kind: "temporarily_unavailable" } },
+      ]);
       expect(
         await failureOf(sales.createQuote(quoteInput(buyer, "afterauthority", "authority-new"))),
       ).toEqual(rejected("sale_namespace_inactive", true));
