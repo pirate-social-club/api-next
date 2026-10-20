@@ -193,9 +193,16 @@ async function seedHealthySaleDependencies(admin: Client, sellerId: string, comm
 
 async function seedPublicHnsDiscovery(admin: Client, scopedConnection: string) {
   const sellerId = "discovery-hns-seller";
+  const recipientId = "discovery-hns-recipient";
   const communityId = "community_00000000-0000-4000-8000-00000000a002";
-  await seedAccount(admin, sellerId);
+  const sellerPersona = await seedAccount(admin, sellerId);
+  const recipientPersona = await seedAccount(admin, recipientId);
   const dependencies = await seedHealthySaleDependencies(admin, sellerId, communityId);
+  for (const binding of [
+    { accountId: sellerId, personaId: sellerPersona },
+    { accountId: recipientId, personaId: recipientPersona },
+  ])
+    await bindPersonaToCommunity(admin, { ...binding, communityId });
   const store = makeControlPlaneHandleSalesStore(
     makeDirectPostgresControlPlaneLayer(scopedConnection),
   );
@@ -214,28 +221,57 @@ async function seedPublicHnsDiscovery(admin: Client, scopedConnection: string) {
       dedicatedRootReplacementConfirmed: true,
     }),
   );
-  const baseTerms = terms(activationId);
-  for (const [index, offeringId] of ["discovery-hns-a", "discovery-hns-b"].entries())
-    await Effect.runPromise(
-      store.createOffering({
-        accountId: sellerId,
-        communityId,
-        idempotencyKey: offeringId,
-        offeringId,
-        actionId: offeringId,
-        terms: {
-          ...baseTerms,
-          label_scope: {
-            ...baseTerms.label_scope,
-            availability: {
-              kind: "length_band_v1",
-              min_label_length: 8 + index * 5,
-              max_label_length: 12 + index * 5,
-            },
-          },
-        },
-      }),
+  await Effect.runPromise(
+    store.createOffering({
+      accountId: sellerId,
+      communityId,
+      idempotencyKey: "discovery-hns-a",
+      offeringId: "discovery-hns-a",
+      actionId: "discovery-hns-a",
+      terms: terms(activationId),
+    }),
+  );
+  // A sale activation admits one active broad offering. Use the maintained
+  // real recipient-token/policy flow for its supported exact-grant sibling.
+  const sales = makeHandleSalesService(store);
+  const vault = makeHandleRecipientTokenVault({
+    hmacKeys: `h1:${key(11)}`,
+    envelopeKeys: `e1:${key(12)}`,
+  });
+  let sequence = 0;
+  const run = <A, E>(effect: Effect.Effect<A, E, IdGen | HandleRecipientTokenVault>) =>
+    Effect.runPromise(
+      effect.pipe(
+        Effect.provideService(IdGen, { next: Effect.sync(() => `discovery-${++sequence}`) }),
+        Effect.provideService(HandleRecipientTokenVault, vault),
+      ),
     );
+  const token = await run(
+    sales.createRecipientToken({
+      accountId: recipientId,
+      communityId,
+      idempotencyKey: "discovery-recipient-token",
+    }),
+  );
+  const policy = await run(
+    sales.createQualificationPolicy({
+      accountId: sellerId,
+      communityId,
+      idempotencyKey: "discovery-exact-policy",
+      recipientToken: token.recipient_token,
+      expectedAccountDirectoryBindingVersion: "1",
+    }),
+  );
+  await Effect.runPromise(
+    store.createOffering({
+      accountId: sellerId,
+      communityId,
+      idempotencyKey: "discovery-hns-b",
+      offeringId: "discovery-hns-b",
+      actionId: "discovery-hns-b",
+      terms: directGrantTerms(activationId, policy.qualification_policy, "discoverysample"),
+    }),
+  );
   const expireHealth = async () => {
     const result = await admin.query<{ valid_until: Date }>(
       `INSERT INTO hns_dns_zone_health_observations

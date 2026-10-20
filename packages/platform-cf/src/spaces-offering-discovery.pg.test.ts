@@ -28,7 +28,7 @@ const connection = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !connection)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 const suite = connection ? describe : describe.skip;
-const communityId = "community-spaces-discovery";
+const communityId = "community_00000000-0000-4000-8000-00000000a003";
 const seller = "spaces-discovery-owner";
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 
