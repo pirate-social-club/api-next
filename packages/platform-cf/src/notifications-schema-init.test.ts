@@ -7,6 +7,8 @@ import {
   inspectScopedConnection,
 } from "./notifications-schema-init.pg-fixture.ts";
 
+import { validateVideoUpgradeTarget } from "./notifications-video-ordering-upgrade.pg18.fixture.ts";
+
 type Operations = NonNullable<Parameters<typeof initializeNotificationsInboxSchema>[1]>;
 type Inspection = Awaited<ReturnType<Operations["inspectScoped"]>>;
 const migrations = await loadPostgresMigrations(); // Files/checksums only; no DB.
@@ -39,12 +41,16 @@ function protocol(
     migrateError?: Error;
     dryRun?: boolean;
     partialApply?: boolean;
+    mode?: "full_migrations" | "pre_video_ordering_migrations";
   } = {},
 ) {
   const events: string[] = [];
   let defaultsInstalled = false;
   const plan = options.plan ?? migrations;
-  const ledger = migrations.map(({ version, checksum }) => ({ version, checksum }));
+  const selectedPlan = options.mode === "pre_video_ordering_migrations" ? plan.slice(0, -1) : plan;
+  const ledger = (
+    options.mode === "pre_video_ordering_migrations" ? migrations.slice(0, -1) : migrations
+  ).map(({ version, checksum }) => ({ version, checksum }));
   if (options.ledger === "checksum") {
     const first = ledger[0];
     if (!first) throw new Error("Nonempty repository ledger required");
@@ -87,7 +93,7 @@ function protocol(
     throw new Error(`Unexpected fixture statement: ${sql}`);
   };
   const input = {
-    mode: "full_migrations" as const,
+    mode: options.mode ?? "full_migrations",
     admin: { query } as unknown as Pick<Client, "query">,
     schema,
     connectionString,
@@ -116,14 +122,16 @@ function protocol(
       expect(defaultsInstalled).toBe(true);
       expect(config.connectionString).toBe(connectionString);
       expect(config.expectedLedger).toEqual([]);
-      expect(config.migrations).toBe(plan);
+      if (options.mode === "pre_video_ordering_migrations")
+        expect(config.migrations).toEqual(selectedPlan);
+      else expect(config.migrations).toBe(plan);
       if (options.migrateError) throw options.migrateError;
       if (options.dryRun) return { dryRun: true, plan: [] };
       return {
         dryRun: false,
         result: {
-          applied: plan.slice(options.partialApply ? 1 : 0).map(({ version }) => version),
-          currentVersion: plan.at(-1)?.version ?? null,
+          applied: selectedPlan.slice(options.partialApply ? 1 : 0).map(({ version }) => version),
+          currentVersion: selectedPlan.at(-1)?.version ?? null,
         },
       };
     },
@@ -159,6 +167,43 @@ test("ACL initialization proves empty schema on both connections and installs de
     "exact-resulting-ledger",
     "creating-role-owners",
   ]);
+});
+
+test("the distinct upgrade mode validates the complete source plan then installs exactly274", async () => {
+  const p = protocol({ mode: "pre_video_ordering_migrations" });
+  await initializeNotificationsInboxSchema(p.input, p.operations);
+  expect(p.events).toContain("maintained-full-runner");
+  expect(p.events).toContain("exact-resulting-ledger");
+  expect(p.events).not.toContain("baseline");
+});
+
+for (const boundary of ["checksum", "filename"] as const)
+  test(`the upgrade prefix cannot proceed with a changed source boundary: ${boundary}`, async () => {
+    const plan = migrations.map((migration, index) =>
+      index !== 274
+        ? migration
+        : {
+            ...migration,
+            ...(boundary === "checksum"
+              ? { checksum: "0".repeat(64) }
+              : { version: "0275_unreviewed.sql" }),
+          },
+    );
+    const p = protocol({ mode: "pre_video_ordering_migrations", plan });
+    await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
+      "source-bound274-to275 boundary",
+    );
+    expect(p.events).toEqual(["checksum-loader"]);
+  });
+
+test("the upgrade prefix still refuses existing application objects before defaults", async () => {
+  const p = protocol({
+    mode: "pre_video_ordering_migrations",
+    before: { relations: ["already_populated"] },
+  });
+  await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow();
+  expect(p.events).not.toContain("roles-membership-forward-defaults");
+  expect(p.events).not.toContain("maintained-full-runner");
 });
 
 for (const dirty of [
@@ -308,4 +353,24 @@ test("a close-only failure after actual scoped inspection stays a failure", asyn
       },
     }),
   ).rejects.toBe(closeError);
+});
+
+const pg18Target = "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable";
+test("the video upgrade target is bound to the maintained inbox and literal CI origin", () => {
+  expect(validateVideoUpgradeTarget(pg18Target, pg18Target)).toBe(new URL(pg18Target).toString());
+  for (const bad of [
+    pg18Target.replace("127.0.0.1", "localhost"),
+    pg18Target.replace("127.0.0.1", "127.1"),
+    pg18Target.replace(":5432/", ":5433/"),
+    pg18Target.replace("/postgres?", "/another?"),
+    `${pg18Target}&host=remote.invalid`,
+    `${pg18Target}&options=-c%20search_path=public`,
+    `${pg18Target}&sslmode=require`,
+    `${pg18Target}#fragment`,
+  ])
+    expect(() => validateVideoUpgradeTarget(bad, bad)).toThrow();
+  expect(() => validateVideoUpgradeTarget(pg18Target, undefined)).toThrow();
+  expect(() =>
+    validateVideoUpgradeTarget(pg18Target, `${pg18Target}&host=remote.invalid`),
+  ).toThrow();
 });
