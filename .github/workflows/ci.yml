@@ -62,6 +62,8 @@ jobs:
           "$RUNNER_TEMP/hns-monitor-python/bin/python" scripts/hns-monitor/zone-freshness.test.py
       - name: Verify secondary DNS release refusal paths
         run: python3 scripts/hns-secondary-dns/verify-release.test.py
+      - name: Check official TypeScript compatibility
+        run: bun run typecheck:typescript
       - run: bun run check
       - name: Remove stale media completion sentinels
         run: >-
