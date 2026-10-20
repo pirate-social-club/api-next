@@ -7,7 +7,10 @@ import {
 } from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 
-export type NotificationsInboxInitialization = "baseline" | "full_migrations";
+export type NotificationsInboxInitialization =
+  | "baseline"
+  | "full_migrations"
+  | "pre_video_ordering_migrations";
 
 type SchemaInspection = {
   creating_role: string;
@@ -119,14 +122,24 @@ export async function initializeNotificationsInboxSchema(
     new URL(input.connectionString).searchParams.get("options") !== `-c search_path=${input.schema}`
   )
     throw new Error("Full ACL migrations require the dedicated schema-scoped connection");
-  const migrations = await operations.load();
+  const complete = await operations.load();
   if (
-    migrations.length !== 275 ||
-    migrations.some(
+    complete.length !== 275 ||
+    complete.some(
       (migration, index) => !migration.version.startsWith(`${String(index + 1).padStart(4, "0")}_`),
     )
   )
     throw new Error("Full ACL fixture requires the complete contiguous 0001..0275 plan");
+  if (
+    input.mode === "pre_video_ordering_migrations" &&
+    (complete.at(-2)?.version !== "0274_author_declared_text_moderation_actions.sql" ||
+      complete.at(-1)?.version !== "0275_video_root_comment_ordering.sql" ||
+      complete.at(-1)?.checksum !==
+        "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4")
+  )
+    throw new Error("Video upgrade fixture requires the exact source-bound274-to275 boundary");
+  const migrations =
+    input.mode === "pre_video_ordering_migrations" ? complete.slice(0, -1) : complete;
   const lastMigration = migrations.at(-1);
   if (!lastMigration) throw new Error("Full ACL fixture requires its final migration");
   await input.admin.query(`SET search_path TO "${input.schema}"`);

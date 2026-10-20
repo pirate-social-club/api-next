@@ -577,6 +577,18 @@ jobs:
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_REQUIRED: "1"
         run: bun test scripts/staging-persona-schema-shape.pg18.test.ts
+      - name: Rehearse populated video ordering upgrade on PostgreSQL 18.6
+        env:
+          CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_TEST_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL: ${{ runner.temp }}/video-ordering-upgrade-complete.json
+        run: |
+          set -euo pipefail
+          test ! -e "$CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL"
+          bun test packages/platform-cf/src/notifications-video-ordering-upgrade.pg18.test.ts
+          test -s "$CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL"
+          bun -e 'const r=await Bun.file(process.env.CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL).json();if(r.case_count!==1||r.engine!==180006||r.beforeLedgerCount!==274||r.afterLedgerCount!==275||r.cleanup_completed!==true||r.status!=="passed")throw new Error("PostgreSQL18 upgrade completion was not proved")'
       - name: Prove the disposable reset at staging-shaped lock settings
         env:
           CONTROL_PLANE_POSTGRES18_DISPOSABLE_RESET_TEST_URL: postgres://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable
