@@ -91,6 +91,7 @@ import {
   spacesReservationFromRow,
   submitSpacesClaim,
 } from "./spaces-handle-claims.ts";
+import { listSpacesMemberRequests } from "./spaces-member-recovery-repository.ts";
 
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -1285,6 +1286,7 @@ export function makeControlPlaneHandleSalesRepository(
   spacesAuthority: SpacesCurrentAuthority = null,
 ) {
   return {
+    listSpacesMemberRequests,
     createSaleNamespace: (input: Parameters<HandleSalesStore["createSaleNamespace"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;

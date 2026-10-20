@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.124.0",
+  "sourceBranch": "feat/spaces-member-request-readback",
+  "sourceBase": "dd1733928cb38463cd596bbbcebefd451259966f",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Add account-private GET /users/me/spaces-handle-requests for retained Spaces quote/reservation/claim actions, original context and existing safe recipient projections. Scope-incomplete refusals are explicit. Cursor is actor/filter-bound and uses native microsecond ordering. Readback never establishes new-submission admission or that an uncertain writer has ended. Existing command contracts remain unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.124.0.tgz",
+    "sha256": "1884cf6632f2b4e80519876dcabd6021cd1ee8f5738636165adcb83193abb1ab"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.124.0",
+    "sourceIdentifier": "api-next-contracts@586f8f40f7888c2f808c5a115f783aee4f67365df77f6e03a4f1ac646bc5e8df",
+    "openapiSha256": "586f8f40f7888c2f808c5a115f783aee4f67365df77f6e03a4f1ac646bc5e8df",
+    "clientSha256": "df32eaec9b1f54cf710cd84fb834a9fd5a47321374784ebc8c25d5d1ec865e32"
+  },
+  "validation": {
+    "status": "Source prepared; independent final source/artifact review, separately admitted native PostgreSQL, full required checks and CI pending.",
+    "focused": "27 contract/HTTP tests,137 assertions pass; both normal TypeScript projects pass.",
+    "postgres": "Prepared four native database cases; not executed.",
+    "pairedSolid": "Not implemented in this source-only slice.",
+    "liveAcceptance": "Not run."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.124.0",
+    "behavior": "Use ordinary same-origin account authentication. Preserve explicit uncertainty and original retained context. Never use an empty, partial, terminal or paginated readback to permit another submission or wallet creation. Full restart fencing and member UI remain separate."
+  }
+}

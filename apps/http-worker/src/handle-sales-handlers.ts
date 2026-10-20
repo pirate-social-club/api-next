@@ -102,6 +102,27 @@ export function makeHandleSalesHandlers(
     );
 
   return {
+    ListSpacesMemberRequests: (request) => {
+      if (request.principal?.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const query = request.query as {
+        readonly community_id?: string;
+        readonly offering_id?: string;
+        readonly namespace_root?: string;
+        readonly network?: "mainnet" | "testnet4" | "regtest";
+      };
+      return run(
+        sales.listSpacesMemberRequests({
+          accountId: request.principal.subject,
+          ...(query.community_id === undefined ? {} : { communityId: query.community_id }),
+          ...(query.offering_id === undefined ? {} : { offeringId: query.offering_id }),
+          ...(query.namespace_root === undefined ? {} : { namespaceRoot: query.namespace_root }),
+          ...(query.network === undefined ? {} : { network: query.network }),
+          ...page(request.query),
+        }),
+      );
+    },
     CreateHandleSaleNamespace: async (request) => {
       const path = request.params as { readonly communityId: string };
       if ((request.body as { readonly family?: string }).family === "spaces") {
