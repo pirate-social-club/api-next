@@ -121,12 +121,12 @@ export async function initializeNotificationsInboxSchema(
     throw new Error("Full ACL migrations require the dedicated schema-scoped connection");
   const migrations = await operations.load();
   if (
-    migrations.length !== 274 ||
+    migrations.length !== 275 ||
     migrations.some(
       (migration, index) => !migration.version.startsWith(`${String(index + 1).padStart(4, "0")}_`),
     )
   )
-    throw new Error("Full ACL fixture requires the complete contiguous 0001..0274 plan");
+    throw new Error("Full ACL fixture requires the complete contiguous 0001..0275 plan");
   const lastMigration = migrations.at(-1);
   if (!lastMigration) throw new Error("Full ACL fixture requires its final migration");
   await input.admin.query(`SET search_path TO "${input.schema}"`);
