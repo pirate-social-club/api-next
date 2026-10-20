@@ -259,13 +259,14 @@ describe("public offering discovery projection", () => {
     });
     const page = await Effect.runPromise(effect);
     expect(page.items).toEqual([]);
-    expect(decodePageCursor(page.next_cursor ?? undefined, "offerings", "community-1")).toEqual({
+    if (page.next_cursor === null) throw new Error("Original candidate page cursor required");
+    expect(decodePageCursor(page.next_cursor, "offerings", "community-1")).toEqual({
       snapshotCutoff: now,
       sortTime: now,
       sortId: "offering-1",
     });
     const later = scenario({
-      cursor: page.next_cursor ?? undefined,
+      cursor: page.next_cursor,
       before: [record({ discovery_ready: false })],
     });
     expect((await Effect.runPromise(later.effect)).items[0]).toMatchObject({
@@ -276,9 +277,9 @@ describe("public offering discovery projection", () => {
 
   test("HNS wire remains unchanged and current authorization is rechecked", async () => {
     const row = record({ family: "hns" });
-    expect((await Effect.runPromise(scenario({ before: [row] }).effect)).items).toEqual([
-      offering(row),
-    ]);
+    const expected = offering(row);
+    if (expected.family !== "hns") throw new Error("Existing HNS offering fixture required");
+    expect((await Effect.runPromise(scenario({ before: [row] }).effect)).items).toEqual([expected]);
     expect(
       (
         await Effect.runPromise(
