@@ -575,54 +575,19 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("limits active policy to the three pending Study expiry declarations", async () => {
+  test("keeps active policy free of consumed one-time waivers", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
       ).text(),
     ) as BreakingChangePolicy;
-    const unchanged = JSON.parse(
-      await Bun.file(
-        new URL("../apps/http-worker/src/generated/openapi.json", import.meta.url),
-      ).text(),
-    ) as OpenApiDocument;
+    const unchanged = document([], []);
 
-    // Landed transitions remain in Git history, not in the active policy.
-    const declarations = [
-      [
-        "get_communitiesCommunityIdStudyV2SessionsSessionId",
-        'response GET /communities/{communityId}/study/v2/sessions/{sessionId}: enum value added: "expired" at status',
-      ],
-      [
-        "post_communitiesCommunityIdPostsPostIdStudyV2Sessions",
-        'response POST /communities/{communityId}/posts/{postId}/study/v2/sessions status 201: enum value added: "expired" at status',
-      ],
-      [
-        "post_communitiesCommunityIdStudyV2SessionsSessionIdItemsSessionItemIdAnswers",
-        'response POST /communities/{communityId}/study/v2/sessions/{sessionId}/items/{sessionItemId}/answers: enum value added: "expired" at session.status',
-      ],
-    ];
-    expect(repositoryPolicy).toEqual({
-      breakingChangeWaivers: declarations.map(([operationId, violation]) => ({
-        baselineSha: "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-        expectedViolations: [violation],
-        kind: "deprecation",
-        operationId,
-        reason: expect.any(String),
-      })),
-    });
-    // Once consumed, these entries must be removed rather than silently kept.
-    expect(() =>
+    // The Study expiry transition has landed in source. Its historical waiver remains in Git.
+    expect(repositoryPolicy).toEqual({ breakingChangeWaivers: [] });
+    expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
-    ).not.toThrow();
-    expect(() =>
-      filterAllowedBreakingChanges(
-        unchanged,
-        unchanged,
-        repositoryPolicy,
-        "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-      ),
-    ).toThrow("Missing expected violations");
+    ).toEqual([]);
   });
 
   test("admits only the exact reviewed diff and still reports an unrelated break", () => {

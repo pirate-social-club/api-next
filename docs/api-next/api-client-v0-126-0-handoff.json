@@ -5,8 +5,8 @@
   "version": "0.126.0",
   "sourceBranch": "fix/v1-study-expiry-projection-20261021",
   "sourceBase": "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-  "validatedSourceCommit": null,
-  "pullRequest": null,
+  "validatedSourceCommit": "1ab84bca7b82d02a6be370a528189c9b6a36928e",
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/637",
   "wireContract": "Account Study session reads project expired when the active session deadline has passed. Expired sessions retain their unfinished current card, progress and null completion fields. The held guest status contract remains active/completed. No write, qualification, expiry deadline or stored history is changed.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.126.0.tgz",
@@ -24,12 +24,13 @@
     "focusedContracts": "18 tests and120 assertions passed.",
     "postgres": "All three genuine controlled account producer cases pass on disposable PostgreSQL17.11,1641 assertions, including the expiry read after one genuine completed spoken answer and unchanged retained rows. Fixture-only deadline passage preserves active guards; it is not natural-expiry runtime acceptance.",
     "fullLocal": "bun run check and bun run test passed. Unit gate:6345 pass,4 skip,0 fail,39417 assertions; storage,Node and all maintained workerd suites also passed.",
-    "runtimeAcceptance": "Not deployed. The original naturally expired production session remains the runtime acceptance target.",
-    "hosted": "All hosted PostgreSQL17/18, HNS, dependency and secret-boundary checks pass at44d0cbbb. The hosted check job refused the three undeclared response-enum additions. Exact one-time deprecation entries and their strict policy regression are now proposed for independent source review; no blanket compatibility exemption or deployment is claimed."
+    "runtimeAcceptance": "Staging serves API1ab84bca and Solid0ccc3d28 at100percent after maintained HNS checks. Production original naturally expired session acceptance remains pending.",
+    "hosted": "All14 hosted checks passed for API PR637, including check, PostgreSQL17/18, HNS, dependency and secret-boundary. Its three exact baseline-specific response-enum declarations were consumed on merge and are now retired from active policy.",
+    "transitionRetirement": "The three exact baselinefc637525 response-enum declarations were consumed by merged PR637 and are removed from active policy. All14 hosted checks passed. Client/OpenAPI/runtime bytes remain unchanged; production natural-expiry acceptance is still pending."
   },
   "consumerRequirements": {
     "minimumClientVersion": "0.126.0",
     "behavior": "Retain the expired lesson until an explicit new-session action. Hide recording and completion/reward surfaces for expiry; do not automatically rotate its coordination key. Re-read after a server refusal to surface expiry.",
-    "deploymentOrder": "Deploy the paired Solid PR114 consumer with genuine client0.126.0 before API637 in production. Previously loaded clients do not accept the new response enum until reload; UI-first ordering makes the new consumer available but cannot guarantee all old tabs have upgraded. The three exact response-enum changes are declared through the maintained baseline-specific deprecation policy; remove those entries after this transition lands."
+    "deploymentOrder": "Deploy the paired Solid PR114 consumer with genuine client0.126.0 before API637 in production. Previously loaded clients can reject the new response enum until reload; UI-first ordering cannot guarantee old tabs upgraded. The exact three-operation transition has landed in source; its consumed baseline-specific declarations are retired from active policy."
   }
 }
