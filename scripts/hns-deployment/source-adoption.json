@@ -240,7 +240,7 @@
       "source_sha256": "46c2de7621b74a473324cd904fd73f849f8c4d228e39b3695ff63a8dc82f199d",
       "owned_path": "scripts/hns-doh-resolver/Dockerfile",
       "mode": "100644",
-      "owned_sha256": "73ee8b55f42358c5c12cfab047fccd17a2e8c3cd1696f364b1e3a0890d00709e",
+      "owned_sha256": "7e08c4479986132faabd895cc05d95c03f1084d80ed0876c38646f1c5cf00409",
       "modified_from_source": true,
       "owned_mode": "100644"
     },

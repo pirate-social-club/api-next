@@ -19,7 +19,7 @@ ARG HNSD_TARBALL_SHA256=90e4a0e78fab92d5232df288ef55fbed32cebd0651b16e6bc257dbed
 # Alpine 3.21's unbound-libs 1.22.0-r1 lacks the 2026 security fixes. Build the
 # reviewed upstream library on the same libc; do not mix edge APKs or retain
 # the old APK library as a fallback. Both compilations deliberately use one job.
-RUN apk add --no-cache autoconf automake bash build-base libtool libevent-dev openssl-dev wget
+RUN apk add --no-cache autoconf automake bash build-base libtool expat-dev libevent-dev openssl-dev wget
 
 WORKDIR /opt/unbound
 RUN wget -q "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSION}.tar.gz" \
@@ -57,7 +57,7 @@ FROM alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe3
 # bind-tools supplies dig for the container healthcheck. busybox's nslookup
 # cannot target a non-standard port, and a bare port check would not prove that
 # the SPV chain is actually synced and answering.
-RUN apk add --no-cache bind-tools libevent libssl3 libcrypto3 \
+RUN apk add --no-cache bind-tools expat libevent libssl3 libcrypto3 \
     && addgroup -g 1000 -S hnsd \
     && adduser -u 1000 -S -G hnsd -H -s /sbin/nologin hnsd
 
