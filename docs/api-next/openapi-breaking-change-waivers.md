@@ -121,11 +121,11 @@ requires it. This is not backwards compatible.
 
 The detector now reports added fields in closed response objects, including
 optional fields and nested referenced objects. The four temporary declarations
-bind baselineb2df70204b3c82a32cf614d55859a24e51c54e18 to exactly that one
-property diagnostic on the two Send reads, reservation and submission. No other
-request, response property, error, status, operation or later baseline is
-covered. Independent review of these declarations is required before
-integration; they are retired when that transition lands.
+bound baselineb2df70204b3c82a32cf614d55859a24e51c54e18 to exactly that one
+property diagnostic on the two Send reads, reservation and submission. The
+independently reviewed transition landed through PR644 at18fdb9f2. The four
+consumed entries are now retired; the active policy is empty. Historical
+declarations remain in Git history and admit no later contract change.
 
 Earlier refreshes inherited PR643's four HNS-only paths at f78b7e7c and
 PR645's twenty HNS source paths at 76cd679e. The current refresh inherits

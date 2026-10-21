@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.128.0",
+  "sourceBranch": "feat/v1-send-palm-api-20261021",
+  "sourceBase": "18fdb9f23532c68f8302223d547266a3cf43befb",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "CreateRewardWinnerSend now declares VerificationRequired403 with wallet_send purpose, intended persona and very.web provider. Fresh first and post-revert attempts require current account-bound stored Palm inside the nonce-admission transaction. Historical accepted Claim is insufficient. Private authenticated same-key history, reads, transaction/cancellation reporting and reconciliation retain their original identity and liabilities after revocation. Already disclosed transaction parameters cannot be recalled. Ordinary Send127 success fields and its paired transition remain unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.128.0.tgz",
+    "sha256": "4bbab895fd25827c0ea3a16b83e1840ef5d6b374403f72e354b97664cec3cbe5"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.128.0",
+    "sourceIdentifier": "api-next-contracts@f66c81bc0f4b698db059666abe6ec5549c5503b3a382dec11b29f4ce3fe62caa",
+    "openapiSha256": "f66c81bc0f4b698db059666abe6ec5549c5503b3a382dec11b29f4ce3fe62caa",
+    "clientSha256": "7ae4167c9749bd3b27cb8802be50950e6acd934bd2c9114fa5dcd30473bfec2b"
+  },
+  "validation": {
+    "focused": "34 application/HTTP unit cases209 assertions and seven-project typecheck pass. Real isolated PostgreSQL17 proves31 cases234 assertions across winnings and ordinary Send, including current-proof denials, post-revert retry, concurrent revocation, private recovery and restricted-role narrow EXECUTE. Owned container and socket cleanup pass.",
+    "fullLocal": "Full current check/test qualification remains required; initial focused results do not substitute.",
+    "independentReview": "Exact source/package review remains required under the live Send Palm and closed-response tasks.",
+    "hosted": "Pending protected publication and exact hosted checks.",
+    "runtimeAcceptance": "No deployment, actual chain/provider operation or live transfer executed."
+  },
+  "consumerRequirements": {
+    "minimumClientVersionForTypedWinnerSendRefusal": "0.128.0",
+    "behavior": "Handle verification_required with the existing intended-persona wallet_send verification flow. Refresh the original record after verification; preserve its idempotency key and unknown-outcome recovery. Do not activate an otherwise unused winnings UI merely to consume this repair.",
+    "ordinarySend": "The accepted127 ordinary-Send consumer and API success contract are unchanged; loaded pre127 tab handling and paired serving remain launch gates.",
+    "release": "Source/package preparation grants no financial, credential, deployment or production Rewards effect."
+  }
+}

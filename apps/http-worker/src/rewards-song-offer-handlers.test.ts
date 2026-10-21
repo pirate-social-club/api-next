@@ -16,6 +16,7 @@ import {
   RewardProjectionRejected,
   RewardWinnerSendChainUnavailable,
   RewardWinnerSendRejected,
+  RewardWinnerSendVerificationRequired,
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -933,6 +934,9 @@ describe("song reward offer HTTP handlers", () => {
         if (input.idempotencyKey === "key_busy") {
           return Effect.fail(new RewardWinnerSendRejected({ reason: "sender-busy" }));
         }
+        if (input.idempotencyKey === "key_needs_palm") {
+          return Effect.fail(new RewardWinnerSendVerificationRequired({ personaId: "persona_1" }));
+        }
         return own(input.accountId, input.creditId);
       },
       attachTransaction: (input) => {
@@ -1026,6 +1030,17 @@ describe("song reward offer HTTP handlers", () => {
     expect(busy.status).toBe(409);
     expect(await busy.json()).toMatchObject({
       error: { code: "conflict", message: "Another send from this wallet is in progress" },
+    });
+    const verification = await post("/rewards/credits/credit_1/send", {
+      ...body,
+      idempotency_key: "key_needs_palm",
+    });
+    expect(verification.status).toBe(403);
+    expect(await verification.json()).toMatchObject({
+      error: {
+        code: "verification_required",
+        details: { purpose: "wallet_send", persona_id: "persona_1", provider: "very.web" },
+      },
     });
 
     const attached = await post("/rewards/winner-sends/winner-send_1/transactions", {
