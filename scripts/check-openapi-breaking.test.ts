@@ -575,7 +575,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps active policy limited to the unconsumed exact Send transition", async () => {
+  test("keeps active policy empty after landed transitions", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
@@ -583,37 +583,10 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    const sendBaseline = "b2df70204b3c82a32cf614d55859a24e51c54e18";
-    const expected = {
-      post_walletPersonasPersonaIdSponsoredSend: "POST /wallet/personas/{personaId}/sponsored-send",
-      get_walletPersonasPersonaIdSponsoredSend: "GET /wallet/personas/{personaId}/sponsored-send",
-      get_walletSponsoredSendsSendId: "GET /wallet/sponsored-sends/{sendId}",
-      post_walletSponsoredSendsSendIdSubmit: "POST /wallet/sponsored-sends/{sendId}/submit",
-    };
-    expect(repositoryPolicy.breakingChangeWaivers.map((value) => value.operationId).sort()).toEqual(
-      Object.keys(expected).sort(),
-    );
-    for (const entry of repositoryPolicy.breakingChangeWaivers) {
-      expect(entry.baselineSha).toBe(sendBaseline);
-      expect(entry.kind).toBe("clean-break");
-      expect(entry.expectedViolations).toEqual([
-        `response ${expected[entry.operationId as keyof typeof expected]}: property added to closed response: verification_required`,
-      ]);
-    }
-    expect(() =>
-      assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, sendBaseline, () => true),
-    ).not.toThrow();
+    expect(repositoryPolicy.breakingChangeWaivers).toEqual([]);
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
-    ).toThrow("obsolete baseline");
-    expect(() =>
-      assertNoObsoleteBreakingChangeWaivers(
-        repositoryPolicy,
-        "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
-        () => true,
-      ),
-    ).toThrow("obsolete baseline");
-    // Consumed Study declarations stay absent; a different baseline receives no allowance.
+    ).not.toThrow();
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);
