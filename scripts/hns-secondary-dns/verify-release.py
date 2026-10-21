@@ -10,7 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-IMAGE_DIGEST = "sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59"
+IMAGE_DIGEST = "sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27"
 IMAGE = "powerdns/pdns-auth-51@" + IMAGE_DIGEST
 CONTAINER = "pirate-hns-secondary-dns"
 CURRENT = Path("/srv/pirate-hns-secondary/current")

@@ -8,7 +8,7 @@ services:
   doh:
     # Pinned by digest. 1.9.0-1.9.3 carry a remotely triggerable DoH DoS
     # (PowerDNS Security Advisory 2024-03); 1.9.4 fixed it. Do not downgrade.
-    image: powerdns/dnsdist-19:1.9.15@sha256:af0a812fedd2d24cb54c7058cc7b07ca643b44bbf543fe9ae826fc5c663b0801
+    image: powerdns/dnsdist-19:1.9.16@sha256:260b1120947a10c494fad4d93cde33ebace34bf4800c88ebb114dd7f9e829809
     container_name: pirate-hns-dnsdist
     restart: unless-stopped
     init: true
