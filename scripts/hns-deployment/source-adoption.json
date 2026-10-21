@@ -240,8 +240,8 @@
       "source_sha256": "46c2de7621b74a473324cd904fd73f849f8c4d228e39b3695ff63a8dc82f199d",
       "owned_path": "scripts/hns-doh-resolver/Dockerfile",
       "mode": "100644",
-      "owned_sha256": "46c2de7621b74a473324cd904fd73f849f8c4d228e39b3695ff63a8dc82f199d",
-      "modified_from_source": false,
+      "owned_sha256": "73ee8b55f42358c5c12cfab047fccd17a2e8c3cd1696f364b1e3a0890d00709e",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
@@ -253,7 +253,7 @@
       "source_sha256": "d0d7a5e098ba92f80db7b826b3d9a334b4d7e20dbc3968947aaffa77dc309e4f",
       "owned_path": "scripts/hns-doh-resolver/README.md",
       "mode": "100644",
-      "owned_sha256": "e71d5af5ad9152d6dfea9da55b6c1c56ba925f5054ff62d230ee0530572c9135",
+      "owned_sha256": "55451468e5f052fcf24dec33716aec8e818f634c9ad8b57642873cc4a77a0d9d",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
