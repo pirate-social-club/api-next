@@ -12,6 +12,7 @@ import {
   type CloudflareWorkflowStepDo,
   PROCESSING_WORKFLOW_STEP_OPTIONS,
 } from "../../../packages/platform-cf/src/cloudflare-orchestration-primitives.ts";
+import { runVideoWorkflowStep } from "./video-workflow-diagnostics.ts";
 
 export interface VideoAnalysisWorkflowStep
   extends CloudflareWorkflowStepDo<typeof PROCESSING_WORKFLOW_STEP_OPTIONS> {
@@ -46,7 +47,10 @@ export function makeVideoAnalysisWorkflowRunner<Env>(
       return runVideoEnrichmentWorkflow(
         event.payload.effectIdentity,
         {
-          do: (name, run) => step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, run),
+          do: (name, run) =>
+            step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, () =>
+              runVideoWorkflowStep(event.instanceId, name, run),
+            ),
           sleep: (name, duration) => step.sleep(name, duration),
         },
         composition.videoEnrichmentWorkflow,
@@ -63,15 +67,17 @@ export function makeVideoAnalysisWorkflowRunner<Env>(
       event.payload.effectIdentity,
       {
         do: (name, run) =>
-          step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, async () => {
-            try {
-              return await run();
-            } catch (error) {
-              if (error instanceof VideoWorkflowTerminalError)
-                throw nonRetryableError(error.message);
-              throw error;
-            }
-          }),
+          step.do(name, PROCESSING_WORKFLOW_STEP_OPTIONS, () =>
+            runVideoWorkflowStep(event.instanceId, name, async () => {
+              try {
+                return await run();
+              } catch (error) {
+                if (error instanceof VideoWorkflowTerminalError)
+                  throw nonRetryableError(error.message);
+                throw error;
+              }
+            }),
+          ),
         sleep: (name, duration) => step.sleep(name, duration),
         waitForEvent: (name, options) => step.waitForEvent(name, options),
       },
