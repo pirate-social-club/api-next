@@ -31,7 +31,7 @@ BEGIN
      WHERE coalesce(session.policy_id,command.policy_id)=prior_policy.policy_id))
   AND (prior_policy.operational_profile->>'replayScope' IS DISTINCT FROM profile->>'replayScope'
    OR prior_policy.review_policy->>'normalizationHash' IS DISTINCT FROM policy->>'normalizationHash'
-   OR NOT (prior_policy.operational_profile->'replayCompatibleEpochs'<@profile->'replayCompatibleEpochs'))) THEN
+   OR NOT ((prior_policy.operational_profile->'replayCompatibleEpochs')<@(profile->'replayCompatibleEpochs')))) THEN
   RAISE EXCEPTION 'retained replay family/epochs require compatible normalization' USING ERRCODE='DRV07';
  END IF;
  SELECT * INTO q FROM qualification_policy_versions WHERE qualification_policy_version_id=policy->>'qualificationVersion' FOR SHARE;

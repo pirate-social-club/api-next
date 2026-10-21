@@ -24728,24 +24728,29 @@ CREATE FUNCTION persist_moderated_dance_probe_v1(p_upload text, p_token text, p_
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE work dance_moderated_processing_v1; s dance_moderated_sessions_v1; p JSONB; duration_ms BIGINT;
+DECLARE work dance_moderated_processing_v1; s dance_moderated_sessions_v1; p JSONB; duration_ms BIGINT; original_submission BOOLEAN;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
  SELECT session.* INTO STRICT s FROM dance_moderated_sessions_v1 session JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=p_upload;
  p:=s.terms->'profile';
- IF work.observation_token IS DISTINCT FROM p_token OR work.provider_deadline<=clock_timestamp()
+ IF work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR work.provider_deadline<=clock_timestamp()
  OR p_result->'attempt'->'runtimeFence' IS DISTINCT FROM work.probe_attempt->'runtimeFence'
  OR work.probe_attempt ? 'providerJobId' AND p_result->'attempt'->>'providerJobId' IS DISTINCT FROM work.probe_attempt->>'providerJobId' THEN RAISE EXCEPTION 'probe identity changed' USING ERRCODE='DRV05'; END IF;
+ -- Unknown is an outcome, not a new purpose. Only an original known-ID
+ -- attempt whose START grant was already consumed may recover through observe.
+ original_submission:=coalesce(length(work.probe_attempt->>'providerJobId')>0
+  AND work.probe_attempt->>'providerJobPhase' IN('submitting','started'),FALSE);
  IF p_result->>'status'='completed' THEN
   duration_ms:=(p_result->'probe'->>'durationMs')::BIGINT;
-  IF work.probe_phase NOT IN('started','submitting') OR (duration_ms>=(s.terms->'capture'->>'bodyEndMs')::BIGINT AND duration_ms<=(s.terms->'capture'->>'bodyEndMs')::BIGINT+(p->>'maximumDurationErrorMs')::BIGINT
+  IF NOT original_submission OR work.probe_phase NOT IN('started','submitting','unknown')
+   OR (p_result->'attempt'->>'providerJobPhase' IN('submitting','started')) IS NOT TRUE OR (duration_ms>=(s.terms->'capture'->>'bodyEndMs')::BIGINT AND duration_ms<=(s.terms->'capture'->>'bodyEndMs')::BIGINT+(p->>'maximumDurationErrorMs')::BIGINT
    AND (p_result->'probe'->>'hasAudio')::BOOLEAN AND p_result->'probe'->>'audioCodec'='aac' AND p_result->'probe'->>'videoCodec' IN('h264','hevc')
    AND (p_result->'probe'->>'width')::BIGINT>0 AND (p_result->'probe'->>'height')::BIGINT>0
    AND length(p_result->'probe'->>'evidenceRef')>0) IS NOT TRUE THEN RAISE EXCEPTION 'probe media bounds refused' USING ERRCODE='DRV06'; END IF;
   UPDATE dance_moderated_processing_v1 SET probe_phase='complete',probe_result=p_result->'probe',probe_attempt=p_result->'attempt',observation_until=NULL WHERE upload_id=p_upload;
  ELSIF p_result->>'status' IN('submitted','processing') AND p_result->'attempt'->>'providerJobPhase' IN('allocated','started') THEN
-  IF (work.probe_phase='allocating' AND p_result->'attempt'->>'providerJobPhase'='allocated' OR work.probe_phase='submitting' AND p_result->'attempt'->>'providerJobPhase'='started' OR work.probe_phase='started' AND p_result->'attempt'->>'providerJobPhase'='started') IS NOT TRUE
+  IF (work.probe_phase='allocating' AND p_result->'attempt'->>'providerJobPhase'='allocated' OR work.probe_phase='submitting' AND p_result->'attempt'->>'providerJobPhase'='started' OR work.probe_phase='started' AND p_result->'attempt'->>'providerJobPhase'='started' OR work.probe_phase='unknown' AND original_submission AND p_result->'attempt'->>'providerJobPhase'='started') IS NOT TRUE
    OR length(p_result->'attempt'->>'providerJobId') IS NULL OR length(p_result->'attempt'->>'providerJobId')<1 THEN RAISE EXCEPTION 'probe transition refused' USING ERRCODE='DRV05'; END IF;
   UPDATE dance_moderated_processing_v1 SET probe_phase=p_result->'attempt'->>'providerJobPhase',probe_attempt=p_result->'attempt',observation_until=NULL WHERE upload_id=p_upload;
  ELSE
@@ -27669,7 +27674,7 @@ BEGIN
      WHERE coalesce(session.policy_id,command.policy_id)=prior_policy.policy_id))
   AND (prior_policy.operational_profile->>'replayScope' IS DISTINCT FROM profile->>'replayScope'
    OR prior_policy.review_policy->>'normalizationHash' IS DISTINCT FROM policy->>'normalizationHash'
-   OR NOT (prior_policy.operational_profile->'replayCompatibleEpochs'<@profile->'replayCompatibleEpochs'))) THEN
+   OR NOT ((prior_policy.operational_profile->'replayCompatibleEpochs')<@(profile->'replayCompatibleEpochs')))) THEN
   RAISE EXCEPTION 'retained replay family/epochs require compatible normalization' USING ERRCODE='DRV07';
  END IF;
  SELECT * INTO q FROM qualification_policy_versions WHERE qualification_policy_version_id=policy->>'qualificationVersion' FOR SHARE;
