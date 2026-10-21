@@ -583,7 +583,7 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    const sendBaseline = "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f";
+    const sendBaseline = "b2df70204b3c82a32cf614d55859a24e51c54e18";
     const expected = {
       post_walletPersonasPersonaIdSponsoredSend: "POST /wallet/personas/{personaId}/sponsored-send",
       get_walletPersonasPersonaIdSponsoredSend: "GET /wallet/personas/{personaId}/sponsored-send",
@@ -609,7 +609,7 @@ describe("OpenAPI clean-break allowance", () => {
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(
         repositoryPolicy,
-        "f78b7e7c1f9679e7d0fa72c796c09ae0c62c82cd",
+        "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
         () => true,
       ),
     ).toThrow("obsolete baseline");

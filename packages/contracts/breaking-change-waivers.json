@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
+      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
       "expectedViolations": [
         "response POST /wallet/personas/{personaId}/sponsored-send: property added to closed response: verification_required"
       ],
@@ -10,7 +10,7 @@
       "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
     },
     {
-      "baselineSha": "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
+      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
       "expectedViolations": [
         "response GET /wallet/personas/{personaId}/sponsored-send: property added to closed response: verification_required"
       ],
@@ -19,7 +19,7 @@
       "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
     },
     {
-      "baselineSha": "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
+      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
       "expectedViolations": [
         "response GET /wallet/sponsored-sends/{sendId}: property added to closed response: verification_required"
       ],
@@ -28,7 +28,7 @@
       "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
     },
     {
-      "baselineSha": "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
+      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
       "expectedViolations": [
         "response POST /wallet/sponsored-sends/{sendId}/submit: property added to closed response: verification_required"
       ],
