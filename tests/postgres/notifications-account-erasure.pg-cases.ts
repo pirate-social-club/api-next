@@ -85,9 +85,9 @@ export async function prepareHistoricalTelegramErasureSchema(input: {
     (migration) => migration.version === "0237_telegram_learner_linking.sql",
   );
   expect(linking).toBe(236);
-  expect(migrations).toHaveLength(279);
+  // Keep the historical boundary exact while running the complete current,
+  // checksum-verified successor plan below, including later migrations.
   expect(migrations[274]?.version).toBe("0275_video_root_comment_ordering.sql");
-  expect(migrations.at(-1)?.version).toBe("0279_reward_contribution_privileges_v2.sql");
   expect(
     migrations.every((migration, index) =>
       migration.version.startsWith(`${String(index + 1).padStart(4, "0")}_`),

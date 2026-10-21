@@ -58,7 +58,7 @@ function protocol(
   }
   if (options.ledger === "missing") ledger.pop();
   if (options.ledger === "extra")
-    ledger.push({ version: "0280_unexpected.sql", checksum: "0".repeat(64) });
+    ledger.push({ version: "0277_unexpected.sql", checksum: "0".repeat(64) });
   const query = async (sql: string) => {
     const result = (rows: Record<string, unknown>[] = []) => ({ rows, rowCount: rows.length });
     if (sql.startsWith("SET search_path")) {
@@ -144,16 +144,20 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0279 set", () => {
-  expect(migrations).toHaveLength(279);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0292 set", () => {
+  expect(migrations).toHaveLength(292);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 279 }, (_, i) => i + 1),
+    Array.from({ length: 292 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
     checksum: "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
   });
-  expect(migrations.at(-1)?.version).toBe("0279_reward_contribution_privileges_v2.sql");
+  expect(migrations[275]).toMatchObject({
+    version: "0276_wallet_send_palm_assertion_lock.sql",
+    checksum: "51d53c71b178f84ac730e6a7659319f61b3871d31c6976ee913616a6b87af8e3",
+  });
+  expect(migrations.at(-1)?.version).toBe("0292_shared_song_megapot_summary.sql");
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {
@@ -261,7 +265,26 @@ for (const plan of [migrations.slice(0, -1), [secondMigration, ...migrations.sli
   test(`missing or noncontiguous plans are refused before defaults: ${plan.length}`, async () => {
     const p = protocol({ plan });
     await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
-      "complete contiguous 0001..0279 plan",
+      "complete contiguous repository migration plan",
+    );
+    expect(p.events).toEqual(["checksum-loader"]);
+  });
+
+for (const boundary of ["checksum", "filename"] as const)
+  test(`full ACL initialization rejects a changed current source boundary: ${boundary}`, async () => {
+    const plan = migrations.map((migration, index) =>
+      index !== migrations.length - 1
+        ? migration
+        : {
+            ...migration,
+            ...(boundary === "checksum"
+              ? { checksum: "0".repeat(64) }
+              : { version: `${String(migrations.length).padStart(4, "0")}_unreviewed.sql` }),
+          },
+    );
+    const p = protocol({ plan });
+    await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
+      "exact repository migration plan",
     );
     expect(p.events).toEqual(["checksum-loader"]);
   });

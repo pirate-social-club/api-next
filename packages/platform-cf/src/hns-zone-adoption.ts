@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Client } from "pg";
 import { decodeHnsRootImportReadinessResultV1 } from "../../application/src/namespace-ownership/hns-root-import-readiness.ts";
 import { promoteImportedHnsInventorySuccessor } from "./hns-imported-inventory-successor.ts";
+import { requireHnsStagingRelocationReview } from "./hns-staging-relocation-review.ts";
 import {
   type HnsZoneAdoptionDeltaKind,
   hnsZoneAdoptionSerialV1,
@@ -78,6 +79,8 @@ export type HnsZoneAdoptionReceipt = Readonly<{
 
 /** What adoption needs to know about an activated root, read in one statement. */
 export type HnsRootZoneAdoptionState = Readonly<{
+  environment: string;
+  current_health_generation: number;
   root_label: string;
   root_import_session_id: string;
   session_status: string;
@@ -109,6 +112,8 @@ export type HnsRootZoneAdoptionState = Readonly<{
 }>;
 
 type StateRow = {
+  environment: string;
+  current_health_generation: string;
   root_import_session_id: string;
   session_status: string;
   namespace_session_id: string | null;
@@ -159,7 +164,12 @@ async function selectState(
   lock: boolean,
 ): Promise<HnsRootZoneAdoptionState> {
   const rows = await client.query<StateRow>(
-    `SELECT session.root_import_session_id, session.status AS session_status,
+    `SELECT inventory.environment,
+            (SELECT COALESCE(max(health_generation),0)::text
+               FROM hns_dns_zone_health_observations
+              WHERE dns_zone_activation_id = dns.dns_zone_activation_id
+                AND activation_generation = dns.current_generation) AS current_health_generation,
+            session.root_import_session_id, session.status AS session_status,
             session.namespace_session_id, session.challenge_txt_value,
             session.ownership_result_sha256,
             session.publish_plan_sha256 AS session_publish_plan_sha256,
@@ -199,6 +209,10 @@ async function selectState(
        JOIN hns_dns_zone_activation_revisions AS revision
          ON revision.dns_zone_activation_id = dns.dns_zone_activation_id
         AND revision.dns_zone_activation_generation = dns.current_generation
+       JOIN hns_authority_inventories AS inventory
+         ON inventory.authority_inventory_reference = revision.pirate_dns_authority_inventory_reference
+        AND inventory.authority_inventory_version = revision.pirate_dns_authority_inventory_version
+        AND inventory.authority_inventory_digest = revision.pirate_dns_authority_inventory_digest
        LEFT JOIN hns_authority_provision_jobs AS provision
          ON provision.root_import_session_id = session.root_import_session_id
         AND provision.state = 'completed'
@@ -216,6 +230,8 @@ async function selectState(
     refuse("the retained zone does not match its digest");
   const now = row.database_time.getTime();
   return {
+    environment: row.environment,
+    current_health_generation: Number(row.current_health_generation),
     root_label: rootLabel,
     root_import_session_id: row.root_import_session_id,
     session_status: row.session_status,
@@ -376,6 +392,7 @@ export async function adoptHnsRootZone(
     /** The difference the operator intends; any other is refused. */
     readonly expected_delta: HnsZoneAdoptionDeltaKind;
     readonly mode: HnsZoneAdoptionMode;
+    readonly reviewed_relocation?: unknown;
     /** Fresh full observer result, read under the same database fence. */
     readonly observe_current: (state: HnsRootZoneAdoptionState) => Promise<Uint8Array>;
   },
@@ -432,13 +449,33 @@ export async function adoptHnsRootZone(
       result.gateway_healthy !== true
     )
       refuse("the observation does not report a healthy authority");
+    const relocation =
+      input.reviewed_relocation === undefined
+        ? undefined
+        : await requireHnsStagingRelocationReview({
+            review: input.reviewed_relocation,
+            predecessor: {
+              environment: state.environment,
+              root_label: state.root_label,
+              generation: state.current_generation,
+              health_generation: state.current_health_generation,
+              gateway_reference: state.gateway_deployment_reference,
+              certificate_spki: state.gateway_certificate_spki_sha256,
+              chain_reference: state.stable_chain_delegation_snapshot_reference,
+            },
+            observed: result,
+            observed_at: result.observed_at,
+          });
+    if ((input.expected_delta === "staging_gateway_relocated") !== (relocation !== undefined))
+      refuse("staging gateway relocation requires its explicit reviewed delta");
     if (
       result.dnssec_keyset_reference !== state.dnssec_keyset_reference ||
       result.dnssec_keyset_version !== state.dnssec_keyset_version ||
-      result.gateway_deployment_reference !== state.gateway_deployment_reference ||
       result.gateway_certificate_spki_sha256 !== state.gateway_certificate_spki_sha256 ||
-      `hns-root-chain:${result.chain_resource_sha256}` !==
-        state.stable_chain_delegation_snapshot_reference
+      (relocation === undefined &&
+        (result.gateway_deployment_reference !== state.gateway_deployment_reference ||
+          `hns-root-chain:${result.chain_resource_sha256}` !==
+            state.stable_chain_delegation_snapshot_reference))
     )
       refuse("the observation's keyset, gateway or chain reference is not the current revision's");
     const now = Date.parse(state.database_time);
@@ -454,6 +491,7 @@ export async function adoptHnsRootZone(
       root_label: result.root_label,
       retained_zone_bytes: state.retained_zone_bytes,
       observed_zone_bytes: decoded.managed_zone_bytes,
+      ...(relocation === undefined ? {} : { staging_relocation: relocation }),
     });
     if (delta !== input.expected_delta)
       refuse(`the zone difference is ${delta}, not the one intended`);
@@ -528,6 +566,7 @@ export async function adoptHnsRootZone(
       input.result_bytes,
       resultSha256,
       "hns-zone-adoption",
+      input.reviewed_relocation,
     );
     const after = await client.query<{ generation: string; zone_bytes_digest: string }>(
       `SELECT dns.current_generation::text AS generation, revision.zone_bytes_digest

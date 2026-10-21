@@ -146,11 +146,10 @@ export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) =>
     throw new Error("Maintained inbox target changed after import");
   // This occurs before withInbox may create any schema or role.
   await requirePostgres186(base);
-  const complete = await loadPostgresMigrations();
-  expect(complete).toHaveLength(279);
-  // This fixture proves only the applied video boundary. Later unapplied
-  // Funding migrations must not enter either its prefix or upgrade execution.
-  const migrations = complete.slice(0, 275);
+  // This historical upgrade proves exactly274-to275 even as the current
+  // repository gains later migrations. The loader still verifies all source checksums.
+  const migrations = (await loadPostgresMigrations()).slice(0, 275);
+  expect(migrations).toHaveLength(275);
   expect(migrations.at(-1)).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
     checksum: "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",

@@ -276,9 +276,22 @@
     "0273_notifications_video_alias_audit.sql": "2379e483f78fcc7aec5730ea3db93c347783cc01e154f4147e73f6d39448c321",
     "0274_author_declared_text_moderation_actions.sql": "79f054e672bb17f22faa83d04f5808288beddf766b494fb83b399834ba337eff",
     "0275_video_root_comment_ordering.sql": "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
-    "0276_reward_wallet_nonce_authority_v2.sql": "b73642c94dae6bf74b7495c18bdae3194c959344baea4df076cbb521f811e976",
-    "0277_song_megapot_contributions_v2.sql": "d42d288c878419b0ea7a7c2b8870c345b094360dc7f2fa8118cc89354410fed2",
-    "0278_reward_principal_seals_v2.sql": "cc81e992c39516f9cd97e3f3cdba52711d76a9d0540ed0fb12e0ae7986f5dd42",
-    "0279_reward_contribution_privileges_v2.sql": "e4171009b779cb2e2ec0f082b41a980adf56f22d853651d0d72b1f2aff8ce4f6"
+    "0276_wallet_send_palm_assertion_lock.sql": "51d53c71b178f84ac730e6a7659319f61b3871d31c6976ee913616a6b87af8e3",
+    "0277_reward_wallet_nonce_authority_v2.sql": "b73642c94dae6bf74b7495c18bdae3194c959344baea4df076cbb521f811e976",
+    "0278_song_megapot_contributions_v2.sql": "d42d288c878419b0ea7a7c2b8870c345b094360dc7f2fa8118cc89354410fed2",
+    "0279_reward_principal_seals_v2.sql": "cc81e992c39516f9cd97e3f3cdba52711d76a9d0540ed0fb12e0ae7986f5dd42",
+    "0280_reward_contribution_privileges_v2.sql": "e4171009b779cb2e2ec0f082b41a980adf56f22d853651d0d72b1f2aff8ce4f6",
+    "0281_moderated_dance_review_foundation.sql": "61cd05d042b526a7d44ba60ef8d5774c574d57599fdfaa799b731ff30b0e2604",
+    "0282_moderated_dance_qualification_and_commands.sql": "c7206bf3ee93fde629e3c933c6a2d9f8f1b184f37b0c4dc0e1747335219d3b57",
+    "0283_moderated_dance_result_notifications.sql": "0494892f6f9fbf19a5699fc80566ef26a2a32de6c85889b0f046402eb6a50a4a",
+    "0284_shared_song_megapot_production.sql": "5a0886f89a87e5355e6cffbaaacc2fb4a929280ae67307ec7664610540d228b7",
+    "0285_shared_song_qualification_consumers.sql": "e57c8d5b5a13d6aa61c6e55ff2195f34101116d8218e1bcd43a83f230323c91a",
+    "0286_moderated_dance_intake.sql": "552c37217ae9ddac5e4c8a7fae252b453ea0a6cf95d312dafbc8ba14805a77e6",
+    "0287_moderated_dance_private_processing.sql": "6c55bf0ebab94d70cb5b67fc2bfd3f80cdecffd8e4240e14b84020426348ab51",
+    "0288_moderated_dance_policy_and_references.sql": "4d9d1d73efcce86383f59c05e8b2391f22c1c740c8d9e2c1d3ce324167c860d9",
+    "0289_moderated_dance_maintenance.sql": "bdaf036c35b8eeae483edf0e121ef96c6abd4470f81dc97eac8f5f4a0d378a1e",
+    "0290_moderated_dance_private_playback.sql": "b9b5ae7d751cd2c4d09aafac94a555a566046955e61aa062bcf53325bcb28c9f",
+    "0291_moderated_dance_purpose_grants.sql": "d922723aa32c2ff483336c1e6ec11c200cec3957191bddc09499787e19edcece",
+    "0292_shared_song_megapot_summary.sql": "64437b69fa1553d22f2d76103101fb6a6ff76be7be36c34f1b3a774c15f42f5c"
   }
 }

@@ -41,16 +41,21 @@ RUN printf '#include <stdio.h>\n#include <unbound.h>\nint main(void) { puts(ub_v
     && cc /tmp/unbound-version.c -I/usr/local/include -L/usr/local/lib \
          -lunbound -o /usr/local/bin/hnsd-unbound-version
 
+# v2.0.0 writes its temporary checkpoint to a relative path under musl, so
+# checkpoints never persist. Apply only the upstream store.c fix; copying it
+# after the Unbound stage keeps that stage's cached layers valid.
+COPY hnsd-store-checkpoint-path.patch /tmp/hnsd-store-checkpoint-path.patch
 WORKDIR /opt/hnsd
 RUN wget -q "https://github.com/handshake-org/hnsd/archive/refs/tags/v${HNSD_VERSION}.tar.gz" \
       -O /tmp/hnsd.tar.gz \
     && echo "${HNSD_TARBALL_SHA256}  /tmp/hnsd.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/hnsd.tar.gz --strip-components=1 -C /opt/hnsd \
+    && patch -p1 < /tmp/hnsd-store-checkpoint-path.patch \
     && ./autogen.sh \
     && ./configure --prefix=/usr/local --with-unbound=/usr/local \
     && make -j1 \
     && strip hnsd \
-    && rm -rf /tmp/hnsd.tar.gz
+    && rm -rf /tmp/hnsd.tar.gz /tmp/hnsd-store-checkpoint-path.patch
 
 FROM alpine:3.21@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
 

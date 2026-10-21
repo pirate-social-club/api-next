@@ -366,6 +366,14 @@ function compareSchema(
   const oldProperties = (oldSchema.properties ?? {}) as Record<string, JsonSchema>;
   const newProperties = (newSchema.properties ?? {}) as Record<string, JsonSchema>;
   const breaks: string[] = [];
+  if (direction === "response" && oldSchema.additionalProperties === false) {
+    for (const name of Object.keys(newProperties)) {
+      if (!Object.hasOwn(oldProperties, name)) {
+        const fullPath = propertyPath === "" ? name : `${propertyPath}.${name}`;
+        breaks.push(`${where}: property added to closed response: ${fullPath}`);
+      }
+    }
+  }
   for (const [name, oldProperty] of Object.entries(oldProperties)) {
     const newProperty = newProperties[name];
     const fullPath = propertyPath === "" ? name : `${propertyPath}.${name}`;

@@ -240,7 +240,7 @@
       "source_sha256": "46c2de7621b74a473324cd904fd73f849f8c4d228e39b3695ff63a8dc82f199d",
       "owned_path": "scripts/hns-doh-resolver/Dockerfile",
       "mode": "100644",
-      "owned_sha256": "7e08c4479986132faabd895cc05d95c03f1084d80ed0876c38646f1c5cf00409",
+      "owned_sha256": "01f355271d1a64fb70e90a23d0a548a483fde2ec0d3a60dcd9d2968be0c79086",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -253,7 +253,7 @@
       "source_sha256": "d0d7a5e098ba92f80db7b826b3d9a334b4d7e20dbc3968947aaffa77dc309e4f",
       "owned_path": "scripts/hns-doh-resolver/README.md",
       "mode": "100644",
-      "owned_sha256": "55451468e5f052fcf24dec33716aec8e818f634c9ad8b57642873cc4a77a0d9d",
+      "owned_sha256": "bfb172f284c142c92a8d07993c71e544173e9dc17025b6d70300e4584c7670fc",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -923,6 +923,10 @@
     {
       "owned_path": "scripts/hns-doh-resolver/dns-wire-health.test.py",
       "sha256": "37e20b4e1c505489d84aad2706b3123ec5f811c74346c17010e7f316d31a836a"
+    },
+    {
+      "owned_path": "scripts/hns-doh-resolver/hnsd-store-checkpoint-path.patch",
+      "sha256": "67e9625994dc626bf66a30cd0c4ba41c680c8709304aaeb8521d865c37e9cda0"
     }
   ]
 }

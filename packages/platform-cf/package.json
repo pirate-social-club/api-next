@@ -149,6 +149,8 @@
     "./wallet-sponsored-send-request": "./src/wallet-sponsored-send-request.ts",
     "./wallet-sponsored-send-repository": "./src/wallet-sponsored-send-repository.ts",
     "./wallet-sponsored-send-service": "./src/wallet-sponsored-send-service.ts",
+    "./wallet-send-palm": "./src/wallet-send-palm.ts",
+    "./wallet-send-verification-intent": "./src/wallet-send-verification-intent.ts",
     "./wallet-sponsored-chain": "./src/wallet-sponsored-chain.ts",
     "./reward-winner-send-repository": "./src/reward-winner-send-repository.ts",
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",

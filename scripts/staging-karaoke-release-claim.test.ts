@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -116,7 +124,29 @@ for (const stage of ["created", "written", "file-synced", "directory-synced"] as
 }
 
 test("directory durability precedes grant and file descriptors are released on failure", () => {
-  const before = readdirSync("/proc/self/fd").length;
+  // Other suites/runtime work may release unrelated process descriptors.
+  // Check the claim's actual directory/file handles instead of a global count.
+  const ownedDescriptors = () =>
+    readdirSync("/proc/self/fd").flatMap((fd) => {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/self/fd/${fd}`);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+        throw error;
+      }
+      return directories.some((path) => target === path || target.startsWith(`${path}/`))
+        ? [target]
+        : [];
+    });
+  const calibration = directory();
+  const fd = openSync(calibration, "r");
+  try {
+    expect(ownedDescriptors()).toContain(calibration);
+  } finally {
+    closeSync(fd);
+  }
+  expect(ownedDescriptors()).toEqual([]);
   const seen: string[] = [];
   expect(persistKaraokeReleaseClaim(directory(), "claim", (stage) => seen.push(stage))).toBe(true);
   expect(seen).toEqual(["created", "written", "file-synced", "directory-synced"]);
@@ -127,7 +157,7 @@ test("directory durability precedes grant and file descriptors are released on f
       }),
     ).toThrow("injected persistence failure");
   }
-  expect(readdirSync("/proc/self/fd").length).toBe(before);
+  expect(ownedDescriptors()).toEqual([]);
 });
 
 test("successor claims compare the exact cancelled head and retain its bytes", () => {

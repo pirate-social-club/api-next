@@ -611,6 +611,88 @@ describe("openapi breaking-change diff", () => {
     expect(diffBreaking(doc(), added)).toEqual([]);
   });
 
+  test("new required or optional properties in a closed response break old generated clients", () => {
+    const make = (response: Schema.Top) =>
+      generateOpenApi([
+        endpoint({ method: "GET", path: "/closed", auth: Auth.public(), response }),
+      ]);
+    const old = make(Schema.Struct({ existing: Schema.String }));
+    for (const added of [Schema.Boolean, Schema.optional(Schema.Boolean)]) {
+      const candidate = make(Schema.Struct({ existing: Schema.String, added }));
+      expect(diffBreaking(old, candidate)).toEqual([
+        "response GET /closed: property added to closed response: added",
+      ]);
+    }
+  });
+
+  test("closed response additions are detected through nested published references", () => {
+    const make = (response: Schema.Top) =>
+      generateOpenApi([
+        endpoint({ method: "GET", path: "/nested", auth: Auth.public(), response }),
+      ]);
+    const old = make(
+      Schema.Struct({
+        result: Schema.Struct({ existing: Schema.String }).annotate({ identifier: "NestedResult" }),
+      }),
+    );
+    const candidate = make(
+      Schema.Struct({
+        result: Schema.Struct({ existing: Schema.String, added: Schema.Boolean }).annotate({
+          identifier: "NestedResult",
+        }),
+      }),
+    );
+    expect(diffBreaking(old, candidate)).toEqual([
+      "response GET /nested: property added to closed response: result.added",
+    ]);
+  });
+
+  test("inherited object names do not hide a new closed-response property", () => {
+    const old = generateOpenApi([responseEndpoint(Schema.Struct({ existing: Schema.String }))]);
+    for (const name of ["constructor", "toString", "__proto__"]) {
+      const candidate = generateOpenApi([
+        responseEndpoint(Schema.Struct({ existing: Schema.String, [name]: Schema.Boolean })),
+      ]);
+      expect(diffBreaking(old, candidate)).toEqual([
+        `response GET /reference: property added to closed response: ${name}`,
+      ]);
+    }
+  });
+
+  test("open response additions and optional request additions remain compatible", () => {
+    const old = doc();
+    const candidate = doc();
+    for (const document of [old, candidate]) {
+      const operation = document.paths["/echo/{message}"]?.post as {
+        responses: Record<
+          "200",
+          {
+            content: {
+              "application/json": {
+                schema: { additionalProperties?: boolean; properties: Record<string, unknown> };
+              };
+            };
+          }
+        >;
+      };
+      operation.responses["200"].content["application/json"].schema.additionalProperties = true;
+    }
+    const operation = candidate.paths["/echo/{message}"]?.post as {
+      responses: Record<
+        "200",
+        { content: { "application/json": { schema: { properties: Record<string, unknown> } } } }
+      >;
+      requestBody: {
+        content: { "application/json": { schema: { properties: Record<string, unknown> } } };
+      };
+    };
+    operation.responses["200"].content["application/json"].schema.properties.added = {
+      type: "boolean",
+    };
+    operation.requestBody.content["application/json"].schema.properties.added = { type: "boolean" };
+    expect(diffBreaking(old, candidate)).toEqual([]);
+  });
+
   test("removed operation breaks", () => {
     const removed = doc((d) => {
       delete d.paths["/echo/{message}"];

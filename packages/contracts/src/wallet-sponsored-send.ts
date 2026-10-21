@@ -9,6 +9,7 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  VerificationRequired,
 } from "./errors.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
@@ -24,6 +25,7 @@ const Errors = [
   NotFound,
   InternalError,
   ProviderUnavailable,
+  VerificationRequired,
 ] as const;
 
 /** One user-authorized Wallet transfer, independent of how its tokens arrived. */
@@ -46,6 +48,7 @@ const WalletSponsoredSendV1 = Schema.Struct({
   recipient_address: Address,
   amount_atomic: AtomicAmount,
   transaction_hash: Schema.NullOr(TransactionHash),
+  verification_required: Schema.Boolean,
   authorization: Schema.NullOr(
     Schema.Struct({
       wallet_id: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
@@ -105,5 +108,20 @@ export const GetWalletSponsoredSendForPersona = endpoint({
   auth: Auth.user(),
   request: { path: Schema.Struct({ personaId: Identifier }) },
   response: WalletSponsoredSendV1,
+  errors: [...Errors],
+});
+
+/** Starts the existing Very flow and returns to the intended owned persona's Send sheet. */
+export const IssueWalletSendVerificationIntent = endpoint({
+  method: "POST",
+  path: "/wallet/personas/:personaId/send-verification-intents",
+  auth: Auth.user(),
+  request: { path: Schema.Struct({ personaId: Identifier }) },
+  response: Schema.Struct({
+    intent_id: Identifier,
+    provider_id: Schema.Literal("very.web"),
+    purpose: Schema.Literal("wallet_send"),
+    persona_id: Identifier,
+  }),
   errors: [...Errors],
 });

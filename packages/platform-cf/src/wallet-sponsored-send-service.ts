@@ -8,6 +8,7 @@ import {
   type PrivySponsoredTransactionObservation,
   submitPrivySponsoredEvmCall,
 } from "./privy-sponsored-transaction.ts";
+import { WalletSendVerificationRequired } from "./wallet-send-palm.ts";
 import {
   type makeControlPlaneSponsoredSendStore,
   type SponsoredSendRecord,
@@ -40,6 +41,7 @@ export type SponsoredSendChain = Readonly<{
 
 export type SponsoredSendView = Readonly<{
   record: SponsoredSendRecord;
+  verificationRequired: boolean;
   authorization: Readonly<{
     walletId: string;
     payloadBase64: string;
@@ -95,8 +97,12 @@ export function makeWalletSponsoredSendService(
   const submit = input.submit ?? submitPrivySponsoredEvmCall;
   const findByReference = input.findByReference ?? findPrivySponsoredTransactionByReference;
 
-  function authorization(record: SponsoredSendRecord): SponsoredSendView["authorization"] {
+  async function authorization(
+    record: SponsoredSendRecord,
+  ): Promise<SponsoredSendView["authorization"]> {
     if (record.status !== "reserved" || record.expiresAtMs <= now()) return null;
+    if (!(await Effect.runPromise(input.store.hasCurrentPalm({ accountId: record.accountId }))))
+      return null;
     const prepared = prepareWalletSponsoredSendRequest(
       {
         walletId: record.walletId,
@@ -113,6 +119,16 @@ export function makeWalletSponsoredSendService(
       now(),
     );
     return { walletId: record.walletId, payloadBase64: prepared.authorizationPayloadBase64 };
+  }
+
+  async function view(record: SponsoredSendRecord): Promise<SponsoredSendView> {
+    const signing = await authorization(record);
+    return {
+      record,
+      authorization: signing,
+      verificationRequired:
+        record.status === "reserved" && record.expiresAtMs > now() && signing === null,
+    };
   }
 
   async function observe(record: SponsoredSendRecord): Promise<SponsoredSendRecord> {
@@ -257,13 +273,13 @@ export function makeWalletSponsoredSendService(
           providerIdempotencyKey: `sponsor_${input.ids()}`,
         }),
       );
-      return { record, authorization: authorization(record) };
+      return view(record);
     },
     get: async (request: { accountId: string; sendId: string }): Promise<SponsoredSendView> => {
       const record = await Effect.runPromise(input.store.get(request));
       if (record === null) throw new SponsoredSendRefused("not-found");
       const observed = await observe(record);
-      return { record: observed, authorization: authorization(observed) };
+      return view(observed);
     },
     getForPersona: async (request: {
       accountId: string;
@@ -272,7 +288,7 @@ export function makeWalletSponsoredSendService(
       const record = await Effect.runPromise(input.store.findByPersona(request));
       if (record === null) throw new SponsoredSendRefused("not-found");
       const observed = await observe(record);
-      return { record: observed, authorization: authorization(observed) };
+      return view(observed);
     },
     submit: async (request: {
       accountId: string;
@@ -290,6 +306,11 @@ export function makeWalletSponsoredSendService(
         request.signature.length % 4 !== 0
       ) {
         throw new SponsoredSendRefused("ineligible");
+      }
+      if (
+        !(await Effect.runPromise(input.store.hasCurrentPalm({ accountId: request.accountId })))
+      ) {
+        throw new WalletSendVerificationRequired(record.personaId);
       }
       let balance: bigint;
       try {
@@ -338,7 +359,7 @@ export function makeWalletSponsoredSendService(
         }),
       );
       if (updated === null) throw new SponsoredSendRefused("not-found");
-      return { record: await observe(updated), authorization: null };
+      return { record: await observe(updated), authorization: null, verificationRequired: false };
     },
   };
 }

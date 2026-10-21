@@ -92,7 +92,7 @@ BEGIN
   ELSE expected_keys:=ARRAY[coalesce(d.identity->>'destination_ref',d.identity->>'key')]; END IF;
   SELECT array_agg(o->>'key' ORDER BY o->>'key') INTO observed_keys FROM jsonb_array_elements(p_result->'observations') o;
   IF expected_keys IS NULL OR array_position(expected_keys,NULL) IS NOT NULL OR observed_keys IS DISTINCT FROM expected_keys
-   OR cardinality(expected_keys)<>CASE WHEN p_kind='derived' THEN 3 ELSE 1 END
+   OR cardinality(expected_keys)<>(CASE WHEN p_kind='derived' THEN 3 ELSE 1 END)
    OR (SELECT count(DISTINCT key) FROM unnest(expected_keys) key)<>cardinality(expected_keys)
    OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_result->'observations') o WHERE (o->>'outcome'='payload_fenced'
     AND jsonb_typeof(o->'version')='string' AND length(o->>'version')>0 AND jsonb_typeof(o->'etag')='string' AND length(o->>'etag')>0) IS NOT TRUE) THEN

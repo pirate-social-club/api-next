@@ -175,6 +175,7 @@ import {
   CreateWalletSponsoredSend,
   GetWalletSponsoredSend,
   GetWalletSponsoredSendForPersona,
+  IssueWalletSendVerificationIntent,
   SubmitWalletSponsoredSend,
 } from "./wallet-sponsored-send.ts";
 
@@ -308,6 +309,7 @@ export const registry = {
   CreateWalletSponsoredSend,
   GetWalletSponsoredSend,
   GetWalletSponsoredSendForPersona,
+  IssueWalletSendVerificationIntent,
   SubmitWalletSponsoredSend,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,

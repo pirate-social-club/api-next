@@ -7,6 +7,38 @@ import {
 import { canonicalZone, encoder, sha256, world } from "./zone-adoption-command-fixture.ts";
 
 describe("HNS zone adoption command arguments", () => {
+  test("requires an exact relocation file digest only for the relocation delta", () => {
+    const args = [
+      "adopt",
+      "--observation",
+      "/var/lib/observation.json",
+      "--expect-result-sha256",
+      "a".repeat(64),
+      "--expect-delta",
+      "staging_gateway_relocated",
+      "--mode",
+      "rehearse",
+    ];
+    expect(() => parseHnsZoneAdoptionArgumentsV1(args)).toThrow();
+    expect(() =>
+      parseHnsZoneAdoptionArgumentsV1([...args, "--relocation", "/var/lib/review.json"]),
+    ).toThrow();
+    const reviewed = [
+      ...args,
+      "--relocation",
+      "/var/lib/review.json",
+      "--expect-relocation-sha256",
+      "b".repeat(64),
+    ];
+    expect(parseHnsZoneAdoptionArgumentsV1(reviewed)).toMatchObject({
+      relocation: { path: "/var/lib/review.json", sha256: "b".repeat(64) },
+    });
+    expect(() =>
+      parseHnsZoneAdoptionArgumentsV1(
+        reviewed.map((arg) => (arg === "staging_gateway_relocated" ? "serial_only" : arg)),
+      ),
+    ).toThrow();
+  });
   test("accepts each step's exact options", () => {
     expect(parseHnsZoneAdoptionArgumentsV1(["status", "--root", "newroot"])).toEqual({
       step: "status",

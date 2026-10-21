@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.127.0",
+  "sourceBranch": "feat/v1-send-palm-api-20261021",
+  "sourceBase": "b2df70204b3c82a32cf614d55859a24e51c54e18",
+  "validatedSourceCommit": null,
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/644",
+  "wireContract": "Send requires current account-bound server-verified Very Palm evidence before fresh reservation and submission. Missing proof returns verification_required with wallet_send purpose and intended persona. Reserved-send reads and same-key replay with stale proof retain the original record, with authorization null and verification_required true. Submitted/held outcomes remain privately readable and reconcilable without fresh proof or resubmission. The new authenticated IssueWalletSendVerificationIntent returns intent_id, very.web provider, wallet_send purpose and intended persona, using the existing canonical palm subject scope.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.127.0.tgz",
+    "sha256": "4210a1e4dbd01b1ac9054d7c43bdcb075981e0c3494681b4f6bd20e768810e2f"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.127.0",
+    "sourceIdentifier": "api-next-contracts@de0636114f3dc6a246bd90dc61af8fa98898c4c60208b77f2ec4348fab77a75c",
+    "openapiSha256": "de0636114f3dc6a246bd90dc61af8fa98898c4c60208b77f2ec4348fab77a75c",
+    "clientSha256": "d6dcd0c43d3089b966cd513069c824b2573693d415b098cb34f85b17ea6c6b92"
+  },
+  "validation": {
+    "focused": "7 HTTP/service/request tests,32 assertions pass. Isolated PostgreSQL17 Send/Palm/Claim-intent suites pass10 tests78 assertions, including the actual-migration restricted-role proof and concurrent revocation. Historical PostgreSQL18.6 upgrade passes1 test222 assertions with retained274-to275 completion sentinel.",
+    "fullLocal": "The pre-lock source passed the complete check/test commands. Final source command results and exact source binding are retained by the owning Send Palm launch task. Full local, hosted and reviewed integration remain acceptance requirements; this handoff does not substitute for them.",
+    "independentReview": "The owning Send Palm launch task records exact source/SQL review verdicts and required successor qualification. Package preparation alone does not grant source acceptance.",
+    "hosted": "Pending publication and exact hosted checks.",
+    "runtimeAcceptance": "No deployment or live transfer executed. This is a source/package review candidate."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.127.0",
+    "behavior": "Use the typed wallet_send verification entry and preserve the intended persona. Withhold signing when verification_required is true; after successful verification re-read the same reservation. Preserve existing idempotency/recovery state and never create another send to recover an unknown outcome.",
+    "deploymentOrder": "This is a paired API/client transition. Pre127 generated clients reject the new verification_required success property, while client127 requires it. UI-first deployment alone cannot prove every loaded tab upgraded. Verify old-tab refusal/reload handling, exact API/client pairing and preserved Send idempotency/unknown outcomes before serving acceptance. No production release is authorized by this handoff."
+  }
+}

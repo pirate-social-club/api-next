@@ -217,6 +217,7 @@ DO $acl$
 DECLARE obj RECORD; recipient RECORD;
 BEGIN
  FOR obj IN SELECT c.oid,c.relowner,c.relname FROM pg_class c WHERE c.relnamespace=current_schema()::regnamespace
+   AND c.relkind IN('r','p','v','m','f')
    AND (c.relname LIKE 'dance_moderated_%_v1' OR c.relname IN('dance_review_account_fences_v1','dance_review_policy_versions_v1','dance_review_policy_admissions_v1','dance_moderator_reference_revisions_v1','dance_moderator_reference_cutoffs_v1')) LOOP
   EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC CASCADE',obj.relname);
   FOR recipient IN SELECT DISTINCT pg_get_userbyid(a.grantee) AS name FROM aclexplode(coalesce((SELECT relacl FROM pg_class WHERE oid=obj.oid),acldefault('r',obj.relowner))) a WHERE a.grantee<>0 AND a.grantee<>obj.relowner LOOP
