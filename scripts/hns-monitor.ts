@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { Schema } from "effect";
-import { openContinuityDatabase } from "./hns-continuity/database.mjs";
+import { Client } from "pg";
 import { probePinnedCertificate } from "./hns-monitor/certificate.ts";
 import { deliverMonitorConditions, makeMonitorHeartbeatSender } from "./hns-monitor/delivery.ts";
 import {
@@ -71,7 +71,13 @@ async function main(): Promise<void> {
   let observedAt = Date.now() / 1000;
   let rootCount: number | null = null;
   try {
-    const client = openContinuityDatabase(process.env.HNS_OPERATOR_MONITOR_POSTGRES_URL ?? "");
+    const databaseUrl = new URL(process.env.HNS_OPERATOR_MONITOR_POSTGRES_URL ?? "");
+    if (databaseUrl.searchParams.get("sslrootcert") === "system")
+      databaseUrl.searchParams.delete("sslrootcert");
+    const client = new Client({
+      connectionString: databaseUrl.toString(),
+      connectionTimeoutMillis: 10000,
+    });
     let snapshot: MonitorSnapshot;
     try {
       await client.connect();
