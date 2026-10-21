@@ -17,6 +17,7 @@ export type WorkerRequestDiagnostic = Readonly<{
   first_request_on_instance: boolean;
   worker_version: string | null;
   worker_role: "http";
+  database_correlation_id?: string;
   emit: (fields: WorkerDiagnosticFields) => void;
 }>;
 
@@ -35,7 +36,7 @@ export function makeWorkerRequestDiagnostics(
   let sequence = 0;
   return {
     current: () => storage.getStore(),
-    run<A>(version: string | null, use: () => A): A {
+    run<A>(version: string | null, use: () => A, databaseCorrelationId?: string): A {
       const requestStartedAt = now();
       instanceId ??= randomUUID();
       const requestSequence = ++sequence;
@@ -53,9 +54,18 @@ export function makeWorkerRequestDiagnostics(
           /* Diagnostics cannot change admission. */
         }
       };
-      const context = Object.freeze({ ...identity, emit });
+      const context = Object.freeze({
+        ...identity,
+        emit,
+        ...(databaseCorrelationId === undefined
+          ? {}
+          : { database_correlation_id: databaseCorrelationId }),
+      });
       return storage.run(context, () => {
-        emit({ phase: "request_entry" });
+        emit({
+          phase: "request_entry",
+          ...(databaseCorrelationId === undefined ? {} : { correlation_id: databaseCorrelationId }),
+        });
         return use();
       });
     },

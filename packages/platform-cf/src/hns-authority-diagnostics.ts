@@ -32,7 +32,16 @@ export const withHnsAuthoritySpan = Effect.fn("hns.authority.diagnostic-span")(f
   phase: "authority" | "client_initialization" | "connection_acquisition" | "query",
   effect: Effect.Effect<A, E, R>,
 ) {
-  const diagnostic = yield* HnsAuthorityDiagnostic;
+  const authorityDiagnostic = yield* HnsAuthorityDiagnostic;
+  const current = httpRequestDiagnostics.current();
+  const diagnostic =
+    authorityDiagnostic ??
+    (current?.database_correlation_id === undefined
+      ? undefined
+      : {
+          emit: current.emit,
+          correlation_id: current.database_correlation_id,
+        });
   if (diagnostic === undefined) return yield* effect;
   const startedAt = performance.now();
   diagnostic.emit({ phase, outcome: "started", correlation_id: diagnostic.correlation_id });

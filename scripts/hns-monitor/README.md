@@ -90,8 +90,8 @@ not compare complete zones or prove a clean client's DNSSEC/DANE path.
 Requests have three-second transport bounds, each helper has a thirty-second
 observation deadline, and its parent kills it after thirty-five seconds with
 bounded output. At most four roots are probed concurrently. Missing answers,
-lag, signature/DS/pin failure and unavailable chain evidence use the existing
-condition delivery, suppression and recovery mechanism. Raw answers and root
+lag, signature/DS/pin failure and unavailable chain evidence produce a failed
+external heartbeat. Raw answers and root
 labels are never logged by the helper.
 The parent reserves a seventy-five-second probe window and starts no batch
 with less than thirty-five seconds left. Unprobed roots produce an explicit
@@ -100,34 +100,43 @@ incomplete observation. Capacity is an operational failure, not healthy coverage
 
 ## Delivery and acknowledgment
 
-The destination is supplied only through `HNS_OPERATOR_ALERT_WEBHOOK_URL` in
-the operator environment. It must accept an HTTPS POST with a JSON `text`
-field and acknowledge with a 2xx response. Redirects are refused. URL credentials
-and fragments are refused; any token in the operator-owned URL remains secret.
-The request has a ten-second abort deadline and does not retry internally.
-The dedicated existing HNS alert service and sink interface enforce the message
-boundary. The public-song Workers Logs sink is unchanged.
+Every completed observation sends one Healthchecks signal. Empty conditions
+send success; any condition sends failure. Repeated healthy or failed results
+still send signals. Healthchecks owns notification suppression and recovery,
+and detects a missed run when the unit or host stops. No local delivery ledger
+may suppress the heartbeat. Detailed conditions remain in the unit's structured
+output; the hosted payload contains only the state, public role label, host and
+time. The public-song Workers Logs policy is unchanged.
+
+Use a dedicated check with a fifteen-minute period and five-minute grace.
+Do not share its ping URL with any other task. A backup success must not clear
+a failed monitor. Keep the project management key in Infisical; install only
+this check's private ping URL on the host. The dynamic service identity receives
+it through LoadCredential and HNS_HEALTHCHECK_URL_FILE.
+
+The maintained sender is scripts/hns-deployment/ping-healthcheck.py. Install
+those exact reviewed bytes beside the monitor bundle and pass its absolute
+path with --healthcheck-sender. The parent starts an isolated Python child with
+only its credential file path and locale. Neither the database credential nor
+the project management key is inherited. Transport has a thirty-second timeout
+and the parent kills the child after thirty-five seconds. Redirects are refused.
+Only HTTP200 with the exact OK acknowledgment counts as delivery; unknown and
+rate-limited checks also return HTTP200 and must remain failures.
 
 ```sh
-rtk proxy infisical run --env=prod --path=/services/api-next/operator --silent -- bun scripts/hns-monitor.ts --config /absolute/monitor.json --state /private/state/receipt.sqlite --deliver
-rtk proxy infisical run --env=prod --path=/services/api-next/operator --silent -- bun scripts/hns-monitor.ts --delivery-test
+HNS_HEALTHCHECK_URL_FILE=/private/monitor-check-url rtk proxy infisical run --env=prod --path=/services/api-next/operator --silent -- bun scripts/hns-monitor.ts --config /absolute/monitor.json --healthcheck-sender /absolute/ping-healthcheck.py --deliver
+HNS_HEALTHCHECK_URL_FILE=/private/fixture-check-url bun scripts/hns-monitor.ts --healthcheck-sender /absolute/ping-healthcheck.py --delivery-test --delivery-state failure
+HNS_HEALTHCHECK_URL_FILE=/private/fixture-check-url bun scripts/hns-monitor.ts --healthcheck-sender /absolute/ping-healthcheck.py --delivery-test --delivery-state success
 ```
 
-The delivery test sends a clearly marked synthetic terminal-renewal condition
-through the real adapter. It does not mutate production health or job rows.
-Run it only against the operator's selected destination. Retain the operator-side
-message receipt as well as the command's acknowledgment; a provider 2xx alone
-does not prove someone received a notification. Mailbox delivery requires the
-operator's mail adapter or an independently reviewed email integration.
-
-The local SQLite receipt is private operator-tool state, separate from the
-Workers alert delivery ledger. It records a condition fingerprint after
-acknowledged delivery, suppresses unchanged alerts for six hours, sends changed
-conditions immediately, and reports recovery once. An immediate transaction
-serializes concurrent senders. Failed sends do not advance the receipt. A process
-death or lost acknowledgment can produce a duplicate notification; this is
-at-least-once delivery, not an exactly-once promise. Back up neither destination
-secrets nor session material into the receipt.
+The two delivery tests explicitly signal a synthetic failure and recovery,
+without reading or changing production observations. Run them against a
+separate fixture check with the selected email integration. Also let a short
+fixture check expire without further pings to verify missed-run delivery.
+Retain provider event and mailbox receipts for all three paths; an acknowledged
+ping alone does not prove an email was received. Arm the production check only
+after acceptance. New checks that have never received a ping do not provide
+missing-run coverage.
 
 ## Runtime installation
 
@@ -138,16 +147,18 @@ rtk bun build scripts/hns-monitor.ts --target=bun --outfile=/absolute/release/hn
 ```
 
 The adjacent systemd units are installation templates, not evidence of deployment.
-Stage the bundle, Python helper and hash-locked Python environment. Record all
+Stage the bundle, DNS helper, hosted sender and hash-locked Python environment. Record all
 artifact and dependency provenance and their source commit; verify the local
 driver and run the helper as the service identity. Supply the environment
 and configuration, run a dry-run and delivery test, then install the timer.
-The service uses a dynamic identity and its own private state directory.
-Systemd passes the private configuration through LoadCredential, so the
+The service uses a dynamic identity. Systemd passes the private monitor
+configuration and check URL through LoadCredential, so the
 dynamic identity does not need direct access to the operator-owned source file.
 Its fifteen-minute period is independent of the production renewal cron.
-Monitor timer execution from another host or an external dead-man destination;
-a stopped monitor cannot report its own absence.
+The hosted check monitors missing timer execution outside the VPS fleet;
+a stopped monitor cannot report its own absence. Inspect and retire the live
+dry-run override explicitly during the reviewed delivery release. A source
+template with --deliver does not override a live ExecStart replacement.
 
 The old backup heartbeat and authority deployment drift checks remain distinct
 installation repairs. The secondary release verifier is a local integrity
@@ -192,9 +203,9 @@ ordinary full-prefix migration run re-executes these idempotent revocations and
 preserves the explicit grants; the PostgreSQL test covers repeat application.
 
 Store the dedicated reader URL as HNS_OPERATOR_MONITOR_POSTGRES_URL in the
-production operator path. Map only that value to the command's existing
-CONTROL_PLANE_POSTGRES_ADMIN_URL environment name in the private service file;
-the variable name does not confer administrative privilege. Never install the
-actual operator administrator URL in the monitor unit. The reader URL and
-HNS_OPERATOR_ALERT_WEBHOOK_URL are optional admitted operator secrets, not
-Worker runtime secrets. Dry-run installation does not require a destination.
+production operator path. The command reads that exact dedicated variable;
+never install the actual administrator URL or use it as a fallback. The reader
+URL and private check URL are operator credentials, not Worker runtime secrets.
+Dry-run installation does not require a destination. Old SQLite delivery
+receipts may be retained as evidence, but are neither read nor migrated into
+the hosted check's state.

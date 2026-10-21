@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pirate HNS authoritative RRSIG health hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=pirate-hns-rrsig-health.service
+
+[Install]
+WantedBy=timers.target

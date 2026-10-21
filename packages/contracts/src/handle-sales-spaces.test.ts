@@ -2,11 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { HandleClaimV2, HandleQuoteV2, SaleNamespaceActivationV1 } from "./handle-sales.ts";
 import {
+  CommunityHandleOfferingDiscoveryV1,
+  CommunityHandleOfferingV4,
+  CommunityHandleSpacesOfferingDiscoveryV1,
   CreateHandleSpacesQuoteResultV1,
   CreateSpacesSaleNamespaceActivationV1,
   HandleSpacesClaimV1,
   HandleSpacesQuoteV1,
   HandleSpacesReservationV1,
+  SpacesMemberRequestReadbackPageV1,
   SpacesOperatorFundingV1,
   SpacesSaleNamespaceActivationV1,
   SpacesSaleReadinessV1,
@@ -16,6 +20,110 @@ import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 const strict = { onExcessProperty: "error" } as const;
 const decodes = <S extends Schema.Top>(schema: S, value: unknown): boolean =>
   Schema.decodeUnknownExit(schema as never, strict)(value)._tag === "Success";
+
+const discoveryOffering = {
+  offering_id: "offering_spaces_discovery",
+  offering_revision: 1,
+  offering_hash: "a".repeat(64),
+  community_id: "community_discovery",
+  family: "spaces",
+  namespace_root: "harbor",
+  display_root: "harbor",
+  sale_namespace_activation_id: "activation_spaces_discovery",
+  sale_namespace_activation_generation: 1,
+  label_scope: {
+    kind: "label_rule_v2",
+    label_grammar_id: "spaces_subspace_label_v1",
+    reserved_labels_id: "reserved_spaces_discovery",
+    reserved_labels_revision: 1,
+    reserved_labels_hash: "b".repeat(64),
+    availability: { kind: "length_band_v1", min_label_length: 8, max_label_length: 32 },
+  },
+  allocation: { kind: "first_come_v1" },
+  max_active_grants_per_account: 1,
+  fulfillment: { kind: "spaces_native_v1" },
+  qualification_policy: {
+    kind: "curated_policy_v1",
+    policy_id: "policy_spaces_discovery",
+    policy_revision: 1,
+    policy_hash: "c".repeat(64),
+    provider_binding_hash: "d".repeat(64),
+  },
+  pricing: {
+    kind: "free_v1",
+    pricing_id: "pricing_discovery",
+    pricing_revision: 1,
+    pricing_hash: "e".repeat(64),
+    atomic_amount: "0",
+  },
+  issuance: { family: "spaces", driver_id: "spaces_discovery", driver_version: "1" },
+  quote_ttl_seconds: 120,
+  reservation_ttl_seconds: 120,
+  status: "active",
+  created_at: "2026-10-20T00:00:00.000Z",
+} as const;
+
+describe("Spaces public discovery availability", () => {
+  test.each(["available", "temporarily_unavailable"] as const)(
+    "accepts strict %s discovery without extending transactional terms",
+    (kind) => {
+      const item = { ...discoveryOffering, current_availability: { kind } };
+      expect(decodes(CommunityHandleOfferingV4, discoveryOffering)).toBe(true);
+      expect(decodes(CommunityHandleSpacesOfferingDiscoveryV1, item)).toBe(true);
+      expect(decodes(CommunityHandleOfferingDiscoveryV1, item)).toBe(true);
+      expect(
+        decodes(handleSalesSpacesRegistry.ListCommunityHandleOfferings.response, {
+          items: [item],
+          next_cursor: null,
+        }),
+      ).toBe(true);
+      expect(decodes(CommunityHandleOfferingV4, item)).toBe(false);
+      expect(
+        decodes(handleSalesSpacesRegistry.CreateCommunityHandleOffering.response, {
+          offering: discoveryOffering,
+          replayed: false,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  test("does not silently fall back to the old Spaces shape on missing or unknown availability", () => {
+    for (const item of [
+      discoveryOffering,
+      { ...discoveryOffering, current_availability: { kind: "unknown" } },
+      { ...discoveryOffering, current_availability: { kind: "available", reason: "internal" } },
+      {
+        ...discoveryOffering,
+        current_availability: { kind: "temporarily_unavailable" },
+        internal_readiness: "expired",
+      },
+    ])
+      expect(
+        decodes(handleSalesSpacesRegistry.ListCommunityHandleOfferings.response, {
+          items: [item],
+          next_cursor: null,
+        }),
+      ).toBe(false);
+  });
+
+  test("retains the exact existing HNS discovery member without an availability field", () => {
+    const hns = {
+      ...discoveryOffering,
+      family: "hns",
+      label_scope: { ...discoveryOffering.label_scope, label_grammar_id: "hns_ascii_ldh_1_63_v1" },
+      fulfillment: { kind: "hosted_persona_v1" },
+      issuance: { ...discoveryOffering.issuance, family: "hns" },
+    };
+    expect(decodes(CommunityHandleOfferingV4, hns)).toBe(true);
+    expect(decodes(CommunityHandleOfferingDiscoveryV1, hns)).toBe(true);
+    expect(
+      decodes(CommunityHandleOfferingDiscoveryV1, {
+        ...hns,
+        current_availability: { kind: "available" },
+      }),
+    ).toBe(false);
+  });
+});
 
 const activation = {
   sale_namespace_activation_id: "sale_namespace_activation_spaces_01",
@@ -362,5 +470,86 @@ describe("Spaces quote, reservation, and claim contracts", () => {
     expect(
       decodes(CreateHandleSpacesQuoteResultV1, { kind: "quoted", quote, replayed: false }),
     ).toBe(true);
+  });
+});
+
+describe("private Spaces member retained request readback", () => {
+  const action = {
+    action_id: "quote-action-1",
+    endpoint_template: "/handle-quotes",
+    idempotency_key: "quote-key-1",
+    request_hash: "a".repeat(64),
+    committed_at: quote.quoted_at,
+  };
+  const context = {
+    community_id: activation.community_id,
+    offering_id: quote.offering_id,
+    offering_revision: quote.offering_revision,
+    offering_hash: quote.offering_hash,
+    sale_namespace_activation_id: quote.sale_namespace_activation_id,
+    sale_namespace_activation_generation: quote.sale_namespace_activation_generation,
+    owner_persona_id: quote.owner_persona_id,
+    network: quote.recipient.network,
+    namespace_root: quote.handle.namespace_root,
+  };
+  const page = {
+    object: "spaces_member_request_readback_v1",
+    coverage: "retained_committed_actions_with_stored_scope",
+    scope_incomplete_actions: "omitted_when_scope_unprovable",
+    unlocated_request_outcome: "unknown",
+    new_submission_admission: "not_established_by_readback",
+    items: [{ kind: "quote", action, context, quote }],
+    next_cursor: null,
+  };
+  test("requires uncertainty and rejects invented admission or private wallet material", () => {
+    expect(decodes(SpacesMemberRequestReadbackPageV1, page)).toBe(true);
+    expect(decodes(SpacesMemberRequestReadbackPageV1, { ...page, items: [] })).toBe(true);
+    for (const value of [
+      { ...page, new_submission_admission: "allowed" },
+      { ...page, unlocated_request_outcome: "not_started" },
+      { ...page, items: [{ ...page.items[0], context: { ...context, wallet_token: "secret" } }] },
+      { ...page, items: Array.from({ length: 101 }, () => page.items[0]) },
+      { ...page, next_cursor: "other.cursor" },
+    ])
+      expect(decodes(SpacesMemberRequestReadbackPageV1, value)).toBe(false);
+  });
+  test("refused actions remain context-incomplete and scope selectors are closed", () => {
+    expect(
+      decodes(SpacesMemberRequestReadbackPageV1, {
+        ...page,
+        items: [
+          {
+            kind: "quote_refusal",
+            action,
+            offering_id: quote.offering_id,
+            owner_persona_id: quote.owner_persona_id,
+            immutable_context: "not_recorded",
+            result_kind: "eligibility_required",
+            reason: "evidence_required",
+          },
+        ],
+      }),
+    ).toBe(true);
+    const endpoint = handleSalesSpacesRegistry.ListSpacesMemberRequests;
+    expect(endpoint.auth).toEqual({ policy: { kind: "user" } });
+    expect(endpoint.cacheControl).toBe("private, no-store");
+    expect(
+      decodes(endpoint.request.query, {
+        limit: "100",
+        namespace_root: "charizard",
+        network: "regtest",
+      }),
+    ).toBe(true);
+    for (const query of [
+      { account_id: "someone" },
+      { limit: "101" },
+      { limit: "0" },
+      { limit: "1.5" },
+      { network: "signet" },
+      { namespace_root: "Charizard" },
+      { cursor: "bad" },
+    ]) {
+      expect(decodes(endpoint.request.query, query)).toBe(false);
+    }
   });
 });

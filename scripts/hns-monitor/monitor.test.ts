@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, X509Certificate } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspectPinnedCertificate } from "./certificate.ts";
-import { deliverMonitorConditions } from "./delivery.ts";
+import { deliverMonitorConditions, makeMonitorHeartbeatSender } from "./delivery.ts";
 import { evaluateMonitorSnapshot } from "./evaluate.ts";
 import type { MonitorSnapshot } from "./snapshot.ts";
 
@@ -88,58 +88,75 @@ test("DANE-EE certificate identity uses the retained SPKI without a WebPKI hostn
   );
 });
 
-describe("monitor delivery receipt", () => {
-  test("many affected roots are delivered in bounded messages before advancing the receipt", async () => {
+describe("external monitor heartbeat", () => {
+  test("every observation reports its state, including repeated healthy or failed results", async () => {
+    const condition = [{ subject: "scheduler", code: "heartbeat_stale" }];
+    const delivered: string[] = [];
+    const send = async (state: string) => {
+      delivered.push(state);
+    };
+    for (const conditions of [[], [], condition, condition, []])
+      expect(await deliverMonitorConditions(conditions, send)).toBe("delivered");
+    expect(delivered).toEqual(["success", "success", "failure", "failure", "success"]);
+  });
+
+  test("a failed acknowledgment is retried on the next observation", async () => {
+    const condition = [{ subject: "monitor", code: "observation_unavailable" }];
+    await expect(
+      deliverMonitorConditions(condition, async () => {
+        throw new Error("transport unavailable");
+      }),
+    ).rejects.toThrow("transport unavailable");
+    const delivered: string[] = [];
+    expect(
+      await deliverMonitorConditions(condition, async (state) => {
+        delivered.push(state);
+      }),
+    ).toBe("delivered");
+    expect(delivered).toEqual(["failure"]);
+  });
+
+  test("the sender gets only its private file path, with no parent credentials", async () => {
     const directory = await mkdtemp(join(tmpdir(), "hns-monitor-test-"));
-    const path = join(directory, "receipt.sqlite");
-    const conditions = Array.from({ length: 250 }, (_, index) => ({
-      subject: `root-${index}`,
-      code: "serving_validity_low",
-    }));
-    const messages: string[] = [];
+    const credential = join(directory, "managed-url");
+    const helper = join(directory, "sender.py");
+    const secret = "fixture-private-url-value";
     try {
-      expect(
-        await deliverMonitorConditions(path, conditions, now, async (text) => {
-          messages.push(text);
-        }),
-      ).toBe("delivered");
-      expect(messages.length).toBeGreaterThan(1);
-      expect(messages.every((text) => Buffer.byteLength(text) <= 4096)).toBe(true);
-      expect(messages.join("\n").match(/serving_validity_low/gu)).toHaveLength(250);
-      expect(
-        await deliverMonitorConditions(path, conditions, now + 1, async () => {
-          throw new Error();
-        }),
-      ).toBe("suppressed");
+      await writeFile(credential, secret, { mode: 0o600 });
+      await writeFile(
+        helper,
+        "import json, os, pathlib, sys\n" +
+          "assert 'HNS_OPERATOR_MONITOR_POSTGRES_URL' not in os.environ\n" +
+          "assert 'HNS_HEALTHCHECKS_API_KEY' not in os.environ\n" +
+          "pathlib.Path(os.environ['HNS_HEALTHCHECK_URL_FILE'] + '.receipt').write_text(json.dumps(sys.argv[1:]))\n",
+      );
+      const sender = makeMonitorHeartbeatSender("/usr/bin/python3", helper, credential);
+      await sender("failure");
+      const argumentsText = await readFile(`${credential}.receipt`, "utf8");
+      expect(JSON.parse(argumentsText)).toEqual([
+        "--state",
+        "failure",
+        "--label",
+        "hns-operator-monitor",
+      ]);
+      expect(argumentsText).not.toContain(secret);
+      await writeFile(
+        helper,
+        "import sys\nprint('fixture-private-url-value', file=sys.stderr)\nraise SystemExit(1)\n",
+      );
+      await expect(sender("success")).rejects.toThrow("HNS monitor delivery unavailable");
     } finally {
       await rm(directory, { recursive: true });
     }
   });
-  test("failed delivery retries, successful delivery suppresses, changes and recovery deliver", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "hns-monitor-test-"));
-    const path = join(directory, "receipt.sqlite");
-    const condition = [{ subject: "scheduler", code: "heartbeat_stale" }];
-    const delivered: string[] = [];
-    const send = async (text: string) => {
-      delivered.push(text);
-    };
-    try {
-      await expect(
-        deliverMonitorConditions(path, condition, now, async () => {
-          throw new Error("secret");
-        }),
-      ).rejects.toThrow("HNS monitor delivery unavailable");
-      expect(await deliverMonitorConditions(path, condition, now, send)).toBe("delivered");
-      expect(await deliverMonitorConditions(path, condition, now + 1, send)).toBe("suppressed");
-      expect(await deliverMonitorConditions(path, condition, now + 6 * 3600, send)).toBe(
-        "delivered",
-      );
-      expect(await deliverMonitorConditions(path, [], now + 6 * 3600 + 1, send)).toBe("delivered");
-      expect(await deliverMonitorConditions(path, [], now + 6 * 3600 + 2, send)).toBe("suppressed");
-      expect(delivered).toHaveLength(3);
-      expect(delivered[2]).toContain("cleared");
-    } finally {
-      await rm(directory, { recursive: true });
-    }
+
+  test("relative runtime paths are refused before starting a sender", () => {
+    expect(() => makeMonitorHeartbeatSender("python3", "/sender.py", "/credential")).toThrow();
+    expect(() =>
+      makeMonitorHeartbeatSender("/usr/bin/python3", "sender.py", "/credential"),
+    ).toThrow();
+    expect(() =>
+      makeMonitorHeartbeatSender("/usr/bin/python3", "/sender.py", "credential"),
+    ).toThrow();
   });
 });

@@ -8,6 +8,7 @@
     "scripts/reward-operations-control.ts",
     "scripts/reward-operations-control.test.ts",
     "scripts/hns-staging-gateway-fixture.ts",
+    "scripts/hns-monitor.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
     "apps",

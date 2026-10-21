@@ -1,0 +1,27 @@
+services:
+  powerdns:
+    # 5.1 pinned by digest; integration-tested against this compose file.
+    image: powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
+    container_name: pirate-hns-authdns
+    restart: unless-stopped
+    # Host networking: the webserver/API must be reachable on the host's
+    # loopback by the verifier (127.0.0.1:8081). Under bridge networking a
+    # published port cannot reach a service bound to the CONTAINER's loopback,
+    # and binding the API to 0.0.0.0 inside the container would widen it.
+    # Matches the spaced/subsd services, which are also host-networked.
+    network_mode: host
+    entrypoint: ["/bin/sh", "-lc", "umask 0002 && exec /usr/local/sbin/pdns_server-startup $$@", "--"]
+    # Public host addresses are args; the private API-key setting is a separate mount.
+    command:
+      - --local-address=${EDGE_PUBLIC_IP:?set EDGE_PUBLIC_IP},127.0.0.1
+      - --also-notify=${NS2_IP:?set NS2_IP (secondary nameserver)}
+    volumes:
+      # /etc/powerdns, NOT /etc/pdns — this image reads the former, so the old
+      # path meant pdns.conf was silently never loaded at all.
+      - ./config/pdns.conf:/etc/powerdns/pdns.conf:ro
+      - ${PDNS_API_KEY_CONFIG:?set private PDNS_API_KEY_CONFIG}:/etc/powerdns/pdns.d/api-key.conf:ro
+      # Stable host path, deliberately NOT ./data: the PowerDNS SQLite
+      # database and DNSSEC keys must survive checkout replacement and release
+      # cleanup. Losing it destroys the authoritative state and its matching
+      # parent DS lifecycle.
+      - ${PDNS_DATA_DIR:-/srv/pirate-hns-authdns/shared/data}:/var/lib/powerdns

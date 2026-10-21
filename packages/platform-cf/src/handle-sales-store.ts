@@ -9,6 +9,9 @@ export function provideHandleSalesRepository(
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect);
   const store = {
+    listSpacesMemberRequests: (
+      input: Parameters<HandleSalesStore["listSpacesMemberRequests"]>[0],
+    ) => provide(repository.listSpacesMemberRequests(input)),
     createSaleNamespace: (input: Parameters<HandleSalesStore["createSaleNamespace"]>[0]) =>
       provide(repository.createSaleNamespace(input)),
     reviseSaleNamespace: (input: Parameters<HandleSalesStore["reviseSaleNamespace"]>[0]) =>

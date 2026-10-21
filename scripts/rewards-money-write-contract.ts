@@ -9,8 +9,8 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_operations_run_lease",
     "reward_operations_run_lease_events",
   ],
-  "0275_reward_wallet_nonce_authority_v2.sql": ["reward_wallet_nonce_leases"],
-  "0276_song_megapot_contributions_v2.sql": [
+  "0276_reward_wallet_nonce_authority_v2.sql": ["reward_wallet_nonce_leases"],
+  "0277_song_megapot_contributions_v2.sql": [
     "reward_funding_profiles_v2",
     "reward_funding_schedule_witnesses_v2",
     "reward_song_slots_v2",
@@ -24,7 +24,7 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_funding_scan_checkpoints_v2",
     "reward_incoming_receipts_v2",
   ],
-  "0277_reward_principal_seals_v2.sql": [
+  "0278_reward_principal_seals_v2.sql": [
     "reward_pool_cohort_seals_v2",
     "reward_pool_cohort_members_v2",
     "reward_late_principal_liabilities_v2",

@@ -1,5 +1,7 @@
 import { Schema } from "effect";
+import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
+import { AuthError, BadRequest, InternalError } from "./errors.ts";
 import * as hns from "./handle-sales.ts";
 import {
   BoundedIdentifier,
@@ -8,6 +10,7 @@ import {
   Sha256Hex,
 } from "./handle-sales-scalars.ts";
 import {
+  CommunityHandleOfferingDiscoveryV1,
   CommunityHandleOfferingManagementItemV3,
   CommunityHandleOfferingV4,
   CreateHandleQuoteResultV4,
@@ -20,6 +23,9 @@ import {
   PublicPersonaProfileV2,
   SaleNamespaceActivationV2,
   SpacesCanonicalRootV1,
+  SpacesMemberRequestCursorV1,
+  SpacesMemberRequestReadbackPageV1,
+  SpacesNetworkV1,
   SpacesSubspaceLabelV1,
 } from "./handle-sales-spaces.ts";
 
@@ -105,7 +111,7 @@ const ReviseCommunityHandleOffering = endpoint({
 
 const ListCommunityHandleOfferings = endpoint({
   ...hns.ListCommunityHandleOfferings,
-  response: page(CommunityHandleOfferingV4),
+  response: page(CommunityHandleOfferingDiscoveryV1),
 });
 
 const GetHandleSalesManagement = endpoint({
@@ -172,9 +178,29 @@ const GetPublicPersona = endpoint({
   response: PublicPersonaProfileV2,
 });
 
+const ListSpacesMemberRequests = endpoint({
+  method: "GET",
+  path: "/users/me/spaces-handle-requests",
+  auth: Auth.user(),
+  cacheControl: "private, no-store",
+  request: {
+    query: Schema.Struct({
+      community_id: Schema.optional(BoundedIdentifier),
+      offering_id: Schema.optional(BoundedIdentifier),
+      namespace_root: Schema.optional(SpacesCanonicalRootV1),
+      network: Schema.optional(SpacesNetworkV1),
+      limit: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[1-9]|[1-9][0-9]|100)$/u))),
+      cursor: Schema.optional(SpacesMemberRequestCursorV1),
+    }),
+  },
+  response: SpacesMemberRequestReadbackPageV1,
+  errors: [AuthError, BadRequest, InternalError],
+});
+
 /** The shared public API uses successor schemas without changing route IDs. */
 export const handleSalesSpacesRegistry = {
   ...hns.handleSalesRegistry,
+  ListSpacesMemberRequests,
   CreateHandleSaleNamespace,
   ReviseHandleSaleNamespace,
   ListHandleSaleNamespaces,

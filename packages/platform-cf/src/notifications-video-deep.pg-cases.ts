@@ -68,14 +68,15 @@ export function registerVideoDeepPostgresCases(completed: () => void) {
           ).toEqual([{ instants: 1 }]);
           expect(await matrixHistory(f)).toEqual(history);
           expect(await receiptBytes()).toEqual(receipts);
-          // With all timestamps equal, the actual server row-ID tie break
-          // selects the 21st sibling, never an insertion-order assumption.
+          // With all timestamps equal, use the actual row-ID tie break:
+          // newest-first roots and oldest-first replies, never insertion order.
           const ordered = (
             await f.admin.query<{ comment_id: string }>(
               "SELECT comment_id FROM comments WHERE comment_id=ANY($1::text[]) ORDER BY created_at,comment_id",
               [rows],
             )
           ).rows.map((row) => row.comment_id);
+          if (depth === 0) ordered.reverse();
           const selected = ordered[20];
           if (!selected) throw new Error("Beyond-first-page branch required");
           branch.push(selected);

@@ -1,0 +1,10 @@
+{
+  "schema": "pirate-hns-effective-gateway/v1",
+  "captured_at": "2026-10-20T15:18:38.577525+00:00",
+  "source_host": "94.103.168.161",
+  "runtime_path": "/etc/caddy/caddy.json",
+  "sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5",
+  "bytes": 3942,
+  "role": "captured production routing baseline",
+  "status": "source custody only; independently reviewed release and current-host comparison required before installation"
+}

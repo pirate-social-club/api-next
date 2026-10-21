@@ -1,0 +1,60 @@
+name: pirate-hns-observer
+
+services:
+  hsd-observer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pirate-hsd-observer:8.0.0
+    container_name: pirate-hsd-observer
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    read_only: true
+    user: "${HSD_UID:-1000}:${HSD_GID:-1000}"
+    environment:
+      HSD_API_KEY_FILE: /run/secrets/hsd_api_key
+      HSD_NETWORK: main
+      HSD_PREFIX: /var/lib/hsd
+      HSD_HTTP_HOST: 127.0.0.1
+      HSD_HTTP_PORT: "12037"
+      HSD_LISTEN: "false"
+      HSD_PRUNE: "true"
+      HSD_LOG_LEVEL: info
+      HSD_LOG_CONSOLE: "true"
+      HSD_WORKERS_SIZE: "2"
+      HSD_CORS: "false"
+      HSD_NO_AUTH: "false"
+      # hsd exposes no initialblockdownload flag. Readiness therefore requires
+      # near-complete verification plus a loose median-time freshness bound.
+      # The verifier independently enforces the stricter security policy.
+      HSD_HEALTH_MIN_VERIFICATION_PROGRESS: "0.999"
+      HSD_HEALTH_MAX_TIP_AGE_SECONDS: "21600"
+    secrets:
+      - hsd_api_key
+    volumes:
+      # Stable host path, deliberately NOT ./data: the chain database is
+      # roughly 59 GB and must survive checkout replacement and release
+      # cleanup. Losing it forces a full resync and takes the observer out of
+      # the namespace-verification path.
+      - ${HSD_DATA_DIR:-/srv/pirate-hns-observer/shared/data}:/var/lib/hsd
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hsd-observer-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+secrets:
+  hsd_api_key:
+    # Stable host path, deliberately NOT ./secrets: the secret must not move
+    # with an immutable release directory.
+    file: ${HSD_API_KEY_FILE:-/srv/pirate-hns-observer/config/hsd_api_key}

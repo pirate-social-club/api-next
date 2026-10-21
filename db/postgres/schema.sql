@@ -20919,7 +20919,7 @@ CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_pare
     LANGUAGE sql STABLE
     AS $$
  WITH access AS MATERIALIZED (
-   SELECT p.community_id FROM posts p JOIN communities community USING(community_id)
+   SELECT p.community_id,p.post_type='video' AND p_parent IS NULL AS newest_roots FROM posts p JOIN communities community USING(community_id)
    JOIN users viewer ON viewer.user_id=p_viewer AND viewer.status='active'
    WHERE p.post_id=p_post AND p.status='published' AND community.status='active'
      AND (p.post_type<>'video' OR EXISTS(SELECT 1 FROM video_detail_access_v1(p_viewer,p.post_id) v WHERE v.non_age_allowed AND v.age_allowed))
@@ -20928,15 +20928,41 @@ CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_pare
        SELECT 1 FROM community_memberships m WHERE m.community_id=p.community_id
          AND m.user_id=p_viewer AND m.status='member')))
  ), authorized AS MATERIALIZED (
-   SELECT access.community_id,p_parent IS NULL OR EXISTS(
+   SELECT access.community_id,access.newest_roots,p_parent IS NULL OR EXISTS(
      SELECT 1 FROM authorized_comment_branch_v1(p_viewer,p_parent) branch
        WHERE branch.community_id=access.community_id AND branch.post_id=p_post
          AND branch.target_rating_allowed) AS parent_allowed FROM access
  ), anchor AS MATERIALIZED (
    SELECT c.comment_id,c.created_at FROM comments c JOIN access USING(community_id)
    WHERE c.post_id=p_post AND c.parent_comment_id IS NOT DISTINCT FROM p_parent AND c.comment_id=p_cursor
+ ), candidates AS MATERIALIZED (
+   SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating,a.newest_roots FROM authorized a CROSS JOIN LATERAL (
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (a.newest_roots) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id IS NULL AND c.status='published' AND p_cursor IS NULL
+          ORDER BY c.created_at DESC,c.comment_id DESC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (a.newest_roots) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id IS NULL AND c.status='published' AND p_cursor IS NOT NULL AND (c.created_at,c.comment_id)<(SELECT created_at,comment_id FROM anchor)
+          ORDER BY c.created_at DESC,c.comment_id DESC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (NOT a.newest_roots AND p_parent IS NULL) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id IS NULL AND c.status='published' AND p_cursor IS NULL
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (NOT a.newest_roots AND p_parent IS NULL) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id IS NULL AND c.status='published' AND p_cursor IS NOT NULL AND (c.created_at,c.comment_id)>(SELECT created_at,comment_id FROM anchor)
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (p_parent IS NOT NULL) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id=p_parent AND c.status='published' AND p_cursor IS NULL
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE a.parent_allowed AND (p_parent IS NOT NULL) AND c.community_id=a.community_id AND c.post_id=p_post AND c.parent_comment_id=p_parent AND c.status='published' AND p_cursor IS NOT NULL AND (c.created_at,c.comment_id)>(SELECT created_at,comment_id FROM anchor)
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+   ) c
  ), page AS MATERIALIZED (
-   SELECT c.comment_id,c.created_at,
+   SELECT c.comment_id,c.created_at,c.newest_roots,
      CASE WHEN NOT can_account_view_content_rating_v1(p_viewer,c.content_rating) THEN
        jsonb_build_object('kind','age_locked','content_rating','adult_18',
          'next_action',jsonb_build_object('kind','verify_minimum_age','minimum_age',18))
@@ -20947,19 +20973,15 @@ CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_pare
        'depth',c.depth,'reply_count',(SELECT count(*) FROM comments reply WHERE reply.community_id=c.community_id
          AND reply.post_id=c.post_id AND reply.parent_comment_id=c.comment_id AND reply.status='published'),
        'status','published','content_rating',c.content_rating,'created_at',c.created_at) END AS item
-   FROM comments c JOIN authorized a USING(community_id)
-   WHERE a.parent_allowed AND c.post_id=p_post AND c.parent_comment_id IS NOT DISTINCT FROM p_parent
-     AND c.status='published' AND (p_cursor IS NULL OR
-       (c.created_at,c.comment_id)>(SELECT created_at,comment_id FROM anchor))
-   ORDER BY c.created_at,c.comment_id LIMIT 21
- ), shown AS (SELECT * FROM page ORDER BY created_at,comment_id LIMIT 20)
+   FROM candidates c
+ ), shown AS (SELECT * FROM page ORDER BY CASE WHEN newest_roots THEN created_at END DESC,CASE WHEN newest_roots THEN comment_id END DESC,created_at,comment_id LIMIT 20)
  SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM access) THEN jsonb_build_object('kind','post_not_found')
    WHEN NOT EXISTS(SELECT 1 FROM authorized WHERE parent_allowed) THEN jsonb_build_object('kind','comment_not_found')
    WHEN p_cursor IS NOT NULL AND NOT EXISTS(SELECT 1 FROM anchor) THEN jsonb_build_object('kind','invalid_cursor')
    ELSE jsonb_build_object('kind','available','document',jsonb_build_object(
-     'items',COALESCE((SELECT jsonb_agg(item ORDER BY created_at,comment_id) FROM shown),'[]'::jsonb),
+     'items',COALESCE((SELECT jsonb_agg(item ORDER BY CASE WHEN newest_roots THEN created_at END DESC,CASE WHEN newest_roots THEN comment_id END DESC,created_at,comment_id) FROM shown),'[]'::jsonb),
      'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
-       (SELECT comment_id FROM shown ORDER BY created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END)) END
+       (SELECT comment_id FROM shown ORDER BY CASE WHEN newest_roots THEN created_at END,CASE WHEN newest_roots THEN comment_id END,created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END)) END
 $$;
 
 CREATE FUNCTION list_song_funding_work_v2(n integer) RETURNS SETOF text
@@ -29040,8 +29062,20 @@ CREATE FUNCTION resolve_comment_navigation_v1(p_viewer text, p_comment text) RET
      FROM unnest(branch.path_ids) WITH ORDINALITY AS path(id,ordinal)
      JOIN comments node ON node.comment_id=path.id AND node.community_id=branch.community_id AND node.post_id=branch.post_id
      CROSS JOIN LATERAL (
-       WITH page AS MATERIALIZED (
-         SELECT c.comment_id,c.created_at,CASE WHEN NOT can_account_view_content_rating_v1(p_viewer,c.content_rating) THEN
+       WITH candidates AS MATERIALIZED (
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE c.community_id=branch.community_id AND c.post_id=branch.post_id AND c.parent_comment_id IS NULL AND c.status='published' AND (p.post_type='video' AND node.parent_comment_id IS NULL) AND (c.created_at,c.comment_id)<=(node.created_at,node.comment_id)
+          ORDER BY c.created_at DESC,c.comment_id DESC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE c.community_id=branch.community_id AND c.post_id=branch.post_id AND c.parent_comment_id IS NULL AND c.status='published' AND (p.post_type<>'video' AND node.parent_comment_id IS NULL) AND (c.created_at,c.comment_id)>=(node.created_at,node.comment_id)
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+          UNION ALL
+          (SELECT c.comment_id,c.created_at,c.community_id,c.post_id,c.parent_comment_id,c.body,c.author_user_id,c.author_persona_id,c.depth,c.content_rating
+          FROM comments c WHERE c.community_id=branch.community_id AND c.post_id=branch.post_id AND c.parent_comment_id=node.parent_comment_id AND c.status='published' AND (node.parent_comment_id IS NOT NULL) AND (c.created_at,c.comment_id)>=(node.created_at,node.comment_id)
+          ORDER BY c.created_at ASC,c.comment_id ASC LIMIT 21)
+       ), page AS MATERIALIZED (
+         SELECT c.comment_id,c.created_at,(p.post_type='video' AND node.parent_comment_id IS NULL) AS newest_roots,CASE WHEN NOT can_account_view_content_rating_v1(p_viewer,c.content_rating) THEN
            jsonb_build_object('kind','age_locked','content_rating','adult_18',
              'next_action',jsonb_build_object('kind','verify_minimum_age','minimum_age',18))
          ELSE jsonb_build_object('comment_id',c.comment_id,'parent_comment_id',c.parent_comment_id,
@@ -29049,18 +29083,15 @@ CREATE FUNCTION resolve_comment_navigation_v1(p_viewer text, p_comment text) RET
            'reply_count',(SELECT count(*) FROM comments reply WHERE reply.community_id=c.community_id
              AND reply.post_id=c.post_id AND reply.parent_comment_id=c.comment_id AND reply.status='published'),
            'status','published','content_rating',c.content_rating,'created_at',c.created_at) END AS item
-         FROM comments c WHERE c.community_id=branch.community_id AND c.post_id=branch.post_id
-           AND c.parent_comment_id IS NOT DISTINCT FROM node.parent_comment_id AND c.status='published'
-           AND (c.created_at,c.comment_id)>=(node.created_at,node.comment_id)
-         ORDER BY c.created_at,c.comment_id LIMIT 21
-       ), shown AS (SELECT * FROM page ORDER BY created_at,comment_id LIMIT 20)
+         FROM candidates c
+       ), shown AS (SELECT * FROM page ORDER BY CASE WHEN newest_roots THEN created_at END DESC,CASE WHEN newest_roots THEN comment_id END DESC,created_at,comment_id LIMIT 20)
        SELECT jsonb_build_object('parent_comment_id',node.parent_comment_id,'branch_comment_id',node.comment_id,
-         'items',(SELECT jsonb_agg(item ORDER BY created_at,comment_id) FROM shown),
-         'earlier_items_omitted',EXISTS(SELECT 1 FROM comments earlier WHERE earlier.community_id=branch.community_id
-           AND earlier.post_id=branch.post_id AND earlier.parent_comment_id IS NOT DISTINCT FROM node.parent_comment_id
-           AND earlier.status='published' AND (earlier.created_at,earlier.comment_id)<(node.created_at,node.comment_id)),
+         'items',(SELECT jsonb_agg(item ORDER BY CASE WHEN newest_roots THEN created_at END DESC,CASE WHEN newest_roots THEN comment_id END DESC,created_at,comment_id) FROM shown),
+         'earlier_items_omitted',CASE WHEN p.post_type='video' AND node.parent_comment_id IS NULL THEN EXISTS(SELECT 1 FROM comments earlier WHERE earlier.community_id=branch.community_id AND earlier.post_id=branch.post_id AND earlier.parent_comment_id IS NULL AND earlier.status='published' AND (earlier.created_at,earlier.comment_id)>(node.created_at,node.comment_id))
+           WHEN node.parent_comment_id IS NULL THEN EXISTS(SELECT 1 FROM comments earlier WHERE earlier.community_id=branch.community_id AND earlier.post_id=branch.post_id AND earlier.parent_comment_id IS NULL AND earlier.status='published' AND (earlier.created_at,earlier.comment_id)<(node.created_at,node.comment_id))
+           ELSE EXISTS(SELECT 1 FROM comments earlier WHERE earlier.community_id=branch.community_id AND earlier.post_id=branch.post_id AND earlier.parent_comment_id=node.parent_comment_id AND earlier.status='published' AND (earlier.created_at,earlier.comment_id)<(node.created_at,node.comment_id)) END,
          'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
-           (SELECT comment_id FROM shown ORDER BY created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END) AS document
+           (SELECT comment_id FROM shown ORDER BY CASE WHEN newest_roots THEN created_at END,CASE WHEN newest_roots THEN comment_id END,created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END) AS document
      ) w)) END)
  FROM authorized_comment_branch_v1(p_viewer,p_comment) branch
  JOIN posts p ON p.community_id=branch.community_id AND p.post_id=branch.post_id AND p.post_type IN('text','song','video')

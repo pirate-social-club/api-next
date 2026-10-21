@@ -31,9 +31,9 @@ function reviewedMoneyTableRevocations(
 ): string[] {
   const tags: Readonly<Record<string, string>> = {
     "0242_reward_operations_run_lease.sql": "lease_permissions",
-    "0275_reward_wallet_nonce_authority_v2.sql": "permissions",
-    "0276_song_megapot_contributions_v2.sql": "acl",
-    "0277_reward_principal_seals_v2.sql": "principal_acl",
+    "0276_reward_wallet_nonce_authority_v2.sql": "permissions",
+    "0277_song_megapot_contributions_v2.sql": "acl",
+    "0278_reward_principal_seals_v2.sql": "principal_acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -84,7 +84,7 @@ function reviewedMoneyTableRevocations(
       "inherited revocation missing",
     );
   } else if (tag === "permissions") {
-    // 0275 has one literal table; stop before the independent function ACL loop.
+    // 0276 has one literal table; stop before the independent function ACL loop.
     const tableAcl = body.split(/FOR\s+f\s+IN\s+SELECT/u)[0] ?? "";
     const table = /WHERE\s+c\.oid='([a-z][a-z0-9_]*)'::regclass/u.exec(tableAcl)?.[1];
     tables = table ? [table] : [];
@@ -110,7 +110,7 @@ function reviewedMoneyTableRevocations(
       "inherited revocation missing",
     );
   } else {
-    // 0276/0277 enumerate owned tables from pg_class, not pg_proc. Restrict
+    // 0277/0278 enumerate owned tables from pg_class, not pg_proc. Restrict
     // observation to that table loop so function revokes cannot fill a hole.
     const functionLoop = body.search(/FOR\s+x\s+IN\s+SELECT[^;]*\bFROM\s+pg_proc\b/u);
     if (functionLoop < 0) throw new Error("money table ACL boundary missing");
@@ -334,23 +334,23 @@ describe("destructive money-table inventory", () => {
           tables,
         ),
       ).toThrow("money table coverage mismatch");
-      const missingTable = migration.startsWith("0275_")
+      const missingTable = migration.startsWith("0276_")
         ? sql.replace(`c.oid='${first}'::regclass`, "c.oid=NULL")
         : sql.replaceAll(`'${first}',`, "");
       expect(missingTable).not.toBe(sql);
       expect(() => reviewedMoneyTableRevocations(migration, missingTable, tables)).toThrow(
-        migration.startsWith("0275_")
+        migration.startsWith("0276_")
           ? "money table coverage missing"
           : "money table coverage mismatch",
       );
       const publicCommand = migration.startsWith("0242_")
         ? "REVOKE ALL ON TABLE %I FROM PUBLIC"
-        : migration.startsWith("0275_")
+        : migration.startsWith("0276_")
           ? `REVOKE ALL ON ${first} FROM PUBLIC CASCADE`
           : "REVOKE ALL ON %I.%I FROM PUBLIC CASCADE";
       const inheritedCommand = migration.startsWith("0242_")
         ? "REVOKE ALL ON TABLE %I FROM %I"
-        : migration.startsWith("0275_")
+        : migration.startsWith("0276_")
           ? `REVOKE ALL ON %I.${first} FROM %I CASCADE`
           : "REVOKE ALL ON %I.%I FROM %I CASCADE";
       const publicLine = sql.split("\n").find((line) => line.includes(publicCommand));

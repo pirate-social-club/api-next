@@ -1,4 +1,5 @@
 import type {
+  CommunityHandleOfferingDiscoveryV1,
   CommunityHandleOfferingManagementItemV3,
   CommunityHandleOfferingV4,
   CreateHandleQuoteResultV3,
@@ -17,6 +18,8 @@ import type {
   PublicHandleGrantV4,
   PublicPersonaProfileV2,
   SaleNamespaceActivationV2,
+  SpacesMemberRequestReadbackPageV1,
+  SpacesNetworkV1,
 } from "@pirate/contracts";
 import { Context, Data, Effect } from "effect";
 import { IdGen } from "../ports.ts";
@@ -84,6 +87,15 @@ export class HandleRecipientTokenVault extends Context.Service<
 
 export type PageInput = Readonly<{ limit?: number; cursor?: string }>;
 export type PageResult<A> = Readonly<{ items: readonly A[]; next_cursor: string | null }>;
+
+export type SpacesMemberRequestReadbackInput = PageInput &
+  Readonly<{
+    accountId: string;
+    communityId?: string;
+    offeringId?: string;
+    namespaceRoot?: string;
+    network?: SpacesNetworkV1;
+  }>;
 
 export type HandleSaleNamespaceAuthorityInput = Readonly<{
   namespaceAuthorityReference: string;
@@ -174,6 +186,12 @@ export type HandleQualificationPolicyAuthoringResultV2 = Readonly<{
 }>;
 
 export interface HandleSalesStore {
+  readonly listSpacesMemberRequests: (
+    input: SpacesMemberRequestReadbackInput,
+  ) => Effect.Effect<
+    SpacesMemberRequestReadbackPageV1,
+    HandleSalesPageRejected | HandleSalesStorageFailed
+  >;
   readonly createSaleNamespace: (
     input: CreateHandleSaleNamespaceInput & Readonly<{ activationId: string; actionId: string }>,
   ) => Effect.Effect<
@@ -231,7 +249,7 @@ export interface HandleSalesStore {
   readonly listOfferings: (
     input: Readonly<{ communityId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<CommunityHandleOfferingV4>,
+    PageResult<CommunityHandleOfferingDiscoveryV1>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getManagementContext: (
@@ -337,6 +355,7 @@ const nextId = (prefix: string): Effect.Effect<string, never, IdGen> =>
 
 export function makeHandleSalesService(store: HandleSalesStore) {
   return {
+    listSpacesMemberRequests: store.listSpacesMemberRequests,
     createSaleNamespace: (input: CreateHandleSaleNamespaceInput) =>
       Effect.gen(function* () {
         return yield* store.createSaleNamespace({

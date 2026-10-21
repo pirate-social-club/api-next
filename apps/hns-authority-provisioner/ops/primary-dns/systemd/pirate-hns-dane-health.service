@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify Pirate HNS DANE certificate-to-TLSA continuity
+After=network-online.target
+Wants=network-online.target
+OnFailure=pirate-hns-dane-health-alert.service
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_ROOT=/srv/pirate-hns-authdns
+EnvironmentFile=/srv/pirate-hns-authdns/config/dane-health.env
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/check-dane-spki.sh"'
+ExecStartPost=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/heartbeat.sh"'

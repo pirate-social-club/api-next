@@ -1,0 +1,8 @@
+[Unit]
+Description=Alert on Pirate HNS DoH resolver health failure
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_ROOT=/srv/pirate-hns-doh
+EnvironmentFile=/srv/pirate-hns-doh/config/doh-health.env
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/alert-on-failure.sh" "pirate-hns-doh-health.service"'

@@ -275,9 +275,10 @@
     "0272_notifications_video_destination.sql": "1cf850cb28141f15e43938a4a62cf0cf9ae8c2ceb735f589faa82fec386775ec",
     "0273_notifications_video_alias_audit.sql": "2379e483f78fcc7aec5730ea3db93c347783cc01e154f4147e73f6d39448c321",
     "0274_author_declared_text_moderation_actions.sql": "79f054e672bb17f22faa83d04f5808288beddf766b494fb83b399834ba337eff",
-    "0275_reward_wallet_nonce_authority_v2.sql": "b73642c94dae6bf74b7495c18bdae3194c959344baea4df076cbb521f811e976",
-    "0276_song_megapot_contributions_v2.sql": "4f3b1070ce9f46cd089cf1adec0803f69b2ae4c984b49bc73dc3d8ba75c2d184",
-    "0277_reward_principal_seals_v2.sql": "cc81e992c39516f9cd97e3f3cdba52711d76a9d0540ed0fb12e0ae7986f5dd42",
-    "0278_reward_contribution_privileges_v2.sql": "573fbd398a47070ec51662ee9093d12482abefee18a090b5750b133a3f220ea2"
+    "0275_video_root_comment_ordering.sql": "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
+    "0276_reward_wallet_nonce_authority_v2.sql": "b73642c94dae6bf74b7495c18bdae3194c959344baea4df076cbb521f811e976",
+    "0277_song_megapot_contributions_v2.sql": "4f3b1070ce9f46cd089cf1adec0803f69b2ae4c984b49bc73dc3d8ba75c2d184",
+    "0278_reward_principal_seals_v2.sql": "cc81e992c39516f9cd97e3f3cdba52711d76a9d0540ed0fb12e0ae7986f5dd42",
+    "0279_reward_contribution_privileges_v2.sql": "573fbd398a47070ec51662ee9093d12482abefee18a090b5750b133a3f220ea2"
   }
 }

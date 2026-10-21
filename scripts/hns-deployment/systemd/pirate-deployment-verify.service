@@ -1,0 +1,25 @@
+[Unit]
+Description=Daily deployment drift verification for a Pirate VPS role
+After=network-online.target
+Wants=network-online.target
+OnFailure=pirate-deployment-verify-alert@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/pirate-deployment-verify.env
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/verify-deployment.sh"'
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hosted failure signal for failed unit %i
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/srv/pirate-hns/config/hns-state-backup.env
+ExecStart=/srv/pirate-hns/current/bin/alert-on-failure.sh %i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+LockPersonality=true
+UMask=0077

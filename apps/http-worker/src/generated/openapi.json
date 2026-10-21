@@ -74223,6 +74223,40 @@
                               },
                               "created_at": {
                                 "type": "string"
+                              },
+                              "current_availability": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "available"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "temporarily_unavailable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -74245,7 +74279,8 @@
                               "quote_ttl_seconds",
                               "reservation_ttl_seconds",
                               "status",
-                              "created_at"
+                              "created_at",
+                              "current_availability"
                             ],
                             "additionalProperties": false
                           }
@@ -85277,6 +85312,1000 @@
         "x-errors": [
           "BadRequest",
           "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/users/me/spaces-handle-requests": {
+      "get": {
+        "operationId": "get_usersMeSpacesHandleRequests",
+        "parameters": [
+          {
+            "name": "community_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "offering_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "namespace_root",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "mainnet",
+                    "testnet4",
+                    "regtest"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "pattern": "^(?:[1-9]|[1-9][0-9]|100)$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "maxLength": 2048
+                    },
+                    {
+                      "pattern": "^smr1\\.[A-Za-z0-9_-]+$"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "spaces_member_request_readback_v1"
+                      ]
+                    },
+                    "coverage": {
+                      "type": "string",
+                      "enum": [
+                        "retained_committed_actions_with_stored_scope"
+                      ]
+                    },
+                    "scope_incomplete_actions": {
+                      "type": "string",
+                      "enum": [
+                        "omitted_when_scope_unprovable"
+                      ]
+                    },
+                    "unlocated_request_outcome": {
+                      "type": "string",
+                      "enum": [
+                        "unknown"
+                      ]
+                    },
+                    "new_submission_admission": {
+                      "type": "string",
+                      "enum": [
+                        "not_established_by_readback"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "quote"
+                                ]
+                              },
+                              "action": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "context": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_1"
+                              },
+                              "quote": {
+                                "type": "object",
+                                "properties": {
+                                  "quote_id": {
+                                    "type": "string"
+                                  },
+                                  "quote_hash": {
+                                    "type": "string"
+                                  },
+                                  "offering_id": {
+                                    "type": "string"
+                                  },
+                                  "offering_revision": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "offering_hash": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_id": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_generation": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "fulfillment": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_2"
+                                  },
+                                  "owner_persona_id": {
+                                    "type": "string"
+                                  },
+                                  "recipient": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_3"
+                                  },
+                                  "handle": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_4"
+                                  },
+                                  "display_identifier": {
+                                    "type": "string"
+                                  },
+                                  "pricing": {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "free_v1"
+                                        ]
+                                      },
+                                      "pricing_id": {
+                                        "type": "string"
+                                      },
+                                      "pricing_revision": {
+                                        "type": "integer",
+                                        "allOf": [
+                                          {
+                                            "minimum": 1,
+                                            "maximum": 9007199254740991
+                                          }
+                                        ]
+                                      },
+                                      "pricing_hash": {
+                                        "type": "string"
+                                      },
+                                      "atomic_amount": {
+                                        "type": "string",
+                                        "enum": [
+                                          "0"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "pricing_id",
+                                      "pricing_revision",
+                                      "pricing_hash",
+                                      "atomic_amount"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "eligibility": {
+                                    "type": "object",
+                                    "properties": {
+                                      "policy_revision": {
+                                        "type": "integer",
+                                        "allOf": [
+                                          {
+                                            "minimum": 1,
+                                            "maximum": 9007199254740991
+                                          }
+                                        ]
+                                      },
+                                      "policy_hash": {
+                                        "type": "string"
+                                      },
+                                      "decision": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed"
+                                        ]
+                                      },
+                                      "evidence_use_ids": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "evaluated_at": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "policy_revision",
+                                      "policy_hash",
+                                      "decision",
+                                      "evidence_use_ids",
+                                      "evaluated_at"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "quoted",
+                                      "expired",
+                                      "consumed"
+                                    ]
+                                  },
+                                  "quoted_at": {
+                                    "type": "string"
+                                  },
+                                  "expires_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "quote_id",
+                                  "quote_hash",
+                                  "offering_id",
+                                  "offering_revision",
+                                  "offering_hash",
+                                  "sale_namespace_activation_id",
+                                  "sale_namespace_activation_generation",
+                                  "fulfillment",
+                                  "owner_persona_id",
+                                  "recipient",
+                                  "handle",
+                                  "display_identifier",
+                                  "pricing",
+                                  "eligibility",
+                                  "status",
+                                  "quoted_at",
+                                  "expires_at"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "context",
+                              "quote"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "reservation"
+                                ]
+                              },
+                              "action": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "context": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_1"
+                              },
+                              "reservation": {
+                                "type": "object",
+                                "properties": {
+                                  "reservation_id": {
+                                    "type": "string"
+                                  },
+                                  "reservation_hash": {
+                                    "type": "string"
+                                  },
+                                  "quote_id": {
+                                    "type": "string"
+                                  },
+                                  "quote_hash": {
+                                    "type": "string"
+                                  },
+                                  "offering_id": {
+                                    "type": "string"
+                                  },
+                                  "offering_hash": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_id": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_generation": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "fulfillment": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_2"
+                                  },
+                                  "owner_persona_id": {
+                                    "type": "string"
+                                  },
+                                  "recipient": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_3"
+                                  },
+                                  "handle": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_4"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "reserved",
+                                      "consumed",
+                                      "expired",
+                                      "cancelled",
+                                      "blocked"
+                                    ]
+                                  },
+                                  "reserved_at": {
+                                    "type": "string"
+                                  },
+                                  "expires_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "reservation_id",
+                                  "reservation_hash",
+                                  "quote_id",
+                                  "quote_hash",
+                                  "offering_id",
+                                  "offering_hash",
+                                  "sale_namespace_activation_id",
+                                  "sale_namespace_activation_generation",
+                                  "fulfillment",
+                                  "owner_persona_id",
+                                  "recipient",
+                                  "handle",
+                                  "status",
+                                  "reserved_at",
+                                  "expires_at"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "context",
+                              "reservation"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "claim"
+                                ]
+                              },
+                              "action": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "context": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_1"
+                              },
+                              "claim": {
+                                "type": "object",
+                                "properties": {
+                                  "claim_id": {
+                                    "type": "string"
+                                  },
+                                  "owner_persona_id": {
+                                    "type": "string"
+                                  },
+                                  "offering_id": {
+                                    "type": "string"
+                                  },
+                                  "offering_hash": {
+                                    "type": "string"
+                                  },
+                                  "quote_id": {
+                                    "type": "string"
+                                  },
+                                  "reservation_id": {
+                                    "type": "string"
+                                  },
+                                  "reservation_hash": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_id": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_generation": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "fulfillment": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_2"
+                                  },
+                                  "recipient": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_3"
+                                  },
+                                  "handle": {
+                                    "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_4"
+                                  },
+                                  "display_identifier": {
+                                    "type": "string"
+                                  },
+                                  "payment": {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "not_required_v1"
+                                        ]
+                                      },
+                                      "pricing_revision": {
+                                        "type": "integer",
+                                        "allOf": [
+                                          {
+                                            "minimum": 1,
+                                            "maximum": 9007199254740991
+                                          }
+                                        ]
+                                      },
+                                      "pricing_hash": {
+                                        "type": "string"
+                                      },
+                                      "atomic_amount": {
+                                        "type": "string",
+                                        "enum": [
+                                          "0"
+                                        ]
+                                      },
+                                      "status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "not_applicable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "pricing_revision",
+                                      "pricing_hash",
+                                      "atomic_amount",
+                                      "status"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "issuance_pending",
+                                      "issued",
+                                      "issuance_failed"
+                                    ]
+                                  },
+                                  "delayed": {
+                                    "type": "boolean"
+                                  },
+                                  "safe_reason": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "persona_unavailable",
+                                          "public_linking_confirmation_required",
+                                          "offering_unavailable",
+                                          "platform_namespace_reserved",
+                                          "paid_offerings_disabled",
+                                          "invalid_handle",
+                                          "handle_unavailable",
+                                          "evidence_required",
+                                          "qualification_unsatisfied",
+                                          "quote_expired",
+                                          "reservation_expired",
+                                          "idempotency_conflict",
+                                          "claim_blocked",
+                                          "issuance_pending",
+                                          "issuance_failed",
+                                          "service_unavailable",
+                                          "not_found",
+                                          "not_offered",
+                                          "offering_not_applicable",
+                                          "account_grant_limit_reached",
+                                          "sale_namespace_inactive",
+                                          "dns_delegation_required",
+                                          "recipient_wallet_required"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "grant": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "grant_id": {
+                                            "type": "string"
+                                          },
+                                          "grant_generation": {
+                                            "type": "integer",
+                                            "allOf": [
+                                              {
+                                                "minimum": 1,
+                                                "maximum": 9007199254740991
+                                              }
+                                            ]
+                                          },
+                                          "community_id": {
+                                            "type": "string"
+                                          },
+                                          "offering_id": {
+                                            "type": "string"
+                                          },
+                                          "offering_hash": {
+                                            "type": "string"
+                                          },
+                                          "claim_id": {
+                                            "type": "string"
+                                          },
+                                          "owner_persona_id": {
+                                            "type": "string"
+                                          },
+                                          "sale_namespace_activation_id": {
+                                            "type": "string"
+                                          },
+                                          "sale_namespace_activation_generation": {
+                                            "type": "integer",
+                                            "allOf": [
+                                              {
+                                                "minimum": 1,
+                                                "maximum": 9007199254740991
+                                              }
+                                            ]
+                                          },
+                                          "fulfillment": {
+                                            "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_2"
+                                          },
+                                          "handle": {
+                                            "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_4"
+                                          },
+                                          "display_identifier": {
+                                            "type": "string"
+                                          },
+                                          "status": {
+                                            "type": "string",
+                                            "enum": [
+                                              "active",
+                                              "revoked",
+                                              "tombstoned"
+                                            ]
+                                          },
+                                          "issued_at": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "grant_id",
+                                          "grant_generation",
+                                          "community_id",
+                                          "offering_id",
+                                          "offering_hash",
+                                          "claim_id",
+                                          "owner_persona_id",
+                                          "sale_namespace_activation_id",
+                                          "sale_namespace_activation_generation",
+                                          "fulfillment",
+                                          "handle",
+                                          "display_identifier",
+                                          "status",
+                                          "issued_at"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "created_at": {
+                                    "type": "string"
+                                  },
+                                  "updated_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "claim_id",
+                                  "owner_persona_id",
+                                  "offering_id",
+                                  "offering_hash",
+                                  "quote_id",
+                                  "reservation_id",
+                                  "reservation_hash",
+                                  "sale_namespace_activation_id",
+                                  "sale_namespace_activation_generation",
+                                  "fulfillment",
+                                  "recipient",
+                                  "handle",
+                                  "display_identifier",
+                                  "payment",
+                                  "state",
+                                  "delayed",
+                                  "safe_reason",
+                                  "grant",
+                                  "created_at",
+                                  "updated_at"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "context",
+                              "claim"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "quote_refusal"
+                                ]
+                              },
+                              "action": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "offering_id": {
+                                "type": "string"
+                              },
+                              "owner_persona_id": {
+                                "type": "string"
+                              },
+                              "immutable_context": {
+                                "type": "string",
+                                "enum": [
+                                  "not_recorded"
+                                ]
+                              },
+                              "result_kind": {
+                                "type": "string",
+                                "enum": [
+                                  "eligibility_required"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "evidence_required",
+                                  "qualification_unsatisfied"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "offering_id",
+                              "owner_persona_id",
+                              "immutable_context",
+                              "result_kind",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "allOf": [
+                        {
+                          "maxItems": 100
+                        }
+                      ]
+                    },
+                    "next_cursor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "maxLength": 2048
+                            },
+                            {
+                              "pattern": "^smr1\\.[A-Za-z0-9_-]+$"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "coverage",
+                    "scope_incomplete_actions",
+                    "unlocated_request_outcome",
+                    "new_submission_admission",
+                    "items",
+                    "next_cursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          }
+        },
+        "x-cache-control": "private, no-store",
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
           "InternalError"
         ]
       }
@@ -210128,6 +211157,168 @@
               "display_name",
               "avatar_ref",
               "primary_public_handle"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_": {
+        "$defs": {
+          "Objects_": {
+            "type": "object",
+            "properties": {
+              "action_id": {
+                "type": "string"
+              },
+              "endpoint_template": {
+                "type": "string",
+                "enum": [
+                  "/handle-quotes",
+                  "/handle-reservations",
+                  "/handle-claims"
+                ]
+              },
+              "idempotency_key": {
+                "type": "string"
+              },
+              "request_hash": {
+                "type": "string"
+              },
+              "committed_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action_id",
+              "endpoint_template",
+              "idempotency_key",
+              "request_hash",
+              "committed_at"
+            ],
+            "additionalProperties": false
+          },
+          "Union_": {
+            "type": "string",
+            "enum": [
+              "mainnet",
+              "testnet4",
+              "regtest"
+            ]
+          },
+          "Objects_1": {
+            "type": "object",
+            "properties": {
+              "community_id": {
+                "type": "string"
+              },
+              "offering_id": {
+                "type": "string"
+              },
+              "offering_revision": {
+                "type": "integer",
+                "allOf": [
+                  {
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              "offering_hash": {
+                "type": "string"
+              },
+              "sale_namespace_activation_id": {
+                "type": "string"
+              },
+              "sale_namespace_activation_generation": {
+                "type": "integer",
+                "allOf": [
+                  {
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                ]
+              },
+              "owner_persona_id": {
+                "type": "string"
+              },
+              "network": {
+                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Union_"
+              },
+              "namespace_root": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "community_id",
+              "offering_id",
+              "offering_revision",
+              "offering_hash",
+              "sale_namespace_activation_id",
+              "sale_namespace_activation_generation",
+              "owner_persona_id",
+              "network",
+              "namespace_root"
+            ],
+            "additionalProperties": false
+          },
+          "Objects_2": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "spaces_native_v1"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          "Objects_3": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "persona_taproot_v1"
+                ]
+              },
+              "network": {
+                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_users_2f_me_2f_spaces-handle-requests_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Union_"
+              },
+              "script_pubkey_hex": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "network",
+              "script_pubkey_hex"
+            ],
+            "additionalProperties": false
+          },
+          "Objects_4": {
+            "type": "object",
+            "properties": {
+              "family": {
+                "type": "string",
+                "enum": [
+                  "spaces"
+                ]
+              },
+              "namespace_root": {
+                "type": "string"
+              },
+              "handle_label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "family",
+              "namespace_root",
+              "handle_label"
             ],
             "additionalProperties": false
           }

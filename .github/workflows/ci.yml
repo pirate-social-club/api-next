@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+      - name: Install HNS host test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y sqlite3 zstd
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
@@ -60,8 +64,25 @@ jobs:
           python -m venv "$RUNNER_TEMP/hns-monitor-python"
           "$RUNNER_TEMP/hns-monitor-python/bin/pip" install --require-hashes --only-binary=:all: -r scripts/hns-continuity/requirements.txt
           "$RUNNER_TEMP/hns-monitor-python/bin/python" scripts/hns-monitor/zone-freshness.test.py
+      - name: Verify maintained HNS host releases and alert semantics
+        run: |
+          python3 scripts/hns-deployment/ping-healthcheck.test.py
+          bash scripts/hns-deployment/deployment-tooling.test.sh
+          bash scripts/hns-doh-resolver/doh-health.test.sh
+          bash apps/hns-authority-provisioner/ops/primary-dns/rrsig-health.test.sh
+          bash apps/hns-authority-provisioner/ops/primary-dns/dane-health.test.sh
+          bash apps/hns-authority-provisioner/ops/state-backup/hns-state-backup.test.sh
+      - name: Build standalone HNS monitor from the checked source
+        run: |
+          mkdir -p "$RUNNER_TEMP/hns-host-release"
+          bun build scripts/hns-monitor.ts --target=bun --outfile="$RUNNER_TEMP/hns-host-release/hns-monitor.mjs"
+          node --check "$RUNNER_TEMP/hns-host-release/hns-monitor.mjs"
+          cp scripts/hns-deployment/ping-healthcheck.py "$RUNNER_TEMP/hns-host-release/ping-healthcheck.py"
+          sha256sum "$RUNNER_TEMP/hns-host-release/hns-monitor.mjs" "$RUNNER_TEMP/hns-host-release/ping-healthcheck.py"
       - name: Verify secondary DNS release refusal paths
         run: python3 scripts/hns-secondary-dns/verify-release.test.py
+      - name: Check official TypeScript compatibility
+        run: bun run typecheck:typescript
       - run: bun run check
       - name: Remove stale media completion sentinels
         run: >-
@@ -577,6 +598,18 @@ jobs:
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES18_SHAPE_TEST_REQUIRED: "1"
         run: bun test scripts/staging-persona-schema-shape.pg18.test.ts
+      - name: Rehearse populated video ordering upgrade on PostgreSQL 18.6
+        env:
+          CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_TEST_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL: ${{ runner.temp }}/video-ordering-upgrade-complete.json
+        run: |
+          set -euo pipefail
+          test ! -e "$CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL"
+          bun test packages/platform-cf/src/notifications-video-ordering-upgrade.pg18.test.ts
+          test -s "$CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL"
+          bun -e 'const r=await Bun.file(process.env.CONTROL_PLANE_POSTGRES18_VIDEO_UPGRADE_SENTINEL).json();if(r.case_count!==1||r.engine!==180006||r.beforeLedgerCount!==274||r.afterLedgerCount!==275||r.cleanup_completed!==true||r.status!=="passed")throw new Error("PostgreSQL18 upgrade completion was not proved")'
       - name: Prove the disposable reset at staging-shaped lock settings
         env:
           CONTROL_PLANE_POSTGRES18_DISPOSABLE_RESET_TEST_URL: postgres://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable

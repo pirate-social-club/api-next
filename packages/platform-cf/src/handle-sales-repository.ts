@@ -59,6 +59,7 @@ import {
 import { Effect, type Layer, Schema } from "effect";
 import { evaluateHandleNationality } from "./handle-nationality-decisions.ts";
 import { issueHandleNationalityQualification } from "./handle-nationality-qualification-repository.ts";
+import { listHandleOfferingDiscovery } from "./handle-offering-discovery.ts";
 import { handleQualificationPolicyRefFromRow } from "./handle-qualification-policy.ts";
 import {
   advisoryLock,
@@ -76,13 +77,14 @@ import {
   stringArray,
   text,
 } from "./handle-sales-internals.ts";
+import { decodePageCursor, encodePageCursor, pageLimit } from "./handle-sales-page-cursor.ts";
 import { provideHandleSalesRepository } from "./handle-sales-store.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
 import {
-  filterCurrentSpacesOfferings,
   requireCurrentSpacesAuthority,
   type SpacesCurrentAuthority,
 } from "./spaces-current-authority.ts";
+import type { SpacesDiscoveryAuthority } from "./spaces-discovery-authority.ts";
 import {
   createSpacesQuote,
   createSpacesReservation,
@@ -91,114 +93,15 @@ import {
   spacesReservationFromRow,
   submitSpacesClaim,
 } from "./spaces-handle-claims.ts";
+import { listSpacesMemberRequests } from "./spaces-member-recovery-repository.ts";
 
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 const requestHash = (domain: string, value: unknown): string => sha256([domain, value]);
 
-type HandlePageOperation =
-  | "activations"
-  | "offerings"
-  | "management_activations"
-  | "management_offerings"
-  | "persona_grants";
-type HandlePageCursor = Readonly<{
-  snapshotCutoff: string;
-  sortTime: string;
-  sortId: string;
-}>;
-
 const pageRejected = (reason: HandleSalesPageRejected["reason"]): HandleSalesPageRejected =>
   new HandleSalesPageRejected({ reason });
-
-const base64UrlEncode = (value: string): string => {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
-};
-
-const base64UrlDecode = (value: string): string => {
-  const padding = value.length % 4 === 0 ? "" : "=".repeat(4 - (value.length % 4));
-  const binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/") + padding);
-  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
-};
-
-const pageScope = (operation: HandlePageOperation, scope: string): string =>
-  createHash("sha256")
-    .update(JSON.stringify([operation, scope]))
-    .digest("hex")
-    .slice(0, 32);
-
-const encodePageCursor = (
-  operation: HandlePageOperation,
-  scope: string,
-  cursor: HandlePageCursor,
-): string => {
-  const encoded = `hcp1.${base64UrlEncode(
-    JSON.stringify([
-      operation,
-      pageScope(operation, scope),
-      Date.parse(cursor.snapshotCutoff),
-      Date.parse(cursor.sortTime),
-      cursor.sortId,
-    ]),
-  )}`;
-  if (encoded.length > 256) throw pageRejected("invalid_cursor");
-  return encoded;
-};
-
-const decodePageCursor = (
-  value: string | undefined,
-  operation: HandlePageOperation,
-  scope: string,
-): HandlePageCursor | null => {
-  if (value === undefined) return null;
-  if (!value.startsWith("hcp1.")) throw pageRejected("invalid_cursor");
-  try {
-    const parsed: unknown = JSON.parse(base64UrlDecode(value.slice(5)));
-    if (!Array.isArray(parsed) || parsed.length !== 5) throw pageRejected("invalid_cursor");
-    const [storedOperation, storedScope, snapshotMillis, sortMillis, sortId] = parsed;
-    if (
-      storedOperation !== operation ||
-      storedScope !== pageScope(operation, scope) ||
-      typeof snapshotMillis !== "number" ||
-      !Number.isSafeInteger(snapshotMillis) ||
-      snapshotMillis <= 0 ||
-      typeof sortMillis !== "number" ||
-      !Number.isSafeInteger(sortMillis) ||
-      sortMillis <= 0 ||
-      sortMillis > snapshotMillis ||
-      typeof sortId !== "string" ||
-      sortId.length === 0 ||
-      sortId.length > 128 ||
-      sortId !== sortId.trim() ||
-      [...sortId].some((character) => {
-        const code = character.charCodeAt(0);
-        return code < 0x20 || code === 0x7f;
-      })
-    ) {
-      throw pageRejected("invalid_cursor");
-    }
-    return {
-      snapshotCutoff: new Date(snapshotMillis).toISOString(),
-      sortTime: new Date(sortMillis).toISOString(),
-      sortId,
-    };
-  } catch (error) {
-    if (error instanceof HandleSalesPageRejected) throw error;
-    throw pageRejected("invalid_cursor");
-  }
-};
-
-const pageLimit = (value: number | undefined): number => {
-  const resolved = value ?? 20;
-  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > 100) {
-    throw pageRejected("invalid_limit");
-  }
-  return resolved;
-};
 
 /**
  * Decodes only the HNS activation shape. A Spaces activation shares the table
@@ -1283,8 +1186,10 @@ const mutateOffering = (
 
 export function makeControlPlaneHandleSalesRepository(
   spacesAuthority: SpacesCurrentAuthority = null,
+  discoveryAuthority: SpacesDiscoveryAuthority = null,
 ) {
   return {
+    listSpacesMemberRequests,
     createSaleNamespace: (input: Parameters<HandleSalesStore["createSaleNamespace"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -2098,85 +2003,7 @@ export function makeControlPlaneHandleSalesRepository(
     listOfferings: (input: Parameters<HandleSalesStore["listOfferings"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const paging = yield* Effect.try({
-          try: () => ({
-            limit: pageLimit(input.limit),
-            cursor: decodePageCursor(input.cursor, "offerings", input.communityId),
-          }),
-          catch: (error) =>
-            error instanceof HandleSalesPageRejected ? error : pageRejected("invalid_cursor"),
-        });
-        const cutoff =
-          paging.cursor?.snapshotCutoff ??
-          instant(
-            one(
-              (yield* mapped(
-                db.execute<Row>({
-                  label: "handle-sales.offering.list-clock",
-                  text: "SELECT clock_timestamp() AS database_now",
-                  values: [],
-                  readonly: true,
-                }),
-              )).rows,
-              "offering list clock",
-            ).database_now,
-          );
-        const result = yield* mapped(
-          db.execute<Row>({
-            label: "handle-sales.offering.list-public",
-            text: `${OFFERING_SELECT}
-                   JOIN community_handle_offering_current AS current_offering
-                     ON current_offering.offering_id=revision.offering_id
-                    AND current_offering.current_revision=revision.offering_revision
-                  WHERE revision.community_id=$1 AND revision.status='active'
-                    AND EXISTS (
-                      SELECT 1 FROM effective_community_handle_sale_namespace_v1(
-                        revision.sale_namespace_activation_id,$2::timestamptz
-                      )
-                    )
-                    AND revision.created_at <= $2::timestamptz
-                    AND (
-                      $3::timestamptz IS NULL
-                      OR (revision.created_at,revision.offering_id) < ($3::timestamptz,$4)
-                    )
-                  ORDER BY revision.created_at DESC,revision.offering_id DESC
-                  LIMIT $5`,
-            values: [
-              input.communityId,
-              cutoff,
-              paging.cursor?.sortTime ?? null,
-              paging.cursor?.sortId ?? null,
-              paging.limit + 1,
-            ],
-            readonly: true,
-          }),
-        );
-        return yield* Effect.try({
-          try: () => {
-            const selectedRows = result.rows.slice(0, paging.limit);
-            const selected = selectedRows.map(offeringFromRow);
-            const last = selectedRows[selectedRows.length - 1];
-            return {
-              items: selected,
-              next_cursor:
-                result.rows.length > paging.limit && last !== undefined
-                  ? encodePageCursor("offerings", input.communityId, {
-                      snapshotCutoff: cutoff,
-                      sortTime: instant(last.created_at),
-                      sortId: text(last, "offering_id"),
-                    })
-                  : null,
-            };
-          },
-          catch: (error) =>
-            error instanceof HandleSalesPageRejected ? error : storage("invalid-row"),
-        }).pipe(
-          Effect.flatMap((page) =>
-            filterCurrentSpacesOfferings(db, spacesAuthority, page.items).pipe(
-              Effect.map((items) => ({ ...page, items })),
-            ),
-          ),
-        );
+        return yield* listHandleOfferingDiscovery(db, discoveryAuthority, input, offeringFromRow);
       }),
     getManagementContext: (input: Parameters<HandleSalesStore["getManagementContext"]>[0]) =>
       Effect.gen(function* () {
@@ -4259,9 +4086,10 @@ export function makeControlPlaneHandleSalesRepository(
 export function makeControlPlaneHandleSalesStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   spacesAuthority: SpacesCurrentAuthority = null,
+  discoveryAuthority: SpacesDiscoveryAuthority = null,
 ): HandleSalesStore {
   return provideHandleSalesRepository(
     runtime,
-    makeControlPlaneHandleSalesRepository(spacesAuthority),
+    makeControlPlaneHandleSalesRepository(spacesAuthority, discoveryAuthority),
   );
 }

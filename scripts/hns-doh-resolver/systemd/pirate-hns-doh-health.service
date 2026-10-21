@@ -1,0 +1,18 @@
+[Unit]
+Description=Verify the public Pirate HNS DoH resolver answers real queries
+After=network-online.target pirate-hns-doh-resolver.service
+Wants=network-online.target
+# Order the probe after resolver startup. A failed dependency must never emit a
+# healthy heartbeat; the hosted check also detects missing completed probes.
+Requires=pirate-hns-doh-resolver.service
+OnFailure=pirate-hns-doh-health-alert.service
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_ROOT=/srv/pirate-hns-doh
+EnvironmentFile=/srv/pirate-hns-doh/config/doh-health.env
+# The timer gives cold sync its startup interval. Every healthy signal still
+# requires a completed public probe; an inactive resolver is never success.
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/check-doh-health.sh"'
+ExecStartPost=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/heartbeat.sh"'
+TimeoutStartSec=120

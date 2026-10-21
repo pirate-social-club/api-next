@@ -7,6 +7,8 @@ import {
   inspectScopedConnection,
 } from "./notifications-schema-init.pg-fixture.ts";
 
+import { validateVideoUpgradeTarget } from "./notifications-video-ordering-upgrade.pg18.fixture.ts";
+
 type Operations = NonNullable<Parameters<typeof initializeNotificationsInboxSchema>[1]>;
 type Inspection = Awaited<ReturnType<Operations["inspectScoped"]>>;
 const migrations = await loadPostgresMigrations(); // Files/checksums only; no DB.
@@ -39,12 +41,16 @@ function protocol(
     migrateError?: Error;
     dryRun?: boolean;
     partialApply?: boolean;
+    mode?: "full_migrations" | "pre_video_ordering_migrations";
   } = {},
 ) {
   const events: string[] = [];
   let defaultsInstalled = false;
   const plan = options.plan ?? migrations;
-  const ledger = migrations.map(({ version, checksum }) => ({ version, checksum }));
+  const selectedPlan = options.mode === "pre_video_ordering_migrations" ? plan.slice(0, 274) : plan;
+  const ledger = (
+    options.mode === "pre_video_ordering_migrations" ? migrations.slice(0, 274) : migrations
+  ).map(({ version, checksum }) => ({ version, checksum }));
   if (options.ledger === "checksum") {
     const first = ledger[0];
     if (!first) throw new Error("Nonempty repository ledger required");
@@ -52,7 +58,7 @@ function protocol(
   }
   if (options.ledger === "missing") ledger.pop();
   if (options.ledger === "extra")
-    ledger.push({ version: "0279_unexpected.sql", checksum: "0".repeat(64) });
+    ledger.push({ version: "0280_unexpected.sql", checksum: "0".repeat(64) });
   const query = async (sql: string) => {
     const result = (rows: Record<string, unknown>[] = []) => ({ rows, rowCount: rows.length });
     if (sql.startsWith("SET search_path")) {
@@ -87,7 +93,7 @@ function protocol(
     throw new Error(`Unexpected fixture statement: ${sql}`);
   };
   const input = {
-    mode: "full_migrations" as const,
+    mode: options.mode ?? "full_migrations",
     admin: { query } as unknown as Pick<Client, "query">,
     schema,
     connectionString,
@@ -116,14 +122,21 @@ function protocol(
       expect(defaultsInstalled).toBe(true);
       expect(config.connectionString).toBe(connectionString);
       expect(config.expectedLedger).toEqual([]);
-      expect(config.migrations).toBe(plan);
+      if (options.mode === "pre_video_ordering_migrations") {
+        expect(config.migrations).toEqual(selectedPlan);
+        expect(config.migrations).toHaveLength(274);
+        expect(config.migrations?.at(-1)?.version).toBe(
+          "0274_author_declared_text_moderation_actions.sql",
+        );
+        expect(config.migrations?.some((m) => Number(m.version.slice(0, 4)) >= 275)).toBe(false);
+      } else expect(config.migrations).toBe(plan);
       if (options.migrateError) throw options.migrateError;
       if (options.dryRun) return { dryRun: true, plan: [] };
       return {
         dryRun: false,
         result: {
-          applied: plan.slice(options.partialApply ? 1 : 0).map(({ version }) => version),
-          currentVersion: plan.at(-1)?.version ?? null,
+          applied: selectedPlan.slice(options.partialApply ? 1 : 0).map(({ version }) => version),
+          currentVersion: selectedPlan.at(-1)?.version ?? null,
         },
       };
     },
@@ -131,12 +144,16 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0278 set", () => {
-  expect(migrations).toHaveLength(278);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0279 set", () => {
+  expect(migrations).toHaveLength(279);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 278 }, (_, i) => i + 1),
+    Array.from({ length: 279 }, (_, i) => i + 1),
   );
-  expect(migrations.at(-1)?.version).toBe("0278_reward_contribution_privileges_v2.sql");
+  expect(migrations[274]).toMatchObject({
+    version: "0275_video_root_comment_ordering.sql",
+    checksum: "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
+  });
+  expect(migrations.at(-1)?.version).toBe("0279_reward_contribution_privileges_v2.sql");
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {
@@ -159,6 +176,43 @@ test("ACL initialization proves empty schema on both connections and installs de
     "exact-resulting-ledger",
     "creating-role-owners",
   ]);
+});
+
+test("the distinct upgrade mode validates the complete source plan then installs exactly274", async () => {
+  const p = protocol({ mode: "pre_video_ordering_migrations" });
+  await initializeNotificationsInboxSchema(p.input, p.operations);
+  expect(p.events).toContain("maintained-full-runner");
+  expect(p.events).toContain("exact-resulting-ledger");
+  expect(p.events).not.toContain("baseline");
+});
+
+for (const boundary of ["checksum", "filename"] as const)
+  test(`the upgrade prefix cannot proceed with a changed source boundary: ${boundary}`, async () => {
+    const plan = migrations.map((migration, index) =>
+      index !== 274
+        ? migration
+        : {
+            ...migration,
+            ...(boundary === "checksum"
+              ? { checksum: "0".repeat(64) }
+              : { version: "0275_unreviewed.sql" }),
+          },
+    );
+    const p = protocol({ mode: "pre_video_ordering_migrations", plan });
+    await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
+      "source-bound274-to275 boundary",
+    );
+    expect(p.events).toEqual(["checksum-loader"]);
+  });
+
+test("the upgrade prefix still refuses existing application objects before defaults", async () => {
+  const p = protocol({
+    mode: "pre_video_ordering_migrations",
+    before: { relations: ["already_populated"] },
+  });
+  await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow();
+  expect(p.events).not.toContain("roles-membership-forward-defaults");
+  expect(p.events).not.toContain("maintained-full-runner");
 });
 
 for (const dirty of [
@@ -207,7 +261,7 @@ for (const plan of [migrations.slice(0, -1), [secondMigration, ...migrations.sli
   test(`missing or noncontiguous plans are refused before defaults: ${plan.length}`, async () => {
     const p = protocol({ plan });
     await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
-      "complete contiguous 0001..0278 plan",
+      "complete contiguous 0001..0279 plan",
     );
     expect(p.events).toEqual(["checksum-loader"]);
   });
@@ -308,4 +362,24 @@ test("a close-only failure after actual scoped inspection stays a failure", asyn
       },
     }),
   ).rejects.toBe(closeError);
+});
+
+const pg18Target = "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable";
+test("the video upgrade target is bound to the maintained inbox and literal CI origin", () => {
+  expect(validateVideoUpgradeTarget(pg18Target, pg18Target)).toBe(new URL(pg18Target).toString());
+  for (const bad of [
+    pg18Target.replace("127.0.0.1", "localhost"),
+    pg18Target.replace("127.0.0.1", "127.1"),
+    pg18Target.replace(":5432/", ":5433/"),
+    pg18Target.replace("/postgres?", "/another?"),
+    `${pg18Target}&host=remote.invalid`,
+    `${pg18Target}&options=-c%20search_path=public`,
+    `${pg18Target}&sslmode=require`,
+    `${pg18Target}#fragment`,
+  ])
+    expect(() => validateVideoUpgradeTarget(bad, bad)).toThrow();
+  expect(() => validateVideoUpgradeTarget(pg18Target, undefined)).toThrow();
+  expect(() =>
+    validateVideoUpgradeTarget(pg18Target, `${pg18Target}&host=remote.invalid`),
+  ).toThrow();
 });

@@ -51,22 +51,22 @@ suite("reviewed rewards money destructive privileges", () => {
       scoped.searchParams.set("options", `-c search_path=${schema}`);
       const migrations = await loadPostgresMigrations();
       const boundary =
-        migrations.findIndex((m) => m.version === "0275_reward_wallet_nonce_authority_v2.sql") + 1;
-      if (boundary !== 275) throw new Error("Expected exact maintained275 prefix");
+        migrations.findIndex((m) => m.version === "0276_reward_wallet_nonce_authority_v2.sql") + 1;
+      if (boundary !== 276) throw new Error("Expected exact maintained276 prefix");
       const prefix = await runPostgresMigrations({
         connectionString: scoped.toString(),
         migrations: migrations.slice(0, boundary),
         expectedLedger: [],
       });
       if (prefix.dryRun) throw new Error("Expected actual isolated migration prefix");
-      expect(prefix.result.currentVersion).toBe("0275_reward_wallet_nonce_authority_v2.sql");
+      expect(prefix.result.currentVersion).toBe("0276_reward_wallet_nonce_authority_v2.sql");
       await admin.query(
         `CREATE ROLE "${parent}";CREATE ROLE "${runtime}";CREATE ROLE "${observer}";GRANT "${parent}" TO "${runtime}";GRANT USAGE ON SCHEMA "${schema}" TO "${parent}","${observer}";ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${parent}";ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT EXECUTE ON FUNCTIONS TO "${parent}"`,
       );
       for (const file of [
-        "0276_song_megapot_contributions_v2.sql",
-        "0277_reward_principal_seals_v2.sql",
-        "0278_reward_contribution_privileges_v2.sql",
+        "0277_song_megapot_contributions_v2.sql",
+        "0278_reward_principal_seals_v2.sql",
+        "0279_reward_contribution_privileges_v2.sql",
       ])
         await admin.query(
           await Bun.file(
