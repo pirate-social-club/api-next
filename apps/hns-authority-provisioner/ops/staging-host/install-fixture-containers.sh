@@ -9,7 +9,7 @@ docker_cmd=(docker --host unix:///run/pirate-hns-staging/docker.sock)
 runtime_root=$("${docker_cmd[@]}" info --format '{{.DockerRootDir}}')
 [[ $runtime_root == /var/lib/pirate-hns-staging/docker ]] || exit 1
 hsd_image=sha256:0a8e9532e781490e23f536de08719bfac03602654fb9608359f7f27ce6ac0fd3
-dns_image=sha256:bb5b1c133bcca1dd455075321de7d55db4945a8d7f2ba23339e3c7bbe416b205
+dns_image=sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27
 for image in "$hsd_image" "$dns_image"; do
   "${docker_cmd[@]}" image inspect "$image" >/dev/null
 done

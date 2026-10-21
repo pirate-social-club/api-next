@@ -71,7 +71,7 @@
       "source_sha256": "54f9bde8ef4d85bccad4d1ce9069728f5915adc8dfaff4c0cf7695d47d751410",
       "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/compose.yaml",
       "mode": "100644",
-      "owned_sha256": "64eb72bfd7116bf2916ca6587be1a74de09dd4074c9a9bab5f9f4983479f7875",
+      "owned_sha256": "5f5a93150cfc210b8b8d69883ecd3a765f1aa5371249ac7a25e0c4d999f8ad03",
       "modified_from_source": true,
       "owned_mode": "100644"
     },

@@ -1,13 +1,18 @@
-# DNS image security patch
+# DNS image security patches
 
 PowerDNS advisory 2026-11, CVE-2026-52682, affects the previously pinned
 authoritative 5.1.3 and dnsdist 1.9.15 images. A crafted DNS response can cause
 excessive CPU and memory use. The advisory identifies 5.1.4 and 1.9.16 as the
-first fixed versions in these release series:
+first fixed versions for that advisory in these release series:
 https://www.dnsdist.org/security-advisories/powerdns-advisory-for-dnsdist-2026-11.html
 
+The October21 advisory2026-13, CVE-2026-73206, also affects authoritative5.1.4.
+Crafted DNS compression pointers can cause a denial of service. Version5.1.5
+is the first fixed5.1 release, so this patch selects it instead of5.1.4:
+https://doc.powerdns.com/authoritative/security-advisories/powerdns-advisory-2026-13.html
+
 The maintained primary, secondary, staging fixture and DoH recipes now pin
-the official 5.1.4 and 1.9.16 OCI index digests. These are patch updates within
+the official 5.1.5 and 1.9.16 OCI index digests. These are patch updates within
 the existing image families. No database migration, signing-key rotation,
 delegation, gateway manifest or product binding change accompanies them.
 Registry discovery is not host acceptance: verify the actual version and
