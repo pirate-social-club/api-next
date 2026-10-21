@@ -146,7 +146,9 @@ export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) =>
     throw new Error("Maintained inbox target changed after import");
   // This occurs before withInbox may create any schema or role.
   await requirePostgres186(base);
-  const migrations = await loadPostgresMigrations();
+  // This historical upgrade proves exactly274-to275 even as the current
+  // repository gains later migrations. The loader still verifies all source checksums.
+  const migrations = (await loadPostgresMigrations()).slice(0, 275);
   expect(migrations).toHaveLength(275);
   expect(migrations.at(-1)).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",

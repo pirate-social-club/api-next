@@ -106,6 +106,7 @@ export * from "./rewards/reward-claim-intent-binding.ts";
 export * from "./rewards/study-spoken-rerecord.ts";
 export * from "./rewards/study-v2-grading.ts";
 export * from "./rewards/vault-revert.ts";
+export * from "./rewards/wallet-send-intent-binding.ts";
 export * from "./story/story-settlement-step-state-machine.ts";
 export * from "./study/english-phonetics.ts";
 export * from "./study/lyric-line-identity.ts";

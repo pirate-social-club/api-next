@@ -101,6 +101,7 @@ REVOKE ALL ON FUNCTION accept_megapot_participant_claim_v1(TEXT, TEXT) FROM PUBL
 REVOKE ALL ON FUNCTION operator_accept_megapot_participant_claim_v1(TEXT, TEXT, TEXT, TEXT)
   FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION accept_megapot_participant_claim_v1(TEXT, TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION lock_wallet_send_palm_assertions_v1(TEXT, TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION append_song_owner_policy_revision_v1(
   TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT
 ) TO api_next_app;

@@ -47,9 +47,9 @@ function protocol(
   const events: string[] = [];
   let defaultsInstalled = false;
   const plan = options.plan ?? migrations;
-  const selectedPlan = options.mode === "pre_video_ordering_migrations" ? plan.slice(0, -1) : plan;
+  const selectedPlan = options.mode === "pre_video_ordering_migrations" ? plan.slice(0, 274) : plan;
   const ledger = (
-    options.mode === "pre_video_ordering_migrations" ? migrations.slice(0, -1) : migrations
+    options.mode === "pre_video_ordering_migrations" ? migrations.slice(0, 274) : migrations
   ).map(({ version, checksum }) => ({ version, checksum }));
   if (options.ledger === "checksum") {
     const first = ledger[0];
@@ -58,7 +58,7 @@ function protocol(
   }
   if (options.ledger === "missing") ledger.pop();
   if (options.ledger === "extra")
-    ledger.push({ version: "0276_unexpected.sql", checksum: "0".repeat(64) });
+    ledger.push({ version: "0277_unexpected.sql", checksum: "0".repeat(64) });
   const query = async (sql: string) => {
     const result = (rows: Record<string, unknown>[] = []) => ({ rows, rowCount: rows.length });
     if (sql.startsWith("SET search_path")) {
@@ -139,12 +139,12 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0275 set", () => {
-  expect(migrations).toHaveLength(275);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0276 set", () => {
+  expect(migrations).toHaveLength(276);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 275 }, (_, i) => i + 1),
+    Array.from({ length: 276 }, (_, i) => i + 1),
   );
-  expect(migrations.at(-1)?.version).toBe("0275_video_root_comment_ordering.sql");
+  expect(migrations.at(-1)?.version).toBe("0276_wallet_send_palm_assertion_lock.sql");
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {
@@ -252,7 +252,26 @@ for (const plan of [migrations.slice(0, -1), [secondMigration, ...migrations.sli
   test(`missing or noncontiguous plans are refused before defaults: ${plan.length}`, async () => {
     const p = protocol({ plan });
     await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
-      "complete contiguous 0001..0275 plan",
+      "complete contiguous repository migration plan",
+    );
+    expect(p.events).toEqual(["checksum-loader"]);
+  });
+
+for (const boundary of ["checksum", "filename"] as const)
+  test(`full ACL initialization rejects a changed current source boundary: ${boundary}`, async () => {
+    const plan = migrations.map((migration, index) =>
+      index !== migrations.length - 1
+        ? migration
+        : {
+            ...migration,
+            ...(boundary === "checksum"
+              ? { checksum: "0".repeat(64) }
+              : { version: "0276_unreviewed.sql" }),
+          },
+    );
+    const p = protocol({ plan });
+    await expect(initializeNotificationsInboxSchema(p.input, p.operations)).rejects.toThrow(
+      "exact repository migration plan",
     );
     expect(p.events).toEqual(["checksum-loader"]);
   });
