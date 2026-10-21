@@ -163,7 +163,7 @@ const CombinedStagingPublicManifestV1 = Schema.Struct({
   staging_gateway_listener: Schema.Literal("127.0.0.1:4269"),
   staging_health_listener: Schema.Literal("127.0.0.1:4271"),
   tls_terminator_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT),
-  public_tls_listener: Schema.Literal("81.15.150.167:443"),
+  public_tls_listener: Schema.Literal("94.103.168.209:443"),
   public_tls_termination: Schema.Literal(true),
   gateway_certificate_spki_sha256: Sha256,
   routing_contract: Schema.Literal("app-or-handle-host-v1"),

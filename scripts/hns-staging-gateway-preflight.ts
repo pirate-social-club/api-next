@@ -44,6 +44,7 @@ export function verifyHnsStagingGatewayManifest(
   if (
     manifest.schema !== "pirate-hns-community-app-handle-gateway-staging-public-v1" ||
     manifest.mode !== "staging-public-tls" ||
+    manifest.public_tls_listener !== "81.15.150.167:443" ||
     manifest.solid_origin !== "https://hns-community-ingress-staging.pirate.sc" ||
     typeof manifest.solid_ingress_composition_reference !== "string" ||
     expected.schema !== "pirate-hns-staging-gateway-deploy-pin-v1" ||
