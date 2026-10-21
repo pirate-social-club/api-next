@@ -12,6 +12,9 @@ services:
     network_mode: host
     read_only: true
     user: "${HSD_UID:-1000}:${HSD_GID:-1000}"
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
     environment:
       HSD_API_KEY_FILE: /run/secrets/hsd_api_key
       HSD_NETWORK: main
