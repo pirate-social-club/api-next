@@ -275,6 +275,7 @@
     "0272_notifications_video_destination.sql": "1cf850cb28141f15e43938a4a62cf0cf9ae8c2ceb735f589faa82fec386775ec",
     "0273_notifications_video_alias_audit.sql": "2379e483f78fcc7aec5730ea3db93c347783cc01e154f4147e73f6d39448c321",
     "0274_author_declared_text_moderation_actions.sql": "79f054e672bb17f22faa83d04f5808288beddf766b494fb83b399834ba337eff",
-    "0275_video_root_comment_ordering.sql": "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4"
+    "0275_video_root_comment_ordering.sql": "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
+    "0276_wallet_send_palm_assertion_lock.sql": "51d53c71b178f84ac730e6a7659319f61b3871d31c6976ee913616a6b87af8e3"
   }
 }

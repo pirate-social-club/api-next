@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneSponsoredSendStore } from "./wallet-sponsored-send-repository.ts";
 import { makeWalletSponsoredSendService } from "./wallet-sponsored-send-service.ts";
@@ -78,6 +79,7 @@ suite("Postgres shared Wallet sponsored send", () => {
     } finally {
       await admin.query("SET session_replication_role = origin");
     }
+    await seedVeryRewardEvidence(admin, "winner", "wallet-send-winner");
     await contender.connect();
   }, 120_000);
 

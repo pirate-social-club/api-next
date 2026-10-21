@@ -244,6 +244,11 @@ import {
 } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoOutcomeStore } from "@pirate/platform-cf/video-outcome-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
+import {
+  issueWalletSendVerificationIntent,
+  makeControlPlaneWalletSendIntentResolver,
+  WalletSendIntentDataInvalid,
+} from "@pirate/platform-cf/wallet-send-verification-intent";
 import { makeWalletSponsoredChain } from "@pirate/platform-cf/wallet-sponsored-chain";
 import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-sponsored-send-repository";
 import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
@@ -1252,6 +1257,7 @@ export async function createProductionHttpWorker(
     makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneRewardClaimIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneWalletSendIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeControlPlaneHandleNationalityIntentResolver(controlPlane),
     accountAgeVerification.intents,
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
@@ -1667,6 +1673,17 @@ export async function createProductionHttpWorker(
           requiredConfirmations: 3,
           ids: () => crypto.randomUUID().replaceAll("-", ""),
         }),
+    (accountId, personaId) =>
+      Effect.runPromise(
+        issueWalletSendVerificationIntent(accountId, personaId).pipe(
+          Effect.provide(controlPlane),
+          Effect.mapError((error) =>
+            error instanceof WalletSendIntentDataInvalid
+              ? new NotFound({ message: "Send unavailable", cause: error })
+              : new ProviderUnavailable({ message: "Verification is unavailable", cause: error }),
+          ),
+        ),
+      ),
   );
   const requireRewardOperationsRunning = makeRewardOperationsGuard({
     readRunning: () => Effect.runPromise(makeRewardOperationsRunningReader(controlPlane)()),

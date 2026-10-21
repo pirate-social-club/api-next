@@ -20847,6 +20847,27 @@ CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_po
      FOR SHARE
 $$;
 
+CREATE FUNCTION lock_wallet_send_palm_assertions_v1(input_account_id text, input_evidence_receipt_id text) RETURNS void
+    LANGUAGE plpgsql STRICT SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  PERFORM assertion.assertion_id
+    FROM assertions AS assertion
+    JOIN evidence_receipts AS receipt
+      ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
+     AND receipt.user_id = assertion.user_id
+     AND receipt.provider_id = 'very.web'
+     AND receipt.method = 'palm_web'
+     AND receipt.evidence_kind = 'very.web.server-verified.v1'
+   WHERE assertion.user_id = input_account_id
+     AND assertion.evidence_receipt_id = input_evidence_receipt_id
+     AND assertion.claim_id IN ('human.personhood', 'credential.subject_unique')
+   ORDER BY assertion.assertion_id
+   FOR UPDATE OF assertion;
+END;
+$$;
+
 CREATE FUNCTION map_controlled_guest_learning_source_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT

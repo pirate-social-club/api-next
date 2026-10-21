@@ -123,23 +123,32 @@ export async function initializeNotificationsInboxSchema(
   )
     throw new Error("Full ACL migrations require the dedicated schema-scoped connection");
   const complete = await operations.load();
+  const repository = await loadPostgresMigrations();
   if (
-    complete.length !== 275 ||
+    complete.length !== repository.length ||
     complete.some(
       (migration, index) => !migration.version.startsWith(`${String(index + 1).padStart(4, "0")}_`),
     )
   )
-    throw new Error("Full ACL fixture requires the complete contiguous 0001..0275 plan");
+    throw new Error("Full ACL fixture requires the complete contiguous repository migration plan");
   if (
     input.mode === "pre_video_ordering_migrations" &&
-    (complete.at(-2)?.version !== "0274_author_declared_text_moderation_actions.sql" ||
-      complete.at(-1)?.version !== "0275_video_root_comment_ordering.sql" ||
-      complete.at(-1)?.checksum !==
+    (complete[273]?.version !== "0274_author_declared_text_moderation_actions.sql" ||
+      complete[274]?.version !== "0275_video_root_comment_ordering.sql" ||
+      complete[274]?.checksum !==
         "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4")
   )
     throw new Error("Video upgrade fixture requires the exact source-bound274-to275 boundary");
+  if (
+    complete.some(
+      (migration, index) =>
+        migration.version !== repository[index]?.version ||
+        migration.checksum !== repository[index]?.checksum,
+    )
+  )
+    throw new Error("Full ACL fixture requires the exact repository migration plan");
   const migrations =
-    input.mode === "pre_video_ordering_migrations" ? complete.slice(0, -1) : complete;
+    input.mode === "pre_video_ordering_migrations" ? complete.slice(0, 274) : complete;
   const lastMigration = migrations.at(-1);
   if (!lastMigration) throw new Error("Full ACL fixture requires its final migration");
   await input.admin.query(`SET search_path TO "${input.schema}"`);
