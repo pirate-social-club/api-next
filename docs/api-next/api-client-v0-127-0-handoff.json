@@ -30,6 +30,6 @@
   "consumerRequirements": {
     "minimumClientVersion": "0.127.0",
     "behavior": "Use the typed wallet_send verification entry and preserve the intended persona. Withhold signing when verification_required is true; after successful verification re-read the same reservation. Preserve existing idempotency/recovery state and never create another send to recover an unknown outcome.",
-    "deploymentOrder": "Coordinate Solid Send gating with the reviewed API release. No production release is authorized by this handoff."
+    "deploymentOrder": "This is a paired API/client transition. Pre127 generated clients reject the new verification_required success property, while client127 requires it. UI-first deployment alone cannot prove every loaded tab upgraded. Verify old-tab refusal/reload handling, exact API/client pairing and preserved Send idempotency/unknown outcomes before serving acceptance. No production release is authorized by this handoff."
   }
 }

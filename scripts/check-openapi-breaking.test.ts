@@ -575,7 +575,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps active policy free of consumed one-time waivers", async () => {
+  test("keeps active policy limited to the unconsumed exact Send transition", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
@@ -583,8 +583,30 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    // The Study expiry transition has landed in source. Its historical waiver remains in Git.
-    expect(repositoryPolicy).toEqual({ breakingChangeWaivers: [] });
+    const sendBaseline = "17eaa01f1415c839f3fd14f67de610b370c41c8d";
+    const expected = {
+      post_walletPersonasPersonaIdSponsoredSend: "POST /wallet/personas/{personaId}/sponsored-send",
+      get_walletPersonasPersonaIdSponsoredSend: "GET /wallet/personas/{personaId}/sponsored-send",
+      get_walletSponsoredSendsSendId: "GET /wallet/sponsored-sends/{sendId}",
+      post_walletSponsoredSendsSendIdSubmit: "POST /wallet/sponsored-sends/{sendId}/submit",
+    };
+    expect(repositoryPolicy.breakingChangeWaivers.map((value) => value.operationId).sort()).toEqual(
+      Object.keys(expected).sort(),
+    );
+    for (const entry of repositoryPolicy.breakingChangeWaivers) {
+      expect(entry.baselineSha).toBe(sendBaseline);
+      expect(entry.kind).toBe("clean-break");
+      expect(entry.expectedViolations).toEqual([
+        `response ${expected[entry.operationId as keyof typeof expected]}: property added to closed response: verification_required`,
+      ]);
+    }
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, sendBaseline, () => true),
+    ).not.toThrow();
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
+    ).toThrow("obsolete baseline");
+    // Consumed Study declarations stay absent; a different baseline receives no allowance.
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

@@ -110,3 +110,26 @@ when their former baseline is reachable from HEAD under a later baseline;
 do not renew them automatically, copy them to another baseline or widen
 their expected sets without a separately reviewed transition. Historical
 policy/receipt/fact/href/terminal bytes remain immutable.
+
+## 2026-10-21 Send Palm paired-client transition
+
+The reviewed Send source candidate a54241d1 enforces current stored Very Palm
+verification before fresh reservation and submission. Its typed
+verification_required success property is a real response change: pre127
+clients reject the extra property in their closed object, while client127
+requires it. This is not backwards compatible.
+
+The detector now reports added fields in closed response objects, including
+optional fields and nested referenced objects. The four temporary declarations
+bind baseline17eaa01f1415c839f3fd14f67de610b370c41c8d to exactly that one
+property diagnostic on the two Send reads, reservation and submission. No other
+request, response property, error, status, operation or later baseline is
+covered. Independent review of these declarations is required before
+integration; they are retired when that transition lands.
+
+The genuine127 artifact remains byte-exact. Serving acceptance requires the
+paired Solid consumer and verified old-tab refusal/reload handling; UI-first
+ordering alone cannot establish that every open tab upgraded. Private replay,
+uncertain-outcome recovery and original idempotency must survive the
+transition. This source declaration authorizes no deployment, financial
+execution or production Rewards activation.
