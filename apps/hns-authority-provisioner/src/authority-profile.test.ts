@@ -82,4 +82,24 @@ describe("HNS authority runtime profile", () => {
       }),
     ).toThrow();
   });
+
+  test("admits the reviewed single-host 8s28 staging topology", () => {
+    const sameHost = {
+      HNS_AUTHORITY_NS1_ADDRESS: "94.103.168.209",
+      HNS_AUTHORITY_NS2_ADDRESS: "94.103.168.209",
+    };
+    const staging = profile("staging", "main", ["ns1.8s28", "ns2.8s28"], sameHost);
+    expect(staging.glue_records).toEqual([
+      { type: "GLUE4", ns: "ns1.8s28.", address: "94.103.168.209" },
+      { type: "GLUE4", ns: "ns2.8s28.", address: "94.103.168.209" },
+    ]);
+    expect(() => profile("production", "main", ["ns1.8s28", "ns2.8s28"], sameHost)).toThrow();
+    expect(() => profile("staging", "main", ["ns1.other", "ns2.other"], sameHost)).toThrow();
+    expect(() =>
+      profile("staging", "main", ["ns1.8s28", "ns2.8s28"], {
+        HNS_AUTHORITY_NS1_ADDRESS: "192.0.2.53",
+        HNS_AUTHORITY_NS2_ADDRESS: "192.0.2.53",
+      }),
+    ).toThrow();
+  });
 });

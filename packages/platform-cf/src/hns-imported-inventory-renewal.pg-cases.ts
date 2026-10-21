@@ -90,35 +90,38 @@ export async function verifyHnsImportedInventoryRenewal(
   // result during renewal, because a reviewed successor replaces it. This
   // preparation is what refuses a result whose reference is not the current
   // revision's, and it ends the job. Rolled back so the lease stays usable.
-  const superseded = JSON.parse(new TextDecoder().decode(first.result_bytes));
-  superseded.gateway_deployment_reference = `${superseded.gateway_deployment_reference}-superseded`;
-  const supersededBytes = Buffer.from(JSON.stringify(superseded));
-  await admin.query("BEGIN");
-  try {
-    expect(
-      (
-        await admin.query(
-          "SELECT outcome FROM prepare_hns_root_inventory_renewal_v1($1,$2,$3,$4,'ready',$5,encode(sha256($5),'hex'),NULL)",
-          [
-            first.observation_job_id,
-            first.executor_id,
-            first.lease_fence,
-            first.request_sha256,
-            supersededBytes,
-          ],
-        )
-      ).rows[0]?.outcome,
-    ).toBe("failed");
-    expect(
-      (
-        await admin.query(
-          "SELECT state,failure_code FROM hns_root_health_renewal_jobs WHERE renewal_job_id=$1",
-          [first.observation_job_id],
-        )
-      ).rows[0],
-    ).toMatchObject({ state: "terminal", failure_code: "evidence_mismatch" });
-  } finally {
-    await admin.query("ROLLBACK");
+  for (const field of ["gateway_deployment_reference", "observed_zone_bytes_sha256"] as const) {
+    const superseded = JSON.parse(new TextDecoder().decode(first.result_bytes));
+    superseded[field] =
+      field === "observed_zone_bytes_sha256" ? "9".repeat(64) : `${superseded[field]}-superseded`;
+    const supersededBytes = Buffer.from(JSON.stringify(superseded));
+    await admin.query("BEGIN");
+    try {
+      expect(
+        (
+          await admin.query(
+            "SELECT outcome FROM prepare_hns_root_inventory_renewal_v1($1,$2,$3,$4,'ready',$5,encode(sha256($5),'hex'),NULL)",
+            [
+              first.observation_job_id,
+              first.executor_id,
+              first.lease_fence,
+              first.request_sha256,
+              supersededBytes,
+            ],
+          )
+        ).rows[0]?.outcome,
+      ).toBe("failed");
+      expect(
+        (
+          await admin.query(
+            "SELECT state,failure_code FROM hns_root_health_renewal_jobs WHERE renewal_job_id=$1",
+            [first.observation_job_id],
+          )
+        ).rows[0],
+      ).toMatchObject({ state: "terminal", failure_code: "evidence_mismatch" });
+    } finally {
+      await admin.query("ROLLBACK");
+    }
   }
   const contender = new Client({ connectionString: connection });
   await contender.connect();

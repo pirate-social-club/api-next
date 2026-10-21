@@ -14,6 +14,7 @@ import {
   HNS_ROOT_IMPORT_POLICY_V1,
   initialHnsRootImportLifecycleStateV1,
 } from "@pirate/domain";
+import type { HnsRootLiveReadinessResultV1 } from "./live-readiness.ts";
 import { HnsRootReadinessObservationError, observeHnsRootReadinessV1 } from "./observe-root.ts";
 import { PowerDnsManagedProfileMismatchError } from "./powerdns.ts";
 import {
@@ -351,6 +352,7 @@ describe("HNS root readiness observation", () => {
     const observe = (
       operation_kind: "observe_root_v1" | "renew_health_v1",
       zone: typeof state.zone,
+      live: HnsRootLiveReadinessResultV1 = state.live,
     ) =>
       observeHnsRootReadinessV1({
         observation_attempt: { job_id: "rotated-gateway", executor_id: "executor", lease_fence: 1 },
@@ -362,7 +364,7 @@ describe("HNS root readiness observation", () => {
           observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
           reconcile_zone: async () => {},
           inspect_zone: async () => zone,
-          observe_live: async () => state.live,
+          observe_live: async () => live,
         },
         config: {
           environment: "test",
@@ -378,13 +380,48 @@ describe("HNS root readiness observation", () => {
     );
     expect(renewed.result.gateway_deployment_reference).toBe("gateway-deployment-v2");
 
+    const movedBytes = encoder.encode(
+      canonicalJson({ root_label: "newroot", serial: 8, gateway_ipv4: "192.0.2.11" }),
+    );
+    const movedDigest = await sha256(movedBytes);
+    const moved = {
+      ...rotated,
+      serial: 8,
+      gateway_ipv4: "192.0.2.11",
+      managed_zone_bytes: movedBytes,
+      managed_rrset_sha256: movedDigest,
+    };
+    const movedLive: HnsRootLiveReadinessResultV1 = {
+      authority_views: [
+        {
+          ...state.live.authority_views[0],
+          observed_zone_bytes: movedBytes,
+          observed_zone_sha256: movedDigest,
+        },
+        {
+          ...state.live.authority_views[1],
+          observed_zone_bytes: movedBytes,
+          observed_zone_sha256: movedDigest,
+        },
+      ],
+      gateway: { ...state.live.gateway, gateway_address: "192.0.2.11" },
+    };
+    const relocated = await decodeHnsRootImportReadinessResultV1(
+      (await observe("renew_health_v1", moved, movedLive)).result_bytes,
+    );
+    expect(relocated.result.observed_zone_bytes_sha256).toBe(movedDigest);
+    expect(relocated.result.managed_rrset_sha256).toBe(movedDigest);
+    await expect(observe("observe_root_v1", moved, movedLive)).rejects.toEqual(
+      new HnsRootReadinessObservationError("authority_mismatch"),
+    );
+
     // A root that is not activated yet has no revision to hold it to.
     await expect(observe("observe_root_v1", rotated)).rejects.toEqual(
       new HnsRootReadinessObservationError("authority_mismatch"),
     );
 
-    // The allowance is the reference alone. A different certificate key is
-    // still a mismatch in renewal.
+    // The successor retains the signing identities. A different certificate
+    // key is still a mismatch in renewal.
     await expect(
       observe("renew_health_v1", { ...rotated, gateway_certificate_spki_sha256: "f".repeat(64) }),
     ).rejects.toEqual(new HnsRootReadinessObservationError("authority_mismatch"));

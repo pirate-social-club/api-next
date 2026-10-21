@@ -29,6 +29,7 @@ import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-communit
 import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
+import { verifyHnsStagingRelocation } from "./hns-staging-relocation.pg-cases.ts";
 import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
 import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -380,7 +381,8 @@ async function seedSatisfiedOwnership(admin: Client): Promise<string> {
 async function makeReadinessArtifact(input: {
   readonly inventoryVersion?: string;
   readonly validForSeconds?: number;
-  readonly environment?: "test" | "production";
+  readonly environment?: "test" | "production" | "staging";
+  readonly chainResourceSha256?: string;
   readonly ownershipResultHash: string;
   readonly publishPlanSha256: string;
   readonly provisionResultSha256: string;
@@ -445,7 +447,7 @@ async function makeReadinessArtifact(input: {
     ownership_result_sha256: input.ownershipResultHash,
     publish_plan_sha256: input.publishPlanSha256,
     provision_result_sha256: input.provisionResultSha256,
-    chain_resource_sha256: SHA_A,
+    chain_resource_sha256: input.chainResourceSha256 ?? SHA_A,
     powerdns_zone_serial: input.powerdnsZoneSerial ?? 7,
     managed_rrset_sha256: SHA_C,
     managed_zone_bytes_hex: Buffer.from(managedZoneBytes).toString("hex"),
@@ -996,9 +998,11 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 20_000);
 
-  test.each([false, true])(
+  test.each([false, true, "staging-relocation"] as const)(
     "observes readiness and atomically activates serving plus handle issuance (inventory renewal %s)",
-    async (inventoryRenewal) => {
+    async (scenario) => {
+      const inventoryRenewal = scenario === true;
+      const relocation = scenario === "staging-relocation";
       await withSchema(async (connection, admin) => {
         const store = makeControlPlaneHnsRootImportStore(
           makeDirectPostgresControlPlaneLayer(connection),
@@ -1069,6 +1073,12 @@ suite("Postgres 17 HNS root-import repository", () => {
         // readiness job in one statement.
         const ready = await driveLifecycleToReady(admin, provisioned, {
           readinessValidForSeconds: inventoryRenewal ? 5 : 3600,
+          ...(relocation
+            ? {
+                environment: "staging" as const,
+                chainResourceSha256: sha256(new TextEncoder().encode("[]")),
+              }
+            : {}),
         });
         const readiness = ready.readiness;
         const lifecycleRevision = ready.lifecycleRevision;
@@ -1168,6 +1178,22 @@ suite("Postgres 17 HNS root-import repository", () => {
           inventoryRenewal ? 0 : 3_590,
         );
 
+        if (relocation) {
+          await verifyHnsStagingRelocation(admin, connection, (zone, serial) =>
+            makeReadinessArtifact({
+              ownershipResultHash,
+              publishPlanSha256: sha256(provisioned.planBytes),
+              provisionResultSha256: sha256(provisioned.resultBytes),
+              inventoryVersion: `relocation-${randomUUID()}`,
+              environment: "staging",
+              chainResourceSha256: sha256(new TextEncoder().encode("[]")),
+              managedZoneBytes: zone,
+              powerdnsZoneSerial: serial,
+              validForSeconds: 172800,
+            }),
+          );
+          return;
+        }
         if (inventoryRenewal) {
           await verifyHnsImportedInventoryRenewal(
             admin,
@@ -1968,7 +1994,11 @@ suite("Postgres 17 HNS root-import repository", () => {
   async function driveLifecycleToReady(
     admin: Client,
     provisioned: ProvisionedRootImport,
-    options: Readonly<{ readonly readinessValidForSeconds?: number }> = {},
+    options: Readonly<{
+      readonly readinessValidForSeconds?: number;
+      readonly environment?: "staging";
+      readonly chainResourceSha256?: string;
+    }> = {},
   ): Promise<
     Readonly<{
       readiness: ReadinessArtifact;
@@ -2036,6 +2066,10 @@ suite("Postgres 17 HNS root-import repository", () => {
       ownershipResultHash: provisioned.ownershipResultHash,
       publishPlanSha256: sha256(provisioned.planBytes),
       provisionResultSha256: sha256(provisioned.resultBytes),
+      ...(options.environment === undefined ? {} : { environment: options.environment }),
+      ...(options.chainResourceSha256 === undefined
+        ? {}
+        : { chainResourceSha256: options.chainResourceSha256 }),
       ...(options.readinessValidForSeconds === undefined
         ? {}
         : { validForSeconds: options.readinessValidForSeconds }),

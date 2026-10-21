@@ -49,6 +49,12 @@ export function parseHnsAuthorityRuntimeProfileV1(
     `${endpoints[0].authority_nameserver}.`,
     `${endpoints[1].authority_nameserver}.`,
   ];
+  // The fleet's staging names share the existing CI host. This is one reviewed
+  // staging topology; other mainnet staging profiles still need two addresses.
+  const stagingSingleHost =
+    nameservers[0] === "ns1.8s28." &&
+    nameservers[1] === "ns2.8s28." &&
+    endpoints.every((entry) => entry.authority_address === "94.103.168.209");
   if (
     !["production", "staging", "regtest", "test"].includes(input.environment) ||
     !["main", "regtest"].includes(input.chain_network) ||
@@ -59,7 +65,7 @@ export function parseHnsAuthorityRuntimeProfileV1(
     (input.environment === "staging" &&
       input.chain_network === "main" &&
       (JSON.stringify(nameservers) === JSON.stringify(HNS_AUTHORITY_NAMESERVERS) ||
-        endpoints[0].authority_address === endpoints[1].authority_address ||
+        (endpoints[0].authority_address === endpoints[1].authority_address && !stagingSingleHost) ||
         endpoints.some((entry) => productionAuthorityAddresses.has(entry.authority_address))))
   ) {
     throw new Error("HNS authority delegation profile is invalid");

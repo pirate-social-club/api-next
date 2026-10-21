@@ -4,7 +4,7 @@
   "package": "@pirate/api-client",
   "version": "0.127.0",
   "sourceBranch": "feat/v1-send-palm-api-20261021",
-  "sourceBase": "f78b7e7c1f9679e7d0fa72c796c09ae0c62c82cd",
+  "sourceBase": "76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f",
   "validatedSourceCommit": null,
   "pullRequest": "https://github.com/pirate-social-club/api-next/pull/644",
   "wireContract": "Send requires current account-bound server-verified Very Palm evidence before fresh reservation and submission. Missing proof returns verification_required with wallet_send purpose and intended persona. Reserved-send reads and same-key replay with stale proof retain the original record, with authorization null and verification_required true. Submitted/held outcomes remain privately readable and reconcilable without fresh proof or resubmission. The new authenticated IssueWalletSendVerificationIntent returns intent_id, very.web provider, wallet_send purpose and intended persona, using the existing canonical palm subject scope.",
