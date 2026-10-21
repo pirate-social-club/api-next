@@ -1018,7 +1018,7 @@
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
-      "sha256": "6a2db2b5ad97cafbe2103ee8fca258035e1f90d24865b4ffe631e8d670db0f8a"
+      "sha256": "5d22308e5ebd2d6988bafddbe45b956e9c34668ab87eecfdb6e5489ced49db55"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.test.py",

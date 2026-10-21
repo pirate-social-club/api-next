@@ -100,6 +100,9 @@ def required_installed_paths(profile):
             "/etc/pirate-deployment-verify/observer.env",
         }
     return shared | {
+        "/usr/local/bin/pirate-caddy", "/etc/caddy/caddy.json",
+        "/lib/systemd/system/caddy.service",
+        "/etc/systemd/system/caddy.service.d/30-production-json.conf",
         "/etc/systemd/system/pirate-hns-community-app-gateway.service",
         "/srv/pirate-hns-community-app-gateway/current/bin/pirate-hns-community-app-gateway.mjs",
         "/srv/pirate-hns-community-app-gateway/current/deployment-manifest.json",
