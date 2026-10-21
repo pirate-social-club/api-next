@@ -13,11 +13,20 @@ const Rotation = Schema.Struct({
   observed_at: Schema.String,
   readiness: Schema.Literal("operator_attested_shadow_ready"),
 });
-const ManifestBinding = Schema.Struct({
-  schema: Schema.Literal("pirate-hns-community-app-handle-gateway-deployment-v1"),
+const manifestFields = {
   profile_sha256: Digest,
   handle_profile_sha256: Digest,
   gateway_certificate_spki_sha256: Digest,
+};
+const ManifestBinding = Schema.Struct({
+  schema: Schema.Literal("pirate-hns-community-app-handle-gateway-deployment-v1"),
+  ...manifestFields,
+});
+const StagingManifestBinding = Schema.Struct({
+  schema: Schema.Literal("pirate-hns-community-app-handle-gateway-staging-public-v1"),
+  mode: Schema.Literal("staging-public-tls"),
+  public_tls_listener: Schema.Literal("94.103.168.209:443"),
+  ...manifestFields,
 });
 export type HnsReviewedGatewayRotation = Schema.Schema.Type<typeof Rotation>;
 
@@ -29,13 +38,18 @@ export async function requireHnsReviewedGatewayRotation(input: {
   readonly previousGatewayReference: string;
   readonly certificateSpki: string;
   readonly observedAt: string;
+  readonly environment?: string;
 }): Promise<HnsReviewedGatewayRotation> {
   const rotation = Schema.decodeUnknownSync(Rotation, { onExcessProperty: "error" })(
     input.rotation,
   );
   const bytes = new TextEncoder().encode(rotation.manifest_json);
   const raw: unknown = JSON.parse(rotation.manifest_json);
-  const manifest = Schema.decodeUnknownSync(ManifestBinding)(raw);
+  const binding =
+    input.environment === "staging"
+      ? Schema.Union([ManifestBinding, StagingManifestBinding])
+      : ManifestBinding;
+  const manifest = Schema.decodeUnknownSync(binding)(raw);
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -72,7 +86,7 @@ export async function requireHnsGatewayRotationFence(input: {
 }) {
   const result = await input.client.query({
     text: `SELECT current.current_generation, revision.gateway_deployment_reference,
-      revision.gateway_certificate_spki_sha256,
+      revision.gateway_certificate_spki_sha256, inventory.environment,
       COALESCE((SELECT max(health_generation) FROM hns_dns_zone_health_observations
         WHERE dns_zone_activation_id=current.dns_zone_activation_id
           AND activation_generation=current.current_generation),0) AS health_generation,
@@ -81,6 +95,10 @@ export async function requireHnsGatewayRotationFence(input: {
       JOIN hns_dns_zone_activation_revisions AS revision
         ON revision.dns_zone_activation_id=current.dns_zone_activation_id
         AND revision.dns_zone_activation_generation=current.current_generation
+      JOIN hns_authority_inventories AS inventory
+        ON inventory.authority_inventory_reference=revision.pirate_dns_authority_inventory_reference
+        AND inventory.authority_inventory_version=revision.pirate_dns_authority_inventory_version
+        AND inventory.authority_inventory_digest=revision.pirate_dns_authority_inventory_digest
       WHERE current.dns_zone_activation_id=$1`,
     values: [input.dnsActivationId],
   });
@@ -97,6 +115,7 @@ export async function requireHnsGatewayRotationFence(input: {
     previousGatewayReference: String(row.gateway_deployment_reference),
     certificateSpki: String(row.gateway_certificate_spki_sha256),
     observedAt: String(row.observed_at),
+    environment: String(row.environment),
   });
   if (
     Number(row.current_generation) + 1 !== input.successorGeneration ||
