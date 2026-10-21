@@ -24,10 +24,12 @@
     "focusedContracts": "18 tests and120 assertions passed.",
     "postgres": "All three genuine controlled account producer cases pass on disposable PostgreSQL17.11,1641 assertions, including the expiry read after one genuine completed spoken answer and unchanged retained rows. Fixture-only deadline passage preserves active guards; it is not natural-expiry runtime acceptance.",
     "fullLocal": "bun run check and bun run test passed. Unit gate:6345 pass,4 skip,0 fail,39417 assertions; storage,Node and all maintained workerd suites also passed.",
-    "runtimeAcceptance": "Not deployed. The original naturally expired production session remains the runtime acceptance target."
+    "runtimeAcceptance": "Not deployed. The original naturally expired production session remains the runtime acceptance target.",
+    "hosted": "All hosted PostgreSQL17/18, HNS, dependency and secret-boundary checks pass at44d0cbbb. The hosted check job refused the three undeclared response-enum additions. Exact one-time deprecation entries and their strict policy regression are now proposed for independent source review; no blanket compatibility exemption or deployment is claimed."
   },
   "consumerRequirements": {
     "minimumClientVersion": "0.126.0",
-    "behavior": "Retain the expired lesson until an explicit new-session action. Hide recording and completion/reward surfaces for expiry; do not automatically rotate its coordination key. Re-read after a server refusal to surface expiry."
+    "behavior": "Retain the expired lesson until an explicit new-session action. Hide recording and completion/reward surfaces for expiry; do not automatically rotate its coordination key. Re-read after a server refusal to surface expiry.",
+    "deploymentOrder": "Deploy the paired Solid PR114 consumer with genuine client0.126.0 before API637 in production. Previously loaded clients do not accept the new response enum until reload; UI-first ordering makes the new consumer available but cannot guarantee all old tabs have upgraded. The three exact response-enum changes are declared through the maintained baseline-specific deprecation policy; remove those entries after this transition lands."
   }
 }
