@@ -475,7 +475,7 @@
       "source_sha256": "696099d47fd7e08eec3d1d2d574f333df1b7a563b0956f26487c07cdd5de81c1",
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/README.md",
       "mode": "100644",
-      "owned_sha256": "ca8626b9c1bd1b33bf3ab865b1c3f7ac3e97dbecaae5ddcbde961ef7c81ba694",
+      "owned_sha256": "3097118adb404e8ca360690ec8e74ee93ddf1551b7d5d3db35c56d197021de0d",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -488,8 +488,8 @@
       "source_sha256": "350f37141ea44baa0c555ddc17dc7a1818ace247f08b7bd6b1c7e0074988efde",
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/compose.yaml",
       "mode": "100644",
-      "owned_sha256": "350f37141ea44baa0c555ddc17dc7a1818ace247f08b7bd6b1c7e0074988efde",
-      "modified_from_source": false,
+      "owned_sha256": "d46495921b3c5077e43ec43e9346ea08069480304020e2c30602054a7b7b594d",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
@@ -553,7 +553,7 @@
       "source_sha256": "226d6df463a2848d0713aadc9d3fa384d6790927b8c10f7b891557721e63cff2",
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/README.md",
       "mode": "100644",
-      "owned_sha256": "54e16e5be87ed571308ce4300942bdef0423b2d5f7af804ca01bc06bd09b67a8",
+      "owned_sha256": "d032801df428d5662b46656c12374d9e7259821f7bb19491ba362f1d03fa51dc",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -938,7 +938,7 @@
     },
     {
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/systemd/pirate-hns-staging-state-backup.service",
-      "sha256": "d566b5a459313e6df334cd7a9998ceccaa9be6326752c5e5167681a01901e59f"
+      "sha256": "7f7f8e3110fe6470059dd9c640957fc5ad012983f12c68281efeb6767fec186d"
     },
     {
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/systemd/pirate-hns-staging-state-backup.timer",
@@ -966,15 +966,23 @@
     },
     {
       "owned_path": "scripts/hns-secondary-dns/pirate-hns-secondary-integrity-failure.service",
-      "sha256": "e3f13a48154bb91f33487d4f6011a00b3b066311a25808216ca1b942532e1688"
+      "sha256": "85f6d69514cc81539446435f0b9995faaaf080006beb9e0763eda1cf3d04d52c"
     },
     {
       "owned_path": "scripts/hns-secondary-dns/pirate-hns-secondary-integrity-success.service",
-      "sha256": "202bf958b6b6286e8507e40af658ea49c5f1414e34d7a6a79efe1966f3e7c0c7"
+      "sha256": "b722756be607bd624bdc360bcb110c734c844f39ee85531fb938c891f854cd20"
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/caddy-build/bin/stage-release-assets.sh",
       "sha256": "00db5186cfba44c357ca5b310bfa254d5c8dcfbe5370217dffc62e54ea1f5db5"
+    },
+    {
+      "owned_path": "apps/hns-observer-driver/ops/chain-reader/systemd/pirate-deployment-verify@observer.service.d/10-runtime-bounds.conf",
+      "sha256": "50ee174bd4bff7293af9f7e2c3afec9a8d8b640cb04c77ecb33b7c31a50a66d7"
+    },
+    {
+      "owned_path": "apps/hns-observer-driver/ops/chain-reader/systemd/pirate-deployment-verify@observer.timer.d/10-initial-verification.conf",
+      "sha256": "f3b2fdd48cc2961dced9cc887868ead21027fad9071e3bf5a256b49e9fa74376"
     }
   ]
 }

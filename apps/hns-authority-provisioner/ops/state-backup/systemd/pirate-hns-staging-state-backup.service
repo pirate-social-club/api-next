@@ -9,8 +9,6 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/srv/pirate-hns-staging-backup/config/backup.env
-RuntimeDirectory=pirate-hns-staging-backup
-RuntimeDirectoryMode=0700
 TemporaryFileSystem=/run/pirate-hns-staging-backup:rw,nosuid,nodev,noexec,size=256M,mode=0700
 ExecStart=/usr/bin/flock --nonblock /run/pirate-hns-staging-relocation.lock /srv/pirate-hns-staging-backup/current/hns-state-backup.sh
 ExecStartPost=/srv/pirate-hns-staging-backup/current/bin/heartbeat.sh

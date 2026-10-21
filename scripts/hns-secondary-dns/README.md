@@ -102,8 +102,9 @@ hook to the retired receiver. The separate supplied success and failure units
 use this check's private URL at
 `/etc/pirate-healthchecks/hns-secondary-integrity.url`, root-owned mode0600.
 Only the completed verifier starts its success sender. The verifier remains
-restricted to local Unix sockets; the senders have network access. The manifest
-also covers all four installed unit files and the sender. Install all four,
+restricted to local Unix sockets; the senders have network access. The verifier
+and both senders have128MiB memory limits and zero swap. The manifest also
+covers all four installed unit files and the sender. Install all four,
 reload systemd, and retain a real scheduled verifier pass and corresponding
 hosted success before claiming external coverage. Its fifteen-minute period,
 thirty-second jitter and sixty-second execution bound fit five-minute grace.
