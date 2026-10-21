@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Client } from "pg";
 import {
@@ -81,6 +82,7 @@ export type HnsZoneAdoptionCommandV1 =
       expected_result_sha256: string;
       expected_delta: HnsZoneAdoptionDeltaKind;
       mode: HnsZoneAdoptionMode;
+      relocation?: Readonly<{ path: string; sha256: string }>;
     }>;
 
 const USAGE =
@@ -88,7 +90,8 @@ const USAGE =
   "`write-records --root <label> --change add-wildcard-family|remove-wildcard-family " +
   "[--minimum-validity-seconds <n>]`, `observe --root <label> --out <absolute path>`, or " +
   "`adopt --observation <absolute path> --expect-result-sha256 <hex> " +
-  "--expect-delta <kind> --mode dry-run|rehearse|commit`";
+  "--expect-delta <kind> --mode dry-run|rehearse|commit " +
+  "[--relocation <absolute path> --expect-relocation-sha256 <hex>]`";
 
 function options(
   args: readonly string[],
@@ -158,22 +161,28 @@ export function parseHnsZoneAdoptionArgumentsV1(args: readonly string[]): HnsZon
     return { step, root_label: rootLabel(found["--root"]), out: absolutePath(found["--out"]) };
   }
   if (step === "adopt") {
-    const found = options(rest, [
-      "--observation",
-      "--expect-result-sha256",
-      "--expect-delta",
-      "--mode",
-    ]);
+    const found = options(
+      rest,
+      ["--observation", "--expect-result-sha256", "--expect-delta", "--mode"],
+      ["--relocation", "--expect-relocation-sha256"],
+    );
     const delta = HNS_ZONE_ADOPTION_DELTA_KINDS.find((kind) => kind === found["--expect-delta"]);
     const mode = (["dry-run", "rehearse", "commit"] as const).find(
       (candidate) => candidate === found["--mode"],
     );
     const digest = found["--expect-result-sha256"];
+    const relocationPath = found["--relocation"];
+    const relocationDigest = found["--expect-relocation-sha256"];
     if (
       delta === undefined ||
       mode === undefined ||
       digest === undefined ||
-      !/^[0-9a-f]{64}$/u.test(digest)
+      !/^[0-9a-f]{64}$/u.test(digest) ||
+      (delta === "staging_gateway_relocated"
+        ? relocationPath === undefined ||
+          relocationDigest === undefined ||
+          !/^[0-9a-f]{64}$/u.test(relocationDigest)
+        : relocationPath !== undefined || relocationDigest !== undefined)
     )
       throw new Error(USAGE);
     return {
@@ -182,6 +191,11 @@ export function parseHnsZoneAdoptionArgumentsV1(args: readonly string[]): HnsZon
       expected_result_sha256: digest,
       expected_delta: delta,
       mode,
+      ...(relocationPath === undefined
+        ? {}
+        : {
+            relocation: { path: absolutePath(relocationPath), sha256: relocationDigest as string },
+          }),
     };
   }
   throw new Error(USAGE);
@@ -299,7 +313,9 @@ async function status(
     outcome: "read",
     root_label: state.root_label,
     root_import_session_id: state.root_import_session_id,
+    environment: state.environment,
     current_generation: state.current_generation,
+    current_health_generation: state.current_health_generation,
     retained_zone_bytes_sha256: state.retained_zone_bytes_sha256,
     // Null for a retained zone adoption cannot read, which it will also refuse.
     retained_zone_holds_wildcard_family: retainedZoneHoldsFamily(state),
@@ -307,6 +323,7 @@ async function status(
     serving_valid_until: state.serving_valid_until,
     serving_valid_for_seconds: state.serving_valid_for_seconds,
     gateway_deployment_reference: state.gateway_deployment_reference,
+    gateway_certificate_spki_sha256: state.gateway_certificate_spki_sha256,
     dnssec_keyset_version: state.dnssec_keyset_version,
     stable_chain_delegation_snapshot_reference: state.stable_chain_delegation_snapshot_reference,
     database_time: state.database_time,
@@ -451,12 +468,24 @@ async function adopt(
   deps: HnsZoneAdoptionCommandDependenciesV1,
 ): Promise<Step> {
   const resultBytes = await deps.read_file(command.observation);
+  let reviewedRelocation: unknown;
+  if (command.relocation !== undefined) {
+    const bytes = await deps.read_file(command.relocation.path);
+    if (createHash("sha256").update(bytes).digest("hex") !== command.relocation.sha256)
+      throw new HnsZoneAdoptionRefusal("the relocation is not the one that was reviewed");
+    try {
+      reviewedRelocation = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch {
+      throw new HnsZoneAdoptionRefusal("the relocation review is not JSON");
+    }
+  }
   const receipt = await withClient(deps, (client) =>
     adoptHnsRootZone(client, {
       result_bytes: resultBytes,
       expected_result_sha256: command.expected_result_sha256,
       expected_delta: command.expected_delta,
       mode: command.mode,
+      reviewed_relocation: reviewedRelocation,
       observe_current: async (state) => (await observeCurrent(state, deps)).result_bytes,
     }),
   );

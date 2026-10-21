@@ -493,7 +493,12 @@ export async function observeHnsRootReadinessV1(input: {
     zone.dnssec !== true ||
     zone.serial < provision.zone_serial ||
     canonicalJson(zone.ds_records) !== canonicalJson(provision.ds_records) ||
-    zone.managed_rrset_sha256 !== provision.managed_rrset_sha256 ||
+    // A reviewed relocation changes the managed address records. Recurring
+    // renewal is fenced to the current full zone by its database preparation,
+    // rather than the original import's managed-record digest. First readiness
+    // still has no retained revision and must reproduce the provision result.
+    (input.operation_kind !== "renew_health_v1" &&
+      zone.managed_rrset_sha256 !== provision.managed_rrset_sha256) ||
     zone.shared_tlsa_profile_sha256 !== provision.shared_tlsa_profile_sha256 ||
     // A reviewed authority successor replaces a root's gateway deployment
     // reference, after which the current one no longer equals the one the

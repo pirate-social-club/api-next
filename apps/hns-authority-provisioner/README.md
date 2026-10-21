@@ -82,7 +82,7 @@ make that change. It changes the zone at the primary authority, takes the same
 observation a renewal takes, and promotes a successor that adopts the observed
 zone through the promotion body renewal and the continuity command share.
 
-Adoption admits three differences between the retained zone and the observed
+Ordinary adoption admits three differences between the retained zone and the observed
 one, and refuses every other. `wildcard_family_added` is one wildcard AAAA
 holding the IPv4-mapped form of the wildcard A address and one wildcard HTTPS
 record `1 . alpn=h2,http/1.1`, together with the two records those force to
@@ -92,6 +92,12 @@ those two types. `wildcard_family_removed` is the exact reverse.
 zone looks like when a change was undone before it was adopted. Zones that
 use NSEC3 are refused. The operator names the difference intended, and a
 different one found is a refusal, not a substitution.
+
+The staging relocation additionally admits `staging_gateway_relocated` with
+an exact reviewed relocation file and digest. It preserves signing and TLS
+identities, fences predecessor generations and chain records, and moves only
+the reviewed address records. See the
+[staging relocation procedure](../hns-platform-gateway/ops/community/staging-wallet-isolation.md#supported-activation-successor).
 
 The steps are run in order from the staged bundle, under the service's
 environment, and each prints one JSON line. Keep those lines: together with
