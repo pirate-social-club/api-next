@@ -6,7 +6,7 @@ const ROOT = "8s28";
 const SERVERS = [
   { type: "NS", ns: "ns1.8s28." },
   { type: "NS", ns: "ns2.8s28." },
-  { type: "GLUE4", ns: "ns1.8s28.", address: "94.103.168.209" },
+  { type: "GLUE4", ns: "ns1.8s28.", address: "81.15.150.167" },
   { type: "GLUE4", ns: "ns2.8s28.", address: "94.103.168.209" },
 ];
 

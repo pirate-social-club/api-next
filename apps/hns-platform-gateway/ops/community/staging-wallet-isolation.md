@@ -27,3 +27,10 @@ records only after the new signer and gateway are ready. Accept DNSSEC/DANE,
 claimed200 and unclaimed421 through the actual serving path before retiring
 .167's staging services, the .209-to-.167 API tunnel and its exact authorized key.
 Retain rollback and the encrypted staging recovery point throughout the move.
+
+This source phase retains the live staging deployment guard and Bob challenge
+delegation at81.15.150.167. The209 manifest and Caddy example are relocation
+candidates, not active references. Do not update the API pin, paired Solid
+bindings or saved activation rows until the supported successor/address
+transition has been rehearsed and the new signer and gateway are qualified.
+The owned DoH rollout on the production primary is independent of that cutover.

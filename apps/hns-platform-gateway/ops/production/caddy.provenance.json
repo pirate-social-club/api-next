@@ -3,8 +3,10 @@
   "captured_at": "2026-10-20T15:18:38.577525+00:00",
   "source_host": "94.103.168.161",
   "runtime_path": "/etc/caddy/caddy.json",
-  "sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5",
+  "sha256": "ee855db5bab9fa43bc5c60d9dc0b975d04520e9fe21f351c2e122a9adf7cc4c7",
   "bytes": 3942,
-  "role": "captured production routing baseline",
-  "status": "source custody only; independently reviewed release and current-host comparison required before installation"
+  "role": "owned production routing candidate; only DoH upstream changes to private8054",
+  "status": "not installed; requires synced owned resolver and current gateway writer custody",
+  "source_capture_sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5",
+  "source_capture_commit": "ffc1e901d3d15c54b304ab45936b4bcb680233bd"
 }

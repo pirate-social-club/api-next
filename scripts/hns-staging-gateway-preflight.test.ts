@@ -6,7 +6,7 @@ const fingerprint = `solid-hns-ingress-sha256:${"a".repeat(64)}`;
 const manifest = JSON.stringify({
   schema: "pirate-hns-community-app-handle-gateway-staging-public-v1",
   mode: "staging-public-tls",
-  public_tls_listener: "94.103.168.209:443",
+  public_tls_listener: "81.15.150.167:443",
   solid_origin: "https://hns-community-ingress-staging.pirate.sc",
   solid_ingress_composition_reference: fingerprint,
 });
@@ -25,10 +25,10 @@ describe("staging HNS gateway deploy pin", () => {
     });
   });
 
-  test("refuses a pinned manifest that still advertises the wallet host", () => {
+  test("refuses a pinned manifest ahead of the live address transition", () => {
     const oldHostManifest = JSON.stringify({
       ...JSON.parse(manifest),
-      public_tls_listener: "81.15.150.167:443",
+      public_tls_listener: "94.103.168.209:443",
     });
     const oldHostPin = {
       ...pin,
