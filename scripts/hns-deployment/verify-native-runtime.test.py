@@ -11,7 +11,7 @@ spec.loader.exec_module(native)
 
 class NativeAcceptance(unittest.TestCase):
     def test_actual_tip_time_not_median_time(self):
-        chain = {"chain": "main", "blocks": 352395, "bestblockhash": "abc", "verificationprogress": 1}
+        chain = {"chain": "main", "blocks": 352395, "headers": 352395, "bestblockhash": "abc", "verificationprogress": 1}
         block = {"hash": "abc", "height": 352395, "time": 9900, "mediantime": 1}
         native.validate_tip(chain, block, 10000)
         for changes in [{"time": 1}, {"time": 11000}, {"height": 352394}, {"hash": "other"}]:

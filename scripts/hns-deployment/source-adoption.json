@@ -1018,15 +1018,15 @@
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
-      "sha256": "1a1373c2686c29b59f7268131d2321ee5d6c3e5b6a9f5c4b94adb4b9c5ed43d6"
+      "sha256": "2f9b0a9049c9f7cf0d5f15d01235f3b546b1f10b3417310beee6445c8a3f2353"
     },
     {
-      "owned_path": "scripts/hns-deployment/verify-native-runtime_test.py",
-      "sha256": "f86fbdd8338dcdae7cc2bded3458eb23afe73824a2cb28adf3747b10d9bcd758"
+      "owned_path": "scripts/hns-deployment/verify-native-runtime.test.py",
+      "sha256": "02e1e37a4430a0405d3514c5aa114d038c10279bd39dcf6bb9dba9878ba67efc"
     },
     {
       "owned_path": "scripts/hns-native-runtime.test.ts",
-      "sha256": "b04d716428800b68655adafa5cdd719a58aabcc139a44f0085ad11d8abf113ca"
+      "sha256": "5abe0349790c94bff0cafa7ff5d4245e9cf638e8166de7d959dd1b08f18324ac"
     }
   ]
 }

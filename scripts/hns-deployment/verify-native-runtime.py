@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -72,12 +73,15 @@ def observer_rpc(method, params):
 
 
 def validate_tip(chain, block, now):
-    require(chain.get("chain") == "main" and isinstance(chain.get("blocks"), int)
-            and chain["blocks"] > 0 and isinstance(chain.get("verificationprogress"), (int, float))
-            and 0.999 <= chain["verificationprogress"] <= 1.001, "observer-not-synchronized")
-    require(block.get("hash") == chain.get("bestblockhash") and block.get("height") == chain["blocks"], "observer-tip-mismatch")
-    stamp = block.get("time")
-    require(isinstance(stamp, (int, float)) and -300 <= now - stamp <= 7200, "observer-actual-tip-stale")
+    height, headers = chain.get("blocks"), chain.get("headers")
+    progress, stamp = chain.get("verificationprogress"), block.get("time")
+    require(chain.get("chain") == "main" and type(height) is int and height >= 350000
+            and type(headers) is int and 0 <= headers - height <= 2
+            and type(progress) in (int, float) and math.isfinite(progress)
+            and 0.9999 <= progress <= 1, "observer-not-synchronized")
+    require(block.get("hash") == chain.get("bestblockhash")
+            and type(block.get("height")) is int and block["height"] == height, "observer-tip-mismatch")
+    require(type(stamp) is int and -300 <= now - stamp <= 7200, "observer-actual-tip-stale")
 
 
 def verify_native(profile, release):
