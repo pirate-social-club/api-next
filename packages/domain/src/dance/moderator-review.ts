@@ -1,4 +1,4 @@
-/** Offline moderated family only. No media, clock, storage or funding I/O. */
+/** Pure moderated family. No media, clock, storage or funding I/O. */
 export type ReviewPolicy = Readonly<{
   version: "moderator-review-policy-v1";
   hash: string;
@@ -433,8 +433,8 @@ function boundSafety(c: SealedReviewCapture, f: ReviewFacts): boolean {
     s.analysisRevision === c.analysisRevision &&
     s.policyHash === c.policy.safetyHash &&
     s.frameDigests.length === 3 &&
-    s.frameDigests.every(hash) &&
-    new Set(s.frameDigests).size === 3
+    // Three captured positions remain evidence when two images have identical pixels.
+    s.frameDigests.every(hash)
   );
 }
 function unique(c: SealedReviewCapture, f: ReviewFacts): boolean {

@@ -1,5 +1,7 @@
 import { Data, Effect } from "effect";
 import {
+  type DanceOwnerDetailV1,
+  type DanceOwnerQueueV1,
   type DanceReviewCommandReceiptV1,
   type DanceReviewCommandV1,
   type DanceReviewPrivateResultV1,
@@ -8,6 +10,7 @@ import {
   decodeDanceReviewCommandV1,
   decodeDanceReviewPrivateResultV1,
   decodeDanceReviewTaskV1,
+  type LatestModeratedDanceReviewV1,
 } from "../../../../contracts/src/dance-review.ts";
 import {
   type ModeratorReview,
@@ -25,6 +28,7 @@ export class DanceReviewServiceFailure extends Data.TaggedError("DanceReviewServ
     | "not_found"
     | "unauthorized"
     | "idempotency_conflict"
+    | "revision_conflict"
     | "unavailable"
     | "outcome_unknown";
 }> {}
@@ -103,11 +107,32 @@ export interface DanceReviewServices {
   readonly authenticateWorker: () => Effect.Effect<ReviewActor, DanceReviewServiceFailure>;
   /** Port implementation must preserve cancellation, original causes and
    * unknown COMMIT/rollback outcomes; it MUST NOT replay this callback.
-   * This offline slice supplies no production persistence implementation.
+   * The production adapter uses the same retained-outcome CP transaction as Funding.
    */
   readonly withTransaction: <A, E, R>(
     use: (tx: DanceReviewTransaction) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | DanceReviewServiceFailure, R>;
+}
+
+export interface DanceReviewReadStore {
+  readonly getOwnResult: (
+    communityId: string,
+    reviewId: string,
+  ) => Effect.Effect<DanceReviewPrivateResultV1, DanceReviewServiceFailure>;
+  readonly getLatest: (
+    communityId: string,
+    postId: string,
+    choreographyId: string,
+    revision: number,
+  ) => Effect.Effect<LatestModeratedDanceReviewV1, DanceReviewServiceFailure>;
+  readonly ownerQueue: (
+    communityId: string,
+    cursor: string | null,
+  ) => Effect.Effect<DanceOwnerQueueV1, DanceReviewServiceFailure>;
+  readonly ownerDetail: (
+    communityId: string,
+    reviewId: string,
+  ) => Effect.Effect<DanceOwnerDetailV1, DanceReviewServiceFailure>;
 }
 
 /** Account-private DTO only. Queue/media projections and actual read routes

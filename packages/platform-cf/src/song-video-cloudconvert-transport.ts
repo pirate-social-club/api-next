@@ -6,6 +6,10 @@ export type CloudConvertJob = Readonly<{
 }>;
 
 export type CloudConvertJobObservation = CloudConvertJob & Readonly<{ exportUrl: string | null }>;
+export type CloudConvertPrivateDanceObservation = CloudConvertJob &
+  Readonly<{
+    exports: Readonly<{ identity: string; frames: readonly [string, string, string] }> | null;
+  }>;
 
 export class CloudConvertTransportError extends Error {
   constructor(
@@ -124,6 +128,57 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function privateDanceObservation(value: unknown): CloudConvertPrivateDanceObservation {
+  const job = parseJob(value);
+  if (job.status !== "finished") return { ...job, exports: null };
+  const tasks = record(value).tasks;
+  if (!Array.isArray(tasks)) throw new CloudConvertTransportError("uncertain");
+  const matches = tasks.filter((t) => record(t).name === "export-dance");
+  if (matches.length !== 1) throw new CloudConvertTransportError("uncertain");
+  const task = record(matches[0]);
+  if (task.operation !== "export/url" || task.status !== "finished")
+    throw new CloudConvertTransportError("uncertain");
+  const files = record(task.result).files;
+  if (!Array.isArray(files) || files.length !== 4)
+    throw new CloudConvertTransportError("uncertain");
+  const urls = new Map<string, string>();
+  for (const entry of files) {
+    const file = record(entry);
+    if (
+      typeof file.filename !== "string" ||
+      !["recording.framehash", "frame-0.jpg", "frame-1.jpg", "frame-2.jpg"].includes(
+        file.filename,
+      ) ||
+      urls.has(file.filename) ||
+      typeof file.url !== "string"
+    )
+      throw new CloudConvertTransportError("uncertain");
+    let url: URL;
+    try {
+      url = new URL(file.url);
+    } catch {
+      throw new CloudConvertTransportError("uncertain");
+    }
+    if (
+      url.protocol !== "https:" ||
+      !["storage.cloudconvert.com", "us-east.storage.cloudconvert.com"].includes(url.hostname) ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.hash !== ""
+    )
+      throw new CloudConvertTransportError("uncertain");
+    urls.set(file.filename, file.url);
+  }
+  const identity = urls.get("recording.framehash"),
+    a = urls.get("frame-0.jpg"),
+    b = urls.get("frame-1.jpg"),
+    c = urls.get("frame-2.jpg");
+  if (identity === undefined || a === undefined || b === undefined || c === undefined)
+    throw new CloudConvertTransportError("uncertain");
+  return { ...job, exports: { identity, frames: [a, b, c] } };
+}
+
 /** Returns at most one matching job. More than one is an operator reconciliation event. */
 export function makeSongVideoCloudConvertTransport(
   input: Readonly<{
@@ -225,6 +280,12 @@ export function makeSongVideoCloudConvertTransport(
         record(await request(`/jobs/${id}`, "GET")).data,
         input.exportKind ?? "video",
       );
+    },
+    /** Separate private analysis export; it cannot be mistaken for a public
+     * master or PCM authority by any existing consumer. */
+    async showPrivateDance(id: string): Promise<CloudConvertPrivateDanceObservation> {
+      if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
+      return privateDanceObservation(record(await request(`/jobs/${id}`, "GET")).data);
     },
     async remove(id: string): Promise<void> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");

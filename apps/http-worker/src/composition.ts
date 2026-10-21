@@ -19,6 +19,7 @@ import type {
   DanceAttemptSessionAuthorityResolver,
   DanceAttemptUploadAuthority,
 } from "@pirate/application/use-cases/dance/attempt-services";
+import { DanceReviewServiceFailure } from "@pirate/application/use-cases/dance/moderator-review-services";
 import type { DanceReferenceAuthoringAuthorityResolver } from "@pirate/application/use-cases/dance/reference-services";
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { PERSONA_WALLET_SETUP_SESSION_SCOPE } from "@pirate/application/use-cases/identity-registration-handler";
@@ -96,6 +97,7 @@ import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-reposi
 import { makeControlledAccountSpokenComposition } from "@pirate/platform-cf/controlled-account-spoken-composition";
 import { makeControlledAccountStudyV2Store } from "@pirate/platform-cf/controlled-account-study-store";
 import { makeDanceAttemptStore } from "@pirate/platform-cf/dance-attempt-authoring-repository";
+import { makeControlPlaneModeratorReviewStore } from "@pirate/platform-cf/dance-moderator-review-repository";
 import { makeDanceReferenceStore } from "@pirate/platform-cf/dance-reference-authoring-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeControlPlaneHandleNationalityAuthoringStore } from "@pirate/platform-cf/handle-nationality-authoring-repository";
@@ -253,10 +255,18 @@ import { makeControlPlaneSponsoredSendStore } from "@pirate/platform-cf/wallet-s
 import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-sponsored-send-service";
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect, Redacted, Schema } from "effect";
+import { GetSharedSongMegapotSummaryV2 } from "../../../packages/contracts/src/shared-song-megapot.ts";
+import {
+  makeControlPlaneModeratedDanceIntakeStore,
+  makeModeratedDanceUploadSigner,
+} from "../../../packages/platform-cf/src/dance-moderated-intake-repository.ts";
+import { makeModeratedDanceMediaAccessStore } from "../../../packages/platform-cf/src/moderated-dance-media-access.ts";
+import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
 import {
   makeTelegramServices,
   type TelegramBindings,
 } from "../../../packages/platform-cf/src/telegram-runtime.ts";
+import type { VideoSourceBucket } from "../../../packages/platform-cf/src/video-source-gateway.ts";
 import { makeActivityCompletionHandlers } from "./activity-completion-handlers.ts";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { assertSupportedAuthPolicies, supportedAuthPolicy } from "./auth-policy.ts";
@@ -298,6 +308,12 @@ import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
 import { makeKaraokeHandlers, makeKaraokeReadinessHandlers } from "./karaoke-handlers.ts";
 import { makeLearnerAudioHandlers } from "./learner-audio-handlers.ts";
 import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
+import { makeModeratedDanceIntakeHandlers } from "./moderated-dance-intake-handlers.ts";
+import {
+  installModeratedDancePrivateMedia,
+  makeModeratedDanceMediaLeaseHandler,
+} from "./moderated-dance-private-media.ts";
+import { makeModeratedDanceReviewHandlers } from "./moderated-dance-review-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makeNotificationHandlers } from "./notification-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -509,7 +525,9 @@ export interface HttpWorkerBindings
   readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
   readonly MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY?: string;
   readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"] & R2VideoMultipartControl;
-  readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"];
+  readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"] & {
+    readonly get?: VideoSourceBucket["get"];
+  };
   readonly LEARNER_AUDIO?: StudyAudioBucket & LearnerAudioDeletionBucket;
 }
 
@@ -1879,6 +1897,18 @@ export async function createProductionHttpWorker(
       ? {}
       : { hnsProtectedIngressOrigin: config.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN }),
   });
+  const privateOriginals = bindings.MEDIA_IMMUTABLE_ORIGINALS;
+  const privateGet = privateOriginals?.get;
+  const privateMediaBucket: VideoSourceBucket | null =
+    privateOriginals !== undefined && privateGet !== undefined
+      ? {
+          head: (key) => privateOriginals.head(key),
+          get: (key, options) => privateGet.call(privateOriginals, key, options),
+        }
+      : null;
+  const privateMediaForAccount = (account: string) =>
+    makeModeratedDanceMediaAccessStore(controlPlane, account);
+  const readSharedPotSummary = makeSharedSongMegapotSummaryReader(controlPlane);
   const worker = createHttpWorker({
     ...(guestStudy === null ? {} : { guestStudy }),
     ...spacesRuntime,
@@ -1890,6 +1920,22 @@ export async function createProductionHttpWorker(
     hnsHandleHostApi,
     hnsEdgeStatus,
     handlers: {
+      GetSharedSongMegapotSummaryV2: async (ctx) => {
+        if (ctx.principal?.kind !== "user")
+          throw new AuthError({ message: "Authentication required" });
+        const path = Schema.decodeUnknownSync(GetSharedSongMegapotSummaryV2.request.path, {
+          onExcessProperty: "error",
+        })(ctx.params);
+        try {
+          return await readSharedPotSummary(ctx.principal.subject, path.communityId, path.postId);
+        } catch {
+          throw new InternalError({ message: "Shared pot summary unavailable" });
+        }
+      },
+      CreateModeratedDanceMediaAccess: makeModeratedDanceMediaLeaseHandler(
+        privateMediaForAccount,
+        privateMediaBucket !== null,
+      ),
       ...productHandlers,
       ListPostComments: makeCommentThreadHandler(makeCommentThreadStore(controlPlane)),
       ResolveCommentNavigationV1: makeCommentNavigationHandler(
@@ -1934,6 +1980,34 @@ export async function createProductionHttpWorker(
       ...songPlaybackHandlers,
       ...danceReferenceHandlers,
       ...danceAttemptHandlers,
+      ...makeModeratedDanceReviewHandlers((accountId) =>
+        makeControlPlaneModeratorReviewStore(controlPlane, {
+          account: () => Effect.succeed({ kind: "account", accountId }),
+          worker: () => Effect.fail(new DanceReviewServiceFailure({ reason: "unauthorized" })),
+        }),
+      ),
+      ...makeModeratedDanceIntakeHandlers((accountId) => {
+        const account = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID,
+          bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME,
+          accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID,
+          secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
+        return makeControlPlaneModeratedDanceIntakeStore(controlPlane, accountId, {
+          signer:
+            bindings.MEDIA_INGRESS !== undefined &&
+            privateMediaBucket !== null &&
+            account !== undefined &&
+            bucket !== undefined &&
+            accessKeyId !== undefined &&
+            secretAccessKey !== undefined
+              ? makeModeratedDanceUploadSigner({
+                  accountId: account,
+                  bucket,
+                  accessKeyId,
+                  secretAccessKey,
+                })
+              : null,
+        });
+      }),
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
       ...makeSongLibraryHandlers(makeControlPlaneSongLibraryStore(controlPlane)),
@@ -1991,5 +2065,12 @@ export async function createProductionHttpWorker(
         }),
       ),
   });
+  if (privateMediaBucket !== null)
+    installModeratedDancePrivateMedia({
+      app: worker,
+      authenticate,
+      forAccount: privateMediaForAccount,
+      bucket: privateMediaBucket,
+    });
   return { ...worker, continuePublicationChecks };
 }

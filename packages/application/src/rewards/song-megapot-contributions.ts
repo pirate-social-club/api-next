@@ -314,7 +314,9 @@ export function makeSongMegapotContributionReads(ports: SongContributionReadPort
     )
       return yield* fail("not_found");
     if (result.readiness === "ready") {
-      if ((yield* digestFundingPreimageV2(contextPreimage(result))) !== result.context_hash)
+      if (
+        (yield* digestFundingPreimageV2(fundingContextPreimageV2(result))) !== result.context_hash
+      )
         return yield* fail("outcome_unknown");
       if (result.quote.kind === "prospective") {
         if (
@@ -418,7 +420,7 @@ function href(scope: FundingScope, contributionId: string): string {
   return `/communities/${encodeURIComponent(scope.communityId)}/posts/${encodeURIComponent(scope.postId)}/megapot-contributions/${encodeURIComponent(contributionId)}`;
 }
 
-const contextPreimage = (c: ContextReadyV2) => {
+export const fundingContextPreimageV2 = (c: ContextReadyV2) => {
   const l = c.limits;
   const limits = [
     "profile_id",
@@ -563,7 +565,7 @@ const createContribution = Effect.fn("SongMegapotContribution.create")(function*
     return yield* fail("quote_reference_invalid");
   if (
     request.expected_context_hash !== c.context_hash ||
-    (yield* digestFundingPreimageV2(contextPreimage(c))) !== c.context_hash
+    (yield* digestFundingPreimageV2(fundingContextPreimageV2(c))) !== c.context_hash
   )
     return yield* fail("quote_mismatch");
   if (now >= c.context_expires_at || now >= c.limits.latest_allocation_at)

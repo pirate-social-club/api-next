@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./use-cases/rewards/song-megapot-contributions": "./src/use-cases/rewards/song-megapot-contributions.ts",
     "./use-cases/rewards/activity-completion": "./src/use-cases/rewards/activity-completion.ts",
     "./telegram": "./src/telegram/index.ts",
     ".": "./src/index.ts",

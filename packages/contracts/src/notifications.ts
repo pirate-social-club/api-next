@@ -7,7 +7,7 @@ export const NotificationIdV1 = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u),
 );
 const ResourceId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512));
-export const NotificationV1 = Schema.Struct({
+const CommentNotificationV1 = Schema.Struct({
   notification_id: NotificationIdV1,
   kind: Schema.Literals(["comment_published", "reply_published"]),
   occurred_at: Schema.String,
@@ -19,6 +19,22 @@ export const NotificationV1 = Schema.Struct({
     comment_id: ResourceId,
   }),
 });
+/** A terminal result belongs only to its dancer. Navigation resolves the owned
+ * private result endpoint; it never carries the recording, owner or reward data.
+ */
+const DanceResultNotificationV1 = Schema.Struct({
+  notification_id: NotificationIdV1,
+  kind: Schema.Literal("dance_review_result"),
+  occurred_at: Schema.String,
+  read_at: Schema.NullOr(Schema.String),
+  target: Schema.Struct({
+    kind: Schema.Literal("private_dance_result"),
+    community_id: ResourceId,
+    review_id: ResourceId,
+  }),
+  outcome: Schema.Literals(["passed", "not_passed", "review_expired"]),
+});
+export const NotificationV1 = Schema.Union([CommentNotificationV1, DanceResultNotificationV1]);
 export type NotificationV1 = Schema.Schema.Type<typeof NotificationV1>;
 
 /** Recipient comes exclusively from the authenticated principal. Fixed page size

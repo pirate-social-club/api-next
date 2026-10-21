@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import {
   AlertCollector,
   ControlPlaneDb,
+  type ControlPlaneStatement,
   ControlPlaneStatementFailed,
   RewardOperationsPaused,
 } from "@pirate/application";
@@ -17,7 +18,7 @@ const { makeJobsWorkerDeclarations } = await import("./index.ts");
 function fixture() {
   const labels: string[] = [];
   let paused = false;
-  const execute: ControlPlaneDb["Service"]["execute"] = (statement) => {
+  const execute: ControlPlaneDb["Service"]["execute"] = <Row>(statement: ControlPlaneStatement) => {
     labels.push(statement.label);
     if (paused && statement.label === "reward-run-authority.require")
       return Effect.fail(
@@ -28,7 +29,10 @@ function fixture() {
           outcomeCertainty: "completed",
         }),
       );
-    return Effect.succeed({ rows: [], rowCount: 0 });
+    return Effect.succeed({
+      rows: (statement.label === "shared-song.context.claim" ? [{ packet: null }] : []) as Row[],
+      rowCount: statement.label === "shared-song.context.claim" ? 1 : 0,
+    });
   };
   const layer = Layer.succeed(ControlPlaneDb, {
     execute,
@@ -102,7 +106,11 @@ describe("serving Funding observer/recovery composition", () => {
     await run();
     expect(f.labels).toEqual([
       "reward-run-authority.require",
+      "shared-song.context.claim",
+      "reward-run-authority.require",
       "song-funding.work.list",
+      "reward-run-authority.require",
+      "shared-song.context.claim",
       "reward-run-authority.require",
       "song-funding.work.list",
     ]);
@@ -110,7 +118,11 @@ describe("serving Funding observer/recovery composition", () => {
     await expect(run()).rejects.toBeInstanceOf(RewardOperationsPaused);
     expect(f.labels).toEqual([
       "reward-run-authority.require",
+      "shared-song.context.claim",
+      "reward-run-authority.require",
       "song-funding.work.list",
+      "reward-run-authority.require",
+      "shared-song.context.claim",
       "reward-run-authority.require",
       "song-funding.work.list",
       "reward-run-authority.require",

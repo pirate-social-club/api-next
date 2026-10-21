@@ -5,7 +5,7 @@ import {
   SongContributionFailure,
   type SongContributionPorts,
   type SongContributionReadPorts,
-} from "@pirate/application/rewards/song-megapot-contributions";
+} from "@pirate/application/use-cases/rewards/song-megapot-contributions";
 import {
   AuthError,
   ContributionBadRequestV2,

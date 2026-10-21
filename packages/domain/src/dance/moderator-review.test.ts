@@ -305,6 +305,27 @@ describe("pure offline moderated Dance review", () => {
       ).refusal,
     ).toBe("self_review");
   });
+  test("three persisted sample positions may have identical pixels without losing their safety evidence", () => {
+    const { state: s, facts: f } = fixture();
+    const r = submit(s, f);
+    const facts = {
+      ...f,
+      safety: {
+        ...f.safety,
+        frameDigests: ["6".repeat(64), "6".repeat(64), "6".repeat(64)] as const,
+      },
+    };
+    const screened = transitionModeratorReview(
+      r,
+      { kind: "screen" },
+      worker,
+      r.revision,
+      3000,
+      facts,
+    );
+    expect(screened.refusal).toBeNull();
+    expect(screened.state.state).toBe("awaiting_review");
+  });
   test("incomplete, mismatched, failed and uncertain evidence never grants preview/review; held has no owner resolver", () => {
     const { state: s, facts: f } = fixture();
     const r = submit(s, f);

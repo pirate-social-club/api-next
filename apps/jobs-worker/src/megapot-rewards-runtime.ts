@@ -32,6 +32,7 @@ import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-pa
 import { makeRewardRefundCoordinator } from "@pirate/platform-cf/reward-refund-coordinator";
 import { makeControlPlaneRewardRefundStore } from "@pirate/platform-cf/reward-refund-repository";
 import { Effect, type Layer } from "effect";
+import { makeControlPlaneSharedSongContextProducer } from "../../../packages/platform-cf/src/shared-song-megapot-production.ts";
 import {
   makeControlPlaneRewardFundingObserver,
   makeControlPlaneSongFundingRecoveryStore,
@@ -57,7 +58,29 @@ export function makeSongFundingRecoveryRuntime(input: {
       create: (attestation) => makeMegapotV2RpcClient({ rpcUrl: input.rpcUrl, attestation }),
     }),
   });
-  return { ...runtime, ensure: makeControlPlaneRewardRunAuthority(input.controlPlane).ensure };
+  const authority = makeControlPlaneRewardRunAuthority(input.controlPlane);
+  const contexts = makeControlPlaneSharedSongContextProducer({
+    runtime: input.controlPlane,
+    now: input.now,
+    rpcFor: (deployment) => {
+      if (
+        deployment.environment !==
+        (input.environment === "development" ? "test" : input.environment)
+      )
+        throw new MegapotRewardRoutingRejected({ reason: "attestation-mismatch" });
+      return makeMegapotV2RpcClient({ rpcUrl: input.rpcUrl, attestation: deployment });
+    },
+  });
+  return {
+    ensure: authority.ensure,
+    run: Effect.fn("SongFundingRuntime.run")(function* (
+      options: Parameters<typeof runtime.run>[0],
+    ) {
+      if (!options.enabled) return;
+      yield* contexts.run({ enabled: true, ensure: options.ensure });
+      yield* runtime.run(options);
+    }),
+  };
 }
 
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";

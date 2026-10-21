@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, type Layer, Schema } from "effect";
+import { Effect, type Layer, Schema } from "effect";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
@@ -18,6 +18,7 @@ import {
 } from "../../application/src/rewards/song-megapot-contributions.ts";
 import * as C from "../../contracts/src/rewards-song-contributions-v2.ts";
 import { HashV2, IdV2, KeyV2 } from "../../contracts/src/rewards-song-contributions-v2.ts";
+import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import { validateMegapotV2DeploymentAttestation } from "./megapot-v2.ts";
 import {
   type FundingPrincipalEvidence,
@@ -30,6 +31,7 @@ import {
   loadRewardFundingWalletNonceOwnerIn,
   reserveRewardFundingWalletNonceIn,
 } from "./reward-wallet-nonce-authority.ts";
+import { instantiateSharedSongRewardPolicyIn } from "./shared-song-megapot-production.ts";
 
 type CommandIdentity = Parameters<SongContributionPorts["transaction"]>[0];
 
@@ -86,52 +88,22 @@ export const withSongMegapotContributionTransaction = Effect.fn(
     try: () => Schema.decodeUnknownSync(CommandIdentity, { onExcessProperty: "error" })(identity),
     catch: () => new SongContributionFailure({ code: "invalid_request" }),
   });
-  const db = yield* ControlPlaneDb;
-  let callbackCause: Cause.Cause<SongContributionFailure | ControlPlaneError> | undefined;
-  return yield* Effect.uninterruptibleMask((restore) =>
+  return yield* withRetainedControlPlaneCommandTransaction((transaction) =>
     Effect.gen(function* () {
-      const outcome = yield* Effect.exit(
-        db.withTransaction((transaction) =>
-          restore(
-            Effect.gen(function* () {
-              yield* transaction.execute({
-                label: "song-megapot-contribution.command.lock",
-                text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                values: [
-                  JSON.stringify([
-                    "song-megapot-contribution-command-v2",
-                    decoded.accountId,
-                    decoded.operation,
-                    decoded.key,
-                  ]),
-                ],
-                readonly: false,
-              });
-              return yield* use(transaction);
-            }).pipe(
-              Effect.onExit((exit) =>
-                Effect.sync(() => {
-                  if (Exit.isFailure(exit)) callbackCause = exit.cause;
-                }),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      // Capture pending cancellation inside the mask too. In rc.109 an outer
-      // catchCause can be skipped once interruptibility is restored. This
-      // checkpoint does no work and never re-enters the transaction/callback.
-      const cancellation = yield* Effect.exit(restore(Effect.void));
-      if (Exit.isFailure(outcome)) {
-        const cause =
-          callbackCause === undefined ? outcome.cause : Cause.combine(callbackCause, outcome.cause);
-        return yield* Effect.failCause(
-          Exit.isFailure(cancellation) ? Cause.combine(cause, cancellation.cause) : cause,
-        );
-      }
-      if (Exit.isFailure(cancellation)) return yield* Effect.failCause(cancellation.cause);
-      return outcome.value;
+      yield* transaction.execute({
+        label: "song-megapot-contribution.command.lock",
+        text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        values: [
+          JSON.stringify([
+            "song-megapot-contribution-command-v2",
+            decoded.accountId,
+            decoded.operation,
+            decoded.key,
+          ]),
+        ],
+        readonly: false,
+      });
+      return yield* use(transaction);
     }),
   );
 });
@@ -412,9 +384,20 @@ export function makeControlPlaneSongContributionPorts(
                   }),
                 ),
               id: (kind) => Effect.succeed(`${kind}:${crypto.randomUUID()}`),
-              // New mixed-objective construction requires actual accepted CP2 source.
-              instantiateRewardPolicy: () =>
-                Effect.fail(new SongContributionFailure({ code: "mixed_objective_unavailable" })),
+              instantiateRewardPolicy: (offerId, templateHash) =>
+                mapStorage(
+                  Effect.gen(function* () {
+                    if (admissionPacket === undefined)
+                      return yield* new SongContributionFailure({ code: "recovery_required" });
+                    return yield* instantiateSharedSongRewardPolicyIn(
+                      db,
+                      identity,
+                      admissionPacket.snapshot.snapshot_id,
+                      offerId,
+                      templateHash,
+                    );
+                  }),
+                ),
               ownedContribution: () => mapStorage(owned()),
               fundingAdmission: (request) =>
                 mapStorage(
@@ -565,6 +548,14 @@ export function makeControlPlaneSongContributionPorts(
                       return yield* new SongContributionFailure({ code: "recovery_required" });
                     const s = yield* decodeRow(stateSchema, state);
                     const i = s.receipt.instruction;
+                    if (p.slot.target === null) {
+                      yield* db.execute({
+                        label: "shared-song.pot.bind",
+                        text: "SELECT bind_initial_shared_song_pot_v2($1::jsonb,$2,$3::jsonb)",
+                        values: [json(identity), p.snapshot.snapshot_id, json(s)],
+                        readonly: false,
+                      });
+                    }
                     yield* reserveRewardFundingWalletNonceIn(db, {
                       owner: {
                         leaseId: s.receipt.reservation.nonce_lease_id,

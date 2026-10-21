@@ -3,7 +3,7 @@ import {
   SongContributionFailure,
   type SongContributionPorts,
   type SongContributionReadPorts,
-} from "@pirate/application/rewards/song-megapot-contributions";
+} from "@pirate/application/use-cases/rewards/song-megapot-contributions";
 import { SubmissionClaimReceiptV2 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { makeSongMegapotContributionHandlers } from "./song-megapot-contribution-handlers.ts";

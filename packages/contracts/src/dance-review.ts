@@ -1,4 +1,7 @@
 import { Schema } from "effect";
+import { Auth } from "./auth.ts";
+import { endpoint } from "./endpoint.ts";
+import { AuthError, BadRequest, Conflict, InternalError, NotFound, RateLimited } from "./errors.ts";
 
 const Id = Schema.NonEmptyString.check(
   Schema.isMaxLength(128),
@@ -250,3 +253,132 @@ export const decodeDanceReviewCommandReceiptV1 = Schema.decodeUnknownSync(
   DanceReviewCommandReceiptV1,
   { onExcessProperty: "error" },
 );
+
+const reviewPath = Schema.Struct({ communityId: Id, reviewId: Id });
+const errors = [AuthError, BadRequest, Conflict, NotFound, RateLimited, InternalError] as const;
+const account = Auth.user({ browserSessionOnly: true });
+export const SubmitModeratedDanceReview = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/dance/reviews/:reviewId/submit",
+  auth: account,
+  request: { path: reviewPath, bodyEncoding: "exact-json", body: SubmitDanceReviewV1 },
+  response: DanceReviewCommandReceiptV1,
+  errors,
+});
+export const ChangeModeratedDanceVisibility = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/dance/reviews/:reviewId/visibility",
+  auth: account,
+  request: { path: reviewPath, bodyEncoding: "exact-json", body: UpdateDanceReviewVisibilityV1 },
+  response: DanceReviewCommandReceiptV1,
+  errors,
+});
+export const WithdrawModeratedDanceReview = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/dance/reviews/:reviewId/withdraw",
+  auth: account,
+  request: { path: reviewPath, bodyEncoding: "exact-json", body: WithdrawDanceReviewV1 },
+  response: DanceReviewCommandReceiptV1,
+  errors,
+});
+export const RecordModeratedDanceVerdict = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/dance/reviews/:reviewId/verdict",
+  auth: account,
+  request: { path: reviewPath, bodyEncoding: "exact-json", body: RecordDanceOwnerVerdictV1 },
+  response: DanceReviewCommandReceiptV1,
+  errors,
+});
+export const GetMyModeratedDanceResult = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/dance/reviews/:reviewId/result",
+  auth: account,
+  cacheControl: "private, no-store",
+  request: { path: reviewPath },
+  response: DanceReviewPrivateResultV1,
+  errors,
+});
+export const LatestModeratedDanceReviewV1 = Schema.Struct({
+  object: Schema.Literal("latest_moderated_dance_review"),
+  latest_submitted: Schema.NullOr(DanceReviewPrivateResultV1),
+  active_session_id: Schema.NullOr(Id),
+});
+export type LatestModeratedDanceReviewV1 = typeof LatestModeratedDanceReviewV1.Type;
+export const GetLatestModeratedDanceReview = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/dance/moderated-choreographies/:choreographyId/revisions/:revision/latest-review",
+  auth: account,
+  cacheControl: "private, no-store",
+  request: {
+    path: Schema.Struct({
+      communityId: Id,
+      postId: Id,
+      choreographyId: Id,
+      revision: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,14}$/u)),
+    }),
+  },
+  response: LatestModeratedDanceReviewV1,
+  errors,
+});
+export const DanceOwnerQueueItemV1 = Schema.Struct({
+  review_id: Id,
+  review_revision: Revision,
+  community_id: Id,
+  song_post_id: Id,
+  choreography_id: Id,
+  choreography_revision: Revision,
+  segment_id: Id,
+  submitted_at: Instant,
+  review_deadline: Instant,
+  state: Schema.Literal("awaiting_review"),
+});
+export const DanceOwnerQueueV1 = Schema.Struct({
+  object: Schema.Literal("dance_owner_review_page"),
+  items: Schema.Array(DanceOwnerQueueItemV1).check(Schema.isMaxLength(20)),
+  next_cursor: Schema.NullOr(Hash),
+});
+export type DanceOwnerQueueV1 = typeof DanceOwnerQueueV1.Type;
+export const ListOwnerModeratedDanceReviews = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/dance/owner-reviews",
+  auth: account,
+  cacheControl: "private, no-store",
+  request: {
+    path: Schema.Struct({ communityId: Id }),
+    query: Schema.Struct({ cursor: Schema.optional(Hash) }),
+  },
+  response: DanceOwnerQueueV1,
+  errors,
+});
+export const DanceOwnerDetailV1 = Schema.Struct({
+  object: Schema.Literal("dance_owner_review"),
+  review: DanceOwnerQueueItemV1,
+  reference_post_id: Id,
+  video_render_revision: Id,
+  cue: Schema.Struct({ id: Id, start_ms: Schema.Int, end_ms: Schema.Int, hold_ms: Revision }),
+  body: Schema.Struct({ start_ms: Schema.Int, end_ms: Schema.Int }),
+  rubric_version: Id,
+  rubric_hash: Hash,
+  attestation_version: Schema.Literal("dance-owner-verdict-attestation-v1"),
+});
+export type DanceOwnerDetailV1 = typeof DanceOwnerDetailV1.Type;
+export const GetOwnerModeratedDanceReview = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/dance/owner-reviews/:reviewId",
+  auth: account,
+  cacheControl: "private, no-store",
+  request: { path: reviewPath },
+  response: DanceOwnerDetailV1,
+  errors,
+});
+
+export const moderatedDanceReviewRegistry = {
+  SubmitModeratedDanceReview,
+  ChangeModeratedDanceVisibility,
+  WithdrawModeratedDanceReview,
+  RecordModeratedDanceVerdict,
+  GetMyModeratedDanceResult,
+  GetLatestModeratedDanceReview,
+  ListOwnerModeratedDanceReviews,
+  GetOwnerModeratedDanceReview,
+} as const;
