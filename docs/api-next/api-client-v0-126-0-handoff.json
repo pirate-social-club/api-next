@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.126.0",
+  "sourceBranch": "fix/v1-study-expiry-projection-20261021",
+  "sourceBase": "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Account Study session reads project expired when the active session deadline has passed. Expired sessions retain their unfinished current card, progress and null completion fields. The held guest status contract remains active/completed. No write, qualification, expiry deadline or stored history is changed.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.126.0.tgz",
+    "sha256": "1b9a0b2657abdf75da64796dd61af716c570a95ffd8c65c69c80d91302136c01"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.126.0",
+    "sourceIdentifier": "api-next-contracts@78be78a810c4256f55576b3dffb69aa8ff0a7a3fad755765c42a7866ce13ae3e",
+    "openapiSha256": "78be78a810c4256f55576b3dffb69aa8ff0a7a3fad755765c42a7866ce13ae3e",
+    "clientSha256": "faf0672e89b0f8881e1f5e602b04abcc79487740dba51de350d28aa8d0307029"
+  },
+  "validation": {
+    "focusedContracts": "18 tests and120 assertions passed.",
+    "postgres": "All three genuine controlled account producer cases pass on disposable PostgreSQL17.11,1641 assertions, including the expiry read after one genuine completed spoken answer and unchanged retained rows. Fixture-only deadline passage preserves active guards; it is not natural-expiry runtime acceptance.",
+    "fullLocal": "bun run check and bun run test passed. Unit gate:6345 pass,4 skip,0 fail,39417 assertions; storage,Node and all maintained workerd suites also passed.",
+    "runtimeAcceptance": "Not deployed. The original naturally expired production session remains the runtime acceptance target."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.126.0",
+    "behavior": "Retain the expired lesson until an explicit new-session action. Hide recording and completion/reward surfaces for expiry; do not automatically rotate its coordination key. Re-read after a server refusal to surface expiry."
+  }
+}
