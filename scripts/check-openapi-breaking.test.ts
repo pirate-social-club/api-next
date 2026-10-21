@@ -583,7 +583,7 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    // The moderation transition has landed. Its historical waiver remains in Git.
+    // The Study expiry transition has landed in source. Its historical waiver remains in Git.
     expect(repositoryPolicy).toEqual({ breakingChangeWaivers: [] });
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),

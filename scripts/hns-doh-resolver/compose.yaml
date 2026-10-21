@@ -3,19 +3,19 @@ services:
   # drift verifier: it is the digest-pinned, public-facing one. hnsd is built
   # locally and carries no digest to verify; it is covered by its own container
   # healthcheck and by the end-to-end probe in bin/check-doh-health.sh. The role
-  # is staged with `--monitored-container pirate-dnsdist-doh` so this is explicit
+  # is staged with `--monitored-container pirate-hns-dnsdist` so this is explicit
   # rather than inferred from declaration order.
-  dnsdist:
+  doh:
     # Pinned by digest. 1.9.0-1.9.3 carry a remotely triggerable DoH DoS
     # (PowerDNS Security Advisory 2024-03); 1.9.4 fixed it. Do not downgrade.
-    image: powerdns/dnsdist-19:1.9.15@sha256:af0a812fedd2d24cb54c7058cc7b07ca643b44bbf543fe9ae826fc5c663b0801
-    container_name: pirate-dnsdist-doh
+    image: powerdns/dnsdist-19:1.9.16@sha256:260b1120947a10c494fad4d93cde33ebace34bf4800c88ebb114dd7f9e829809
+    container_name: pirate-hns-dnsdist
     restart: unless-stopped
     init: true
     network_mode: host
     read_only: true
     depends_on:
-      hnsd-resolver:
+      spv:
         condition: service_healthy
     volumes:
       - ./dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
@@ -28,12 +28,12 @@ services:
     pids_limit: 128
     stop_grace_period: 15s
 
-  hnsd-resolver:
+  spv:
     build:
       context: .
       dockerfile: Dockerfile
-    image: pirate-hnsd-resolver:2.0.0
-    container_name: pirate-hnsd-resolver
+    image: pirate-hnsd:2.0.0
+    container_name: pirate-hns-spv
     restart: unless-stopped
     init: true
     # host networking so both listeners land on this host's loopback, where
@@ -43,13 +43,14 @@ services:
     user: "${HNSD_UID:-1000}:${HNSD_GID:-1000}"
     environment:
       HNSD_POOL_SIZE: "4"
-      HNSD_RS_HOST: 127.0.0.1:5350
-      HNSD_NS_HOST: 127.0.0.1:5351
+      HNSD_RS_HOST: 127.0.0.1:15350
+      HNSD_NS_HOST: 127.0.0.1:15351
+      HNSD_NS_PORT: "15351"
     volumes:
       # Stable host path, deliberately NOT ./data: state must survive checkout
       # replacement and release cleanup. Losing it costs a ~40 minute resync
       # outage, which makes it availability state rather than scratch.
-      - ${HNSD_DATA_DIR:-/srv/pirate-hns-doh/data}:/var/lib/hnsd
+      - ${HNSD_DATA_DIR:-/srv/pirate-hns-doh/shared/spv}:/var/lib/hnsd
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m
     cap_drop:

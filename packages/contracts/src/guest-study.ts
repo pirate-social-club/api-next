@@ -45,6 +45,8 @@ export const GuestStudySessionV1 = StudySessionV2.mapFields(
   ({ persona_id: _persona, ...fields }) => ({
     ...fields,
     object: Schema.Literal("guest_study_session_v1"),
+    // Account expiry recovery does not extend the held guest lifecycle contract.
+    status: Schema.Literals(["active", "completed"]),
     actor: Schema.Struct({ kind: Schema.Literal("guest") }),
     owner_id: GuestIdentifierV1,
     expires_at: GuestInstantV1,

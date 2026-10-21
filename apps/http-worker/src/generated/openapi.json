@@ -196612,7 +196612,8 @@
                       "type": "string",
                       "enum": [
                         "active",
-                        "completed"
+                        "completed",
+                        "expired"
                       ]
                     },
                     "items": {
@@ -197815,7 +197816,8 @@
                       "type": "string",
                       "enum": [
                         "active",
-                        "completed"
+                        "completed",
+                        "expired"
                       ]
                     },
                     "items": {
@@ -199643,7 +199645,8 @@
                           "type": "string",
                           "enum": [
                             "active",
-                            "completed"
+                            "completed",
+                            "expired"
                           ]
                         },
                         "items": {

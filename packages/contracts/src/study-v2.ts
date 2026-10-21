@@ -191,7 +191,8 @@ export const StudySessionV2 = Schema.Struct({
   selection_policy_revision: Identifier,
   qualification_policy_revision: Identifier,
   timezone: Identifier,
-  status: Schema.Literals(["active", "completed"]),
+  /** Expiry is a read projection; it retains the unfinished lesson and progress. */
+  status: Schema.Literals(["active", "completed", "expired"]),
   items: Schema.Array(StudySessionItemV2).check(Schema.isMinLength(4), Schema.isMaxLength(10)),
   progress: StudyProgressV2,
   lesson: StudyLessonV2,
@@ -224,13 +225,13 @@ export const StudySessionV2 = Schema.Struct({
       return "Study lesson state must respect card and presentation bounds";
     }
     if (
-      session.status === "active"
+      session.status !== "completed"
         ? session.lesson.current === null || session.lesson.completion_reason !== null
         : session.lesson.current !== null || session.lesson.completion_reason === null
     ) {
       return "Study lesson current card must match session completion";
     }
-    return (session.status === "active") === (session.completed_at === null)
+    return (session.status !== "completed") === (session.completed_at === null)
       ? undefined
       : "Study session completion fields must match status";
   }),

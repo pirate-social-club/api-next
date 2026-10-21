@@ -223,7 +223,14 @@ function inspectTopology(rootValue: unknown): Topology {
   assertDials(appRoute, [HNS_GENERIC_COMMUNITY_UPSTREAM], "app.jazleeuw");
   assertDials(wildcardRoute, [HNS_GENERIC_COMMUNITY_UPSTREAM], "*.jazleeuw");
   assertDials(verifierRoute, ["127.0.0.1:4047", "127.0.0.1:4048"], "verifier");
-  assertDials(dohRoute, ["127.0.0.1:8053"], "DoH");
+  // Both reviewed resolver generations may be present during adoption or
+  // rollback. This builder preserves the selected DoH route byte-for-byte.
+  const dohDials = reverseProxyDials(dohRoute);
+  if (
+    dohDials.length !== 1 ||
+    (dohDials[0] !== "127.0.0.1:8053" && dohDials[0] !== "127.0.0.1:8054")
+  )
+    rejected("DoH upstream changed");
   assertTrustedBoundary(appRoute, HNS_GENERIC_COMMUNITY_UPSTREAM, communityHeaders);
   assertTrustedBoundary(wildcardRoute, HNS_GENERIC_COMMUNITY_UPSTREAM, communityHeaders);
 

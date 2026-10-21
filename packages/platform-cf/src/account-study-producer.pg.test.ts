@@ -209,6 +209,52 @@ async function actualGuestDeleteBatch(f: Fixture) {
 }
 
 suite("genuine controlled ordinary Study producer", () => {
+  test("projects an expired account lesson without rewriting its retained session or progress", async () => {
+    await fixture(async (f) => {
+      const normal = harness(f, { put: async (_key, bytes) => ({ size: bytes.byteLength }) });
+      let session = await normal.start("ordinary-expired-read");
+      const answer = await run(normal.submit(await normal.input(session, "before-expiry")));
+      session = answer.session;
+      expect(session.progress.answered_exercise_count).toBe(1);
+      // Fixture-only deadline passage, with every account guard still active.
+      // Runtime acceptance separately uses the original naturally expired session.
+      await f.admin.query(
+        "UPDATE study_sessions_v2 SET created_at=created_at-interval '25 hours',expires_at=clock_timestamp()-interval '1 microsecond' WHERE session_id=$1",
+        [session.session_id],
+      );
+      const input = {
+        accountId: "study-account",
+        communityId: "study-community",
+        sessionId: session.session_id,
+      };
+      const retained = async () =>
+        (
+          await f.admin.query(
+            "SELECT to_jsonb(s) AS session FROM study_sessions_v2 s WHERE session_id=$1",
+            [session.session_id],
+          )
+        ).rows;
+      const before = await retained();
+      const read = await run(normal.store.ordinary.getSession(input));
+      expect(read).toMatchObject({
+        status: "expired",
+        completed_at: null,
+        lesson: session.lesson,
+        progress: session.progress,
+        items: session.items,
+      });
+      expect(read?.lesson.current).not.toBeNull();
+      expect(before[0]?.session.status).toBe("active");
+      expect(await retained()).toEqual(before);
+      expect(await count(f, "study_sessions_v2")).toBe(1);
+      expect(await count(f, "study_spoken_answer_commands")).toBe(1);
+      expect(await count(f, "activity_qualifications")).toBe(0);
+      expect(
+        await run(normal.store.ordinary.getSession({ ...input, accountId: "another-account" })),
+      ).toBeNull();
+    });
+  }, 120_000);
+
   test("five causal recovery/storage cases preserve original account grade and private authority", async () => {
     await fixture(async (f) => {
       const objects = new Map<string, Uint8Array>();
