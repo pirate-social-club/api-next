@@ -121,11 +121,15 @@ requires it. This is not backwards compatible.
 
 The detector now reports added fields in closed response objects, including
 optional fields and nested referenced objects. The four temporary declarations
-bind baseline17eaa01f1415c839f3fd14f67de610b370c41c8d to exactly that one
+bind baselinef78b7e7c1f9679e7d0fa72c796c09ae0c62c82cd to exactly that one
 property diagnostic on the two Send reads, reservation and submission. No other
 request, response property, error, status, operation or later baseline is
 covered. Independent review of these declarations is required before
 integration; they are retired when that transition lands.
+
+This refresh follows normal inheritance of resolver checkpoint PR643. Its four
+HNS-only paths leave the baseline OpenAPI bytes identical to17eaa01f. The old
+baseline receives no declaration; the exact four diagnostics are unchanged.
 
 The genuine127 artifact remains byte-exact. Serving acceptance requires the
 paired Solid consumer and verified old-tab refusal/reload handling; UI-first

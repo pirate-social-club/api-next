@@ -583,7 +583,7 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    const sendBaseline = "17eaa01f1415c839f3fd14f67de610b370c41c8d";
+    const sendBaseline = "f78b7e7c1f9679e7d0fa72c796c09ae0c62c82cd";
     const expected = {
       post_walletPersonasPersonaIdSponsoredSend: "POST /wallet/personas/{personaId}/sponsored-send",
       get_walletPersonasPersonaIdSponsoredSend: "GET /wallet/personas/{personaId}/sponsored-send",
@@ -605,6 +605,13 @@ describe("OpenAPI clean-break allowance", () => {
     ).not.toThrow();
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
+    ).toThrow("obsolete baseline");
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        repositoryPolicy,
+        "17eaa01f1415c839f3fd14f67de610b370c41c8d",
+        () => true,
+      ),
     ).toThrow("obsolete baseline");
     // Consumed Study declarations stay absent; a different baseline receives no allowance.
     expect(
