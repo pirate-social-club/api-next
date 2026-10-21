@@ -273,7 +273,11 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     allowedNames: [
       ...OPERATOR_SECRET_NAMES,
       "HNS_OPERATOR_MONITOR_POSTGRES_URL",
-      "HNS_OPERATOR_ALERT_WEBHOOK_URL",
+      // Fleet foundation custody only; none are Worker runtime inputs.
+      "HNS_AUTHORITY_DNS_AXFR_TSIG_SECRET",
+      "HNS_HEALTHCHECKS_API_KEY",
+      "FLEET_HEALTHCHECK_URLS_JSON",
+      "SPACES_OPERATOR_API_RECOVERY_POSTGRES_URL",
       ...PRODUCTION_HNS_OPERATOR_SECRET_NAMES,
       // Optional browser fixtures, never synchronized to any Worker.
       "PRODUCTION_E2E_CREATOR_EMAIL",

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted backup of Pirate HNS and Spaces edge state
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=45m
+Persistent=true
+Unit=pirate-hns-state-backup.service
+
+[Install]
+WantedBy=timers.target

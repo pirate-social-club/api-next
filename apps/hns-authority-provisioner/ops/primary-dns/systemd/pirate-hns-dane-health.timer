@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pirate HNS DANE continuity check hourly
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=1h
+RandomizedDelaySec=5m
+Persistent=true
+Unit=pirate-hns-dane-health.service
+
+[Install]
+WantedBy=timers.target

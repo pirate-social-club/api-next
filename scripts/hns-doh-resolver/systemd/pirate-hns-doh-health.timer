@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Pirate HNS DoH resolver health check every 15 minutes
+
+[Timer]
+OnBootSec=45m
+OnUnitActiveSec=15m
+RandomizedDelaySec=2m
+Persistent=true
+Unit=pirate-hns-doh-health.service
+
+[Install]
+WantedBy=timers.target
