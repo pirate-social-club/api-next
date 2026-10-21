@@ -34,8 +34,14 @@ must not be mistaken for a stronger enforcement guarantee.
 
 ## Build and review
 
-Use a clean, reviewed source commit. Copy this directory to an immutable
-release directory without test artifacts or Python caches. The manifest is a
+Use a clean, reviewed source commit with the standard release builder:
+
+```sh
+bash scripts/hns-deployment/make-release.sh scripts/hns-secondary-dns /absolute/output --db-path shared/data/pdns.sqlite3
+```
+
+This includes the common heartbeat sender as `bin/ping-healthcheck.py`.
+Emit the secondary manifest inside that staged release. The manifest is a
 proposal, not automatic approval of observed host state:
 
 ```sh
@@ -80,9 +86,10 @@ The service needs root-equivalent Docker access and read access to the SQLite
 store. Its systemd sandbox is defense in depth, not a boundary against the
 Docker daemon. No operator database credential or webhook is installed here.
 
-Verify staged files before changing current. This successor changes Compose
-and DNS configuration bytes, so it requires a reviewed container recreation
-and serving cutover. The bind source remains
+Verify staged files before changing current. Recreate the container only when
+Compose or effective mounted DNS configuration bytes change. A monitoring-only
+successor with identical mounted bytes can retain the running container.
+The bind source remains
 `/srv/pirate-hns-secondary/current/config/pdns.conf`; the verifier hashes
 both mounted configuration files inside the container to detect stale binds.
 Observe the retained zone from both authorities before and after recreation.
@@ -91,9 +98,15 @@ Switch current atomically, verify again, then enable the new timer. Retain one
 manual and one natural timer invocation with actual start/end times and exit
 status. Only after those pass, disable the obsolete secondary verification
 timer and retain its failed notification state honestly. The new unit has no
-OnFailure hook to the retired receiver. Local-only verification does not repair
-operator delivery or external dead-man coverage; hns-monitoring-repair owns
-those outstanding integrations. Do not report this release as complete alerting.
+hook to the retired receiver. The separate supplied success and failure units
+use this check's private URL at
+`/etc/pirate-healthchecks/hns-secondary-integrity.url`, root-owned mode0600.
+Only the completed verifier starts its success sender. The verifier remains
+restricted to local Unix sockets; the senders have network access. The manifest
+also covers all four installed unit files and the sender. Install all four,
+reload systemd, and retain a real scheduled verifier pass and corresponding
+hosted success before claiming external coverage. Its fifteen-minute period,
+thirty-second jitter and sixty-second execution bound fit five-minute grace.
 
 Prove authoritative DNS responses and signed AXFR from both authorities through
 the maintained continuity observer before and after the switch. Separately

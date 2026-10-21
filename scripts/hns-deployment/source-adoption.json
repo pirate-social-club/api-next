@@ -553,7 +553,7 @@
       "source_sha256": "226d6df463a2848d0713aadc9d3fa384d6790927b8c10f7b891557721e63cff2",
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/README.md",
       "mode": "100644",
-      "owned_sha256": "91a894b25265693f81eccfa590583ae4eab3a66a2f56eb941a5447dca5440166",
+      "owned_sha256": "54e16e5be87ed571308ce4300942bdef0423b2d5f7af804ca01bc06bd09b67a8",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -566,7 +566,7 @@
       "source_sha256": "c679a75c96550a11de929deee9b6ef3cbf4b725551ccb7792880f9b4407be24e",
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/env/hns-state-backup.env.example",
       "mode": "100644",
-      "owned_sha256": "dafcd937e31a8f814a2eeb537d16fab4881d4c3d357261f0176e1b959e77cff0",
+      "owned_sha256": "fd3227dbb6264014699928ef84e344592c47a9bbde787f13367acd0984783391",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -579,7 +579,7 @@
       "source_sha256": "0cd9291870f367300305d769d1137f5be5f006f5844ecc3ca7c94113cd096449",
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/hns-state-backup.sh",
       "mode": "100755",
-      "owned_sha256": "26c25ed9326847ef87e894df3cec2436cd4ca460004f494a6273e5b3e1ea9556",
+      "owned_sha256": "8fb3110e75373009de04f7f67eba8ea68b316717cca6f6aabf97247073f31b79",
       "modified_from_source": true,
       "owned_mode": "100755"
     },
@@ -592,7 +592,7 @@
       "source_sha256": "05f7439a773e14f7b3859f4cadeed7c919a21ce4b26fd7229a29cb952265eb9b",
       "owned_path": "apps/hns-authority-provisioner/ops/state-backup/hns-state-backup.test.sh",
       "mode": "100755",
-      "owned_sha256": "dc1be2245af36354b838c63103dd4f40e430020e91bf5c92d34536c823e5dd20",
+      "owned_sha256": "1926e1ab60f18003a9623fd7097d2b8b686bdbf72023974e9fa268332138523d",
       "modified_from_source": true,
       "owned_mode": "100755"
     },
@@ -927,6 +927,54 @@
     {
       "owned_path": "scripts/hns-doh-resolver/hnsd-store-checkpoint-path.patch",
       "sha256": "67e9625994dc626bf66a30cd0c4ba41c680c8709304aaeb8521d865c37e9cda0"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/state-backup/env/hns-staging-backup.env.example",
+      "sha256": "88f2fea59afe02abe508bb4a664823b10712003d196eb48a017fab5c4876c801"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/state-backup/systemd/pirate-hns-staging-state-backup-alert.service",
+      "sha256": "bb9b7ced030dcf99aab6c640f68ced6fd9de6a70c49eef965c6c4b48b8caf3dd"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/state-backup/systemd/pirate-hns-staging-state-backup.service",
+      "sha256": "d566b5a459313e6df334cd7a9998ceccaa9be6326752c5e5167681a01901e59f"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/state-backup/systemd/pirate-hns-staging-state-backup.timer",
+      "sha256": "0ca9385cda40da9870a5e0d89374624023f7bb535d262b72a7b6f95099f0d97b"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/README.md",
+      "sha256": "4e221a9ac0049bff595530829241953b6d84bfd8ccca655a34d14a64687e36b0"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/build-caddy.sh",
+      "sha256": "bf9fd97cd72f89645256e36d68a24c3a7446e5c67c8f638208710117b4d056f8"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/go.mod",
+      "sha256": "e64652794427a693c50a5b2f963f995e9c00e5d67e483511366a1906e96c116c"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/go.sum",
+      "sha256": "6719277f96d13d660bce25d53e15edf082c548415ef0d1fa2f7d33e0569b8c7f"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/main.go",
+      "sha256": "15bd9542374c9ffc4d1f1ed50653e4cc338156df331ce9c1422d99033b70e6b4"
+    },
+    {
+      "owned_path": "scripts/hns-secondary-dns/pirate-hns-secondary-integrity-failure.service",
+      "sha256": "e3f13a48154bb91f33487d4f6011a00b3b066311a25808216ca1b942532e1688"
+    },
+    {
+      "owned_path": "scripts/hns-secondary-dns/pirate-hns-secondary-integrity-success.service",
+      "sha256": "202bf958b6b6286e8507e40af658ea49c5f1414e34d7a6a79efe1966f3e7c0c7"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/bin/stage-release-assets.sh",
+      "sha256": "00db5186cfba44c357ca5b310bfa254d5c8dcfbe5370217dffc62e54ea1f5db5"
     }
   ]
 }

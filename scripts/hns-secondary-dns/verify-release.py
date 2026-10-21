@@ -19,7 +19,10 @@ PRIVATE = Path("/etc/pirate-hns-secondary/private")
 KEY_DIGEST = Path("/etc/pirate-hns-secondary/api-key.sha256")
 FILES = ("compose.yaml", "config/pdns.conf", "config/secondary-trigger.sql",
          "verify-release.py", "pirate-hns-secondary-verify.service",
-         "pirate-hns-secondary-verify.timer", "README.md")
+         "pirate-hns-secondary-verify.timer", "README.md",
+         "pirate-hns-secondary-integrity-success.service",
+         "pirate-hns-secondary-integrity-failure.service", "bin/ping-healthcheck.py")
+UNITS = tuple(name for name in FILES if name.endswith((".service", ".timer")))
 
 
 class Refusal(Exception):
@@ -157,6 +160,7 @@ def verify_database(database, trigger_sql):
 
 
 def verify_runtime(release, manifest):
+    verify_installed_units(manifest)
     state = json.loads(run(["/usr/bin/docker", "inspect", CONTAINER]))
     require(isinstance(state, list) and len(state) == 1, "runtime_inspect_shape")
     image = json.loads(run(["/usr/bin/docker", "image", "inspect", IMAGE]))
@@ -170,6 +174,12 @@ def verify_runtime(release, manifest):
     verify_private_config(PRIVATE, KEY_DIGEST, mounted_private)
     return verify_database(DATA / "pdns.sqlite3",
                            regular_bytes(release / "config/secondary-trigger.sql").decode())
+
+
+def verify_installed_units(manifest, directory=Path("/etc/systemd/system")):
+    for name in UNITS:
+        require(digest(regular_bytes(directory / name)) == manifest["files"][name],
+                "installed_unit_mismatch")
 
 
 def main():

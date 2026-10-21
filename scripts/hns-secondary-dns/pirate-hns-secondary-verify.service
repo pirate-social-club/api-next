@@ -2,6 +2,8 @@
 Description=Verify the reviewed HNS secondary DNS release
 After=docker.service
 Requires=docker.service
+OnSuccess=pirate-hns-secondary-integrity-success.service
+OnFailure=pirate-hns-secondary-integrity-failure.service
 
 [Service]
 Type=oneshot
