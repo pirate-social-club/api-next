@@ -486,6 +486,7 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
     const manifest = JSON.stringify({
       schema: "pirate-hns-community-app-handle-gateway-staging-public-v1",
       mode: "staging-public-tls",
+      public_tls_listener: "94.103.168.209:443",
       solid_origin: "https://hns-community-ingress-staging.pirate.sc",
       solid_ingress_composition_reference: `solid-hns-ingress-sha256:${"a".repeat(64)}`,
     });
