@@ -20,7 +20,7 @@ const Instant = Schema.String.check(
 /** Operator data, never a browser/owner permission toggle. All numbers, hold
  * authority, admission, qualification and disclosure are explicitly supplied.
  * Preparing this document does not accept it or activate a runtime. */
-export const ModeratedDancePolicyDraft = Schema.Struct({
+const ModeratedDancePolicyDraft = Schema.Struct({
   version: Schema.Literal("dance-moderated-policy-publication-v1"),
   policy_id: Id,
   community_id: Id,

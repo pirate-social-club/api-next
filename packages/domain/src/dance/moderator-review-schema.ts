@@ -1,5 +1,15 @@
 import { Schema } from "effect";
-import type { ModeratorReview, ReviewFacts, SealedReviewCapture } from "./moderator-review.ts";
+import type {
+  DispositionAuthority,
+  FrozenObjective,
+  ModeratorReview,
+  OwnerAttestation,
+  ReviewFacts,
+  ReviewPolicy,
+  ReviewState,
+  SealedReviewCapture,
+  SubmitReceipt,
+} from "./moderator-review.ts";
 
 const Id = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
@@ -11,7 +21,7 @@ const Positive = Schema.Int.check(
 );
 const Day = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u));
 
-export const ModeratorReviewPolicySchema = Schema.Struct({
+export const ModeratorReviewPolicySchema: Schema.Codec<ReviewPolicy> = Schema.Struct({
   version: Schema.Literal("moderator-review-policy-v1"),
   hash: Hash,
   qualificationVersion: Id,
@@ -31,7 +41,7 @@ export const ModeratorReviewPolicySchema = Schema.Struct({
   admissionHash: Hash,
   producerId: Id,
 });
-const Objective = Schema.Struct({
+const Objective: Schema.Codec<FrozenObjective> = Schema.Struct({
   id: Id,
   version: Id,
   termsHash: Hash,
@@ -81,7 +91,7 @@ export const SealedModeratorCaptureSchema: Schema.Codec<SealedReviewCapture> = S
     policyHash: Hash,
   }),
 });
-const Submit = Schema.Struct({
+const Submit: Schema.Codec<SubmitReceipt> = Schema.Struct({
   id: Id,
   showPublicly: Schema.Boolean,
   disclosureVersion: Id,
@@ -89,7 +99,7 @@ const Submit = Schema.Struct({
   uploadId: Id,
   sourceDigest: Hash,
 });
-const Attestation = Schema.Struct({
+const Attestation: Schema.Codec<OwnerAttestation> = Schema.Struct({
   version: Schema.Literal("dance-owner-verdict-attestation-v1"),
   producer: Schema.Literal("owner_verdict_attestation"),
   cue: Schema.Literals(["affirmed", "not_attested"]),
@@ -107,21 +117,22 @@ const Attestation = Schema.Struct({
   bodyEndMs: Positive,
   committedAtMs: Natural,
 });
+const State: Schema.Codec<ReviewState> = Schema.Literals([
+  "uploaded",
+  "screening",
+  "awaiting_review",
+  "reviewed",
+  "review_expired",
+  "withdrawn",
+  "held",
+  "expired",
+  "abandoned",
+  "processing_failed",
+]);
 export const ModeratorReviewSchema: Schema.Codec<ModeratorReview> = Schema.Struct({
   capture: SealedModeratorCaptureSchema,
   revision: Positive,
-  state: Schema.Literals([
-    "uploaded",
-    "screening",
-    "awaiting_review",
-    "reviewed",
-    "review_expired",
-    "withdrawn",
-    "held",
-    "expired",
-    "abandoned",
-    "processing_failed",
-  ]),
+  state: State,
   reviewDeadlineMs: Natural,
   initialSubmit: Schema.NullOr(Submit),
   submittedAtMs: Schema.NullOr(Natural),
@@ -137,7 +148,7 @@ export const ModeratorReviewSchema: Schema.Codec<ModeratorReview> = Schema.Struc
   attestation: Schema.NullOr(Attestation),
   qualificationRef: Schema.NullOr(Id),
 });
-const Disposition = Schema.Struct({
+const Disposition: Schema.Codec<DispositionAuthority> = Schema.Struct({
   accepted: Schema.Boolean,
   version: Id,
   hash: Hash,

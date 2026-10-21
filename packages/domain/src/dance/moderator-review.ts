@@ -212,7 +212,8 @@ export type ReviewEvent =
     }>
   | Readonly<{ kind: "withdraw" | "screen" | "expire" | "erase" }>
   | Readonly<{ kind: "publication_failed"; generation: number }>;
-export type ReviewRejection =
+// Reducer-owned reasons remain part of the public ReviewTransition shape.
+type ReviewRejection =
   | "invalid_state"
   | "policy_unavailable"
   | "evidence_unavailable"

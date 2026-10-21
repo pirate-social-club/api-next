@@ -8,7 +8,9 @@ import {
   type ContributionState,
   digestFundingPreimageV2,
   type FundingAdmission,
+  type FundingCommandIdentity,
   type FundingCommandReceipt,
+  type FundingCounters,
   type RecoveryAuthority,
   SongContributionFailure,
   type SongContributionPorts,
@@ -33,7 +35,7 @@ import {
 } from "./reward-wallet-nonce-authority.ts";
 import { instantiateSharedSongRewardPolicyIn } from "./shared-song-megapot-production.ts";
 
-type CommandIdentity = Parameters<SongContributionPorts["transaction"]>[0];
+type CommandIdentity = FundingCommandIdentity;
 
 const CommandIdentity = Schema.Struct({
   accountId: IdV2,
@@ -471,7 +473,7 @@ export function makeControlPlaneSongContributionPorts(
                         globalWorkRemaining: work?.global ?? 0,
                         refundEnvelopeReady: profile.accepted && snapshot.context.fees.gas_ready,
                         unresolvedV1Wallet: head.rows[0]?.blocked_reason === "unknown_v1_funding",
-                      },
+                      } satisfies FundingCounters,
                       refusal:
                         slot.status !== "open"
                           ? "lifecycle_changed"

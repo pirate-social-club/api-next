@@ -16,7 +16,7 @@ import {
   projectPrivateDanceReview,
 } from "../../application/src/use-cases/dance/moderator-review-services.ts";
 import { DanceOwnerDetailV1, DanceOwnerQueueV1 } from "../../contracts/src/dance-review.ts";
-import type { ReviewActor } from "../../domain/src/dance/moderator-review.ts";
+import type { QualificationIntent, ReviewActor } from "../../domain/src/dance/moderator-review.ts";
 import {
   ModeratorReviewFactsSchema,
   ModeratorReviewSchema,
@@ -158,9 +158,10 @@ export function makeControlPlaneModeratorReviewStore(
                   }),
                   result,
                 );
-                const qualification = input.transition.intents.find(
-                  (intent) => intent.kind === "qualification",
-                )?.qualification;
+                const qualification: QualificationIntent | null | undefined =
+                  input.transition.intents.find(
+                    (intent) => intent.kind === "qualification",
+                  )?.qualification;
                 if (qualification !== undefined && qualification !== null) {
                   if (
                     confirmed.qualificationId !== qualification.id ||

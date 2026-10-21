@@ -58,9 +58,11 @@ async function fixture() {
   let normalizationConsumed = false,
     loseGrantCommit = false,
     pendingLostCommit = false;
-  let probeComplete = true;
+  let probeComplete = true,
+    recoveryProbe: unknown = null;
+  const persistedProbes: unknown[] = [];
   const attempt = {
-    version: "media-transform-attempt-v1",
+    version: "media-transform-attempt-v1" as const,
     runtimeFence: { submittedAtMs: 1000, runtimeDeadlineMs: 61000 },
   };
   const driver: PostgresClientLike = {
@@ -76,8 +78,10 @@ async function fixture() {
       if (q.text.includes("claim_moderated_dance_media_v1")) packet = rawWork;
       else if (q.text.includes("persist_moderated_dance_seal_v1"))
         sealProofs.push(JSON.parse(String(q.values?.[2])));
+      else if (q.text.includes("persist_moderated_dance_probe_v1"))
+        persistedProbes.push(JSON.parse(String(q.values?.[2])));
       else if (q.text.includes("claim_moderated_dance_probe_v1"))
-        packet = {
+        packet = recoveryProbe ?? {
           fresh: false,
           phase: probeComplete ? "complete" : "allocating",
           attempt,
@@ -186,6 +190,15 @@ async function fixture() {
       observe: () =>
         Effect.sync(() => {
           probeCalls.push("observe");
+          if (recoveryProbe !== null)
+            return {
+              status: "processing" as const,
+              attempt: {
+                ...attempt,
+                providerJobId: "original-probe-job",
+                providerJobPhase: "started" as const,
+              },
+            };
           throw new Error("No original provider identity");
         }),
     }),
@@ -214,10 +227,46 @@ async function fixture() {
     uncertainProbeAllocation: () => {
       probeComplete = false;
     },
+    persistedProbes,
+    knownUnknownProbe: (phase: "submitting" | "started" | "allocated") => {
+      recoveryProbe = {
+        fresh: false,
+        phase: "unknown",
+        attempt: { ...attempt, providerJobId: "original-probe-job", providerJobPhase: phase },
+        probe: null,
+      };
+    },
   };
 }
 
 describe("actual private capture orchestration with offline SQL/provider ports", () => {
+  test("known-ID unknown START outcome recovers by observation only, retaining original runtime fences", async () => {
+    for (const phase of ["submitting", "started"] as const) {
+      const f = await fixture();
+      f.knownUnknownProbe(phase);
+      expect(await f.processor.run()).toEqual({ outcome: "processing" });
+      expect(f.probeCalls).toEqual(["observe"]);
+      expect(f.providerCalls).toEqual([]);
+      expect(f.persistedProbes).toEqual([
+        {
+          status: "processing",
+          attempt: {
+            version: "media-transform-attempt-v1",
+            runtimeFence: { submittedAtMs: 1000, runtimeDeadlineMs: 61000 },
+            providerJobId: "original-probe-job",
+            providerJobPhase: "started",
+          },
+        },
+      ]);
+    }
+  });
+  test("knowing an allocated ID without consumed START authority does not permit recovery to invoke a provider", async () => {
+    const f = await fixture();
+    f.knownUnknownProbe("allocated");
+    expect(await f.processor.run()).toEqual({ outcome: "unknown" });
+    expect(f.probeCalls).toEqual([]);
+    expect(f.persistedProbes).toEqual([]);
+  });
   test("accepted sealer R2 URI maps only to the original private target, with actual ingress identity/time", async () => {
     const f = await fixture();
     f.useSeal();

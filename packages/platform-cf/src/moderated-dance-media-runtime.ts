@@ -504,7 +504,12 @@ export function makeModeratedDanceMediaRuntime(
         !probeGrant.fresh &&
         probeGrant.phase !== "started" &&
         probeGrant.phase !== "submitting" &&
-        !(probeGrant.phase === "unknown" && probeGrant.attempt.providerJobId !== undefined)
+        !(
+          probeGrant.phase === "unknown" &&
+          probeGrant.attempt.providerJobId !== undefined &&
+          (probeGrant.attempt.providerJobPhase === "submitting" ||
+            probeGrant.attempt.providerJobPhase === "started")
+        )
       )
         return unknown(work, new Error("Probe allocation uncertain; no new authorization"));
       let result:

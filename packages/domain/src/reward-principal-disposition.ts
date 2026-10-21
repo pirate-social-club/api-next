@@ -41,7 +41,7 @@ export type PrincipalDisposition =
   | Readonly<{ kind: "no_principal" }>
   | Readonly<{ kind: "unattributed_asset"; retainLiability: true }>;
 
-export function effectiveFundingDeadline(instruction: PrincipalInstruction): number {
+function effectiveFundingDeadline(instruction: PrincipalInstruction): number {
   return Math.min(instruction.deadline, instruction.fixedEnd, ...instruction.invalidatedAt);
 }
 

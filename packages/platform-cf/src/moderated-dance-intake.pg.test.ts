@@ -95,7 +95,7 @@ async function seed(admin: Client, connection: string) {
       [f.personaId, f.accountId],
     );
     await admin.query(
-      "INSERT INTO communities(community_id,display_name,status,created_by_user_id) VALUES($1,'Private Dance test','active','private-test-owner')",
+      "INSERT INTO communities(community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES($1,'Private Dance test','active','private-test-owner',statement_timestamp(),statement_timestamp())",
       [f.communityId],
     );
     await admin.query(
@@ -107,7 +107,7 @@ async function seed(admin: Client, connection: string) {
       [f.communityId],
     );
     await admin.query(
-      "INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility) VALUES($1,$2,'private-test-owner','private-owner-persona','song','published','public'),($1,'private-reference','private-test-owner','private-owner-persona','video','published','public')",
+      "INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,content_rating,author_declared_rating,created_at,updated_at) VALUES($1,$2,'private-test-owner','private-owner-persona','song','published','public','general','general',statement_timestamp(),statement_timestamp()),($1,'private-reference','private-test-owner','private-owner-persona','video','published','public','general','general',statement_timestamp(),statement_timestamp())",
       [f.communityId, f.songPostId],
     );
     await admin.query(
@@ -333,5 +333,196 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
           f.store.captureOptions(f.facts.communityId, f.facts.songPostId, "f".repeat(64)),
         ),
       ).rejects.toMatchObject({ reason: "invalid_request" });
+    }));
+  test("known-ID unknown probe observes processing/completion without restoring a START grant or charging work twice", async () =>
+    withFixture(async (f, admin) => {
+      await f.ready();
+      const first = await Effect.runPromise(f.store.command(f.create)),
+        session = first.session;
+      const shared = {
+        version: "dance-moderated-intake-v1",
+        community_id: session.community_id,
+        session_id: session.session_id,
+        terms_hash: session.terms_hash,
+      } as const;
+      await Effect.runPromise(
+        f.store.command({
+          ...shared,
+          operation: "consent",
+          idempotency_key: "probe-consent",
+          consent_version: session.consent_version,
+          consent_hash: session.consent_hash,
+          retention_hash: session.retention_hash,
+        }),
+      );
+      const reserved = await Effect.runPromise(
+        f.store.command({
+          ...shared,
+          operation: "reserve",
+          idempotency_key: "probe-reserve",
+          content_type: "video/mp4",
+          size_bytes: 1000,
+          duration_ms: session.body_end_ms,
+        }),
+      );
+      const uploadId = reserved.session.upload_id;
+      expect(uploadId).not.toBeNull();
+      await Effect.runPromise(
+        f.store.command({
+          ...shared,
+          operation: "finalize",
+          idempotency_key: "probe-finalize",
+          upload_id: uploadId,
+        }),
+      );
+      const claim = async (token: string) =>
+        (
+          await admin.query("SELECT claim_moderated_dance_media_v1($1,$2,$3,$4::jsonb) AS packet", [
+            token,
+            f.facts.profile.mediaRuntimeRevision,
+            f.facts.profile.safetyProviderRevision,
+            JSON.stringify(f.facts.profile.replayCompatibleEpochs),
+          ])
+        ).rows[0]?.packet;
+      const seal = await claim("probe-seal-observation");
+      expect(seal).toMatchObject({ action: "seal", uploadId });
+      const ingress = (
+        await admin.query(
+          "SELECT private_object_key FROM dance_moderated_uploads_v1 WHERE upload_id=$1",
+          [uploadId],
+        )
+      ).rows[0]?.private_object_key;
+      // This is fictional verified storage evidence for a SQL transition test,
+      // never proof of an R2 operation. Wait beyond timestamp precision once.
+      await Bun.sleep(2);
+      await admin.query("SELECT persist_moderated_dance_seal_v1($1,$2,$3::jsonb)", [
+        uploadId,
+        seal.token,
+        JSON.stringify({
+          outcome: "sealed",
+          immutable_ref: `private-dance://${uploadId}/source`,
+          destination_ref: `moderated-dance/originals/${uploadId}/source`,
+          etag: "test-immutable-etag",
+          version: "test-immutable-version",
+          size_bytes: 1000,
+          canonical_sha256: "a".repeat(64),
+          firstStoredAtMs: Date.now(),
+          ingress_identity: {
+            key: ingress,
+            version: "test-ingress-version",
+            etag: "test-ingress-etag",
+            size: 1000,
+          },
+        }),
+      ]);
+      const work = await claim("probe-owned-observation");
+      expect(work).toMatchObject({ action: "dispatch", uploadId });
+      const probeClaim = async () =>
+        (
+          await admin.query("SELECT claim_moderated_dance_probe_v1($1,$2) AS packet", [
+            uploadId,
+            work.token,
+          ])
+        ).rows[0]?.packet;
+      const persist = (value: unknown) =>
+        admin.query("SELECT persist_moderated_dance_probe_v1($1,$2,$3::jsonb)", [
+          uploadId,
+          work.token,
+          JSON.stringify(value),
+        ]);
+      const allocated = await probeClaim();
+      expect(allocated).toMatchObject({ fresh: true, phase: "allocating" });
+      await persist({
+        status: "submitted",
+        attempt: {
+          ...allocated.attempt,
+          providerJobId: "original-probe-job",
+          providerJobPhase: "allocated",
+        },
+      });
+      const start = await probeClaim();
+      expect(start).toMatchObject({
+        fresh: true,
+        phase: "submitting",
+        attempt: { providerJobId: "original-probe-job", providerJobPhase: "submitting" },
+      });
+      await persist({ status: "retryable_failure", reason: "transport", attempt: start.attempt });
+      const unknown = await probeClaim();
+      expect(unknown).toEqual({ ...start, fresh: false, phase: "unknown" });
+      const before = (
+        await admin.query(
+          "SELECT work_token,charged_calls,charged_spend_microunits,normalization_claimed_at FROM dance_moderated_processing_v1 WHERE upload_id=$1",
+          [uploadId],
+        )
+      ).rows[0];
+      const completed = {
+        status: "completed",
+        attempt: { ...start.attempt, providerJobPhase: "started" },
+        probe: {
+          durationMs: session.body_end_ms,
+          hasAudio: true,
+          audioCodec: "aac",
+          videoCodec: "h264",
+          width: 1280,
+          height: 720,
+          evidenceRef: "fictional-original-probe-evidence",
+        },
+      };
+      await expect(
+        persist({
+          ...completed,
+          attempt: { ...completed.attempt, providerJobId: "foreign-probe-job" },
+        }),
+      ).rejects.toMatchObject({ code: "DRV05" });
+      await expect(
+        persist({ ...completed, attempt: { ...completed.attempt, providerJobPhase: "allocated" } }),
+      ).rejects.toMatchObject({ code: "DRV06" });
+      await expect(
+        admin.query("SELECT persist_moderated_dance_probe_v1($1,'foreign-observation',$2::jsonb)", [
+          uploadId,
+          JSON.stringify(completed),
+        ]),
+      ).rejects.toMatchObject({ code: "DRV05" });
+      await expect(
+        persist({
+          ...completed,
+          attempt: {
+            ...completed.attempt,
+            runtimeFence: {
+              ...completed.attempt.runtimeFence,
+              runtimeDeadlineMs: completed.attempt.runtimeFence.runtimeDeadlineMs + 1,
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "DRV05" });
+      await persist({ status: "processing", attempt: completed.attempt });
+      expect(await probeClaim()).toMatchObject({
+        fresh: false,
+        phase: "started",
+        attempt: completed.attempt,
+      });
+      await persist({
+        status: "retryable_failure",
+        reason: "transport",
+        attempt: completed.attempt,
+      });
+      expect(await probeClaim()).toMatchObject({ fresh: false, phase: "unknown" });
+      await persist(completed);
+      const final = await probeClaim();
+      expect(final).toMatchObject({
+        fresh: false,
+        phase: "complete",
+        attempt: completed.attempt,
+        probe: completed.probe,
+      });
+      expect(final.attempt.runtimeFence).toEqual(start.attempt.runtimeFence);
+      expect(
+        (
+          await admin.query(
+            "SELECT work_token,charged_calls,charged_spend_microunits,normalization_claimed_at FROM dance_moderated_processing_v1 WHERE upload_id=$1",
+            [uploadId],
+          )
+        ).rows[0],
+      ).toEqual(before);
     }));
 });
