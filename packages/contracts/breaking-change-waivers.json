@@ -1,31 +1,3 @@
 {
-  "breakingChangeWaivers": [
-    {
-      "baselineSha": "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-      "expectedViolations": [
-        "response GET /communities/{communityId}/study/v2/sessions/{sessionId}: enum value added: \"expired\" at status"
-      ],
-      "kind": "deprecation",
-      "operationId": "get_communitiesCommunityIdStudyV2SessionsSessionId",
-      "reason": "Deprecate treating every unfinished account lesson as answerable: a passed database deadline now projects expired while retaining progress and the unfinished card. This exact transition is paired with generated client0.126.0 and Solid PR114. Deploy that UI before this API in production to make the updated consumer available first. Previously loaded older clients can still reject the new enum until they reload; UI-first ordering does not prove those clients upgraded. Guest contracts, answer writes and qualification remain unchanged. Remove this baseline-specific entry after the transition lands."
-    },
-    {
-      "baselineSha": "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-      "expectedViolations": [
-        "response POST /communities/{communityId}/posts/{postId}/study/v2/sessions status 201: enum value added: \"expired\" at status"
-      ],
-      "kind": "deprecation",
-      "operationId": "post_communitiesCommunityIdPostsPostIdStudyV2Sessions",
-      "reason": "Deprecate treating every unfinished account lesson as answerable: a passed database deadline now projects expired while retaining progress and the unfinished card. This exact transition is paired with generated client0.126.0 and Solid PR114. Deploy that UI before this API in production to make the updated consumer available first. Previously loaded older clients can still reject the new enum until they reload; UI-first ordering does not prove those clients upgraded. Guest contracts, answer writes and qualification remain unchanged. Remove this baseline-specific entry after the transition lands."
-    },
-    {
-      "baselineSha": "fc637525b5cd54605328061f4d21d9ef10c7e0ee",
-      "expectedViolations": [
-        "response POST /communities/{communityId}/study/v2/sessions/{sessionId}/items/{sessionItemId}/answers: enum value added: \"expired\" at session.status"
-      ],
-      "kind": "deprecation",
-      "operationId": "post_communitiesCommunityIdStudyV2SessionsSessionIdItemsSessionItemIdAnswers",
-      "reason": "Deprecate treating every unfinished account lesson as answerable: a passed database deadline now projects expired while retaining progress and the unfinished card. This exact transition is paired with generated client0.126.0 and Solid PR114. Deploy that UI before this API in production to make the updated consumer available first. Previously loaded older clients can still reject the new enum until they reload; UI-first ordering does not prove those clients upgraded. Guest contracts, answer writes and qualification remain unchanged. Remove this baseline-specific entry after the transition lands."
-    }
-  ]
+  "breakingChangeWaivers": []
 }
