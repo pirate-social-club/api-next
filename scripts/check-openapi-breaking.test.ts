@@ -575,7 +575,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps active policy empty after landed transitions", async () => {
+  test("keeps consumed Send and Study transition declarations retired", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),

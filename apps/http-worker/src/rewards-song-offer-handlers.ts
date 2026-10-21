@@ -16,6 +16,7 @@ import {
   type RewardProjectionStore,
   type RewardWinnerSendRecord,
   type RewardWinnerSendService,
+  RewardWinnerSendVerificationRequired,
   type SongRewardOffer,
   type SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -28,6 +29,7 @@ import {
   ProviderUnavailable,
   RetryableConflict,
   RewardsPaused,
+  VerificationRequired,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
@@ -192,6 +194,16 @@ function optionalAccountId(principal: Principal | null): string | null {
 }
 
 function wireFailure(error: unknown): Error {
+  if (error instanceof RewardWinnerSendVerificationRequired) {
+    return new VerificationRequired({
+      message: "Palm verification is required before sending",
+      details: {
+        purpose: "wallet_send",
+        persona_id: error.personaId,
+        provider: "very.web",
+      },
+    });
+  }
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
   if (tagged._tag === "RewardOperationsPaused")
     return new RewardsPaused({ message: "Rewards are paused" });

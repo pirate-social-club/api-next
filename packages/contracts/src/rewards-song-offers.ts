@@ -10,6 +10,7 @@ import {
   ProviderUnavailable,
   RetryableConflict,
   RewardsPaused,
+  VerificationRequired,
 } from "./errors.ts";
 import { PersonaIdV1 } from "./personas.ts";
 import {
@@ -777,7 +778,7 @@ export const CreateRewardWinnerSend = endpoint({
     }),
   },
   response: RewardWinnerSendV1,
-  errors: [...WinnerSendErrors],
+  errors: [...WinnerSendErrors, VerificationRequired],
 });
 
 /** The caller's winner send for a credit, with status read fresh from the chain. */

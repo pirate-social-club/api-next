@@ -10,9 +10,14 @@ import {
   type RewardWinnerSendStatus,
   RewardWinnerSendStorageFailed,
   type RewardWinnerSendStore,
+  RewardWinnerSendVerificationRequired,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { CONFIRMED_PAYOUT_WALLET } from "./reward-gas-topup-repository.ts";
+import {
+  requireCurrentWalletSendPalm,
+  WalletSendVerificationRequired,
+} from "./wallet-send-palm.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -20,6 +25,20 @@ const storage = (reason: RewardWinnerSendStorageFailed["reason"]) =>
   new RewardWinnerSendStorageFailed({ reason });
 const rejected = (reason: RewardWinnerSendRejected["reason"]) =>
   new RewardWinnerSendRejected({ reason });
+
+const requireCurrentWinnerSendPalm = Effect.fn("RewardWinnerSend.requireCurrentPalm")(function* (
+  transaction: ControlPlaneTransaction,
+  accountId: string,
+  personaId: string,
+) {
+  return yield* requireCurrentWalletSendPalm(transaction, accountId, personaId).pipe(
+    Effect.mapError((error) =>
+      error instanceof WalletSendVerificationRequired
+        ? new RewardWinnerSendVerificationRequired({ personaId: error.personaId })
+        : error,
+    ),
+  );
+});
 
 function mapError(error: ControlPlaneError): RewardWinnerSendStorageFailed {
   if (error._tag === "ControlPlaneTransactionOutcomeUnknown") return storage("outcome-unknown");
@@ -413,6 +432,14 @@ export function makeControlPlaneRewardWinnerSendRepository() {
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const { context } = input;
+              // Match retry's sender-before-evidence lock order, and check
+              // proof before the nonce reader or any new send authority.
+              yield* lockSenderIn(transaction, context);
+              yield* requireCurrentWinnerSendPalm(
+                transaction,
+                context.accountId,
+                context.personaId,
+              );
               const nonce = yield* reserveSenderNonceIn(transaction, {
                 chainId: context.chainId,
                 senderAddress: context.senderAddress,
@@ -468,7 +495,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
             Effect.gen(function* () {
               const sender = yield* transaction.execute<Row>({
                 label: "reward-winner-send.sender.read",
-                text: `SELECT chain_id, sender_address FROM reward_winner_sends
+                text: `SELECT chain_id, sender_address, persona_id FROM reward_winner_sends
                         WHERE send_id=$1 AND account_id=$2`,
                 values: [input.sendId, input.accountId],
                 readonly: false,
@@ -477,6 +504,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
               const identity = yield* parse(() => ({
                 chainId: integer(sender.rows[0] as Row, "chain_id"),
                 senderAddress: text(sender.rows[0] as Row, "sender_address"),
+                personaId: text(sender.rows[0] as Row, "persona_id"),
               }));
               // The sender lock comes before the row lock, as in create.
               yield* lockSenderIn(transaction, identity);
@@ -484,6 +512,7 @@ export function makeControlPlaneRewardWinnerSendRepository() {
               if (locked.status !== "reverted" || locked.attempt !== input.previousAttempt) {
                 return yield* rejected("send-conflict");
               }
+              yield* requireCurrentWinnerSendPalm(transaction, input.accountId, identity.personaId);
               const nonce = yield* reserveSenderNonceIn(transaction, {
                 ...identity,
                 readNonce: input.readNonce,

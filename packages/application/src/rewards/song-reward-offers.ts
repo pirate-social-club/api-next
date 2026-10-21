@@ -36,6 +36,7 @@ export {
   RewardWinnerSendRejected,
   type RewardWinnerSendService,
   RewardWinnerSendStorageFailed,
+  RewardWinnerSendVerificationRequired,
 } from "./reward-winner-send.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{

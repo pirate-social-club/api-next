@@ -40,6 +40,10 @@ export class RewardWinnerSendRejected extends Data.TaggedError("RewardWinnerSend
     | "status-contended";
 }> {}
 
+export class RewardWinnerSendVerificationRequired extends Data.TaggedError(
+  "RewardWinnerSendVerificationRequired",
+)<{ readonly personaId: string }> {}
+
 export class RewardWinnerSendChainUnavailable extends Data.TaggedError(
   "RewardWinnerSendChainUnavailable",
 )<{
@@ -157,7 +161,9 @@ export interface RewardWinnerSendStore {
     readonly readNonce: RewardWinnerSendNonceReader;
   }) => Effect.Effect<
     RewardWinnerSendRecord,
-    RewardWinnerSendFailure | RewardWinnerSendChainUnavailable
+    | RewardWinnerSendFailure
+    | RewardWinnerSendChainUnavailable
+    | RewardWinnerSendVerificationRequired
   >;
   /**
    * The same lock and nonce rules as create, only while the record is
@@ -173,7 +179,9 @@ export interface RewardWinnerSendStore {
     readonly readNonce: RewardWinnerSendNonceReader;
   }) => Effect.Effect<
     RewardWinnerSendRecord,
-    RewardWinnerSendFailure | RewardWinnerSendChainUnavailable
+    | RewardWinnerSendFailure
+    | RewardWinnerSendChainUnavailable
+    | RewardWinnerSendVerificationRequired
   >;
   /**
    * Only while attempt is current and open. A hash already accepted for this
@@ -438,7 +446,7 @@ type Failure = RewardWinnerSendFailure | RewardWinnerSendChainUnavailable;
 export interface RewardWinnerSendService {
   readonly request: (
     input: RewardWinnerSendRequest,
-  ) => Effect.Effect<RewardWinnerSendRecord, Failure>;
+  ) => Effect.Effect<RewardWinnerSendRecord, Failure | RewardWinnerSendVerificationRequired>;
   readonly attachTransaction: (input: {
     readonly accountId: string;
     readonly sendId: string;
