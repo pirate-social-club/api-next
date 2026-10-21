@@ -27,6 +27,23 @@ require_absolute_path() {
   fi
 }
 
+profile="${HNS_BACKUP_PROFILE:-primary}"
+mandatory_directories=(HNS_RUNTIME_STATE_DIR HNS_DANE_CERT_DIR)
+archive_directories=(HNS_RUNTIME_STATE_DIR)
+case "$profile" in
+  primary)
+    mandatory_directories=(SPACES_DATA_DIR "${mandatory_directories[@]}")
+    archive_directories=(SPACES_DATA_DIR HNS_RUNTIME_STATE_DIR HNS_DANE_CERT_DIR)
+    ;;
+  staging-hns)
+    if [[ -n "${SPACES_DATA_DIR:-}" ]]; then
+      echo "staging-hns profile must not declare SPACES_DATA_DIR" >&2
+      exit 1
+    fi
+    ;;
+  *) echo "HNS_BACKUP_PROFILE must be primary or staging-hns" >&2; exit 1 ;;
+esac
+
 for name in BACKUP_RCLONE_REMOTE BACKUP_AGE_RECIPIENT BACKUP_RETENTION_VERIFY; do
   require_env "$name"
 done
@@ -53,7 +70,7 @@ case "$BACKUP_RETENTION_VERIFY" in
     ;;
 esac
 
-for name in BACKUP_STAGING_ROOT PDNS_SQLITE_DB SPACES_DATA_DIR HNS_RUNTIME_STATE_DIR HNS_DANE_CERT_DIR HNS_CADDY_CONFIG_FILE; do
+for name in BACKUP_STAGING_ROOT PDNS_SQLITE_DB HNS_CADDY_CONFIG_FILE "${mandatory_directories[@]}"; do
   require_absolute_path "$name"
 done
 
@@ -73,12 +90,36 @@ if [[ ! -f "$HNS_CADDY_CONFIG_FILE" || ! -s "$HNS_CADDY_CONFIG_FILE" ]]; then
   echo "active Caddy configuration is missing or empty" >&2
   exit 1
 fi
-for name in SPACES_DATA_DIR HNS_RUNTIME_STATE_DIR HNS_DANE_CERT_DIR; do
+for name in "${mandatory_directories[@]}"; do
   if [[ ! -d "${!name}" || -L "${!name}" ]]; then
     echo "mandatory backup input must be an existing non-symlink directory: $name" >&2
     exit 1
   fi
 done
+if [[ "$profile" == staging-hns ]]; then
+  require_command realpath
+  require_command find
+  runtime_real="$(realpath -e -- "$HNS_RUNTIME_STATE_DIR")"
+  tls_real="$(realpath -e -- "$HNS_DANE_CERT_DIR")"
+  runtime_device="$(stat -c %d "$runtime_real")"
+  if [[ "$tls_real" != "$runtime_real"/* ||
+        "$(stat -c %d "$tls_real")" != "$runtime_device" ]]; then
+    echo "staging TLS identity must be inside the mandatory runtime directory" >&2
+    exit 1
+  fi
+  unsupported="$(find "$runtime_real" ! -type d ! -type f -print -quit)"
+  if [[ -n "$unsupported" ]]; then
+    echo "staging runtime must contain only regular files and directories" >&2
+    exit 1
+  fi
+  devices="$(find "$runtime_real" -printf '%D\n')"
+  while IFS= read -r device; do
+    if [[ "$device" != "$runtime_device" ]]; then
+      echo "staging runtime must not contain another filesystem" >&2
+      exit 1
+    fi
+  done <<< "$devices"
+fi
 
 mkdir -p "$BACKUP_STAGING_ROOT"
 chmod 0700 "$BACKUP_STAGING_ROOT"
@@ -159,7 +200,8 @@ declare -a tar_args=(
   caddy
 )
 
-for path in "$SPACES_DATA_DIR" "$HNS_RUNTIME_STATE_DIR" "$HNS_DANE_CERT_DIR"; do
+for name in "${archive_directories[@]}"; do
+  path="${!name}"
   # Every declared directory is mandatory. If it disappears after preflight,
   # tar must fail rather than turn a partial archive into a success heartbeat.
   tar_args+=(-C / "${path#/}")

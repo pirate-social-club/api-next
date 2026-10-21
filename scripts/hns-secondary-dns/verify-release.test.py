@@ -29,7 +29,9 @@ class SecondaryReleaseTests(unittest.TestCase):
         for name in verifier.FILES:
             target = self.release / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(SOURCE / name, target)
+            source = (SOURCE.parent / "hns-deployment/ping-healthcheck.py"
+                      if name == "bin/ping-healthcheck.py" else SOURCE / name)
+            shutil.copyfile(source, target)
         self.manifest = verifier.manifest_for(self.release, "a" * 40)
         self.manifest_raw = json.dumps(self.manifest).encode()
         (self.release / "manifest.json").write_bytes(self.manifest_raw)
@@ -91,6 +93,20 @@ class SecondaryReleaseTests(unittest.TestCase):
         target.symlink_to(SOURCE / "config/pdns.conf")
         with self.assertRaisesRegex(verifier.Refusal, "artifact_not_regular"):
             verifier.verify_artifacts(self.release, verifier.digest(self.manifest_raw))
+
+    def test_installed_sender_and_verifier_unit_drift_refuses(self):
+        installed = self.root / "systemd"
+        installed.mkdir()
+        for name in verifier.UNITS:
+            shutil.copyfile(self.release / name, installed / name)
+        verifier.verify_installed_units(self.manifest, installed)
+        for name in verifier.UNITS:
+            with self.subTest(unit=name):
+                original = (installed / name).read_bytes()
+                (installed / name).write_text("ExecStart=/bin/true\n")
+                with self.assertRaisesRegex(verifier.Refusal, "installed_unit_mismatch"):
+                    verifier.verify_installed_units(self.manifest, installed)
+                (installed / name).write_bytes(original)
 
     def test_live_policy_is_read_only_and_trigger_provisions_successor_zone(self):
         before = self.database.read_bytes()
