@@ -202,6 +202,10 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { makeControlPlaneSongLibraryStore } from "@pirate/platform-cf/song-library-repository";
+import {
+  makeControlPlaneSongContributionPorts,
+  makeControlPlaneSongContributionReadPorts,
+} from "@pirate/platform-cf/song-megapot-contribution-repository";
 import { makeControlPlaneSongOwnerPolicyStore } from "@pirate/platform-cf/song-owner-video-policy-repository";
 import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneSongVideoIntervalStore } from "@pirate/platform-cf/song-video-interval-repository";
@@ -309,6 +313,7 @@ import {
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
 import { makeSongLibraryHandlers } from "./song-library-handlers.ts";
+import { makeSongMegapotContributionHandlers } from "./song-megapot-contribution-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";
 import {
   makeSongPlaybackHandlers,
@@ -1671,6 +1676,16 @@ export async function createProductionHttpWorker(
   const requireRewardOperationsRunning = makeRewardOperationsGuard({
     readRunning: () => Effect.runPromise(makeRewardOperationsRunningReader(controlPlane)()),
   });
+  const songContributionHandlers = makeSongMegapotContributionHandlers({
+    commands: (authorization) =>
+      makeControlPlaneSongContributionPorts(controlPlane, authorization, {
+        rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
+      }),
+    reads: (authorization) =>
+      makeControlPlaneSongContributionReadPorts(controlPlane, authorization, {
+        rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
+      }),
+  });
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? makeLazySongRewardOfferHandlers(async () => {
@@ -1910,6 +1925,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      ...songContributionHandlers,
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
       ...makeVideoOutcomeHandlers(makeControlPlaneVideoOutcomeStore(controlPlane)),

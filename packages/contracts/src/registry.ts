@@ -97,6 +97,7 @@ import {
   StartStudySession,
   SubmitStudyAnswer,
 } from "./rewards-qualification.ts";
+import { songMegapotContributionRegistryV2 } from "./rewards-song-contributions-v2.ts";
 import {
   AddAssetBonusLeg,
   AddMegapotPoolLeg,
@@ -169,6 +170,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...songMegapotContributionRegistryV2,
   ...activityCompletionRegistry,
   ...guestParticipationRegistry,
   GetPublicProfileActivity,

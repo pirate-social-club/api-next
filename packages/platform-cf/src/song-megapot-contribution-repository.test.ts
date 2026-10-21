@@ -6,6 +6,7 @@ import {
   digestFundingPreimageV2,
   SongContributionFailure,
 } from "../../application/src/rewards/song-megapot-contributions.ts";
+import * as C from "../../contracts/src/rewards-song-contributions-v2.ts";
 import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientLike,
@@ -19,6 +20,7 @@ import {
 } from "./reward-funding-receipt-discovery.ts";
 import {
   makeControlPlaneSongContributionPorts,
+  makeControlPlaneSongContributionReadPorts,
   makeControlPlaneSongFundingRecoveryStore,
   persistRewardFundingPrincipalIn,
   withSongMegapotContributionTransaction,
@@ -225,6 +227,7 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
           clientFactory: () => driver,
         }),
         { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+        { rewardsEnabled: true },
       );
       const authority = await Effect.runPromise(
         ports.transaction(
@@ -379,6 +382,7 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
         clientFactory: () => driver,
       }),
       { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+      { rewardsEnabled: true },
     );
     const loaded = await Effect.runPromise(
       ports.lookup({
@@ -407,6 +411,7 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
         clientFactory: () => driver,
       }),
       { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+      { rewardsEnabled: true },
     );
     const exit = await Effect.runPromiseExit(
       ports.transaction(identity, (tx) => {
@@ -435,6 +440,7 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
         clientFactory: () => driver,
       }),
       { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+      { rewardsEnabled: true },
     );
     const exit = await Effect.runPromiseExit(ports.lookup(identity));
     expect(failures(exit)).toMatchObject([
@@ -1010,5 +1016,115 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
     expect(count(driver, "COMMIT")).toBe(0);
     expect(count(driver, "ROLLBACK")).toBe(1);
     expect(driver.events).toEqual(["connect", "end"]);
+  });
+});
+
+describe("actual private V5 SQL read and feature boundaries (offline driver)", () => {
+  test("uses only narrow own-scope read functions and never allocates or starts a transaction", async () => {
+    const driver = new OfflineDriver();
+    driver.onQuery = async (q) =>
+      q.text.includes("read_owned_song_contribution_current_v2")
+        ? { rows: [{ packet: null }], rowCount: 1 }
+        : q.text.includes("read_song_contribution_command_v2")
+          ? { rows: [{ packet: { immutable: "fixture evidence" } }], rowCount: 1 }
+          : empty();
+    const authorization = { authorize: () => Effect.succeed({ accountId: identity.accountId }) };
+    const reads = makeControlPlaneSongContributionReadPorts(
+      makeDirectPostgresControlPlaneLayer("postgres://offline.invalid/unused", {
+        clientFactory: () => driver,
+      }),
+      authorization,
+      { rewardsEnabled: false },
+    );
+    const scope = { communityId: "community", postId: "song", contributionId: "original" };
+    expect(await Effect.runPromise(reads.current(scope, identity.accountId))).toBeNull();
+    expect(
+      await Effect.runPromise(
+        reads.command(scope, identity.accountId, "RecoverSongMegapotContributionV2", identity.key),
+      ),
+    ).toEqual({ immutable: "fixture evidence" });
+    const queries = driver.queries.filter((q) => q.text.includes("read_"));
+    expect(queries).toHaveLength(2);
+    for (const query of queries) {
+      expect(JSON.parse(String(query.values?.[0]))).toEqual({
+        ...scope,
+        accountId: identity.accountId,
+      });
+    }
+    expect(count(driver, "BEGIN")).toBe(0);
+    expect(
+      driver.queries.some((q) =>
+        /INSERT|UPDATE|pg_advisory|create_song|enqueue_song/iu.test(q.text),
+      ),
+    ).toBe(false);
+  });
+  test("an unknown read cannot become a404 or a null receipt", async () => {
+    for (const mode of ["error", "missing_row", "missing_packet"] as const) {
+      const driver = new OfflineDriver();
+      driver.onQuery = async (q) => {
+        if (!q.text.includes("read_song_contribution_command_v2")) return empty();
+        if (mode === "error") throw new Error("injected private read uncertainty");
+        return mode === "missing_row" ? empty() : { rows: [{}], rowCount: 1 };
+      };
+      const reads = makeControlPlaneSongContributionReadPorts(
+        makeDirectPostgresControlPlaneLayer("postgres://offline.invalid/unused", {
+          clientFactory: () => driver,
+        }),
+        { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+        { rewardsEnabled: false },
+      );
+      await expect(
+        Effect.runPromise(
+          reads.command(
+            identity,
+            identity.accountId,
+            "RecoverSongMegapotContributionV2",
+            identity.key,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+      expect(count(driver, "BEGIN")).toBe(0);
+    }
+  });
+  test("feature-off refuses new funding inside the locked true-miss path before touching financial admission", async () => {
+    const driver = new OfflineDriver();
+    const ports = makeControlPlaneSongContributionPorts(
+      makeDirectPostgresControlPlaneLayer("postgres://offline.invalid/unused", {
+        clientFactory: () => driver,
+      }),
+      { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+      { rewardsEnabled: false },
+    );
+    const request = C.decodeFundingCommandV2("CreateSongMegapotContributionV2", {
+      version: 2,
+      idempotency_key: identity.key,
+      persona_id: "persona",
+      funding_amount_atomic: "1",
+      expected_context_hash: "a".repeat(64),
+      expected_lifecycle_revision: 0,
+      context_ref: {
+        version: "funding-context-reference-v1",
+        slot_id: "slot",
+        slot_generation: 0,
+        leg_snapshot_id: null,
+        schedule_witness_id: "witness",
+        profile_id: "profile",
+        profile_hash: "b".repeat(64),
+        funding_policy_hash: "c".repeat(64),
+        wallet_assignment_id: "wallet",
+        wallet_assignment_revision: 1,
+        lifecycle_revision: 0,
+      },
+      expected_terms: { kind: "prospective", prospective_terms_hash: "d".repeat(64) },
+    });
+    await expect(
+      Effect.runPromise(ports.transaction(identity, (tx) => tx.fundingAdmission(request))),
+    ).rejects.toMatchObject({ code: "paused" });
+    expect(driver.queries.some((q) => q.text.includes("lock_song_contribution_context_v2"))).toBe(
+      false,
+    );
+    expect(
+      driver.queries.some((q) => q.text.includes("reserve_reward_funding_wallet_nonce_v2")),
+    ).toBe(false);
   });
 });

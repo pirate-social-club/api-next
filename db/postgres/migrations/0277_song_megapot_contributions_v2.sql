@@ -1,5 +1,5 @@
 -- SOURCE ONLY. Provisional ordinal; registration, CP1/CP2, role mapping and
--- financial/profile acceptance remain separate integration gates. Never replay274.
+-- financial/profile acceptance remain separate gates. Never replay the applied prefix.
 CREATE DOMAIN reward_funding_atomic_v2 AS NUMERIC(78,0)
   CHECK (VALUE >= 0 AND VALUE < 115792089237316195423570985008687907853269984665640564039457584007913129639936);
 REVOKE ALL ON DOMAIN reward_funding_atomic_v2 FROM PUBLIC CASCADE;
@@ -198,7 +198,7 @@ $$;
 CREATE FUNCTION lock_song_contribution_context_v2(i JSONB,h TEXT) RETURNS JSONB
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2; p reward_funding_profiles_v2;
-  w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB;
+  w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB; paused BOOLEAN;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE context_hash=h;
@@ -208,6 +208,13 @@ BEGIN
   PERFORM lock_reward_wallet_nonce_sender_v2((snap.context->>'chain_id')::BIGINT,snap.context->'actor'->>'sender_address');
   SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id FOR SHARE;
   SELECT * INTO STRICT w FROM reward_funding_schedule_witnesses_v2 WHERE witness_id=snap.witness_id;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  IF paused IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001'; END IF;
+  PERFORM 1 FROM megapot_deployment_attestations WHERE attestation_id=snap.context->>'attestation_id'
+    AND status='active' AND retired_at IS NULL AND verified_at<=clock_timestamp()
+    AND chain_id=(snap.context->>'chain_id')::BIGINT AND usdc_address=snap.context->>'token_address'
+    AND custody_address=snap.context->>'custody_address' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'current funding attestation unavailable' USING ERRCODE='PCV05'; END IF;
   leg:=slot.target->>'pool_leg_id';
   -- Missing envelopes never create a budget. They are admitted operational inputs.
   PERFORM 1 FROM reward_funding_work_envelopes_v2 WHERE (scope,scope_key) IN
@@ -286,13 +293,20 @@ CREATE FUNCTION create_song_contribution_v2(i JSONB,s JSONB,snapshot TEXT) RETUR
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE r JSONB:=s->'receipt'; o JSONB:=s->'owner'; snap reward_funding_leg_snapshots_v2;
   slot reward_song_slots_v2; p reward_funding_profiles_v2; lease reward_wallet_nonce_leases; amount reward_funding_atomic_v2;
-  leg TEXT:=r->'target'->>'pool_leg_id'; cap BIGINT; active_count BIGINT; affected INTEGER;
+  leg TEXT:=r->'target'->>'pool_leg_id'; cap BIGINT; active_count BIGINT; affected INTEGER; paused BOOLEAN;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=snapshot;
   SELECT * INTO STRICT slot FROM reward_song_slots_v2 WHERE slot_id=snap.slot_id FOR UPDATE;
   PERFORM lock_reward_wallet_nonce_sender_v2((r->'instruction'->>'chain_id')::BIGINT,r->'instruction'->>'from');
   SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  IF paused IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001'; END IF;
+  PERFORM 1 FROM megapot_deployment_attestations WHERE attestation_id=r->'instruction'->>'attestation_id'
+    AND status='active' AND retired_at IS NULL AND verified_at<=clock_timestamp()
+    AND chain_id=(r->'instruction'->>'chain_id')::BIGINT AND usdc_address=r->'instruction'->>'to_token'
+    AND custody_address=r->'instruction'->>'recipient_custody' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'current funding attestation unavailable' USING ERRCODE='PCV05'; END IF;
   IF NOT p.accepted OR p.valid_until<=clock_timestamp() OR NOT slot.reward_policy_ready THEN RAISE EXCEPTION 'policy unavailable' USING ERRCODE='PCV05'; END IF;
   IF slot.status<>'open' OR slot.target IS DISTINCT FROM r->'target' OR slot.terms IS DISTINCT FROM r->'committed_terms' THEN RAISE EXCEPTION 'target terms changed' USING ERRCODE='PCV06'; END IF;
   IF snap.context->'actor' IS DISTINCT FROM o OR i->>'accountId' IS DISTINCT FROM o->>'account_id'

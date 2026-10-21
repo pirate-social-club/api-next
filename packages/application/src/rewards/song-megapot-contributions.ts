@@ -6,19 +6,26 @@ import {
   type CommittedTargetV2,
   ContextReadyV2 as ContextReadySchema,
   type ContextReadyV2,
+  ContextRequestV2,
+  ContextResponseV2,
   ErrorV2 as ContributionErrorSchema,
   type ContributionReceiptV2,
   type ContributionRequestV2,
+  CurrentStateV2,
   cancellationInstructionPreimageV2,
   cancellationPolicyPreimageV2,
   committedTermsPreimageV2,
   decodeFundingCommandV2,
   type ErrorV2,
+  FundingCommandReceiptV2,
   type FundingCommandV2,
   type FundingOperationV2,
   fundingCommandPreimageV2,
   fundingHashPreimageV2,
+  HashV2,
+  IdV2,
   InstantV2,
+  KeyV2,
   type ObservationReceiptV2,
   type OwnedActorV2,
   projectCommittedTarget,
@@ -238,6 +245,172 @@ export interface SongContributionPorts {
     identity: Identity,
     run: (tx: SongContributionTransaction) => Effect.Effect<A, SongContributionFailure>,
   ) => Effect.Effect<A, SongContributionFailure>;
+}
+
+/** Effect-free private queries: no slot/quote/nonce allocation, claim, observer
+ * enqueue or transaction callback is available through this capability.
+ * Unknown reads are failures, never an absent receipt or unpaid instruction.
+ */
+export interface SongContributionReadPorts {
+  readonly authorize: SongContributionPorts["authorize"];
+  readonly context: (
+    scope: FundingScope,
+    accountId: string,
+    personaId: string,
+  ) => Effect.Effect<unknown, SongContributionFailure>;
+  readonly current: (
+    scope: FundingScope,
+    accountId: string,
+  ) => Effect.Effect<unknown | null, SongContributionFailure>;
+  readonly command: (
+    scope: FundingScope,
+    accountId: string,
+    operation: FundingOperationV2,
+    key: string,
+  ) => Effect.Effect<unknown | null, SongContributionFailure>;
+}
+
+const privateStateRead = Schema.Struct({ accountId: IdV2, current: CurrentStateV2 });
+const privateCommandRead = Schema.Struct({
+  accountId: IdV2,
+  communityId: IdV2,
+  postId: IdV2,
+  operation: Schema.Literals([
+    "CreateSongMegapotContributionV2",
+    "ClaimSongMegapotContributionSubmissionV2",
+    "ObserveSongMegapotContributionV2",
+    "RecoverSongMegapotContributionV2",
+    "PrepareSongMegapotContributionCancellationV2",
+  ]),
+  key: KeyV2,
+  requestHash: HashV2,
+  receipt: FundingCommandReceiptV2,
+});
+const decodeRead = <A>(f: () => A) =>
+  Effect.try({ try: f, catch: () => new SongContributionFailure({ code: "outcome_unknown" }) });
+
+export function makeSongMegapotContributionReads(ports: SongContributionReadPorts) {
+  const context = Effect.fn("SongMegapotContribution.readContext")(function* (
+    scope: FundingScope,
+    rawQuery: unknown,
+  ) {
+    const actor = yield* ports.authorize(scope);
+    const query = yield* parse(() =>
+      Schema.decodeUnknownSync(ContextRequestV2, { onExcessProperty: "error" })(rawQuery),
+    );
+    if (scope.contributionId !== null) return yield* fail("invalid_request");
+    const value = yield* ports.context(scope, actor.accountId, query.persona_id);
+    const result = yield* decodeRead(() =>
+      Schema.decodeUnknownSync(ContextResponseV2, { onExcessProperty: "error" })(value),
+    );
+    if (
+      result.target.community_id !== scope.communityId ||
+      result.target.post_id !== scope.postId ||
+      (result.readiness === "ready"
+        ? result.actor.account_id !== actor.accountId ||
+          result.actor.persona_id !== query.persona_id
+        : result.persona_id !== query.persona_id)
+    )
+      return yield* fail("not_found");
+    if (result.readiness === "ready") {
+      if ((yield* digestFundingPreimageV2(contextPreimage(result))) !== result.context_hash)
+        return yield* fail("outcome_unknown");
+      if (result.quote.kind === "prospective") {
+        if (
+          result.target.kind !== "empty" ||
+          JSON.stringify(projectSongTarget(result.quote.prospective_terms.target)) !==
+            JSON.stringify(projectSongTarget(result.target)) ||
+          (yield* digestFundingPreimageV2(
+            prospectiveTermsPreimageV2(result.quote.prospective_terms),
+          )) !== result.quote.prospective_terms_hash
+        )
+          return yield* fail("outcome_unknown");
+      } else if (
+        result.target.kind !== "committed" ||
+        result.quote.committed_terms_hash !== result.quote.committed_terms.terms_hash ||
+        !(yield* consistentCommittedTerms(result.quote.committed_terms, result.target))
+      )
+        return yield* fail("outcome_unknown");
+    }
+    return result;
+  });
+  const current = Effect.fn("SongMegapotContribution.readCurrent")(function* (scope: FundingScope) {
+    const actor = yield* ports.authorize(scope);
+    if (scope.contributionId === null) return yield* fail("invalid_request");
+    const value = yield* ports.current(scope, actor.accountId);
+    if (value === null) return yield* fail("not_found");
+    const row = yield* decodeRead(() =>
+      Schema.decodeUnknownSync(privateStateRead, { onExcessProperty: "error" })(value),
+    );
+    const result = row.current;
+    if (
+      row.accountId !== actor.accountId ||
+      result.contribution_id !== scope.contributionId ||
+      result.target.community_id !== scope.communityId ||
+      result.target.post_id !== scope.postId
+    )
+      return yield* fail("not_found");
+    if (
+      result.command_receipt.contribution_id !== result.contribution_id ||
+      result.command_receipt.funding_effect_id !== result.funding_effect_id ||
+      result.command_receipt.terms_hash !== result.terms_hash ||
+      result.command_receipt.instruction.instruction_hash !== result.instruction_hash ||
+      result.command_receipt.instruction.from !== result.original_sender ||
+      JSON.stringify(projectCommittedTarget(result.command_receipt.target)) !==
+        JSON.stringify(projectCommittedTarget(result.target))
+    )
+      return yield* fail("outcome_unknown");
+    const cancellation = result.cancellation.current_receipt;
+    if (
+      result.command_receipt.committed_terms.terms_hash !== result.terms_hash ||
+      !(yield* consistentCommittedTerms(result.command_receipt.committed_terms, result.target))
+    )
+      return yield* fail("outcome_unknown");
+    if (
+      cancellation !== null &&
+      (cancellation.contribution_id !== result.contribution_id ||
+        cancellation.original_funding_instruction_hash !== result.instruction_hash ||
+        cancellation.sender !== result.original_sender ||
+        cancellation.nonce !== result.command_receipt.instruction.nonce ||
+        cancellation.wallet_assignment_id !==
+          result.command_receipt.instruction.wallet_assignment_id)
+    )
+      return yield* fail("outcome_unknown");
+    return result;
+  });
+  const command = Effect.fn("SongMegapotContribution.readCommand")(function* (
+    scope: FundingScope,
+    operation: FundingOperationV2,
+    key: string,
+  ) {
+    const actor = yield* ports.authorize(scope);
+    const value = yield* ports.command(scope, actor.accountId, operation, key);
+    if (value === null) return yield* fail("not_found");
+    const row = yield* decodeRead(() =>
+      Schema.decodeUnknownSync(privateCommandRead, { onExcessProperty: "error" })(value),
+    );
+    if (
+      row.accountId !== actor.accountId ||
+      row.communityId !== scope.communityId ||
+      row.postId !== scope.postId ||
+      row.operation !== operation ||
+      row.key !== key
+    )
+      return yield* fail("not_found");
+    if (row.requestHash !== row.receipt.request_hash) return yield* fail("outcome_unknown");
+    const objects: Record<FundingOperationV2, FundingCommandReceipt["object"]> = {
+      CreateSongMegapotContributionV2: "song_megapot_contribution_command_receipt",
+      ClaimSongMegapotContributionSubmissionV2: "contribution_submission_claim_receipt",
+      ObserveSongMegapotContributionV2: "contribution_observation_command_receipt",
+      RecoverSongMegapotContributionV2: "contribution_recovery_command_receipt",
+      PrepareSongMegapotContributionCancellationV2: "contribution_cancellation_command_receipt",
+    };
+    if (row.receipt.object !== objects[operation]) return yield* fail("outcome_unknown");
+    // An immutable claim receipt is deliberately returned without a fresh_grant
+    // delivery envelope. Historical GET/replay cannot authorize another send.
+    return row.receipt;
+  });
+  return { context, current, command };
 }
 
 function href(scope: FundingScope, contributionId: string): string {

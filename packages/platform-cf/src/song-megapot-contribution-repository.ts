@@ -12,6 +12,7 @@ import {
   type RecoveryAuthority,
   SongContributionFailure,
   type SongContributionPorts,
+  type SongContributionReadPorts,
   type SongContributionTransaction,
   type SongFundingRecoveryWorkPolicy,
 } from "../../application/src/rewards/song-megapot-contributions.ts";
@@ -54,7 +55,7 @@ const CommandIdentity = Schema.Struct({
   ),
 );
 
-/** The available SQL transaction boundary, NOT a SongContributionPorts repository.
+/** Shared transaction boundary used by the concrete CP3/CP5 ports below.
  * Identity must come from the authenticated application command, never request JSON.
  * Session/private-read/Origin-CSRF/rate checks remain before this boundary.
  *
@@ -62,9 +63,8 @@ const CommandIdentity = Schema.Struct({
  * deliberately excluded so conflicting same-key requests serialize together.
  * The callback must re-read the original owned command and compare its hash
  * before any current admission guards, then take further locks in V5 order.
- * Actual V2 receipt lookup and financial persistence remain unavailable until
- * accepted CP3/CP5 schema/grants and shared authorities exist. No SQL for those
- * missing tables, wallet nonce reservation, or placeholder adapter is supplied.
+ * The concrete adapter uses the existing command/receipt tables and shared
+ * nonce authority. This boundary introduces no second allocator/interpreter.
  *
  * Reuses accepted withTransaction: one callback, known commit before success.
  * No retry or error remapping. Capture callback and transaction Causes before
@@ -301,11 +301,13 @@ const json = (value: unknown) =>
 
 /** Real CP3/CP5 SQL persistence. Auth is the actual HTTP/session boundary's
  * capability, supplied explicitly; no browser actor/nonce/policy is trusted.
- * Routes, live role mapping and CP2 objective creation remain unadmitted.
+ * HTTP composition supplies the actual session capability and feature posture.
+ * Live role mapping and CP2 objective construction remain separate gates.
  */
 export function makeControlPlaneSongContributionPorts(
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   authorization: Pick<SongContributionPorts, "authorize">,
+  runtime: Readonly<{ rewardsEnabled: boolean }>,
 ): SongContributionPorts {
   const provided = <A, E>(e: Effect.Effect<A, E | ControlPlaneError, ControlPlaneDb>) =>
     mapStorage(e.pipe(Effect.provide(layer)));
@@ -417,6 +419,10 @@ export function makeControlPlaneSongContributionPorts(
               fundingAdmission: (request) =>
                 mapStorage(
                   Effect.gen(function* () {
+                    // This runs only after the locked same-key lookup. Turning
+                    // the feature off never suppresses immutable receipt replay.
+                    if (!runtime.rewardsEnabled)
+                      return yield* new SongContributionFailure({ code: "paused" });
                     const raw = yield* call(
                       db,
                       "song-contribution.context.lock",
@@ -542,7 +548,10 @@ export function makeControlPlaneSongContributionPorts(
                         e.witnessHash;
                     return {
                       ...authority,
-                      policy: current ? authority.policy : null,
+                      policy: current && runtime.rewardsEnabled ? authority.policy : null,
+                      currentSigningRefusal: runtime.rewardsEnabled
+                        ? authority.currentSigningRefusal
+                        : "paused",
                       originalWalletStillOwned:
                         authority.originalWalletStillOwned && lease !== null,
                     } satisfies RecoveryAuthority;
@@ -616,6 +625,72 @@ export function makeControlPlaneSongContributionPorts(
       ),
   };
   return ports;
+}
+
+/** Real bounded own-scope SQL reads, independent of current funding admission.
+ * These functions expose no arbitrary SELECT or allocation capability to HTTP.
+ */
+export function makeControlPlaneSongContributionReadPorts(
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  authorization: Pick<SongContributionReadPorts, "authorize">,
+  runtime: Readonly<{ rewardsEnabled: boolean }>,
+): SongContributionReadPorts {
+  const read = (label: string, text: string, values: readonly unknown[]) =>
+    mapStorage(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<{ packet: unknown }>({
+          label,
+          text,
+          values,
+          readonly: true,
+        });
+        if (result.rows.length !== 1 || result.rows[0]?.packet === undefined)
+          return yield* new SongContributionFailure({ code: "outcome_unknown" });
+        return result.rows[0].packet;
+      }).pipe(Effect.provide(layer)),
+    );
+  return {
+    authorize: authorization.authorize,
+    context: (scope, accountId, personaId) =>
+      read(
+        "song-contribution.context.read",
+        "SELECT read_song_contribution_context_v2($1::jsonb,$2) AS packet",
+        [json({ ...scope, accountId }), personaId],
+      ).pipe(
+        Effect.flatMap((packet) =>
+          Effect.gen(function* () {
+            if (packet === null)
+              return yield* new SongContributionFailure({ code: "policy_unavailable" });
+            const context = yield* decodeRow(C.ContextResponseV2, packet);
+            return runtime.rewardsEnabled
+              ? context
+              : {
+                  object: "song_megapot_funding_context" as const,
+                  version: 2 as const,
+                  readiness: "unavailable" as const,
+                  target: context.target,
+                  persona_id: personaId,
+                  reason: "paused" as const,
+                  retry_after_seconds: null,
+                  own_recovery_href: null,
+                };
+          }),
+        ),
+      ),
+    current: (scope, accountId) =>
+      read(
+        "song-contribution.current.read",
+        "SELECT read_owned_song_contribution_current_v2($1::jsonb) AS packet",
+        [json({ ...scope, accountId })],
+      ),
+    command: (scope, accountId, operation, key) =>
+      read(
+        "song-contribution.receipt.read",
+        "SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet",
+        [json({ ...scope, accountId }), operation, key],
+      ),
+  };
 }
 
 const packetSchema = Schema.Struct({

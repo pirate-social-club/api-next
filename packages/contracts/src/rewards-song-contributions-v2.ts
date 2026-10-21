@@ -1,4 +1,17 @@
 import { Schema } from "effect";
+import { Auth } from "./auth.ts";
+import { endpoint } from "./endpoint.ts";
+import {
+  AuthError,
+  BadRequest,
+  Conflict,
+  EligibilityFailed,
+  InternalError,
+  NotFound,
+  ProviderUnavailable,
+  RateLimited,
+  RewardsPaused,
+} from "./errors.ts";
 
 /** JSON syntax is validated by the built-in parser; this lexical pass preserves
  * duplicate-key evidence (including escaped keys) that JSON.parse would discard.
@@ -76,7 +89,7 @@ export function decodeFundingCommandJsonV2<O extends FundingOperationV2>(
   return decodeFundingCommandV2(operation, parsed);
 }
 
-// V5 schema 9ab3097c. Standalone V2 boundary; no endpoint registration or V1 changes.
+// V5 schema 9ab3097c, consumed by the private HTTP endpoints below. V1 history is separate.
 // Decoders MUST use onExcessProperty:error. Semantic financial proofs live in the application.
 
 export const IdV2 = Schema.String.check(
@@ -880,7 +893,66 @@ export const CurrentStateV2 = Schema.Struct({
   submissions: Schema.Array(SubmissionStateV2).check(Schema.isMinLength(0), Schema.isMaxLength(2)),
   command_receipt: ContributionReceiptV2,
   cancellation: CancellationPreparationStateV2,
-});
+}).check(
+  Schema.makeFilter((s) => {
+    const r = s.command_receipt;
+    const e = s.receipt_evidence;
+    if (
+      s.contribution_id !== r.contribution_id ||
+      s.funding_effect_id !== r.funding_effect_id ||
+      s.original_persona_id !== r.persona_id ||
+      s.original_sender !== r.instruction.from ||
+      s.terms_hash !== r.terms_hash ||
+      s.instruction_hash !== r.instruction.instruction_hash ||
+      JSON.stringify(projectCommittedTarget(s.target)) !==
+        JSON.stringify(projectCommittedTarget(r.target))
+    )
+      return "Current state changed immutable contribution provenance";
+    if (new Set(s.submissions.map((g) => g.purpose)).size !== s.submissions.length)
+      return "Duplicate purpose state";
+    if (e === null) {
+      if (
+        s.pool_credit_atomic !== "0" ||
+        s.late_principal_owed_atomic !== "0" ||
+        s.refund_paid_atomic !== "0" ||
+        s.disposition === "pool_principal" ||
+        s.disposition === "late_principal" ||
+        s.nonce_state === "consumed_transfer"
+      )
+        return "Principal requires actual receipt evidence";
+    } else {
+      if (
+        e.chain_id !== r.instruction.chain_id ||
+        e.sender_nonce !== r.instruction.nonce ||
+        e.attestation_id !== r.instruction.attestation_id ||
+        e.finalized_at === null ||
+        s.nonce_state !== "consumed_transfer"
+      )
+        return "Receipt does not bind finalized original transfer";
+      if (
+        s.disposition === "pool_principal" &&
+        (s.pool_credit_atomic !== e.actual_amount_atomic ||
+          s.late_principal_owed_atomic !== "0" ||
+          BigInt(s.refund_paid_atomic) > BigInt(e.actual_amount_atomic))
+      )
+        return "Pool principal evidence mismatch";
+      if (
+        s.disposition === "late_principal" &&
+        (s.pool_credit_atomic !== "0" ||
+          BigInt(s.late_principal_owed_atomic) + BigInt(s.refund_paid_atomic) !==
+            BigInt(e.actual_amount_atomic))
+      )
+        return "Late principal conservation mismatch";
+    }
+    if (
+      (s.state === "pool_credited" && s.disposition !== "pool_principal") ||
+      (s.state === "late_principal_owed" && s.disposition !== "late_principal") ||
+      (s.cohort_seal_id !== null && s.disposition !== "pool_principal")
+    )
+      return "Principal state mismatch";
+    return undefined;
+  }),
+);
 export type CurrentStateV2 = typeof CurrentStateV2.Type;
 
 export const PublicPotSummaryV2 = Schema.Struct({
@@ -1371,3 +1443,161 @@ export function cancellationPolicyPreimageV2(v: CancellationRecoveryPolicyV2): s
     ["attestation_contract_version", v.attestation_contract_version],
   ]);
 }
+
+/** Funding refusal data uses the existing api-next wire envelope. The closed
+ * V5 payload is its details member, not an alternative browser error protocol.
+ * No frozen error, authentication or endpoint primitive is extended here.
+ */
+export class ContributionBadRequestV2 extends BadRequest {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionForbiddenV2 extends EligibilityFailed {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionNotFoundV2 extends NotFound {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionConflictV2 extends Conflict {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionUnavailableV2 extends ProviderUnavailable {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionRateLimitedV2 extends RateLimited {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+export class ContributionPausedV2 extends RewardsPaused {
+  static readonly detailsSchema = ErrorV2;
+  static readonly detailsRequired = true;
+}
+
+export const FundingCommandReceiptV2 = Schema.Union([
+  ContributionReceiptV2,
+  SubmissionClaimReceiptV2,
+  ObservationReceiptV2,
+  RecoveryReceiptV2,
+  CancellationReceiptV2,
+]);
+export type FundingCommandReceiptV2 = typeof FundingCommandReceiptV2.Type;
+
+const songFundingPath = Schema.Struct({ communityId: IdV2, postId: IdV2 });
+const contributionPath = Schema.Struct({
+  communityId: IdV2,
+  postId: IdV2,
+  contributionId: IdV2,
+});
+const contributionErrors = [
+  AuthError,
+  BadRequest,
+  InternalError,
+  ContributionBadRequestV2,
+  ContributionForbiddenV2,
+  ContributionNotFoundV2,
+  ContributionConflictV2,
+  ContributionUnavailableV2,
+  ContributionRateLimitedV2,
+  ContributionPausedV2,
+] as const;
+
+export const GetSongMegapotFundingContextV2 = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/megapot-funding-context",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: songFundingPath, query: ContextRequestV2 },
+  response: ContextResponseV2,
+  errors: contributionErrors,
+});
+export const CreateSongMegapotContributionV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: songFundingPath, bodyEncoding: "exact-json", body: ContributionRequestV2 },
+  response: ContributionReceiptV2,
+  errors: contributionErrors,
+});
+export const GetSongMegapotContributionV2 = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions/:contributionId",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: contributionPath },
+  response: CurrentStateV2,
+  errors: contributionErrors,
+});
+export const GetSongMegapotContributionCommandV2 = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/posts/:postId/megapot-contribution-commands/:operation/:idempotencyKey",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: {
+    path: Schema.Struct({
+      communityId: IdV2,
+      postId: IdV2,
+      operation: Schema.Literals([
+        "CreateSongMegapotContributionV2",
+        "ClaimSongMegapotContributionSubmissionV2",
+        "ObserveSongMegapotContributionV2",
+        "RecoverSongMegapotContributionV2",
+        "PrepareSongMegapotContributionCancellationV2",
+      ]),
+      idempotencyKey: KeyV2,
+    }),
+  },
+  response: FundingCommandReceiptV2,
+  errors: contributionErrors,
+});
+export const ClaimSongMegapotContributionSubmissionV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions/:contributionId/submission-claims",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: contributionPath, bodyEncoding: "exact-json", body: SubmissionClaimRequestV2 },
+  response: SubmissionClaimDeliveryV2,
+  errors: contributionErrors,
+});
+export const ObserveSongMegapotContributionV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions/:contributionId/observations",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: contributionPath, bodyEncoding: "exact-json", body: ObservationRequestV2 },
+  response: ObservationReceiptV2,
+  errors: contributionErrors,
+});
+export const RecoverSongMegapotContributionV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions/:contributionId/recoveries",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: contributionPath, bodyEncoding: "exact-json", body: RecoveryRequestV2 },
+  response: RecoveryReceiptV2,
+  errors: contributionErrors,
+});
+export const PrepareSongMegapotContributionCancellationV2 = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/posts/:postId/megapot-contributions/:contributionId/cancellation-preparations",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: contributionPath, bodyEncoding: "exact-json", body: CancellationRequestV2 },
+  response: CancellationReceiptV2,
+  errors: contributionErrors,
+});
+
+export const songMegapotContributionRegistryV2 = {
+  GetSongMegapotFundingContextV2,
+  CreateSongMegapotContributionV2,
+  GetSongMegapotContributionV2,
+  GetSongMegapotContributionCommandV2,
+  ClaimSongMegapotContributionSubmissionV2,
+  ObserveSongMegapotContributionV2,
+  RecoverSongMegapotContributionV2,
+  PrepareSongMegapotContributionCancellationV2,
+} as const;

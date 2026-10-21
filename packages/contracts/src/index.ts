@@ -47,6 +47,7 @@ export * from "./public-post-routes.ts";
 export * from "./registry.ts";
 export * from "./rewards-owner-claims.ts";
 export * from "./rewards-qualification.ts";
+export * from "./rewards-song-contributions-v2.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./song-library.ts";
 export * from "./song-owner-video-policy.ts";

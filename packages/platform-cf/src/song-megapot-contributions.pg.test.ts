@@ -62,9 +62,13 @@ suite(
     const layer = () => makeDirectPostgresControlPlaneLayer(scoped());
     const service = (a: string) =>
       makeSongMegapotContributions(
-        makeControlPlaneSongContributionPorts(layer(), {
-          authorize: () => Effect.succeed({ accountId: a }),
-        }),
+        makeControlPlaneSongContributionPorts(
+          layer(),
+          {
+            authorize: () => Effect.succeed({ accountId: a }),
+          },
+          { rewardsEnabled: true },
+        ),
       );
     beforeAll(async () => {
       await admin.connect();
@@ -1084,9 +1088,13 @@ suite(
       await admin.query(
         "UPDATE megapot_deployment_attestations SET status='retired',retired_at=clock_timestamp() WHERE attestation_id='attestation'",
       );
-      const ports = makeControlPlaneSongContributionPorts(layer(), {
-        authorize: () => Effect.succeed({ accountId: "b" }),
-      });
+      const ports = makeControlPlaneSongContributionPorts(
+        layer(),
+        {
+          authorize: () => Effect.succeed({ accountId: "b" }),
+        },
+        { rewardsEnabled: true },
+      );
       const current = await Effect.runPromise(
         ports.transaction(work.identity, (tx) =>
           Effect.gen(function* () {
@@ -1129,6 +1137,151 @@ suite(
           )
         ).rows,
       ).toEqual([{ disposition: "held" }]);
+    });
+    test("private readers preserve original receipts and liabilities without current admission or GET writes", async () => {
+      const rows = (
+        await admin.query(
+          "SELECT contribution_id,account_id,community_id,post_id,state FROM song_megapot_contributions_v2 ORDER BY contribution_id",
+        )
+      ).rows;
+      expect(rows.length).toBeGreaterThan(1);
+      const before = (
+        await admin.query(
+          "SELECT (SELECT count(*)::int FROM song_megapot_contribution_commands_v2) AS commands,(SELECT count(*)::int FROM reward_funding_work_envelopes_v2) AS work,(SELECT count(*)::int FROM reward_incoming_receipts_v2) AS receipts,(SELECT count(*)::int FROM reward_contribution_reservations_v2) AS reservations",
+        )
+      ).rows;
+      for (const row of rows) {
+        const identity = {
+          accountId: row.account_id,
+          communityId: row.community_id,
+          postId: row.post_id,
+          contributionId: row.contribution_id,
+        };
+        const packet = (
+          await admin.query("SELECT read_owned_song_contribution_current_v2($1::jsonb) AS packet", [
+            json(identity),
+          ])
+        ).rows[0].packet;
+        expect(packet.accountId).toBe(row.account_id);
+        const view = Schema.decodeUnknownSync(C.CurrentStateV2, { onExcessProperty: "error" })(
+          packet.current,
+        );
+        expect(view.command_receipt).toEqual(row.state.receipt);
+        expect(view.original_sender).toBe(row.state.owner.sender_address);
+        expect(view.submissions.every((s) => s.state !== "unclaimed")).toBe(true);
+        expect(
+          (
+            await admin.query(
+              "SELECT read_owned_song_contribution_current_v2($1::jsonb) AS packet",
+              [json({ ...identity, accountId: "foreign_account" })],
+            )
+          ).rows,
+        ).toEqual([{ packet: null }]);
+        expect(
+          (
+            await admin.query(
+              "SELECT read_owned_song_contribution_current_v2($1::jsonb) AS packet",
+              [json({ ...identity, postId: "foreign_post" })],
+            )
+          ).rows,
+        ).toEqual([{ packet: null }]);
+      }
+      const command = (
+        await admin.query(
+          "SELECT * FROM song_megapot_contribution_commands_v2 ORDER BY command_id LIMIT 1",
+        )
+      ).rows[0];
+      if (!command) throw new Error("Expected immutable command fixture");
+      const scope = {
+        accountId: command.account_id,
+        communityId: command.community_id,
+        postId: command.post_id,
+      };
+      const own = (
+        await admin.query("SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet", [
+          json(scope),
+          command.operation,
+          command.idempotency_key,
+        ])
+      ).rows[0].packet;
+      expect(Schema.decodeUnknownSync(C.FundingCommandReceiptV2)(own.receipt)).toEqual(
+        command.receipt,
+      );
+      expect(own.receipt).not.toHaveProperty("delivery");
+      expect(
+        (
+          await admin.query("SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet", [
+            json({ ...scope, postId: "foreign_post" }),
+            command.operation,
+            command.idempotency_key,
+          ])
+        ).rows,
+      ).toEqual([{ packet: null }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT contribution_id,account_id,community_id,post_id,state FROM song_megapot_contributions_v2 ORDER BY contribution_id",
+          )
+        ).rows,
+      ).toEqual(rows);
+      expect(
+        (
+          await admin.query(
+            "SELECT (SELECT count(*)::int FROM song_megapot_contribution_commands_v2) AS commands,(SELECT count(*)::int FROM reward_funding_work_envelopes_v2) AS work,(SELECT count(*)::int FROM reward_incoming_receipts_v2) AS receipts,(SELECT count(*)::int FROM reward_contribution_reservations_v2) AS reservations",
+          )
+        ).rows,
+      ).toEqual(before);
+    });
+    test("retired attestation blocks new locked funding admission without changing liabilities", async () => {
+      const snapshot = (
+        await admin.query(
+          "SELECT context_hash,context FROM reward_funding_leg_snapshots_v2 ORDER BY created_at DESC,snapshot_id DESC LIMIT 1",
+        )
+      ).rows[0];
+      if (!snapshot) throw new Error("Expected retained authoritative snapshot fixture");
+      expect(
+        (
+          await admin.query(
+            "SELECT status FROM megapot_deployment_attestations WHERE attestation_id=$1",
+            [snapshot.context.attestation_id],
+          )
+        ).rows,
+      ).toEqual([{ status: "retired" }]);
+      const identity = {
+        accountId: snapshot.context.actor.account_id,
+        communityId: snapshot.context.target.community_id,
+        postId: snapshot.context.target.post_id,
+        contributionId: null,
+        operation: "CreateSongMegapotContributionV2",
+        key: "retired_admission_key_0001",
+        hash: h,
+      };
+      const before = (
+        await admin.query(
+          "SELECT contribution_id,state FROM song_megapot_contributions_v2 ORDER BY contribution_id",
+        )
+      ).rows;
+      await expect(
+        admin.query("SELECT lock_song_contribution_context_v2($1::jsonb,$2)", [
+          json(identity),
+          snapshot.context_hash,
+        ]),
+      ).rejects.toMatchObject({ code: "PCV05" });
+      expect(
+        (
+          await admin.query(
+            "SELECT contribution_id,state FROM song_megapot_contributions_v2 ORDER BY contribution_id",
+          )
+        ).rows,
+      ).toEqual(before);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM song_megapot_contribution_commands_v2 WHERE idempotency_key=$1",
+            [identity.key],
+          )
+        ).rows,
+      ).toEqual([{ n: 0 }]);
     });
   },
 );

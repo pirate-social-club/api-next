@@ -6,10 +6,12 @@ import {
   digestFundingPreimageV2,
   type FundingAdmission,
   type FundingScope,
+  makeSongMegapotContributionReads,
   makeSongMegapotContributions,
   type RecoveryAuthority,
   SongContributionFailure,
   type SongContributionPorts,
+  type SongContributionReadPorts,
   type SongContributionTransaction,
   type StoredFundingCommand,
 } from "./song-megapot-contributions.ts";
@@ -1312,5 +1314,169 @@ describe("purpose-specific cancellation", () => {
     ).rejects.toMatchObject({ code: "lifecycle_changed" });
     expect(required(f.states.get(r.contribution_id)).receipt.instruction).toEqual(r.instruction);
     expect(required(f.states.get(r.contribution_id)).cancellationGrant).toBeNull();
+  });
+});
+
+// Query fixtures reuse receipts made by the actual application commands. They
+// provide no media, provider, SQL isolation or financial activation proof.
+function currentView(receipt: C.ContributionReceiptV2): C.CurrentStateV2 {
+  return Schema.decodeUnknownSync(C.CurrentStateV2)({
+    object: "song_megapot_contribution_state",
+    version: 2,
+    contribution_id: receipt.contribution_id,
+    funding_effect_id: receipt.funding_effect_id,
+    revision: 0,
+    state: "instruction_issued",
+    nonce_state: "unresolved",
+    disposition: "unresolved",
+    target: receipt.target,
+    original_persona_id: receipt.persona_id,
+    original_sender: receipt.instruction.from,
+    terms_hash: receipt.terms_hash,
+    instruction_hash: receipt.instruction.instruction_hash,
+    receipt_evidence: null,
+    pool_credit_atomic: "0",
+    late_principal_owed_atomic: "0",
+    refund_paid_atomic: "0",
+    reservation_capacity_state: "reserved",
+    cohort_seal_id: null,
+    allowed_actions: ["observe_original", "recover_original", "wait"],
+    pause_reason: null,
+    updated_at: receipt.created_at,
+    submissions: [],
+    command_receipt: receipt,
+    cancellation: {
+      object: "contribution_cancellation_preparation_state",
+      state: "not_prepared",
+      preparations_used: 0,
+      current_preparation_id: null,
+      current_preparation_revision: 0,
+      current_receipt: null,
+    },
+  });
+}
+
+describe("private V5 persisted read consumers", () => {
+  test("current state is own-scope evidence and cannot create/release anything or assert principal without receipt", async () => {
+    const f = fixtureStore();
+    const receipt = await f.create();
+    const view = currentView(receipt);
+    let packet: unknown = { accountId: "a", current: view };
+    const before = f.counts();
+    const ports: SongContributionReadPorts = {
+      authorize: () => Effect.succeed({ accountId: "a" }),
+      context: () => Effect.fail(new SongContributionFailure({ code: "policy_unavailable" })),
+      current: () => Effect.succeed(packet),
+      command: () => Effect.succeed(null),
+    };
+    const reads = makeSongMegapotContributionReads(ports);
+    expect(await run(reads.current(f.scope(receipt.contribution_id)))).toEqual(view);
+    packet = { accountId: "foreign", current: view };
+    await expect(run(reads.current(f.scope(receipt.contribution_id)))).rejects.toMatchObject({
+      code: "not_found",
+    });
+    packet = {
+      accountId: "a",
+      current: {
+        ...view,
+        pool_credit_atomic: "100",
+        disposition: "pool_principal",
+        state: "pool_credited",
+      },
+    };
+    await expect(run(reads.current(f.scope(receipt.contribution_id)))).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    packet = null;
+    await expect(run(reads.current(f.scope(receipt.contribution_id)))).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect(f.counts()).toEqual(before);
+    expect(required(f.states.get(receipt.contribution_id)).nonceFinalized).toBe(false);
+  });
+  test("a private ready context binds its exact persona, target, canonical quote and hash without allocating an instruction", async () => {
+    const f = fixtureStore();
+    const request = await f.quote();
+    const context = required(f.quotes.get(request.expected_context_hash));
+    let packet: unknown = context;
+    let queried = 0;
+    const ports: SongContributionReadPorts = {
+      authorize: () => Effect.succeed({ accountId: "a" }),
+      context: () => {
+        queried++;
+        return Effect.succeed(packet);
+      },
+      current: () => Effect.succeed(null),
+      command: () => Effect.succeed(null),
+    };
+    const reads = makeSongMegapotContributionReads(ports);
+    const before = f.counts();
+    expect(await run(reads.context(baseScope, { persona_id: context.actor.persona_id }))).toEqual(
+      context,
+    );
+    packet = { ...context, context_hash: "0".repeat(64) };
+    await expect(
+      run(reads.context(baseScope, { persona_id: context.actor.persona_id })),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+    packet = { ...context, actor: { ...context.actor, account_id: "foreign" } };
+    await expect(
+      run(reads.context(baseScope, { persona_id: context.actor.persona_id })),
+    ).rejects.toMatchObject({ code: "not_found" });
+    const calls = queried;
+    await expect(
+      run(reads.context(baseScope, { persona_id: context.actor.persona_id, accepted: true })),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(queried).toBe(calls);
+    expect(f.counts()).toEqual(before);
+  });
+  test("historical claim receipt reads preserve consumed identity after pause and have no fresh-grant envelope", async () => {
+    const f = fixtureStore();
+    const receipt = await f.create();
+    const claim = await f.claim(receipt);
+    f.setRefusal("paused");
+    const before = f.counts();
+    let packet: unknown = {
+      accountId: "a",
+      communityId: baseScope.communityId,
+      postId: baseScope.postId,
+      operation: "ClaimSongMegapotContributionSubmissionV2",
+      key: "claim_submission_key_01",
+      requestHash: claim.receipt.request_hash,
+      receipt: claim.receipt,
+    };
+    const reads = makeSongMegapotContributionReads({
+      authorize: () => Effect.succeed({ accountId: "a" }),
+      context: () => Effect.fail(new SongContributionFailure({ code: "paused" })),
+      current: () => Effect.succeed(null),
+      command: () => Effect.succeed(packet),
+    });
+    const result = await run(
+      reads.command(
+        baseScope,
+        "ClaimSongMegapotContributionSubmissionV2",
+        "claim_submission_key_01",
+      ),
+    );
+    expect(result).toEqual(claim.receipt);
+    expect(result).not.toHaveProperty("delivery");
+    packet = {
+      accountId: "a",
+      communityId: "other",
+      postId: baseScope.postId,
+      operation: "ClaimSongMegapotContributionSubmissionV2",
+      key: "claim_submission_key_01",
+      requestHash: claim.receipt.request_hash,
+      receipt: claim.receipt,
+    };
+    await expect(
+      run(
+        reads.command(
+          baseScope,
+          "ClaimSongMegapotContributionSubmissionV2",
+          "claim_submission_key_01",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(f.counts()).toEqual(before);
   });
 });
