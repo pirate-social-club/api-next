@@ -1,0 +1,48 @@
+services:
+  public-authority:
+    image: powerdns/pdns-auth-51@sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27
+    container_name: pirate-hns-public-ns2
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, DAC_OVERRIDE]
+    security_opt: [no-new-privileges]
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.2
+    pids_limit: 128
+    logging:
+      driver: local
+      options: {max-size: 10m, max-file: "2"}
+    volumes:
+      - ./public-pdns.conf:/etc/powerdns/pdns.conf:ro
+      - /etc/pirate-hns-staging/public-dns/secondary-api.conf:/etc/powerdns/pdns.d/api-key.conf:ro
+      - public-data:/var/lib/powerdns
+  private-secondary:
+    image: powerdns/pdns-auth-51@sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27
+    container_name: pirate-hns-staging-ns2
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, DAC_OVERRIDE]
+    security_opt: [no-new-privileges]
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.15
+    pids_limit: 128
+    logging:
+      driver: local
+      options: {max-size: 10m, max-file: "2"}
+    volumes:
+      - ./private-secondary-pdns.conf:/etc/powerdns/pdns.conf:ro
+      - /etc/pirate-hns-staging/public-dns/private-secondary-api.conf:/etc/powerdns/pdns.d/api-key.conf:ro
+      - private-secondary-data:/var/lib/powerdns
+volumes:
+  public-data:
+    external: true
+    name: pirate-hns-public-ns2-data
+  private-secondary-data:
+    external: true
+    name: pirate-hns-staging-ns2-data

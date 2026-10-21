@@ -18,7 +18,7 @@ function fixture() {
   const unchanged = [
     { type: "NS", ns: "ns1.8s28." },
     { type: "NS", ns: "ns2.8s28." },
-    { type: "GLUE4", ns: "ns1.8s28.", address: "81.15.150.167" },
+    { type: "GLUE4", ns: "ns1.8s28.", address: "94.103.168.209" },
     { type: "GLUE4", ns: "ns2.8s28.", address: "94.103.168.209" },
     { type: "DS", keyTag: 1, algorithm: 13, digestType: 2, digest: "a".repeat(64) },
     { type: "DS", keyTag: 1, algorithm: 13, digestType: 4, digest: "b".repeat(96) },

@@ -1,0 +1,193 @@
+{
+  "logging": {
+    "logs": {
+      "default": {
+        "exclude": [
+          "http.log.access.log0"
+        ]
+      },
+      "log0": {
+        "writer": {
+          "output": "stdout"
+        },
+        "encoder": {
+          "format": "json"
+        },
+        "include": [
+          "http.log.access.log0"
+        ]
+      }
+    }
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "srv0": {
+          "listen": [
+            ":443"
+          ],
+          "routes": [
+            {
+              "match": [
+                {
+                  "host": [
+                    "zkpassport-verifier-staging.pirate.sc"
+                  ]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "deferred": true,
+                            "delete": [
+                              "Server"
+                            ]
+                          }
+                        },
+                        {
+                          "encodings": {
+                            "gzip": {},
+                            "zstd": {}
+                          },
+                          "handler": "encode",
+                          "prefer": [
+                            "zstd",
+                            "gzip"
+                          ]
+                        },
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "127.0.0.1:8794"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "match": [
+                {
+                  "host": [
+                    "8s28",
+                    "*.8s28",
+                    "a18n",
+                    "*.a18n",
+                    "8uyz",
+                    "*.8uyz",
+                    "fp1c",
+                    "*.fp1c"
+                  ]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Pirate-Gateway-*"
+                    ]
+                  }
+                },
+                {
+                  "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Pirate-Hns-Forwarder-*"
+                    ]
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "127.0.0.1:4269"
+                    }
+                  ],
+                  "headers": {
+                    "request": {
+                      "set": {
+                        "X-Pirate-Gateway-External-Scheme": [
+                          "https"
+                        ],
+                        "X-Pirate-Gateway-Tls-Sni": [
+                          "{http.request.tls.server_name}"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ],
+              "terminal": true
+            }
+          ],
+          "logs": {
+            "logger_names": {
+              "zkpassport-verifier-staging.pirate.sc": [
+                "log0"
+              ]
+            }
+          },
+          "automatic_https": {
+            "skip_certificates": [
+              "8s28",
+              "*.8s28",
+              "a18n",
+              "*.a18n",
+              "8uyz",
+              "*.8uyz",
+              "fp1c",
+              "*.fp1c"
+            ]
+          },
+          "tls_connection_policies": [
+            {
+              "match": {
+                "sni": [
+                  "8s28",
+                  "*.8s28",
+                  "a18n",
+                  "*.a18n",
+                  "8uyz",
+                  "*.8uyz",
+                  "fp1c",
+                  "*.fp1c"
+                ]
+              },
+              "certificate_selection": {
+                "any_tag": [
+                  "staging-8s28"
+                ]
+              }
+            },
+            {}
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/etc/pirate-hns-staging/public-gateway/8s28.crt",
+            "key": "/etc/pirate-hns-staging/public-gateway/8s28.key",
+            "tags": [
+              "staging-8s28"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
