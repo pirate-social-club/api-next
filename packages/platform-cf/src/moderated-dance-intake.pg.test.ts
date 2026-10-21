@@ -1,24 +1,14 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { Effect, Schema } from "effect";
-import { Client } from "pg";
+import { Effect } from "effect";
+import type { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
-import { prepareModeratedDanceTerms } from "../../application/src/use-cases/dance/moderated-intake.ts";
-import { executeDanceReviewCommand, projectPrivateDanceReview } from "../../application/src/use-cases/dance/moderator-review-services.ts";
-import { initializeModeratorReview, transitionModeratorReview, type ReviewFacts, type ReviewActor } from "../../domain/src/dance/moderator-review.ts";
-import { ModeratorReviewFactsSchema, SealedModeratorCaptureSchema } from "../../domain/src/dance/moderator-review-schema.ts";
-import { moderatedDanceFixture } from "../../testing/src/moderated-dance-fixture.ts";
-import { makeControlPlaneModeratorReviewStore } from "./dance-moderator-review-repository.ts";
-import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
-import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
-import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { seedModeratedDanceIntake as seed } from "./moderated-dance-intake.pg-fixture.ts";
 
-// Source-only until the coordinator registers the prospective migrations and
-// generates their maintained baseline. No pending SQL/archive fixture is loaded
-// here. All data/profile/provenance below is fictional isolated test input.
+// These native cases use the maintained baseline and fictional bootstrap inputs.
+// They make no provider request, upload or real-recording acceptance claim.
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
@@ -50,167 +40,6 @@ async function withFixture(
       await use(await seed(admin, scoped.toString()), admin);
     },
   });
-}
-
-async function seed(admin: Client, connection: string) {
-  const f = moderatedDanceIntakeFacts(),
-    now = Date.now(),
-    hash = "a".repeat(64);
-  const publication = await Effect.runPromise(
-    prepareModeratedDancePolicyPublication({
-      version: "dance-moderated-policy-publication-v1",
-      policy_id: "private-test-policy",
-      community_id: f.communityId,
-      policy: f.policy,
-      profile: f.profile,
-      safety_policy: f.safetyPolicy,
-      disposition: {
-        ...f.disposition,
-        validUntilMs: now + 10 * 86400000,
-        hold: { ...f.disposition.hold, disposeByMs: now + 10 * 86400000 },
-      },
-      disclosure: {
-        version: "dance-moderated-disclosure-v1",
-        consent_text: "Fictional consent",
-        retention_text: "Fictional finite retention",
-        publication_text: "Fictional independent optional Post",
-        owner_rubric_text: "Fictional cue/routine owner attestation",
-      },
-      valid_from: new Date(now - 10 * 86400000).toISOString(),
-      valid_until: new Date(now + 3600000).toISOString(),
-      accepted_by: "test-operator",
-      acceptance_ref: "isolated-test-only",
-      acceptance_hash: hash,
-      producer_registration: {
-        status: "active",
-        acceptance_ref: "isolated-test-producer",
-        acceptance_hash: hash,
-      },
-    }),
-  );
-  // The pre-existing public-song graph is bootstrap fixture data, not evidence
-  // of a real renderer/provider. New intake commands run with all guards ON.
-  await admin.query("BEGIN");
-  try {
-    await admin.query("SET LOCAL session_replication_role=replica");
-    await admin.query("INSERT INTO users(user_id) VALUES($1),('private-test-owner')", [
-      f.accountId,
-    ]);
-    await admin.query(
-      "INSERT INTO personas(persona_id,account_id) VALUES($1,$2),('private-owner-persona','private-test-owner')",
-      [f.personaId, f.accountId],
-    );
-    await admin.query(
-      "INSERT INTO communities(community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES($1,'Private Dance test','active','private-test-owner',statement_timestamp(),statement_timestamp())",
-      [f.communityId],
-    );
-    await admin.query(
-      "INSERT INTO persona_community_bindings(persona_id,account_id,community_id,binding_source) VALUES($1,$2,$3,'activity_participation')",
-      [f.personaId, f.accountId, f.communityId],
-    );
-    await admin.query(
-      "INSERT INTO community_role_assignments(role_assignment_id,community_id,account_id,role) VALUES('private-owner-assignment',$1,'private-test-owner','owner')",
-      [f.communityId],
-    );
-    await admin.query(
-      "INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,visibility,content_rating,author_declared_rating,created_at,updated_at) VALUES($1,$2,'private-test-owner','private-owner-persona','song','published','public','general','general',statement_timestamp(),statement_timestamp()),($1,'private-reference','private-test-owner','private-owner-persona','video','published','public','general','general',statement_timestamp(),statement_timestamp())",
-      [f.communityId, f.songPostId],
-    );
-    await admin.query(
-      "INSERT INTO media_publication_projections(submission_id,community_id,actor_user_id,author_persona_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,language_status,lyrics_explicitness,alignment,data_registration,locked_delivery) VALUES('private-song-submission',$1,'private-test-owner','private-owner-persona','private-song-operation',$2,1,$3,1,1,$4,'Test song','test/song','not_applicable','not_applicable','not_applicable','pending','not_required')",
-      [f.communityId, f.songPostId, f.audioRevision, hash],
-    );
-    await admin.query(
-      "INSERT INTO dance_song_segments(segment_id,community_id,song_post_id,song_submission_id,audio_revision,start_ms,end_ms,canonical_audio_duration_ms,canonical_segment_audio_ref,canonical_segment_sha256,extraction_policy_version,source_media_sha256,segment_terms_hash) VALUES($1,$2,$3,'private-song-submission',$4,10000,20000,180000,'test/segment',$5,'test-canonical-extraction',$5,$5)",
-      [f.segmentId, f.communityId, f.songPostId, f.audioRevision, hash],
-    );
-    await admin.query(
-      "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}','{}',$6)",
-      [f.choreographyId, f.communityId, f.songPostId, f.audioRevision, f.segmentId, hash],
-    );
-    await admin.query(
-      "INSERT INTO account_streak_clocks(account_id,timezone,timezone_updated_at,next_change_allowed_at) VALUES($1,'UTC',statement_timestamp(),statement_timestamp()+interval '7 days')",
-      [f.accountId],
-    );
-    await admin.query("COMMIT");
-  } catch (error) {
-    await admin.query("ROLLBACK");
-    throw error;
-  }
-  await admin.query("SELECT publish_moderated_dance_policy_v1($1::jsonb)", [
-    JSON.stringify(publication),
-  ]);
-  const runtime = makeDirectPostgresControlPlaneLayer(connection);
-  const store = makeControlPlaneModeratedDanceIntakeStore(runtime, f.accountId, {
-    signer: {
-      presign: async () => {
-        throw new Error("No storage URL requested by these SQL cases");
-      },
-    },
-    randomU32: () => 1,
-  });
-  const create = {
-    version: "dance-moderated-intake-v1",
-    operation: "create",
-    idempotency_key: "private-create",
-    community_id: f.communityId,
-    song_post_id: f.songPostId,
-    persona_id: f.personaId,
-    choreography_id: f.choreographyId,
-    choreography_revision: 1,
-    expected_policy_hash: publication.policy.hash,
-  } as const;
-  const ready = async () => {
-    await admin.query("SELECT record_moderated_dance_maintenance_v1()");
-    await admin.query("SELECT announce_moderated_dance_processor_v1($1,$2,$3::jsonb)", [
-      f.profile.mediaRuntimeRevision,
-      f.profile.safetyProviderRevision,
-      JSON.stringify(f.profile.replayCompatibleEpochs),
-    ]);
-  };
-  return { store, create, ready, facts: f, publication, connection, runtime };
-}
-
-// Synthetic historical review graph for authority/clock tests only. It is not
-// evidence of a provider, R2 upload or real participant recording.
-async function historicalReview(f: Awaited<ReturnType<typeof seed>>, admin: Client, deadline: number, stage: "uploaded" | "awaiting_review" = "awaiting_review") {
-  const uploaded = deadline - 604800000, created = uploaded - 1000;
-  const ids = { sessionId: crypto.randomUUID(), reviewId: crypto.randomUUID(), attemptId: crypto.randomUUID() }, uploadId = crypto.randomUUID(), consentId = crypto.randomUUID();
-  const terms = await Effect.runPromise(prepareModeratedDanceTerms({ ...f.facts, nowMs: created, policyId: f.publication.policy_id, policy: f.publication.policy, disposition: f.publication.disposition }, ids, "arms_t"));
-  const capture = Schema.decodeUnknownSync(SealedModeratorCaptureSchema)({ ...terms.capture, uploadId, sourceDigest: "a".repeat(64), normalizedDigest: "b".repeat(64), analysisRevision: 1, firstStoredAtMs: created + 3, uploadedAtMs: uploaded, consent: { receiptId: consentId, uploadId, recordedAtMs: created + 1, accountId: f.facts.accountId, personaId: f.facts.personaId, termsHash: terms.terms_hash, version: terms.capture.policy.consentVersion, policyHash: terms.capture.policy.consentHash } });
-  const facts: ReviewFacts = { ...moderatedDanceFixture().facts, accountFenceRevision: 1, ownedPersona: { active: true, accountId: capture.accountId, personaId: capture.personaId, communityId: capture.communityId }, owner: { accountId: "private-test-owner", communityId: capture.communityId, assignmentId: "private-owner-assignment", revision: 1, canInspect: true }, media: { accepted: true, sourceDigest: capture.sourceDigest, normalizedDigest: capture.normalizedDigest, normalizationVersion: capture.policy.normalizationVersion, normalizationHash: capture.policy.normalizationHash }, safety: { status: "accepted", persisted: true, sourceDigest: capture.sourceDigest, analysisRevision: 1, policyHash: capture.policy.safetyHash, frameDigests: ["6".repeat(64), "7".repeat(64), "8".repeat(64)] }, integrity: { status: "unique", persisted: true, sourceDigest: capture.sourceDigest, normalizedDigest: capture.normalizedDigest, policyHash: capture.policy.normalizationHash }, disposition: f.publication.disposition, qualification: null, submissionDay: { atMs: uploaded + 1, day: new Date(uploaded + 1).toISOString().slice(0, 10), timezone: capture.timezone, timezoneVersion: capture.timezoneVersion } };
-  let state = initializeModeratorReview(capture, facts, uploaded);
-  if (state === null) throw new Error("Invalid historical review fixture");
-  if (stage === "awaiting_review") {
-    const submit = transitionModeratorReview(state, { kind: "submit", receiptId: "historical-submit", showPublicly: false, disclosureVersion: capture.policy.disclosureVersion }, { kind: "account", accountId: capture.accountId }, state.revision, uploaded + 1, facts);
-    expect(submit.refusal).toBeNull();
-    const screen = transitionModeratorReview(submit.state, { kind: "screen" }, { kind: "worker", accountId: "fixture-worker" }, submit.state.revision, uploaded + 2, facts);
-    expect(screen.refusal).toBeNull(); state = screen.state;
-  }
-  await admin.query("INSERT INTO dance_review_account_fences_v1(account_id,revision,erasing) VALUES($1,1,FALSE) ON CONFLICT DO NOTHING", [capture.accountId]);
-  await admin.query("INSERT INTO dance_moderated_sessions_v1(session_id,review_id,attempt_id,account_id,persona_id,community_id,song_post_id,choreography_id,choreography_revision,policy_id,capture_account_fence,terms,terms_hash,created_at,expires_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9,1,$10::jsonb,$11,to_timestamp($12::NUMERIC/1000),to_timestamp($13::NUMERIC/1000),'uploaded')", [ids.sessionId, ids.reviewId, ids.attemptId, capture.accountId, capture.personaId, capture.communityId, capture.songPostId, capture.choreographyId, f.publication.policy_id, JSON.stringify(terms), terms.terms_hash, created, capture.captureExpiresAtMs]);
-  await admin.query("INSERT INTO dance_moderated_active_slots_v1 VALUES($1,$2,1,$3)", [capture.accountId, capture.choreographyId, ids.sessionId]);
-  await admin.query("INSERT INTO dance_moderated_consents_v1 VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9::NUMERIC/1000))", [ids.sessionId, consentId, capture.accountId, capture.personaId, terms.terms_hash, capture.policy.consentVersion, capture.policy.consentHash, capture.policy.retentionHash, created + 1]);
-  await admin.query("INSERT INTO dance_moderated_uploads_v1(upload_id,session_id,consent_receipt_id,private_object_key,content_type,maximum_bytes,expected_size_bytes,expected_duration_ms,reserved_at,expires_at,first_stored_at,sealed_at,server_sha256,normalized_digest,normalization_version,normalization_hash,state,immutable_object_identity,bytes_sealed_at) VALUES($1,$2,$3,$4,'video/mp4',1000000,1000,$5,to_timestamp($6::NUMERIC/1000),to_timestamp($7::NUMERIC/1000),to_timestamp($8::NUMERIC/1000),to_timestamp($9::NUMERIC/1000),$10,$11,$12,$13,'sealed',$14::jsonb,to_timestamp($9::NUMERIC/1000))", [uploadId, ids.sessionId, consentId, `moderated-dance/ingress/${uploadId}/source`, capture.bodyEndMs, created + 2, created + 60000, created + 3, uploaded, capture.sourceDigest, capture.normalizedDigest, capture.policy.normalizationVersion, capture.policy.normalizationHash, JSON.stringify({ destination_ref: `moderated-dance/originals/${uploadId}/source`, version: "fixture-v1", etag: "fixture-etag", size_bytes: 1000, canonical_sha256: capture.sourceDigest })]);
-  await admin.query("INSERT INTO dance_moderated_reviews_v1(review_id,session_id,account_id,community_id,state,revision,publication_revision,status,uploaded_at,review_deadline,submitted_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,0,$7,to_timestamp($8::NUMERIC/1000),to_timestamp($9::NUMERIC/1000),to_timestamp($10::NUMERIC/1000))", [ids.reviewId, ids.sessionId, capture.accountId, capture.communityId, JSON.stringify(state), state.revision, state.state, uploaded, deadline, state.submittedAtMs]);
-  await admin.query("INSERT INTO dance_moderated_review_evidence_v1(review_id,analysis_revision,source_digest,normalization_hash,safety_policy_hash,frame_digests,safety_status,content_rating,integrity_status,normalized_digest,evidence) VALUES($1,1,$2,$3,$4,$5,'accepted','general','unique',$6,'{}')", [ids.reviewId, capture.sourceDigest, capture.policy.normalizationHash, capture.policy.safetyHash, ["6".repeat(64), "7".repeat(64), "8".repeat(64)], capture.normalizedDigest]);
-  return state;
-}
-async function waitForBlock(admin: Client, pid: number) {
-  const until = Date.now() + 3000;
-  while (Date.now() < until) {
-    const row = (await admin.query("SELECT pg_backend_pid()=ANY(pg_blocking_pids($1)) AS blocked,query_start FROM pg_stat_activity WHERE pid=$1", [pid])).rows[0];
-    if (row?.blocked) return row;
-    await Bun.sleep(5);
-  }
-  throw new Error("Owned second connection did not reach the expected blocking lock");
-}
-async function crossDeadline(admin: Client, deadline: Date) {
-  await admin.query("SELECT pg_sleep(greatest(0,extract(epoch FROM $1::TIMESTAMPTZ-clock_timestamp()))+0.01)", [deadline]);
-  expect((await admin.query("SELECT clock_timestamp()>=$1::TIMESTAMPTZ AS past", [deadline])).rows[0]?.past).toBe(true);
-}
-function reviewCommit(state: ReturnType<typeof transitionModeratorReview>["state"], transition: ReturnType<typeof transitionModeratorReview>, actor: ReviewActor, operation: "expire" | "verdict", key: string, at: number) {
-  return { action: { actor, operation, idempotencyKey: key, requestHash: "a".repeat(64), receiptId: key, communityId: state.capture.communityId, reviewId: state.capture.reviewId }, beforeReviewRevision: state.revision, beforePublicationRevision: state.publicationRevision, captureAccountFenceRevision: state.capture.accountFenceRevision, observedAccountFenceRevision: state.capture.accountFenceRevision, observedAccountActive: true, transition, receipt: { version: "dance-review-receipt-v1", receipt_id: key, review_id: state.capture.reviewId, operation, outcome: transition.refusal === null ? "applied" : "refused", refusal_code: transition.refusal, committed_at: new Date(at).toISOString(), result: projectPrivateDanceReview(transition.state) } };
 }
 
 suite("private moderated Dance intake on the maintained generated baseline", () => {
@@ -376,7 +205,14 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
         new Set([...first.choreographies, ...second.choreographies].map((c) => c.choreography_id))
           .size,
       ).toBe(22);
-      await expect(admin.query("SELECT read_moderated_dance_capture_options_v1($1,$2,$3,$4)", [f.facts.accountId, f.facts.communityId, f.facts.songPostId, "f".repeat(64)])).rejects.toMatchObject({ code: "DRV06" });
+      await expect(
+        admin.query("SELECT read_moderated_dance_capture_options_v1($1,$2,$3,$4)", [
+          f.facts.accountId,
+          f.facts.communityId,
+          f.facts.songPostId,
+          "f".repeat(64),
+        ]),
+      ).rejects.toMatchObject({ code: "DRV06" });
       await expect(
         Effect.runPromise(
           f.store.captureOptions(f.facts.communityId, f.facts.songPostId, "f".repeat(64)),

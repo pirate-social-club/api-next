@@ -4948,7 +4948,7 @@ CREATE FUNCTION claim_moderated_dance_media_v1(p_token text, p_runtime text, p_s
     SET search_path FROM CURRENT
     AS $$
 DECLARE candidate RECORD; s dance_moderated_sessions_v1; u dance_moderated_uploads_v1; f dance_review_account_fences_v1;
- work dance_moderated_processing_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); action TEXT; bucket BIGINT; width BIGINT; scope_value TEXT; usage NUMERIC; allowed NUMERIC;
+ work dance_moderated_processing_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); action TEXT; budget_ready BOOLEAN; budget_at TIMESTAMPTZ;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT upload.upload_id,session.account_id INTO candidate FROM dance_moderated_uploads_v1 upload JOIN dance_moderated_sessions_v1 session USING(session_id)
@@ -4966,18 +4966,34 @@ BEGIN
  SELECT * INTO f FROM dance_review_account_fences_v1 WHERE account_id=candidate.account_id FOR UPDATE;
  SELECT session.* INTO s FROM dance_moderated_sessions_v1 session JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=candidate.upload_id FOR UPDATE OF session;
  SELECT * INTO u FROM dance_moderated_uploads_v1 WHERE upload_id=candidate.upload_id FOR UPDATE SKIP LOCKED;
- IF u.upload_id IS NULL OR f.erasing OR f.revision<>s.capture_account_fence OR now_at>=least(u.expires_at,s.expires_at)
+ IF u.upload_id IS NULL OR f.account_id IS NULL OR f.erasing OR f.revision<>s.capture_account_fence
  OR NOT active_activity_persona(s.account_id,s.persona_id,s.community_id) THEN RETURN NULL; END IF;
+ -- Candidate selection time is not a grant. Persona/authority locks may wait.
+ now_at:=clock_timestamp();
+ IF now_at>=least(u.expires_at,s.expires_at) THEN RETURN NULL; END IF;
  profile:=s.terms->'profile';
  IF u.seal_dispatched_at IS NULL THEN
   UPDATE dance_moderated_uploads_v1 SET seal_dispatched_at=now_at,seal_token=p_token WHERE upload_id=u.upload_id;
   action:='seal';
  ELSE
   SELECT * INTO work FROM dance_moderated_processing_v1 WHERE upload_id=u.upload_id FOR UPDATE;
-  IF work.state NOT IN('ready','claimed','unknown') OR work.observation_until>now_at THEN RETURN NULL; END IF;
+  now_at:=clock_timestamp();
+  IF work.upload_id IS NULL OR work.state NOT IN('ready','claimed','unknown') OR work.observation_until>now_at
+   OR now_at>=least(u.expires_at,s.expires_at) THEN RETURN NULL; END IF;
   IF work.state='ready' THEN
    IF (profile->>'maximumProviderCalls')::BIGINT<6 OR (profile->>'maximumProviderSpendMicrounits')::NUMERIC<=0 THEN RETURN NULL; END IF;
-   IF NOT reserve_moderated_dance_provider_work_v1(s.account_id,profile) THEN RETURN NULL; END IF;
+   budget_at:=clock_timestamp();
+   budget_ready:=reserve_moderated_dance_provider_work_v1(s.account_id,profile);
+   -- The helper retains account/global usage locks. Recheck the actual clock
+   -- after those waits. Abort the entire reservation on closure/rollover so
+   -- neither a fresh grant nor its work charge survives after expiry.
+   now_at:=clock_timestamp();
+   IF now_at>=least(u.expires_at,s.expires_at) OR now_at<budget_at
+    OR floor(extract(epoch FROM now_at)*1000/(profile->>'windowMs')::NUMERIC)<>
+       floor(extract(epoch FROM budget_at)*1000/(profile->>'windowMs')::NUMERIC) THEN
+    RAISE EXCEPTION 'fresh dispatch window closed during budget wait' USING ERRCODE='DRV05';
+   END IF;
+   IF NOT budget_ready THEN RETURN NULL; END IF;
    UPDATE dance_moderated_processing_v1 SET state='claimed',work_token=p_token,provider_tag='dance-'||u.upload_id,
     dispatched_at=now_at,provider_deadline=least(s.expires_at,now_at+((profile->>'providerWaitMs')::BIGINT*interval '1 millisecond')),
     charged_calls=6,charged_spend_microunits=(profile->>'maximumProviderSpendMicrounits')::NUMERIC
@@ -6218,8 +6234,14 @@ BEGIN
    RAISE EXCEPTION 'invalid immutable Submit' USING ERRCODE='DRV05';
   END IF;
  END IF;
- IF next_status='review_expired' AND (terminal IS NULL OR terminal<r.review_deadline) THEN
-  RAISE EXCEPTION 'premature review expiry' USING ERRCODE='DRV05';
+ IF next_status='review_expired' THEN
+  -- A supplied future timestamp cannot manufacture expiry. Account commands
+  -- may expire an actually pending submitted review at the real deadline.
+  IF terminal IS NULL OR terminal<r.review_deadline OR terminal>clock_timestamp() OR clock_timestamp()<r.review_deadline
+   OR (r.status<>'review_expired' AND (r.status NOT IN('screening','awaiting_review') OR r.submitted_at IS NULL OR r.terminal_at IS NOT NULL))
+   OR (r.status='review_expired' AND next IS DISTINCT FROM r.state) THEN
+   RAISE EXCEPTION 'premature or invalid review expiry' USING ERRCODE='DRV05';
+  END IF;
  END IF;
  UPDATE dance_moderated_reviews_v1 SET state=next,revision=next_revision,
   publication_revision=(next->>'publicationRevision')::BIGINT,status=next_status,
@@ -7586,16 +7608,18 @@ BEGIN
    END IF;
    RETURN deliver_comment_notification_v1(p_event);
  END IF;
- SELECT * INTO event FROM dance_moderated_result_events_v1 WHERE event_id=p_event FOR UPDATE;
+ SELECT * INTO event FROM dance_moderated_result_events_v1 WHERE event_id=p_event;
  IF NOT FOUND THEN RAISE EXCEPTION 'persisted notification source required' USING ERRCODE='DRV02'; END IF;
+ recipient:=event.recipient_account_id;
+ -- This is also acquired by verdict/expiry BEFORE their user/review locks.
+ PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||recipient,0));
+ PERFORM 1 FROM users WHERE user_id=recipient FOR SHARE;
+ SELECT * INTO STRICT event FROM dance_moderated_result_events_v1 WHERE event_id=p_event FOR UPDATE;
  SELECT * INTO prior FROM dance_review_result_deliveries_v1 WHERE event_id=p_event;
  IF FOUND THEN
    IF event.delivered_at IS NULL THEN UPDATE dance_moderated_result_events_v1 SET delivered_at=clock_timestamp() WHERE event_id=p_event; END IF;
    RETURN jsonb_build_object('processed',FALSE,'delivered',prior.outcome='delivered');
  END IF;
- recipient:=event.recipient_account_id;
- PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||recipient,0));
- PERFORM 1 FROM users WHERE user_id=recipient FOR SHARE;
  PERFORM 1 FROM dance_review_account_fences_v1 WHERE account_id=recipient FOR SHARE;
  IF eligible_dance_result_notification_recipient_v1(p_event)=recipient THEN
    INSERT INTO notification_inbox(recipient_user_id,dance_result_event_id) VALUES(recipient,p_event)
@@ -22425,7 +22449,7 @@ CREATE FUNCTION issue_moderated_dance_media_lease_v1(p_actor text, p_community t
     SET search_path FROM CURRENT
     AS $_$
 DECLARE r dance_moderated_reviews_v1; s dance_moderated_sessions_v1; f dance_review_account_fences_v1; owner community_role_assignments;
- now_at TIMESTAMPTZ:=clock_timestamp(); until_at TIMESTAMPTZ; profile JSONB;
+ now_at TIMESTAMPTZ; until_at TIMESTAMPTZ; profile JSONB;
 BEGIN
  IF NOT moderated_dance_account_runtime_v1() THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT * INTO r FROM dance_moderated_reviews_v1 WHERE review_id=p_review AND community_id=p_community;
@@ -22437,7 +22461,7 @@ BEGIN
  profile:=s.terms->'profile';
  IF p_lease !~ '^[A-Za-z0-9_-]{43}$' OR NOT EXISTS(SELECT 1 FROM users WHERE user_id=p_actor AND status='active')
  OR f.erasing OR f.revision<>s.capture_account_fence OR r.revision<>p_revision OR r.status NOT IN('uploaded','screening','awaiting_review')
- OR now_at>=r.review_deadline OR NOT active_activity_persona(r.account_id,s.persona_id,r.community_id)
+ OR NOT active_activity_persona(r.account_id,s.persona_id,r.community_id)
  OR NOT EXISTS(SELECT 1 FROM dance_moderated_review_evidence_v1 e WHERE e.review_id=r.review_id AND e.safety_status='accepted' AND e.integrity_status='unique' AND can_account_view_content_rating_v1(p_actor,e.content_rating)) THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  IF p_audience='dancer' THEN
   IF p_actor<>r.account_id THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
@@ -22446,6 +22470,8 @@ BEGIN
   SELECT * INTO STRICT owner FROM community_role_assignments WHERE community_id=p_community AND role='owner' AND status='active' AND account_id=p_actor FOR SHARE;
  ELSE RAISE EXCEPTION 'invalid media audience' USING ERRCODE='DRV06'; END IF;
  IF NOT charge_moderated_dance_intake_v1(p_actor,profile,TRUE,FALSE) THEN RAISE EXCEPTION 'private media budget reached' USING ERRCODE='DRV07'; END IF;
+ -- Includes owner/persona and the read-budget row waits; no stale lease grant.
+ now_at:=clock_timestamp();
  until_at:=least(r.review_deadline,now_at+((profile->>'mediaLeaseMs')::BIGINT*interval '1 millisecond'),CASE WHEN r.submitted_at IS NULL THEN s.expires_at ELSE r.review_deadline END);
  IF until_at IS NULL OR until_at<=now_at THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  INSERT INTO dance_moderated_media_leases_v1 VALUES(p_lease,p_review,p_actor,p_audience,owner.role_assignment_id,owner.authority_revision,s.capture_account_fence,now_at,until_at);
@@ -23658,8 +23684,10 @@ DECLARE r dance_moderated_reviews_v1; owner community_role_assignments; policy T
 BEGIN
  SELECT * INTO r FROM dance_moderated_reviews_v1 WHERE review_id=p_action->>'reviewId' AND community_id=p_action->>'communityId';
  IF NOT FOUND THEN RAISE EXCEPTION 'private resource unavailable' USING ERRCODE='DRV02'; END IF;
- -- Every command orders lifecycle rows before own key and review. Immutable
- -- review identity can be read to discover these rows without granting access.
+ -- Match comment/result delivery: recipient advisory lock BEFORE user rows.
+ -- Commit re-enters this same order, including its synchronous inbox trigger.
+ -- Immutable review identity is discovery only, not private authority.
+ PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||r.account_id,0));
  PERFORM 1 FROM users WHERE user_id IN(r.account_id,p_action->'actor'->>'accountId') ORDER BY user_id FOR UPDATE;
  PERFORM 1 FROM dance_review_account_fences_v1 WHERE account_id=r.account_id FOR UPDATE;
  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('dance-review-command-v1',p_action->'actor'->>'kind',p_action->'actor'->>'accountId',p_action->>'operation',p_action->>'idempotencyKey')::TEXT,0));
@@ -24808,6 +24836,7 @@ BEGIN
  SELECT * INTO STRICT f FROM dance_review_account_fences_v1 WHERE account_id=s.account_id FOR UPDATE;
  PERFORM 1 FROM dance_moderated_sessions_v1 WHERE session_id=s.session_id FOR UPDATE;
  SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload FOR UPDATE;
+ now_at:=clock_timestamp();
  IF u.seal_token IS DISTINCT FROM p_token OR u.seal_dispatched_at IS NULL THEN RAISE EXCEPTION 'seal authority changed' USING ERRCODE='DRV05'; END IF;
  IF u.immutable_object_identity IS NOT NULL THEN
   IF u.immutable_object_identity IS DISTINCT FROM p_result THEN RAISE EXCEPTION 'seal identity changed' USING ERRCODE='DRV05'; END IF;
@@ -32812,6 +32841,8 @@ BEGIN
  OR NOT EXISTS(SELECT 1 FROM dance_moderated_review_evidence_v1 e WHERE e.review_id=r.review_id AND e.safety_status='accepted' AND e.integrity_status='unique' AND can_account_view_content_rating_v1(p_actor,e.content_rating)) THEN RETURN NULL; END IF;
  IF lease.audience='dancer' AND p_actor<>r.account_id OR lease.audience='owner' AND (NOT can_owner_read_moderated_dance_v1(p_actor,p_review) OR NOT EXISTS(SELECT 1 FROM community_role_assignments owner WHERE owner.role_assignment_id=lease.owner_assignment_id AND owner.authority_revision=lease.owner_assignment_revision AND owner.account_id=p_actor AND owner.community_id=p_community AND owner.role='owner' AND owner.status='active')) THEN RETURN NULL; END IF;
  IF p_charge AND NOT charge_moderated_dance_intake_v1(p_actor,s.terms->'profile',TRUE,FALSE) THEN RETURN NULL; END IF;
+ -- A budget wait cannot turn an expired existing lease into a byte capability.
+ IF lease.expires_at<=clock_timestamp() OR r.review_deadline<=clock_timestamp() OR r.submitted_at IS NULL AND s.expires_at<=clock_timestamp() THEN RETURN NULL; END IF;
  RETURN jsonb_build_object('expiresAtMs',floor(extract(epoch FROM lease.expires_at)*1000)::BIGINT,'object',jsonb_build_object('key',u.immutable_object_identity->>'destination_ref','identity','upload_version','version',u.immutable_object_identity->>'version','etag',u.immutable_object_identity->>'etag','size',(u.immutable_object_identity->>'size_bytes')::BIGINT,'contentType',u.content_type,'canonicalSha256',u.server_sha256));
 END $$;
 DO $baseline_function_path$

@@ -18,6 +18,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-intake.pg.test.ts",
+  "packages/platform-cf/src/moderated-dance-authority.pg.test.ts",
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
   "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",

@@ -35,7 +35,13 @@ function fixture() {
   const execute: ControlPlaneTransaction["execute"] = (statement) =>
     Effect.gen(function* () {
       calls.push(statement.label);
-      if (sqlFailure?.label === statement.label) return yield* new ControlPlaneStatementFailed({ label: statement.label, sqlState: sqlFailure.state, constraint: null, outcomeCertainty: "aborted" });
+      if (sqlFailure?.label === statement.label)
+        return yield* new ControlPlaneStatementFailed({
+          label: statement.label,
+          sqlState: sqlFailure.state,
+          constraint: null,
+          outcomeCertainty: "aborted",
+        });
       let packet: unknown;
       const body = typeof statement.values[1] === "string" ? JSON.parse(statement.values[1]) : {};
       switch (statement.label) {
@@ -135,7 +141,9 @@ function fixture() {
   });
   return {
     store,
-    failSql: (label: string, state: string) => { sqlFailure = { label, state }; },
+    failSql: (label: string, state: string) => {
+      sqlFailure = { label, state };
+    },
     calls,
     receipts,
     setReady: (ready: boolean) => {
@@ -154,12 +162,21 @@ function fixture() {
 }
 describe("actual private intake repository protocol (offline driver, not SQL proof)", () => {
   test("only the capture-options DRV06 cursor refusal maps to invalid_request", async () => {
-    const invalid = fixture(); invalid.failSql("dance.intake.capture-options", "DRV06");
-    await expect(Effect.runPromise(invalid.store.captureOptions("community", "song", "f".repeat(64)))).rejects.toMatchObject({ reason: "invalid_request" });
-    const privateDenial = fixture(); privateDenial.failSql("dance.intake.capture-options", "DRV02");
-    await expect(Effect.runPromise(privateDenial.store.captureOptions("community", "song", "f".repeat(64)))).rejects.toMatchObject({ reason: "not_found" });
-    const proofFailure = fixture(); proofFailure.failSql("dance.intake.creation-facts", "DRV06");
-    await expect(Effect.runPromise(proofFailure.store.command(create))).rejects.toMatchObject({ reason: "unavailable" });
+    const invalid = fixture();
+    invalid.failSql("dance.intake.capture-options", "DRV06");
+    await expect(
+      Effect.runPromise(invalid.store.captureOptions("community", "song", "f".repeat(64))),
+    ).rejects.toMatchObject({ reason: "invalid_request" });
+    const privateDenial = fixture();
+    privateDenial.failSql("dance.intake.capture-options", "DRV02");
+    await expect(
+      Effect.runPromise(privateDenial.store.captureOptions("community", "song", "f".repeat(64))),
+    ).rejects.toMatchObject({ reason: "not_found" });
+    const proofFailure = fixture();
+    proofFailure.failSql("dance.intake.creation-facts", "DRV06");
+    await expect(Effect.runPromise(proofFailure.store.command(create))).rejects.toMatchObject({
+      reason: "unavailable",
+    });
   });
   test("creates exact terms then recovers immutable receipt before fresh availability", async () => {
     const f = fixture(),
