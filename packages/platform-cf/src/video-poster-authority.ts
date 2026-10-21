@@ -43,6 +43,8 @@ export const readVideoPosterAuthority = Effect.fn("readVideoPosterAuthority")(fu
   // publication's decision accepted. Its key carries that decision's creation
   // revision and its source is the sealed video revision, not the published
   // video: for a song reference the published video is the rendered master.
+  // Lock the publication and revision fences. Analysis and artifact facts stay
+  // read-only; row locks would require forbidden UPDATE grants on those tables.
   const result = yield* db.execute({
     label: "video-access.poster-authority",
     text: `SELECT pub.operation_id, pub.video_revision::text,
@@ -62,7 +64,7 @@ export const readVideoPosterAuthority = Effect.fn("readVideoPosterAuthority")(fu
         AND v.canonical_video_sha256=r.canonical_sha256
       WHERE pub.post_id=$1 AND pub.community_id=$2 AND pub.media_kind='video'
         AND pub.decision_revision<=pub.creation_revision
-        AND pub.poster_artifact_ref=$3${lock ? " FOR SHARE OF pub,r,a,v" : ""}`,
+        AND pub.poster_artifact_ref=$3${lock ? " FOR SHARE OF pub,r" : ""}`,
     values: [input.postId, input.communityId, input.artifactRef],
     readonly: !lock,
   });

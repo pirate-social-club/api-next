@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
@@ -12,6 +12,7 @@ import {
   decideOriginalAudioVideo,
   publishOriginalVideo,
 } from "../../domain/src/video-submission.ts";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeVideoPosterAuthority } from "./video-poster-authority.ts";
 import {
   finalizedFixture,
@@ -82,7 +83,11 @@ async function published(connection: string) {
 }
 
 async function fixture(
-  use: (input: Awaited<ReturnType<typeof published>>, admin: Client) => Promise<void>,
+  use: (
+    input: Awaited<ReturnType<typeof published>>,
+    admin: Client,
+    connection: string,
+  ) => Promise<void>,
 ) {
   if (!connectionString) throw new Error("Postgres configuration missing");
   await reusableSchema.run({
@@ -93,7 +98,7 @@ async function fixture(
       await admin.query(`SET search_path TO "${schema.replaceAll('"', '""')}"`);
       await applyPostgresTestBaselineConnection({ connectionString: connection });
       await seedVideoActors(admin);
-      await use(await published(connection), admin);
+      await use(await published(connection), admin, connection);
     },
   });
 }
@@ -104,6 +109,65 @@ const expire = (admin: Client) =>
   );
 
 suite("video thumbnail durable PostgreSQL", () => {
+  test("thumbnail claim and completion preserve read-only analysis and artifact authority", async () => {
+    await fixture(async ({ postId }, admin, connection) => {
+      const role = `video_thumbnail_runtime_${crypto.randomUUID().replaceAll("-", "")}`;
+      const schema = String(
+        (await admin.query("SELECT current_schema() AS schema")).rows[0].schema,
+      );
+      const quotedSchema = `"${schema.replaceAll('"', '""')}"`;
+      await admin.query(`CREATE ROLE "${role}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      const url = new URL(connection);
+      url.searchParams.set("options", `${url.searchParams.get("options") ?? ""} -c role=${role}`);
+      const runtime = new Client({ connectionString: url.toString() });
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA ${quotedSchema} TO "${role}"`);
+        await admin.query(`GRANT SELECT ON media_video_enrichment_outbox,
+          media_publication_projections,media_video_rights,media_video_revisions,
+          media_video_analyses,media_video_derived_artifacts TO "${role}"`);
+        await admin.query(`GRANT UPDATE ON media_video_enrichment_outbox,
+          media_publication_projections,media_video_rights TO "${role}"`);
+        await admin.query(`GRANT UPDATE(finalized_at) ON media_video_revisions TO "${role}"`);
+        await runtime.connect();
+        expect((await runtime.query("SELECT current_user AS role")).rows[0].role).toBe(role);
+        for (const table of ["media_video_analyses", "media_video_derived_artifacts"]) {
+          expect(
+            (
+              await runtime.query(
+                "SELECT has_any_column_privilege(current_user,$1,'UPDATE') AS allowed",
+                [table],
+              )
+            ).rows[0].allowed,
+          ).toBe(false);
+          await expect(
+            runtime.query(`UPDATE ${table} SET submission_id=submission_id`),
+          ).rejects.toMatchObject({ code: "42501" });
+        }
+        const store = makeVideoThumbnailStore(makeDirectPostgresControlPlaneLayer(url.toString()), {
+          leaseMs: 60_000,
+        });
+        const claim = await store.claim(effectIdentity);
+        if (claim === null) throw new Error("Restricted-role thumbnail claim missing");
+        expect(claim.postId).toBe(postId);
+        expect(await store.complete({ ...claim, sha256: "f".repeat(64) }, "ready")).toBe(false);
+        expect(await store.complete(claim, "ready")).toBe(true);
+        expect(await store.complete(claim, "failed")).toBe(false);
+        expect(
+          (
+            await runtime.query(
+              "SELECT state FROM media_video_enrichment_outbox WHERE effect_identity=$1",
+              [effectIdentity],
+            )
+          ).rows[0].state,
+        ).toBe("ready");
+      } finally {
+        await runtime.end().catch(() => undefined);
+        await admin.query(`DROP OWNED BY "${role}"`);
+        await admin.query(`DROP ROLE "${role}"`);
+      }
+    });
+  });
+
   test("one live claim, same-worker reacquisition fences stale and forged completion", async () => {
     await fixture(async ({ store }, admin) => {
       const claims = await Promise.all([store.claim(effectIdentity), store.claim(effectIdentity)]);
