@@ -3,9 +3,9 @@ faec0edd965c2550f99a213e1faca37e7783f91a ("fix: Windows tests"), which is
 not in the v2.0.0 release. v2.0.0 builds the temporary checkpoint path with
 sprintf(path, "%s~%u", path, height), reading the buffer it writes. Under
 musl that yields a relative "~<height>" path, so checkpoint writes fail in
-the read-only container root and every restart resyncs from the hard-coded
-checkpoint. Only this hunk is applied; the upstream build-system changes in
-the same commit are not.
+the read-only container root. The entrypoint does not pass -t, so every
+restart then syncs headers again from genesis. Only this hunk is applied; the
+same commit's build-system and other portability changes are not.
 
 diff --git a/src/store.c b/src/store.c
 index c567eb02..d238066c 100644
