@@ -1,0 +1,52 @@
+Backport of the src/store.c hunk from upstream handshake-org/hnsd commit
+faec0edd965c2550f99a213e1faca37e7783f91a ("fix: Windows tests"), which is
+not in the v2.0.0 release. v2.0.0 builds the temporary checkpoint path with
+sprintf(path, "%s~%u", path, height), reading the buffer it writes. Under
+musl that yields a relative "~<height>" path, so checkpoint writes fail in
+the read-only container root and every restart resyncs from the hard-coded
+checkpoint. Only this hunk is applied; the upstream build-system changes in
+the same commit are not.
+
+diff --git a/src/store.c b/src/store.c
+index c567eb02..d238066c 100644
+--- a/src/store.c
++++ b/src/store.c
+@@ -44,18 +44,27 @@ hsk_store_exists(char *path) {
+ 
+ static void
+ hsk_store_filename(char *prefix, char *path, uint32_t height) {
+-  sprintf(
+-    path,
+-    "%s%c%s_%s%s",
+-    prefix,
+-    HSK_PATH_SEP,
+-    HSK_STORE_FILENAME,
+-    HSK_NETWORK_NAME,
+-    HSK_STORE_EXTENSION
+-  );
+-
+   if (height > 0) {
+-    sprintf(path, "%s~%u", path, height);
++    sprintf(
++      path,
++      "%s%c%s_%s%s~%u",
++      prefix,
++      HSK_PATH_SEP,
++      HSK_STORE_FILENAME,
++      HSK_NETWORK_NAME,
++      HSK_STORE_EXTENSION,
++      height
++    );
++  } else {
++    sprintf(
++      path,
++      "%s%c%s_%s%s",
++      prefix,
++      HSK_PATH_SEP,
++      HSK_STORE_FILENAME,
++      HSK_NETWORK_NAME,
++      HSK_STORE_EXTENSION
++    );
+   }
+ }
+ 
