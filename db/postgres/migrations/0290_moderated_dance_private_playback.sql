@@ -1,7 +1,7 @@
 -- Audience/account-bound leases. No R2 URL is a browser authorization token.
 CREATE FUNCTION issue_moderated_dance_media_lease_v1(p_actor TEXT,p_community TEXT,p_review TEXT,p_revision BIGINT,p_audience TEXT,p_lease TEXT) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE r dance_moderated_reviews_v1; s dance_moderated_sessions_v1; f dance_review_account_fences_v1; owner community_role_assignments;
- now_at TIMESTAMPTZ:=clock_timestamp(); until_at TIMESTAMPTZ; profile JSONB;
+ now_at TIMESTAMPTZ; until_at TIMESTAMPTZ; profile JSONB;
 BEGIN
  IF NOT moderated_dance_account_runtime_v1() THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT * INTO r FROM dance_moderated_reviews_v1 WHERE review_id=p_review AND community_id=p_community;
@@ -13,7 +13,7 @@ BEGIN
  profile:=s.terms->'profile';
  IF p_lease !~ '^[A-Za-z0-9_-]{43}$' OR NOT EXISTS(SELECT 1 FROM users WHERE user_id=p_actor AND status='active')
  OR f.erasing OR f.revision<>s.capture_account_fence OR r.revision<>p_revision OR r.status NOT IN('uploaded','screening','awaiting_review')
- OR now_at>=r.review_deadline OR NOT active_activity_persona(r.account_id,s.persona_id,r.community_id)
+ OR NOT active_activity_persona(r.account_id,s.persona_id,r.community_id)
  OR NOT EXISTS(SELECT 1 FROM dance_moderated_review_evidence_v1 e WHERE e.review_id=r.review_id AND e.safety_status='accepted' AND e.integrity_status='unique' AND can_account_view_content_rating_v1(p_actor,e.content_rating)) THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  IF p_audience='dancer' THEN
   IF p_actor<>r.account_id THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
@@ -22,6 +22,8 @@ BEGIN
   SELECT * INTO STRICT owner FROM community_role_assignments WHERE community_id=p_community AND role='owner' AND status='active' AND account_id=p_actor FOR SHARE;
  ELSE RAISE EXCEPTION 'invalid media audience' USING ERRCODE='DRV06'; END IF;
  IF NOT charge_moderated_dance_intake_v1(p_actor,profile,TRUE,FALSE) THEN RAISE EXCEPTION 'private media budget reached' USING ERRCODE='DRV07'; END IF;
+ -- Includes owner/persona and the read-budget row waits; no stale lease grant.
+ now_at:=clock_timestamp();
  until_at:=least(r.review_deadline,now_at+((profile->>'mediaLeaseMs')::BIGINT*interval '1 millisecond'),CASE WHEN r.submitted_at IS NULL THEN s.expires_at ELSE r.review_deadline END);
  IF until_at IS NULL OR until_at<=now_at THEN RAISE EXCEPTION 'private media unavailable' USING ERRCODE='DRV02'; END IF;
  INSERT INTO dance_moderated_media_leases_v1 VALUES(p_lease,p_review,p_actor,p_audience,owner.role_assignment_id,owner.authority_revision,s.capture_account_fence,now_at,until_at);
@@ -46,6 +48,8 @@ BEGIN
  OR NOT EXISTS(SELECT 1 FROM dance_moderated_review_evidence_v1 e WHERE e.review_id=r.review_id AND e.safety_status='accepted' AND e.integrity_status='unique' AND can_account_view_content_rating_v1(p_actor,e.content_rating)) THEN RETURN NULL; END IF;
  IF lease.audience='dancer' AND p_actor<>r.account_id OR lease.audience='owner' AND (NOT can_owner_read_moderated_dance_v1(p_actor,p_review) OR NOT EXISTS(SELECT 1 FROM community_role_assignments owner WHERE owner.role_assignment_id=lease.owner_assignment_id AND owner.authority_revision=lease.owner_assignment_revision AND owner.account_id=p_actor AND owner.community_id=p_community AND owner.role='owner' AND owner.status='active')) THEN RETURN NULL; END IF;
  IF p_charge AND NOT charge_moderated_dance_intake_v1(p_actor,s.terms->'profile',TRUE,FALSE) THEN RETURN NULL; END IF;
+ -- A budget wait cannot turn an expired existing lease into a byte capability.
+ IF lease.expires_at<=clock_timestamp() OR r.review_deadline<=clock_timestamp() OR r.submitted_at IS NULL AND s.expires_at<=clock_timestamp() THEN RETURN NULL; END IF;
  RETURN jsonb_build_object('expiresAtMs',floor(extract(epoch FROM lease.expires_at)*1000)::BIGINT,'object',jsonb_build_object('key',u.immutable_object_identity->>'destination_ref','identity','upload_version','version',u.immutable_object_identity->>'version','etag',u.immutable_object_identity->>'etag','size',(u.immutable_object_identity->>'size_bytes')::BIGINT,'contentType',u.content_type,'canonicalSha256',u.server_sha256));
 END $$;
 DO $acl$

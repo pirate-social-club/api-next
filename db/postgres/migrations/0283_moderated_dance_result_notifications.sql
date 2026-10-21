@@ -125,16 +125,18 @@ BEGIN
    END IF;
    RETURN deliver_comment_notification_v1(p_event);
  END IF;
- SELECT * INTO event FROM dance_moderated_result_events_v1 WHERE event_id=p_event FOR UPDATE;
+ SELECT * INTO event FROM dance_moderated_result_events_v1 WHERE event_id=p_event;
  IF NOT FOUND THEN RAISE EXCEPTION 'persisted notification source required' USING ERRCODE='DRV02'; END IF;
+ recipient:=event.recipient_account_id;
+ -- This is also acquired by verdict/expiry BEFORE their user/review locks.
+ PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||recipient,0));
+ PERFORM 1 FROM users WHERE user_id=recipient FOR SHARE;
+ SELECT * INTO STRICT event FROM dance_moderated_result_events_v1 WHERE event_id=p_event FOR UPDATE;
  SELECT * INTO prior FROM dance_review_result_deliveries_v1 WHERE event_id=p_event;
  IF FOUND THEN
    IF event.delivered_at IS NULL THEN UPDATE dance_moderated_result_events_v1 SET delivered_at=clock_timestamp() WHERE event_id=p_event; END IF;
    RETURN jsonb_build_object('processed',FALSE,'delivered',prior.outcome='delivered');
  END IF;
- recipient:=event.recipient_account_id;
- PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||recipient,0));
- PERFORM 1 FROM users WHERE user_id=recipient FOR SHARE;
  PERFORM 1 FROM dance_review_account_fences_v1 WHERE account_id=recipient FOR SHARE;
  IF eligible_dance_result_notification_recipient_v1(p_event)=recipient THEN
    INSERT INTO notification_inbox(recipient_user_id,dance_result_event_id) VALUES(recipient,p_event)

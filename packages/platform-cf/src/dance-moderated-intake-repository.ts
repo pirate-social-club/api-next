@@ -65,6 +65,8 @@ function classify(error: unknown) {
     if (error.sqlState === "DRV02") return fail("not_found");
     if (error.sqlState === "DRV03") return fail("idempotency_conflict");
     if (error.sqlState === "DRV05") return fail("revision_conflict");
+    if (error.sqlState === "DRV06" && error.label === "dance.intake.capture-options")
+      return fail("invalid_request");
   }
   return fail("unavailable");
 }

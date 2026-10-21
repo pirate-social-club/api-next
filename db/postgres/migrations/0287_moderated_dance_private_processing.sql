@@ -91,7 +91,7 @@ CREATE TRIGGER moderated_provider_usage_no_truncate BEFORE TRUNCATE ON dance_mod
 CREATE FUNCTION claim_moderated_dance_media_v1(p_token TEXT,p_runtime TEXT,p_safety TEXT,p_epochs JSONB) RETURNS JSONB
  LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE candidate RECORD; s dance_moderated_sessions_v1; u dance_moderated_uploads_v1; f dance_review_account_fences_v1;
- work dance_moderated_processing_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); action TEXT; bucket BIGINT; width BIGINT; scope_value TEXT; usage NUMERIC; allowed NUMERIC;
+ work dance_moderated_processing_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); action TEXT; budget_ready BOOLEAN; budget_at TIMESTAMPTZ;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT upload.upload_id,session.account_id INTO candidate FROM dance_moderated_uploads_v1 upload JOIN dance_moderated_sessions_v1 session USING(session_id)
@@ -109,18 +109,34 @@ BEGIN
  SELECT * INTO f FROM dance_review_account_fences_v1 WHERE account_id=candidate.account_id FOR UPDATE;
  SELECT session.* INTO s FROM dance_moderated_sessions_v1 session JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=candidate.upload_id FOR UPDATE OF session;
  SELECT * INTO u FROM dance_moderated_uploads_v1 WHERE upload_id=candidate.upload_id FOR UPDATE SKIP LOCKED;
- IF u.upload_id IS NULL OR f.erasing OR f.revision<>s.capture_account_fence OR now_at>=least(u.expires_at,s.expires_at)
+ IF u.upload_id IS NULL OR f.account_id IS NULL OR f.erasing OR f.revision<>s.capture_account_fence
  OR NOT active_activity_persona(s.account_id,s.persona_id,s.community_id) THEN RETURN NULL; END IF;
+ -- Candidate selection time is not a grant. Persona/authority locks may wait.
+ now_at:=clock_timestamp();
+ IF now_at>=least(u.expires_at,s.expires_at) THEN RETURN NULL; END IF;
  profile:=s.terms->'profile';
  IF u.seal_dispatched_at IS NULL THEN
   UPDATE dance_moderated_uploads_v1 SET seal_dispatched_at=now_at,seal_token=p_token WHERE upload_id=u.upload_id;
   action:='seal';
  ELSE
   SELECT * INTO work FROM dance_moderated_processing_v1 WHERE upload_id=u.upload_id FOR UPDATE;
-  IF work.state NOT IN('ready','claimed','unknown') OR work.observation_until>now_at THEN RETURN NULL; END IF;
+  now_at:=clock_timestamp();
+  IF work.upload_id IS NULL OR work.state NOT IN('ready','claimed','unknown') OR work.observation_until>now_at
+   OR now_at>=least(u.expires_at,s.expires_at) THEN RETURN NULL; END IF;
   IF work.state='ready' THEN
    IF (profile->>'maximumProviderCalls')::BIGINT<6 OR (profile->>'maximumProviderSpendMicrounits')::NUMERIC<=0 THEN RETURN NULL; END IF;
-   IF NOT reserve_moderated_dance_provider_work_v1(s.account_id,profile) THEN RETURN NULL; END IF;
+   budget_at:=clock_timestamp();
+   budget_ready:=reserve_moderated_dance_provider_work_v1(s.account_id,profile);
+   -- The helper retains account/global usage locks. Recheck the actual clock
+   -- after those waits. Abort the entire reservation on closure/rollover so
+   -- neither a fresh grant nor its work charge survives after expiry.
+   now_at:=clock_timestamp();
+   IF now_at>=least(u.expires_at,s.expires_at) OR now_at<budget_at
+    OR floor(extract(epoch FROM now_at)*1000/(profile->>'windowMs')::NUMERIC)<>
+       floor(extract(epoch FROM budget_at)*1000/(profile->>'windowMs')::NUMERIC) THEN
+    RAISE EXCEPTION 'fresh dispatch window closed during budget wait' USING ERRCODE='DRV05';
+   END IF;
+   IF NOT budget_ready THEN RETURN NULL; END IF;
    UPDATE dance_moderated_processing_v1 SET state='claimed',work_token=p_token,provider_tag='dance-'||u.upload_id,
     dispatched_at=now_at,provider_deadline=least(s.expires_at,now_at+((profile->>'providerWaitMs')::BIGINT*interval '1 millisecond')),
     charged_calls=6,charged_spend_microunits=(profile->>'maximumProviderSpendMicrounits')::NUMERIC
@@ -148,6 +164,7 @@ BEGIN
  SELECT * INTO STRICT f FROM dance_review_account_fences_v1 WHERE account_id=s.account_id FOR UPDATE;
  PERFORM 1 FROM dance_moderated_sessions_v1 WHERE session_id=s.session_id FOR UPDATE;
  SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload FOR UPDATE;
+ now_at:=clock_timestamp();
  IF u.seal_token IS DISTINCT FROM p_token OR u.seal_dispatched_at IS NULL THEN RAISE EXCEPTION 'seal authority changed' USING ERRCODE='DRV05'; END IF;
  IF u.immutable_object_identity IS NOT NULL THEN
   IF u.immutable_object_identity IS DISTINCT FROM p_result THEN RAISE EXCEPTION 'seal identity changed' USING ERRCODE='DRV05'; END IF;

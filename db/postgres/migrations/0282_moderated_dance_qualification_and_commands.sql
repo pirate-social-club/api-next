@@ -73,8 +73,10 @@ DECLARE r dance_moderated_reviews_v1; owner community_role_assignments; policy T
 BEGIN
  SELECT * INTO r FROM dance_moderated_reviews_v1 WHERE review_id=p_action->>'reviewId' AND community_id=p_action->>'communityId';
  IF NOT FOUND THEN RAISE EXCEPTION 'private resource unavailable' USING ERRCODE='DRV02'; END IF;
- -- Every command orders lifecycle rows before own key and review. Immutable
- -- review identity can be read to discover these rows without granting access.
+ -- Match comment/result delivery: recipient advisory lock BEFORE user rows.
+ -- Commit re-enters this same order, including its synchronous inbox trigger.
+ -- Immutable review identity is discovery only, not private authority.
+ PERFORM pg_advisory_xact_lock(hashtextextended('notifications-recipient-v1:'||r.account_id,0));
  PERFORM 1 FROM users WHERE user_id IN(r.account_id,p_action->'actor'->>'accountId') ORDER BY user_id FOR UPDATE;
  PERFORM 1 FROM dance_review_account_fences_v1 WHERE account_id=r.account_id FOR UPDATE;
  PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('dance-review-command-v1',p_action->'actor'->>'kind',p_action->'actor'->>'accountId',p_action->>'operation',p_action->>'idempotencyKey')::TEXT,0));
@@ -233,8 +235,14 @@ BEGIN
    RAISE EXCEPTION 'invalid immutable Submit' USING ERRCODE='DRV05';
   END IF;
  END IF;
- IF next_status='review_expired' AND (terminal IS NULL OR terminal<r.review_deadline) THEN
-  RAISE EXCEPTION 'premature review expiry' USING ERRCODE='DRV05';
+ IF next_status='review_expired' THEN
+  -- A supplied future timestamp cannot manufacture expiry. Account commands
+  -- may expire an actually pending submitted review at the real deadline.
+  IF terminal IS NULL OR terminal<r.review_deadline OR terminal>clock_timestamp() OR clock_timestamp()<r.review_deadline
+   OR (r.status<>'review_expired' AND (r.status NOT IN('screening','awaiting_review') OR r.submitted_at IS NULL OR r.terminal_at IS NOT NULL))
+   OR (r.status='review_expired' AND next IS DISTINCT FROM r.state) THEN
+   RAISE EXCEPTION 'premature or invalid review expiry' USING ERRCODE='DRV05';
+  END IF;
  END IF;
  UPDATE dance_moderated_reviews_v1 SET state=next,revision=next_revision,
   publication_revision=(next->>'publicationRevision')::BIGINT,status=next_status,
