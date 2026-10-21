@@ -14,7 +14,7 @@ import { validateFixtureDnssec } from "./dnssec.ts";
 import { acquireAuthorityFixtureLease } from "./lease.ts";
 
 export const authorityImage =
-  "powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59";
+  "powerdns/pdns-auth-51@sha256:bb5b1c133bcca1dd455075321de7d55db4945a8d7f2ba23339e3c7bbe416b205";
 export const authorityAddresses = ["127.0.0.21", "127.0.0.22"] as const;
 const fixtureKey = "isolated-hns-authority-fixture-only";
 const transferKey = Buffer.from("isolated-regtest-transfer-key-not-a-live-secret").toString(

@@ -1,7 +1,7 @@
 services:
   powerdns-secondary:
     # Keep primary and secondary on the same reviewed PowerDNS release/digest.
-    image: powerdns/pdns-auth-51@sha256:f976e753a1de8ec62636203ecb12ae5fa3d1055601be167de53f1f673e0abe59
+    image: powerdns/pdns-auth-51@sha256:bb5b1c133bcca1dd455075321de7d55db4945a8d7f2ba23339e3c7bbe416b205
     container_name: pirate-hns-secondary-dns
     restart: unless-stopped
     network_mode: host

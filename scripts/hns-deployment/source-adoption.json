@@ -71,7 +71,7 @@
       "source_sha256": "54f9bde8ef4d85bccad4d1ce9069728f5915adc8dfaff4c0cf7695d47d751410",
       "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/compose.yaml",
       "mode": "100644",
-      "owned_sha256": "7a8403fd8bf13ba4a5c82852494ec542fafdcd2567c929f1735c5610012acffa",
+      "owned_sha256": "64eb72bfd7116bf2916ca6587be1a74de09dd4074c9a9bab5f9f4983479f7875",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -306,7 +306,7 @@
       "source_sha256": "8dd3f27f0cf9abc64ab7c365ce045e5142fa7a96c01c65e32026c46199957d7b",
       "owned_path": "scripts/hns-doh-resolver/compose.yaml",
       "mode": "100644",
-      "owned_sha256": "9d71e17c02bd06fd56f6670583164f8b4779e93a5660cdb97c37fda92cc27d88",
+      "owned_sha256": "821fae46287a51d14404301825e61603f3a75ab9a503a9dd87e17fb094dee8ea",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
