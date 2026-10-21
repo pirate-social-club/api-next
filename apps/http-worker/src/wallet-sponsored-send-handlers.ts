@@ -1,4 +1,12 @@
-import { AuthError, BadRequest, Conflict, NotFound, ProviderUnavailable } from "@pirate/contracts";
+import {
+  AuthError,
+  BadRequest,
+  Conflict,
+  NotFound,
+  ProviderUnavailable,
+  VerificationRequired,
+} from "@pirate/contracts";
+import { WalletSendVerificationRequired } from "@pirate/platform-cf/wallet-send-palm";
 import { SponsoredSendRefused } from "@pirate/platform-cf/wallet-sponsored-send-repository";
 import {
   type makeWalletSponsoredSendService,
@@ -17,6 +25,14 @@ function accountId(principal: Principal | null): string {
 }
 
 function failure(error: unknown): Error {
+  if (error instanceof NotFound || error instanceof ProviderUnavailable) return error;
+  if (error instanceof WalletSendVerificationRequired) {
+    return new VerificationRequired({
+      message: "Verify your palm to send",
+      details: { purpose: "wallet_send", persona_id: error.personaId, provider_id: "very.web" },
+      cause: error,
+    });
+  }
   if (error instanceof SponsoredSendRefused) {
     if (error.reason === "not-found") return new NotFound({ message: "Send unavailable" });
     if (error.reason === "limit") return new Conflict({ message: "Sponsorship limit reached" });
@@ -41,6 +57,7 @@ function response(view: SponsoredSendView) {
     recipient_address: view.record.recipientAddress,
     amount_atomic: view.record.amountAtomic.toString(),
     transaction_hash: view.record.transactionHash,
+    verification_required: view.verificationRequired,
     authorization:
       view.authorization === null
         ? null
@@ -56,10 +73,12 @@ export type WalletSponsoredSendHandlers = Readonly<{
   SubmitWalletSponsoredSend: EndpointHandler;
   GetWalletSponsoredSend: EndpointHandler;
   GetWalletSponsoredSendForPersona: EndpointHandler;
+  IssueWalletSendVerificationIntent: EndpointHandler;
 }>;
 
 export function makeWalletSponsoredSendHandlers(
   service: Service | null,
+  issueVerificationIntent: (accountId: string, personaId: string) => Promise<string>,
 ): WalletSponsoredSendHandlers {
   const requireService = () => {
     if (service === null)
@@ -67,6 +86,21 @@ export function makeWalletSponsoredSendHandlers(
     return service;
   };
   return {
+    IssueWalletSendVerificationIntent: async (request) => {
+      const account = accountId(request.principal);
+      const path = request.params as { readonly personaId: string };
+      try {
+        const intentId = await issueVerificationIntent(account, path.personaId);
+        return {
+          intent_id: intentId,
+          provider_id: "very.web",
+          purpose: "wallet_send",
+          persona_id: path.personaId,
+        };
+      } catch (error) {
+        throw failure(error);
+      }
+    },
     CreateWalletSponsoredSend: async (request) => {
       const account = accountId(request.principal);
       const path = request.params as { readonly personaId: string };

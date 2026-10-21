@@ -4,6 +4,7 @@ import {
   type ControlPlaneTransaction,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { hasCurrentWalletSendPalm, requireCurrentWalletSendPalm } from "./wallet-send-palm.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Executor = Pick<ControlPlaneTransaction, "execute">;
@@ -171,6 +172,11 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
     throw new Error("sponsorship count limits must be positive");
 
   return {
+    hasCurrentPalm: (input: { accountId: string }) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* hasCurrentWalletSendPalm(db, input.accountId);
+      }),
     get: (input: { accountId: string; sendId: string }) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -285,6 +291,7 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
             });
             if (siblingRecipient.rows.length > 0)
               return yield* Effect.fail(new SponsoredSendRefused("ineligible"));
+            yield* requireCurrentWalletSendPalm(transaction, input.accountId, input.personaId);
             const counts = yield* transaction.execute<Row>({
               label: "wallet-sponsored-send.quota.read",
               text: `SELECT count(*)::int AS platform_count,
@@ -351,16 +358,33 @@ function makeControlPlaneSponsoredSendRepository(limits: SponsoredSendCountLimit
     markSubmitting: (input: { accountId: string; sendId: string }) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        const result = yield* db.execute<Row>({
-          label: "wallet-sponsored-send.submitting",
-          text: `UPDATE wallet_sponsored_sends SET status='submitting', updated_at=clock_timestamp()
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const found = yield* transaction.execute<Row>({
+              label: "wallet-sponsored-send.submit.lock",
+              text: `${SELECT} WHERE send.account_id=$1 AND send.send_id=$2 FOR UPDATE`,
+              values: [input.accountId, input.sendId],
+              readonly: false,
+            });
+            if (found.rows.length !== 1)
+              return yield* Effect.fail(new SponsoredSendRefused("not-found"));
+            const record = parseRecord(found.rows[0] as Row);
+            if (record.status !== "reserved")
+              return yield* Effect.fail(new SponsoredSendRefused("conflict"));
+            yield* requireCurrentWalletSendPalm(transaction, input.accountId, record.personaId);
+            const result = yield* transaction.execute<Row>({
+              label: "wallet-sponsored-send.submitting",
+              text: `UPDATE wallet_sponsored_sends SET status='submitting', updated_at=clock_timestamp()
             WHERE account_id=$1 AND send_id=$2 AND status='reserved'
               AND request_expires_at > clock_timestamp()
             RETURNING send_id`,
-          values: [input.accountId, input.sendId],
-          readonly: false,
-        });
-        if (result.rowCount !== 1) return yield* Effect.fail(new SponsoredSendRefused("conflict"));
+              values: [input.accountId, input.sendId],
+              readonly: false,
+            });
+            if (result.rowCount !== 1)
+              return yield* Effect.fail(new SponsoredSendRefused("conflict"));
+          }),
+        );
       }),
     recordSubmission: (input: {
       accountId: string;
@@ -478,6 +502,8 @@ export function makeControlPlaneSponsoredSendStore(
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(layer)(effect);
   return {
+    hasCurrentPalm: (input: Parameters<typeof repository.hasCurrentPalm>[0]) =>
+      provide(repository.hasCurrentPalm(input)),
     get: (input: Parameters<typeof repository.get>[0]) => provide(repository.get(input)),
     findByPersona: (input: Parameters<typeof repository.findByPersona>[0]) =>
       provide(repository.findByPersona(input)),
