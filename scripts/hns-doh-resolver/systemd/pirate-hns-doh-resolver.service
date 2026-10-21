@@ -1,0 +1,25 @@
+[Unit]
+Description=Pirate HNS DoH resolver (hnsd SPV + dnsdist)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+Environment=DEPLOY_ROOT=/srv/pirate-hns-doh
+EnvironmentFile=-/srv/pirate-hns-doh/config/resolver.env
+WorkingDirectory=/srv/pirate-hns-doh/current
+# --wait blocks until the hnsd healthcheck (Hesiod sync gate) reports healthy,
+# so systemd does not report the unit active while the resolver is still
+# catching up. First boot from an empty data dir can take ~40 minutes.
+# A stable project name is load-bearing with immutable releases. Without it,
+# Compose derives the project from the resolved `current` symlink target, so
+# every release becomes a different project: `down` removes nothing and the new
+# `up` collides with the old containers' explicit names.
+ExecStart=/usr/bin/docker compose --project-name pirate-hns-doh up -d --wait --wait-timeout 3900
+ExecStop=/usr/bin/docker compose --project-name pirate-hns-doh down
+TimeoutStartSec=4000
+
+[Install]
+WantedBy=multi-user.target

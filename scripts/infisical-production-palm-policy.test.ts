@@ -94,7 +94,13 @@ describe("production Palm secret boundaries", () => {
     };
     expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
 
-    const monitorNames = ["HNS_OPERATOR_ALERT_WEBHOOK_URL", "HNS_OPERATOR_MONITOR_POSTGRES_URL"];
+    const monitorNames = [
+      "FLEET_HEALTHCHECK_URLS_JSON",
+      "HNS_AUTHORITY_DNS_AXFR_TSIG_SECRET",
+      "HNS_HEALTHCHECKS_API_KEY",
+      "HNS_OPERATOR_MONITOR_POSTGRES_URL",
+      "SPACES_OPERATOR_API_RECOVERY_POSTGRES_URL",
+    ];
     expect(
       auditInfisicalSnapshots([
         {

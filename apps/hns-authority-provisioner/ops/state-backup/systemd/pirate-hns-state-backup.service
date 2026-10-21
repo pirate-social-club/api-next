@@ -1,0 +1,29 @@
+[Unit]
+Description=Encrypted backup of Pirate HNS and Spaces edge state
+After=network-online.target
+Wants=network-online.target
+OnFailure=pirate-hns-state-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/srv/pirate-hns/config/hns-state-backup.env
+ExecStart=/srv/pirate-hns/current/hns-state-backup.sh
+# A heartbeat is emitted only after the archive, sidecar, upload, and provider
+# retention checks all succeed. A dead timer or repeated failure therefore
+# becomes a missing heartbeat and trips the external missed-run check.
+ExecStartPost=/srv/pirate-hns/current/bin/heartbeat.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

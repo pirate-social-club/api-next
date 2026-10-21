@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify Pirate HNS authoritative RRSIG lifetime
+After=network-online.target pirate-hns-authdns.service
+Wants=network-online.target
+OnFailure=pirate-hns-rrsig-health-alert.service
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_ROOT=/srv/pirate-hns-authdns
+EnvironmentFile=/srv/pirate-hns-authdns/config/rrsig-health.env
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/check-rrsig-expiry.sh"'
+ExecStartPost=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/heartbeat.sh"'

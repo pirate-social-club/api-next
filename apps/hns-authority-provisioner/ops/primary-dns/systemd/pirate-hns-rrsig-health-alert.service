@@ -1,0 +1,8 @@
+[Unit]
+Description=Alert on Pirate HNS authoritative RRSIG health failure
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_ROOT=/srv/pirate-hns-authdns
+EnvironmentFile=/srv/pirate-hns-authdns/config/rrsig-health.env
+ExecStart=/bin/bash -c 'exec "$DEPLOY_ROOT/current/bin/alert-on-failure.sh" "pirate-hns-rrsig-health.service"'
