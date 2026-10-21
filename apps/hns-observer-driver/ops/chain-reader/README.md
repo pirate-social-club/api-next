@@ -20,3 +20,10 @@ actual scheduled verification succeeds. Record the drop-ins in the installed
 file manifest and retain the previous container, selector and units for rollback.
 
 Readiness requires near-complete verification and a bounded tip age. Stronger namespace and finality policy belongs to the API observer. A health response alone does not prove current finality. Release acceptance checks the exact image, mounts, source digest, API authentication, synchronized main chain, unit/file integrity and affected callers. Retain the existing reader until its successor has passed those checks.
+
+The release asset hook also reproduces the existing private observer driver and
+pins its Bun runtime and tunnel binary. Install the native-driver verifier
+drop-in alongside the existing bounds and timer drop-ins. It extends the same
+observer integrity check through a real authenticated private-driver exchange.
+See scripts/hns-deployment/native-runtime-recovery.md for immutable historical
+application binding, private configuration recovery and bounded rollback.

@@ -475,7 +475,7 @@
       "source_sha256": "696099d47fd7e08eec3d1d2d574f333df1b7a563b0956f26487c07cdd5de81c1",
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/README.md",
       "mode": "100644",
-      "owned_sha256": "3097118adb404e8ca360690ec8e74ee93ddf1551b7d5d3db35c56d197021de0d",
+      "owned_sha256": "60082f8802079f6d24e2588707bf329360457fd2fef4f7d64212a4c1dbc19650",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -983,6 +983,50 @@
     {
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/systemd/pirate-deployment-verify@observer.timer.d/10-initial-verification.conf",
       "sha256": "f3b2fdd48cc2961dced9cc887868ead21027fad9071e3bf5a256b49e9fa74376"
+    },
+    {
+      "owned_path": "apps/hns-observer-driver/ops/chain-reader/bin/stage-release-assets.sh",
+      "sha256": "d62752b2afa2d65961597d6b24940c79d49b590525a86df1777c3be949aeae1f"
+    },
+    {
+      "owned_path": "apps/hns-observer-driver/ops/chain-reader/systemd/pirate-deployment-verify@observer.service.d/20-native-driver.conf",
+      "sha256": "429e01d2bcb6ab918732a143431c0cfaf2032701086bd8babd9e1ea67b55243a"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/production/bin/stage-release-assets.sh",
+      "sha256": "5f74a47a09b413e6aa8406c7980904ec3a0cf4ec949a41a6f3324e4d92576c1d"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/production/deployment-manifest.json",
+      "sha256": "c6269d0f8773b51a6ba785e56155911b91e3dd43ba2efdc3b4825e0dffc8bb41"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/production/systemd/pirate-deployment-verify@gateway-config.service.d/10-native-gateway.conf",
+      "sha256": "2bb1e9045ab06c77ba780ae69f40f9e16825598b35c11d8ef647cd26f1c3a800"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/production/systemd/pirate-deployment-verify@gateway-config.timer.d/10-initial-verification.conf",
+      "sha256": "7b80f59d1eeccd75012bfa321f0949a45e00833660085a5e1056f4b4f2c1c5c4"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/build-native-app-bundle.py",
+      "sha256": "07fbf9e5c8bf329d583d30f95c7c5fea5815864086e835a5388b335d9f005394"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/native-runtime-recovery.md",
+      "sha256": "3eb2cdb57b21ed0a84566cb1600545644bb795bc999f6fba0a80735824b88301"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
+      "sha256": "1a1373c2686c29b59f7268131d2321ee5d6c3e5b6a9f5c4b94adb4b9c5ed43d6"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/verify-native-runtime_test.py",
+      "sha256": "f86fbdd8338dcdae7cc2bded3458eb23afe73824a2cb28adf3747b10d9bcd758"
+    },
+    {
+      "owned_path": "scripts/hns-native-runtime.test.ts",
+      "sha256": "b04d716428800b68655adafa5cdd719a58aabcc139a44f0085ad11d8abf113ca"
     }
   ]
 }
