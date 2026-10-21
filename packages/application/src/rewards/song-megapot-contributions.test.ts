@@ -25,23 +25,19 @@ const fixture = {
     funding_amount_atomic: "1000000",
     expected_context_hash: "47e14f282256168eac75d25ceeae2fe1e77eb4ad4d1c484bf9519b4539adc352",
     expected_lifecycle_revision: 0,
-    context_ref: {
-      version: "funding-context-reference-v1",
-      slot_id: "fixture-slot",
-      slot_generation: 0,
-      leg_snapshot_id: null,
-      schedule_witness_id: "fixture-witness",
-      profile_id: "fixture-profile",
-      profile_hash: "a4ed102f029f8b3f5d49ca9fe64c131c017e3471a0d388fa65bfeb4db10b97dc",
-      funding_policy_hash: "1bb42413cfc2fe292c95fcab0e62436a54199ffce08360a33d789aa12773dac6",
-      wallet_assignment_id: "fixture-wallet",
-      wallet_assignment_revision: 1,
-      lifecycle_revision: 0,
-    },
-    expected_terms: {
-      kind: "prospective",
-      prospective_terms_hash: "4d0d1092962c36cec741a0316c79f87de7898669b9d3d4eb65b364219c2eed3d",
-    },
+    context_version: "funding-context-reference-v1",
+    context_slot_id: "fixture-slot",
+    context_slot_generation: 0,
+    context_leg_snapshot_id: "",
+    context_schedule_witness_id: "fixture-witness",
+    context_profile_id: "fixture-profile",
+    context_profile_hash: "a4ed102f029f8b3f5d49ca9fe64c131c017e3471a0d388fa65bfeb4db10b97dc",
+    context_funding_policy_hash: "1bb42413cfc2fe292c95fcab0e62436a54199ffce08360a33d789aa12773dac6",
+    context_wallet_assignment_id: "fixture-wallet",
+    context_wallet_assignment_revision: 1,
+    context_lifecycle_revision: 0,
+    expected_terms_kind: "prospective",
+    expected_terms_hash: "4d0d1092962c36cec741a0316c79f87de7898669b9d3d4eb65b364219c2eed3d",
   },
   prospectus: {
     version: "shared-song-megapot-prospectus-v1",
@@ -349,7 +345,9 @@ function fixtureStore() {
         gas_ready: true,
       },
       context_ref: {
-        ...fixture.request.context_ref,
+        ...C.contributionContextReferenceV2(
+          C.decodeFundingCommandV2("CreateSongMegapotContributionV2", fixture.request),
+        ),
         version: "funding-context-reference-v1",
         schedule_witness_id: schedule.schedule_witness_id,
         wallet_assignment_id: actor.wallet_assignment_id,
@@ -406,11 +404,22 @@ function fixtureStore() {
       version: 2,
       persona_id: actor.persona_id,
       expected_context_hash: c.context_hash,
-      context_ref: c.context_ref,
-      expected_terms:
+      context_version: c.context_ref.version,
+      context_slot_id: c.context_ref.slot_id,
+      context_slot_generation: c.context_ref.slot_generation,
+      context_leg_snapshot_id: c.context_ref.leg_snapshot_id ?? "",
+      context_schedule_witness_id: c.context_ref.schedule_witness_id,
+      context_profile_id: c.context_ref.profile_id,
+      context_profile_hash: c.context_ref.profile_hash,
+      context_funding_policy_hash: c.context_ref.funding_policy_hash,
+      context_wallet_assignment_id: c.context_ref.wallet_assignment_id,
+      context_wallet_assignment_revision: c.context_ref.wallet_assignment_revision,
+      context_lifecycle_revision: c.context_ref.lifecycle_revision,
+      expected_terms_kind: c.quote.kind,
+      expected_terms_hash:
         c.quote.kind === "prospective"
-          ? { kind: "prospective", prospective_terms_hash: c.quote.prospective_terms_hash }
-          : { kind: "committed", terms_hash: c.quote.committed_terms_hash },
+          ? c.quote.prospective_terms_hash
+          : c.quote.committed_terms_hash,
     };
     return request;
   }
@@ -972,6 +981,16 @@ describe("fake-port contribution application", () => {
     const before = f.counts();
     expect(await f.create("a", "2000000", "new_contribution_key_01", request)).toEqual(r);
     expect(f.counts().preflights).toBe(before.preflights);
+    for (const change of [
+      { context_schedule_witness_id: "changed-witness" },
+      { context_wallet_assignment_revision: request.context_wallet_assignment_revision + 1 },
+      { expected_terms_hash: "f".repeat(64) },
+    ]) {
+      await expect(
+        f.create("a", "2000000", "new_contribution_key_01", { ...request, ...change }),
+      ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    }
+    expect(f.counts()).toEqual({ ...before, authorizations: before.authorizations + 4 });
     await expect(
       f.create("a", "1000000", "new_contribution_key_01", request),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });

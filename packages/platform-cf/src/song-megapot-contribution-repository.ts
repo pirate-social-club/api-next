@@ -789,6 +789,25 @@ export const persistRewardFundingPrincipalIn = Effect.fn(
   });
 });
 
+/** Both queue observers and reconciliation use the same fenced principal write. */
+const acceptSongFundingPrincipal = Effect.fn("SongFundingWork.accept")(function* (
+  work: SongFundingWork,
+  proof: FundingPrincipalEvidence,
+) {
+  return yield* withSongMegapotContributionTransaction(
+    work.identity,
+    Effect.fn("SongFundingWork.acceptIn")(function* (tx: ControlPlaneTransaction) {
+      yield* tx.execute({
+        label: "song-funding.work.fence",
+        text: "SELECT require_song_funding_work_lease_v2($1,$2)",
+        values: [work.workId, work.token],
+        readonly: false,
+      });
+      return yield* persistRewardFundingPrincipalIn(tx, proof);
+    }),
+  );
+});
+
 /** The queued observer reuses the actual canonical incoming reader and the SAME
  * transaction boundary. Provider work is outside the write transaction. Caller
  * identity comes from owned durable work, not a browser's claimed sender. No
@@ -799,9 +818,10 @@ export function makeControlPlaneRewardFundingObserver(
   discover: ReturnType<typeof makeRewardFundingReceiptDiscovery>,
 ) {
   return Effect.fn("SongContributionRepository.observePrincipal")(function* (
-    identity: CommandIdentity,
+    work: SongFundingWork,
     transactionHash: string,
   ) {
+    const identity = work.identity;
     return yield* mapStorage(
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -816,9 +836,7 @@ export function makeControlPlaneRewardFundingObserver(
         const state = yield* decodeRow(stateSchema, loaded.rows[0]?.packet);
         const proof = yield* discover(state, transactionHash);
         if (proof === null) return null;
-        return yield* withSongMegapotContributionTransaction(identity, (tx) =>
-          persistRewardFundingPrincipalIn(tx, proof),
-        );
+        return yield* acceptSongFundingPrincipal(work, proof);
       }).pipe(Effect.provide(layer)),
     );
   });
@@ -974,20 +992,7 @@ export function makeControlPlaneSongFundingRecoveryStore(
         ).pipe(Effect.asVoid),
       ),
     accept: (work: SongFundingWork, proof: FundingPrincipalEvidence) =>
-      provided(
-        withSongMegapotContributionTransaction(
-          work.identity,
-          Effect.fn("SongFundingWork.accept")(function* (tx: ControlPlaneTransaction) {
-            yield* tx.execute({
-              label: "song-funding.work.fence",
-              text: "SELECT require_song_funding_work_lease_v2($1,$2)",
-              values: [work.workId, work.token],
-              readonly: false,
-            });
-            return yield* persistRewardFundingPrincipalIn(tx, proof);
-          }),
-        ),
-      ),
+      provided(acceptSongFundingPrincipal(work, proof)),
     finish,
   };
 }

@@ -15,6 +15,7 @@ import {
   cancellationInstructionPreimageV2,
   cancellationPolicyPreimageV2,
   committedTermsPreimageV2,
+  contributionContextReferenceV2,
   decodeFundingCommandV2,
   type ErrorV2,
   FundingCommandReceiptV2,
@@ -551,10 +552,10 @@ const createContribution = Effect.fn("SongMegapotContribution.create")(function*
   if (
     c.target.community_id !== identity.communityId ||
     c.target.post_id !== identity.postId ||
-    JSON.stringify(projectContextReference(request.context_ref)) !==
+    JSON.stringify(projectContextReference(contributionContextReferenceV2(request))) !==
       JSON.stringify(projectContextReference(c.context_ref)) ||
     request.expected_lifecycle_revision !== c.lifecycle_revision ||
-    request.context_ref.lifecycle_revision !== c.lifecycle_revision ||
+    request.context_lifecycle_revision !== c.lifecycle_revision ||
     c.context_ref.wallet_assignment_id !== a.actor.wallet_assignment_id ||
     c.context_ref.profile_id !== c.limits.profile_id ||
     c.context_ref.schedule_witness_id !== c.schedule.schedule_witness_id
@@ -586,15 +587,15 @@ const createContribution = Effect.fn("SongMegapotContribution.create")(function*
     )
       return yield* fail("invalid_request");
     if (
-      request.expected_terms.kind !== "prospective" ||
-      request.expected_terms.prospective_terms_hash !== c.quote.prospective_terms_hash ||
+      request.expected_terms_kind !== "prospective" ||
+      request.expected_terms_hash !== c.quote.prospective_terms_hash ||
       (yield* digestFundingPreimageV2(prospectiveTermsPreimageV2(c.quote.prospective_terms))) !==
         c.quote.prospective_terms_hash
     )
       return yield* fail("terms_mismatch");
   } else if (
-    request.expected_terms.kind !== "committed" ||
-    request.expected_terms.terms_hash !== c.quote.committed_terms_hash
+    request.expected_terms_kind !== "committed" ||
+    request.expected_terms_hash !== c.quote.committed_terms_hash
   )
     return yield* fail("terms_mismatch");
   if (

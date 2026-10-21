@@ -3251,6 +3251,7 @@ BEGIN
   IF pg_has_role(target,owner,'MEMBER') THEN RAISE EXCEPTION 'runtime owns money authority' USING ERRCODE='42501'; END IF;
   CASE purpose
     WHEN 'http_commands' THEN allowed:=ARRAY[
+      'read_song_contribution_context_v2(jsonb,text)','read_song_contribution_command_v2(jsonb,text,text)','read_owned_song_contribution_current_v2(jsonb)',
       'load_song_contribution_command_v2(text,text,text)','load_owned_song_contribution_v2(jsonb)',
       'lock_song_contribution_context_v2(jsonb,text)','create_song_contribution_v2(jsonb,jsonb,text)',
       'update_song_contribution_command_v2(jsonb,jsonb,jsonb,jsonb)','enqueue_song_contribution_reconciliation_v2(jsonb,jsonb,jsonb)',
@@ -5939,13 +5940,20 @@ CREATE FUNCTION create_song_contribution_v2(i jsonb, s jsonb, snapshot text) RET
     AS $$
 DECLARE r JSONB:=s->'receipt'; o JSONB:=s->'owner'; snap reward_funding_leg_snapshots_v2;
   slot reward_song_slots_v2; p reward_funding_profiles_v2; lease reward_wallet_nonce_leases; amount reward_funding_atomic_v2;
-  leg TEXT:=r->'target'->>'pool_leg_id'; cap BIGINT; active_count BIGINT; affected INTEGER;
+  leg TEXT:=r->'target'->>'pool_leg_id'; cap BIGINT; active_count BIGINT; affected INTEGER; paused BOOLEAN;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=snapshot;
   SELECT * INTO STRICT slot FROM reward_song_slots_v2 WHERE slot_id=snap.slot_id FOR UPDATE;
   PERFORM lock_reward_wallet_nonce_sender_v2((r->'instruction'->>'chain_id')::BIGINT,r->'instruction'->>'from');
   SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  IF paused IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001'; END IF;
+  PERFORM 1 FROM megapot_deployment_attestations WHERE attestation_id=r->'instruction'->>'attestation_id'
+    AND status='active' AND retired_at IS NULL AND verified_at<=clock_timestamp()
+    AND chain_id=(r->'instruction'->>'chain_id')::BIGINT AND usdc_address=r->'instruction'->>'to_token'
+    AND custody_address=r->'instruction'->>'recipient_custody' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'current funding attestation unavailable' USING ERRCODE='PCV05'; END IF;
   IF NOT p.accepted OR p.valid_until<=clock_timestamp() OR NOT slot.reward_policy_ready THEN RAISE EXCEPTION 'policy unavailable' USING ERRCODE='PCV05'; END IF;
   IF slot.status<>'open' OR slot.target IS DISTINCT FROM r->'target' OR slot.terms IS DISTINCT FROM r->'committed_terms' THEN RAISE EXCEPTION 'target terms changed' USING ERRCODE='PCV06'; END IF;
   IF snap.context->'actor' IS DISTINCT FROM o OR i->>'accountId' IS DISTINCT FROM o->>'account_id'
@@ -21657,7 +21665,7 @@ CREATE FUNCTION lock_song_contribution_context_v2(i jsonb, h text) RETURNS jsonb
     SET search_path FROM CURRENT
     AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2; p reward_funding_profiles_v2;
-  w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB;
+  w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB; paused BOOLEAN;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(jsonb_build_array('funding-account-v2',i->>'accountId')::text,0));
   SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE context_hash=h;
@@ -21667,6 +21675,13 @@ BEGIN
   PERFORM lock_reward_wallet_nonce_sender_v2((snap.context->>'chain_id')::BIGINT,snap.context->'actor'->>'sender_address');
   SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id FOR SHARE;
   SELECT * INTO STRICT w FROM reward_funding_schedule_witnesses_v2 WHERE witness_id=snap.witness_id;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  IF paused IS DISTINCT FROM FALSE THEN RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001'; END IF;
+  PERFORM 1 FROM megapot_deployment_attestations WHERE attestation_id=snap.context->>'attestation_id'
+    AND status='active' AND retired_at IS NULL AND verified_at<=clock_timestamp()
+    AND chain_id=(snap.context->>'chain_id')::BIGINT AND usdc_address=snap.context->>'token_address'
+    AND custody_address=snap.context->>'custody_address' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'current funding attestation unavailable' USING ERRCODE='PCV05'; END IF;
   leg:=slot.target->>'pool_leg_id';
   -- Missing envelopes never create a budget. They are admitted operational inputs.
   PERFORM 1 FROM reward_funding_work_envelopes_v2 WHERE (scope,scope_key) IN
@@ -25387,6 +25402,87 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION read_owned_song_contribution_current_v2(i jsonb) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE c song_megapot_contributions_v2; s JSONB; r JSONB; instr JSONB;
+  incoming reward_incoming_receipts_v2; reservation reward_contribution_reservations_v2;
+  late reward_late_principal_liabilities_v2; seal TEXT; claims JSONB:='[]'; g JSONB;
+  cancel JSONB; nonce_status TEXT; category TEXT; current_state TEXT; actions JSONB;
+  updated TIMESTAMPTZ; plan_state TEXT;
+BEGIN
+  SELECT * INTO c FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId'
+    AND community_id=i->>'communityId' AND post_id=i->>'postId' AND contribution_id=i->>'contributionId';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  s:=project_song_contribution_state_v2(c.state);r:=s->'receipt';instr:=r->'instruction';
+  SELECT * INTO incoming FROM reward_incoming_receipts_v2 WHERE contribution_id=c.contribution_id;
+  SELECT * INTO STRICT reservation FROM reward_contribution_reservations_v2 WHERE contribution_id=c.contribution_id;
+  SELECT * INTO late FROM reward_late_principal_liabilities_v2 WHERE contribution_id=c.contribution_id;
+  SELECT seal_id INTO seal FROM reward_pool_cohort_members_v2 WHERE contribution_id=c.contribution_id;
+  -- Expiry, absent hash and a client assertion never prove nonce consumption.
+  -- This source has no accepted no-principal/outbound completion interpreter.
+  nonce_status:=CASE WHEN incoming.receipt_id IS NOT NULL AND (s->>'nonceFinalized')::BOOLEAN
+    THEN 'consumed_transfer' ELSE 'unresolved' END;
+  category:=CASE incoming.category WHEN 'pool_principal' THEN 'pool_principal'
+    WHEN 'late_principal' THEN 'late_principal' WHEN 'unattributed_principal' THEN 'unattributed_asset'
+    ELSE 'unresolved' END;
+  current_state:=CASE WHEN s->>'fundingState'='nonce_closed_no_principal' AND incoming.receipt_id IS NULL
+    THEN 'manual_reconciliation_required' ELSE s->>'fundingState' END;
+  IF reservation.disposition='closed' AND incoming.receipt_id IS NULL THEN
+    RAISE EXCEPTION 'closed reservation lacks accepted nonce disposition' USING ERRCODE='PCV10';
+  END IF;
+  FOREACH g IN ARRAY ARRAY[s->'fundingGrant',s->'cancellationGrant'] LOOP
+    IF g IS NOT NULL AND g<>'null'::JSONB THEN
+      claims:=claims||jsonb_build_array(jsonb_build_object('state',CASE WHEN nonce_status='consumed_transfer' THEN 'finalized' ELSE 'claimed' END,
+        'purpose',g->>'purpose','grant_id',g->>'grant_id','grant_revision',g->'grant_revision',
+        'holder_client_instance_id',g->>'holder_client_instance_id','submission_attempt_id',g->>'submission_attempt_id',
+        'valid_until',g->>'valid_until','cancellation_preparation_id',g->'cancellation_preparation_id',
+        'cancellation_preparation_revision',g->'cancellation_preparation_revision'));
+    END IF;
+  END LOOP;
+  cancel:=s->'cancellationHead';
+  plan_state:=CASE WHEN cancel='null'::JSONB THEN 'not_prepared'
+    WHEN s->'cancellationGrant'<>'null'::JSONB THEN CASE WHEN nonce_status='consumed_transfer' THEN 'finalized' ELSE 'claimed' END
+    WHEN (cancel->>'dispatch_expires_at')::TIMESTAMPTZ<=statement_timestamp() THEN 'expired_unclaimed' ELSE 'prepared' END;
+  -- These are reconciliation requests, not fresh wallet invocation authority.
+  -- A consumed purpose remains claimed after its dispatch deadline expires.
+  actions:=CASE WHEN nonce_status='consumed_transfer' THEN '["start_fresh_contribution"]'::JSONB
+    ELSE '["observe_original","recover_original","wait"]'::JSONB END;
+  updated:=greatest(c.created_at,incoming.created_at,
+    (SELECT max(created_at) FROM song_megapot_contribution_commands_v2 WHERE contribution_id=c.contribution_id),
+    CASE WHEN current_state='expired_reconciling' THEN (s->>'effectiveDeadline')::TIMESTAMPTZ END);
+  RETURN jsonb_build_object('accountId',c.account_id,'current',jsonb_build_object(
+    'object','song_megapot_contribution_state','version',2,'contribution_id',c.contribution_id,
+    'funding_effect_id',c.funding_effect_id,'revision',s->'revision','state',current_state,'nonce_state',nonce_status,
+    'disposition',category,'target',r->'target','original_persona_id',s->'owner'->>'persona_id',
+    'original_sender',instr->>'from','terms_hash',r->>'terms_hash','instruction_hash',instr->>'instruction_hash',
+    'receipt_evidence',incoming.evidence->'evidence',
+    'pool_credit_atomic',CASE WHEN incoming.category='pool_principal' THEN incoming.amount_atomic::TEXT ELSE '0' END,
+    'late_principal_owed_atomic',coalesce(late.amount_atomic-late.paid_atomic,0)::TEXT,
+    'refund_paid_atomic',coalesce(late.paid_atomic,0)::TEXT,
+    'reservation_capacity_state',CASE reservation.disposition WHEN 'held' THEN 'reserved'
+      WHEN 'converted' THEN 'consumed_by_pool_credit' ELSE 'released_after_nonce_consumed' END,
+    'cohort_seal_id',seal,'allowed_actions',actions,'pause_reason',NULL,
+    'updated_at',to_char(updated AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'submissions',claims,'command_receipt',r,'cancellation',jsonb_build_object(
+      'object','contribution_cancellation_preparation_state','state',plan_state,
+      'preparations_used',s->'preparationsUsed','current_preparation_id',cancel->'preparation_id',
+      'current_preparation_revision',coalesce(cancel->'preparation_revision','0'::JSONB),'current_receipt',cancel)));
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_owned_song_contribution_current_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION read_owner_guest_answer_operation_v1(p_access jsonb, p_source text, p_operation jsonb, p_community text, p_session text, p_item text, p_attempt integer) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25631,6 +25727,93 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='read_owner_study_session_snapshot_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_access jsonb, p_community text, p_session text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION read_song_contribution_command_v2(i jsonb, o text, k text) RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT jsonb_build_object('accountId',account_id,'communityId',community_id,'postId',post_id,
+    'operation',operation,'key',idempotency_key,'requestHash',request_hash,'receipt',receipt)
+  FROM song_megapot_contribution_commands_v2 WHERE account_id=i->>'accountId'
+    AND community_id=i->>'communityId' AND post_id=i->>'postId' AND operation=o AND idempotency_key=k
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_song_contribution_command_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, o text, k text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION read_song_contribution_context_v2(i jsonb, persona text) RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2;
+  p reward_funding_profiles_v2; w reward_funding_schedule_witnesses_v2;
+  refusal TEXT; funded NUMERIC; reserved NUMERIC; paused BOOLEAN; owned BOOLEAN;
+BEGIN
+  SELECT s.* INTO snap FROM reward_funding_leg_snapshots_v2 s JOIN reward_song_slots_v2 l USING(slot_id)
+    WHERE l.community_id=i->>'communityId' AND l.post_id=i->>'postId'
+      AND s.context->'actor'->>'account_id'=i->>'accountId' AND s.context->'actor'->>'persona_id'=persona
+    ORDER BY s.created_at DESC,s.snapshot_id DESC LIMIT 1;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  SELECT * INTO STRICT slot FROM reward_song_slots_v2 WHERE slot_id=snap.slot_id;
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=snap.profile_id;
+  SELECT * INTO STRICT w FROM reward_funding_schedule_witnesses_v2 WHERE witness_id=snap.witness_id;
+  SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton;
+  SELECT EXISTS(SELECT 1 FROM persona_wallet_assignments a JOIN personas v USING(persona_id,account_id)
+    JOIN persona_community_bindings b USING(persona_id,account_id)
+    WHERE a.assignment_id=snap.context->'actor'->>'wallet_assignment_id' AND a.account_id=i->>'accountId'
+      AND a.persona_id=persona AND a.status='active' AND v.status='active' AND b.community_id=slot.community_id
+      AND a.address=snap.context->'actor'->>'sender_address') INTO owned;
+  SELECT coalesce(sum(r.amount_atomic),0) INTO funded FROM reward_incoming_receipts_v2 r
+    JOIN song_megapot_contributions_v2 c USING(contribution_id)
+    WHERE c.pool_leg_id=slot.target->>'pool_leg_id' AND r.category='pool_principal';
+  SELECT coalesce(sum(amount_atomic),0) INTO reserved FROM reward_contribution_reservations_v2
+    WHERE pool_leg_id=slot.target->>'pool_leg_id' AND disposition='held';
+  refusal:=CASE
+    WHEN NOT owned THEN 'wallet_not_ready'
+    WHEN paused IS DISTINCT FROM FALSE THEN 'paused'
+    WHEN NOT p.accepted OR p.valid_until<=statement_timestamp() THEN 'policy_unavailable'
+    WHEN NOT EXISTS(SELECT 1 FROM megapot_deployment_attestations a WHERE a.attestation_id=snap.context->>'attestation_id'
+      AND a.status='active' AND a.retired_at IS NULL AND a.verified_at<=statement_timestamp()
+      AND a.chain_id=(snap.context->>'chain_id')::BIGINT AND a.usdc_address=snap.context->>'token_address'
+      AND a.custody_address=snap.context->>'custody_address') THEN 'attestation_unavailable'
+    WHEN NOT slot.reward_policy_ready THEN 'mixed_objective_unavailable'
+    WHEN slot.status<>'open' THEN 'recovery_required'
+    WHEN w.valid_until<=statement_timestamp() OR (snap.context->>'context_expires_at')::TIMESTAMPTZ<=statement_timestamp() THEN 'observation_stale'
+    WHEN snap.context->'context_ref'->>'profile_hash' IS DISTINCT FROM p.profile_hash
+      OR snap.context->'context_ref'->>'schedule_witness_id' IS DISTINCT FROM w.witness_id
+      OR (snap.context->'context_ref'->>'slot_generation')::BIGINT<>slot.generation
+      OR (slot.target IS NOT NULL AND (snap.context->'target' IS DISTINCT FROM slot.target OR snap.context->'quote'->'committed_terms' IS DISTINCT FROM slot.terms))
+      THEN 'recovery_required'
+    WHEN NOT snap.costs_reconciled OR (snap.budget->>'funded')::NUMERIC IS DISTINCT FROM funded
+      OR (snap.budget->>'liveInboundReservations')::NUMERIC IS DISTINCT FROM reserved THEN 'recovery_required'
+    WHEN snap.refusal IS NOT NULL THEN 'recovery_required'
+    ELSE NULL END;
+  IF refusal IS NULL THEN RETURN snap.context; END IF;
+  RETURN jsonb_build_object('object','song_megapot_funding_context','version',2,'readiness','unavailable',
+    'target',coalesce(slot.target,snap.context->'target'),'persona_id',persona,'reason',refusal,
+    'retry_after_seconds',NULL,'own_recovery_href',NULL);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_song_contribution_context_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, persona text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END

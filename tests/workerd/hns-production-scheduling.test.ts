@@ -144,6 +144,7 @@ describe("production HNS renewal scheduling", () => {
           `scheduled-cron-main:${HNS_ROOT_HEALTH_RENEWAL_LANE}`,
           `scheduled-cron-main:${rewardsEnabled === "true" ? MEGAPOT_REWARDS_CYCLE_LANE : STUDY_SPOKEN_ANSWER_RECOVERY_LANE}`,
           "scheduled-cron-main:notification-delivery",
+          ...(rewardsEnabled === "true" ? ["scheduled-cron-main:rewards"] : []),
         ]);
         expect(waits).toHaveLength(1);
         expect(fetchSpy).not.toHaveBeenCalled();

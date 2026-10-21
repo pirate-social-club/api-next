@@ -67,11 +67,13 @@ import {
   MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
+import { makeSongFundingRecoveryRuntime } from "./megapot-rewards-runtime.ts";
 import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
+import { makeSongMegapotFundingRecoveryJob } from "./song-megapot-funding-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -745,10 +747,23 @@ export function makeJobsWorkerDeclarations(
   avatars?: AvatarCleanupBuckets,
   spacesReconciliation?: SpacesReconciliationComposition,
   guestStudyRecovery?: GuestStudyRecoveryComposition,
+  songFundingRecovery?: ReturnType<typeof makeSongFundingRecoveryRuntime>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
   ];
+  if (songFundingRecovery !== undefined) {
+    declarations.push(
+      makeSongMegapotFundingRecoveryJob({
+        runtime: songFundingRecovery,
+        enabled: true,
+        // One durable item per tick bounds this job; each accepted work policy
+        // still supplies its own attempt, scan, receipt and lease budgets.
+        limit: 1,
+        ensure: songFundingRecovery.ensure,
+      }),
+    );
+  }
   if (communityMaintenanceEnabled) {
     declarations.push(
       makeCommunityCatalogIntegrityJob(sink),
@@ -859,6 +874,14 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
+    const songFundingRecovery = !config.MEGAPOT_REWARDS_ENABLED
+      ? undefined
+      : makeSongFundingRecoveryRuntime({
+          controlPlane: runtime,
+          rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+          environment: config.API_NEXT_ENV,
+          now: () => new Date().toISOString(),
+        });
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -877,6 +900,8 @@ export default {
           })()
         : undefined,
       spacesReconciliation,
+      undefined,
+      songFundingRecovery,
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);

@@ -471,8 +471,19 @@ suite(
         funding_amount_atomic: "2000000",
         expected_context_hash: c.context_hash,
         expected_lifecycle_revision: 0,
-        context_ref: c.context_ref,
-        expected_terms: { kind: "committed", terms_hash: terms.terms_hash },
+        context_version: c.context_ref.version,
+        context_slot_id: c.context_ref.slot_id,
+        context_slot_generation: c.context_ref.slot_generation,
+        context_leg_snapshot_id: c.context_ref.leg_snapshot_id ?? "",
+        context_schedule_witness_id: c.context_ref.schedule_witness_id,
+        context_profile_id: c.context_ref.profile_id,
+        context_profile_hash: c.context_ref.profile_hash,
+        context_funding_policy_hash: c.context_ref.funding_policy_hash,
+        context_wallet_assignment_id: c.context_ref.wallet_assignment_id,
+        context_wallet_assignment_revision: c.context_ref.wallet_assignment_revision,
+        context_lifecycle_revision: c.context_ref.lifecycle_revision,
+        expected_terms_kind: "committed",
+        expected_terms_hash: terms.terms_hash,
       };
     }
     let receipt: C.ContributionReceiptV2;

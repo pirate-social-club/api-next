@@ -32,26 +32,32 @@ import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-pa
 import { makeRewardRefundCoordinator } from "@pirate/platform-cf/reward-refund-coordinator";
 import { makeControlPlaneRewardRefundStore } from "@pirate/platform-cf/reward-refund-repository";
 import { Effect, type Layer } from "effect";
-import { makeControlPlaneSongFundingRecoveryStore } from "../../../packages/platform-cf/src/song-megapot-contribution-repository.ts";
+import {
+  makeControlPlaneRewardFundingObserver,
+  makeControlPlaneSongFundingRecoveryStore,
+} from "../../../packages/platform-cf/src/song-megapot-contribution-repository.ts";
 import { makeSongFundingRecoveryRouting } from "./megapot-rewards-routing.ts";
 import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.ts";
 
-/** Real read-only-provider V2 consumer composition, deliberately not registered
- * by the frozen serving entrypoint and never supplied a custody signing key. */
+/** Real V2 read-only-provider composition. The serving entrypoint selects this
+ * only when Rewards is enabled; no custody signing key enters this runtime. */
 export function makeSongFundingRecoveryRuntime(input: {
   controlPlane: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
   rpcUrl: string;
   environment: string;
   now: () => string;
 }) {
-  return makeSongMegapotFundingRecovery({
+  const runtime = makeSongMegapotFundingRecovery({
     store: makeControlPlaneSongFundingRecoveryStore(input.controlPlane),
+    observe: (work, hash, discover) =>
+      makeControlPlaneRewardFundingObserver(input.controlPlane, discover)(work, hash),
     now: input.now,
     rpcFor: makeSongFundingRecoveryRouting({
       environment: input.environment,
       create: (attestation) => makeMegapotV2RpcClient({ rpcUrl: input.rpcUrl, attestation }),
     }),
   });
+  return { ...runtime, ensure: makeControlPlaneRewardRunAuthority(input.controlPlane).ensure };
 }
 
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";

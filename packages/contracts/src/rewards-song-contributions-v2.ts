@@ -513,16 +513,56 @@ export const ContributionRequestV2 = Schema.Struct({
   funding_amount_atomic: AtomicV2,
   expected_context_hash: HashV2,
   expected_lifecycle_revision: RevisionV2,
-  context_ref: ContextReferenceV2,
-  expected_terms: Schema.Union([ProspectiveTermsExpectationV2, CommittedTermsExpectationV2]),
+  context_version: ContextReferenceV2.fields.version,
+  context_slot_id: IdV2,
+  context_slot_generation: RevisionV2,
+  // The empty string is the sole wire spelling of an absent initial snapshot.
+  // Reconstruct null for the immutable V5 canonical hash; never hash wire order.
+  context_leg_snapshot_id: Schema.String.check(
+    Schema.makeFilter((v) =>
+      v === "" || Schema.is(IdV2)(v) ? undefined : "Invalid snapshot identifier",
+    ),
+  ).annotate({
+    description:
+      "Empty string for a prospective empty slot; otherwise the exact committed leg snapshot ID. Canonical V5 hashing maps only the empty string to null.",
+  }),
+  context_schedule_witness_id: IdV2,
+  context_profile_id: IdV2,
+  context_profile_hash: HashV2,
+  context_funding_policy_hash: HashV2,
+  context_wallet_assignment_id: IdV2,
+  context_wallet_assignment_revision: RevisionV2,
+  context_lifecycle_revision: RevisionV2,
+  expected_terms_kind: Schema.Literals(["prospective", "committed"]),
+  expected_terms_hash: HashV2.annotate({
+    description:
+      "The prospective or committed terms hash selected by expected_terms_kind; the immutable V5 hash domains are unchanged.",
+  }),
 }).check(
   Schema.makeFilter((v) =>
-    (v.expected_terms.kind === "prospective") === (v.context_ref.leg_snapshot_id === null)
+    (v.expected_terms_kind === "prospective") === (v.context_leg_snapshot_id === "")
       ? undefined
       : "Quote branch mismatch",
   ),
 );
 export type ContributionRequestV2 = typeof ContributionRequestV2.Type;
+
+/** Wire flattening changes neither the accepted V5 context nor its hash domain. */
+export function contributionContextReferenceV2(value: ContributionRequestV2): ContextReferenceV2 {
+  return {
+    version: value.context_version,
+    slot_id: value.context_slot_id,
+    slot_generation: value.context_slot_generation,
+    leg_snapshot_id: value.context_leg_snapshot_id === "" ? null : value.context_leg_snapshot_id,
+    schedule_witness_id: value.context_schedule_witness_id,
+    profile_id: value.context_profile_id,
+    profile_hash: value.context_profile_hash,
+    funding_policy_hash: value.context_funding_policy_hash,
+    wallet_assignment_id: value.context_wallet_assignment_id,
+    wallet_assignment_revision: value.context_wallet_assignment_revision,
+    lifecycle_revision: value.context_lifecycle_revision,
+  };
+}
 
 export const ReservationV2 = Schema.Struct({
   reservation_id: IdV2,
@@ -1159,12 +1199,18 @@ export function projectContributionRequest(value: ContributionRequestV2): unknow
     ["funding_amount_atomic", value.funding_amount_atomic],
     ["expected_context_hash", value.expected_context_hash],
     ["expected_lifecycle_revision", value.expected_lifecycle_revision],
-    ["context_ref", projectContextReference(value.context_ref)],
+    ["context_ref", projectContextReference(contributionContextReferenceV2(value))],
     [
       "expected_terms",
-      value.expected_terms.kind === "prospective"
-        ? projectProspectiveTermsExpectation(value.expected_terms)
-        : projectCommittedTermsExpectation(value.expected_terms),
+      value.expected_terms_kind === "prospective"
+        ? projectProspectiveTermsExpectation({
+            kind: "prospective",
+            prospective_terms_hash: value.expected_terms_hash,
+          })
+        : projectCommittedTermsExpectation({
+            kind: "committed",
+            terms_hash: value.expected_terms_hash,
+          }),
     ],
   ];
 }

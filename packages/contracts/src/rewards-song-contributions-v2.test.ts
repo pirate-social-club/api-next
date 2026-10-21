@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import { generateClient } from "./codegen.ts";
 import {
   CancellationReceiptV2,
   CancellationRecoveryPolicyV2,
   ContributionRequestV2,
+  CreateSongMegapotContributionV2,
   cancellationInstructionPreimageV2,
   cancellationPolicyPreimageV2,
   committedTermsPreimageV2,
@@ -19,29 +21,25 @@ import {
 // Exact fictional vectors from accepted V5, not live financial configuration.
 const fixture = {
   request: {
-    version: 2,
+    version: 2 as const,
     idempotency_key: "fixture_create_key_0001",
     persona_id: "fixture-persona-a",
     funding_amount_atomic: "1000000",
     expected_context_hash: "47e14f282256168eac75d25ceeae2fe1e77eb4ad4d1c484bf9519b4539adc352",
     expected_lifecycle_revision: 0,
-    context_ref: {
-      version: "funding-context-reference-v1",
-      slot_id: "fixture-slot",
-      slot_generation: 0,
-      leg_snapshot_id: null,
-      schedule_witness_id: "fixture-witness",
-      profile_id: "fixture-profile",
-      profile_hash: "a4ed102f029f8b3f5d49ca9fe64c131c017e3471a0d388fa65bfeb4db10b97dc",
-      funding_policy_hash: "1bb42413cfc2fe292c95fcab0e62436a54199ffce08360a33d789aa12773dac6",
-      wallet_assignment_id: "fixture-wallet",
-      wallet_assignment_revision: 1,
-      lifecycle_revision: 0,
-    },
-    expected_terms: {
-      kind: "prospective",
-      prospective_terms_hash: "4d0d1092962c36cec741a0316c79f87de7898669b9d3d4eb65b364219c2eed3d",
-    },
+    context_version: "funding-context-reference-v1" as const,
+    context_slot_id: "fixture-slot",
+    context_slot_generation: 0,
+    context_leg_snapshot_id: "",
+    context_schedule_witness_id: "fixture-witness",
+    context_profile_id: "fixture-profile",
+    context_profile_hash: "a4ed102f029f8b3f5d49ca9fe64c131c017e3471a0d388fa65bfeb4db10b97dc",
+    context_funding_policy_hash: "1bb42413cfc2fe292c95fcab0e62436a54199ffce08360a33d789aa12773dac6",
+    context_wallet_assignment_id: "fixture-wallet",
+    context_wallet_assignment_revision: 1,
+    context_lifecycle_revision: 0,
+    expected_terms_kind: "prospective" as const,
+    expected_terms_hash: "4d0d1092962c36cec741a0316c79f87de7898669b9d3d4eb65b364219c2eed3d",
   },
   prospectus: {
     version: "shared-song-megapot-prospectus-v1",
@@ -382,10 +380,10 @@ describe("V5 funding command boundary", () => {
     for (const body of [
       { ...fixture.request, owner_only: true },
       { ...fixture.request, routine_id: "routine" },
-      { ...fixture.request, context_ref: { ...fixture.request.context_ref, secret: "x" } },
+      { ...fixture.request, context_ref: { secret: "x" } },
       {
         ...fixture.request,
-        context_ref: { ...fixture.request.context_ref, leg_snapshot_id: "leg" },
+        context_leg_snapshot_id: "leg",
       },
     ]) {
       expect(() => decodeFundingCommandV2("CreateSongMegapotContributionV2", body)).toThrow();
@@ -408,7 +406,12 @@ describe("V5 funding command boundary", () => {
     expect(() => decode(text.replace('"version":2', '"version":2,"version":2'))).toThrow();
     expect(() => decode(text.replace('"version":2', '"version":2,"\\u0076ersion":2'))).toThrow();
     expect(() =>
-      decode(text.replace('"slot_generation":0', '"slot_generation":0,"slot_generation":0')),
+      decode(
+        text.replace(
+          '"context_slot_generation":0',
+          '"context_slot_generation":0,"context_slot_generation":0',
+        ),
+      ),
     ).toThrow();
     expect(() =>
       decodeFundingCommandJsonV2("CreateSongMegapotContributionV2", text, {
@@ -416,12 +419,19 @@ describe("V5 funding command boundary", () => {
         maxDepth: 10,
       }),
     ).toThrow();
-    expect(() =>
+    expect(
       decodeFundingCommandJsonV2("CreateSongMegapotContributionV2", text, {
         maxBytes: 10000,
         maxDepth: 1,
       }),
-    ).toThrow();
+    ).toEqual(fixture.request);
+    expect(() =>
+      decodeFundingCommandJsonV2(
+        "CreateSongMegapotContributionV2",
+        JSON.stringify({ ...fixture.request, nested: { value: 1 } }),
+        { maxBytes: 10000, maxDepth: 1 },
+      ),
+    ).toThrow("JSON depth exceeded");
   });
   test("categorical Dance has null score, binding hash has no self dependency", () => {
     const terms = structuredClone(fixture.terms);
@@ -458,5 +468,81 @@ describe("V5 funding command boundary", () => {
         delivery: { kind: "fresh_grant", replayed: true },
       }),
     ).toThrow();
+  });
+});
+
+describe("scalar exact JSON funding wire", () => {
+  test("every movable authority scalar remains bound to the original V5 hash domain", () => {
+    const preimage = (body: unknown) =>
+      fundingCommandPreimageV2(
+        "CreateSongMegapotContributionV2",
+        "account",
+        "community",
+        "post",
+        null,
+        decodeFundingCommandV2("CreateSongMegapotContributionV2", body),
+      );
+    const original = preimage(fixture.request);
+    for (const change of [
+      { context_slot_id: "different-slot" },
+      { context_slot_generation: 1 },
+      { context_schedule_witness_id: "different-witness" },
+      { context_profile_id: "different-profile" },
+      { context_profile_hash: "f".repeat(64) },
+      { context_funding_policy_hash: "f".repeat(64) },
+      { context_wallet_assignment_id: "different-wallet" },
+      { context_wallet_assignment_revision: 2 },
+      { context_lifecycle_revision: 1 },
+      { expected_lifecycle_revision: 1 },
+      { expected_terms_hash: "f".repeat(64) },
+      { expected_context_hash: "f".repeat(64) },
+      { persona_id: "different-persona" },
+      { funding_amount_atomic: "2000000" },
+      { context_leg_snapshot_id: "committed-snapshot", expected_terms_kind: "committed" },
+    ])
+      expect(preimage({ ...fixture.request, ...change })).not.toBe(original);
+    for (const change of [
+      { context_leg_snapshot_id: null },
+      { context_leg_snapshot_id: " " },
+      { context_version: "different" },
+      { context_slot_generation: "0" },
+    ])
+      expect(() => preimage({ ...fixture.request, ...change })).toThrow();
+  });
+  test("maintained client serializes the real scalar command canonically, refuses missing/excess keys before fetch and never retries unknown transport", async () => {
+    const source = generateClient({ CreateSongMegapotContributionV2 });
+    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+    const generated = await import(`data:text/javascript;base64,${btoa(js)}`);
+    const sent: string[] = [];
+    const unknown = new Error("offline lost response");
+    const client = generated.createPirateApiClient("https://fixture.invalid", {
+      fetchImpl: async (_url: unknown, init: RequestInit) => {
+        sent.push(String(init.body));
+        throw unknown;
+      },
+    });
+    const invoke = Object.values(client)[0];
+    if (typeof invoke !== "function") throw new Error("Missing generated contribution method");
+    const body = Object.fromEntries(Object.entries(fixture.request).reverse());
+    const input = { path: { communityId: "community", postId: "post" }, body };
+    await expect(invoke(input)).rejects.toBe(unknown);
+    expect(sent).toEqual([JSON.stringify(fixture.request)]);
+    expect(
+      decodeFundingCommandJsonV2("CreateSongMegapotContributionV2", sent[0] ?? "", {
+        maxBytes: 10000,
+        maxDepth: 1,
+      }),
+    ).toEqual(fixture.request);
+    const missing = { ...body };
+    delete missing.context_profile_hash;
+    for (const invalid of [
+      missing,
+      { ...body, owner_only: false },
+      { ...body, context_ref: { slot_id: "nested" } },
+    ])
+      await expect(invoke({ ...input, body: invalid })).rejects.toMatchObject({
+        _tag: "ApiClientProtocolError",
+      });
+    expect(sent).toHaveLength(1);
   });
 });

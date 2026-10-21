@@ -129,7 +129,7 @@ async function fixture() {
     claim: () =>
       Effect.sync(() => {
         calls.push("claim");
-        if (claimed) return null;
+        if (claimed || workCharges >= work.workPolicy.maxAttempts) return null;
         claimed = true;
         workCharges += 1;
         return work;
@@ -182,7 +182,17 @@ async function fixture() {
   } as unknown as MegapotV2FullRpcClient;
   const run = () =>
     Effect.runPromise(
-      makeSongMegapotFundingRecovery({ store, rpcFor: () => rpc, now: () => now }).run({
+      makeSongMegapotFundingRecovery({
+        store,
+        rpcFor: () => rpc,
+        now: () => now,
+        observe: (w, hash, discover) =>
+          discover(w.state, hash).pipe(
+            Effect.flatMap((proof) =>
+              proof === null ? Effect.succeed(null) : store.accept(w, proof),
+            ),
+          ),
+      }).run({
         enabled: true,
         limit: 2,
         ensure: () => Effect.void,
@@ -203,6 +213,9 @@ async function fixture() {
     failRecord: () => {
       failRecord = true;
     },
+    restartAfterUnknown: () => {
+      claimed = false;
+    },
   };
 }
 describe("actual V2 Jobs recovery consumer with offline ports", () => {
@@ -211,6 +224,9 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     await Effect.runPromise(
       makeSongMegapotFundingRecovery({
         store: f.store,
+        observe: () => {
+          throw new Error("must not observe while disabled");
+        },
         rpcFor: () => {
           throw new Error("must not construct RPC");
         },
@@ -406,5 +422,32 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     expect(g.calls).not.toContain("record");
     expect(g.calls).not.toContain("accept");
     expect(g.results).toMatchObject([{ complete: false, error: "outcome_unknown" }]);
+  });
+  test("restart after an unknown provider outcome reuses durable identity and finite attempts without granting, closing or releasing principal", async () => {
+    const f = await fixture();
+    const original = structuredClone(f.work.state);
+    const pending = f.rpc.readPendingNonce;
+    Object.assign(f.rpc, {
+      readPendingNonce: async () => {
+        throw new Error("lost provider response");
+      },
+    });
+    await f.run();
+    expect(f.results).toEqual([{ complete: false, nextBlock: null, error: "outcome_unknown" }]);
+    expect(f.accepted).toEqual([]);
+    f.restartAfterUnknown();
+    Object.assign(f.rpc, { readPendingNonce: pending });
+    await f.run();
+    expect(f.results).toEqual([
+      { complete: false, nextBlock: null, error: "outcome_unknown" },
+      { complete: false, nextBlock: "2", error: null },
+    ]);
+    expect(f.workCharges()).toBe(2);
+    f.restartAfterUnknown();
+    await f.run();
+    expect(f.workCharges()).toBe(2);
+    expect(f.results).toHaveLength(2);
+    expect(f.work.state).toEqual(original);
+    expect(f.accepted).toEqual([]);
   });
 });

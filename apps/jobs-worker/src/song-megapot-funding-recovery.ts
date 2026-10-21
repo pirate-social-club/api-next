@@ -22,6 +22,11 @@ export function makeSongMegapotFundingRecovery(input: {
   readonly store: Store;
   readonly rpcFor: (work: SongFundingWork) => MegapotV2FullRpcClient;
   readonly now: () => string;
+  readonly observe: (
+    work: SongFundingWork,
+    transactionHash: string,
+    discover: ReturnType<typeof makeRewardFundingReceiptDiscovery>,
+  ) => Effect.Effect<unknown | null, SongContributionFailure>;
 }) {
   const process = Effect.fn("SongFundingRecovery.process")(function* (work: SongFundingWork) {
     const rpc = input.rpcFor(work),
@@ -93,15 +98,14 @@ export function makeSongMegapotFundingRecovery(input: {
       if (tx === null || tx.from !== i.from || tx.nonce !== BigInt(i.nonce)) continue;
       // Self cancellation/revert proves no Transfer principal here. No nonce or
       // liability is closed without the separately required custody interpreter.
-      const proof = yield* discover(work.state, hash).pipe(
-        Effect.catchTag("SongContributionFailure", (e) =>
-          e.code === "receipt_mismatch" ? Effect.succeed(null) : Effect.fail(e),
-        ),
-      );
-      if (proof !== null) {
-        yield* input.store.accept(work, proof);
-        return { complete: true, nextBlock: null, error: null };
-      }
+      const accepted = yield* input
+        .observe(work, hash, discover)
+        .pipe(
+          Effect.catchTag("SongContributionFailure", (e) =>
+            e.code === "receipt_mismatch" ? Effect.succeed(null) : Effect.fail(e),
+          ),
+        );
+      if (accepted !== null) return { complete: true, nextBlock: null, error: null };
     }
     return {
       complete: false,
@@ -143,8 +147,8 @@ export function makeSongMegapotFundingRecovery(input: {
   };
 }
 
-/** Unselected source declaration. The frozen serving composition supplies no
- * enablement; a separately admitted runtime must explicitly pass enabled=true. */
+/** Selected only by the serving composition's existing Rewards enablement gate.
+ * No signer or provider submission capability is held by this declaration. */
 export function makeSongMegapotFundingRecoveryJob(input: {
   readonly runtime: ReturnType<typeof makeSongMegapotFundingRecovery>;
   readonly enabled: boolean;
@@ -157,9 +161,17 @@ export function makeSongMegapotFundingRecoveryJob(input: {
     schedule: "* * * * *",
     timeout: "1 minute",
     retry: Schedule.recurs(0),
-    expectedFailures: ["SongContributionFailure"],
+    expectedFailures: [
+      "SongContributionFailure",
+      "RewardOperationsPaused",
+      "RewardRunAuthorityUnavailable",
+    ],
     severity: {
-      expectedFailure: { SongContributionFailure: "medium" },
+      expectedFailure: {
+        SongContributionFailure: "medium",
+        RewardOperationsPaused: "medium",
+        RewardRunAuthorityUnavailable: "high",
+      },
       timeout: "high",
       transactionOutcomeUnknown: "high",
       defect: "high",

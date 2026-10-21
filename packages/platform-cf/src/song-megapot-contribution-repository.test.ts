@@ -36,6 +36,35 @@ const identity: Identity = {
   key: "contribution_key_0001",
   hash: "a".repeat(64),
 };
+const principalProof: FundingPrincipalEvidence = {
+  receiptId: "receipt",
+  contributionId: "contribution",
+  category: "pool_principal",
+  evidence: {
+    chain_id: 84532,
+    transaction_hash: `0x${identity.hash}`,
+    transfer_log_index: 0,
+    sender_nonce: "4",
+    block_number: "21",
+    block_hash: `0x${identity.hash}`,
+    block_timestamp: "2026-10-18T12:00:00.000Z",
+    first_observed_at: "2026-10-18T12:01:00.000Z",
+    finalized_at: "2026-10-18T12:02:00.000Z",
+    actual_amount_atomic: "2000000",
+    attestation_id: "attestation",
+  },
+  senderAddress: `0x${"11".repeat(20)}`,
+  recipientAddress: `0x${"22".repeat(20)}`,
+  tokenAddress: `0x${"33".repeat(20)}`,
+  instructionHash: identity.hash,
+  attestationHash: identity.hash,
+  policyHash: identity.hash,
+  checkpointBlock: "25",
+  checkpointHash: `0x${identity.hash}`,
+  observedConfirmedNonce: "5",
+  exactInstruction: true,
+};
+
 const lockSql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
 const marker = {
   label: "song-megapot-contribution.test.read",
@@ -296,34 +325,7 @@ describe("available funding SQL transaction boundary (offline driver)", () => {
     ).toBe(false);
   });
   test("principal persistence rejects every missing/null/mistyped required field before SQL", async () => {
-    const proof: FundingPrincipalEvidence = {
-      receiptId: "receipt",
-      contributionId: "contribution",
-      category: "pool_principal",
-      evidence: {
-        chain_id: 84532,
-        transaction_hash: `0x${identity.hash}`,
-        transfer_log_index: 0,
-        sender_nonce: "4",
-        block_number: "21",
-        block_hash: `0x${identity.hash}`,
-        block_timestamp: "2026-10-18T12:00:00.000Z",
-        first_observed_at: "2026-10-18T12:01:00.000Z",
-        finalized_at: "2026-10-18T12:02:00.000Z",
-        actual_amount_atomic: "2000000",
-        attestation_id: "attestation",
-      },
-      senderAddress: `0x${"11".repeat(20)}`,
-      recipientAddress: `0x${"22".repeat(20)}`,
-      tokenAddress: `0x${"33".repeat(20)}`,
-      instructionHash: identity.hash,
-      attestationHash: identity.hash,
-      policyHash: identity.hash,
-      checkpointBlock: "25",
-      checkpointHash: `0x${identity.hash}`,
-      observedConfirmedNonce: "5",
-      exactInstruction: true,
-    };
+    const proof = principalProof;
     const driver = new OfflineDriver();
     const persist = (input: unknown) =>
       run(
@@ -1102,20 +1104,19 @@ describe("actual private V5 SQL read and feature boundaries (offline driver)", (
       funding_amount_atomic: "1",
       expected_context_hash: "a".repeat(64),
       expected_lifecycle_revision: 0,
-      context_ref: {
-        version: "funding-context-reference-v1",
-        slot_id: "slot",
-        slot_generation: 0,
-        leg_snapshot_id: null,
-        schedule_witness_id: "witness",
-        profile_id: "profile",
-        profile_hash: "b".repeat(64),
-        funding_policy_hash: "c".repeat(64),
-        wallet_assignment_id: "wallet",
-        wallet_assignment_revision: 1,
-        lifecycle_revision: 0,
-      },
-      expected_terms: { kind: "prospective", prospective_terms_hash: "d".repeat(64) },
+      context_version: "funding-context-reference-v1",
+      context_slot_id: "slot",
+      context_slot_generation: 0,
+      context_leg_snapshot_id: "",
+      context_schedule_witness_id: "witness",
+      context_profile_id: "profile",
+      context_profile_hash: "b".repeat(64),
+      context_funding_policy_hash: "c".repeat(64),
+      context_wallet_assignment_id: "wallet",
+      context_wallet_assignment_revision: 1,
+      context_lifecycle_revision: 0,
+      expected_terms_kind: "prospective",
+      expected_terms_hash: "d".repeat(64),
     });
     await expect(
       Effect.runPromise(ports.transaction(identity, (tx) => tx.fundingAdmission(request))),
@@ -1126,5 +1127,48 @@ describe("actual private V5 SQL read and feature boundaries (offline driver)", (
     expect(
       driver.queries.some((q) => q.text.includes("reserve_reward_funding_wallet_nonce_v2")),
     ).toBe(false);
+  });
+});
+
+describe("shared durable observer principal boundary (offline driver)", () => {
+  test("stale work is refused before principal write; unknown COMMIT is retained with no callback retry", async () => {
+    for (const mode of ["success", "stale_lease", "unknown_commit"] as const) {
+      const driver = new OfflineDriver();
+      driver.onQuery = async (q) => {
+        if (mode === "stale_lease" && q.text.includes("require_song_funding_work_lease_v2"))
+          throw Object.assign(new Error("fixture fenced lease"), { code: "PCV06" });
+        if (mode === "unknown_commit" && q.text === "COMMIT")
+          throw new Error("fixture lost COMMIT acknowledgement");
+        return empty();
+      };
+      const store = makeControlPlaneSongFundingRecoveryStore(
+        makeDirectPostgresControlPlaneLayer("postgres://offline.invalid/unused", {
+          clientFactory: () => driver,
+        }),
+      );
+      // Only immutable work/command identity is read by this persistence port.
+      const work = { workId: "owned-work", token: "owned-token", identity } as Parameters<
+        typeof store.accept
+      >[0];
+      const exit = await Effect.runPromiseExit(store.accept(work, principalProof));
+      const fence = driver.queries.findIndex((q) =>
+        q.text.includes("require_song_funding_work_lease_v2"),
+      );
+      const writes = driver.queries.filter((q) =>
+        q.text.includes("accept_reward_funding_principal_v2"),
+      );
+      expect(fence).toBeGreaterThan(-1);
+      if (mode === "stale_lease") {
+        expect(writes).toEqual([]);
+        expect(failures(exit)).toMatchObject([{ code: "lifecycle_changed" }]);
+      } else {
+        expect(writes).toHaveLength(1);
+        expect(driver.queries.indexOf(writes[0]!)).toBeGreaterThan(fence);
+        if (mode === "success") expect(Exit.isSuccess(exit)).toBe(true);
+        else expect(failures(exit)).toMatchObject([{ code: "outcome_unknown" }]);
+      }
+      expect(count(driver, "BEGIN")).toBe(1);
+      expect(count(driver, "COMMIT")).toBe(mode === "stale_lease" ? 0 : 1);
+    }
   });
 });
