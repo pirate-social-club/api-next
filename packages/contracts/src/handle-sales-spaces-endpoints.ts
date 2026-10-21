@@ -10,6 +10,7 @@ import {
   Sha256Hex,
 } from "./handle-sales-scalars.ts";
 import {
+  CommunityHandleOfferingDiscoveryV1,
   CommunityHandleOfferingManagementItemV3,
   CommunityHandleOfferingV4,
   CreateHandleQuoteResultV4,
@@ -110,7 +111,7 @@ const ReviseCommunityHandleOffering = endpoint({
 
 const ListCommunityHandleOfferings = endpoint({
   ...hns.ListCommunityHandleOfferings,
-  response: page(CommunityHandleOfferingV4),
+  response: page(CommunityHandleOfferingDiscoveryV1),
 });
 
 const GetHandleSalesManagement = endpoint({

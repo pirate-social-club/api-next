@@ -74,10 +74,15 @@ document's api-next transition record.
 
 Run from the repo root, smallest first:
 
-1. `bun run check` — Effect version guard, Biome, `tsc --noEmit`, and
+1. `bun run check` — Effect version guard and diagnostics, Biome, `tsrs --noEmit`, and
    dependency-matrix lint
 2. `bun run test` — unit tests (workerd integration tests join the required
    gate when lane C's pool-workers harness lands)
+
+Use `bun run typecheck` for the seven local tsrs projects. CI also runs
+`bun run typecheck:typescript` against the retained official compiler; keep
+both checks and the separate Effect diagnostics. The `typescript` package is
+still required by compiler API consumers and coverage discovery.
 
 CI must be green before merge; until a remote CI gate exists, the merging
 session runs the full local suite and records it in the workspace register.

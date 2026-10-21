@@ -1631,7 +1631,11 @@ export async function createProductionHttpWorker(
     ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
   });
   const handleSalesHandlers = makeHandleSalesHandlers({
-    store: makeControlPlaneHandleSalesStore(controlPlane, spacesRuntime.currentSpacesAuthority),
+    store: makeControlPlaneHandleSalesStore(
+      controlPlane,
+      spacesRuntime.currentSpacesAuthority,
+      spacesRuntime.spacesDiscoveryAuthority,
+    ),
     ...(spacesRuntime.spacesRegistry === undefined
       ? {}
       : { spacesSaleNamespaces: makeControlPlaneSpacesSaleNamespaceStore(controlPlane) }),

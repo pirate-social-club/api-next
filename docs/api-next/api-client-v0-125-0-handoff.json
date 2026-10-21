@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.125.0",
+  "sourceBranch": "fix/spaces-offering-latency",
+  "sourceBase": "19b7f17343d0bf4ccaedfc4b0a2f4f1fb96861f6",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Only public ListCommunityHandleOfferings uses CommunityHandleOfferingDiscoveryV1. Spaces offerings require current_availability kind available or temporarily_unavailable. Existing HNS members and all transactional/management offering, quote, reservation, claim and confirmation shapes remain unchanged. Visibility never admits a transaction.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.125.0.tgz",
+    "sha256": "d47b6d6f0b1a3663dd1fba90413021f16fffea91b5fc1b28ade7a7ae13d92b86"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.125.0",
+    "sourceIdentifier": "api-next-contracts@dca39be20ff19a78c9f81cca6fbe1163ee33109e5a6b6f1385db4a2648b3d39a",
+    "openapiSha256": "dca39be20ff19a78c9f81cca6fbe1163ee33109e5a6b6f1385db4a2648b3d39a",
+    "clientSha256": "88c838395729c12501a764f3cd3a8c02298dc590a6a8a2e4d2847a952b0019c9"
+  },
+  "validation": {
+    "status": "Source prepared. Final independent source/artifact review, complete types, real PostgreSQL and full hosted gates remain pending.",
+    "focused": "41 focused contract, cursor, discovery authority/query and composition tests pass,374 assertions. Review corrections are included.",
+    "postgres": "Six new schema-owning cases prepared and registered for maintained hosted qualification; not executed locally. Existing strict quote/reservation/claim refusals retained.",
+    "pairedSolid": "Planned separately; not implemented or released.",
+    "pairedObserver": "Planned separately; not implemented or released.",
+    "liveAcceptance": "Not run. The separately accepted off-edge diagnostic contains a failed public list and does not establish Worker or Hyperdrive latency."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.125.0",
+    "behavior": "Pair API, client, Solid and measurement observer. Keep temporarily unavailable choices visible using plain copy; unknown/missing availability blocks every new claim/wallet/confirmation/quote start. Preserve original uncertain commands and pending/issued recovery. Observer requires explicit available rather than item presence. Staging first; no automatic collection or production activation follows."
+  }
+}
