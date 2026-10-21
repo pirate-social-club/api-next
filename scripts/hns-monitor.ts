@@ -1,12 +1,10 @@
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
-import { Effect, Schema } from "effect";
-import { makeHnsEdgeAlertService } from "../packages/application/src/use-cases/hns-edge-alerts.ts";
-import { makeHnsEdgeWebhookAlertSink } from "../packages/platform-cf/src/hns-edge-alert-webhook.ts";
+import { Schema } from "effect";
 import { openContinuityDatabase } from "./hns-continuity/database.mjs";
 import { probePinnedCertificate } from "./hns-monitor/certificate.ts";
-import { deliverMonitorConditions } from "./hns-monitor/delivery.ts";
+import { deliverMonitorConditions, makeMonitorHeartbeatSender } from "./hns-monitor/delivery.ts";
 import {
   evaluateMonitorSnapshot,
   type MonitorCondition,
@@ -32,10 +30,12 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       config: { type: "string" },
-      state: { type: "string" },
+      "healthcheck-sender": { type: "string" },
+      "healthcheck-python": { type: "string", default: "/usr/bin/python3" },
       "dry-run": { type: "boolean" },
       deliver: { type: "boolean" },
       "delivery-test": { type: "boolean" },
+      "delivery-state": { type: "string" },
     },
     strict: true,
     allowPositionals: false,
@@ -44,22 +44,22 @@ async function main(): Promise<void> {
     throw new Error();
   const delivery = values["dry-run"]
     ? undefined
-    : makeHnsEdgeAlertService(
-        makeHnsEdgeWebhookAlertSink(process.env.HNS_OPERATOR_ALERT_WEBHOOK_URL ?? ""),
+    : makeMonitorHeartbeatSender(
+        values["healthcheck-python"] ?? "/usr/bin/python3",
+        values["healthcheck-sender"] ?? "",
+        process.env.HNS_HEALTHCHECK_URL_FILE ?? "",
+        values["delivery-test"] ? "hns-operator-monitor-fixture" : "hns-operator-monitor",
       );
   if (values["delivery-test"]) {
     if (delivery === undefined) throw new Error();
-    await Effect.runPromise(
-      delivery.deliver({
-        text: "HNS monitor delivery test: synthetic terminal renewal condition; no production state changed.",
-      }),
-    );
-    console.log(JSON.stringify({ delivery: "acknowledged", synthetic: true }));
+    const state = values["delivery-state"];
+    if (state !== "success" && state !== "failure") throw new Error();
+    await delivery(state);
+    console.log(JSON.stringify({ delivery: "acknowledged", synthetic: true, state }));
     return;
   }
+  if (values["delivery-state"] !== undefined) throw new Error();
   if (values.config === undefined || !isAbsolute(values.config)) throw new Error();
-  if (values.deliver && (values.state === undefined || !isAbsolute(values.state)))
-    throw new Error();
   const config = Schema.decodeUnknownSync(Config)(await Bun.file(values.config).json(), {
     onExcessProperty: "error",
   });
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   let observedAt = Date.now() / 1000;
   let rootCount: number | null = null;
   try {
-    const client = openContinuityDatabase(process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL ?? "");
+    const client = openContinuityDatabase(process.env.HNS_OPERATOR_MONITOR_POSTGRES_URL ?? "");
     let snapshot: MonitorSnapshot;
     try {
       await client.connect();
@@ -114,10 +114,14 @@ async function main(): Promise<void> {
     conditions = [{ subject: "monitor", code: "observation_unavailable" }];
   }
   let disposition = "dry-run";
-  if (delivery !== undefined && values.state !== undefined) {
-    disposition = await deliverMonitorConditions(values.state, conditions, observedAt, (text) =>
-      Effect.runPromise(delivery.deliver({ text })),
-    );
+  let deliveryUnavailable = false;
+  if (delivery !== undefined) {
+    try {
+      disposition = await deliverMonitorConditions(conditions, delivery);
+    } catch {
+      disposition = "unavailable";
+      deliveryUnavailable = true;
+    }
   }
   console.log(
     JSON.stringify({
@@ -127,7 +131,8 @@ async function main(): Promise<void> {
       delivery: disposition,
     }),
   );
-  if (conditions.length > 0) process.exitCode = 1;
+  if (deliveryUnavailable) process.exitCode = 2;
+  else if (conditions.length > 0) process.exitCode = 1;
 }
 
 main().catch(() => {

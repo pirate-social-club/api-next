@@ -6,12 +6,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 DynamicUser=true
-StateDirectory=pirate-hns-monitor
-StateDirectoryMode=0700
 EnvironmentFile=/etc/pirate-hns-monitor/environment
 LoadCredential=monitor.json:/etc/pirate-hns-monitor/monitor.json
-ExecStart=/usr/bin/env bun /srv/pirate-hns-monitor/current/hns-monitor.mjs --config %d/monitor.json --state /var/lib/pirate-hns-monitor/receipt.sqlite --deliver
-TimeoutStartSec=120
+LoadCredential=healthcheck-url:/etc/pirate-hns-monitor/healthcheck-url
+Environment=HNS_HEALTHCHECK_URL_FILE=%d/healthcheck-url
+ExecStart=/usr/bin/env bun /srv/pirate-hns-monitor/current/hns-monitor.mjs --config %d/monitor.json --healthcheck-sender /srv/pirate-hns-monitor/current/ping-healthcheck.py --deliver
+TimeoutStartSec=150
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict

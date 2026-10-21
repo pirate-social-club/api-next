@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily deployment drift verification
+
+[Timer]
+OnCalendar=*-*-* 04:41:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+Unit=pirate-deployment-verify.service
+
+[Install]
+WantedBy=timers.target
