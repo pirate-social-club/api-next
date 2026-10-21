@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("native", Path(__file__).with_name("verify-native-runtime.py"))
@@ -22,6 +23,20 @@ class NativeAcceptance(unittest.TestCase):
 
     def test_redirects_never_count_as_origin_readiness(self):
         self.assertIsNone(native.NoRedirect().redirect_request(None, None, 302, "moved", {}, "http://elsewhere/readyz"))
+
+    def test_missing_or_caddy_only_manifest_cannot_claim_native_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(native.Refused):
+                native.verify_installed_coverage("community-gateway", root)
+            (root / "config").mkdir()
+            manifest = root / "config/INSTALLED_SHA256SUMS"
+            manifest.write_text("0" * 64 + "  /etc/caddy/caddy.json\n")
+            with self.assertRaises(native.Refused):
+                native.verify_installed_coverage("community-gateway", root)
+            manifest.write_text("".join("0" * 64 + "  " + path + "\n"
+                                        for path in sorted(native.required_installed_paths("community-gateway"))))
+            native.verify_installed_coverage("community-gateway", root)
 
     def test_inactive_unit_or_replaced_executable_refused(self):
         with patch.object(native, "run", return_value="inactive\n"), self.assertRaises(native.Refused):

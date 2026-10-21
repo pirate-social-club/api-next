@@ -28,8 +28,11 @@ def require(value, reason):
 
 
 def sha256(path):
+    digest = hashlib.sha256()
     with open(path, "rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(256 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def run(args):
@@ -52,7 +55,7 @@ def exchange(url, body=None, accept="application/json"):
     headers = {"Accept": accept}
     if body is not None:
         headers.update({"Content-Type": "application/json", "Pirate-HNS-Driver-Protocol": "pirate-hns-private-driver-v1"})
-    request = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), headers=headers)
+    request = urllib.request.Request(url, data=None if body is None else json.dumps(body, separators=(",", ":")).encode(), headers=headers)
     with opener.open(request, timeout=6) as response:
         data = response.read(1_048_577)
         require(len(data) <= 1_048_576, "native-response-too-large")
@@ -62,7 +65,7 @@ def exchange(url, body=None, accept="application/json"):
 def observer_rpc(method, params):
     request = {"version": "pirate-hns-private-driver-request-v1", "exchange_kind": "hsd_json_rpc",
                "driver_reference": "hsd-json-rpc:production-primary",
-               "request_bytes_base64": base64.b64encode(json.dumps({"method": method, "params": params, "id": 1}).encode()).decode(),
+               "request_bytes_base64": base64.b64encode(json.dumps({"method": method, "params": params}, separators=(",", ":")).encode()).decode(),
                "response_max_bytes": 1_048_576, "timeout_ms": 4000}
     status, headers, body = exchange("http://127.0.0.1:4081/internal/hns-observer-driver/v1/hsd", request, "application/octet-stream")
     require(status == 200 and headers.get("Pirate-HNS-Driver-Protocol") == "pirate-hns-private-driver-v1"
@@ -82,6 +85,43 @@ def validate_tip(chain, block, now):
     require(block.get("hash") == chain.get("bestblockhash")
             and type(block.get("height")) is int and block["height"] == height, "observer-tip-mismatch")
     require(type(stamp) is int and -300 <= now - stamp <= 7200, "observer-actual-tip-stale")
+
+
+def required_installed_paths(profile):
+    shared = {"/usr/local/bin/bun"}
+    if profile == "observer-driver":
+        return shared | {
+            "/usr/local/bin/cloudflared", "/etc/systemd/system/pirate-hns-observer-driver.service",
+            "/etc/systemd/system/cloudflared-hns-authority.service",
+            "/etc/pirate/hns-observer-driver.env", "/etc/pirate/hns-observer-driver-hsd-api-key",
+            "/srv/pirate-hns-observer-driver/current/bin/pirate-hns-observer-driver.mjs",
+            "/srv/pirate-hns-observer/config/observer.env", "/srv/pirate-hns-observer/config/hsd_api_key",
+            "/etc/systemd/system/pirate-deployment-verify@observer.service.d/20-native-driver.conf",
+            "/etc/pirate-deployment-verify/observer.env",
+        }
+    return shared | {
+        "/etc/systemd/system/pirate-hns-community-app-gateway.service",
+        "/srv/pirate-hns-community-app-gateway/current/bin/pirate-hns-community-app-gateway.mjs",
+        "/srv/pirate-hns-community-app-gateway/current/deployment-manifest.json",
+        "/etc/pirate/hns-community-app-gateway/authority-database-url",
+        "/etc/pirate/hns-community-app-gateway/forwarder-key-registry.json",
+        "/etc/pirate/hns-community-app-gateway/solid-access-client-id",
+        "/etc/pirate/hns-community-app-gateway/solid-access-client-secret",
+        "/etc/systemd/system/pirate-deployment-verify@gateway-config.service.d/10-native-gateway.conf",
+        "/etc/pirate-deployment-verify/gateway-config.env",
+    }
+
+
+def verify_installed_coverage(profile, root):
+    manifest = root / "config/INSTALLED_SHA256SUMS"
+    require(manifest.is_file(), "native-installed-manifest-missing")
+    paths = set()
+    for line in manifest.read_text().splitlines():
+        digest, separator, path = line.partition("  ")
+        require(separator and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+                and path.startswith("/") and path not in paths, "native-installed-manifest-invalid")
+        paths.add(path)
+    require(required_installed_paths(profile) <= paths, "native-installed-coverage-incomplete")
 
 
 def verify_native(profile, release):
@@ -113,7 +153,7 @@ def verify_native(profile, release):
     pids[unit] = active_process(unit, runtime_hash, str(bundle))
     if profile == "observer-driver":
         chain = observer_rpc("getblockchaininfo", [])
-        block = observer_rpc("getblock", [chain["bestblockhash"], True])
+        block = observer_rpc("getblockheader", [chain["bestblockhash"], True])
         validate_tip(chain, block, time.time())
     else:
         status, _, body = exchange("http://127.0.0.1:4071/readyz")
@@ -136,6 +176,7 @@ def main():
     release = (root / "current").resolve(strict=True)
     # The ordinary checker covers the release, external installed-file manifest,
     # container and Caddy. Never send success before the native checks complete.
+    verify_installed_coverage(args.profile, root)
     run([str(release / "bin/deployment-status.sh"), "--verify", "--deploy-root", str(root)])
     result = verify_native(args.profile, release)
     if not args.no_heartbeat and os.environ.get("HNS_HEALTHCHECK_URL_FILE"):

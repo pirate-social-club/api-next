@@ -1010,23 +1010,23 @@
     },
     {
       "owned_path": "scripts/hns-deployment/build-native-app-bundle.py",
-      "sha256": "07fbf9e5c8bf329d583d30f95c7c5fea5815864086e835a5388b335d9f005394"
+      "sha256": "4b3dba1f830ae09a1b4a3b226e6015246e2138da318ba6c01e174b901f12bd7e"
     },
     {
       "owned_path": "scripts/hns-deployment/native-runtime-recovery.md",
-      "sha256": "3eb2cdb57b21ed0a84566cb1600545644bb795bc999f6fba0a80735824b88301"
+      "sha256": "5c036a40b0ecba4f3f49b1a172c646326c0208a4b5a3462c659bf94be9feb713"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
-      "sha256": "2f9b0a9049c9f7cf0d5f15d01235f3b546b1f10b3417310beee6445c8a3f2353"
+      "sha256": "6a2db2b5ad97cafbe2103ee8fca258035e1f90d24865b4ffe631e8d670db0f8a"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.test.py",
-      "sha256": "02e1e37a4430a0405d3514c5aa114d038c10279bd39dcf6bb9dba9878ba67efc"
+      "sha256": "7933b026ee3f8f731aaaad0f2ed36d3c953ae6c8891466bf1f13e98a7353abe0"
     },
     {
       "owned_path": "scripts/hns-native-runtime.test.ts",
-      "sha256": "5abe0349790c94bff0cafa7ff5d4245e9cf638e8166de7d959dd1b08f18324ac"
+      "sha256": "94d3ea36d00afd6311aa9a5434b4e478b335cc2758a771a0cc8547184cd5f619"
     }
   ]
 }
