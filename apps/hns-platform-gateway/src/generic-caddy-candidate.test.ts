@@ -152,6 +152,23 @@ describe("generic HNS Caddy candidate", () => {
     );
   });
 
+  test("preserves the owned DoH upstream without silently switching generations", () => {
+    const bytes = JSON.stringify(fixture()).replace("127.0.0.1:8053", "127.0.0.1:8054");
+    const source = JSON.parse(bytes) as ReturnType<typeof fixture>;
+    const built = buildHnsGenericCaddyCandidate(encoder.encode(bytes));
+    const candidate = JSON.parse(decoder.decode(built.candidate_bytes)) as ReturnType<
+      typeof fixture
+    >;
+    expect(candidate.apps.http.servers.srv0.routes[3]).toEqual(
+      source.apps.http.servers.srv0.routes[3],
+    );
+    expect(() =>
+      buildHnsGenericCaddyCandidate(
+        encoder.encode(bytes.replace("127.0.0.1:8054", "127.0.0.1:8055")),
+      ),
+    ).toThrow("DoH upstream changed");
+  });
+
   test("is deterministic and accepts its own generic candidate", () => {
     const first = buildHnsGenericCaddyCandidate(encoder.encode(JSON.stringify(fixture())));
     const second = buildHnsGenericCaddyCandidate(first.candidate_bytes);

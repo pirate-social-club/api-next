@@ -5,8 +5,9 @@
   "live_gateway_config": {
     "owned_path": "apps/hns-platform-gateway/ops/production/caddy.json",
     "source": "captured effective /etc/caddy/caddy.json on94.103.168.161 at2026-10-20T15:18:38.577525+00:00",
-    "sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5",
-    "status": "baseline custody; runtime/source retirement not accepted"
+    "sha256": "ee855db5bab9fa43bc5c60d9dc0b975d04520e9fe21f351c2e122a9adf7cc4c7",
+    "status": "owned candidate changes only DoH upstream8053 to8054; runtime unchanged pending acceptance",
+    "source_capture_sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5"
   },
   "files": [
     {
@@ -252,7 +253,7 @@
       "source_sha256": "d0d7a5e098ba92f80db7b826b3d9a334b4d7e20dbc3968947aaffa77dc309e4f",
       "owned_path": "scripts/hns-doh-resolver/README.md",
       "mode": "100644",
-      "owned_sha256": "873b7f9a13588dbd893dce7a4d988c180506e71e6822997a7513759e1b3b2182",
+      "owned_sha256": "e71d5af5ad9152d6dfea9da55b6c1c56ba925f5054ff62d230ee0530572c9135",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -292,8 +293,8 @@
       "source_sha256": "d4a54fd039b335ba5af03798ba01de71b029276fffeeda6b6dd3c52b73e2df68",
       "owned_path": "scripts/hns-doh-resolver/caddy-route.json",
       "mode": "100644",
-      "owned_sha256": "d4a54fd039b335ba5af03798ba01de71b029276fffeeda6b6dd3c52b73e2df68",
-      "modified_from_source": false,
+      "owned_sha256": "21f0cf2db4431892e47e30d5dd4988e556b96a8ed27815dcccd3f7dd6869140a",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
@@ -305,8 +306,8 @@
       "source_sha256": "8dd3f27f0cf9abc64ab7c365ce045e5142fa7a96c01c65e32026c46199957d7b",
       "owned_path": "scripts/hns-doh-resolver/compose.yaml",
       "mode": "100644",
-      "owned_sha256": "8dd3f27f0cf9abc64ab7c365ce045e5142fa7a96c01c65e32026c46199957d7b",
-      "modified_from_source": false,
+      "owned_sha256": "9d71e17c02bd06fd56f6670583164f8b4779e93a5660cdb97c37fda92cc27d88",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
@@ -318,8 +319,8 @@
       "source_sha256": "940c6c107ca2dd4fada430a886d782bfce87536f8d1c5486294e52c745fbeb8f",
       "owned_path": "scripts/hns-doh-resolver/dnsdist.conf",
       "mode": "100644",
-      "owned_sha256": "940c6c107ca2dd4fada430a886d782bfce87536f8d1c5486294e52c745fbeb8f",
-      "modified_from_source": false,
+      "owned_sha256": "b2210e3e613990009c34dc100efdf692353e2a2e45cdb72b1f026061be8f10bc",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
@@ -357,8 +358,8 @@
       "source_sha256": "146fe3cd2d4482014e459588d067c7ed216abaced6bca071389dc821d00a9c34",
       "owned_path": "scripts/hns-doh-resolver/env/resolver.env.example",
       "mode": "100644",
-      "owned_sha256": "146fe3cd2d4482014e459588d067c7ed216abaced6bca071389dc821d00a9c34",
-      "modified_from_source": false,
+      "owned_sha256": "8ec60fc9dc78c7de1b67ad4a15a56f3a6a36579ca96afbb4bb3db3d2603053d9",
+      "modified_from_source": true,
       "owned_mode": "100644"
     },
     {
