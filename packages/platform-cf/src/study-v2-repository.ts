@@ -123,7 +123,9 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
                   lyrics_revision, learning_language, target_language, learner_band,
                   language_profile_revision,
                   study_profile_revision, source_set_revision, selection_policy_revision,
-                  qualification_policy_revision, timezone, status, created_at, completed_at
+                  qualification_policy_revision, timezone,
+                  ${controlledAudio ? "CASE WHEN status='active' AND expires_at<=clock_timestamp() THEN 'expired' ELSE status END" : "status"} AS status,
+                  created_at, completed_at
                   , current_session_item_id, current_presented_at, presentation_count,
                   completion_reason,
                   ${
