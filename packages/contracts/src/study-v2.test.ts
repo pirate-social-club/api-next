@@ -118,6 +118,22 @@ describe("Study v2 contracts after spec 019", () => {
     });
     expect(() => decode(StudySessionV2, session(10))).not.toThrow();
     expect(() => decode(StudySessionV2, session(11))).toThrow();
+    const expired = { ...session(4), status: "expired" };
+    expect(decode(StudySessionV2, expired)).toMatchObject({
+      status: "expired",
+      completed_at: null,
+      lesson: expired.lesson,
+      progress: expired.progress,
+    });
+    expect(() =>
+      decode(StudySessionV2, { ...expired, completed_at: expired.created_at }),
+    ).toThrow();
+    expect(() =>
+      decode(StudySessionV2, {
+        ...expired,
+        lesson: { ...expired.lesson, current: null },
+      }),
+    ).toThrow();
   });
 
   test("does not admit client-authored transcripts or cloze", () => {
