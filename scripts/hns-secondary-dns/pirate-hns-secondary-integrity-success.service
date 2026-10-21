@@ -1,0 +1,16 @@
+[Unit]
+Description=Hosted success after a completed HNS secondary verification
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=HNS_HEALTHCHECK_URL_FILE=/etc/pirate-healthchecks/hns-secondary-integrity.url
+ExecStart=/usr/bin/python3 /srv/pirate-hns-secondary/current/bin/ping-healthcheck.py --state success --label hns-secondary-integrity
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+TimeoutStartSec=45
+UMask=0077

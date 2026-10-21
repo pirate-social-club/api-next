@@ -1,0 +1,15 @@
+[Unit]
+Description=Hosted failure signal for staging HNS state recovery
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/srv/pirate-hns-staging-backup/config/backup.env
+ExecStart=/srv/pirate-hns-staging-backup/current/bin/ping-healthcheck.py --state failure --label staging-hns-backup
+MemoryMax=128M
+MemorySwapMax=0
+TimeoutStartSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

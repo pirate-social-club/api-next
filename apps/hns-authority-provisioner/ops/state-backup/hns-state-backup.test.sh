@@ -205,3 +205,38 @@ for name in SPACES_DATA_DIR HNS_RUNTIME_STATE_DIR HNS_DANE_CERT_DIR; do
   export "$name=$original"
 done
 echo "missing mandatory sources refuse before quiescence or provider calls"
+
+# Staging has no Spaces role. Its complete runtime parent includes TLS once,
+# while an explicit wrong profile or omitted/saved-link state must fail closed.
+(
+  export HNS_BACKUP_PROFILE=staging-hns
+  if "$here/hns-state-backup.sh" >/dev/null 2>"$test_root/staging-declared-spaces.stderr"; then
+    echo "staging backup silently ignored a declared Spaces input" >&2
+    exit 1
+  fi
+  grep -Fq 'staging-hns profile must not declare SPACES_DATA_DIR' "$test_root/staging-declared-spaces.stderr"
+  unset SPACES_DATA_DIR
+  export HNS_RUNTIME_STATE_DIR="$test_root/staging-runtime"
+  export HNS_DANE_CERT_DIR="$HNS_RUNTIME_STATE_DIR/public-gateway"
+  mkdir -p "$HNS_DANE_CERT_DIR" "$test_root/staging-remote"
+  printf 'retained-tls-key\n' >"$HNS_DANE_CERT_DIR/key.pem"
+  printf 'private-runtime-config\n' >"$HNS_RUNTIME_STATE_DIR/runtime.env"
+  export TEST_REMOTE_DIR="$test_root/staging-remote"
+  export BACKUP_QUIESCE_UNITS=
+  "$here/hns-state-backup.sh" >/dev/null
+  stage_archive="$(find "$TEST_REMOTE_DIR" -name '*.tar.zst.age' -print -quit)"
+  stage_listing="$(tar --zstd --list --file "$stage_archive")"
+  [[ "$(grep -Fxc "${HNS_DANE_CERT_DIR#/}/key.pem" <<<"$stage_listing")" -eq 1 ]]
+  grep -Fxq "${HNS_RUNTIME_STATE_DIR#/}/runtime.env" <<<"$stage_listing"
+  grep -Fxq 'powerdns/pdns.sqlite3' <<<"$stage_listing"
+  [[ -z "$(sort <<<"$stage_listing" | uniq -d)" ]]
+  stage_before_events="$(cat "$TEST_EVENT_LOG")"
+  ln -s "$test_root/dane/cert.pem" "$HNS_RUNTIME_STATE_DIR/external-key"
+  if "$here/hns-state-backup.sh" >/dev/null 2>"$test_root/staging-link.stderr"; then
+    echo "staging backup accepted an external saved link" >&2
+    exit 1
+  fi
+  grep -Fq 'staging runtime must contain only regular files and directories' "$test_root/staging-link.stderr"
+  [[ "$(cat "$TEST_EVENT_LOG")" == "$stage_before_events" ]]
+)
+echo "staging captures complete runtime and TLS once, refusing declared or linked omissions"
