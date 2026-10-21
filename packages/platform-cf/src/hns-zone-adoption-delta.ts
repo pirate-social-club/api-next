@@ -5,7 +5,7 @@
  * A retained zone is the canonical authority zone: every record except the
  * online signatures, as `[owner, type, class, ttl, rdata_hex]`. Renewal
  * requires the served zone to equal it byte for byte. Adoption replaces it,
- * and admits exactly three kinds of difference:
+ * and admits these ordinary kinds of difference:
  *
  * - `wildcard_family_added`: the wildcard owner gains one AAAA holding the
  *   IPv4-mapped form of its A record's address and one HTTPS record in
@@ -19,10 +19,14 @@
  *   change to the zone has been undone before it was adopted.
  *
  * In all three the serial strictly increases and the rest of the SOA is equal.
+ * Explicit reviewed staging relocation additionally permits gateway address
+ * bytes to change, preserving every other record and TTL with a later serial.
  *
  * Anything else is refused, including a zone that uses NSEC3, whose denial
  * records this check does not model.
  */
+
+import { isIP } from "node:net";
 
 const CANONICAL_ZONE_VERSION = "pirate-hns-canonical-authority-zone-v1";
 const TYPE_A = 1;
@@ -40,6 +44,7 @@ export const HNS_ZONE_ADOPTION_DELTA_KINDS = [
   "wildcard_family_added",
   "wildcard_family_removed",
   "serial_only",
+  "staging_gateway_relocated",
 ] as const;
 export type HnsZoneAdoptionDeltaKind = (typeof HNS_ZONE_ADOPTION_DELTA_KINDS)[number];
 
@@ -196,6 +201,10 @@ export function requireHnsZoneAdoptionDeltaV1(input: {
   readonly root_label: string;
   readonly retained_zone_bytes: Uint8Array;
   readonly observed_zone_bytes: Uint8Array;
+  readonly staging_relocation?: {
+    readonly previous_gateway_ipv4: string;
+    readonly gateway_ipv4: string;
+  };
 }): HnsZoneAdoptionDeltaKind {
   const retained = decodeZone(input.retained_zone_bytes, input.root_label, "retained");
   const observed = decodeZone(input.observed_zone_bytes, input.root_label, "observed");
@@ -227,6 +236,42 @@ export function requireHnsZoneAdoptionDeltaV1(input: {
     record[0] === wildcard && (record[1] === TYPE_AAAA || record[1] === TYPE_HTTPS);
 
   const sorted = (records: readonly CanonicalRecord[]) => records.map(key).sort();
+  if (input.staging_relocation !== undefined) {
+    const { previous_gateway_ipv4: previous, gateway_ipv4: next } = input.staging_relocation;
+    if (isIP(previous) !== 4 || next !== "94.103.168.209" || previous === next)
+      return refuse("the staging gateway addresses are invalid");
+    const addressHex = (address: string) =>
+      address
+        .split(".")
+        .map((part) => Number(part).toString(16).padStart(2, "0"))
+        .join("");
+    const oldHex = addressHex(previous);
+    const newHex = addressHex(next);
+    const owners = [input.root_label, `app.${input.root_label}`, wildcard];
+    if (input.root_label === "8s28") owners.push("ns1.8s28");
+    for (const owner of owners) {
+      if (only(at(retained, owner, TYPE_A), `retained ${owner} A record`)[4] !== oldHex)
+        return refuse("the retained gateway address is not the reviewed predecessor");
+    }
+    const expected = retained
+      .filter((record) => !isSoa(record))
+      .map((record): CanonicalRecord => {
+        if (owners.includes(record[0]) && record[1] === TYPE_A)
+          return [record[0], record[1], record[2], record[3], newHex];
+        if (record[0] === wildcard && record[1] === TYPE_AAAA) {
+          if (record[4] !== `${IPV4_MAPPED_PREFIX_HEX}${oldHex}`)
+            return refuse("the retained wildcard AAAA is not the mapped predecessor address");
+          return [record[0], record[1], record[2], record[3], `${IPV4_MAPPED_PREFIX_HEX}${newHex}`];
+        }
+        return record;
+      });
+    if (
+      JSON.stringify(sorted(expected)) !==
+      JSON.stringify(sorted(observed.filter((record) => !isSoa(record))))
+    )
+      return refuse("the zone changed outside the reviewed staging gateway addresses");
+    return "staging_gateway_relocated";
+  }
   const sameExceptSoa =
     JSON.stringify(sorted(retained.filter((record) => !isSoa(record)))) ===
     JSON.stringify(sorted(observed.filter((record) => !isSoa(record))));

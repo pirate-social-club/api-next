@@ -34,3 +34,30 @@ candidates, not active references. Do not update the API pin, paired Solid
 bindings or saved activation rows until the supported successor/address
 transition has been rehearsed and the new signer and gateway are qualified.
 The owned DoH rollout on the production primary is independent of that cutover.
+
+## Supported activation successor
+
+Use the provisioner's `adopt-zone` command with the explicit
+`staging_gateway_relocated` delta. Its `adopt` step also requires
+`--relocation <absolute path> --expect-relocation-sha256 <hex>`, binding the
+exact reviewed JSON file. Run dry-run, then rehearse, then commit from a fresh
+observation under exclusive authority-writer custody. Rehearsal rolls back the
+entire inventory, DNS, health, app and sale successor transaction.
+
+The review version is `hns-reviewed-staging-gateway-relocation-v1`. It names
+the root, previous DNS and health generations, previous and new gateway IPv4
+addresses, complete previous and next chain records, and a
+`hns-reviewed-gateway-rotation-v1` object. The latter binds the predecessor
+gateway, canonical successor manifest, profile digests, unchanged certificate
+SPKI, observation time and shadow readiness attestation. Build this evidence
+from actual readback after qualifying the gateway; a template is not readiness.
+
+Only staging can use this operation. It moves the apex, app and wildcard A,
+the existing mapped wildcard AAAA, and 8s28's ns1 A to94.103.168.209. Every
+other canonical zone record and TTL remains identical, apart from increasing
+the SOA serial. Complete chain records must match the predecessor snapshot;
+only8s28's ns1 GLUE4 may move, preserving NS, DS and unrelated records.
+The observer runs again inside the database fence before promotion. The new
+snapshot, gateway and zone become a single successor; saved historical
+activation references are never edited. Recurring renewal binds to that
+adopted full zone and continues to reject changes that were not adopted.

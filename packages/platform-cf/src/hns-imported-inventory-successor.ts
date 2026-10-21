@@ -8,6 +8,7 @@ import {
 } from "../../application/src/hns-host-persistence.ts";
 import { decodeHnsRootImportReadinessResultV1 } from "../../application/src/namespace-ownership/hns-root-import-readiness.ts";
 import { promoteHnsAuthoritySuccessorInTransaction } from "./hns-authority-successor-promotion.ts";
+import { requireHnsStagingRelocationReview } from "./hns-staging-relocation-review.ts";
 
 type State = {
   dns_zone_activation_id: string;
@@ -24,6 +25,9 @@ type State = {
   sale_dns_generation: string;
   registry_reference: string;
   environment: string;
+  gateway_deployment_reference: string;
+  gateway_certificate_spki_sha256: string;
+  current_health_generation: string;
   stable_chain_delegation_snapshot_reference: string;
   stable_chain_delegation_snapshot_digest: string;
   actor_account_id: string;
@@ -44,6 +48,7 @@ export async function promoteImportedHnsInventorySuccessor(
   resultBytes: Uint8Array,
   resultSha256: string,
   operationPrefix: "hns-inventory-renewal" | "hns-zone-adoption" = "hns-inventory-renewal",
+  reviewedRelocation?: unknown,
 ) {
   const decoded = await decodeHnsRootImportReadinessResultV1(resultBytes);
   const result = decoded.result;
@@ -52,6 +57,9 @@ export async function promoteImportedHnsInventorySuccessor(
     dns.dns_zone_activation_id, dns.current_generation AS dns_generation,
     revision.dns_authority_kind, revision.dns_authority_reference, revision.zone_revision, revision.status AS dns_status,
     revision.stable_chain_delegation_snapshot_reference, revision.stable_chain_delegation_snapshot_digest,
+    revision.gateway_deployment_reference, revision.gateway_certificate_spki_sha256,
+    (SELECT COALESCE(max(health_generation),0)::text FROM hns_dns_zone_health_observations
+      WHERE dns_zone_activation_id=dns.dns_zone_activation_id AND activation_generation=dns.current_generation) AS current_health_generation,
     app.app_host_activation_id, app.current_generation AS app_generation,
     app_revision.status AS app_status, app_revision.dns_zone_activation_generation AS app_dns_generation,
     sale_revision.*, sale_revision.status AS sale_status,
@@ -103,6 +111,29 @@ export async function promoteImportedHnsInventorySuccessor(
     throw new Error("HNS successor namespace authority changed");
   if (decoded.authority_inventory.environment !== state.environment)
     throw new Error("HNS successor inventory environment changed");
+  const relocation =
+    reviewedRelocation === undefined
+      ? undefined
+      : await requireHnsStagingRelocationReview({
+          review: reviewedRelocation,
+          predecessor: {
+            environment: state.environment,
+            root_label: result.root_label,
+            generation: Number(state.dns_generation),
+            health_generation: Number(state.current_health_generation),
+            gateway_reference: state.gateway_deployment_reference,
+            certificate_spki: state.gateway_certificate_spki_sha256,
+            chain_reference: state.stable_chain_delegation_snapshot_reference,
+          },
+          observed: result,
+          observed_at: result.observed_at,
+        });
+  const chainReference =
+    relocation === undefined
+      ? state.stable_chain_delegation_snapshot_reference
+      : `hns-root-chain:${result.chain_resource_sha256}`;
+  const chainDigest =
+    relocation === undefined ? state.stable_chain_delegation_snapshot_digest : resultSha256;
   const observed = Date.parse(result.observed_at);
   const now = state.database_time.getTime();
   const expires = Math.min(
@@ -140,10 +171,7 @@ export async function promoteImportedHnsInventorySuccessor(
       zone_revision: Number(state.zone_revision) + 1,
       dnssec_keyset: [result.dnssec_keyset_reference, result.dnssec_keyset_version],
       gateway: [result.gateway_deployment_reference, result.gateway_certificate_spki_sha256],
-      stable_chain_delegation_snapshot: [
-        state.stable_chain_delegation_snapshot_reference,
-        state.stable_chain_delegation_snapshot_digest,
-      ],
+      stable_chain_delegation_snapshot: [chainReference, chainDigest],
     },
     zone_bytes: decoded.managed_zone_bytes,
   });
@@ -169,8 +197,8 @@ export async function promoteImportedHnsInventorySuccessor(
       dns_zone_activation_id: state.dns_zone_activation_id,
       activation_generation: generation,
       expected_health_generation: healthGeneration,
-      stable_chain_delegation_snapshot_reference: state.stable_chain_delegation_snapshot_reference,
-      stable_chain_delegation_snapshot_digest: state.stable_chain_delegation_snapshot_digest,
+      stable_chain_delegation_snapshot_reference: chainReference,
+      stable_chain_delegation_snapshot_digest: chainDigest,
       observed_zone_bytes_digest: result.observed_zone_bytes_sha256,
       observed_dnssec_keyset_reference: result.dnssec_keyset_reference,
       observed_dnssec_keyset_version: result.dnssec_keyset_version,
@@ -183,6 +211,7 @@ export async function promoteImportedHnsInventorySuccessor(
       valid_for_seconds: remaining,
     }),
     successorId: resultSha256,
+    ...(relocation === undefined ? {} : { gatewayRotation: relocation.rotation }),
     rootLabel: result.root_label,
     generations: {
       dns_activation_generation: generation,

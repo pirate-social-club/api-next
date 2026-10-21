@@ -3,6 +3,7 @@ import {
   HnsZoneAdoptionDeltaRefusal,
   requireHnsZoneAdoptionDeltaV1,
 } from "./hns-zone-adoption-delta.ts";
+import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
 
 type Record = readonly [string, number, 1, number, string];
 
@@ -75,6 +76,77 @@ const replace = (records: readonly Record[], owner: string, type: number, next: 
   );
 
 describe("zone adoption delta", () => {
+  test("moves 8s28's ns1 address while retaining the already relocated ns2", () => {
+    const make = (serial: number, moved: boolean) => {
+      const parsed = JSON.parse(
+        new TextDecoder().decode(hnsZoneAdoptionFixtureZone("8s28", serial, true)),
+      );
+      parsed.records.push(["ns1.8s28", 1, 1, 300, "c000020a"], ["ns2.8s28", 1, 1, 300, "5e67a8d1"]);
+      if (moved)
+        parsed.records = parsed.records.map(
+          (record: Record): Record =>
+            record[1] === 1 && record[4] === "c000020a"
+              ? [record[0], 1, 1, record[3], "5e67a8d1"]
+              : record[1] === 28
+                ? [record[0], 28, 1, record[3], "00000000000000000000ffff5e67a8d1"]
+                : record,
+        );
+      return new TextEncoder().encode(JSON.stringify(parsed));
+    };
+    expect(
+      requireHnsZoneAdoptionDeltaV1({
+        root_label: "8s28",
+        retained_zone_bytes: make(7, false),
+        observed_zone_bytes: make(8, true),
+        staging_relocation: { previous_gateway_ipv4: "192.0.2.10", gateway_ipv4: "94.103.168.209" },
+      }),
+    ).toBe("staging_gateway_relocated");
+  });
+  test("relocates only reviewed address bytes, preserving keys, TLSA, denial and TTLs", () => {
+    const old = adoptedRecords(8);
+    const moved = adoptedRecords(9).map(
+      (record): Record =>
+        record[1] === 1
+          ? [record[0], 1, 1, record[3], "5e67a8d1"]
+          : record[1] === 28
+            ? [record[0], 28, 1, record[3], "00000000000000000000ffff5e67a8d1"]
+            : record,
+    );
+    const input = {
+      root_label: root,
+      retained_zone_bytes: zone(old),
+      observed_zone_bytes: zone(moved),
+      staging_relocation: { previous_gateway_ipv4: "192.0.2.10", gateway_ipv4: "94.103.168.209" },
+    };
+    expect(requireHnsZoneAdoptionDeltaV1(input)).toBe("staging_gateway_relocated");
+    expect(() => delta(old, moved)).toThrow();
+    for (const [owner, type, rdata] of [
+      [root, 48, "0101030d01"],
+      [wildcard, 52, `030101${"cd".repeat(32)}`],
+      [wildcard, 47, nsec(root, [1, 47])],
+    ] as const) {
+      expect(() =>
+        requireHnsZoneAdoptionDeltaV1({
+          ...input,
+          observed_zone_bytes: zone(replace(moved, owner, type, [owner, type, 1, 300, rdata])),
+        }),
+      ).toThrow("outside the reviewed");
+    }
+    expect(() =>
+      requireHnsZoneAdoptionDeltaV1({
+        ...input,
+        observed_zone_bytes: zone(
+          replace(moved, `app.${root}`, 1, [`app.${root}`, 1, 1, 301, "5e67a8d1"]),
+        ),
+      }),
+    ).toThrow("outside the reviewed");
+    expect(() =>
+      requireHnsZoneAdoptionDeltaV1({
+        ...input,
+        staging_relocation: { previous_gateway_ipv4: "192.0.2.11", gateway_ipv4: "94.103.168.209" },
+      }),
+    ).toThrow("reviewed predecessor");
+  });
   test("admits the two wildcard address records with the serial and the wildcard NSEC they change", () => {
     expect(delta(retainedRecords(), adoptedRecords())).toBe("wildcard_family_added");
     // Record order is not part of the zone.
