@@ -4,7 +4,7 @@
   "staging_gateway_listener": "127.0.0.1:4269",
   "staging_health_listener": "127.0.0.1:4271",
   "tls_terminator_contract": "pirate-hns-community-app-caddy-boundary-v1",
-  "public_tls_listener": "81.15.150.167:443",
+  "public_tls_listener": "94.103.168.209:443",
   "public_tls_termination": true,
   "gateway_certificate_spki_sha256": "__UNRESOLVED_64_LOWERCASE_HEX_REAL_CERTIFICATE_SPKI__",
   "routing_contract": "app-or-handle-host-v1",

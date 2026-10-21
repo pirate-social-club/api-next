@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const manifestHost = "ubuntu@81.15.150.167";
+const manifestHost = "ubuntu@94.103.168.209";
 const manifestPath = "/srv/pirate-hns-staging/public-gateway/current/deployment-manifest.json";
 const gatewayPrefix = "hns-community-app-handle-gateway-sha256:";
 
@@ -44,6 +44,7 @@ export function verifyHnsStagingGatewayManifest(
   if (
     manifest.schema !== "pirate-hns-community-app-handle-gateway-staging-public-v1" ||
     manifest.mode !== "staging-public-tls" ||
+    manifest.public_tls_listener !== "94.103.168.209:443" ||
     manifest.solid_origin !== "https://hns-community-ingress-staging.pirate.sc" ||
     typeof manifest.solid_ingress_composition_reference !== "string" ||
     expected.schema !== "pirate-hns-staging-gateway-deploy-pin-v1" ||

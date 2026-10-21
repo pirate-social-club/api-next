@@ -15,7 +15,7 @@
     "http": {
       "servers": {
         "staging-8s28": {
-          "listen": ["81.15.150.167:443"],
+          "listen": ["94.103.168.209:443"],
           "protocols": ["h1", "h2"],
           "automatic_https": { "disable": true },
           "tls_connection_policies": [

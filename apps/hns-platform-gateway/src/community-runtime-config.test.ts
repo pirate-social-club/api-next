@@ -76,7 +76,7 @@ async function manifest(
       staging_gateway_listener: "127.0.0.1:4269",
       staging_health_listener: "127.0.0.1:4271",
       tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
-      public_tls_listener: "81.15.150.167:443",
+      public_tls_listener: "94.103.168.209:443",
       public_tls_termination: true,
       gateway_certificate_spki_sha256: "c".repeat(64),
       routing_contract: "app-or-handle-host-v1",
@@ -229,7 +229,7 @@ describe("community gateway deployment configuration", () => {
     expect(configuration.manifest).toMatchObject({
       schema: HNS_COMMUNITY_APP_HANDLE_GATEWAY_STAGING_PUBLIC_SCHEMA,
       mode: "staging-public-tls",
-      public_tls_listener: "81.15.150.167:443",
+      public_tls_listener: "94.103.168.209:443",
       routing_contract: "app-or-handle-host-v1",
       public_tls_termination: true,
     });
@@ -237,6 +237,7 @@ describe("community gateway deployment configuration", () => {
       "hns-community-app-handle-gateway-sha256:",
     );
     for (const change of [
+      { public_tls_listener: "81.15.150.167:443" },
       { public_tls_listener: "94.103.168.161:443" },
       { public_tls_termination: false },
       { routing_contract: "app-only" },
