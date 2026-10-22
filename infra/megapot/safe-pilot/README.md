@@ -70,17 +70,23 @@ establish the proposed timing guarantee.
 
 ## Integration still required
 
-The current `megapot-v2.ts` receipt validators require an outer transaction
-from custody directly to Megapot or USDC. A Safe execution has a different
-outer envelope. Add explicit Safe evidence validation; never relabel or
-fabricate the receipt's from/to fields to pass the old checks. Bind the exact
+The receipt adapters now accept explicit Safe evidence for single-call
+approval, purchase, claim and payout. `reward-safe-execution.ts` verifies the
+Safe EIP-712 message hash, the exact outer execTransaction fields and one
+successful Safe event. The normal Megapot/NFT/USDC checks then verify the
+business outcome. Receipt parties remain unchanged. Native value and gas
+refunds are zero in this pilot command format. The command validator matches
+the released Safe singleton's read-only getTransactionHash at block 52944896.
+This is a parser/validation change; no operational command writer calls it yet. Bind the exact
 chain, Safe, nonce, transaction hash, call list and manifest before exporting
 a packet. Reconcile Safe execution and the exact ticket/token events against
 that same command. An unknown result keeps its reservation and forbids a
 replacement payment until resolved.
 
-Reuse the existing beneficiary freeze, pre-purchase commitment, allocation,
-participant-initiated Palm-gated Claim and never-expiring liabilities. Only
+Reuse the existing beneficiary freeze, allocation, participant-initiated
+Palm-gated Claim and never-expiring liabilities. A new ticket-first pool freezes
+and timestamps its beneficiary commitment before the drawing, after confirmed
+ticket purchase. Existing offers retain their original purchase order. Only
 accepted claims enter a payout batch. The participant sees awaiting payout
 until its transfer confirms. Unclaimed and conflicted credits stay reserved.
 Refunds retain the confirmed funders' proportional entitlement.
@@ -116,13 +122,25 @@ Adapt that boundary explicitly and retain reservations through unknown outcomes.
 The existing receipt validators also require direct EOA calls, as described
 above. These are concrete integration changes, not missing pool arithmetic.
 
-The owner has been asked whether the pilot may buy and confirm a ticket before
-opening entries. This could remove the late-purchase race and check-contract
-deployment, but changes the current lifecycle: the database admits entry-open,
-cutoff-frozen, committed and purchase-pending in that order. It also spends the
-ticket cost when nobody qualifies. The question is pending. Do not implement
-that economic/order change or present it as a proven speed-up without the
-answer and a source comparison. Preserve the current purchase order meanwhile.
+The owner clarified the intended flow on October 22: buy a ticket for the song
+or Dance, then divide any reward among the people who complete the activity.
+Implement a prospective ticket-first pool: confirm the NFT and its actual
+provider drawing before opening entries, require completion before the published
+entry deadline, and freeze one share per qualifying account before the drawing.
+The already purchased ticket costs money even with no qualifiers. The prior
+pre-purchase freeze order is not this new pool's admission rule.
+
+This removes the stale-purchase check contract from the proposed pilot release;
+its local proof remains evidence for the superseded purchase-after-entry design.
+A late execution must never silently attach to a promised or already-open
+participant drawing. An unusable or ambiguous purchase stays held for
+reconciliation. The empty-entry winning-ticket disposition still needs explicit
+terms before a real pool opens; do not invent an operator allocation or silently
+apply the old no-purchase rule to an already spent ticket.
+
+The owner controls when Claude audits occur. Do not launch, arrange or prompt a
+reviewer. Keep source and validation results inspectable, and distinguish
+implementation checks from independent acceptance.
 
 Dance remains in scope unless it becomes the sole remaining launch blocker;
 any Study/singing-only offer would be a new prospective pool version. Telegram
@@ -137,8 +155,11 @@ and `bun run test` both exit zero. The latter reports 6,399 unit tests passing,
 four existing skips, 24 storage tests, 22 Node tests and 248 workerd tests.
 This source has not had independent review, hosted PostgreSQL qualification or
 release acceptance. The repository checks do not automatically run this Forge
-suite; invoke it explicitly with the command above. No production source,
-configuration, migration, Worker or live fund state is changed by this proof.
+suite; invoke it explicitly with the command above. The receipt adapter adds production library code without enabling a runtime
+caller. No configuration, migration, Worker deployment or live fund state has
+changed. Adapter check and full successor test both pass: 6,408 units, four existing
+skips, 24 storage, 22 Node and 248 workerd tests. The focused receipt suites
+pass 17 cases with 66 assertions. Independent review remains with the owner.
 
 ## Sources
 
