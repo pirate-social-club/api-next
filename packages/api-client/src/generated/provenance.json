@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "package": "@pirate/api-client",
   "version": "0.128.0",
-  "sourceIdentifier": "api-next-contracts@f66c81bc0f4b698db059666abe6ec5549c5503b3a382dec11b29f4ce3fe62caa",
-  "openapiSha256": "f66c81bc0f4b698db059666abe6ec5549c5503b3a382dec11b29f4ce3fe62caa",
-  "clientSha256": "7ae4167c9749bd3b27cb8802be50950e6acd934bd2c9114fa5dcd30473bfec2b"
+  "sourceIdentifier": "api-next-contracts@4e90adddc7c96da32ee32379b9d113f6f692869a65e6afc0b2390bca3f21197c",
+  "openapiSha256": "4e90adddc7c96da32ee32379b9d113f6f692869a65e6afc0b2390bca3f21197c",
+  "clientSha256": "81062a3f34cafe09893d491a03143798a980baa1b3103fa79164ef6b821cb6e3"
 }
