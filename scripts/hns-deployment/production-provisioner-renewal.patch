@@ -1,0 +1,84 @@
+diff --git a/apps/hns-authority-provisioner/src/observe-root.test.ts b/apps/hns-authority-provisioner/src/observe-root.test.ts
+index a4014060..7d24af1d 100644
+--- a/apps/hns-authority-provisioner/src/observe-root.test.ts
++++ b/apps/hns-authority-provisioner/src/observe-root.test.ts
+@@ -326,6 +326,58 @@ describe("HNS root readiness observation", () => {
+     await expect(renew(withoutType(state.plan.replacement_records, "DS"))).rejects.toThrow();
+   });
+
++  test("renewal follows a rotated gateway reference; first readiness still requires the provisioned one", async () => {
++    const state = await fixture();
++    // A reviewed authority successor has moved this root to another gateway
++    // deployment, and the provisioner is configured with that one. The
++    // provision result still records the reference the root was created with.
++    const rotated = {
++      ...state.zone,
++      created: false,
++      gateway_deployment_reference: "gateway-deployment-v2",
++    };
++    const observe = (
++      operation_kind: "observe_root_v1" | "renew_health_v1",
++      zone: typeof state.zone,
++    ) =>
++      observeHnsRootReadinessV1({
++        observation_attempt: { job_id: "rotated-gateway", executor_id: "executor", lease_fence: 1 },
++        operation_kind,
++        request: state.request,
++        publish_plan_bytes: state.provision.publish_plan_bytes,
++        provision_result_bytes: state.provision.result_bytes,
++        ports: {
++          observe_current_resource: async () => observedCurrent(state.plan.replacement_records),
++          reconcile_zone: async () => {},
++          inspect_zone: async () => zone,
++          observe_live: async () => state.live,
++        },
++        config: {
++          environment: "test",
++          valid_for_seconds: 604_800,
++          now: () => Date.parse("2026-09-05T06:00:00.000Z"),
++        },
++      });
++
++    // Renewal proceeds and reports the configured reference, which the
++    // renewal preparation in the database then holds to the current revision.
++    const renewed = await decodeHnsRootImportReadinessResultV1(
++      (await observe("renew_health_v1", rotated)).result_bytes,
++    );
++    expect(renewed.result.gateway_deployment_reference).toBe("gateway-deployment-v2");
++
++    // A root that is not activated yet has no revision to hold it to.
++    await expect(observe("observe_root_v1", rotated)).rejects.toEqual(
++      new HnsRootReadinessObservationError("authority_mismatch"),
++    );
++
++    // The allowance is the reference alone. A different certificate key is
++    // still a mismatch in renewal.
++    await expect(
++      observe("renew_health_v1", { ...rotated, gateway_certificate_spki_sha256: "f".repeat(64) }),
++    ).rejects.toEqual(new HnsRootReadinessObservationError("authority_mismatch"));
++  });
++
+   test("reports owner-update pending without inspecting authority", async () => {
+     const state = await fixture();
+     let inspectedZone = false;
+diff --git a/apps/hns-authority-provisioner/src/observe-root.ts b/apps/hns-authority-provisioner/src/observe-root.ts
+index e9473cd4..c2b94ade 100644
+--- a/apps/hns-authority-provisioner/src/observe-root.ts
++++ b/apps/hns-authority-provisioner/src/observe-root.ts
+@@ -483,7 +483,15 @@ export async function observeHnsRootReadinessV1(input: {
+     canonicalJson(zone.ds_records) !== canonicalJson(provision.ds_records) ||
+     zone.managed_rrset_sha256 !== provision.managed_rrset_sha256 ||
+     zone.shared_tlsa_profile_sha256 !== provision.shared_tlsa_profile_sha256 ||
+-    zone.gateway_deployment_reference !== provision.gateway_deployment_reference ||
++    // A reviewed authority successor replaces a root's gateway deployment
++    // reference, after which the current one no longer equals the one the
++    // provision result recorded. Renewal leaves the reference to the renewal
++    // preparation in the database, which accepts only the current revision's
++    // and ends the job otherwise; this result carries the configured one.
++    // First readiness has no revision yet and still requires the provisioned
++    // reference.
++    (input.operation_kind !== "renew_health_v1" &&
++      zone.gateway_deployment_reference !== provision.gateway_deployment_reference) ||
+     zone.gateway_certificate_spki_sha256 !== provision.gateway_certificate_spki_sha256
+   ) {
+     throw new HnsRootReadinessObservationError("authority_mismatch");

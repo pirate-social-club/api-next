@@ -9,3 +9,12 @@ The API listens only on loopback8081. Supply PDNS_API_KEY_CONFIG as an absolute 
 RRSIG checks query both public authoritative serving paths. The six-day minimum leaves a margin around the weekly re-signing boundary; seven days falsely alarms during normal secondary lag. A secondary's hourly refresh is an interval, not guaranteed convergence. An expired or missing signature still fails. The DANE check independently compares the currently served certificate SPKI with every configured TLSA owner through both authorities.
 
 Use the shared immutable release constructor and retain integrity checks. Do not enable a new release until isolated PowerDNS configuration/key loading, authenticated API access, signed queries, authorized transfers and effective unit/file/image checks pass. The live Caddy artifact is a separate ownership task; copying a historical manifest does not explain its production bytes.
+
+The asset stager also rebuilds the retained production provisioner through the
+fixed authority-provisioner profile. See scripts/hns-deployment/native-runtime-recovery.md
+for its protected-base reconstruction, original manifest and managed runtime
+inputs. The authdns verifier drop-in extends the existing check to the actual
+provisioner and its read-only schema guard. This operational update preserves
+PowerDNS, provisioner application bytes, signing keys, database state and
+service identities. Stop only the verification timer during adoption; require
+its local no-heartbeat pass and real scheduled hosted acknowledgement.

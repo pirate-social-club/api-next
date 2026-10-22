@@ -20,7 +20,7 @@
       "source_sha256": "88f1876017f0ea4e64b0edc86a5a125406aca8134a7f2933ce75c89525d826d6",
       "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/README.md",
       "mode": "100644",
-      "owned_sha256": "e9d4cc07fe706fc49cde372627a3c66d576152621571a721c7932a65eeb17a34",
+      "owned_sha256": "44185e96f1ff0eebd4efdfb3487a146501e7d29373a498c347eb1060a28c4e86",
       "modified_from_source": true,
       "owned_mode": "100644"
     },
@@ -947,7 +947,7 @@
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/caddy-build/README.md",
-      "sha256": "4e221a9ac0049bff595530829241953b6d84bfd8ccca655a34d14a64687e36b0"
+      "sha256": "11c53ee093b35a2706179f56345fca7e3ef4775f9f4f7b10dc8b508dc40201a8"
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/caddy-build/build-caddy.sh",
@@ -987,7 +987,7 @@
     },
     {
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/bin/stage-release-assets.sh",
-      "sha256": "d62752b2afa2d65961597d6b24940c79d49b590525a86df1777c3be949aeae1f"
+      "sha256": "cc4536bf30e8a1c817d65766be934c429b2e5f2658a5088c9e951c12502fd122"
     },
     {
       "owned_path": "apps/hns-observer-driver/ops/chain-reader/systemd/pirate-deployment-verify@observer.service.d/20-native-driver.conf",
@@ -1011,27 +1011,59 @@
     },
     {
       "owned_path": "scripts/hns-deployment/build-native-app-bundle.py",
-      "sha256": "6b069c45f3a22d0ccdf06cfc9f4849ffef9eb8c01ff91eff488082e4cfb5a413"
+      "sha256": "e029566bc355172b9470a07fedafe133ef962624412ac343eefcd2a155ad9c93"
     },
     {
       "owned_path": "scripts/hns-deployment/native-runtime-recovery.md",
-      "sha256": "9d7c0a0ec2a374ad13611bd746f89d04a035030606413a120efc300a274e66a6"
+      "sha256": "170d5f9267fd15037cae76d9af86b73146c9e452652653ef245e72af56a7106a"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
-      "sha256": "dab800ed076ebcca4ca966bbca96dd0551f072f55cd2f78445b93db97e5aae57"
+      "sha256": "246356a80f3f8b71692ef5ebee0dd8b06c2a15326f09c8d8f556d0a20f0affb1"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.test.py",
-      "sha256": "bda3b7f376ba27a07664eceb40f509c746d5fd36bcd7014e131636a1fbeb56be"
+      "sha256": "d7c7ec52b3826f8930537d3236e0e1153c2570561fff84d43affa96e807e545f"
     },
     {
       "owned_path": "scripts/hns-native-runtime.test.ts",
-      "sha256": "94d3ea36d00afd6311aa9a5434b4e478b335cc2758a771a0cc8547184cd5f619"
+      "sha256": "6aa32edc5d0ca63c59c2884188a6dae68d065edd05682b5de4269ef204741599"
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/production/retire-legacy-verifiers.md",
       "sha256": "495dd561efdf9f66c8ad6a0851078ba7dc3dbfab8f1b2c9578c62fcf0a848e3d"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/production-provisioner-renewal.patch",
+      "sha256": "4e6e88c124cdc2afd592e8b0a3d6b1ff170418e5f001396acbd604a6c5bb6e39"
+    },
+    {
+      "owned_path": "scripts/hns-deployment/build-native-app-bundle.test.py",
+      "sha256": "6690e8c44b5b53a222bf236686d63874cff58d2ac67864f7001fc0ce5a533f06"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/bin/stage-release-assets.sh",
+      "sha256": "2ba8b56ca39c3cccdff8aab6070d2e0210eb2352183940a329ab4b5ef10f4c1c"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/deployment-manifest.json",
+      "sha256": "00527d30c7a630f37900d4217c9bb6bd058eacae94a6b9c9f445c49b4840ce30"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/systemd/pirate-deployment-verify@authdns.service.d/20-native-provisioner.conf",
+      "sha256": "8e78ce8214180fe28e215052a1257d1eeadc3a0d93177b7b26198c98e43ed228"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/systemd/caddy.service",
+      "sha256": "6c271e030644bd36a0c8956885934f16c928f88202bc126f12cde519ef9693ff"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/caddy-build/systemd/30-production-json.conf",
+      "sha256": "47dca85679b8ac2a94d07a71965e752f6739f1c6e03f41de692f9c7c9ea389a7"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/systemd/pirate-deployment-verify@authdns.timer.d/10-initial-verification.conf",
+      "sha256": "f3b2fdd48cc2961dced9cc887868ead21027fad9071e3bf5a256b49e9fa74376"
     }
   ]
 }
