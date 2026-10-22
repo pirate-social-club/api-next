@@ -705,6 +705,7 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
   "DeliverHnsEdgeAlert",
+  "ListHnsNamespaces",
   "GetHandleSalesManagement",
   "ListHandleSaleNamespaceManagement",
   "ListCommunityHandleOfferingManagement",

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.129.0",
+  "sourceBranch": "feat/hns-namespace-discovery",
+  "sourceBase": "efb81e072d93f4338c358499ea69ce64511e35ba",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds the public GET /public/hns/namespaces/v1 (ListHnsNamespaces): version 1, a millisecond generated_at and up to 256 unique sorted LDH roots, each with an expires_at after generated_at. Its only declared error is InternalError and its cache policy is private, no-store. No existing operation changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.129.0.tgz",
+    "sha256": "c9d9cf42c58e37ef5c96d0e688df723ca1476c1a89e78bfd920072a3bc13dec2"
+  },
+  "validation": {
+    "status": "Candidate package; required gates and independent source acceptance pending.",
+    "operationalBoundary": "No deployment, staging or production database access, or credential operation."
+  }
+}

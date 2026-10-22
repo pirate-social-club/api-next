@@ -8,7 +8,8 @@ import {
 import { Effect } from "effect";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { stripHnsCommunityAppPrivateHeaders } from "./hns-community-app-api-transport.ts";
-import { createHttpWorker } from "./transport.ts";
+import { makeHnsNamespaceDiscoveryHandlers } from "./hns-namespace-discovery-handlers.ts";
+import { createHttpWorker, type EndpointHandler } from "./transport.ts";
 
 const now = 1_770_000_000;
 const origin = "https://app.xn--pokmon-dva";
@@ -124,7 +125,7 @@ const sessionServices: SessionExchangeServices = {
   },
 };
 
-function harness() {
+function harness(handlers: Readonly<Record<string, EndpointHandler>> = {}) {
   let current: HnsCommunityAppHostAuthorityStateV1 | null = activeState;
   let nonce = 0;
   const consumed = new Set<string>();
@@ -160,6 +161,7 @@ function harness() {
   });
   const worker = createHttpWorker({
     config: { corsOrigin: "https://pirate.sc" },
+    handlers,
     sessionExchange: sessionServices,
     hnsCommunityAppApi: composition,
   });
@@ -219,6 +221,37 @@ describe("interactive HNS community API transport", () => {
       expect(denied.headers.has("set-cookie")).toBe(false);
       expect(denied.headers.get("cache-control")).toBe("private, no-store");
     }
+  });
+  test("keeps namespace discovery off the forwarded /api mount for a validly signed envelope", async () => {
+    const { worker, signed } = harness({
+      ...makeHnsNamespaceDiscoveryHandlers({
+        servedRoots: () => Effect.succeed({ generated_at: "2026-10-22T07:00:00.000Z", roots: [] }),
+      }),
+      ListPopularCommunities: () => ({
+        object: "popular_community_list",
+        ranked_by: "members",
+        items: [],
+      }),
+    });
+    // Control: the same harness and signature serve an ordinary public GET under
+    // /api, so the refusal below cannot come from Access, MAC or Origin checks.
+    const control = await signed("/api/public/communities/popular", "GET");
+    const served = await worker.request(control.url, control.init);
+    expect(served.status).toBe(200);
+    expect(await served.json()).toMatchObject({ object: "popular_community_list" });
+
+    const unauthenticated = await signed("/api/public/hns/namespaces/v1", "GET");
+    unauthenticated.init.headers.delete("cf-access-jwt-assertion");
+    expect((await worker.request(unauthenticated.url, unauthenticated.init)).status).toBe(401);
+
+    const request = await signed("/api/public/hns/namespaces/v1", "GET");
+    const refused = await worker.request(request.url, request.init);
+    expect(refused.status).toBe(404);
+    expect(refused.headers.get("cache-control")).toBe("private, no-store");
+
+    const canonical = await worker.request("https://api-next.internal/public/hns/namespaces/v1");
+    expect(canonical.status).toBe(200);
+    expect(canonical.headers.get("cache-control")).toBe("private, no-store");
   });
   test("refuses the protected API hostname while HNS is disabled without affecting the ordinary host", async () => {
     const protectedOrigin = "https://hns-community-api-staging.pirate.sc";
