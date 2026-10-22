@@ -40,6 +40,12 @@ export function makeModeratedDanceMaintenanceProcessor(env: ModeratedDanceMediaE
     runtime: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
     ingress: env.MEDIA_INGRESS,
     originals: env.MEDIA_IMMUTABLE_ORIGINALS,
+    provider: secret(env.CLOUDCONVERT_RENDER_API_KEY)
+      ? makeSongVideoCloudConvertTransport({
+          apiKey: env.CLOUDCONVERT_RENDER_API_KEY ?? "",
+          fetch: (url, init) => fetch(url, init),
+        })
+      : undefined,
   });
 }
 /** Readiness is announced only by this concrete, fully configured composition.

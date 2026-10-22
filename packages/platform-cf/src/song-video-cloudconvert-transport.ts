@@ -287,6 +287,22 @@ export function makeSongVideoCloudConvertTransport(
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
       return privateDanceObservation(record(await request(`/jobs/${id}`, "GET")).data);
     },
+    /** Identity/status only, without requiring finished export URLs. A 404 is
+     * absence only for this previously bound job, never for an uncertain tag. */
+    async inspect(id: string): Promise<CloudConvertJob | null> {
+      if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
+      try {
+        return parseJob(record(await request(`/jobs/${id}`, "GET")).data);
+      } catch (error) {
+        if (
+          error instanceof CloudConvertTransportError &&
+          error.outcome === "rejected" &&
+          error.status === 404
+        )
+          return null;
+        throw error;
+      }
+    },
     async remove(id: string): Promise<void> {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
       const result = await request(`/jobs/${id}`, "DELETE");

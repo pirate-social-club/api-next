@@ -154,6 +154,7 @@ TRUNCATE TABLE
   "dance_moderated_processing_v1",
   "dance_moderated_processor_readiness_v1",
   "dance_moderated_provider_calls_v1",
+  "dance_moderated_provider_effects_v1",
   "dance_moderated_provider_usage_v1",
   "dance_moderated_reference_commands_v1",
   "dance_moderated_reference_receipts_v1",

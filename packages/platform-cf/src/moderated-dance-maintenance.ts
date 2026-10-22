@@ -7,6 +7,8 @@ import {
 } from "../../application/src/use-cases/dance/moderator-review-services.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import { makeControlPlaneModeratorReviewStore } from "./dance-moderator-review-repository.ts";
+import { makeModeratedDanceProviderCleanup } from "./moderated-dance-provider-cleanup.ts";
+import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
 const Id = Schema.NonEmptyString,
   NumberId = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }));
@@ -74,6 +76,12 @@ export function makeModeratedDanceMaintenance(
     runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError>;
     ingress: PrivateCleanupBucket;
     originals: PrivateCleanupBucket;
+    provider?:
+      | Pick<
+          ReturnType<typeof makeSongVideoCloudConvertTransport>,
+          "inspect" | "findByTag" | "remove"
+        >
+      | undefined;
     randomId?: () => string;
   }>,
 ) {
@@ -96,6 +104,11 @@ export function makeModeratedDanceMaintenance(
   const reviewStore = makeControlPlaneModeratorReviewStore(input.runtime, {
     account: () => Effect.fail(new DanceReviewServiceFailure({ reason: "unauthorized" })),
     worker: () => Effect.succeed({ kind: "worker", accountId: "moderated-dance-maintenance" }),
+  });
+  const providerCleanup = makeModeratedDanceProviderCleanup({
+    call,
+    provider: input.provider,
+    randomId: input.randomId,
   });
   const run = async () => {
     const raw = await call(
@@ -217,6 +230,7 @@ export function makeModeratedDanceMaintenance(
         [cleanup.uploadId, cleanup.kind, cleanup.token, JSON.stringify({ outcome, observations })],
       );
     }
+    await providerCleanup.run();
     await call(
       "dance.maintenance.readiness",
       "SELECT record_moderated_dance_maintenance_v1() AS packet",
