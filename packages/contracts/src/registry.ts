@@ -57,6 +57,7 @@ import {
 import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
+import { ListHnsNamespaces } from "./hns-namespace-discovery.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import {
   ActivateHnsCommunityRootImport,
@@ -211,6 +212,7 @@ export const registry = {
   GetCanonicalCommunityRoute,
   DeliverHnsEdgeAlert,
   PublishHnsEdgeStatusReport,
+  ListHnsNamespaces,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
   StartHnsRootImport,

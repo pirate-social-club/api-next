@@ -113,6 +113,7 @@ import type { HnsEdgeStatusKvNamespace } from "@pirate/platform-cf/hns-edge-stat
 import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
 import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "@pirate/platform-cf/hns-handle-host-authority-repository";
 import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
+import { makeControlPlaneHnsNamespaceDiscoveryStore } from "@pirate/platform-cf/hns-namespace-discovery-repository";
 import { makeControlPlaneHnsRootHealthRenewalStatusStore } from "@pirate/platform-cf/hns-root-health-renewal-status";
 import { makeControlPlaneHnsRootImportStore } from "@pirate/platform-cf/hns-root-import-repository";
 import { makeControlPlaneHnsTxtAttachmentStore } from "@pirate/platform-cf/hns-txt-attachment-repository";
@@ -307,6 +308,7 @@ import { hnsEdgeAlertBearerMatches, isHnsEdgeAlertTokenConfigured } from "./hns-
 import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
+import { makeHnsNamespaceDiscoveryHandlers } from "./hns-namespace-discovery-handlers.ts";
 import { makeProductionHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
@@ -2033,6 +2035,9 @@ export async function createProductionHttpWorker(
         contentStore,
       ),
       ...makeCommunityNavigationHandlers(makeControlPlaneCommunityNavigationStore(controlPlane)),
+      ...makeHnsNamespaceDiscoveryHandlers(
+        makeControlPlaneHnsNamespaceDiscoveryStore(controlPlane),
+      ),
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,

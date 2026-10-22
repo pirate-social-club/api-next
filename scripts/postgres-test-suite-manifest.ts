@@ -14,6 +14,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/dance-reference-persistence.pg.test.ts",
   "packages/platform-cf/src/feed-repository.pg.test.ts",
   "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
+  "packages/platform-cf/src/hns-namespace-discovery-repository.pg.test.ts",
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",

@@ -80,6 +80,16 @@ LoadCredential; do not substitute the expired private-fixture TLS identity.
 Use the maintained probe-reseed command and a fresh attempt before resuming
 the provisioner; its schema check alone is not launch acceptance.
 
+The narrow `scripts/staging-hns-cutover-probe-reseed.ts` command binds the
+existing paired `staging/main` database and its live provider roles/Hyperdrive.
+Its migration ledger comes from the exact accepted source commit in the reviewed
+provisioner manifest, with every SQL checksum verified. Newer tooling therefore
+does not migrate the operator recovery branch. Dry-run prints the settled probe
+history and administrator role; execution requires those exact fences. Keep the
+provisioner stopped until the fresh probe is queued, then start only the reviewed
+release. This operation does not retarget the historical reset, first-seed or
+post-migration orchestration, and performs no broad database reset.
+
 `caddy-209.json` preserves the effective verifier route captured onOctober21
 and adds the staging names on the existing listener. It loads the preserved
 certificate/key from `/etc/pirate-hns-staging/public-gateway`, and disables

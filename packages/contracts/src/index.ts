@@ -31,6 +31,7 @@ export * from "./handle-sales-spaces.ts";
 export * from "./handle-sales-spaces-endpoints.ts";
 export * from "./hns-edge-alerts.ts";
 export * from "./hns-edge-status.ts";
+export * from "./hns-namespace-discovery.ts";
 export * from "./hns-owner-recovery.ts";
 export * from "./hns-root-import.ts";
 export * from "./karaoke.ts";

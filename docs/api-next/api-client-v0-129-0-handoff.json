@@ -3,41 +3,17 @@
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
   "version": "0.129.0",
-  "sourceBranch": "feat/v1-open-reward-funding",
-  "sourceBase": "d032109b1ded8d0d83b9038a129c6506221354f2",
-  "preparationHead": "0b8554700ff348b31c4d54afe51c20662ec0c0cc",
+  "sourceBranch": "feat/hns-namespace-discovery",
+  "sourceBase": "efb81e072d93f4338c358499ea69ce64511e35ba",
   "validatedSourceCommit": null,
-  "pullRequest": 625,
-  "wireContract": "Shared song contributionV2 context/create/current-state/command-read/submission-claim/observe/recover/cancellation preparation use the reviewed flat exact-JSON request and immutable canonical context/terms hashes. The same authoritative registry adds moderated Dance capture/intake, owner review, private media leases and result views plus shared-pot summaries. Incoming current-Palm Send contracts remain intact.",
+  "pullRequest": null,
+  "wireContract": "Adds the public GET /public/hns/namespaces/v1 (ListHnsNamespaces): version 1, a millisecond generated_at and up to 256 unique sorted LDH roots, each with an expires_at after generated_at. Its only declared error is InternalError and its cache policy is private, no-store. No existing operation changes.",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.129.0.tgz",
-    "sha256": "fde7eb54f3ad82d7d9edee0927e84456bce258c6170bf232847ba2cb7a8c3fce"
-  },
-  "provenance": {
-    "schemaVersion": 1,
-    "package": "@pirate/api-client",
-    "version": "0.129.0",
-    "sourceIdentifier": "api-next-contracts@9da0f3f642f03fba3e582bfe380fa2cc2ca511b8826641acdecfb7ced42c3172",
-    "openapiSha256": "9da0f3f642f03fba3e582bfe380fa2cc2ca511b8826641acdecfb7ced42c3172",
-    "clientSha256": "43a8f74c1acb19b227d73db3def29565029caa62f483a6a1f85346ba8950777d"
+    "sha256": "c9d9cf42c58e37ef5c96d0e688df723ca1476c1a89e78bfd920072a3bc13dec2"
   },
   "validation": {
-    "status": "Prepared candidate; complete combined source and package qualification remain pending.",
-    "nativePredecessor": "The four SQL/cursor repair predecessor0b855470 passes12 native cases108 assertions with owned cleanup0; those results do not qualify this new nonce/main/registry combination.",
-    "fullLocal": "Required current check/test, native integration and official compiler checks remain pending.",
-    "independentReview": "Exact source/package and mechanical main inheritance review remain required.",
-    "hosted": "PR625 remains draft at its older advertised source until protected successor publication and fresh qualification.",
-    "runtimeAcceptance": "No deployment, actual recording, provider or chain request, permission/credential mutation or funds movement.",
-    "notificationCompatibility": "Offline genuine127/128/129 archive execution:12 mock responses, all expected accept/refuse outcomes pass; no network request."
-  },
-  "consumerRequirements": {
-    "minimumClientVersionForContributionAndModeratedDance": "0.129.0",
-    "activityChoice": "Contributions support the shared song pot. Funders do not choose Study, singing or Dance.",
-    "immutableAuthority": "Show server-bound context and committed terms; use the exact wallet assignment, chain and transfer instruction. A refreshed context never changes an already issued command.",
-    "recovery": "Persist and replay original identities and recover current state. Preserve unknown-outcome liabilities; no automatic resend or fresh nonce after expiry/reload.",
-    "dance": "Owner reviewer and participant must be distinct accounts. Reviewing alone requires no Palm. Qualification time is actual verdict commit time; private payload/retention and Post handoff remain separate authoritative flows.",
-    "sourceBoundary": "Consume this genuine dependency-free archive in standalone Solid with its provenance. No product workspace or legacy runtime dependency.",
-    "release": "Source/package preparation does not admit recordings, financial execution, deployment, Mainnet or production Rewards. Required disposition/replay drain/Post consumers remain under implementation.",
-    "notificationTransition": "Existing comment/reply alternative remains byte-exact. Genuine127/128 accept old pages but reject any Dance item;129 accepts empty, old-only, Dance-only and mixed pages in offline archive probes. Upgrade the standalone consumer and verify old-tab reload before Dance activation. The six exact-D032 policy diagnostics are a review candidate, not a permanent waiver."
+    "status": "Candidate package; required gates and independent source acceptance pending.",
+    "operationalBoundary": "No deployment, staging or production database access, or credential operation."
   }
 }

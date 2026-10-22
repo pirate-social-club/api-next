@@ -507,6 +507,7 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       { exitCode: 0 },
       { exitCode: 0 },
       { exitCode: 0, stdout: httpInput.configPath },
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
       { exitCode: 0, stdout: manifest },
       { exitCode: 0, stdout: "preflight passed" },
       { exitCode: 0, stdout: before },
@@ -514,11 +515,17 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       { exitCode: 0, stdout: after },
       { exitCode: 0, stdout: "serving passed" },
     ]);
+    const solidDirectories: string[] = [];
+    const linkedRunner: CommandRunner = async (command, cwd, signal) => {
+      if (command[0] === "node" || command.includes("check:staging:hns-route"))
+        solidDirectories.push(cwd);
+      return runner(command, cwd, signal);
+    };
     await expect(
       deployWorkerWithProvenance(
-        "/repo",
+        "/workspace/.worktrees/api-next/staging-release",
         httpInput,
-        runner,
+        linkedRunner,
         () => undefined,
         async () => pin,
         allowRewardDeployment,
@@ -526,9 +533,13 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
         allowTelegram,
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
-    expect(commands[5]?.[0]).toBe("timeout");
-    expect(commands[6]).toEqual(["node", "scripts/hns-staging-gateway-preflight.mjs"]);
-    expect(commands[10]).toEqual(["bun", "run", "check:staging:hns-route"]);
+    expect(commands[6]?.[0]).toBe("timeout");
+    expect(commands[7]).toEqual(["node", "scripts/hns-staging-gateway-preflight.mjs"]);
+    expect(commands[11]).toEqual(["bun", "run", "check:staging:hns-route"]);
+    expect(solidDirectories).toEqual([
+      "/workspace/pirate-web-solid",
+      "/workspace/pirate-web-solid",
+    ]);
 
     const refused = queueRunner([
       { exitCode: 0, stdout: sourceSha },
@@ -536,6 +547,7 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       { exitCode: 0 },
       { exitCode: 0 },
       { exitCode: 0, stdout: httpInput.configPath },
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
       { exitCode: 0, stdout: manifest },
     ]);
     await expect(
@@ -548,6 +560,14 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       ),
     ).rejects.toThrow("differs from the reviewed deploy pin");
     expect(refused.commands.some((command) => command.includes("deploy"))).toBe(false);
+    const relativeGit = queueRunner([
+      ...sourceChecks(httpInput.configPath),
+      { exitCode: 0, stdout: ".git" },
+    ]);
+    await expect(
+      deployWorkerWithProvenance("/repo", httpInput, relativeGit.runner),
+    ).rejects.toThrow("Git common directory must be absolute");
+    expect(relativeGit.commands.some((command) => command[0] === "timeout")).toBe(false);
   });
 });
 

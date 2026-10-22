@@ -8,7 +8,18 @@ const execute = promisify(execFile);
 const databaseId = "mvydkmmwh5x4";
 const branchId = "syu03e00w3ux";
 const hyperdriveId = "8cb7658a0f7143359c1becfec6a15c23";
-const base = "organizations/{org}/databases/pirate-staging";
+type StagingReadOnlyTarget = Readonly<{
+  databaseId: string;
+  branchId: string;
+  databaseName: string;
+  hyperdriveId: string;
+}>;
+const historicalTarget: StagingReadOnlyTarget = {
+  databaseId,
+  branchId,
+  databaseName: "pirate-staging",
+  hyperdriveId,
+};
 type ConnectionKind = "admin" | "runtime";
 const object = (value: unknown): Record<string, unknown> => {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -37,7 +48,12 @@ function assertConnectionParameters(url: URL, kind: ConnectionKind) {
 /** Pure consistency check. Provider metadata is supplied by the live collector
  * below, never treated as an authorization receipt from a JSON caller.
  */
-export function matchStagingRole(value: unknown, rawUrl: string, kind: ConnectionKind) {
+export function matchStagingRole(
+  value: unknown,
+  rawUrl: string,
+  kind: ConnectionKind,
+  expectedBranchId = branchId,
+) {
   const role = object(value);
   const branch = object(role.branch);
   const url = new URL(rawUrl);
@@ -51,7 +67,7 @@ export function matchStagingRole(value: unknown, rawUrl: string, kind: Connectio
     role.username !== username ||
     role.access_host_url !== url.hostname ||
     role.database_name !== "postgres" ||
-    branch.id !== branchId ||
+    branch.id !== expectedBranchId ||
     branch.name !== "main" ||
     role.expired !== false ||
     role.deleted_at != null ||
@@ -136,7 +152,11 @@ async function sqlIdentity(raw: string, expectedRole: string) {
 /** Fixed-target, read-only collector. Secrets remain in process memory. This
  * proves neither a fence nor recovery and cannot invoke reconstruction.
  */
-export async function collectStagingProviderBinding() {
+export async function collectStagingProviderBinding(target = historicalTarget) {
+  // This collector performs GETs only. Existing reset callers retain their
+  // historical target; a narrow release caller can bind a different live branch.
+  const { databaseId, branchId, databaseName, hyperdriveId } = target;
+  const base = `organizations/{org}/databases/${databaseName}`;
   let phase = "credentials";
   try {
     const adminRaw = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL;
@@ -147,7 +167,7 @@ export async function collectStagingProviderBinding() {
     const branch = await provider(`${base}/branches/main`);
     if (
       database.id !== databaseId ||
-      database.name !== "pirate-staging" ||
+      database.name !== databaseName ||
       database.kind !== "postgresql" ||
       branch.id !== branchId ||
       branch.name !== "main" ||
@@ -174,7 +194,7 @@ export async function collectStagingProviderBinding() {
       const username = decodeURIComponent(new URL(raw).username);
       const matches = roles.filter((role) => object(role).username === username);
       if (matches.length !== 1) throw new Error("staging_role_not_unique");
-      return matchStagingRole(matches[0], raw, kind);
+      return matchStagingRole(matches[0], raw, kind, branchId);
     };
     phase = "admin_binding";
     const admin = resolve(adminRaw, "admin");

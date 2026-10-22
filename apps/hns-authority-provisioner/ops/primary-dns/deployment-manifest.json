@@ -1,0 +1,9 @@
+{
+  "source_commit": "9fed1f47a8a97cac763249963f40f97163e3e1a5",
+  "parent_commit": "1cdaa010a494e8af37426142f6ed2dad93ff1225",
+  "bundle_sha256": "35759a39dd22f406f36b8b05d987d0b581a0a403b63191feb1a0ec23a402b5ec",
+  "service_version": "pirate-hns-authority-provisioner-v2",
+  "job_envelope_version": "hns-lifecycle-job-envelope-v1",
+  "executor_id": "production-authority-ns1-v1",
+  "attempt_id": "v1-native-production-20261014-e971dbaa-f941-45a8-b892-77953fc292c9"
+}
