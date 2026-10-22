@@ -1,40 +1,18 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
+      "baselineSha": "d032109b1ded8d0d83b9038a129c6506221354f2",
+      "operationId": "get_meNotifications",
       "expectedViolations": [
-        "response POST /wallet/personas/{personaId}/sponsored-send: property added to closed response: verification_required"
+        "response GET /me/notifications: enum value added: \"dance_review_result\" at items.items.kind",
+        "response GET /me/notifications: enum value added: \"private_dance_result\" at items.items.target.kind",
+        "response GET /me/notifications: property added to closed response: items.items.outcome",
+        "response GET /me/notifications: property added to closed response: items.items.target.review_id",
+        "response GET /me/notifications: response/request property removed: items.items.target.comment_id",
+        "response GET /me/notifications: response/request property removed: items.items.target.post_id"
       ],
-      "kind": "clean-break",
-      "operationId": "post_walletPersonasPersonaIdSponsoredSend",
-      "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
-    },
-    {
-      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
-      "expectedViolations": [
-        "response GET /wallet/personas/{personaId}/sponsored-send: property added to closed response: verification_required"
-      ],
-      "kind": "clean-break",
-      "operationId": "get_walletPersonasPersonaIdSponsoredSend",
-      "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
-    },
-    {
-      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
-      "expectedViolations": [
-        "response GET /wallet/sponsored-sends/{sendId}: property added to closed response: verification_required"
-      ],
-      "kind": "clean-break",
-      "operationId": "get_walletSponsoredSendsSendId",
-      "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
-    },
-    {
-      "baselineSha": "b2df70204b3c82a32cf614d55859a24e51c54e18",
-      "expectedViolations": [
-        "response POST /wallet/sponsored-sends/{sendId}/submit: property added to closed response: verification_required"
-      ],
-      "kind": "clean-break",
-      "operationId": "post_walletSponsoredSendsSendIdSubmit",
-      "reason": "The accepted Send Palm source candidate a54241d1 implements the workspace_owner Send ruling with typed verification_required state. Client127 and this API are a paired reviewed contract transition; pre127 tabs require verified reload/refusal handling before serving acceptance. This one-time declaration admits only the named success field against this exact baseline, and is retired after integration. No deployment, money or production Rewards activation follows."
+      "kind": "deprecation",
+      "reason": "Candidate exact-baseline Spec021section15.11 Dance notification union transition for client129, pending independent source/package/policy review. Existing comment/reply alternative remains byte-exact; genuine127/128 reject pages containing new Dance items. Pair the standalone consumer and reload old tabs before Dance activation. Remove this entry after PR625 normal integration; no permanent or future-baseline allowance."
     }
   ]
 }

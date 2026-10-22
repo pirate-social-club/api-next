@@ -121,11 +121,11 @@ requires it. This is not backwards compatible.
 
 The detector now reports added fields in closed response objects, including
 optional fields and nested referenced objects. The four temporary declarations
-bind baselineb2df70204b3c82a32cf614d55859a24e51c54e18 to exactly that one
-property diagnostic on the two Send reads, reservation and submission. No other
-request, response property, error, status, operation or later baseline is
-covered. Independent review of these declarations is required before
-integration; they are retired when that transition lands.
+bound baselineb2df70204b3c82a32cf614d55859a24e51c54e18 to exactly that one
+property diagnostic on the two Send reads, reservation and submission. The
+independently reviewed transition landed through PR644 at18fdb9f2. The four
+consumed entries are now retired; the active policy is empty. Historical
+declarations remain in Git history and admit no later contract change.
 
 Earlier refreshes inherited PR643's four HNS-only paths at f78b7e7c and
 PR645's twenty HNS source paths at 76cd679e. The current refresh inherits
@@ -139,3 +139,23 @@ ordering alone cannot establish that every open tab upgraded. Private replay,
 uncertain-outcome recovery and original idempotency must survive the
 transition. This source declaration authorizes no deployment, financial
 execution or production Rewards activation.
+
+## 2026-10-22 moderated Dance notification union candidate
+
+This exact-baseline candidate awaits independent contract, genuine-client and
+policy review with the Funding/Dance source. Spec021section15.11 requires a
+private result notification. The response adds a Dance alternative to the
+existing item union; the comment/reply alternative remains byte-exact. The
+branch-comparison diagnostics do not mean comment targets lost their fields.
+
+Against API main d032109b1ded8d0d83b9038a129c6506221354f2, the maintained guard
+reports exactly the six get_meNotifications diagnostics recorded in the policy.
+The candidate allows that complete set on that baseline only. Unknown or extra
+changes remain failures, and the entry must retire after normal PR625 integration.
+
+Offline execution of the genuine127,128 and129 archives proves that all three
+read empty/comment-only pages;127/128 reject Dance-only and mixed pages, while129
+reads both. No request left the process. Use genuine129 in the standalone Solid
+notification consumer and verify old-tab reload before Dance activation. The
+producer/package handoff records this paired transition; neither this candidate
+nor a passing local policy gate is independent acceptance or a deployment.
