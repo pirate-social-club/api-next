@@ -6,7 +6,11 @@ import {
 } from "../../../scripts/postgres-migrations.ts";
 import { withInbox } from "./notifications.pg-fixture.ts";
 import { provisionNotificationsVideoAclRoles } from "./notifications-video-acl.pg-fixture.ts";
-import type { VideoMatrixFixture } from "./notifications-video-matrix.pg-fixture.ts";
+import {
+  prepareMatrixAdmission,
+  type VideoMatrixFixture,
+} from "./notifications-video-matrix.pg-fixture.ts";
+import { runVideoAdmissionFixture } from "./notifications-video-proof.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 // The dedicated hosted invocation supplies both values before importing the
@@ -135,6 +139,16 @@ async function reduceOwnedUpgradeSchema(admin: Client, schema: string, expectedO
     }
   }
   throw new Error("Video upgrade cleanup batch bound exceeded");
+}
+
+/** This historical rehearsal drains through its pinned pre-Dance delivery store.
+ * Audit and cutover use the unchanged real admission protocol; no later DDL is applied. */
+export async function admitVideoOrderingUpgrade(f: UpgradeFixture) {
+  const input = await prepareMatrixAdmission(f);
+  await f.run(f.store.recover());
+  expect(
+    await runVideoAdmissionFixture(f.runtime, (store) => store.cutover(input.plan, input.source)),
+  ).toEqual({ alreadyCommitted: false });
 }
 
 export async function withVideoOrderingUpgrade(use: (fixture: UpgradeFixture) => Promise<void>) {
