@@ -16,6 +16,7 @@ export * from "./community-route-resolution.ts";
 export * from "./community-routes.ts";
 export * from "./dance.ts";
 export * from "./dance-attempt.ts";
+export * from "./dance-moderated-context.ts";
 export * from "./dance-moderated-intake.ts";
 export * from "./dance-review.ts";
 export * from "./endpoint.ts";

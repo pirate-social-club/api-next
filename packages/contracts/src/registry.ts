@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { activityCompletionRegistry } from "./activity-completion.ts";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
+import { moderatedDanceContextRegistry } from "./dance-moderated-context.ts";
 import {
   CreateModeratedDanceMediaAccess,
   CreateModeratedDanceReference,
@@ -182,6 +183,7 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...moderatedDanceContextRegistry,
   ...moderatedDanceReviewRegistry,
   ...moderatedDanceIntakeRegistry,
   GetSharedSongMegapotSummaryV2,

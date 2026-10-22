@@ -24,6 +24,10 @@ import {
 } from "../../contracts/src/dance-moderated-intake.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import {
+  decodeModeratedDanceCaptureContext,
+  decodeModeratedDanceOwnerRubric,
+} from "./dance-moderated-context.ts";
+import {
   amzDate,
   canonicalQuery,
   encodeObjectPath,
@@ -160,6 +164,7 @@ export function makeControlPlaneModeratedDanceIntakeStore(
     /** Exact configured producer revisions, checked only for NEW capture. An
      * immutable receipt still recovers when processing is unavailable/paused. */
     signer: ModeratedDanceUploadSigner | null;
+    rewardsEnabled?: boolean;
     randomId?: () => string;
     randomU32?: () => number;
   }>,
@@ -336,5 +341,50 @@ export function makeControlPlaneModeratedDanceIntakeStore(
     if (raw === null) return yield* new DanceReviewServiceFailure({ reason: "not_found" });
     return yield* parse(ModeratedDanceReferenceStatus, raw);
   });
-  return { command, getSession, uploadAccess, captureOptions, createReference, getReference };
+  const captureContext = Effect.fn("ModeratedDanceIntake.captureContext")(function* (
+    communityId: string,
+    sessionId: string,
+  ) {
+    return yield* withRetainedControlPlaneCommandTransaction((tx) =>
+      Effect.gen(function* () {
+        const packet = yield* call(
+          tx,
+          "dance.intake.capture-context",
+          "SELECT read_owned_moderated_dance_capture_context_v1($1,$2,$3) AS packet",
+          [accountId, communityId, sessionId],
+        );
+        return yield* decodeModeratedDanceCaptureContext(
+          packet,
+          { accountId, communityId, sessionId },
+          input.rewardsEnabled === true,
+        );
+      }),
+    ).pipe(Effect.provide(runtime), Effect.mapError(classify));
+  });
+  const ownerRubric = Effect.fn("ModeratedDanceIntake.ownerRubric")(function* (
+    communityId: string,
+    reviewId: string,
+  ) {
+    return yield* withRetainedControlPlaneCommandTransaction((tx) =>
+      Effect.gen(function* () {
+        const packet = yield* call(
+          tx,
+          "dance.intake.owner-rubric",
+          "SELECT read_moderated_dance_owner_rubric_v1($1,$2,$3) AS packet",
+          [accountId, communityId, reviewId],
+        );
+        return yield* decodeModeratedDanceOwnerRubric(packet, communityId, reviewId);
+      }),
+    ).pipe(Effect.provide(runtime), Effect.mapError(classify));
+  });
+  return {
+    command,
+    getSession,
+    uploadAccess,
+    captureOptions,
+    createReference,
+    getReference,
+    captureContext,
+    ownerRubric,
+  };
 }

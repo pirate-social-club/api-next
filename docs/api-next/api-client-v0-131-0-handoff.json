@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.131.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+  "validatedSourceCommit": null,
+  "pullRequest": 625,
+  "wireContract": "Retains every genuine130 operation. Adds two browser-session private/no-store moderated Dance reads for frozen capture context and owner rubric. Full original policy, consent, retention, reference and shared-objective lineage is verified; owner projection exposes no dancer identity or funded objectives. Runtime Rewards state is separate from immutable captured reward mode. No existing closed reply is widened.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.131.0.tgz",
+    "sha256": "caa3e383a3c6cbe82c37ceaea8788ce9293f185ccf2bfd609a04b2d71ee90d99"
+  },
+  "validation": {
+    "status": "Candidate package; bounded eight-path producer independently reviewed and 14 native cases/118 assertions pass. Full generated/source gates and independent generated review pending.",
+    "operationalBoundary": "No deployment, runtime grant, policy admission, provider/media/chain operation, Mainnet continuation or Rewards activation. Genuine130 and all prior release artifacts remain immutable."
+  }
+}

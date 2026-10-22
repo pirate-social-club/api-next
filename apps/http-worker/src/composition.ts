@@ -2018,6 +2018,7 @@ export async function createProductionHttpWorker(
           accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID,
           secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
         return makeControlPlaneModeratedDanceIntakeStore(controlPlane, accountId, {
+          rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
           signer:
             bindings.MEDIA_INGRESS !== undefined &&
             privateMediaBucket !== null &&

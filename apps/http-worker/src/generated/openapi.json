@@ -5,6 +5,1674 @@
     "version": "0.0.0"
   },
   "paths": {
+    "/communities/{communityId}/dance/moderated-sessions/{sessionId}/capture-context": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdDanceModeratedSessionsSessionIdCaptureContext",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "dance-moderated-capture-context-v1"
+                      ]
+                    },
+                    "session": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "dance-moderated-session-v1"
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "review_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "attempt_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "song_post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "choreography_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "choreography_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "terms_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "policy_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "consent_version": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "consent_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "retention_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "normalization_version": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "normalization_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "safety_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "created",
+                            "consented",
+                            "awaiting_upload",
+                            "uploaded",
+                            "terminal"
+                          ]
+                        },
+                        "created_at_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "expires_at_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "body_start_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "body_end_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "cue": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "hands_on_head",
+                                "arms_t",
+                                "hands_on_hips"
+                              ]
+                            },
+                            "start_ms": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "end_ms": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "hold_ms": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "start_ms",
+                            "end_ms",
+                            "hold_ms"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "maximum_bytes": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "upload_id": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "upload_state": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "reserved",
+                                "sealing",
+                                "sealed",
+                                "unknown",
+                                "deleted",
+                                "held"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "uploaded_at_ms": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "review_deadline_ms": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score_bps": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "session_id",
+                        "review_id",
+                        "attempt_id",
+                        "community_id",
+                        "song_post_id",
+                        "choreography_id",
+                        "choreography_revision",
+                        "terms_hash",
+                        "policy_hash",
+                        "consent_version",
+                        "consent_hash",
+                        "retention_hash",
+                        "normalization_version",
+                        "normalization_hash",
+                        "safety_hash",
+                        "state",
+                        "created_at_ms",
+                        "expires_at_ms",
+                        "body_start_ms",
+                        "body_end_ms",
+                        "cue",
+                        "maximum_bytes",
+                        "upload_id",
+                        "upload_state",
+                        "uploaded_at_ms",
+                        "review_deadline_ms",
+                        "score_bps"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "persona_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                        },
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "audio_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "segment_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                        },
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "reference": {
+                      "type": "object",
+                      "properties": {
+                        "reference_post_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "video_render_revision": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "reference_terms_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "canonical_song_start_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "canonical_song_end_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "reference_body_start_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "reference_body_end_ms": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "reference_post_id",
+                        "video_render_revision",
+                        "reference_terms_hash",
+                        "canonical_song_start_ms",
+                        "canonical_song_end_ms",
+                        "reference_body_start_ms",
+                        "reference_body_end_ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reward_mode": {
+                      "type": "string",
+                      "enum": [
+                        "practice",
+                        "reward_eligible"
+                      ]
+                    },
+                    "rewards_enabled": {
+                      "type": "boolean"
+                    },
+                    "captured_policy": {
+                      "type": "object",
+                      "properties": {
+                        "admission": {
+                          "type": "string",
+                          "enum": [
+                            "shadow",
+                            "streak_admitted",
+                            "money_admitted"
+                          ]
+                        },
+                        "admission_version": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "admission_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "qualification_policy_version_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "qualification_policy_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        },
+                        "producer_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "publication_disclosure_version": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "rubric_version": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                            },
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "rubric_hash": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "admission",
+                        "admission_version",
+                        "admission_hash",
+                        "qualification_policy_version_id",
+                        "qualification_policy_hash",
+                        "producer_id",
+                        "publication_disclosure_version",
+                        "rubric_version",
+                        "rubric_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "disclosure": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "enum": [
+                            "dance-moderated-disclosure-v1"
+                          ]
+                        },
+                        "consent_text": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 12000
+                            }
+                          ]
+                        },
+                        "retention_text": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 12000
+                            }
+                          ]
+                        },
+                        "publication_text": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 12000
+                            }
+                          ]
+                        },
+                        "owner_rubric_text": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 12000
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "consent_text",
+                        "retention_text",
+                        "publication_text",
+                        "owner_rubric_text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "objectives": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "object",
+                            "properties": {
+                              "community_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "post_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "canonical_song_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "audio_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "committed"
+                                ]
+                              },
+                              "offer_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "pool_leg_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "community_id",
+                              "post_id",
+                              "canonical_song_id",
+                              "audio_revision",
+                              "kind",
+                              "offer_id",
+                              "pool_leg_id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "terms": {
+                            "type": "object",
+                            "properties": {
+                              "version": {
+                                "type": "string",
+                                "enum": [
+                                  "shared-song-megapot-v2"
+                                ]
+                              },
+                              "profile_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "profile_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "terms_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "funding_policy_revision": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "funding_policy_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "budget_source": {
+                                "type": "string",
+                                "enum": [
+                                  "leg_budget"
+                                ]
+                              },
+                              "empty_behavior": {
+                                "type": "string",
+                                "enum": [
+                                  "no_purchase"
+                                ]
+                              },
+                              "eligible_activities": {
+                                "type": "array",
+                                "prefixItems": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "study"
+                                    ]
+                                  },
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "karaoke"
+                                    ]
+                                  },
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "dance"
+                                    ]
+                                  }
+                                ],
+                                "maxItems": 3,
+                                "minItems": 3
+                              },
+                              "dance_scope": {
+                                "type": "string",
+                                "enum": [
+                                  "any_policy_accepted"
+                                ]
+                              },
+                              "starts_at": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                                  }
+                                ]
+                              },
+                              "ends_at": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                                  }
+                                ]
+                              },
+                              "first_drawing_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                  }
+                                ]
+                              },
+                              "last_planned_drawing_id": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                  }
+                                ]
+                              },
+                              "ticket_price_ceiling_atomic": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[1-9][0-9]{0,77}$"
+                                  }
+                                ]
+                              },
+                              "disclosure_version": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                  },
+                                  {
+                                    "minLength": 1
+                                  },
+                                  {
+                                    "maxLength": 128
+                                  }
+                                ]
+                              },
+                              "origin_prospective_terms_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "origin_slot_generation": {
+                                "type": "integer",
+                                "allOf": [
+                                  {
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                ]
+                              },
+                              "reward_policy_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "qualification_bindings": {
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_dance_2f_moderated-sessions_2f__7b_sessionId_7d__2f_capture-context_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                                },
+                                "allOf": [
+                                  {
+                                    "minItems": 3
+                                  },
+                                  {
+                                    "maxItems": 3
+                                  }
+                                ]
+                              },
+                              "qualification_bindings_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              },
+                              "planned_drawing_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                    }
+                                  ]
+                                },
+                                "allOf": [
+                                  {
+                                    "minItems": 1
+                                  },
+                                  {
+                                    "maxItems": 30
+                                  }
+                                ]
+                              },
+                              "planned_schedule_hash": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "profile_id",
+                              "profile_hash",
+                              "terms_hash",
+                              "funding_policy_revision",
+                              "funding_policy_hash",
+                              "budget_source",
+                              "empty_behavior",
+                              "eligible_activities",
+                              "dance_scope",
+                              "starts_at",
+                              "ends_at",
+                              "first_drawing_id",
+                              "last_planned_drawing_id",
+                              "ticket_price_ceiling_atomic",
+                              "disclosure_version",
+                              "origin_prospective_terms_hash",
+                              "origin_slot_generation",
+                              "reward_policy_hash",
+                              "qualification_bindings",
+                              "qualification_bindings_hash",
+                              "planned_drawing_ids",
+                              "planned_schedule_hash"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "binding": {
+                            "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_dance_2f_moderated-sessions_2f__7b_sessionId_7d__2f_capture-context_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                          },
+                          "chain_id": {
+                            "type": "number",
+                            "enum": [
+                              84532,
+                              8453
+                            ]
+                          },
+                          "token_address": {
+                            "type": "string",
+                            "allOf": [
+                              {
+                                "pattern": "^0x[a-f0-9]{40}$"
+                              }
+                            ]
+                          },
+                          "token_decimals": {
+                            "type": "number",
+                            "enum": [
+                              6
+                            ]
+                          }
+                        },
+                        "required": [
+                          "target",
+                          "terms",
+                          "binding",
+                          "chain_id",
+                          "token_address",
+                          "token_decimals"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "allOf": [
+                        {
+                          "maxItems": 1
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "session",
+                    "persona_id",
+                    "audio_revision",
+                    "segment_id",
+                    "reference",
+                    "reward_mode",
+                    "rewards_enabled",
+                    "captured_policy",
+                    "disclosure",
+                    "objectives"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-cache-control": "private, no-store",
+        "x-errors": [
+          "AuthError",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/dance/owner-reviews/{reviewId}/rubric": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdDanceOwnerReviewsReviewIdRubric",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "reviewId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "dance-moderated-owner-rubric-v1"
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                        },
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "review_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                        },
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "review_revision": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "session_terms_hash": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      ]
+                    },
+                    "policy_hash": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      ]
+                    },
+                    "rubric_version": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                        },
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "rubric_hash": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      ]
+                    },
+                    "rubric_text": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 12000
+                        }
+                      ]
+                    },
+                    "attestation_version": {
+                      "type": "string",
+                      "enum": [
+                        "dance-owner-verdict-attestation-v1"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "community_id",
+                    "review_id",
+                    "review_revision",
+                    "session_terms_hash",
+                    "policy_hash",
+                    "rubric_version",
+                    "rubric_hash",
+                    "rubric_text",
+                    "attestation_version"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-cache-control": "private, no-store",
+        "x-errors": [
+          "AuthError",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/dance/reviews/{reviewId}/submit": {
       "post": {
         "operationId": "post_communitiesCommunityIdDanceReviewsReviewIdSubmit",
@@ -240873,6 +242541,198 @@
   },
   "components": {
     "schemas": {
+      "_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_dance_2f_moderated-sessions_2f__7b_sessionId_7d__2f_capture-context_22__2c__22_response_22__2c__22_200_22__5d_": {
+        "$defs": {
+          "Objects_": {
+            "type": "object",
+            "properties": {
+              "template_key": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "activity": {
+                "type": "string",
+                "enum": [
+                  "study",
+                  "karaoke",
+                  "dance"
+                ]
+              },
+              "grading_family": {
+                "type": "string",
+                "enum": [
+                  "numeric",
+                  "moderator_verdict"
+                ]
+              },
+              "qualification_policy_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "qualification_policy_hash": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                ]
+              },
+              "numeric_floor_bps": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 0,
+                        "maximum": 10000
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "choreography_scope": {
+                "type": "string",
+                "enum": [
+                  "not_applicable",
+                  "any_policy_accepted"
+                ]
+              },
+              "admission_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "admission_hash": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                ]
+              },
+              "disclosure_version": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "binding_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "objective_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "offer_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "leg_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              }
+            },
+            "required": [
+              "template_key",
+              "activity",
+              "grading_family",
+              "qualification_policy_id",
+              "qualification_policy_hash",
+              "numeric_floor_bps",
+              "choreography_scope",
+              "admission_id",
+              "admission_hash",
+              "disclosure_version",
+              "binding_id",
+              "objective_id",
+              "offer_id",
+              "leg_id"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
       "_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_posts_2f__7b_postId_7d__2f_megapot-participation_22__2c__22_response_22__2c__22_200_22__5d_": {
         "$defs": {
           "Objects_": {

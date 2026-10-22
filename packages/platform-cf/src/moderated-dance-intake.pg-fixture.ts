@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import type { Client } from "pg";
+import { canonicalBodyHash } from "../../application/src/use-cases/content/common.ts";
 import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
 import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
 import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
@@ -41,6 +42,18 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
       },
     }),
   );
+  const referenceTermsHash = await Effect.runPromise(
+    canonicalBodyHash([
+      "moderated-canonical-reference-v1",
+      f.choreographyId,
+      1,
+      "fictional-verified-master",
+      "private-reference",
+      hash,
+      hash,
+      publication.policy.normalizationHash,
+    ]),
+  );
   // The pre-existing public-song graph is bootstrap fixture data, not evidence
   // of a real renderer/provider. New intake commands run with all guards ON.
   await admin.query("BEGIN");
@@ -78,8 +91,21 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
       [f.segmentId, f.communityId, f.songPostId, f.audioRevision, hash],
     );
     await admin.query(
-      "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}','{}',$6)",
-      [f.choreographyId, f.communityId, f.songPostId, f.audioRevision, f.segmentId, hash],
+      "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)",
+      [
+        f.choreographyId,
+        f.communityId,
+        f.songPostId,
+        f.audioRevision,
+        f.segmentId,
+        hash,
+        JSON.stringify({
+          reference_body_start_ms: 0,
+          reference_body_end_ms: f.bodyDurationMs,
+          normalization_hash: publication.policy.normalizationHash,
+        }),
+        referenceTermsHash,
+      ],
     );
     await admin.query(
       "INSERT INTO account_streak_clocks(account_id,timezone,timezone_updated_at,next_change_allowed_at) VALUES($1,'UTC',statement_timestamp(),statement_timestamp()+interval '7 days')",

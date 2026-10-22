@@ -281,6 +281,8 @@ describe("Dance reference contracts", () => {
     expect(
       danceEndpoints.filter(([name]) => name.includes("ModeratedDance")).map(([name]) => name),
     ).toEqual([
+      "GetModeratedDanceCaptureContext",
+      "GetModeratedDanceOwnerRubric",
       "SubmitModeratedDanceReview",
       "ChangeModeratedDanceVisibility",
       "WithdrawModeratedDanceReview",

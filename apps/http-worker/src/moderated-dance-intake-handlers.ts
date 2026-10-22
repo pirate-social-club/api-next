@@ -1,6 +1,7 @@
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import type { DanceReviewServiceFailure } from "../../../packages/application/src/use-cases/dance/moderator-review-services.ts";
+import { moderatedDanceContextRegistry } from "../../../packages/contracts/src/dance-moderated-context.ts";
 import {
   CreateModeratedDanceReference,
   GetModeratedDanceCaptureOptions,
@@ -68,6 +69,32 @@ export function makeModeratedDanceIntakeHandlers(
     return Effect.runPromise(
       forAccount(account)
         .getSession(path.communityId, path.sessionId)
+        .pipe(Effect.mapError(mapped)),
+      { signal: ctx.signal },
+    );
+  };
+  handlers.GetModeratedDanceCaptureContext = (ctx) => {
+    const account = actor(ctx.principal),
+      path = decode(
+        moderatedDanceContextRegistry.GetModeratedDanceCaptureContext.request.path,
+        ctx.params,
+      );
+    return Effect.runPromise(
+      forAccount(account)
+        .captureContext(path.communityId, path.sessionId)
+        .pipe(Effect.mapError(mapped)),
+      { signal: ctx.signal },
+    );
+  };
+  handlers.GetModeratedDanceOwnerRubric = (ctx) => {
+    const account = actor(ctx.principal),
+      path = decode(
+        moderatedDanceContextRegistry.GetModeratedDanceOwnerRubric.request.path,
+        ctx.params,
+      );
+    return Effect.runPromise(
+      forAccount(account)
+        .ownerRubric(path.communityId, path.reviewId)
         .pipe(Effect.mapError(mapped)),
       { signal: ctx.signal },
     );

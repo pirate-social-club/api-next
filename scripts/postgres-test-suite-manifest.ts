@@ -1,5 +1,7 @@
 export { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-costs.ts";
 
+import { reusableModeratedDanceSuites } from "./postgres-test-suite-dance.ts";
+
 export const reusablePostgresTestSuites = [
   "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-repository.pg.test.ts",
@@ -18,8 +20,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",
-  "packages/platform-cf/src/moderated-dance-intake.pg.test.ts",
-  "packages/platform-cf/src/moderated-dance-authority.pg.test.ts",
+  ...reusableModeratedDanceSuites,
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
   "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
