@@ -2295,7 +2295,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -3314,7 +3315,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -4317,7 +4319,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -5328,7 +5331,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -6184,7 +6188,8 @@
                         "staged",
                         "cancelled",
                         "pending",
-                        "failed"
+                        "failed",
+                        "transferred"
                       ]
                     },
                     "publication_revision": {
@@ -7068,7 +7073,8 @@
                                 "staged",
                                 "cancelled",
                                 "pending",
-                                "failed"
+                                "failed",
+                                "transferred"
                               ]
                             },
                             "publication_revision": {

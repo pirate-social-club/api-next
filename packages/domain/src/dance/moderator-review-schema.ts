@@ -147,7 +147,7 @@ export const ModeratorReviewSchema: Schema.Codec<ModeratorReview> = Schema.Struc
   showPublicly: Schema.NullOr(Schema.Boolean),
   choiceRevision: Natural,
   generation: Natural,
-  publication: Schema.Literals(["none", "staged", "cancelled", "pending", "failed"]),
+  publication: Schema.Literals(["none", "staged", "cancelled", "pending", "failed", "transferred"]),
   publicationRevision: Natural,
   transferDeadlineMs: Schema.NullOr(Natural),
   terminalAtMs: Schema.NullOr(Natural),

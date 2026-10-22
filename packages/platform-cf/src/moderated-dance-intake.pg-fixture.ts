@@ -11,7 +11,11 @@ export async function seedModeratedDanceIntake(
   admin: Client,
   connection: string,
   runtimeRevision?: string,
-  options: Readonly<{ publicReplay?: boolean; safetyRevision?: string }> = {},
+  options: Readonly<{
+    publicReplay?: boolean;
+    safetyRevision?: string;
+    transferWithinMs?: number;
+  }> = {},
 ) {
   const originalFacts = moderatedDanceIntakeFacts(),
     facts =
@@ -27,6 +31,14 @@ export async function seedModeratedDanceIntake(
         : { ...facts, profile: { ...facts.profile, mediaRuntimeRevision: runtimeRevision } },
     now = Date.now(),
     hash = "a".repeat(64);
+  const disposition =
+    options.transferWithinMs === undefined
+      ? f.disposition
+      : {
+          ...f.disposition,
+          transferWithinMs: options.transferWithinMs,
+          cleanupWithinMs: Math.max(f.disposition.cleanupWithinMs, options.transferWithinMs),
+        };
   const publication = await Effect.runPromise(
     prepareModeratedDancePolicyPublication({
       version: "dance-moderated-policy-publication-v1",
@@ -36,7 +48,7 @@ export async function seedModeratedDanceIntake(
       profile: f.profile,
       safety_policy: f.safetyPolicy,
       disposition: {
-        ...f.disposition,
+        ...disposition,
         validUntilMs: now + 10 * 86400000,
         hold: { ...f.disposition.hold, disposeByMs: now + 10 * 86400000 },
       },

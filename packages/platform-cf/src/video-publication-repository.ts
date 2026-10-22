@@ -507,7 +507,7 @@ export function makeControlPlaneVideoPublicationStore(
             label: "video-publication.reservation-read",
             text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
                     WHERE reservation_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3
-                      AND media_kind='video'`,
+                      AND media_kind='video' AND input_source='upload'`,
             values: [input.reservationId, input.actorAccountId, input.authorPersonaId],
             readonly: true,
           });
@@ -542,7 +542,7 @@ export function makeControlPlaneVideoPublicationStore(
           const result = yield* db.execute<Row>({
             label: "video-publication.reservation-account-read",
             text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
-                    WHERE reservation_id=$1 AND actor_user_id=$2 AND media_kind='video'`,
+                    WHERE reservation_id=$1 AND actor_user_id=$2 AND media_kind='video' AND input_source='upload'`,
             values: [input.reservationId, input.actorAccountId],
             readonly: true,
           });
@@ -580,7 +580,7 @@ export function makeControlPlaneVideoPublicationStore(
                 label: "video-publication.renew-guard",
                 text: `SELECT reservation_id FROM media_upload_reservations
                         WHERE reservation_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3
-                          AND media_kind='video' AND state IN ('issued','claimed')
+                          AND media_kind='video' AND input_source='upload' AND state IN ('issued','claimed')
                           AND multipart_manifest IS NULL
                           AND expires_at>clock_timestamp() FOR UPDATE`,
                 values: [
@@ -656,7 +656,7 @@ export function makeControlPlaneVideoPublicationStore(
                 label: "video-publication.claim-reservation",
                 text: `SELECT reservation_id FROM media_upload_reservations
                         WHERE reservation_id=$1 AND community_id=$2 AND actor_user_id=$3
-                          AND actor_persona_id=$4 AND media_kind='video' AND state='issued'
+                          AND actor_persona_id=$4 AND media_kind='video' AND input_source='upload' AND state='issued'
                           AND expires_at>clock_timestamp() FOR UPDATE`,
                 values: [
                   state.reservationId,

@@ -31,7 +31,7 @@ export function makeVideoReservationCleanup(
         return (yield* db.execute<Candidate>({
           label: "video-reservation.cleanup-candidates",
           text: `SELECT reservation_id,multipart_upload_id FROM media_upload_reservations
-          WHERE media_kind='video' AND state IN ('issued','claimed')
+          WHERE media_kind='video' AND input_source='upload' AND state IN ('issued','claimed')
             AND expires_at<=clock_timestamp() AND multipart_manifest IS NULL
             AND multipart_completed_at IS NULL AND multipart_aborted_at IS NULL
           ORDER BY expires_at,reservation_id LIMIT $1`,
@@ -52,7 +52,7 @@ export function makeVideoReservationCleanup(
                 const found = yield* tx.execute<Candidate>({
                   label: "video-reservation.cleanup-lock",
                   text: `SELECT reservation_id,multipart_upload_id FROM media_upload_reservations
-                WHERE reservation_id=$1 AND media_kind='video' AND state IN ('issued','claimed')
+                WHERE reservation_id=$1 AND media_kind='video' AND input_source='upload' AND state IN ('issued','claimed')
                   AND expires_at<=clock_timestamp() AND multipart_manifest IS NULL
                   AND multipart_completed_at IS NULL AND multipart_aborted_at IS NULL
                 FOR UPDATE SKIP LOCKED`,

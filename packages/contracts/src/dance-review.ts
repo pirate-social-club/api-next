@@ -150,7 +150,14 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
   publication_choice_revision: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   ),
-  publication_status: Schema.Literals(["none", "staged", "cancelled", "pending", "failed"]),
+  publication_status: Schema.Literals([
+    "none",
+    "staged",
+    "cancelled",
+    "pending",
+    "failed",
+    "transferred",
+  ]),
   publication_revision: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   ),
@@ -203,7 +210,7 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
     )
       return "Invalid owner attestation";
     if (
-      r.publication_status === "pending" &&
+      (r.publication_status === "pending" || r.publication_status === "transferred") &&
       (r.verdict !== "passed" || r.show_publicly_if_passed !== true)
     )
       return "No conditional release authority";

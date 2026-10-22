@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.132.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "11e2fb0297fe623951eeddec6e591801b6d45b04",
+  "validatedSourceCommit": null,
+  "pullRequest": 625,
+  "wireContract": "Retains genuine131 operations and adds transferred to the private Dance publication result. This means an independent body input has entered ordinary Post processing, never that a Post is published. Passed verdict, qualification, immutable Submit and existing command replay are unchanged. No public route accepts server-owned handoff packets.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.132.0.tgz",
+    "sha256": "0ea50958ca25e7241672589bdd77f5101d717d0acfc4ee81c02ecc78d4fc9ce7"
+  },
+  "validation": {
+    "status": "Candidate package. Complete local check/test, both compiler families, package verification and schema freshness pass. Native regression passes59cases593assertions across six suites, including seven new adoption/recovery/cleanup/erasure/deadline/rights cases and a confined media role through the actual migration chain. Whole-feature owner audit and Solid consumer intake remain pending.",
+    "operationalBoundary": "No deployment, production grants, policy admission, provider/storage operation, monetary activation or Mainnet effect. Genuine131 and earlier artifacts remain immutable."
+  }
+}

@@ -118,7 +118,7 @@ export type ModeratorReview = Readonly<{
   showPublicly: boolean | null;
   choiceRevision: number;
   generation: number;
-  publication: "none" | "staged" | "cancelled" | "pending" | "failed";
+  publication: "none" | "staged" | "cancelled" | "pending" | "failed" | "transferred";
   publicationRevision: number;
   transferDeadlineMs: number | null;
   terminalAtMs: number | null;
@@ -872,4 +872,18 @@ export function authorizeModeratorPublication(
     mapping.bodyStartMs === s.capture.bodyStartMs &&
     mapping.bodyEndMs === s.capture.bodyEndMs
   );
+}
+
+/** Only the owning Post adoption transaction may persist this transition. It
+ * secures an independent input; it does not assert that the Post is published.
+ * Qualification, verdict, Submit and review revision are unchanged. */
+export function transferModeratorPublication(
+  s: ModeratorReview,
+  generation: number,
+  now: number,
+  facts: ReviewFacts,
+  mapping: Parameters<typeof authorizeModeratorPublication>[4],
+): ModeratorReview | null {
+  if (!authorizeModeratorPublication(s, generation, now, facts, mapping)) return null;
+  return { ...s, publication: "transferred", publicationRevision: s.publicationRevision + 1 };
 }

@@ -8,4 +8,5 @@ export const reusableModeratedDanceSuites = [
   "packages/platform-cf/src/moderated-dance-replay-retention.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-public-replay.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-safety-contract.pg.test.ts",
+  "packages/platform-cf/src/moderated-dance-publication-input.pg.test.ts",
 ] as const;
