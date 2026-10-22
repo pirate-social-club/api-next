@@ -12122,6 +12122,1396 @@
         ]
       }
     },
+    "/communities/{communityId}/posts/{postId}/megapot-participation": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdPostsPostIdMegapotParticipation",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                },
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "shared_song_megapot_participation"
+                          ]
+                        },
+                        "version": {
+                          "type": "number",
+                          "enum": [
+                            2
+                          ]
+                        },
+                        "as_of": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                            }
+                          ]
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "post_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "canonical_song_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "audio_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "committed"
+                              ]
+                            },
+                            "offer_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "pool_leg_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "community_id",
+                            "post_id",
+                            "canonical_song_id",
+                            "audio_revision",
+                            "kind",
+                            "offer_id",
+                            "pool_leg_id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "terms": {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "string",
+                              "enum": [
+                                "shared-song-megapot-v2"
+                              ]
+                            },
+                            "profile_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "profile_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "terms_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "funding_policy_revision": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "funding_policy_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "budget_source": {
+                              "type": "string",
+                              "enum": [
+                                "leg_budget"
+                              ]
+                            },
+                            "empty_behavior": {
+                              "type": "string",
+                              "enum": [
+                                "no_purchase"
+                              ]
+                            },
+                            "eligible_activities": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "study"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "karaoke"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "dance"
+                                  ]
+                                }
+                              ],
+                              "maxItems": 3,
+                              "minItems": 3
+                            },
+                            "dance_scope": {
+                              "type": "string",
+                              "enum": [
+                                "any_policy_accepted"
+                              ]
+                            },
+                            "starts_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                                }
+                              ]
+                            },
+                            "ends_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                                }
+                              ]
+                            },
+                            "first_drawing_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                }
+                              ]
+                            },
+                            "last_planned_drawing_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                }
+                              ]
+                            },
+                            "ticket_price_ceiling_atomic": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[1-9][0-9]{0,77}$"
+                                }
+                              ]
+                            },
+                            "disclosure_version": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                },
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "origin_prospective_terms_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "origin_slot_generation": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            },
+                            "reward_policy_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "qualification_bindings": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_posts_2f__7b_postId_7d__2f_megapot-participation_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "allOf": [
+                                {
+                                  "minItems": 3
+                                },
+                                {
+                                  "maxItems": 3
+                                }
+                              ]
+                            },
+                            "qualification_bindings_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            },
+                            "planned_drawing_ids": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                  }
+                                ]
+                              },
+                              "allOf": [
+                                {
+                                  "minItems": 1
+                                },
+                                {
+                                  "maxItems": 30
+                                }
+                              ]
+                            },
+                            "planned_schedule_hash": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "profile_id",
+                            "profile_hash",
+                            "terms_hash",
+                            "funding_policy_revision",
+                            "funding_policy_hash",
+                            "budget_source",
+                            "empty_behavior",
+                            "eligible_activities",
+                            "dance_scope",
+                            "starts_at",
+                            "ends_at",
+                            "first_drawing_id",
+                            "last_planned_drawing_id",
+                            "ticket_price_ceiling_atomic",
+                            "disclosure_version",
+                            "origin_prospective_terms_hash",
+                            "origin_slot_generation",
+                            "reward_policy_hash",
+                            "qualification_bindings",
+                            "qualification_bindings_hash",
+                            "planned_drawing_ids",
+                            "planned_schedule_hash"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "chain_id": {
+                          "type": "number",
+                          "enum": [
+                            84532,
+                            8453
+                          ]
+                        },
+                        "token_address": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^0x[a-f0-9]{40}$"
+                            }
+                          ]
+                        },
+                        "token_decimals": {
+                          "type": "number",
+                          "enum": [
+                            6
+                          ]
+                        },
+                        "offer_status": {
+                          "type": "string",
+                          "enum": [
+                            "draft",
+                            "active",
+                            "paused",
+                            "exhausted",
+                            "expired",
+                            "ended",
+                            "operational_hold"
+                          ]
+                        },
+                        "leg_status": {
+                          "type": "string",
+                          "enum": [
+                            "draft",
+                            "funding",
+                            "active",
+                            "paused",
+                            "exhausted",
+                            "ended",
+                            "operational_hold"
+                          ]
+                        },
+                        "confirmed_contributed_atomic": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(0|[1-9][0-9]{0,77})$"
+                            }
+                          ]
+                        },
+                        "remaining_budget_atomic": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^(0|[1-9][0-9]{0,77})$"
+                            }
+                          ]
+                        },
+                        "participation_available": {
+                          "type": "boolean"
+                        },
+                        "qualification_rules": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "binding": {
+                                "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_posts_2f__7b_postId_7d__2f_megapot-participation_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                              },
+                              "rule": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "study_session_first_pass_v2"
+                                        ]
+                                      },
+                                      "qualification_policy_version_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 128
+                                          }
+                                        ]
+                                      },
+                                      "required_correct_bps": {
+                                        "type": "number",
+                                        "enum": [
+                                          7000
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "qualification_policy_version_id",
+                                      "required_correct_bps"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "karaoke_qualification_v1"
+                                        ]
+                                      },
+                                      "qualification_policy_version_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 128
+                                          }
+                                        ]
+                                      },
+                                      "minimum_scored_line_count": {
+                                        "type": "number",
+                                        "enum": [
+                                          5
+                                        ]
+                                      },
+                                      "minimum_coverage_bps": {
+                                        "type": "number",
+                                        "enum": [
+                                          8500
+                                        ]
+                                      },
+                                      "minimum_final_score_bps": {
+                                        "type": "number",
+                                        "enum": [
+                                          7000
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "qualification_policy_version_id",
+                                      "minimum_scored_line_count",
+                                      "minimum_coverage_bps",
+                                      "minimum_final_score_bps"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "karaoke_qualification_v2"
+                                        ]
+                                      },
+                                      "qualification_policy_version_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 128
+                                          }
+                                        ]
+                                      },
+                                      "minimum_scored_line_count": {
+                                        "type": "number",
+                                        "enum": [
+                                          5
+                                        ]
+                                      },
+                                      "minimum_coverage_bps": {
+                                        "type": "number",
+                                        "enum": [
+                                          8500
+                                        ]
+                                      },
+                                      "minimum_final_score_bps": {
+                                        "type": "number",
+                                        "enum": [
+                                          7000
+                                        ]
+                                      },
+                                      "eligible_playback_kinds": {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "string",
+                                            "enum": [
+                                              "full_mix",
+                                              "instrumental"
+                                            ]
+                                          }
+                                        ],
+                                        "minItems": 1,
+                                        "items": {
+                                          "type": "string",
+                                          "enum": [
+                                            "full_mix",
+                                            "instrumental"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "qualification_policy_version_id",
+                                      "minimum_scored_line_count",
+                                      "minimum_coverage_bps",
+                                      "minimum_final_score_bps",
+                                      "eligible_playback_kinds"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dance_owner_verdict_v1"
+                                        ]
+                                      },
+                                      "qualification_policy_version_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                          },
+                                          {
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "maxLength": 128
+                                          }
+                                        ]
+                                      },
+                                      "grading_mode": {
+                                        "type": "string",
+                                        "enum": [
+                                          "moderator_verdict"
+                                        ]
+                                      },
+                                      "verdict": {
+                                        "type": "string",
+                                        "enum": [
+                                          "passed"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "qualification_policy_version_id",
+                                      "grading_mode",
+                                      "verdict"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "currently_available": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "binding",
+                              "rule",
+                              "currently_available"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "allOf": [
+                            {
+                              "minItems": 3
+                            },
+                            {
+                              "maxItems": 3
+                            }
+                          ]
+                        },
+                        "drawings": {
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "not_open"
+                                    ]
+                                  },
+                                  "planned_drawing_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "planned_drawing_id"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "materialized"
+                                    ]
+                                  },
+                                  "planned_drawing_id": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "pattern": "^(0|[1-9][0-9]{0,77})$"
+                                      }
+                                    ]
+                                  },
+                                  "drawing_at": {
+                                    "type": "string",
+                                    "allOf": [
+                                      {
+                                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                                      }
+                                    ]
+                                  },
+                                  "drawing": {
+                                    "type": "object",
+                                    "properties": {
+                                      "object": {
+                                        "type": "string",
+                                        "enum": [
+                                          "megapot_pool_drawing_projection"
+                                        ]
+                                      },
+                                      "drawing_id": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "pattern": "^(?:0|[1-9][0-9]*)$"
+                                          }
+                                        ]
+                                      },
+                                      "lifecycle_status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "entry_open",
+                                          "cutoff_frozen",
+                                          "committed",
+                                          "purchase_pending",
+                                          "tickets_confirmed",
+                                          "drawing_pending",
+                                          "no_win",
+                                          "winnings_detected",
+                                          "claim_pending",
+                                          "claimed",
+                                          "allocated",
+                                          "credited",
+                                          "closed_no_entries",
+                                          "closed_unfunded",
+                                          "closed_fallback_ineligible",
+                                          "closed_fallback_unavailable",
+                                          "closed_fallback_ceiling",
+                                          "operational_hold"
+                                        ]
+                                      },
+                                      "state": {
+                                        "type": "string",
+                                        "enum": [
+                                          "funding",
+                                          "awaiting_drawing",
+                                          "entry_open",
+                                          "entry_closed",
+                                          "committed",
+                                          "ticket_purchased",
+                                          "drawing_pending",
+                                          "no_win",
+                                          "won",
+                                          "operational_hold"
+                                        ]
+                                      },
+                                      "entry_cutoff_at": {
+                                        "type": "string"
+                                      },
+                                      "beneficiary_count": {
+                                        "type": "integer",
+                                        "allOf": [
+                                          {
+                                            "minimum": 0,
+                                            "maximum": 1000000
+                                          }
+                                        ]
+                                      },
+                                      "ticket_price_ceiling_atomic": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "pattern": "^[1-9][0-9]*$"
+                                          }
+                                        ]
+                                      },
+                                      "actual_ticket_cost_atomic": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "pattern": "^(?:0|[1-9][0-9]*)$"
+                                          }
+                                        ]
+                                      },
+                                      "gross_prize_pool_atomic": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^(?:0|[1-9][0-9]*)$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "global_tickets_bought": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^(?:0|[1-9][0-9]*)$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "prize_pool_observed_at": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "prize_pool_basis": {
+                                        "type": "string",
+                                        "enum": [
+                                          "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover"
+                                        ]
+                                      },
+                                      "global_tickets_basis": {
+                                        "type": "string",
+                                        "enum": [
+                                          "drawing_wide_all_megapot_buyers"
+                                        ]
+                                      },
+                                      "net_winnings_atomic": {
+                                        "type": "string",
+                                        "allOf": [
+                                          {
+                                            "pattern": "^(?:0|[1-9][0-9]*)$"
+                                          }
+                                        ]
+                                      },
+                                      "commitment_reference": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "minLength": 1
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "snapshot_hash": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^0x[0-9a-f]{64}$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "ticket_id": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^(?:0|[1-9][0-9]*)$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "purchase_transaction_hash": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^0x[0-9a-f]{64}$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "claim_transaction_hash": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "allOf": [
+                                              {
+                                                "pattern": "^0x[0-9a-f]{64}$"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "object",
+                                      "drawing_id",
+                                      "lifecycle_status",
+                                      "state",
+                                      "entry_cutoff_at",
+                                      "beneficiary_count",
+                                      "ticket_price_ceiling_atomic",
+                                      "actual_ticket_cost_atomic",
+                                      "gross_prize_pool_atomic",
+                                      "global_tickets_bought",
+                                      "prize_pool_observed_at",
+                                      "prize_pool_basis",
+                                      "global_tickets_basis",
+                                      "net_winnings_atomic",
+                                      "commitment_reference",
+                                      "snapshot_hash",
+                                      "ticket_id",
+                                      "purchase_transaction_hash",
+                                      "claim_transaction_hash"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "standing": {
+                                    "type": "object",
+                                    "properties": {
+                                      "share_held": {
+                                        "type": "boolean"
+                                      },
+                                      "credit": {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "credit_id": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                                                  },
+                                                  {
+                                                    "minLength": 1
+                                                  },
+                                                  {
+                                                    "maxLength": 128
+                                                  }
+                                                ]
+                                              },
+                                              "amount_atomic": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "pattern": "^[1-9][0-9]{0,77}$"
+                                                  }
+                                                ]
+                                              },
+                                              "state": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "credited",
+                                                  "payout_reserved",
+                                                  "payout_pending",
+                                                  "sent",
+                                                  "reconciliation_required"
+                                                ]
+                                              },
+                                              "claim": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "status": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "unclaimed",
+                                                      "accepted",
+                                                      "subject_conflict"
+                                                    ]
+                                                  },
+                                                  "payout_status": {
+                                                    "anyOf": [
+                                                      {
+                                                        "type": "string",
+                                                        "enum": [
+                                                          "pending",
+                                                          "recipient_pending",
+                                                          "submitted",
+                                                          "confirmed",
+                                                          "failed_retrying"
+                                                        ]
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "status",
+                                                  "payout_status"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "required": [
+                                              "credit_id",
+                                              "amount_atomic",
+                                              "state",
+                                              "claim"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "share_held",
+                                      "credit"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "planned_drawing_id",
+                                  "drawing_at",
+                                  "drawing",
+                                  "standing"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "allOf": [
+                            {
+                              "minItems": 1
+                            },
+                            {
+                              "maxItems": 30
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "object",
+                        "version",
+                        "as_of",
+                        "target",
+                        "terms",
+                        "chain_id",
+                        "token_address",
+                        "token_decimals",
+                        "offer_status",
+                        "leg_status",
+                        "confirmed_contributed_atomic",
+                        "remaining_budget_atomic",
+                        "participation_available",
+                        "qualification_rules",
+                        "drawings"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-cache-control": "private, no-store",
+        "x-errors": [
+          "AuthError",
+          "NotFound",
+          "ProviderUnavailable",
+          "InternalError"
+        ]
+      }
+    },
     "/communities/{communityId}/posts/{postId}/dance/moderated-options": {
       "get": {
         "operationId": "get_communitiesCommunityIdPostsPostIdDanceModeratedOptions",
@@ -239483,6 +240873,198 @@
   },
   "components": {
     "schemas": {
+      "_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_posts_2f__7b_postId_7d__2f_megapot-participation_22__2c__22_response_22__2c__22_200_22__5d_": {
+        "$defs": {
+          "Objects_": {
+            "type": "object",
+            "properties": {
+              "template_key": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "activity": {
+                "type": "string",
+                "enum": [
+                  "study",
+                  "karaoke",
+                  "dance"
+                ]
+              },
+              "grading_family": {
+                "type": "string",
+                "enum": [
+                  "numeric",
+                  "moderator_verdict"
+                ]
+              },
+              "qualification_policy_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "qualification_policy_hash": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                ]
+              },
+              "numeric_floor_bps": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 0,
+                        "maximum": 10000
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "choreography_scope": {
+                "type": "string",
+                "enum": [
+                  "not_applicable",
+                  "any_policy_accepted"
+                ]
+              },
+              "admission_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "admission_hash": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                ]
+              },
+              "disclosure_version": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "binding_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "objective_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "offer_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "leg_id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+                  },
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              }
+            },
+            "required": [
+              "template_key",
+              "activity",
+              "grading_family",
+              "qualification_policy_id",
+              "qualification_policy_hash",
+              "numeric_floor_bps",
+              "choreography_scope",
+              "admission_id",
+              "admission_hash",
+              "disclosure_version",
+              "binding_id",
+              "objective_id",
+              "offer_id",
+              "leg_id"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
       "_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_posts_2f__7b_postId_7d__2f_megapot-funding-context_22__2c__22_response_22__2c__22_200_22__5d_": {
         "$defs": {
           "Union_": {

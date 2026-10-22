@@ -267,8 +267,8 @@ import {
   makeModeratedDanceUploadSigner,
 } from "../../../packages/platform-cf/src/dance-moderated-intake-repository.ts";
 import { makeModeratedDanceMediaAccessStore } from "../../../packages/platform-cf/src/moderated-dance-media-access.ts";
-import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
 import { makeSharedSongMegapotParticipationReader } from "../../../packages/platform-cf/src/shared-song-megapot-participation.ts";
+import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
 import {
   makeTelegramServices,
   type TelegramBindings,
@@ -310,7 +310,6 @@ import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsNamespaceDiscoveryHandlers } from "./hns-namespace-discovery-handlers.ts";
-import { makeSharedSongMegapotParticipationHandler } from "./shared-song-megapot-participation-handlers.ts";
 import { makeProductionHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
@@ -337,6 +336,7 @@ import {
   makeSongRewardOfferHandlers,
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
+import { makeSharedSongMegapotParticipationHandler } from "./shared-song-megapot-participation-handlers.ts";
 import { makeSongLibraryHandlers } from "./song-library-handlers.ts";
 import { makeSongMegapotContributionHandlers } from "./song-megapot-contribution-handlers.ts";
 import { makeSongOwnerVideoPolicyHandlers } from "./song-owner-video-policy-handlers.ts";

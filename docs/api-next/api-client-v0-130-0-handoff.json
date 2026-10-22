@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.130.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+  "validatedSourceCommit": null,
+  "pullRequest": 625,
+  "wireContract": "Retains published main129 namespace discovery and incorporates the combined draft Funding and moderated Dance operations, including original contribution refusal receipts. Adds GetSharedSongMegapotParticipationV2: a browser-session account-scoped private/no-store read of immutable three-activity qualification terms, bounded planned drawings and own share/credit/Claim state. Categorical Dance has no invented score or arbitrary review rubric. Historical drawings remain visible; positive amounts require exact custody/allocation/credit lineage. Serving Rewards-off refuses this participant operation before storage access.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.130.0.tgz",
+    "sha256": "34d756f7c9f81f894e9317ce5f88c8b66729e0e1d838b0eabfdab14200f98051"
+  },
+  "validation": {
+    "status": "Candidate package. Bounded participant producer source independently accepted; focused92 and native31 cases plus official seven-project TypeScript pass on the producer. Generated artifact, complete source gates and consumer intake remain pending.",
+    "operationalBoundary": "No deployment, production role grant, policy admission, Mainnet continuation, provider/chain operation or Rewards activation. Main129 archive remains immutable; the distinct Funding draft129 archive is separately retained in the execution evidence."
+  }
+}
