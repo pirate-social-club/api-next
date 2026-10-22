@@ -16958,6 +16958,31 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION guard_moderated_dance_safety_call_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP<>'UPDATE' THEN RAISE EXCEPTION 'safety dispatch history retained' USING ERRCODE='DRV01'; END IF;
+ IF (to_jsonb(NEW)-'state'-'result'-'completed_at') IS DISTINCT FROM (to_jsonb(OLD)-'state'-'result'-'completed_at')
+ OR (OLD.state<>'sending' AND NEW IS DISTINCT FROM OLD) OR NEW.state='sending' AND NEW IS DISTINCT FROM OLD
+ OR (NEW.state<>'sending' AND (NEW.completed_at IS NULL OR NEW.completed_at<OLD.dispatched_at OR jsonb_typeof(NEW.result) IS DISTINCT FROM 'object'))
+ OR NEW.completed_at>clock_timestamp() THEN RAISE EXCEPTION 'safety dispatch identity changed' USING ERRCODE='DRV01'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_moderated_dance_safety_call_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION guard_moderation_platform_floor_current_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -23497,6 +23522,7 @@ DECLARE work dance_moderated_processing_v1; s dance_moderated_sessions_v1; u dan
  now_ms BIGINT:=floor(extract(epoch FROM clock_timestamp())*1000)::BIGINT;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
+ IF EXISTS(SELECT 1 FROM dance_moderated_provider_calls_v1 c WHERE c.upload_id=p_upload AND c.provider_contract IS DISTINCT FROM moderated_dance_safety_contract_v1()) THEN RAISE EXCEPTION 'safety provider retention unbound' USING ERRCODE='DRV07'; END IF;
  SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload;
  SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload;
  SELECT * INTO STRICT s FROM dance_moderated_sessions_v1 WHERE session_id=u.session_id;
@@ -24669,6 +24695,25 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION moderated_dance_safety_contract_v1() RETURNS jsonb
+    LANGUAGE sql IMMUTABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT '{"version":"private-dance-safety-retention-v1","provider":"openai","endpoint":"https://api.openai.com/v1/moderations","model":"omni-moderation-2024-09-26","input":"inline-jpeg-data-url","abuseMonitoring":"no-ordinary-content-retention","applicationState":"none","evidenceKind":"documented-endpoint-contract","preservation":"legal-or-provider-preservation-is-not-observed-absence","source":"https://developers.openai.com/api/docs/guides/your-data","observedOn":"2026-10-23"}'::JSONB
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_safety_contract_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION moderated_dance_safety_protocol_v1(p_upload text, p_token text, p_action text, p_input jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -24678,7 +24723,8 @@ DECLARE work dance_moderated_processing_v1; u dance_moderated_uploads_v1; s danc
  idx INTEGER; purpose_key TEXT; claim TEXT; prior dance_moderated_safety_evidence_v1;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
- SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
+ IF p_action NOT IN('succeed','fail') THEN work:=lock_moderated_dance_processing_authority_v1(p_upload);
+ ELSE SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE; END IF;
  SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload;
  SELECT * INTO STRICT s FROM dance_moderated_sessions_v1 WHERE session_id=u.session_id;
  -- Recording an original consumed frame claim's exact provider result is
@@ -24688,6 +24734,10 @@ BEGIN
  IF p_action NOT IN('succeed','fail') AND (work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR u.state<>'sealed'
  OR work.provider_deadline<=clock_timestamp() OR NOT EXISTS(SELECT 1 FROM users a JOIN dance_review_account_fences_v1 f ON f.account_id=a.user_id WHERE a.user_id=s.account_id AND a.status='active' AND NOT f.erasing AND f.revision=work.account_fence)) THEN RAISE EXCEPTION 'screen authority changed' USING ERRCODE='DRV05'; END IF;
  IF p_action IN('load','save') THEN
+  IF p_input->'providerContract' IS DISTINCT FROM moderated_dance_safety_contract_v1()
+  OR s.terms->'profile'->>'safetyProviderRevision' IS DISTINCT FROM 'private-three-still-openai-contract-v1'
+  OR EXISTS(SELECT 1 FROM dance_moderated_provider_calls_v1 c WHERE c.upload_id=p_upload AND c.provider_contract IS DISTINCT FROM moderated_dance_safety_contract_v1()) THEN
+   RAISE EXCEPTION 'safety provider retention unbound' USING ERRCODE='DRV07'; END IF;
   SELECT * INTO prior FROM dance_moderated_safety_evidence_v1 WHERE upload_id=p_upload;
   IF prior.upload_id IS NOT NULL THEN
    IF prior.input_digest IS DISTINCT FROM p_input->>'inputDigest' THEN RAISE EXCEPTION 'safety evidence changed' USING ERRCODE='DRV05'; END IF;
@@ -24712,8 +24762,10 @@ BEGIN
  purpose_key:='frame:'||idx;
  SELECT * INTO call_row FROM dance_moderated_provider_calls_v1 WHERE upload_id=p_upload AND dance_moderated_provider_calls_v1.purpose=purpose_key FOR UPDATE;
  IF call_row.upload_id IS NOT NULL THEN
+  IF call_row.provider_contract IS DISTINCT FROM p_input->'providerContract' THEN RAISE EXCEPTION 'screen provider contract changed' USING ERRCODE='DRV05'; END IF;
   IF call_row.request_hash IS DISTINCT FROM p_input->>'requestHash' THEN RAISE EXCEPTION 'screen request changed' USING ERRCODE='DRV05'; END IF;
   IF p_action IN('inspect','claim') THEN
+   IF call_row.provider_contract IS NULL THEN RETURN jsonb_build_object('status','unresolved'); END IF;
    RETURN CASE call_row.state WHEN 'sending' THEN jsonb_build_object('status','unresolved') WHEN 'succeeded' THEN jsonb_build_object('status','succeeded','result',call_row.result) ELSE jsonb_build_object('status','failed','failure',call_row.result) END;
   END IF;
   IF call_row.claim_token IS DISTINCT FROM p_input->>'claimToken' THEN RAISE EXCEPTION 'screen claim changed' USING ERRCODE='DRV05'; END IF;
@@ -24722,14 +24774,18 @@ BEGIN
    RETURN call_row.result;
   END IF;
   IF p_action='succeed' AND p_input->'result'->>'input_sha256' IS DISTINCT FROM frame.sha256 THEN RAISE EXCEPTION 'screen digest changed' USING ERRCODE='DRV06'; END IF;
+  IF p_action='succeed' AND call_row.provider_contract IS NOT NULL AND (p_input->'result'->>'provider_id'='openai' AND p_input->'result'->>'requested_model'=call_row.provider_contract->>'model' AND p_input->'result'->>'returned_model'=call_row.provider_contract->>'model') IS NOT TRUE THEN RAISE EXCEPTION 'screen provider model changed' USING ERRCODE='DRV06'; END IF;
   IF p_action NOT IN('succeed','fail') OR jsonb_typeof(p_input->'result') IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'screen result unavailable' USING ERRCODE='DRV06'; END IF;
   UPDATE dance_moderated_provider_calls_v1 SET state=CASE WHEN p_action='succeed' THEN 'succeeded' ELSE 'failed' END,result=p_input->'result',completed_at=clock_timestamp() WHERE upload_id=p_upload AND dance_moderated_provider_calls_v1.purpose=purpose_key;
   RETURN p_input->'result';
  END IF;
  IF p_action='inspect' THEN RETURN jsonb_build_object('status','absent'); END IF;
  IF p_action<>'claim' THEN RAISE EXCEPTION 'screen claim missing' USING ERRCODE='DRV05'; END IF;
+ IF p_input->'providerContract' IS DISTINCT FROM moderated_dance_safety_contract_v1()
+ OR s.terms->'profile'->>'safetyProviderRevision' IS DISTINCT FROM 'private-three-still-openai-contract-v1' THEN
+  RAISE EXCEPTION 'safety provider retention unbound' USING ERRCODE='DRV07'; END IF;
  claim:=p_input->>'claimToken';
- INSERT INTO dance_moderated_provider_calls_v1(upload_id,purpose,request_hash,claim_token,state) VALUES(p_upload,purpose_key,p_input->>'requestHash',claim,'sending');
+ INSERT INTO dance_moderated_provider_calls_v1(upload_id,purpose,request_hash,claim_token,state,provider_contract) VALUES(p_upload,purpose_key,p_input->>'requestHash',claim,'sending',p_input->'providerContract');
  RETURN jsonb_build_object('status','dispatch','claimToken',claim);
 END $$;
 DO $baseline_function_path$
@@ -30671,10 +30727,12 @@ $$;
 
 CREATE FUNCTION record_moderated_dance_maintenance_v1() RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE lease_ms BIGINT; now_at TIMESTAMPTZ:=clock_timestamp();
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() OR NOT dance_review_worker_authorized_v1() THEN RAISE EXCEPTION 'maintenance purposes unavailable' USING ERRCODE='DRV02'; END IF;
+ IF EXISTS(SELECT 1 FROM dance_moderated_provider_calls_v1 WHERE provider_contract IS DISTINCT FROM moderated_dance_safety_contract_v1()) THEN DELETE FROM dance_moderated_maintenance_readiness_v1; DELETE FROM dance_moderated_processor_readiness_v1; RETURN; END IF;
  IF EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect
   LEFT JOIN dance_moderated_processing_v1 processing ON processing.upload_id=effect.upload_id
   LEFT JOIN dance_moderated_uploads_v1 upload ON upload.upload_id=effect.upload_id
@@ -30698,6 +30756,18 @@ BEGIN
  INSERT INTO dance_moderated_maintenance_readiness_v1 VALUES(TRUE,now_at,now_at+lease_ms*interval '1 millisecond')
  ON CONFLICT(singleton) DO UPDATE SET observed_at=EXCLUDED.observed_at,valid_until=EXCLUDED.valid_until;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='record_moderated_dance_maintenance_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION record_moderated_dance_reference_provider_v1(p_choreography text, p_token text, p_result jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -45820,7 +45890,9 @@ CREATE TABLE dance_moderated_provider_calls_v1 (
     result jsonb,
     dispatched_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     completed_at timestamp with time zone,
+    provider_contract jsonb,
     CONSTRAINT dance_moderated_provider_calls_v1_check CHECK (((state = 'sending'::text) = ((result IS NULL) AND (completed_at IS NULL)))),
+    CONSTRAINT dance_moderated_provider_calls_v1_provider_contract_check CHECK (((provider_contract IS NULL) OR (jsonb_typeof(provider_contract) = 'object'::text))),
     CONSTRAINT dance_moderated_provider_calls_v1_purpose_check CHECK ((purpose = ANY (ARRAY['frame:0'::text, 'frame:1'::text, 'frame:2'::text]))),
     CONSTRAINT dance_moderated_provider_calls_v1_request_hash_check CHECK ((request_hash ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT dance_moderated_provider_calls_v1_state_check CHECK ((state = ANY (ARRAY['sending'::text, 'succeeded'::text, 'failed'::text])))
@@ -59780,6 +59852,10 @@ CREATE TRIGGER moderated_replay_retirement_immutable BEFORE DELETE OR UPDATE ON 
 CREATE TRIGGER moderated_replay_retirement_no_truncate BEFORE TRUNCATE ON dance_moderated_replay_retirements_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
 CREATE TRIGGER moderated_review_replay_retirement BEFORE UPDATE ON dance_moderated_reviews_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_retirement_v1();
+
+CREATE TRIGGER moderated_safety_call_no_truncate BEFORE TRUNCATE ON dance_moderated_provider_calls_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER moderated_safety_call_retained BEFORE DELETE OR UPDATE ON dance_moderated_provider_calls_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_safety_call_v1();
 
 CREATE TRIGGER moderated_upload_replay_retirement BEFORE UPDATE ON dance_moderated_uploads_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_retirement_v1();
 

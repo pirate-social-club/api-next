@@ -29,6 +29,7 @@ import {
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
 import { bindModeratedDanceReplayKeys } from "./moderated-dance-public-replay.ts";
+import { makeModeratedDanceSafetyProtocol } from "./moderated-dance-safety-contract.ts";
 import { sha256Hex } from "./r2-upload-signing.ts";
 import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 import {
@@ -335,14 +336,11 @@ export function makeModeratedDanceMediaRuntime(
     };
   }
   function safetyStore(work: Work): VideoSafetyEvidenceStore {
-    const protocol = (action: string, value: unknown) =>
-      call(
-        `dance.media.safety.${action}`,
-        "SELECT moderated_dance_safety_protocol_v1($1,$2,$3,$4::jsonb) AS packet",
-        [work.uploadId, work.token, action, JSON.stringify(value)],
-      );
-    const requestHash = (frame: unknown) =>
-      Effect.runPromise(canonicalBodyHash(["private-dance-safety-frame-v1", work.uploadId, frame]));
+    const protocol = makeModeratedDanceSafetyProtocol({
+      call,
+      uploadId: work.uploadId,
+      token: work.token,
+    });
     const interpretClaim = (
       raw: unknown,
       sha: string,
@@ -362,7 +360,7 @@ export function makeModeratedDanceMediaRuntime(
     };
     return {
       load: async (_i, inputDigest) => {
-        const e = await protocol("load", { inputDigest });
+        const e = await protocol.evidence("load", { inputDigest });
         return e === null
           ? null
           : Schema.decodeUnknownSync(Schema.Struct({ fact: PrivateSafetyFact }), {
@@ -370,7 +368,7 @@ export function makeModeratedDanceMediaRuntime(
             })(e).fact;
       },
       save: async (_i, evidence) => {
-        const saved = await protocol("save", {
+        const saved = await protocol.evidence("save", {
           inputDigest: evidence.inputDigest,
           policyHash: Schema.decodeUnknownSync(Schema.Struct({ safetyHash: Hash }), {
             onExcessProperty: "ignore",
@@ -382,18 +380,13 @@ export function makeModeratedDanceMediaRuntime(
         })(saved).fact;
       },
       inspectFrame: async (frame) => {
-        const claim = interpretClaim(
-          await protocol("inspect", { frame, requestHash: await requestHash(frame) }),
-          frame.frameSha256,
-        );
+        const claim = interpretClaim(await protocol.frame("inspect", frame), frame.frameSha256);
         if (claim.status === "dispatch") throw new Error("Read cannot issue a safety grant");
         return claim;
       },
       claimFrame: async (frame) => {
         const claim = interpretClaim(
-          await protocol("claim", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("claim", frame, {
             claimToken: id(),
           }),
           frame.frameSha256,
@@ -403,9 +396,7 @@ export function makeModeratedDanceMediaRuntime(
       },
       succeedFrame: async (frame, claimToken, result) =>
         validateVideoSafetyFrameProviderResult(
-          await protocol("succeed", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("succeed", frame, {
             claimToken,
             result,
           }),
@@ -413,9 +404,7 @@ export function makeModeratedDanceMediaRuntime(
         ),
       failFrame: async (frame, claimToken, result) =>
         validateVideoSafetyFrameProviderFailure(
-          await protocol("fail", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("fail", frame, {
             claimToken,
             result,
           }),

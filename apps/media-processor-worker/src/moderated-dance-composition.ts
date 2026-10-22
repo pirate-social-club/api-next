@@ -9,6 +9,7 @@ import { makeModeratedDanceMaintenance } from "../../../packages/platform-cf/src
 import { makeModeratedDanceMediaRuntime } from "../../../packages/platform-cf/src/moderated-dance-media-runtime.ts";
 import { decodeModeratedDanceReplayKeys } from "../../../packages/platform-cf/src/moderated-dance-public-replay.ts";
 import { makeModeratedDanceReferenceRuntime } from "../../../packages/platform-cf/src/moderated-dance-reference-runtime.ts";
+import { MODERATED_DANCE_SAFETY_REVISION } from "../../../packages/platform-cf/src/moderated-dance-safety-contract.ts";
 import { makeSongVideoCloudConvertTransport } from "../../../packages/platform-cf/src/song-video-cloudconvert-transport.ts";
 
 export type ModeratedDanceMediaEnv = Readonly<{
@@ -109,7 +110,7 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
     replayKeys: keys,
     gatewayOrigin: env.VIDEO_SOURCE_GATEWAY_ORIGIN,
     runtimeRevision: MODERATED_DANCE_CLOUDCONVERT_REVISION,
-    safetyRevision: "private-three-still-openai-v1",
+    safetyRevision: MODERATED_DANCE_SAFETY_REVISION,
   });
   return {
     async run() {

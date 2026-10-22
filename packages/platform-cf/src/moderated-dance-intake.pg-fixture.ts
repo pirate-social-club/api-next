@@ -11,9 +11,16 @@ export async function seedModeratedDanceIntake(
   admin: Client,
   connection: string,
   runtimeRevision?: string,
-  options: Readonly<{ publicReplay?: boolean }> = {},
+  options: Readonly<{ publicReplay?: boolean; safetyRevision?: string }> = {},
 ) {
-  const facts = moderatedDanceIntakeFacts(),
+  const originalFacts = moderatedDanceIntakeFacts(),
+    facts =
+      options.safetyRevision === undefined
+        ? originalFacts
+        : {
+            ...originalFacts,
+            profile: { ...originalFacts.profile, safetyProviderRevision: options.safetyRevision },
+          },
     f =
       runtimeRevision === undefined
         ? facts

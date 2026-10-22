@@ -300,6 +300,7 @@
     "0297_moderated_dance_provider_disposition.sql": "6a2b6c84110224f61a1e0c97846f9ada96cc9a93a63d26b519fb74d47b88dd0d",
     "0298_moderated_dance_cloudconvert_probe.sql": "6e7e87389a509be9895d2a6bda0031c677cd21e1b8f2d90ecb682e7d1a25a3eb",
     "0299_moderated_dance_replay_retention.sql": "20055cc14cf6644481b526b25b771bba2016cd93f676518093238bbd05ff9c18",
-    "0300_moderated_dance_public_replay_epochs.sql": "864c0f8588bfea996fbd3d3d62c6b03841aa1932c9a0f66a5c3872232f782ea1"
+    "0300_moderated_dance_public_replay_epochs.sql": "864c0f8588bfea996fbd3d3d62c6b03841aa1932c9a0f66a5c3872232f782ea1",
+    "0301_moderated_dance_safety_retention.sql": "f81cd893e131ee2a61f61cc61d990ded633774eb706849d38c420d2c2dd5d7ff"
   }
 }
