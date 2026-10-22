@@ -372,8 +372,18 @@ export async function deployWorkerWithProvenance(
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
     configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
-  const solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  let solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
   if (guardedHnsStagingHttp) {
+    // Linked API checkouts have a different parent. The shared Git directory
+    // identifies the canonical API repository and its standalone Solid sibling.
+    const commonGit = await requiredOutput(
+      runner,
+      ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      repositoryRoot,
+      "staging sibling repository discovery",
+    );
+    if (!isAbsolute(commonGit)) throw Error("staging Git common directory must be absolute");
+    solidRoot = resolve(commonGit, "../../pirate-web-solid");
     const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
     if (manifestRead.exitCode !== 0)
       throw new Error("staging HNS gateway read failed before HTTP deploy");
