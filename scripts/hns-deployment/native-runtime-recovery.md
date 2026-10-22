@@ -1,14 +1,17 @@
 # Production native application recovery
 
-The private observer driver and interactive application gateway retain their accepted production versions. The reader and gateway-config role packages now contain their byte-identical rebuilt bundles, exact upstream runtime binaries and original unit templates. This is source custody and application coverage for the existing two checks; it introduces no new listener, gateway profile or hosted check.
+The private observer driver and both application gateways retain their accepted production versions. The reader and gateway-config role packages contain their byte-identical rebuilt bundles, exact upstream runtime binaries and original unit templates. This is source custody and application coverage for the existing two checks; it introduces no new listener, gateway profile or hosted check.
 
 The observer bundle is api-next7d3c8aae24240faf7dde3e35fb359f96caa934b7, SHA256956977e5af68ce4afc0cf4746dbd7ce9c973d0c65123dc7db10b98348293e411. The interactive gateway is59dadfffc0364cae8618c23fb682cce377611369, SHA256710b561ee87a15288b72bb031d428fbbac4d867bd843051645a5d82e7d2d1f04. Both commits must be ancestors of fetched protected main. The fixed recipe downloads checksummed Bun1.4.0, installs the archived frozen dependencies with scripts disabled, verifies every archived source hash, and refuses output that differs from the accepted bundle. The gateway uses the original build options with the immutable archive supplying the source commit normally read from Git. Neither live bundle is replaced by a build of current application source.
+
+The static platform gateway is api-next e7b0b247613691c27aedfd80da63d8a79615f10d, bundle SHA256 619c035de3b8588cd9a429d03df1e997febaf27ebfe5e55ac325e33b00548120. Its static-gateway build profile uses the same pinned compiler and frozen archived source, and refuses any different output. The gateway-config package includes it in static-native with the original unit. Its deployed DEPLOYMENT source/bundle identity, actual running executable and bundle, and local readiness must pass alongside the interactive gateway before the existing check reports success. This static service has no private environment file.
 
 Bun1.3.14 is the separately pinned production runtime. The observer package also includes the exact cloudflared2026.8.3 binary. The build file records official GitHub release URLs and both archive and extracted binary hashes. Its default invocation prints the plan. Run the following from a clean protected checkout on an amd64 Linux builder under two CPUs,4GiB RAM and zero swap, adding --execute to perform the build:
 
 ```
 python3 scripts/hns-deployment/build-native-app-bundle.py observer-driver /absolute/new/observer-output
 python3 scripts/hns-deployment/build-native-app-bundle.py community-gateway /absolute/new/gateway-output
+python3 scripts/hns-deployment/build-native-app-bundle.py static-gateway /absolute/new/static-output
 ```
 
 The standard make-release.sh asset hook invokes this recipe for apps/hns-observer-driver/ops/chain-reader and apps/hns-platform-gateway/ops/production. Standard release hashes cover all resulting assets. Preserve the historical application source in bundle-binding.json separately from the owning operational release commit. Compilation does not establish current chain readiness or database availability.

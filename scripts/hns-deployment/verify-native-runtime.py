@@ -104,6 +104,9 @@ def required_installed_paths(profile):
         "/lib/systemd/system/caddy.service",
         "/etc/systemd/system/caddy.service.d/30-production-json.conf",
         "/etc/systemd/system/pirate-hns-community-app-gateway.service",
+        "/etc/systemd/system/pirate-hns-platform-gateway.service",
+        "/srv/pirate-hns-platform-gateway/current/DEPLOYMENT",
+        "/srv/pirate-hns-platform-gateway/current/bin/pirate-hns-platform-gateway.mjs",
         "/srv/pirate-hns-community-app-gateway/current/bin/pirate-hns-community-app-gateway.mjs",
         "/srv/pirate-hns-community-app-gateway/current/deployment-manifest.json",
         "/etc/pirate/hns-community-app-gateway/authority-database-url",
@@ -125,6 +128,25 @@ def verify_installed_coverage(profile, root):
                 and path.startswith("/") and path not in paths, "native-installed-manifest-invalid")
         paths.add(path)
     require(required_installed_paths(profile) <= paths, "native-installed-coverage-incomplete")
+
+
+def verify_static_gateway(release, runtime_hash):
+    binding = json.loads((release / "static-native/bundle-binding.json").read_text())
+    require(binding["schema"] == "pirate-hns-native-bundle/1" and binding["profile"] == "static-gateway",
+            "static-gateway-binding-mismatch")
+    require(binding["bun"]["runtime"]["binary_sha256"] == runtime_hash, "static-gateway-runtime-mismatch")
+    root = Path("/srv/pirate-hns-platform-gateway/current")
+    lines = (root / "DEPLOYMENT").read_text().splitlines()
+    metadata = dict(line.split("=", 1) for line in lines)
+    require(len(metadata) == len(lines) and metadata.get("api-next_commit") == binding["source_commit"]
+            and metadata.get("bundle_sha256") == binding["bundle_sha256"], "static-gateway-source-binding-mismatch")
+    bundle = root / "bin" / binding["bundle_name"]
+    require(sha256(bundle) == binding["bundle_sha256"], "static-gateway-bundle-mismatch")
+    unit = "pirate-hns-platform-gateway.service"
+    pid = active_process(unit, runtime_hash, str(bundle))
+    status, _, body = exchange("http://127.0.0.1:4051/readyz")
+    require(status == 204 and body == b"", "static-gateway-not-ready")
+    return unit, pid
 
 
 def verify_native(profile, release):
@@ -161,6 +183,8 @@ def verify_native(profile, release):
     else:
         status, _, body = exchange("http://127.0.0.1:4071/readyz")
         require(status == 204 and body == b"", "gateway-not-ready")
+        static_unit, static_pid = verify_static_gateway(release, runtime_hash)
+        pids[static_unit] = static_pid
     for unit, pid in pids.items():
         require(int(run(["systemctl", "show", unit, "-p", "MainPID", "--value"]).strip()) == pid,
                 "native-pid-changed-during-verification")
