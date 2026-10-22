@@ -13,6 +13,14 @@ test("native runtime acceptance refuses stale, redirected and replaced processes
   expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
 });
 
+test("historical provisioner reconstruction verifies the exact source patch", () => {
+  const result = Bun.spawnSync(
+    ["python3", "-B", "scripts/hns-deployment/build-native-app-bundle.test.py"],
+    { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" },
+  );
+  expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
+});
+
 test("operational observer RPC matches the maintained private-driver wire contract", async () => {
   const { decodeHnsPrivateDriverRequestV1 } = await import(
     "../packages/application/src/namespace-ownership/hns-private-driver.ts"

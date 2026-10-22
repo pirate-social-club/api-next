@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 import tempfile
 from unittest.mock import patch
+import subprocess
 
 spec = importlib.util.spec_from_file_location("native", Path(__file__).with_name("verify-native-runtime.py"))
 native = importlib.util.module_from_spec(spec)
@@ -13,6 +14,49 @@ spec.loader.exec_module(native)
 
 
 class NativeAcceptance(unittest.TestCase):
+    def test_private_probe_requires_actual_swap_barrier(self):
+        with patch.object(native, "Path") as path:
+            path.return_value.read_text.return_value = "0::/example\n"
+            path.return_value.__truediv__.return_value.__truediv__.return_value.read_text.return_value = "max\n"
+            with self.assertRaises(native.Refused):
+                native.require_zero_swap()
+
+    def test_loaded_private_credential_drift_refuses_success(self):
+        with patch.object(native, "sha256", side_effect=["old-loaded", "changed-file"]), self.assertRaises(native.Refused):
+            native.loaded_credential(123, "example.service", "client", "/private/client")
+
+    def test_reader_policy_failure_cannot_report_health(self):
+        chain = {"bestblockhash": "accepted"}
+        with patch.object(native, "require_zero_swap"), patch.object(native, "sha256", return_value="accepted"), \
+                patch.object(native, "active_process", return_value=123), patch.object(native, "loaded_credential"), \
+                patch.object(native, "validate_tip"), patch.object(native, "reader_rpc", side_effect=[chain, {}, {}]), \
+                self.assertRaisesRegex(native.Refused, "extra-method-admitted"):
+            native.verify_reader_and_secondary(Path("/release"), "runtime")
+
+    def test_provisioner_schema_guard_is_select_only_and_failure_refuses_health(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bin").mkdir()
+            bundle = root / "bin/provisioner.mjs"
+            bundle.write_bytes(b"bundle")
+            identity = {"source_commit": "historical", "bundle_sha256": "accepted"}
+            (root / "deployment-manifest.json").write_text(json.dumps(identity))
+            fake_path = lambda value: root if value == "/srv/pirate-hns-authority-provisioner/current" else type("Environment", (), {"read_bytes": lambda self: b"CONTROL_PLANE_POSTGRES_URL=private-url\0"})()
+            binding = {**identity, "bundle_name": "provisioner.mjs"}
+            with patch.object(native, "Path", side_effect=fake_path), patch.object(native, "require_zero_swap"), \
+                    patch.object(native, "sha256", return_value="accepted"), patch.object(native, "active_process", return_value=123), \
+                    patch.object(native, "loaded_credential"), patch.object(native.subprocess, "run") as run:
+                run.return_value = subprocess.CompletedProcess([], 0, '{"outcome":"compatible"}', "")
+                self.assertEqual(native.verify_provisioner(root, binding, "runtime"), {"pirate-hns-authority-provisioner.service": 123})
+                command = run.call_args.args[0]
+                self.assertIn("--verify-schema", command)
+                self.assertNotIn("--serve", command)
+                self.assertNotIn("private-url", command)
+                self.assertEqual(run.call_args.kwargs["env"]["CONTROL_PLANE_POSTGRES_URL"], "private-url")
+                run.return_value = subprocess.CompletedProcess([], 2, "", "private diagnostic withheld")
+                with self.assertRaises(native.Refused):
+                    native.verify_provisioner(root, binding, "runtime")
+
     def test_actual_tip_time_not_median_time(self):
         chain = {"chain": "main", "blocks": 352395, "headers": 352395, "bestblockhash": "abc", "verificationprogress": 1}
         block = {"hash": "abc", "height": 352395, "time": 9900, "mediantime": 1}

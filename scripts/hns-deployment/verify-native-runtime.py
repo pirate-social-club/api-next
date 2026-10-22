@@ -89,6 +89,15 @@ def validate_tip(chain, block, now):
 
 def required_installed_paths(profile):
     shared = {"/usr/local/bin/bun"}
+    if profile == "authority-provisioner":
+        return shared | {
+            "/etc/systemd/system/pirate-hns-authority-provisioner.service",
+            "/etc/pirate/hns-authority-provisioner.env", "/etc/pirate/hns-authority-axfr-tsig-secret",
+            "/srv/pirate-hns-authority-provisioner/current/deployment-manifest.json",
+            "/srv/pirate-hns-authority-provisioner/current/bin/pirate-hns-authority-provisioner.mjs",
+            "/etc/systemd/system/pirate-deployment-verify@authdns.service.d/20-native-provisioner.conf",
+            "/etc/pirate-deployment-verify/authdns.env",
+        }
     if profile == "observer-driver":
         return shared | {
             "/usr/local/bin/cloudflared", "/etc/systemd/system/pirate-hns-observer-driver.service",
@@ -98,6 +107,13 @@ def required_installed_paths(profile):
             "/srv/pirate-hns-observer/config/observer.env", "/srv/pirate-hns-observer/config/hsd_api_key",
             "/etc/systemd/system/pirate-deployment-verify@observer.service.d/20-native-driver.conf",
             "/etc/pirate-deployment-verify/observer.env",
+            "/etc/systemd/system/pirate-hns-production-mainnet-reader.service",
+            "/etc/systemd/system/pirate-hns-secondary-api-tunnel.service",
+            "/opt/pirate-hns-production/mainnet-reader/production-mainnet/read-only-hsd-rpc-production.mjs",
+            "/opt/pirate-hns-production/mainnet-reader/staging-mainnet/read-only-hsd-rpc-proxy.mjs",
+            "/etc/pirate/hns-production-mainnet-reader/client-key",
+            "/etc/pirate/hns-secondary-api-tunnel/id_ed25519",
+            "/etc/pirate/hns-secondary-api-tunnel/known_hosts", "/usr/bin/ssh",
         }
     return shared | {
         "/usr/local/bin/pirate-caddy", "/etc/caddy/caddy.json",
@@ -149,11 +165,107 @@ def verify_static_gateway(release, runtime_hash):
     return unit, pid
 
 
+def require_zero_swap():
+    group = Path("/sys/fs/cgroup") / Path("/proc/self/cgroup").read_text().split("0::", 1)[1].strip().lstrip("/")
+    require((group / "memory.swap.max").read_text().strip() == "0", "private-probe-swap-not-disabled")
+
+
+def loaded_credential(pid, unit, name, source):
+    runtime = Path(f"/proc/{pid}/root/run/credentials/{unit}/{name}")
+    require(sha256(runtime) == sha256(source), "native-loaded-credential-mismatch")
+
+
+def reader_rpc(method, params):
+    key = Path("/etc/pirate/hns-production-mainnet-reader/client-key").read_bytes().strip()
+    request = urllib.request.Request("http://127.0.0.1:12039/",
+        data=json.dumps({"method": method, "params": params}, separators=(",", ":")).encode(),
+        headers={"Authorization": "Basic " + base64.b64encode(b"x:" + key).decode(), "Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=6) as response:
+        require(response.status == 200, "production-reader-status-mismatch")
+        data = response.read(1_048_577)
+        require(len(data) <= 1_048_576, "native-response-too-large")
+    result = json.loads(data)
+    require(result.get("error") is None and isinstance(result.get("result"), dict), "production-reader-rpc-refused")
+    return result["result"]
+
+
+def verify_reader_and_secondary(release, runtime_hash):
+    require_zero_swap()
+    reader = "pirate-hns-production-mainnet-reader.service"
+    root = Path("/opt/pirate-hns-production/mainnet-reader")
+    for relative in ["production-mainnet/read-only-hsd-rpc-production.mjs", "staging-mainnet/read-only-hsd-rpc-proxy.mjs"]:
+        require(sha256(root / relative) == sha256(release / "native/reader" / relative), "production-reader-source-mismatch")
+    pids = {reader: active_process(reader, runtime_hash, str(root / "production-mainnet/read-only-hsd-rpc-production.mjs"))}
+    for name, source in [("production-hsd-client-key", "/etc/pirate/hns-production-mainnet-reader/client-key"),
+                         ("production-hsd-upstream-key", "/srv/pirate-hns-observer/config/hsd_api_key")]:
+        loaded_credential(pids[reader], reader, name, source)
+    chain = reader_rpc("getblockchaininfo", [])
+    validate_tip(chain, reader_rpc("getblockheader", [chain["bestblockhash"], True]), time.time())
+    try:
+        reader_rpc("getrawmempool", [])
+    except urllib.error.HTTPError as error:
+        require(error.code == 403, "production-reader-policy-mismatch")
+    else:
+        raise Refused("production-reader-extra-method-admitted")
+    tunnel = "pirate-hns-secondary-api-tunnel.service"
+    pids[tunnel] = active_process(tunnel, sha256("/usr/bin/ssh"), "127.0.0.1:18081:127.0.0.1:8081")
+    for unit in [reader, tunnel]:
+        template = (release / "native/systemd" / unit).read_bytes()
+        if unit == tunnel:
+            template = template.replace(b"%d/", b"/run/credentials/pirate-hns-secondary-api-tunnel.service/")
+        require(Path("/etc/systemd/system", unit).read_bytes() == template, "production-boundary-unit-mismatch")
+    for name, source in [("secondary-tunnel-key", "/etc/pirate/hns-secondary-api-tunnel/id_ed25519"),
+                         ("secondary-known-hosts", "/etc/pirate/hns-secondary-api-tunnel/known_hosts")]:
+        loaded_credential(pids[tunnel], tunnel, name, source)
+    # An unauthenticated API response proves the actual forwarded endpoint is
+    # answering without exposing or transmitting the private PowerDNS API key.
+    try:
+        exchange("http://127.0.0.1:18081/api/v1/servers/localhost")
+    except urllib.error.HTTPError as error:
+        require(error.code == 401, "secondary-api-forward-status-mismatch")
+    else:
+        raise Refused("secondary-api-forward-authentication-missing")
+    return pids
+
+
+def verify_provisioner(release, binding, runtime_hash):
+    require_zero_swap()
+    unit = "pirate-hns-authority-provisioner.service"
+    root = Path("/srv/pirate-hns-authority-provisioner/current")
+    manifest = root / "deployment-manifest.json"
+    require(sha256(manifest) == sha256(release / "deployment-manifest.json"), "provisioner-manifest-mismatch")
+    identity = json.loads(manifest.read_text())
+    require(identity["source_commit"] == binding["source_commit"]
+            and identity["bundle_sha256"] == binding["bundle_sha256"], "provisioner-source-binding-mismatch")
+    bundle = root / "bin" / binding["bundle_name"]
+    require(sha256(bundle) == binding["bundle_sha256"], "native-installed-bundle-mismatch")
+    pid = active_process(unit, runtime_hash, str(bundle))
+    loaded_credential(pid, unit, "hns_axfr_tsig_secret", "/etc/pirate/hns-authority-axfr-tsig-secret")
+    # Reuse only the current process's database URL. The historical command
+    # performs SELECT-only schema compatibility checks, never lifecycle work.
+    values = dict(item.split(b"=", 1) for item in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0") if b"=" in item)
+    url = values.get(b"CONTROL_PLANE_POSTGRES_URL")
+    require(bool(url), "provisioner-database-configuration-missing")
+    result = subprocess.run(["/usr/local/bin/bun", str(bundle), "--verify-schema", "--manifest", str(manifest), "--bundle", str(bundle)],
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "CONTROL_PLANE_POSTGRES_URL": os.fsdecode(url)},
+        capture_output=True, text=True, timeout=20)
+    require(result.returncode == 0 and json.loads(result.stdout).get("outcome") == "compatible", "provisioner-schema-refused")
+    return {unit: pid}
+
+
 def verify_native(profile, release):
     binding = json.loads((release / "native/bundle-binding.json").read_text())
     require(binding["schema"] == "pirate-hns-native-bundle/1" and binding["profile"] == profile, "native-binding-mismatch")
     runtime_hash = binding["bun"]["runtime"]["binary_sha256"]
     require(sha256("/usr/local/bin/bun") == runtime_hash, "native-installed-runtime-mismatch")
+    if profile == "authority-provisioner":
+        pids = verify_provisioner(release, binding, runtime_hash)
+        for unit, pid in pids.items():
+            require(int(run(["systemctl", "show", unit, "-p", "MainPID", "--value"]).strip()) == pid,
+                    "native-pid-changed-during-verification")
+        return {"profile": profile, "historical_application_source": binding["source_commit"],
+                "bundle_sha256": binding["bundle_sha256"], "pids": pids, "schema_compatible": True}
     pids = {}
     if profile == "observer-driver":
         unit = "pirate-hns-observer-driver.service"
@@ -180,6 +292,7 @@ def verify_native(profile, release):
         chain = observer_rpc("getblockchaininfo", [])
         block = observer_rpc("getblockheader", [chain["bestblockhash"], True])
         validate_tip(chain, block, time.time())
+        pids.update(verify_reader_and_secondary(release, runtime_hash))
     else:
         status, _, body = exchange("http://127.0.0.1:4071/readyz")
         require(status == 204 and body == b"", "gateway-not-ready")
@@ -194,7 +307,7 @@ def verify_native(profile, release):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", choices=["observer-driver", "community-gateway"])
+    parser.add_argument("profile", choices=["observer-driver", "community-gateway", "authority-provisioner"])
     parser.add_argument("--deploy-root", type=Path, default=os.environ.get("DEPLOY_ROOT"))
     parser.add_argument("--no-heartbeat", action="store_true")
     args = parser.parse_args()

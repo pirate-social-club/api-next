@@ -27,6 +27,19 @@ PROFILES = {
         "bundle_sha256": "619c035de3b8588cd9a429d03df1e997febaf27ebfe5e55ac325e33b00548120",
         "bundle_name": "pirate-hns-platform-gateway.mjs",
     },
+    "authority-provisioner": {
+        "source_commit": "9fed1f47a8a97cac763249963f40f97163e3e1a5",
+        "reconstruction_base": "1cdaa010a494e8af37426142f6ed2dad93ff1225",
+        "source_patch": "production-provisioner-renewal.patch",
+        "source_patch_sha256": "4e6e88c124cdc2afd592e8b0a3d6b1ff170418e5f001396acbd604a6c5bb6e39",
+        "patched_files": {
+            "apps/hns-authority-provisioner/src/observe-root.ts": "4ba56a97aac16418e208ddb6bdfc656e613dcc0e7d4d48e9810a0f4d53d99b39",
+            "apps/hns-authority-provisioner/src/observe-root.test.ts": "532c27241ce1ab370b2d7aef7af081a1e8869071df328675451c0a14c1d087b8",
+        },
+        "compiler": "runtime",
+        "bundle_sha256": "35759a39dd22f406f36b8b05d987d0b581a0a403b63191feb1a0ec23a402b5ec",
+        "bundle_name": "pirate-hns-authority-provisioner.mjs",
+    },
 }
 BUN = {
     "compiler": {
@@ -75,6 +88,18 @@ def bun_binary(kind, work):
     return path
 
 
+def reconstruct_source(root, source, pin):
+    if "source_patch" not in pin:
+        return
+    patch = root / "scripts/hns-deployment" / pin["source_patch"]
+    if sha256(patch) != pin["source_patch_sha256"]:
+        raise RuntimeError("historical source patch checksum mismatch")
+    subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch)], cwd=source, check=True)
+    for name, expected in pin["patched_files"].items():
+        if sha256(source / name) != expected:
+            raise RuntimeError("reconstructed source checksum mismatch")
+
+
 def build(profile, output):
     root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=root):
@@ -84,19 +109,23 @@ def build(profile, output):
     pin = PROFILES[profile]
     with tempfile.TemporaryDirectory(prefix="hns-native-bundle-") as temporary:
         work = Path(temporary)
-        compiler = bun_binary("compiler", work)
         runtime = bun_binary("runtime", work)
+        compiler_kind = pin.get("compiler", "compiler")
+        compiler = runtime if compiler_kind == "runtime" else bun_binary("compiler", work)
+        archive_commit = pin.get("reconstruction_base", pin["source_commit"])
         subprocess.run([str(root / "scripts/hns-deployment/make-app-release.sh"), str(work),
-                        "--commit", pin["source_commit"]], cwd=root, check=True)
-        source = work / "app-releases" / pin["source_commit"]
+                        "--commit", archive_commit], cwd=root, check=True)
+        source = work / "app-releases" / archive_commit
         env = dict(os.environ, PATH=str(work) + ":" + os.environ.get("PATH", ""))
         (work / "bun").symlink_to(compiler)
         subprocess.run([str(compiler), "install", "--frozen-lockfile", "--ignore-scripts"],
                        cwd=source, env=env, check=True)
         subprocess.run(["sha256sum", "--check", "--status", ".pirate-deployment/SHA256SUMS"],
                        cwd=source, check=True)
-        if profile in ("observer-driver", "static-gateway"):
-            app = "hns-observer-driver" if profile == "observer-driver" else "hns-platform-gateway"
+        reconstruct_source(root, source, pin)
+        if profile != "community-gateway":
+            app = {"observer-driver": "hns-observer-driver", "static-gateway": "hns-platform-gateway",
+                   "authority-provisioner": "hns-authority-provisioner"}[profile]
             subprocess.run([str(compiler), "run", "--cwd", "apps/" + app, "build:vps-bundle"],
                            cwd=source, env=env, check=True)
             bundle = source / "apps" / app / "dist" / pin["bundle_name"]
@@ -120,7 +149,7 @@ def build(profile, output):
         shutil.copy2(bundle, staged / "bin" / pin["bundle_name"])
         shutil.copy2(runtime, staged / "bin/bun")
         binding = {"schema": "pirate-hns-native-bundle/1", "profile": profile,
-                   **pin, "bun": BUN}
+                   **pin, "bun": {"compiler": BUN[compiler_kind], "runtime": BUN["runtime"]}}
         if profile == "observer-driver":
             url = "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64"
             download(url, staged / "bin/cloudflared", CLOUDFLARED["binary_sha256"])
@@ -142,7 +171,9 @@ def main():
     if args.execute:
         build(args.profile, args.output.absolute())
     else:
-        print(json.dumps({"profile": args.profile, **PROFILES[args.profile], "bun": BUN,
+        pin = PROFILES[args.profile]
+        print(json.dumps({"profile": args.profile, **pin,
+                          "bun": {"compiler": BUN[pin.get("compiler", "compiler")], "runtime": BUN["runtime"]},
                           "cloudflared": CLOUDFLARED if args.profile == "observer-driver" else None,
                           "execute": False}))
 
