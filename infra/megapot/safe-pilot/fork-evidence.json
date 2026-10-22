@@ -1,0 +1,55 @@
+{
+  "observedAt": "2026-10-22T14:54:18.539Z",
+  "chainId": 8453,
+  "primaryRpc": "https://mainnet.base.org",
+  "secondaryRpc": "https://base-rpc.publicnode.com",
+  "blocks": [
+    {
+      "number": "52890000",
+      "hash": "0xc368be185f2d8efa866be84bd855a9dd70b4901305e10a364d47554439258d64",
+      "timestamp": "1792569347"
+    },
+    {
+      "number": "52944896",
+      "hash": "0x0a47ae96afd6d823bb209d74be32bc5d8395697c919be536ecd9b6ea16a7ea93",
+      "timestamp": "1792679139"
+    }
+  ],
+  "contracts": {
+    "jackpot": {
+      "address": "0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2",
+      "codeHash": "0x597f3a8e9360fbfc2e623243507ee9e8a66609003078ffc33d9013cb0607002d"
+    },
+    "nft": {
+      "address": "0x48FfE35AbB9f4780a4f1775C2Ce1c46185b366e4",
+      "codeHash": "0xf08234474c8484705b2e855d9602b6e229359839fc7bad67c9157a9d5dd53ca8"
+    },
+    "usdc": {
+      "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "codeHash": "0xa6705a10bb756b5dea144591118be77d7af0c3eee3bf2dfe2583dcb0364fefab"
+    },
+    "safe": {
+      "address": "0x41675C099F32341bf84BFc5382aF534df5C7461a",
+      "codeHash": "0x1fe2df852ba3299d6534ef416eefa406e56ced995bca886ab7a553e6d0c5e1c4"
+    },
+    "factory": {
+      "address": "0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67",
+      "codeHash": "0x50c3cdc4074750a7a974204a716c999edd37482f907608d960b2b025ee0b3317"
+    },
+    "multiSendCallOnly": {
+      "address": "0x9641d764fc13c8B624c04430C7356C1C7C8102e2",
+      "codeHash": "0xecd5bd14a08c5d2122379900b2f272bdf107a7e92423c10dd5fe3254386c9939"
+    },
+    "fallbackHandler": {
+      "address": "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99",
+      "codeHash": "0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9"
+    }
+  },
+  "usdcImplementation": {
+    "slot": "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+    "address": "0x2ce6311ddae708829bc0784c967b7d77d19fd779",
+    "codeHash": "0x11b75a237997ab8328f65b2d5a55c10f0346d0a175741ed42ddf4f2c66b9e873"
+  },
+  "secondaryScope": "Both block hashes agree. Archive code/state comparison unavailable: PublicNode returned -32602, Archive requests require a personal token. No credential was requested or restriction bypassed.",
+  "executionBoundary": "Transactions execute only inside Foundry local forks. Fixture funding and historical NFT transfer use local impersonation. No public-chain write, real sponsor funding, participant qualification or live payout is established."
+}
