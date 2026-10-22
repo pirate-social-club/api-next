@@ -13,6 +13,7 @@ import { moderatedDanceReviewRegistry } from "./dance-review.ts";
 import { endpoint } from "./endpoint.ts";
 import { guestParticipationRegistry } from "./guest-registry.ts";
 import { GetSharedSongMegapotSummaryV2 } from "./shared-song-megapot.ts";
+import { GetSharedSongMegapotParticipationV2 } from "./shared-song-megapot-participation.ts";
 import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 import { telegramLinkingRegistry } from "./telegram-linking.ts";
@@ -184,6 +185,7 @@ export const registry = {
   ...moderatedDanceReviewRegistry,
   ...moderatedDanceIntakeRegistry,
   GetSharedSongMegapotSummaryV2,
+  GetSharedSongMegapotParticipationV2,
   GetModeratedDanceCaptureOptions,
   GetModeratedDanceReferenceStatus,
   CreateModeratedDanceReference,

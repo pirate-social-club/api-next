@@ -1,6 +1,13 @@
 // Content, media, identity, community and rewards persistence measurements.
 // Provenance and public aggregate: postgres-test-suite-costs.ts.
 export const postgresPlatformSuiteCostEstimates = {
+  // Twelve source callbacks expand to17cases on one complete295-migration
+  // isolated schema. Local PostgreSQL17 whole-file observation3.64s; this
+  // rounded estimate affects shard planning only, never a test deadline.
+  "packages/platform-cf/src/shared-song-megapot-participation.pg.test.ts": {
+    sourceCallCount: 12,
+    milliseconds: 5000,
+  },
   // Three callbacks, one complete293->294 isolated upgrade. Local PostgreSQL17
   // whole-file bound is19.14s (paired run); round up for planning only.
   "packages/platform-cf/src/song-contribution-refusals.pg.test.ts": {

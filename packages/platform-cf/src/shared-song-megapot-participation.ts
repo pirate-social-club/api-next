@@ -35,7 +35,8 @@ const Packet = Schema.Struct({
     Schema.isMaxLength(3),
   ),
 });
-const decodePacket = Schema.decodeUnknownSync(Schema.NullOr(Packet), {
+const NotFoundPacket = Schema.Struct({ status: Schema.Literal("not_found") });
+const decodePacket = Schema.decodeUnknownSync(Schema.Union([Schema.Null, NotFoundPacket, Packet]), {
   onExcessProperty: "error",
 });
 
@@ -45,7 +46,8 @@ export const decodeSharedSongParticipation = Effect.fn("SharedSongParticipation.
   post: string,
 ) {
   const packet = yield* Effect.sync(() => decodePacket(value));
-  if (packet === null) return null;
+  if (packet === null) return { status: "found" as const, participation: null };
+  if ("status" in packet) return packet;
   const { projection } = packet;
   if (
     projection.target.community_id !== community ||
@@ -104,9 +106,12 @@ export const decodeSharedSongParticipation = Effect.fn("SharedSongParticipation.
       }),
     );
   }
-  return Schema.decodeUnknownSync(SharedSongMegapotParticipationV2, {
-    onExcessProperty: "error",
-  })({ ...projection, qualification_rules: rules });
+  return {
+    status: "found" as const,
+    participation: Schema.decodeUnknownSync(SharedSongMegapotParticipationV2, {
+      onExcessProperty: "error",
+    })({ ...projection, qualification_rules: rules }),
+  };
 });
 
 /** One STABLE read function uses the calling statement's snapshot. The

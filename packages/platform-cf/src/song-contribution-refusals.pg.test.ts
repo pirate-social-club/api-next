@@ -50,9 +50,19 @@ beforeAll(async () => {
   expect(prefix.result.currentVersion).toBe(
     "0293_moderated_dance_notification_recovery_bounds.sql",
   );
-  const upgrade = await runPostgresMigrations({ connectionString: connectionString(), migrations });
+  const upgrade = await runPostgresMigrations({
+    connectionString: connectionString(),
+    migrations: migrations.slice(0, boundary + 1),
+  });
   if (upgrade.dryRun) throw new Error("Expected actual isolated migration upgrade");
   expect(upgrade.result.currentVersion).toBe("0294_song_contribution_refusals.sql");
+  // Preserve the original refusal boundary, then qualify its behavior against
+  // any append-only successor selected by the current source checkout.
+  const current = await runPostgresMigrations({ connectionString: connectionString(), migrations });
+  if (current.dryRun) throw new Error("Expected actual current isolated schema");
+  const latest = migrations.at(-1);
+  if (latest === undefined) throw new Error("Migration plan required");
+  expect(current.result.currentVersion).toBe(latest.version);
 });
 afterAll(async () => {
   if (!connected) return;

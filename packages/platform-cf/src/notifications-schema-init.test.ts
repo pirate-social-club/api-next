@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0294 set", () => {
-  expect(migrations).toHaveLength(294);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0295 set", () => {
+  expect(migrations).toHaveLength(295);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 294 }, (_, i) => i + 1),
+    Array.from({ length: 295 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -158,7 +158,8 @@ test("the actual checksum loader supplies the complete contiguous repository 000
     checksum: "51d53c71b178f84ac730e6a7659319f61b3871d31c6976ee913616a6b87af8e3",
   });
   expect(migrations[292]?.version).toBe("0293_moderated_dance_notification_recovery_bounds.sql");
-  expect(migrations.at(-1)?.version).toBe("0294_song_contribution_refusals.sql");
+  expect(migrations[293]?.version).toBe("0294_song_contribution_refusals.sql");
+  expect(migrations.at(-1)?.version).toBe("0295_shared_song_megapot_participation.sql");
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {

@@ -268,6 +268,7 @@ import {
 } from "../../../packages/platform-cf/src/dance-moderated-intake-repository.ts";
 import { makeModeratedDanceMediaAccessStore } from "../../../packages/platform-cf/src/moderated-dance-media-access.ts";
 import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
+import { makeSharedSongMegapotParticipationReader } from "../../../packages/platform-cf/src/shared-song-megapot-participation.ts";
 import {
   makeTelegramServices,
   type TelegramBindings,
@@ -309,6 +310,7 @@ import { makeHnsEdgeStatusHandlers } from "./hns-edge-status-handlers.ts";
 import { makeProductionHnsEdgeStatusComposition } from "./hns-edge-status-production-composition.ts";
 import { makeProductionHnsHandleHostApiComposition } from "./hns-handle-host-api-production-composition.ts";
 import { makeHnsNamespaceDiscoveryHandlers } from "./hns-namespace-discovery-handlers.ts";
+import { makeSharedSongMegapotParticipationHandler } from "./shared-song-megapot-participation-handlers.ts";
 import { makeProductionHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeHnsRootImportHandlers } from "./hns-root-import-handlers.ts";
@@ -1928,6 +1930,7 @@ export async function createProductionHttpWorker(
   const privateMediaForAccount = (account: string) =>
     makeModeratedDanceMediaAccessStore(controlPlane, account);
   const readSharedPotSummary = makeSharedSongMegapotSummaryReader(controlPlane);
+  const readSharedPotParticipation = makeSharedSongMegapotParticipationReader(controlPlane);
   const worker = createHttpWorker({
     ...(guestStudy === null ? {} : { guestStudy }),
     ...spacesRuntime,
@@ -1939,6 +1942,10 @@ export async function createProductionHttpWorker(
     hnsHandleHostApi,
     hnsEdgeStatus,
     handlers: {
+      GetSharedSongMegapotParticipationV2: makeSharedSongMegapotParticipationHandler(
+        readSharedPotParticipation,
+        config.MEGAPOT_REWARDS_ENABLED,
+      ),
       GetSharedSongMegapotSummaryV2: async (ctx) => {
         if (ctx.principal?.kind !== "user")
           throw new AuthError({ message: "Authentication required" });

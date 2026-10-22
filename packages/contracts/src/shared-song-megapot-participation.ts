@@ -69,7 +69,13 @@ export const SharedSongParticipantCreditV2 = Schema.Struct({
   amount_atomic: AtomicV2,
   state: RewardCreditStateV1,
   claim: RewardCreditClaimV1,
-});
+}).check(
+  Schema.makeFilter((value) =>
+    (value.claim.status === "accepted") !== (value.claim.payout_status !== null)
+      ? "Payout progress requires an accepted participant claim"
+      : undefined,
+  ),
+);
 export type SharedSongParticipantCreditV2 = typeof SharedSongParticipantCreditV2.Type;
 
 export const SharedSongParticipantStandingV2 = Schema.Struct({

@@ -53,6 +53,7 @@ export * from "./rewards-qualification.ts";
 export * from "./rewards-song-contributions-v2.ts";
 export * from "./rewards-song-offers.ts";
 export * from "./shared-song-megapot.ts";
+export * from "./shared-song-megapot-participation.ts";
 export * from "./song-library.ts";
 export * from "./song-owner-video-policy.ts";
 export * from "./song-playback.ts";
