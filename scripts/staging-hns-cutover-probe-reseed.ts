@@ -11,17 +11,12 @@ import {
   SeedRefusal,
 } from "./staging-hns-cutover-probe-seed.ts";
 import {
-  HNS_STAGING_BRANCH_ID,
-  HNS_STAGING_BRANCH_NAME,
-  HNS_STAGING_DATABASE_ID,
-  HNS_STAGING_PROVIDER_DATABASE_NAME,
-  HNS_STAGING_SQL_DATABASE,
-} from "./staging-hns-post-migration-contract.ts";
-import {
-  collectStagingPostMigrationTargetBinding,
-  readHnsPinnedMigrations,
-  readStagingMigrationLedger,
-} from "./staging-hns-post-migration-runtime.ts";
+  collectPairedStagingReleaseTarget,
+  PAIRED_STAGING_RELEASE_TARGET,
+  readReviewedReleaseMigrations,
+} from "./staging-hns-paired-release-target.ts";
+import { HNS_STAGING_SQL_DATABASE } from "./staging-hns-post-migration-contract.ts";
+import { readStagingMigrationLedger } from "./staging-hns-post-migration-runtime.ts";
 
 /**
  * Guarded re-seed of the synthetic cutover readiness probe for a new staging
@@ -41,7 +36,8 @@ import {
  * attempt. The first-seed command admits only the never-seeded state, so a
  * later release needs this separate operation. It reads the release manifest
  * the operator reviewed, proves the bundle beside it matches, requires the
- * staging ledger to equal this source tree's migrations, and admits exactly
+ * paired staging ledger to equal the manifest's accepted source migrations,
+ * verifies those SQL bytes against that source's checksums, and admits exactly
  * one of two identity states: the previous attempt's completed probe, or a
  * named failed attempt whose only fault was the attempt mismatch. Any queued
  * or leased probe job, any other probe or identity shape, or a reused attempt
@@ -326,16 +322,12 @@ export async function runReseedCommand(
   const adminRaw = environment.CONTROL_PLANE_POSTGRES_ADMIN_URL;
   if (adminRaw === undefined || adminRaw.length === 0 || adminRaw.trim() !== adminRaw)
     throw new SeedRefusal("admin_credential_missing");
-  const target = await collectStagingPostMigrationTargetBinding(adminRaw).catch(() => {
+  const target = await collectPairedStagingReleaseTarget().catch(() => {
     throw new SeedRefusal("provider_target_unproven");
   });
   if (
-    target.database_id !== HNS_STAGING_DATABASE_ID ||
-    target.database_name !== HNS_STAGING_PROVIDER_DATABASE_NAME ||
-    target.branch_id !== HNS_STAGING_BRANCH_ID ||
-    target.branch_name !== HNS_STAGING_BRANCH_NAME ||
-    target.branch_ready !== true ||
-    target.sql_database !== HNS_STAGING_SQL_DATABASE
+    target.database_id !== PAIRED_STAGING_RELEASE_TARGET.databaseId ||
+    target.branch_id !== PAIRED_STAGING_RELEASE_TARGET.branchId
   )
     throw new SeedRefusal("provider_target_mismatch");
   if (command.execute && target.migrator_role !== command.expected_admin_role)
@@ -343,12 +335,12 @@ export async function runReseedCommand(
   const normalized = normalizePostgresConnectionString(adminRaw);
   const [ledger, source] = await Promise.all([
     readStagingMigrationLedger(normalized),
-    readHnsPinnedMigrations(),
+    readReviewedReleaseMigrations(manifestText),
   ]).catch(() => {
     throw new SeedRefusal("ledger_unreadable");
   });
-  // The release is built from this source tree, so its migrations are the
-  // ledger it was reviewed against.
+  // Tooling may be newer than the accepted release. Require that release's
+  // exact complete ledger; never migrate the paired recovery branch here.
   requireExactLedger(ledger, source);
 
   const client = new Client({ connectionString: normalized, connectionTimeoutMillis: 10_000 });
