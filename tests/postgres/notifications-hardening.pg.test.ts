@@ -12,9 +12,11 @@ import { createActivePersonaFixture } from "../../packages/platform-cf/src/perso
 import { registerNotificationAccountErasureCases } from "./notifications-account-erasure.pg-cases.ts";
 import {
   gate,
+  installedNotificationRecoverySql,
   pinnedRuntime,
   seedScaleHistory,
   transactionClient,
+  verifyRecoveryFamilyOrdering,
 } from "./notifications-hardening-fixture.ts";
 import { exerciseNotificationRoles } from "./notifications-roles-fixture.ts";
 
@@ -446,11 +448,23 @@ suite("notification review regressions", () => {
           cursor,
         ])
       ).rows[0]["QUERY PLAN"];
-      const recovery = (
-        await f.admin.query(
-          `EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${NOTIFICATION_RECOVERY_FACTS_SQL}`,
-        )
-      ).rows[0]["QUERY PLAN"];
+      const recoverySql = await installedNotificationRecoverySql(
+        f.admin,
+        (await f.admin.query<{ schema: string }>("SELECT current_schema() AS schema")).rows[0]!
+          .schema,
+      );
+      await verifyRecoveryFamilyOrdering(f.admin, recoverySql);
+      // Prove this plan source and the actual runtime function select the same
+      // bounded original locators before any recovery mutation occurs.
+      expect(
+        (await f.admin.query<{ event_id: string }>(recoverySql)).rows.map((row) => row.event_id),
+      ).toEqual(
+        (
+          await f.admin.query<{ outbox_event_id: string }>(NOTIFICATION_RECOVERY_FACTS_SQL)
+        ).rows.map((row) => row.outbox_event_id),
+      );
+      const recovery = (await f.admin.query(`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${recoverySql}`))
+        .rows[0]["QUERY PLAN"];
       const artifact = `.wrangler/adopted-source-agent/review-fixes-query-plans-${crypto.randomUUID()}.json`;
       await Bun.write(
         artifact,
@@ -530,9 +544,7 @@ suite("notification review regressions", () => {
         ])
       ).rows[0]["QUERY PLAN"];
       const maintainedRecovery = (
-        await f.admin.query(
-          `EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${NOTIFICATION_RECOVERY_FACTS_SQL}`,
-        )
+        await f.admin.query(`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${recoverySql}`)
       ).rows[0]["QUERY PLAN"];
       const recoveryIndex = walk(maintainedRecovery[0].Plan).find(
         (node) => node["Index Name"] === "notification_publication_source_idx",

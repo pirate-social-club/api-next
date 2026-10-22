@@ -24535,11 +24535,13 @@ CREATE FUNCTION pending_recipient_notifications_v2() RETURNS TABLE(outbox_event_
     SET search_path FROM CURRENT
     AS $$
  SELECT pending.event_id FROM (
-  SELECT fact.outbox_event_id AS event_id,fact.created_at FROM content_publication_outbox fact
+  (SELECT fact.outbox_event_id AS event_id,fact.created_at FROM content_publication_outbox fact
    WHERE fact.event_type='comment_notification' AND NOT fact.inbox_delivery_recorded
+   ORDER BY fact.created_at,fact.outbox_event_id LIMIT 50)
   UNION ALL
-  SELECT result.event_id,result.occurred_at FROM dance_moderated_result_events_v1 result
+  (SELECT result.event_id,result.occurred_at FROM dance_moderated_result_events_v1 result
    WHERE result.delivered_at IS NULL
+   ORDER BY result.occurred_at,result.event_id LIMIT 50)
  ) pending ORDER BY pending.created_at,pending.event_id LIMIT 50
 $$;
 DO $baseline_function_path$
@@ -56911,6 +56913,8 @@ CREATE INDEX dance_reference_outbox_claim_idx ON dance_reference_outbox USING bt
 CREATE INDEX dance_reference_processing_attempts_lease_idx ON dance_reference_processing_attempts USING btree (state, lease_expires_at, created_at) WHERE (state = 'leased'::text);
 
 CREATE UNIQUE INDEX dance_replay_fingerprint_platform_unique ON dance_replay_fingerprint_claims USING btree (fingerprint_policy_version, fingerprint_key_version, match_scope, whole_sequence_fingerprint) WHERE (match_scope = 'platform_wide'::text);
+
+CREATE INDEX dance_result_outstanding_order_v1_idx ON dance_moderated_result_events_v1 USING btree (occurred_at, event_id) WHERE (delivered_at IS NULL);
 
 CREATE INDEX dance_sessions_created_at ON dance_sessions USING btree (created_at);
 

@@ -292,6 +292,7 @@
     "0289_moderated_dance_maintenance.sql": "bdaf036c35b8eeae483edf0e121ef96c6abd4470f81dc97eac8f5f4a0d378a1e",
     "0290_moderated_dance_private_playback.sql": "23c3bb05e5bb8a3da5859cc6453fc0fa11b9bd9ae39cd61628ff06f319e54bb3",
     "0291_moderated_dance_purpose_grants.sql": "d922723aa32c2ff483336c1e6ec11c200cec3957191bddc09499787e19edcece",
-    "0292_shared_song_megapot_summary.sql": "64437b69fa1553d22f2d76103101fb6a6ff76be7be36c34f1b3a774c15f42f5c"
+    "0292_shared_song_megapot_summary.sql": "64437b69fa1553d22f2d76103101fb6a6ff76be7be36c34f1b3a774c15f42f5c",
+    "0293_moderated_dance_notification_recovery_bounds.sql": "a7297641de0dde1fc5f3e5d5ea37e690c102c73f911f972a30a20899bea0b7b1"
   }
 }
