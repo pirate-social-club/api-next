@@ -159,6 +159,10 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
         prepareModeratedDancePolicyPublication({
           ...f.publication,
           policy_id: "rotated-context-policy",
+          profile: {
+            ...f.publication.profile,
+            maximumReadsPerWindow: f.facts.profile.maximumReadsPerWindow + 5,
+          },
           policy: { ...f.publication.policy, rubricVersion: "rotated-rubric" },
           disclosure: {
             ...f.publication.disclosure,
@@ -177,15 +181,31 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
         await admin.query("SELECT sum(reads)::INTEGER n FROM dance_moderated_intake_usage_v1")
       ).rows[0]?.n;
       expect(readCount).toBe(2);
-      for (let n = 2; n < f.facts.profile.maximumReadsPerWindow; n++)
-        await Effect.runPromise(f.store.captureContext(f.facts.communityId, session.session_id));
-      await expect(
-        Effect.runPromise(f.store.captureContext(f.facts.communityId, session.session_id)),
-      ).rejects.toMatchObject({ reason: "unavailable" });
-      expect(
-        (await admin.query("SELECT sum(reads)::INTEGER n FROM dance_moderated_intake_usage_v1"))
-          .rows[0]?.n,
-      ).toBe(f.facts.profile.maximumReadsPerWindow);
+      let accepted = 0,
+        limited = false;
+      // This real-clock case can cross one window boundary. A reset is valid;
+      // every bucket must still enforce the ORIGINAL captured limit, including
+      // after the current policy increases it. No provider/runtime gate is waived.
+      for (let n = 0; n < 2 * f.facts.profile.maximumReadsPerWindow; n++) {
+        try {
+          await Effect.runPromise(f.store.captureContext(f.facts.communityId, session.session_id));
+          accepted++;
+        } catch (error) {
+          expect(error).toMatchObject({ reason: "unavailable" });
+          limited = true;
+          break;
+        }
+      }
+      expect(limited).toBe(true);
+      const buckets = (
+        await admin.query(
+          "SELECT reads::INTEGER n FROM dance_moderated_intake_usage_v1 WHERE account_id=$1 ORDER BY window_start_ms",
+          [f.facts.accountId],
+        )
+      ).rows.map((row) => Number(row.n));
+      expect(buckets.every((n) => n <= f.facts.profile.maximumReadsPerWindow)).toBe(true);
+      expect(buckets).toContain(f.facts.profile.maximumReadsPerWindow);
+      expect(buckets.reduce((sum, n) => sum + n, 0)).toBe(2 + accepted);
     }));
 
   test("final snapshot denies persona revocation committed while the captured usage row is locked", async () =>

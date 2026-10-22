@@ -4,7 +4,7 @@ import { makeModeratedDanceReferenceRuntime } from "./moderated-dance-reference-
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientLike } from "./postgres.ts";
 import { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
-function fixture() {
+function fixture(finished = false) {
   const { profile } = moderatedDanceIntakeFacts();
   const hash = "a".repeat(64);
   const work = {
@@ -44,13 +44,14 @@ function fixture() {
       sha256: hash,
     },
     providerTag: "private-reference-choreo",
-    providerJobId: null,
+    providerJobId: finished ? "job-known" : null,
     normalizationClaimed: false,
     deadlineMs: 61000,
   };
   const providerCalls: string[] = [],
     observations: unknown[] = [];
-  let consumed = false,
+  const publications: unknown[] = [];
+  let consumed = finished,
     lostCommit = false,
     pendingLostCommit = false;
   const driver: PostgresClientLike = {
@@ -70,11 +71,18 @@ function fixture() {
           lostCommit = false;
           pendingLostCommit = true;
         }
-      } else if (q.text.includes("record_moderated_dance_reference_provider_v1"))
+      } else if (q.text.includes("publish_moderated_dance_reference_v1"))
+        publications.push({
+          document: JSON.parse(String(q.values?.[2])),
+          claims: JSON.parse(String(q.values?.[3])),
+        });
+      else if (q.text.includes("record_moderated_dance_reference_provider_v1"))
         observations.push(JSON.parse(String(q.values?.[2])));
       else if (
         q.text.startsWith("SELECT ") &&
-        !/set_config\(|issue_moderated_dance_reference_source_v1/u.test(q.text)
+        !/set_config\(|bind_moderated_dance_replay_keys_v1|issue_moderated_dance_reference_source_v1/u.test(
+          q.text,
+        )
       )
         throw new Error(`unexpected offline query ${q.text}`);
       return q.text.startsWith("SELECT ")
@@ -97,9 +105,51 @@ function fixture() {
         providerCalls.push(`${init.method} ${url}`);
         if (init.method === "POST")
           throw new Error("offline response lost; provider may have accepted");
-        return new Response(JSON.stringify({ data: [] }));
+        return new Response(
+          JSON.stringify({
+            data: finished
+              ? {
+                  id: "job-known",
+                  tag: work.providerTag,
+                  status: "finished",
+                  tasks: [
+                    {
+                      name: "export-dance",
+                      operation: "export/url",
+                      status: "finished",
+                      result: {
+                        files: [
+                          "recording.framehash",
+                          "frame-0.jpg",
+                          "frame-1.jpg",
+                          "frame-2.jpg",
+                        ].map((filename) => ({
+                          filename,
+                          url: `https://storage.cloudconvert.com/${filename}`,
+                        })),
+                      },
+                    },
+                  ],
+                }
+              : [],
+          }),
+        );
       },
     }),
+    send: async () =>
+      new Response(
+        [
+          "#hash: SHA256",
+          `#tb 0: 1/${profile.normalizationFps}`,
+          `#dimensions 0: ${profile.normalizationWidth}x${profile.normalizationHeight}`,
+          ...Array.from(
+            { length: 6 * profile.normalizationFps },
+            (_, i) =>
+              `0, ${i}, ${i}, 1, ${profile.normalizationWidth * profile.normalizationHeight}, ${"d".repeat(64)}`,
+          ),
+          "",
+        ].join("\n"),
+      ),
     replayKeys: new Map([[profile.replayKeyEpoch, new Uint8Array(32).fill(1)]]),
     gatewayOrigin: "https://source.test",
     runtimeRevision: profile.mediaRuntimeRevision,
@@ -110,6 +160,7 @@ function fixture() {
     processor,
     providerCalls,
     observations,
+    publications,
     loseCommit: () => {
       lostCommit = true;
     },
@@ -117,6 +168,22 @@ function fixture() {
 }
 
 describe("canonical reference production with offline SQL/provider ports", () => {
+  test("validated public frame hashes reach the immutable descriptor publication with both matching claims", async () => {
+    const f = fixture(true);
+    expect(await f.processor.run()).toEqual({ outcome: "ready" });
+    expect(f.providerCalls.every((c) => c.startsWith("GET"))).toBe(true);
+    expect(f.publications).toEqual([
+      {
+        document: expect.objectContaining({
+          publicFrames: Array.from({ length: 60 }, () => "d".repeat(64)),
+        }),
+        claims: [
+          expect.objectContaining({ kind: "raw", epoch: "test-epoch" }),
+          expect.objectContaining({ kind: "body", epoch: "test-epoch" }),
+        ],
+      },
+    ]);
+  });
   test("ambiguous POST is durably unknown; repeated absent lookup never creates a second job or segment", async () => {
     const f = fixture();
     expect(await f.processor.run()).toEqual({ outcome: "unknown" });

@@ -9,6 +9,7 @@ import {
   moderatedDanceReplayDigests,
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
+import { bindModeratedDanceReplayKeys } from "./moderated-dance-public-replay.ts";
 import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 import { makeSongVideoPcmExcerpt } from "./song-video-pcm-excerpt.ts";
 import { makeR2SongVideoPcmRangeReader } from "./song-video-pcm-r2-range.ts";
@@ -100,6 +101,7 @@ export function makeModeratedDanceReferenceRuntime(
   const invokeVoid = (label: string, text: string, values: readonly unknown[]) =>
     call(label, `${text} AS packet`, values);
   const run = async () => {
+    await bindModeratedDanceReplayKeys(call, input.replayKeys);
     const raw = await call(
       "dance.reference.media.claim",
       "SELECT claim_moderated_dance_reference_media_v1($1,$2,$3::jsonb) AS packet",
@@ -306,7 +308,11 @@ export function makeModeratedDanceReferenceRuntime(
       [
         w.choreographyId,
         w.token,
-        JSON.stringify({ referenceTermsHash, segmentTermsHash: segment.segmentTermsHash }),
+        JSON.stringify({
+          referenceTermsHash,
+          segmentTermsHash: segment.segmentTermsHash,
+          publicFrames: frameHashes,
+        }),
         JSON.stringify(digests.claims),
       ],
     );

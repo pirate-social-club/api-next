@@ -28,6 +28,7 @@ import {
   moderatedDanceReplayDigests,
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
+import { bindModeratedDanceReplayKeys } from "./moderated-dance-public-replay.ts";
 import { sha256Hex } from "./r2-upload-signing.ts";
 import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 import {
@@ -711,6 +712,7 @@ export function makeModeratedDanceMediaRuntime(
     return initialize(work);
   }
   const run = async () => {
+    await bindModeratedDanceReplayKeys(call, input.replayKeys);
     await invokeVoid(
       "dance.media.readiness",
       "SELECT announce_moderated_dance_processor_v1($1,$2,$3::jsonb)",

@@ -1,6 +1,5 @@
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
-import { Schema } from "effect";
 import {
   MODERATED_DANCE_CLOUDCONVERT_REVISION,
   makeModeratedDanceCloudConvertProbe,
@@ -8,6 +7,7 @@ import {
 } from "../../../packages/platform-cf/src/moderated-dance-cloudconvert-probe.ts";
 import { makeModeratedDanceMaintenance } from "../../../packages/platform-cf/src/moderated-dance-maintenance.ts";
 import { makeModeratedDanceMediaRuntime } from "../../../packages/platform-cf/src/moderated-dance-media-runtime.ts";
+import { decodeModeratedDanceReplayKeys } from "../../../packages/platform-cf/src/moderated-dance-public-replay.ts";
 import { makeModeratedDanceReferenceRuntime } from "../../../packages/platform-cf/src/moderated-dance-reference-runtime.ts";
 import { makeSongVideoCloudConvertTransport } from "../../../packages/platform-cf/src/song-video-cloudconvert-transport.ts";
 
@@ -36,7 +36,16 @@ export function makeModeratedDanceMaintenanceProcessor(env: ModeratedDanceMediaE
     env.MEDIA_IMMUTABLE_ORIGINALS === undefined
   )
     return null;
+  let keys: ReadonlyMap<string, Uint8Array> | undefined;
+  try {
+    if (env.DANCE_MODERATED_REPLAY_KEYS !== undefined)
+      keys = decodeModeratedDanceReplayKeys(env.DANCE_MODERATED_REPLAY_KEYS);
+  } catch {
+    // Keep nonfinancial erasure composed when this optional ring is invalid.
+    keys = undefined;
+  }
   return makeModeratedDanceMaintenance({
+    replayKeys: keys,
     runtime: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
     ingress: env.MEDIA_INGRESS,
     originals: env.MEDIA_IMMUTABLE_ORIGINALS,
@@ -65,17 +74,7 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
     env.DANCE_MODERATED_REPLAY_KEYS === undefined
   )
     return null;
-  const encoded = Schema.decodeUnknownSync(
-    Schema.Record(Schema.NonEmptyString, Schema.String.check(Schema.isMaxLength(512))),
-    { onExcessProperty: "error" },
-  )(JSON.parse(env.DANCE_MODERATED_REPLAY_KEYS));
-  const keys = new Map<string, Uint8Array>();
-  for (const [epoch, value] of Object.entries(encoded)) {
-    const key = Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
-    if (key.length < 32 || key.length > 256) throw new Error("Private replay keyring unavailable");
-    keys.set(epoch, key);
-  }
-  if (keys.size === 0) return null;
+  const keys = decodeModeratedDanceReplayKeys(env.DANCE_MODERATED_REPLAY_KEYS);
   const originals = env.MEDIA_IMMUTABLE_ORIGINALS,
     runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
   // These are supported code revisions, not an operational policy admission.

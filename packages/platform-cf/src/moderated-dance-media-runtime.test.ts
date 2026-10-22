@@ -96,7 +96,7 @@ async function fixture() {
         }
       } else if (
         q.text.startsWith("SELECT ") &&
-        !/set_config\(|announce_moderated_dance_processor_v1|issue_moderated_dance_source_v1|mark_moderated_dance_media_unknown_v1/u.test(
+        !/set_config\(|bind_moderated_dance_replay_keys_v1|announce_moderated_dance_processor_v1|issue_moderated_dance_source_v1|mark_moderated_dance_media_unknown_v1/u.test(
           q.text,
         )
       )

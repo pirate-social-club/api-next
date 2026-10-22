@@ -125,8 +125,11 @@ suite("native atomic private replay retention", () => {
           .rows,
       ).toEqual([{ normalized_digest: null }]);
       expect(
-        (await admin.query("SELECT count(*)::INTEGER n FROM dance_moderated_replay_claims_v1"))
-          .rows[0],
+        (
+          await admin.query(
+            "SELECT count(*)::INTEGER n FROM dance_moderated_replay_claims_v1 WHERE source_kind='attempt'",
+          )
+        ).rows[0],
       ).toEqual({ n: 0 });
       expect(
         (

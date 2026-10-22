@@ -4,12 +4,14 @@ import { canonicalBodyHash } from "../../application/src/use-cases/content/commo
 import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
 import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
 import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
+import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 export async function seedModeratedDanceIntake(
   admin: Client,
   connection: string,
   runtimeRevision?: string,
+  options: Readonly<{ publicReplay?: boolean }> = {},
 ) {
   const facts = moderatedDanceIntakeFacts(),
     f =
@@ -127,6 +129,32 @@ export async function seedModeratedDanceIntake(
   await admin.query("SELECT publish_moderated_dance_policy_v1($1::jsonb)", [
     JSON.stringify(publication),
   ]);
+  const replayKeys = new Map(
+    f.profile.replayCompatibleEpochs.map((epoch) => [epoch, new Uint8Array(32).fill(1)] as const),
+  );
+  const publicFrames = Array.from(
+    { length: Math.ceil((f.bodyDurationMs * f.profile.normalizationFps) / 1000) },
+    () => "d".repeat(64),
+  );
+  if (options.publicReplay !== false) {
+    // Explicit synthetic PUBLIC descriptor and actual keyed index, never a
+    // fallback for pre-upgrade schema or evidence of a provider recording.
+    await admin.query(
+      "INSERT INTO dance_moderated_public_replay_v1(choreography_id,revision,scope,normalization_hash,source_sha256,frames) VALUES($1,1,$2,$3,$4,$5::jsonb)",
+      [
+        f.choreographyId,
+        f.profile.replayScope,
+        publication.policy.normalizationHash,
+        hash,
+        JSON.stringify(publicFrames),
+      ],
+    );
+    const publicReplay = makeModeratedDancePublicReplay({
+      call: async (_label, sql, values) => (await admin.query(sql, [...values])).rows[0]?.packet,
+      keys: replayKeys,
+    });
+    await publicReplay.run();
+  }
   const runtime = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeControlPlaneModeratedDanceIntakeStore(runtime, f.accountId, {
     signer: {
@@ -155,5 +183,15 @@ export async function seedModeratedDanceIntake(
       JSON.stringify(f.profile.replayCompatibleEpochs),
     ]);
   };
-  return { store, create, ready, facts: f, publication, connection, runtime };
+  return {
+    store,
+    create,
+    ready,
+    facts: f,
+    publication,
+    connection,
+    runtime,
+    replayKeys,
+    publicFrames,
+  };
 }

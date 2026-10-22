@@ -11,6 +11,7 @@ import {
 import { historicalReview, runBlockedQuery } from "./moderated-dance-authority.pg-fixture.ts";
 import { seedModeratedDanceIntake as seed } from "./moderated-dance-intake.pg-fixture.ts";
 import { makeModeratedDanceMaintenance } from "./moderated-dance-maintenance.ts";
+import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
 import { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
 // Real PostgreSQL/retained transactions with synthetic private-review lineage
@@ -62,7 +63,7 @@ async function withFreshFixture(use: FixtureUse, beforeUpgrade?: FixtureUse) {
       migrations: prefix,
       expectedLedger: [],
     });
-    const f = await seed(admin, scoped.toString()),
+    const f = await seed(admin, scoped.toString(), undefined, { publicReplay: !beforeUpgrade }),
       review = await historicalReview(f, admin, Date.now() + 604_790_000);
     if (beforeUpgrade) {
       await beforeUpgrade(f, admin, review.capture.uploadId);
@@ -380,6 +381,33 @@ suite("moderated Dance provider disposition", () => {
         await expect(
           client.query("SELECT * FROM dance_moderated_replay_retirements_v1"),
         ).rejects.toMatchObject({ code: "42501" });
+        for (const table of [
+          "dance_moderated_public_replay_v1",
+          "dance_moderated_public_replay_indexes_v1",
+          "dance_moderated_replay_epochs_v1",
+          "dance_moderated_replay_epoch_retirements_v1",
+        ])
+          await expect(client.query(`SELECT * FROM ${table}`)).rejects.toMatchObject({
+            code: "42501",
+          });
+        await expect(
+          client.query("SELECT retire_moderated_dance_replay_epoch_v1('unused','forbidden')"),
+        ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+          client.query("SELECT moderated_dance_public_replay_ready_v1('scope','hash','epoch')"),
+        ).rejects.toMatchObject({ code: "42501" });
+        const confined = client;
+        expect(
+          await makeModeratedDancePublicReplay({
+            call: async (_label, sql, values) =>
+              (await confined.query(sql, [...values])).rows[0]?.packet,
+            keys: f.replayKeys,
+          }).run(),
+        ).toEqual({ outcome: "empty" });
+        expect(
+          (await client.query("SELECT drain_moderated_dance_compatible_replay_v1() packet")).rows[0]
+            ?.packet,
+        ).toEqual({ removedClaims: 0, removedPublicIndexes: 0 });
         expect(
           (await client.query("SELECT drain_moderated_dance_replay_v1() packet")).rows[0]?.packet,
         ).toEqual({ retiredAttempts: 0 });
