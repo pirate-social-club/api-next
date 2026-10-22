@@ -569,32 +569,32 @@ function compatibleOrigin(
   );
 }
 
-const consistentCommittedTerms = Effect.fn("SongMegapotContribution.consistentCommittedTerms")(
-  function* (terms: TermsV2, target: CommittedTargetV2) {
-    if (
-      terms.qualification_bindings.some(
-        (b) => b.offer_id !== target.offer_id || b.leg_id !== target.pool_leg_id,
-      )
+export const consistentCommittedTerms = Effect.fn(
+  "SongMegapotContribution.consistentCommittedTerms",
+)(function* (terms: TermsV2, target: CommittedTargetV2) {
+  if (
+    terms.qualification_bindings.some(
+      (b) => b.offer_id !== target.offer_id || b.leg_id !== target.pool_leg_id,
     )
-      return false;
-    const ordered = [...terms.qualification_bindings].sort(
-      (a, b) =>
-        ["study", "karaoke", "dance"].indexOf(a.activity) -
-        ["study", "karaoke", "dance"].indexOf(b.activity),
-    );
-    // Terms commits the full binding payload through this separate acyclic hash.
-    const bindingHash = yield* digestFundingPreimageV2(
-      fundingHashPreimageV2(
-        "pirate.shared-song-qualification-bindings.v1",
-        ordered.map(projectQualificationBinding),
-      ),
-    );
-    return (
-      bindingHash === terms.qualification_bindings_hash &&
-      (yield* digestFundingPreimageV2(committedTermsPreimageV2(terms))) === terms.terms_hash
-    );
-  },
-);
+  )
+    return false;
+  const ordered = [...terms.qualification_bindings].sort(
+    (a, b) =>
+      ["study", "karaoke", "dance"].indexOf(a.activity) -
+      ["study", "karaoke", "dance"].indexOf(b.activity),
+  );
+  // Terms commits the full binding payload through this separate acyclic hash.
+  const bindingHash = yield* digestFundingPreimageV2(
+    fundingHashPreimageV2(
+      "pirate.shared-song-qualification-bindings.v1",
+      ordered.map(projectQualificationBinding),
+    ),
+  );
+  return (
+    bindingHash === terms.qualification_bindings_hash &&
+    (yield* digestFundingPreimageV2(committedTermsPreimageV2(terms))) === terms.terms_hash
+  );
+});
 
 const createContribution = Effect.fn("SongMegapotContribution.create")(function* (
   tx: SongContributionTransaction,
