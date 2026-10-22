@@ -262,16 +262,19 @@ suite("native Create refusal resolution on the maintained schema", () => {
   test("a separate restricted LOGIN receives only the admitted function capability", async () =>
     fixture(async ({ admin, connectionString, schema }) => {
       const role = `refusal_http_${crypto.randomUUID().replaceAll("-", "")}`;
-      await admin.query(`CREATE ROLE "${role}" LOGIN`);
+      // Test-only credential: the same restricted LOGIN must also work when
+      // the CI fixture requires SCRAM rather than local-socket trust.
+      const fixturePassword = crypto.randomUUID().replaceAll("-", "");
+      await admin.query(`CREATE ROLE "${role}" LOGIN PASSWORD '${fixturePassword}'`);
       roles.add(role);
       await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${role}"`);
       await admin.query("SELECT bind_reward_contribution_purpose_v2($1,'http_commands')", [role]);
       const restrictedUrl = new URL(connectionString);
       restrictedUrl.username = role;
-      restrictedUrl.password = "";
+      restrictedUrl.password = fixturePassword;
       const restricted = new Client({ connectionString: restrictedUrl.toString() });
-      await restricted.connect();
       try {
+        await restricted.connect();
         expect((await restricted.query("SELECT session_user AS role")).rows[0].role).toBe(role);
         await expect(
           restricted.query("SELECT * FROM song_megapot_contribution_commands_v2"),
