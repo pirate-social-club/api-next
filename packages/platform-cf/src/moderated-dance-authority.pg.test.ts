@@ -26,16 +26,18 @@ const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 const suite = url === undefined ? describe.skip : describe;
-const owner = createReusablePostgresTestSchemaOwner();
+const reusableSchema = createReusablePostgresTestSchemaOwner();
 setDefaultTimeout(30_000);
-afterAll(() => owner.dispose());
+afterAll(async () => {
+  await reusableSchema.dispose();
+});
 const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
 
 async function withFixture(
   use: (f: Awaited<ReturnType<typeof seed>>, admin: Client) => Promise<void>,
 ) {
   if (url === undefined) throw new Error("Isolated target not configured");
-  return owner.run({
+  return reusableSchema.run({
     baseConnectionString: url,
     schemaName: "moderated_dance_authority_pg_v1",
     use: async ({ admin, schema }) => {

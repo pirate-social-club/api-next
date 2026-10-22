@@ -244,15 +244,15 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
     await admin.query(`SET search_path TO "${schema}"`);
     const migrations = await loadPostgresMigrations();
     const upgradeIndex = migrations.findIndex(
-      (entry) => entry.version === "0276_reward_wallet_nonce_authority_v2.sql",
+      (entry) => entry.version === "0277_reward_wallet_nonce_authority_v2.sql",
     );
     const upgrade = migrations[upgradeIndex];
     if (
-      upgradeIndex !== 275 ||
+      upgradeIndex !== 276 ||
       upgrade === undefined ||
-      migrations[upgradeIndex - 1]?.version !== "0275_video_root_comment_ordering.sql"
+      migrations[upgradeIndex - 1]?.version !== "0276_wallet_send_palm_assertion_lock.sql"
     )
-      throw new Error("The maintained275/276 migration boundary is required");
+      throw new Error("The maintained276/277 migration boundary is required");
     const prefix = migrations.slice(0, upgradeIndex);
     const applied = await runPostgresMigrations({
       connectionString: scoped,
@@ -260,7 +260,7 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
       expectedLedger: [],
     });
     if (applied.dryRun) throw new Error("Nonce upgrade fixture requires an actual owned database");
-    expect(applied.result.currentVersion).toBe("0275_video_root_comment_ordering.sql");
+    expect(applied.result.currentVersion).toBe("0276_wallet_send_palm_assertion_lock.sql");
     expect(applied.result.applied).toEqual(prefix.map((entry) => entry.version));
     expect(
       (await admin.query("SELECT to_regclass('reward_wallet_nonce_leases') AS relation")).rows[0]

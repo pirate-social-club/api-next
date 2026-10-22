@@ -31,9 +31,11 @@ function reviewedMoneyTableRevocations(
 ): string[] {
   const tags: Readonly<Record<string, string>> = {
     "0242_reward_operations_run_lease.sql": "lease_permissions",
-    "0276_reward_wallet_nonce_authority_v2.sql": "permissions",
-    "0277_song_megapot_contributions_v2.sql": "acl",
-    "0278_reward_principal_seals_v2.sql": "principal_acl",
+    "0277_reward_wallet_nonce_authority_v2.sql": "permissions",
+    "0278_song_megapot_contributions_v2.sql": "acl",
+    "0279_reward_principal_seals_v2.sql": "principal_acl",
+    "0284_shared_song_megapot_production.sql": "acl",
+    "0285_shared_song_qualification_consumers.sql": "acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -61,7 +63,58 @@ function reviewedMoneyTableRevocations(
     requirePart(`EXECUTE format('${command}',${binding});`, message, source);
   };
   let tables: string[];
-  if (tag === "lease_permissions") {
+  if (migration === "0284_shared_song_megapot_production.sql") {
+    const tableAcl = body.split(/FOR\s+fn\s+IN\s+SELECT/u)[0] ?? "";
+    tables = names(/relname\s*=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\]\)/u.exec(tableAcl)?.[1]);
+    requirePart(
+      "FOR item IN SELECT oid,relowner FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY[",
+      "table namespace/owner scope missing",
+      tableAcl,
+    );
+    requireRevoke(
+      tableAcl,
+      "REVOKE ALL ON TABLE %s FROM PUBLIC CASCADE",
+      "item.oid::regclass",
+      "PUBLIC revocation missing",
+    );
+    requirePart(
+      `FOR recipient IN SELECT DISTINCT a.grantee FROM pg_class c
+      CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+      WHERE c.oid=item.oid AND a.grantee<>0 AND a.grantee<>item.relowner LOOP`,
+      "inherited table ACL scope missing",
+      tableAcl,
+    );
+    requireRevoke(
+      tableAcl,
+      "REVOKE ALL ON TABLE %s FROM %I CASCADE",
+      "item.oid::regclass,pg_get_userbyid(recipient.grantee)",
+      "inherited revocation missing",
+    );
+  } else if (migration === "0285_shared_song_qualification_consumers.sql") {
+    const tableAcl = body.slice(body.indexOf("owned_table:="));
+    const table = /owned_table:='([a-z][a-z0-9_]*)'::REGCLASS;/u.exec(tableAcl)?.[1];
+    tables = table ? [table] : [];
+    if (!table) throw new Error("money table coverage missing");
+    requireRevoke(
+      tableAcl,
+      "REVOKE ALL ON TABLE %s FROM PUBLIC",
+      "owned_table",
+      "PUBLIC revocation missing",
+    );
+    requirePart(
+      `FOR grant_row IN SELECT DISTINCT acl.grantee FROM pg_class c
+      CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) acl
+      WHERE c.oid=owned_table AND acl.grantee<>0 AND acl.grantee<>c.relowner LOOP`,
+      "inherited table ACL scope missing",
+      tableAcl,
+    );
+    requireRevoke(
+      tableAcl,
+      "REVOKE ALL ON TABLE %s FROM %I",
+      "owned_table,pg_get_userbyid(grant_row.grantee)",
+      "inherited revocation missing",
+    );
+  } else if (tag === "lease_permissions") {
     tables = names(
       /FOREACH\s+table_name\s+IN\s+ARRAY\s+ARRAY\s*\[([^\]]*)\]\s+LOOP/u.exec(body)?.[1],
     );
@@ -84,7 +137,7 @@ function reviewedMoneyTableRevocations(
       "inherited revocation missing",
     );
   } else if (tag === "permissions") {
-    // 0276 has one literal table; stop before the independent function ACL loop.
+    // 0277 has one literal table; stop before the independent function ACL loop.
     const tableAcl = body.split(/FOR\s+f\s+IN\s+SELECT/u)[0] ?? "";
     const table = /WHERE\s+c\.oid='([a-z][a-z0-9_]*)'::regclass/u.exec(tableAcl)?.[1];
     tables = table ? [table] : [];
@@ -110,7 +163,7 @@ function reviewedMoneyTableRevocations(
       "inherited revocation missing",
     );
   } else {
-    // 0277/0278 enumerate owned tables from pg_class, not pg_proc. Restrict
+    // 0278/0279 enumerate owned tables from pg_class, not pg_proc. Restrict
     // observation to that table loop so function revokes cannot fill a hole.
     const functionLoop = body.search(/FOR\s+x\s+IN\s+SELECT[^;]*\bFROM\s+pg_proc\b/u);
     if (functionLoop < 0) throw new Error("money table ACL boundary missing");
@@ -334,25 +387,38 @@ describe("destructive money-table inventory", () => {
           tables,
         ),
       ).toThrow("money table coverage mismatch");
-      const missingTable = migration.startsWith("0276_")
+      const literalNonce = migration.startsWith("0277_");
+      const literalObjective = migration.startsWith("0285_");
+      const contextArray = migration.startsWith("0284_");
+      const missingTable = literalNonce
         ? sql.replace(`c.oid='${first}'::regclass`, "c.oid=NULL")
-        : sql.replaceAll(`'${first}',`, "");
+        : literalObjective
+          ? sql.replace(`owned_table:='${first}'::REGCLASS;`, "owned_table:=NULL;")
+          : sql.replaceAll(`'${first}',`, "");
       expect(missingTable).not.toBe(sql);
       expect(() => reviewedMoneyTableRevocations(migration, missingTable, tables)).toThrow(
-        migration.startsWith("0276_")
+        literalNonce || literalObjective
           ? "money table coverage missing"
           : "money table coverage mismatch",
       );
       const publicCommand = migration.startsWith("0242_")
         ? "REVOKE ALL ON TABLE %I FROM PUBLIC"
-        : migration.startsWith("0276_")
+        : literalNonce
           ? `REVOKE ALL ON ${first} FROM PUBLIC CASCADE`
-          : "REVOKE ALL ON %I.%I FROM PUBLIC CASCADE";
+          : contextArray
+            ? "REVOKE ALL ON TABLE %s FROM PUBLIC CASCADE"
+            : literalObjective
+              ? "REVOKE ALL ON TABLE %s FROM PUBLIC"
+              : "REVOKE ALL ON %I.%I FROM PUBLIC CASCADE";
       const inheritedCommand = migration.startsWith("0242_")
         ? "REVOKE ALL ON TABLE %I FROM %I"
-        : migration.startsWith("0276_")
+        : literalNonce
           ? `REVOKE ALL ON %I.${first} FROM %I CASCADE`
-          : "REVOKE ALL ON %I.%I FROM %I CASCADE";
+          : contextArray
+            ? "REVOKE ALL ON TABLE %s FROM %I CASCADE"
+            : literalObjective
+              ? "REVOKE ALL ON TABLE %s FROM %I"
+              : "REVOKE ALL ON %I.%I FROM %I CASCADE";
       const publicLine = sql.split("\n").find((line) => line.includes(publicCommand));
       if (!publicLine) throw new Error("reviewed PUBLIC revoke missing");
       expect(() =>
@@ -388,7 +454,10 @@ describe("destructive money-table inventory", () => {
       expect(() =>
         reviewedMoneyTableRevocations(
           migration,
-          sql.replace(/a\.grantee\s*<>\s*0/u, "TRUE"),
+          sql.replace(
+            new RegExp(`${literalObjective ? "acl" : "a"}\\.grantee\\s*<>\\s*0`, "gu"),
+            "TRUE",
+          ),
           tables,
         ),
       ).toThrow("inherited table ACL scope missing");

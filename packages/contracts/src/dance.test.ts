@@ -232,7 +232,7 @@ describe("Dance reference contracts", () => {
     ).toThrow();
   });
 
-  test("keeps Dance reserved across runtime and generated qualification surfaces", () => {
+  test("keeps numeric Dance qualification reserved while exposing the separate moderated flow", () => {
     expect(() => Schema.decodeUnknownSync(QualifyingActivityV1)("dance")).toThrow();
     expect(() => Schema.decodeUnknownSync(RewardActivityV1)("dance")).toThrow();
     expect(schemaToOpenApi(QualifyingActivityV1)).toEqual({
@@ -278,7 +278,29 @@ describe("Dance reference contracts", () => {
     const danceEndpoints = Object.entries(registry).filter(([, value]) =>
       value.path.includes("/dance/"),
     );
-    expect(danceEndpoints).toHaveLength(15);
+    expect(
+      danceEndpoints.filter(([name]) => name.includes("ModeratedDance")).map(([name]) => name),
+    ).toEqual([
+      "SubmitModeratedDanceReview",
+      "ChangeModeratedDanceVisibility",
+      "WithdrawModeratedDanceReview",
+      "RecordModeratedDanceVerdict",
+      "GetMyModeratedDanceResult",
+      "GetLatestModeratedDanceReview",
+      "ListOwnerModeratedDanceReviews",
+      "GetOwnerModeratedDanceReview",
+      "CreateModeratedDanceSession",
+      "ConsentModeratedDanceSession",
+      "ReserveModeratedDanceUpload",
+      "FinalizeModeratedDanceUpload",
+      "GetModeratedDanceSession",
+      "GetModeratedDanceUploadAccess",
+      "GetModeratedDanceCaptureOptions",
+      "GetModeratedDanceReferenceStatus",
+      "CreateModeratedDanceReference",
+      "CreateModeratedDanceMediaAccess",
+    ]);
+    expect(danceEndpoints.filter(([name]) => !name.includes("ModeratedDance"))).toHaveLength(15);
     for (const [name, value] of danceEndpoints) {
       expect(name).not.toMatch(/Qualification/u);
       expect(value.path).not.toMatch(/qualifications|rewards/u);

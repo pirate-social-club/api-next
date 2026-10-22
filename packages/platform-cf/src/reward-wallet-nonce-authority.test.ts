@@ -429,27 +429,36 @@ describe("shared EOA nonce authority (offline)", () => {
     const tx: ControlPlaneTransaction = {
       execute: <Row>(q: ControlPlaneStatement) => {
         calls.push(q);
-        const rows: readonly unknown[] = q.label.endsWith("history.read")
-          ? [{ highest_nonce: "3", blocked_reason: null }]
-          : q.label === "reward-winner-send.record.read"
+        const rows: readonly unknown[] =
+          q.label === "wallet-send.palm.read"
             ? [
                 {
-                  send_id: "send",
-                  credit_id: "credit",
-                  account_id: owner.accountId,
-                  status: "retryable",
-                  chain_id: owner.chainId,
-                  sender_address: sender,
-                  token_address: `0x${"cd".repeat(20)}`,
-                  attempt: 1,
-                  recipient_address: `0x${"ef".repeat(20)}`,
-                  amount_atomic: "10",
-                  nonce: "4",
-                  transaction_hashes: "",
-                  cancellation_hashes: "",
+                  subject_key_id: "fixture-subject",
+                  evidence_receipt_id: "fixture-receipt",
+                  evidence_count: "1",
                 },
               ]
-            : [];
+            : q.label.endsWith("history.read")
+              ? [{ highest_nonce: "3", blocked_reason: null }]
+              : q.label === "reward-winner-send.record.read"
+                ? [
+                    {
+                      send_id: "send",
+                      credit_id: "credit",
+                      account_id: owner.accountId,
+                      status: "retryable",
+                      chain_id: owner.chainId,
+                      sender_address: sender,
+                      token_address: `0x${"cd".repeat(20)}`,
+                      attempt: 1,
+                      recipient_address: `0x${"ef".repeat(20)}`,
+                      amount_atomic: "10",
+                      nonce: "4",
+                      transaction_hashes: "",
+                      cancellation_hashes: "",
+                    },
+                  ]
+                : [];
         return Effect.succeed({ rows: rows as readonly Row[], rowCount: rows.length });
       },
     };
@@ -486,12 +495,20 @@ describe("shared EOA nonce authority (offline)", () => {
     expect(transactions).toBe(1);
     expect(calls.map((q) => q.label)).toEqual([
       "reward-wallet-nonce.sender.lock",
+      "wallet-send.palm.read",
+      "wallet-send.palm.lock-subject",
+      "wallet-send.palm.lock-binding",
+      "wallet-send.palm.lock-assertions",
+      "wallet-send.palm.read",
+      "reward-wallet-nonce.sender.lock",
       "reward-wallet-nonce.history.read",
       "reward-winner-send.create",
       "reward-winner-send.attempt.create",
       "reward-winner-send.record.read",
     ]);
-    expect(calls[3]?.values.at(-1)).toBe("4");
+    expect(calls.find((q) => q.label === "reward-winner-send.attempt.create")?.values.at(-1)).toBe(
+      "4",
+    );
     expect(calls.some((q) => q.label === "reward-wallet-nonce.funding.reserve")).toBe(false);
   });
 });

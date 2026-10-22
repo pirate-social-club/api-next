@@ -9,8 +9,8 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_operations_run_lease",
     "reward_operations_run_lease_events",
   ],
-  "0276_reward_wallet_nonce_authority_v2.sql": ["reward_wallet_nonce_leases"],
-  "0277_song_megapot_contributions_v2.sql": [
+  "0277_reward_wallet_nonce_authority_v2.sql": ["reward_wallet_nonce_leases"],
+  "0278_song_megapot_contributions_v2.sql": [
     "reward_funding_profiles_v2",
     "reward_funding_schedule_witnesses_v2",
     "reward_song_slots_v2",
@@ -24,11 +24,18 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_funding_scan_checkpoints_v2",
     "reward_incoming_receipts_v2",
   ],
-  "0278_reward_principal_seals_v2.sql": [
+  "0279_reward_principal_seals_v2.sql": [
     "reward_pool_cohort_seals_v2",
     "reward_pool_cohort_members_v2",
     "reward_late_principal_liabilities_v2",
   ],
+  "0284_shared_song_megapot_production.sql": [
+    "reward_shared_song_templates_v2",
+    "reward_shared_song_template_admissions_v2",
+    "reward_song_context_work_v2",
+    "reward_context_work_counters_v2",
+  ],
+  "0285_shared_song_qualification_consumers.sql": ["reward_activity_objective_captures_v2"],
 };
 
 export const REWARDS_MONEY_TABLES = [
@@ -60,11 +67,13 @@ export const REWARDS_MONEY_TABLES = [
   "platform_referral_revenue_ledger",
   "platform_sponsorship_budget_entries",
   "platform_sponsorship_budgets",
+  "reward_activity_objective_captures_v2",
   "reward_activity_availability_observations",
   "reward_asset_whitelist",
   "reward_chain_effect_transitions",
   "reward_chain_effects",
   "reward_contribution_reservations_v2",
+  "reward_context_work_counters_v2",
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_funding_account_counters_v2",
@@ -90,6 +99,9 @@ export const REWARDS_MONEY_TABLES = [
   "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
   "reward_signer_nonces",
+  "reward_shared_song_template_admissions_v2",
+  "reward_shared_song_templates_v2",
+  "reward_song_context_work_v2",
   "reward_song_slots_v2",
   "reward_subject_consumptions",
   "reward_uniqueness_authorities",

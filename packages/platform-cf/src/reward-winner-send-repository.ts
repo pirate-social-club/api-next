@@ -217,7 +217,10 @@ function lockSenderIn(
   transaction: ControlPlaneTransaction,
   sender: { readonly chainId: number; readonly senderAddress: string },
 ) {
-  return lockRewardWalletNonceSenderIn(transaction, sender).pipe(
+  return lockRewardWalletNonceSenderIn(transaction, {
+    chainId: sender.chainId,
+    senderAddress: sender.senderAddress,
+  }).pipe(
     Effect.catchTag("RewardWalletNonceUnavailable", () => Effect.fail(storage("invalid-row"))),
   );
 }
