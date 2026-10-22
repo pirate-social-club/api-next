@@ -54,8 +54,66 @@ import {
 
 export class SongContributionFailure extends Schema.TaggedError<SongContributionFailure>()(
   "SongContributionFailure",
-  { code: ContributionErrorSchema.fields.code, underlying: Schema.optional(Schema.Defect()) },
+  {
+    code: ContributionErrorSchema.fields.code,
+    underlying: Schema.optional(Schema.Defect()),
+    refusalReceipt: Schema.optional(ContributionErrorSchema.fields.refusal_receipt),
+  },
 ) {}
+
+/** Private persisted resolution, delivered through the existing typed error.
+ * The command key is shared with success; this is never inferred from a miss. */
+export const FundingCreationRefusalCode = Schema.Literals([
+  "invalid_request",
+  "not_found",
+  "context_stale",
+  "terms_mismatch",
+  "lifecycle_changed",
+  "persona_not_owned",
+  "persona_wrong_community",
+  "wallet_not_ready",
+  "wallet_nonce_busy",
+  "quota_exhausted",
+  "account_excluded",
+  "policy_unavailable",
+  "mixed_objective_unavailable",
+  "legacy_pool_incompatible",
+  "schedule_unproven",
+  "observation_stale",
+  "price_changed",
+  "cutoff_passed",
+  "amount_below_minimum",
+  "capacity_exhausted",
+  "effect_limit",
+  "attempt_limit",
+  "rate_limited",
+  "work_budget_exhausted",
+  "gas_budget_unavailable",
+  "paused",
+  "attestation_unavailable",
+  "recovery_required",
+  "quote_expired",
+  "quote_mismatch",
+  "quote_reference_invalid",
+]);
+export const FundingRefusalPacket = Schema.Struct({
+  accountId: IdV2,
+  communityId: IdV2,
+  postId: IdV2,
+  operation: Schema.Literal("CreateSongMegapotContributionV2"),
+  key: KeyV2,
+  requestHash: HashV2,
+  refusal: Schema.Struct({
+    code: FundingCreationRefusalCode,
+    receipt: ContributionErrorSchema.fields.refusal_receipt,
+  }),
+}).check(
+  Schema.makeFilter((row) =>
+    row.refusal.receipt !== null && row.refusal.receipt.request_hash === row.requestHash
+      ? undefined
+      : "Refusal must bind the original request",
+  ),
+);
 type Code = ErrorV2["code"];
 const fail = (code: Code) => Effect.fail(new SongContributionFailure({ code }));
 const parse = <A>(f: () => A) =>
@@ -390,7 +448,9 @@ export function makeSongMegapotContributionReads(ports: SongContributionReadPort
     const value = yield* ports.command(scope, actor.accountId, operation, key);
     if (value === null) return yield* fail("not_found");
     const row = yield* decodeRead(() =>
-      Schema.decodeUnknownSync(privateCommandRead, { onExcessProperty: "error" })(value),
+      Schema.decodeUnknownSync(Schema.Union([privateCommandRead, FundingRefusalPacket]), {
+        onExcessProperty: "error",
+      })(value),
     );
     if (
       row.accountId !== actor.accountId ||
@@ -400,6 +460,11 @@ export function makeSongMegapotContributionReads(ports: SongContributionReadPort
       row.key !== key
     )
       return yield* fail("not_found");
+    if ("refusal" in row)
+      return yield* new SongContributionFailure({
+        code: row.refusal.code,
+        refusalReceipt: row.refusal.receipt,
+      });
     if (row.requestHash !== row.receipt.request_hash) return yield* fail("outcome_unknown");
     const objects: Record<FundingOperationV2, FundingCommandReceipt["object"]> = {
       CreateSongMegapotContributionV2: "song_megapot_contribution_command_receipt",

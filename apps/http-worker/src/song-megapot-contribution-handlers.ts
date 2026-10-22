@@ -113,7 +113,7 @@ export function makeSongMegapotContributionHandlers(
           request_id: crypto.randomUUID(),
           retry_after_seconds: null,
           current_state_href: null,
-          refusal_receipt: null,
+          refusal_receipt: cause.refusalReceipt ?? null,
         });
         const args = { message: "Contribution request refused", details: { ...details }, cause };
         switch (cause.code) {

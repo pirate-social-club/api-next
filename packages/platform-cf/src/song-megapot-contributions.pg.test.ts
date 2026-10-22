@@ -90,6 +90,8 @@ suite(
         "0278_song_megapot_contributions_v2.sql",
         "0279_reward_principal_seals_v2.sql",
         "0280_reward_contribution_privileges_v2.sql",
+        // Focused CP3 successor-body proof, not the complete production upgrade.
+        "0294_song_contribution_refusals.sql",
       ])
         await admin.query(
           await Bun.file(
@@ -487,6 +489,82 @@ suite(
       };
     }
     let receipt: C.ContributionReceiptV2;
+    test("a late SQL refusal rolls back nonce, slot, counter, reservation and work writes before committing proof", async () => {
+      const key = "late_refusal_original_01";
+      const body = await request("a", key);
+      const tables = [
+        "song_megapot_contributions_v2",
+        "reward_contribution_reservations_v2",
+        "reward_funding_account_counters_v2",
+        "reward_funding_work_envelopes_v2",
+        "reward_song_slots_v2",
+        "song_reward_offers",
+        "song_reward_offer_legs",
+        ...(
+          await admin.query(
+            "SELECT relname FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relkind IN('r','p') AND relname LIKE 'reward_wallet_nonce%' ORDER BY relname",
+          )
+        ).rows.map((row: { relname: string }) => row.relname),
+      ];
+      const snapshots = async () => {
+        const result: Record<string, unknown> = {};
+        for (const table of tables) {
+          const quoted = `"${table.replaceAll('"', '""')}"`;
+          result[table] = (
+            await admin.query(
+              `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) AS rows FROM ${quoted} t`,
+            )
+          ).rows[0].rows;
+        }
+        return result;
+      };
+      const before = await snapshots();
+      await admin.query(`CREATE FUNCTION refuse_late_create_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.idempotency_key='${key}' AND NEW.refusal_code IS NULL THEN
+          RAISE EXCEPTION 'late fixture refusal' USING ERRCODE='PCV05';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER refuse_late_create_fixture BEFORE INSERT ON song_megapot_contribution_commands_v2
+        FOR EACH ROW EXECUTE FUNCTION refuse_late_create_fixture()`);
+      try {
+        await expect(
+          Effect.runPromise(service("a").execute("CreateSongMegapotContributionV2", base, body)),
+        ).rejects.toMatchObject({
+          code: "policy_unavailable",
+          refusalReceipt: { allocation: "none", instruction_issued: false },
+        });
+        expect(await snapshots()).toEqual(before);
+        const rows = (
+          await admin.query(
+            "SELECT refusal_code,contribution_id,receipt FROM song_megapot_contribution_commands_v2 WHERE account_id='a' AND idempotency_key=$1",
+            [key],
+          )
+        ).rows;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          refusal_code: "policy_unavailable",
+          contribution_id: null,
+          receipt: { allocation: "none", instruction_issued: false },
+        });
+        await expect(
+          Effect.runPromise(service("a").execute("CreateSongMegapotContributionV2", base, body)),
+        ).rejects.toMatchObject({ code: "policy_unavailable", refusalReceipt: rows[0].receipt });
+        await expect(
+          Effect.runPromise(
+            service("a").execute("CreateSongMegapotContributionV2", base, {
+              ...body,
+              funding_amount_atomic: "1000000",
+            }),
+          ),
+        ).rejects.toMatchObject({ code: "idempotency_conflict" });
+        expect(await snapshots()).toEqual(before);
+      } finally {
+        await admin.query(
+          "DROP TRIGGER refuse_late_create_fixture ON song_megapot_contribution_commands_v2; DROP FUNCTION refuse_late_create_fixture()",
+        );
+      }
+    });
     test("real app/SQL creation, same-key races, private replay and account/work reservations", async () => {
       const body = await request("a", "first_contribution_key_01");
       const [a, b] = await Promise.all([

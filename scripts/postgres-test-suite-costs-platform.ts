@@ -1,6 +1,12 @@
 // Content, media, identity, community and rewards persistence measurements.
 // Provenance and public aggregate: postgres-test-suite-costs.ts.
 export const postgresPlatformSuiteCostEstimates = {
+  // Three callbacks, one complete293->294 isolated upgrade. Local PostgreSQL17
+  // whole-file bound is19.14s (paired run); round up for planning only.
+  "packages/platform-cf/src/song-contribution-refusals.pg.test.ts": {
+    sourceCallCount: 3,
+    milliseconds: 20000,
+  },
   "packages/platform-cf/src/account-age-verification.pg.test.ts": {
     sourceCallCount: 8,
     milliseconds: 31835,

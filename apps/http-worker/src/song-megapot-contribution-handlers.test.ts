@@ -47,7 +47,9 @@ const claim = Schema.decodeUnknownSync(SubmissionClaimReceiptV2)({
 /** Offline HTTP/application boundary only. These ports never implement a
  * database, nonce allocator, grant issuer, observer or financial interpreter.
  */
-function fixture(options: { unknownLookup?: boolean; foreignRead?: boolean } = {}) {
+function fixture(
+  options: { unknownLookup?: boolean; foreignRead?: boolean; refusedRead?: boolean } = {},
+) {
   const calls: string[] = [];
   const handlers = makeSongMegapotContributionHandlers({
     commands: (authorization) => {
@@ -121,7 +123,19 @@ function fixture(options: { unknownLookup?: boolean; foreignRead?: boolean } = {
             operation,
             key,
             requestHash: claim.request_hash,
-            receipt: claim,
+            ...(options.refusedRead
+              ? {
+                  refusal: {
+                    code: "paused",
+                    receipt: {
+                      command_id: "refused-command",
+                      request_hash: claim.request_hash,
+                      allocation: "none",
+                      instruction_issued: false,
+                    },
+                  },
+                }
+              : { receipt: claim }),
           });
         },
       };
@@ -138,6 +152,32 @@ function fixture(options: { unknownLookup?: boolean; foreignRead?: boolean } = {
 }
 
 describe("V5 contribution HTTP consumers", () => {
+  test("original Create GET exposes committed refusal through the existing typed error only to its actor", async () => {
+    for (const foreignRead of [false, true]) {
+      const f = fixture({ refusedRead: true, foreignRead });
+      const response = await f.worker.request(
+        `${root}/megapot-contribution-commands/CreateSongMegapotContributionV2/original_create_key_01`,
+        { headers },
+      );
+      const body = await response.json();
+      expect(body).toMatchObject({
+        error: {
+          details: {
+            code: foreignRead ? "not_found" : "paused",
+            refusal_receipt: foreignRead
+              ? null
+              : {
+                  command_id: "refused-command",
+                  request_hash: claim.request_hash,
+                  allocation: "none",
+                  instruction_issued: false,
+                },
+          },
+        },
+      });
+      expect(f.calls).toEqual(["reads", "receipt:account"]);
+    }
+  });
   test("requires a browser session and exact Origin/CSRF before constructing command ports", async () => {
     const f = fixture();
     const uri = `${stateHref}/submission-claims`;

@@ -1499,3 +1499,63 @@ describe("private V5 persisted read consumers", () => {
     expect(f.counts()).toEqual(before);
   });
 });
+
+describe("private original Create refusal reads", () => {
+  const key = "original_create_key_01";
+  const hash = "a".repeat(64);
+  const receipt = {
+    command_id: "refused-command",
+    request_hash: hash,
+    allocation: "none",
+    instruction_issued: false,
+  } as const;
+  const original = {
+    accountId: "a",
+    communityId: baseScope.communityId,
+    postId: baseScope.postId,
+    operation: "CreateSongMegapotContributionV2",
+    key,
+    requestHash: hash,
+    refusal: { code: "paused", receipt },
+  } as const;
+  const readsFor = (packet: unknown) =>
+    makeSongMegapotContributionReads({
+      authorize: () => Effect.succeed({ accountId: "a" }),
+      context: () => Effect.fail(new SongContributionFailure({ code: "paused" })),
+      current: () => Effect.succeed(null),
+      command: () => Effect.succeed(packet),
+    });
+  test("returns durable no-allocation evidence as a refusal without requiring live admission", async () => {
+    await expect(
+      run(readsFor(original).command(baseScope, "CreateSongMegapotContributionV2", key)),
+    ).rejects.toMatchObject({ code: "paused", refusalReceipt: receipt });
+  });
+  for (const changed of [
+    { accountId: "foreign" },
+    { communityId: "foreign" },
+    { postId: "foreign" },
+    { key: "other_original_key_01" },
+  ])
+    test(`conceals refusal outside its exact private identity: ${Object.keys(changed)[0]}`, async () => {
+      await expect(
+        run(
+          readsFor({ ...original, ...changed }).command(
+            baseScope,
+            "CreateSongMegapotContributionV2",
+            key,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "not_found" });
+    });
+  test("mismatched canonical request hash is unknown rather than proof", async () => {
+    await expect(
+      run(
+        readsFor({ ...original, requestHash: "b".repeat(64) }).command(
+          baseScope,
+          "CreateSongMegapotContributionV2",
+          key,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+  });
+});

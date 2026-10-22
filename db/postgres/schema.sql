@@ -3599,7 +3599,6 @@ CREATE FUNCTION bind_reward_contribution_purpose_v2(role_name text, purpose text
     AS $$
 DECLARE allowed TEXT[]; signature TEXT; trusted TEXT:=current_schema(); target OID; owner OID;
 BEGIN
-  -- SECURITY INVOKER and owner-only EXECUTE: no runtime can bind itself.
   SELECT oid INTO STRICT target FROM pg_roles WHERE rolname=role_name AND NOT rolsuper AND NOT rolcreaterole AND NOT rolbypassrls;
   SELECT relowner INTO STRICT owner FROM pg_class WHERE oid='song_megapot_contributions_v2'::regclass;
   IF pg_has_role(target,owner,'MEMBER') THEN RAISE EXCEPTION 'runtime owns money authority' USING ERRCODE='42501'; END IF;
@@ -3611,13 +3610,12 @@ BEGIN
       'update_song_contribution_command_v2(jsonb,jsonb,jsonb,jsonb)','enqueue_song_contribution_reconciliation_v2(jsonb,jsonb,jsonb)',
       'load_song_contribution_recovery_v2(jsonb)','lock_reward_wallet_nonce_sender_v2(bigint,text)',
       'reward_wallet_nonce_context_v2(bigint,text,text)','reserve_reward_funding_wallet_nonce_v2(jsonb)',
-      'load_reward_funding_wallet_nonce_owner_v2(jsonb)'];
+      'load_reward_funding_wallet_nonce_owner_v2(jsonb)','record_song_contribution_refusal_v2(jsonb,text,text)'];
     WHEN 'incoming_observer' THEN allowed:=ARRAY['load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
     WHEN 'funding_recovery_jobs' THEN allowed:=ARRAY[
       'invalidate_song_recovery_evidence_v2(text,text,text)','require_song_funding_work_lease_v2(text,text)','list_song_funding_work_v2(integer)','claim_song_funding_work_v2(text,text)',
       'record_song_recovery_evidence_v2(text,text,jsonb)','finish_song_funding_work_v2(text,text,jsonb)',
       'load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
-    -- Evidence-only seal storage does not grant outgoing/refund completion.
     WHEN 'cohort_evidence' THEN allowed:=ARRAY['record_reward_pool_cohort_v2(text,text,text,jsonb)'];
     ELSE RAISE EXCEPTION 'unrecognized funding purpose' USING ERRCODE='42501';
   END CASE;
@@ -23194,8 +23192,13 @@ CREATE FUNCTION load_song_contribution_command_v2(a text, o text, k text) RETURN
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-  SELECT jsonb_build_object('requestHash',request_hash,'receipt',receipt)
-  FROM song_megapot_contribution_commands_v2 WHERE account_id=a AND operation=o AND idempotency_key=k
+  SELECT CASE WHEN refusal_code IS NULL THEN
+    jsonb_build_object('requestHash',request_hash,'receipt',receipt)
+  ELSE jsonb_build_object('accountId',account_id,'communityId',community_id,'postId',post_id,
+    'operation',operation,'key',idempotency_key,'requestHash',request_hash,
+    'refusal',jsonb_build_object('code',refusal_code,'receipt',receipt)) END
+  FROM song_megapot_contribution_commands_v2
+  WHERE account_id=a AND operation=o AND idempotency_key=k
 $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -23205,7 +23208,7 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='load_song_contribution_command_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='a text, o text, k text';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
@@ -29011,9 +29014,12 @@ CREATE FUNCTION read_song_contribution_command_v2(i jsonb, o text, k text) RETUR
     SET search_path FROM CURRENT
     AS $$
   SELECT jsonb_build_object('accountId',account_id,'communityId',community_id,'postId',post_id,
-    'operation',operation,'key',idempotency_key,'requestHash',request_hash,'receipt',receipt)
+    'operation',operation,'key',idempotency_key,'requestHash',request_hash)
+    || CASE WHEN refusal_code IS NULL THEN jsonb_build_object('receipt',receipt)
+       ELSE jsonb_build_object('refusal',jsonb_build_object('code',refusal_code,'receipt',receipt)) END
   FROM song_megapot_contribution_commands_v2 WHERE account_id=i->>'accountId'
-    AND community_id=i->>'communityId' AND post_id=i->>'postId' AND operation=o AND idempotency_key=k
+    AND community_id=i->>'communityId' AND post_id=i->>'postId'
+    AND operation=o AND idempotency_key=k
 $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -29023,7 +29029,7 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='read_song_contribution_command_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, o text, k text';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
@@ -29692,6 +29698,43 @@ CREATE FUNCTION record_reward_winner_nonce_lease_v2() RETURNS trigger
   IF NOT FOUND THEN RAISE EXCEPTION 'missing winner owner' USING ERRCODE='PWN01'; END IF;
   RETURN NEW;
 END $$;
+
+CREATE FUNCTION record_song_contribution_refusal_v2(i jsonb, reason text, command text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE receipt JSONB;
+BEGIN
+  IF (i->>'operation'='CreateSongMegapotContributionV2'
+    AND i->'contributionId'='null'::JSONB AND i->>'accountId' IS NOT NULL
+    AND i->>'communityId' IS NOT NULL AND i->>'postId' IS NOT NULL
+    AND i->>'key' IS NOT NULL AND i->>'hash' ~ '^[a-f0-9]{64}$'
+    AND command IS NOT NULL) IS NOT TRUE THEN
+    RAISE EXCEPTION 'invalid original creation identity' USING ERRCODE='PCV07';
+  END IF;
+  -- The existing unique key forbids both a receipt and a refusal, including
+  -- concurrent old-Worker inserts. Append-only guards retain that fence.
+  receipt:=jsonb_build_object('command_id',command,'request_hash',i->>'hash',
+    'allocation','none','instruction_issued',FALSE);
+  INSERT INTO song_megapot_contribution_commands_v2(
+    command_id,account_id,operation,idempotency_key,request_hash,community_id,post_id,
+    contribution_id,receipt,refusal_code)
+  VALUES(command,i->>'accountId',i->>'operation',i->>'key',i->>'hash',
+    i->>'communityId',i->>'postId',NULL,receipt,reason);
+  RETURN load_song_contribution_command_v2(i->>'accountId',i->>'operation',i->>'key');
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='record_song_contribution_refusal_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, reason text, command text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION record_song_recovery_evidence_v2(id text, token text, e jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -51259,10 +51302,12 @@ CREATE TABLE song_megapot_contribution_commands_v2 (
     request_hash text NOT NULL,
     community_id text NOT NULL,
     post_id text NOT NULL,
-    contribution_id text NOT NULL,
+    contribution_id text,
     receipt jsonb NOT NULL,
     preparation_revision bigint,
     created_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+    refusal_code text,
+    CONSTRAINT song_contribution_resolution_v2 CHECK (((((refusal_code IS NULL) AND (contribution_id IS NOT NULL)) OR ((operation = 'CreateSongMegapotContributionV2'::text) AND (contribution_id IS NULL) AND (preparation_revision IS NULL) AND (refusal_code = ANY (ARRAY['invalid_request'::text, 'not_found'::text, 'context_stale'::text, 'terms_mismatch'::text, 'lifecycle_changed'::text, 'persona_not_owned'::text, 'persona_wrong_community'::text, 'wallet_not_ready'::text, 'wallet_nonce_busy'::text, 'quota_exhausted'::text, 'account_excluded'::text, 'policy_unavailable'::text, 'mixed_objective_unavailable'::text, 'legacy_pool_incompatible'::text, 'schedule_unproven'::text, 'observation_stale'::text, 'price_changed'::text, 'cutoff_passed'::text, 'amount_below_minimum'::text, 'capacity_exhausted'::text, 'effect_limit'::text, 'attempt_limit'::text, 'rate_limited'::text, 'work_budget_exhausted'::text, 'gas_budget_unavailable'::text, 'paused'::text, 'attestation_unavailable'::text, 'recovery_required'::text, 'quote_expired'::text, 'quote_mismatch'::text, 'quote_reference_invalid'::text])) AND (receipt = jsonb_build_object('command_id', command_id, 'request_hash', request_hash, 'allocation', 'none', 'instruction_issued', false)))) IS TRUE)),
     CONSTRAINT song_megapot_contribution_commands_v2_check CHECK ((((receipt ->> 'command_id'::text) = command_id) AND ((receipt ->> 'request_hash'::text) = request_hash) AND ((receipt ->> 'contribution_id'::text) = contribution_id))),
     CONSTRAINT song_megapot_contribution_commands_v2_operation_check CHECK ((operation = ANY (ARRAY['CreateSongMegapotContributionV2'::text, 'ClaimSongMegapotContributionSubmissionV2'::text, 'ObserveSongMegapotContributionV2'::text, 'RecoverSongMegapotContributionV2'::text, 'PrepareSongMegapotContributionCancellationV2'::text]))),
     CONSTRAINT song_megapot_contribution_commands_v2_receipt_check CHECK ((jsonb_typeof(receipt) = 'object'::text)),

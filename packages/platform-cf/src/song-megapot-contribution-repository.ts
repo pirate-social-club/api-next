@@ -1,4 +1,4 @@
-import { Effect, type Layer, Schema } from "effect";
+import { Cause, Effect, type Layer, Schema } from "effect";
 import {
   ControlPlaneDb,
   type ControlPlaneError,
@@ -11,6 +11,8 @@ import {
   type FundingCommandIdentity,
   type FundingCommandReceipt,
   type FundingCounters,
+  FundingCreationRefusalCode,
+  FundingRefusalPacket,
   type RecoveryAuthority,
   SongContributionFailure,
   type SongContributionPorts,
@@ -242,33 +244,40 @@ const decodeRow = <S extends Schema.ConstraintDecoder<unknown>>(s: S, value: unk
   });
 const mapStorage = <A, E, R>(e: Effect.Effect<A, E | ControlPlaneError, R>) =>
   e.pipe(
-    Effect.mapError((error) => {
-      if (error instanceof SongContributionFailure) return error;
-      const state =
-        typeof error === "object" && error !== null && "sqlState" in error ? error.sqlState : null;
-      const codes: Record<string, SongContributionFailure["code"]> = {
-        PCV02: "not_found",
-        PCV03: "idempotency_conflict",
-        PCV04: "work_budget_exhausted",
-        PCV05: "policy_unavailable",
-        PCV06: "lifecycle_changed",
-        PCV07: "invalid_request",
-        PCV08: "effect_limit",
-        PCV09: "submission_already_claimed",
-        PCV10: "recovery_required",
-        PCV11: "receipt_mismatch",
-        PCV12: "cancellation_recovery_unavailable",
-        PWN01: "persona_not_owned",
-        PWN02: "wallet_nonce_busy",
-        PWN03: "wallet_nonce_busy",
-        PWN04: "observation_stale",
-        PR001: "paused",
-      };
-      return new SongContributionFailure({
-        code: typeof state === "string" ? (codes[state] ?? "outcome_unknown") : "outcome_unknown",
-        underlying: error,
-      });
-    }),
+    Effect.catchCause((cause) =>
+      Effect.failCause(
+        Cause.map(cause, (error) => {
+          if (error instanceof SongContributionFailure) return error;
+          const state =
+            typeof error === "object" && error !== null && "sqlState" in error
+              ? error.sqlState
+              : null;
+          const codes: Record<string, SongContributionFailure["code"]> = {
+            PCV02: "not_found",
+            PCV03: "idempotency_conflict",
+            PCV04: "work_budget_exhausted",
+            PCV05: "policy_unavailable",
+            PCV06: "lifecycle_changed",
+            PCV07: "invalid_request",
+            PCV08: "effect_limit",
+            PCV09: "submission_already_claimed",
+            PCV10: "recovery_required",
+            PCV11: "receipt_mismatch",
+            PCV12: "cancellation_recovery_unavailable",
+            PWN01: "persona_not_owned",
+            PWN02: "wallet_nonce_busy",
+            PWN03: "wallet_nonce_busy",
+            PWN04: "observation_stale",
+            PR001: "paused",
+          };
+          return new SongContributionFailure({
+            code:
+              typeof state === "string" ? (codes[state] ?? "outcome_unknown") : "outcome_unknown",
+            underlying: error,
+          });
+        }),
+      ),
+    ),
   );
 const json = (value: unknown) =>
   JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v));
@@ -311,7 +320,23 @@ export function makeControlPlaneSongContributionPorts(
         true,
       );
       if (value === null) return null;
-      const command = yield* decodeRow(commandSchema, value);
+      const command = yield* decodeRow(Schema.Union([commandSchema, FundingRefusalPacket]), value);
+      if ("refusal" in command) {
+        if (command.accountId !== i.accountId)
+          return yield* new SongContributionFailure({ code: "not_found" });
+        if (
+          command.operation !== i.operation ||
+          command.communityId !== i.communityId ||
+          command.postId !== i.postId ||
+          command.key !== i.key ||
+          command.requestHash !== i.hash
+        )
+          return yield* new SongContributionFailure({ code: "idempotency_conflict" });
+        return yield* new SongContributionFailure({
+          code: command.refusal.code,
+          refusalReceipt: command.refusal.receipt,
+        });
+      }
       const objects: Record<CommandIdentity["operation"], FundingCommandReceipt["object"]> = {
         CreateSongMegapotContributionV2: "song_megapot_contribution_command_receipt",
         ClaimSongMegapotContributionSubmissionV2: "contribution_submission_claim_receipt",
@@ -355,6 +380,15 @@ export function makeControlPlaneSongContributionPorts(
           Effect.gen(function* () {
             let admissionPacket: typeof packetSchema.Type | undefined;
             let sampled: string | undefined;
+            let originalCommandAbsent = false;
+            const captureRefusal = identity.operation === "CreateSongMegapotContributionV2";
+            if (captureRefusal)
+              yield* db.execute({
+                label: "song-contribution.refusal.begin",
+                text: "SAVEPOINT contribution_creation",
+                values: [],
+                readonly: false,
+              });
             const owned = () =>
               Effect.gen(function* () {
                 const value = yield* call(
@@ -369,7 +403,14 @@ export function makeControlPlaneSongContributionPorts(
                 return yield* decodeRow(stateSchema, value);
               });
             const tx: SongContributionTransaction = {
-              lookup: () => mapStorage(lookupIn(db, identity)),
+              lookup: () =>
+                mapStorage(lookupIn(db, identity)).pipe(
+                  Effect.tap((command) =>
+                    Effect.sync(() => {
+                      originalCommandAbsent = command === null;
+                    }),
+                  ),
+                ),
               now: () =>
                 mapStorage(
                   Effect.gen(function* () {
@@ -612,8 +653,63 @@ export function makeControlPlaneSongContributionPorts(
                   }),
                 ),
             };
-            return yield* use(tx);
+            return yield* use(tx).pipe(
+              Effect.map((value) => ({ kind: "success" as const, value })),
+              Effect.catchCause((cause) =>
+                Effect.gen(function* () {
+                  const reason = cause.reasons[0];
+                  if (
+                    !captureRefusal ||
+                    !originalCommandAbsent ||
+                    cause.reasons.length !== 1 ||
+                    reason === undefined ||
+                    !Cause.isFailReason(reason) ||
+                    !(reason.error instanceof SongContributionFailure) ||
+                    !Schema.is(FundingCreationRefusalCode)(reason.error.code)
+                  )
+                    return yield* Effect.failCause(cause);
+                  const failure = reason.error;
+                  // Keep the original command fence, but undo every policy,
+                  // counter, slot, reservation and nonce write before recording
+                  // proof. SQL errors also require this before any further SQL.
+                  yield* db.execute({
+                    label: "song-contribution.refusal.rollback",
+                    text: "ROLLBACK TO SAVEPOINT contribution_creation",
+                    values: [],
+                    readonly: false,
+                  });
+                  const packet = yield* call(
+                    db,
+                    "song-contribution.refusal.persist",
+                    "SELECT record_song_contribution_refusal_v2($1::jsonb,$2,$3) AS packet",
+                    [json(identity), failure.code, `command:${crypto.randomUUID()}`],
+                  );
+                  const refusal = yield* decodeRow(FundingRefusalPacket, packet);
+                  if (
+                    refusal.accountId !== identity.accountId ||
+                    refusal.communityId !== identity.communityId ||
+                    refusal.postId !== identity.postId ||
+                    refusal.operation !== identity.operation ||
+                    refusal.key !== identity.key ||
+                    refusal.requestHash !== identity.hash ||
+                    refusal.refusal.code !== failure.code
+                  )
+                    return yield* new SongContributionFailure({ code: "outcome_unknown" });
+                  return {
+                    kind: "refused" as const,
+                    failure: new SongContributionFailure({
+                      code: refusal.refusal.code,
+                      refusalReceipt: refusal.refusal.receipt,
+                    }),
+                  };
+                }),
+              ),
+            );
           }),
+        ).pipe(
+          Effect.flatMap((result) =>
+            result.kind === "refused" ? Effect.fail(result.failure) : Effect.succeed(result.value),
+          ),
         ),
       ),
   };

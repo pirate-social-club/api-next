@@ -1172,3 +1172,200 @@ describe("shared durable observer principal boundary (offline driver)", () => {
     }
   });
 });
+
+describe("durable original Create refusal (offline transaction driver)", () => {
+  const receipt = {
+    command_id: "refused-command",
+    request_hash: identity.hash,
+    allocation: "none",
+    instruction_issued: false,
+  } as const;
+  const packet = {
+    accountId: identity.accountId,
+    communityId: identity.communityId,
+    postId: identity.postId,
+    operation: "CreateSongMegapotContributionV2",
+    key: identity.key,
+    requestHash: identity.hash,
+    refusal: { code: "paused", receipt },
+  } as const;
+  const portsFor = (driver: OfflineDriver) =>
+    makeControlPlaneSongContributionPorts(
+      makeDirectPostgresControlPlaneLayer("postgres://offline.invalid/unused", {
+        clientFactory: () => driver,
+        logger: { info: () => undefined, error: () => undefined },
+      }),
+      { authorize: () => Effect.succeed({ accountId: identity.accountId }) },
+      { rewardsEnabled: false },
+    );
+  const normal = async (q: PostgresQueryConfig): Promise<PostgresQueryResponse> => {
+    if (q.text.includes("load_song_contribution_command_v2"))
+      return { rows: [{ packet: null }], rowCount: 1 };
+    if (q.text.includes("record_song_contribution_refusal_v2")) {
+      return {
+        rows: [
+          {
+            packet: {
+              ...packet,
+              refusal: { code: q.values?.[1], receipt: { ...receipt, command_id: q.values?.[2] } },
+            },
+          },
+        ],
+        rowCount: 1,
+      };
+    }
+    return empty();
+  };
+  const refuse = (driver: OfflineDriver) =>
+    portsFor(driver).transaction(identity, (tx) =>
+      Effect.gen(function* () {
+        yield* tx.lookup();
+        return yield* new SongContributionFailure({ code: "paused" });
+      }),
+    );
+
+  test("holds command fence outside savepoint, rolls creation back, and acknowledges COMMIT before proof", async () => {
+    const driver = new OfflineDriver();
+    driver.onQuery = normal;
+    const exit = await Effect.runPromiseExit(refuse(driver));
+    expect(failures(exit)).toMatchObject([
+      {
+        code: "paused",
+        refusalReceipt: {
+          request_hash: identity.hash,
+          allocation: "none",
+          instruction_issued: false,
+        },
+      },
+    ]);
+    const texts = driver.queries.map((q) => q.text);
+    const position = (part: string) => texts.findIndex((text) => text.includes(part));
+    expect(position("pg_advisory_xact_lock")).toBeLessThan(
+      position("SAVEPOINT contribution_creation"),
+    );
+    expect(position("SAVEPOINT contribution_creation")).toBeLessThan(
+      position("load_song_contribution_command_v2"),
+    );
+    expect(position("load_song_contribution_command_v2")).toBeLessThan(
+      position("ROLLBACK TO SAVEPOINT"),
+    );
+    expect(position("ROLLBACK TO SAVEPOINT")).toBeLessThan(
+      position("record_song_contribution_refusal_v2"),
+    );
+    expect(position("record_song_contribution_refusal_v2")).toBeLessThan(position("COMMIT"));
+    expect(count(driver, "COMMIT")).toBe(1);
+    expect(count(driver, "ROLLBACK")).toBe(0);
+  });
+
+  for (const phase of ["rollback", "persist", "commit"] as const)
+    test(`${phase} uncertainty never delivers no-allocation proof`, async () => {
+      const driver = new OfflineDriver();
+      driver.onQuery = async (q) => {
+        if (
+          (phase === "rollback" && q.text.startsWith("ROLLBACK TO")) ||
+          (phase === "persist" && q.text.includes("record_song_contribution_refusal_v2")) ||
+          (phase === "commit" && q.text === "COMMIT")
+        )
+          throw new Error("lost database acknowledgement");
+        return normal(q);
+      };
+      const exit = await Effect.runPromiseExit(refuse(driver));
+      expect(failures(exit)).toMatchObject([{ code: "outcome_unknown" }]);
+      expect(failures(exit).every((error) => error.refusalReceipt === undefined)).toBe(true);
+      expect(count(driver, "COMMIT")).toBe(phase === "commit" ? 1 : 0);
+      expect(
+        driver.queries.filter((q) => q.text.includes("record_song_contribution_refusal_v2")),
+      ).toHaveLength(phase === "rollback" ? 0 : 1);
+    });
+
+  for (const extra of ["defect", "interruption"] as const)
+    test(`mixed refusal and ${extra} preserves the whole Cause without proof`, async () => {
+      const driver = new OfflineDriver();
+      driver.onQuery = normal;
+      const cause = Cause.combine(
+        Cause.fail(new SongContributionFailure({ code: "paused" })),
+        extra === "defect" ? Cause.die("fixture defect") : Cause.interrupt(123),
+      );
+      const exit = await Effect.runPromiseExit(
+        portsFor(driver).transaction(identity, (tx) =>
+          Effect.gen(function* () {
+            yield* tx.lookup();
+            return yield* Effect.failCause(cause);
+          }),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit))
+        expect(
+          exit.cause.reasons.some(extra === "defect" ? Cause.isDieReason : Cause.isInterruptReason),
+        ).toBe(true);
+      expect(
+        driver.queries.some((q) => q.text.includes("record_song_contribution_refusal_v2")),
+      ).toBe(false);
+      expect(count(driver, "COMMIT")).toBe(0);
+    });
+
+  test("a business refusal without a positively observed locked miss is not proof", async () => {
+    const driver = new OfflineDriver();
+    driver.onQuery = normal;
+    const exit = await Effect.runPromiseExit(
+      portsFor(driver).transaction(identity, () =>
+        Effect.fail(new SongContributionFailure({ code: "paused" })),
+      ),
+    );
+    expect(failures(exit)).toMatchObject([{ code: "paused" }]);
+    expect(failures(exit)[0]?.refusalReceipt).toBeUndefined();
+    expect(driver.queries.some((q) => q.text.includes("record_song_contribution_refusal_v2"))).toBe(
+      false,
+    );
+    expect(count(driver, "COMMIT")).toBe(0);
+  });
+
+  test("a persisted refusal resolves the original command while Rewards is off", async () => {
+    const driver = new OfflineDriver();
+    driver.onQuery = async (q) =>
+      q.text.includes("load_song_contribution_command_v2")
+        ? { rows: [{ packet }], rowCount: 1 }
+        : empty();
+    const exit = await Effect.runPromiseExit(portsFor(driver).lookup(identity));
+    expect(failures(exit)).toMatchObject([{ code: "paused", refusalReceipt: receipt }]);
+    expect(count(driver, "BEGIN")).toBe(0);
+  });
+
+  for (const change of [
+    { hash: "b".repeat(64) },
+    { postId: "other-song" },
+    { communityId: "other-community" },
+  ] as const)
+    test(`refusal replay binds canonical hash and original route: ${Object.keys(change)[0]}`, async () => {
+      const driver = new OfflineDriver();
+      driver.onQuery = async (q) =>
+        q.text.includes("load_song_contribution_command_v2")
+          ? { rows: [{ packet }], rowCount: 1 }
+          : empty();
+      const exit = await Effect.runPromiseExit(portsFor(driver).lookup({ ...identity, ...change }));
+      expect(failures(exit)).toMatchObject([{ code: "idempotency_conflict" }]);
+      expect(failures(exit)[0]?.refusalReceipt).toBeUndefined();
+    });
+
+  test("malformed no-allocation evidence fails closed", async () => {
+    const driver = new OfflineDriver();
+    driver.onQuery = async (q) =>
+      q.text.includes("load_song_contribution_command_v2")
+        ? {
+            rows: [
+              {
+                packet: {
+                  ...packet,
+                  refusal: { code: "paused", receipt: { ...receipt, instruction_issued: true } },
+                },
+              },
+            ],
+            rowCount: 1,
+          }
+        : empty();
+    const exit = await Effect.runPromiseExit(portsFor(driver).lookup(identity));
+    expect(failures(exit)).toMatchObject([{ code: "outcome_unknown" }]);
+    expect(failures(exit)[0]?.refusalReceipt).toBeUndefined();
+  });
+});
