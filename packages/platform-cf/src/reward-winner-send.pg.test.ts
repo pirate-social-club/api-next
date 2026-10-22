@@ -528,7 +528,7 @@ suite("Postgres 17 Megapot winner send record", () => {
     expect((await send("p1", "k-1")).nonce).toBe(5n);
     expect(await count("reward_winner_sends")).toBe(1);
     expect(await count("reward_winner_send_attempts")).toBe(1);
-    // The database refuses a second record for the credit outright.
+    // The shared nonce guard refuses the duplicate while the wallet is busy.
     await expect(
       admin.query(
         `INSERT INTO reward_winner_sends (
@@ -537,7 +537,10 @@ suite("Postgres 17 Megapot winner send record", () => {
          ) VALUES ('dup','credit-p1','winner','p1','assignment-p1',$1,$2,$3,1,'retryable')`,
         [CHAIN_ID, USDC, WALLETS.w1],
       ),
-    ).rejects.toThrow("duplicate key");
+    ).rejects.toMatchObject({
+      code: "PWN02",
+      message: "wallet has outstanding nonce ownership",
+    });
     // Foreign accounts cannot see it.
     expect(
       await Effect.runPromise(
@@ -567,7 +570,12 @@ suite("Postgres 17 Megapot winner send record", () => {
          ) VALUES ('guard','${credit}','winner','${persona}','assignment-${persona}',$1,$2,$3,1,$4)`,
         [CHAIN_ID, USDC, sender, status],
       );
-    await expect(insert(WALLETS.w1)).rejects.toThrow("confirmed payout wallet");
+    await expect(insert(WALLETS.w1)).rejects.toMatchObject({
+      code: "PWN02",
+      message: "wallet has outstanding nonce ownership",
+    });
+    // An unused sender reaches the payout-wallet guard after the shared nonce guard.
+    await expect(insert(address("d3"))).rejects.toThrow("confirmed payout wallet");
     await expect(insert(WALLETS.unclaimed, "credit-p5", "p5")).rejects.toThrow(
       "claimed and paid participant credit",
     );
@@ -780,7 +788,10 @@ suite("Postgres 17 Megapot winner send record", () => {
          ) VALUES ('second-open',$1,'winner','p8','assignment-p8',$2,$3,$4,1,'retryable')`,
         [`credit-${otherPersona}`, CHAIN_ID, USDC, WALLETS.shared],
       ),
-    ).rejects.toThrow("duplicate key");
+    ).rejects.toMatchObject({
+      code: "PWN02",
+      message: "wallet has outstanding nonce ownership",
+    });
     // Still busy while the first send is pending.
     signed(open, hash("c1"));
     await attach(open.sendId, hash("c1"));
@@ -1122,7 +1133,7 @@ suite("Postgres 17 Megapot winner send record", () => {
       sendId: again.sendId,
       status: "retryable",
     });
-    // Only one non-cancelled record per credit.
+    // The shared nonce guard also fences a third live record for this credit.
     await expect(
       admin.query(
         `INSERT INTO reward_winner_sends (
@@ -1131,7 +1142,10 @@ suite("Postgres 17 Megapot winner send record", () => {
          ) VALUES ('third-live','credit-p8c','winner','p8','assignment-p8',$1,$2,$3,1,'retryable')`,
         [CHAIN_ID, USDC, WALLETS.shared],
       ),
-    ).rejects.toThrow("duplicate key");
+    ).rejects.toMatchObject({
+      code: "PWN02",
+      message: "wallet has outstanding nonce ownership",
+    });
   });
 
   test("a cancellation of the wrong shape or of a settled send is refused", async () => {

@@ -9,9 +9,8 @@ import {
 import { InternalError } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
 
-export const NOTIFICATION_RECOVERY_FACTS_SQL = `SELECT fact.outbox_event_id FROM content_publication_outbox fact
-  WHERE fact.event_type='comment_notification' AND NOT fact.inbox_delivery_recorded
-  ORDER BY fact.created_at,fact.outbox_event_id LIMIT 50`;
+export const NOTIFICATION_RECOVERY_FACTS_SQL =
+  "SELECT outbox_event_id FROM pending_recipient_notifications_v2() LIMIT 50";
 
 const Delivery = Schema.Struct({ processed: Schema.Boolean, delivered: Schema.Boolean });
 const failed = (cause: unknown) =>
@@ -29,7 +28,7 @@ export function makeNotificationDeliveryStoreFromDb(db: ControlPlaneDb["Service"
     const rows = yield* db.withTransaction((tx) =>
       tx.execute<{ result: unknown }>({
         label: "notifications.deliver",
-        text: "SELECT deliver_comment_notification_v1($1) AS result",
+        text: "SELECT deliver_recipient_notification_v2($1) AS result",
         values: [input.sourceEventId],
         readonly: false,
       }),

@@ -17,7 +17,7 @@ export const NOTIFICATION_PAGE_SQL = `WITH anchor AS MATERIALIZED (
   SELECT inbox.notification_id,inbox.delivery_order,inbox.read_at,source.*
   FROM notification_inbox inbox
   CROSS JOIN LATERAL (
-    SELECT * FROM readable_notification_source_v1($1,inbox.source_event_id) LIMIT 1
+    SELECT * FROM readable_recipient_notification_v2($1,inbox.source_event_id,inbox.dance_result_event_id) LIMIT 1
   ) source
   WHERE inbox.recipient_user_id=$1
     AND ($2::text IS NULL OR inbox.delivery_order<(SELECT delivery_order FROM anchor))
@@ -26,16 +26,16 @@ export const NOTIFICATION_PAGE_SQL = `WITH anchor AS MATERIALIZED (
 SELECT ($2::text IS NULL OR EXISTS(SELECT 1 FROM anchor)) AS cursor_valid,
   jsonb_build_object('object','notification_page',
     'items',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-      'notification_id',notification_id,'kind',CASE WHEN parent_comment_id IS NULL THEN 'comment_published' ELSE 'reply_published' END,
+      'notification_id',notification_id,'kind',kind,
       'occurred_at',to_char(occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'read_at',CASE WHEN read_at IS NULL THEN NULL ELSE to_char(read_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END,
-      'target',jsonb_build_object('kind','comment_thread','community_id',community_id,'post_id',post_id,'comment_id',comment_id))
+      'target',target) || CASE WHEN outcome IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('outcome',outcome) END
       ORDER BY delivery_order DESC) FROM shown),'[]'::jsonb),
     'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
       (SELECT notification_id FROM shown ORDER BY delivery_order LIMIT 1) ELSE NULL END,
     'unread_count',(SELECT count(*) FROM notification_inbox unread
       WHERE unread.recipient_user_id=$1 AND unread.read_at IS NULL
-        AND EXISTS(SELECT 1 FROM readable_notification_source_v1($1,unread.source_event_id)))) AS document`;
+        AND EXISTS(SELECT 1 FROM readable_recipient_notification_v2($1,unread.source_event_id,unread.dance_result_event_id)))) AS document`;
 
 const unavailable = (cause?: unknown) =>
   new InternalError({ message: "Notifications unavailable", cause });
@@ -79,7 +79,7 @@ export function makeControlPlaneNotificationStore(
           label: "notifications.read",
           text: `UPDATE notification_inbox inbox SET read_at=COALESCE(inbox.read_at,clock_timestamp())
         WHERE inbox.recipient_user_id=$1 AND inbox.notification_id=$2
-          AND EXISTS(SELECT 1 FROM readable_notification_source_v1($1,inbox.source_event_id))
+          AND EXISTS(SELECT 1 FROM readable_recipient_notification_v2($1,inbox.source_event_id,inbox.dance_result_event_id))
         RETURNING notification_id,to_char(read_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS read_at`,
           values: [input.recipientUserId, input.notificationId],
           readonly: false,

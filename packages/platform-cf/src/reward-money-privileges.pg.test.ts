@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations.ts";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import {
   moneyTableInventoryViolations,
@@ -30,6 +34,139 @@ const coveredBy0232: readonly string[] = REWARDS_MONEY_TABLES.filter(
 );
 
 suite("reviewed rewards money destructive privileges", () => {
+  test("SOURCE ONLY CP5 removes inherited/default new-object authority and binds exact purposes", async () => {
+    if (!url) throw new Error("Test URL required");
+    const suffix = `${process.pid}_${Date.now()}`,
+      schema = `funding_acl_${suffix}`,
+      parent = `funding_parent_${suffix}`,
+      runtime = `funding_http_${suffix}`,
+      observer = `funding_observer_${suffix}`;
+    const admin = new Client({ connectionString: url });
+    const writer = new Client({ connectionString: url });
+    await admin.connect();
+    await writer.connect();
+    try {
+      await admin.query(`CREATE SCHEMA "${schema}";SET search_path TO "${schema}"`);
+      const scoped = new URL(url);
+      scoped.searchParams.set("options", `-c search_path=${schema}`);
+      const migrations = await loadPostgresMigrations();
+      const boundary =
+        migrations.findIndex((m) => m.version === "0277_reward_wallet_nonce_authority_v2.sql") + 1;
+      if (boundary !== 277) throw new Error("Expected exact maintained277 prefix");
+      const prefix = await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: migrations.slice(0, boundary),
+        expectedLedger: [],
+      });
+      if (prefix.dryRun) throw new Error("Expected actual isolated migration prefix");
+      expect(prefix.result.currentVersion).toBe("0277_reward_wallet_nonce_authority_v2.sql");
+      await admin.query(
+        `CREATE ROLE "${parent}";CREATE ROLE "${runtime}";CREATE ROLE "${observer}";GRANT "${parent}" TO "${runtime}";GRANT USAGE ON SCHEMA "${schema}" TO "${parent}","${observer}";ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${parent}";ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT EXECUTE ON FUNCTIONS TO "${parent}"`,
+      );
+      for (const file of [
+        "0278_song_megapot_contributions_v2.sql",
+        "0279_reward_principal_seals_v2.sql",
+        "0280_reward_contribution_privileges_v2.sql",
+      ])
+        await admin.query(
+          await Bun.file(
+            new URL(`../../../db/postgres/migrations/${file}`, import.meta.url),
+          ).text(),
+        );
+      await writer.query(`SET search_path TO "${schema}";SET ROLE "${runtime}"`);
+      const acl = await writer.query(
+        "SELECT has_table_privilege(current_user,'song_megapot_contributions_v2','SELECT') AS read,has_table_privilege(current_user,'song_megapot_contributions_v2','INSERT') AS write,has_table_privilege(current_user,'reward_late_principal_liabilities_v2','UPDATE') AS complete,has_table_privilege(current_user,'reward_incoming_receipts_v2','DELETE') AS remove,has_table_privilege(current_user,'reward_incoming_receipts_v2','TRUNCATE') AS truncate,has_function_privilege(current_user,'create_song_contribution_v2(jsonb,jsonb,text)','EXECUTE') AS issue",
+      );
+      expect(acl.rows).toEqual([
+        {
+          read: false,
+          write: false,
+          complete: false,
+          remove: false,
+          truncate: false,
+          issue: false,
+        },
+      ]);
+      await expect(
+        writer.query("SELECT bind_reward_contribution_purpose_v2($1,'http_commands')", [runtime]),
+      ).rejects.toMatchObject({ code: "42501" });
+      await admin.query("SELECT bind_reward_contribution_purpose_v2($1,'http_commands')", [
+        runtime,
+      ]);
+      await admin.query("SELECT bind_reward_contribution_purpose_v2($1,'incoming_observer')", [
+        observer,
+      ]);
+      expect(
+        (
+          await writer.query(
+            "SELECT has_function_privilege(current_user,'create_song_contribution_v2(jsonb,jsonb,text)','EXECUTE') AS issue,has_function_privilege(current_user,'accept_reward_funding_principal_v2(jsonb)','EXECUTE') AS confirm,has_function_privilege(current_user,'insert_song_contribution_command_v2(jsonb,jsonb)','EXECUTE') AS raw_command",
+          )
+        ).rows,
+      ).toEqual([{ issue: true, confirm: false, raw_command: false }]);
+      expect(
+        (
+          await writer.query(
+            "SELECT has_function_privilege(current_user,'record_song_recovery_evidence_v2(text,text,jsonb)','EXECUTE') AS attest,has_function_privilege(current_user,'claim_song_funding_work_v2(text,text)','EXECUTE') AS job",
+          )
+        ).rows,
+      ).toEqual([{ attest: false, job: false }]);
+      await expect(writer.query("DELETE FROM reward_incoming_receipts_v2")).rejects.toMatchObject({
+        code: "42501",
+      });
+      await expect(writer.query("TRUNCATE song_megapot_contributions_v2")).rejects.toMatchObject({
+        code: "42501",
+      });
+      await writer.query(`SET ROLE "${observer}"`);
+      expect(
+        (
+          await writer.query(
+            "SELECT has_function_privilege(current_user,'accept_reward_funding_principal_v2(jsonb)','EXECUTE') AS confirm,has_function_privilege(current_user,'update_song_contribution_command_v2(jsonb,jsonb,jsonb,jsonb)','EXECUTE') AS claim,has_table_privilege(current_user,'reward_late_principal_liabilities_v2','UPDATE') AS complete",
+          )
+        ).rows,
+      ).toEqual([{ confirm: true, claim: false, complete: false }]);
+      expect(
+        (
+          await writer.query(
+            "SELECT has_function_privilege(current_user,'record_song_recovery_evidence_v2(text,text,jsonb)','EXECUTE') AS attest",
+          )
+        ).rows,
+      ).toEqual([{ attest: false }]);
+      await admin.query("SELECT bind_reward_contribution_purpose_v2($1,'funding_recovery_jobs')", [
+        observer,
+      ]);
+      expect(
+        (
+          await writer.query(
+            "SELECT has_function_privilege(current_user,'record_song_recovery_evidence_v2(text,text,jsonb)','EXECUTE') AS attest,has_function_privilege(current_user,'claim_song_funding_work_v2(text,text)','EXECUTE') AS work,has_function_privilege(current_user,'song_funding_work_packet_v2(reward_funding_work_envelopes_v2)','EXECUTE') AS internal,has_function_privilege(current_user,'update_song_contribution_command_v2(jsonb,jsonb,jsonb,jsonb)','EXECUTE') AS grant,has_table_privilege(current_user,'reward_funding_schedule_witnesses_v2','INSERT') AS raw_write",
+          )
+        ).rows,
+      ).toEqual([{ attest: true, work: true, internal: false, grant: false, raw_write: false }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT proconfig FROM pg_proc WHERE oid='accept_reward_funding_principal_v2(jsonb)'::regprocedure",
+          )
+        ).rows[0].proconfig,
+      ).toContain(`search_path=pg_catalog, ${schema}, pg_temp`);
+      // No new sequence is used to smuggle inherited money authority.
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind='S' AND c.relname ~ '(contribution|principal|funding_.*_v2)'",
+            [schema],
+          )
+        ).rows[0].n,
+      ).toBe(0);
+    } finally {
+      await writer.end();
+      await admin.query("RESET search_path");
+      await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      for (const role of [runtime, observer, parent])
+        if ((await admin.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [role])).rowCount)
+          await admin.query(`DROP OWNED BY "${role}";DROP ROLE "${role}"`);
+      await admin.end();
+    }
+  }, 120_000);
   test("revokes direct, inherited and PUBLIC destruction while retaining runtime writes and unrelated defaults", async () => {
     if (!url) throw Error("Test URL required");
     const suffix = `${process.pid}_${Date.now()}`;

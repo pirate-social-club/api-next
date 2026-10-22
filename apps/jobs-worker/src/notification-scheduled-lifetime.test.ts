@@ -71,8 +71,8 @@ mock.module("./hns-route-revalidation.ts", () => ({
 }));
 mock.module("./megapot-rewards.ts", () => ({
   ...rewards,
-  makeMegapotRewardsJob: () =>
-    declaration(
+  makeMegapotRewardsJob: () => ({
+    ...declaration(
       "megapot-rewards.cycle",
       "megapot-rewards",
       Effect.promise(async () => {
@@ -80,6 +80,8 @@ mock.module("./megapot-rewards.ts", () => ({
         financialDone = true;
       }),
     ),
+    timeout: "50 seconds",
+  }),
 }));
 mock.module("./pipeline-balance.ts", () => ({
   ...balance,

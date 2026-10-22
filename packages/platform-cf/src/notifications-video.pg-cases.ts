@@ -436,7 +436,9 @@ export function registerVideoNotificationPostgresCases(completed: () => void) {
               const beforeAgePage = await f.run(f.store.list({ recipientUserId: actor }));
               expect(beforeAgePage.unread_count).toBe(1);
               const ageItem = beforeAgePage.items.find(
-                (entry) => entry.target.comment_id === ageTarget.comment_id,
+                (entry) =>
+                  entry.target.kind === "comment_thread" &&
+                  entry.target.comment_id === ageTarget.comment_id,
               );
               if (!ageItem) throw new Error("Unread age scenario item required");
               expect(ageItem.read_at).toBeNull();

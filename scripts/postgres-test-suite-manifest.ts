@@ -1,5 +1,7 @@
 export { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-costs.ts";
 
+import { reusableModeratedDanceSuites } from "./postgres-test-suite-dance.ts";
+
 export const reusablePostgresTestSuites = [
   "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-repository.pg.test.ts",
@@ -18,6 +20,7 @@ export const reusablePostgresTestSuites = [
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts",
   "packages/platform-cf/src/identity.pg.test.ts",
   "packages/platform-cf/src/media-persistence.pg.test.ts",
+  ...reusableModeratedDanceSuites,
   "packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts",
   "packages/platform-cf/src/platform-pirate-handle-repository.pg.test.ts",
   "packages/platform-cf/src/public-post-slug-repository.pg.test.ts",
@@ -53,6 +56,10 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/reward-attestation-pinning.pg.test.ts",
   "packages/platform-cf/src/reward-gas-topup.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send.pg.test.ts",
+  "packages/platform-cf/src/reward-wallet-nonce-authority.pg.test.ts",
+  "packages/platform-cf/src/song-megapot-contributions.pg.test.ts",
+  "packages/platform-cf/src/song-contribution-refusals.pg.test.ts",
+  "packages/platform-cf/src/shared-song-megapot-participation.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send-palm.pg.test.ts",
   "packages/platform-cf/src/wallet-sponsored-send.pg.test.ts",
   "packages/platform-cf/src/wallet-send-palm.pg.test.ts",

@@ -47,7 +47,13 @@ export function makeVideoSourceGrantResolver(
               AND p.audio_revision=a.audio_revision AND p.canonical_audio_sha256=a.canonical_audio_sha256
               AND p.audio_asset_ref=a.audio_asset_ref AND p.media_kind='song' AND p.visibility='public'
            WHERE g.capability_sha256=$1 AND g.revoked_at IS NULL AND g.expires_at > clock_timestamp()
-             AND a.state='processing' AND a.provider_wait_deadline > clock_timestamp()`,
+             AND a.state='processing' AND a.provider_wait_deadline > clock_timestamp()
+          UNION ALL
+          SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind
+            FROM resolve_moderated_dance_source_v1($1)
+          UNION ALL
+          SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind
+            FROM resolve_moderated_dance_reference_source_v1($1)`,
             values: [digest],
           });
         }).pipe(Effect.provide(runtime)),

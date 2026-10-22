@@ -22,6 +22,11 @@ import {
   makeMediaProcessorQueueWorker,
 } from "./index.ts";
 import {
+  type ModeratedDanceMediaEnv,
+  makeModeratedDanceMaintenanceProcessor,
+  makeModeratedDanceProcessor,
+} from "./moderated-dance-composition.ts";
+import {
   makeVideoAnalysisWorkflowRunner,
   type VideoAnalysisWorkflowStep,
 } from "./video-workflow.ts";
@@ -67,4 +72,18 @@ const CloudflareVideoAnalysisWorkflow = makeCloudflareWorkflowEntrypoint<
 /** The status API verifies this fixed class name before establishing missing instances. */
 export class VideoAnalysisWorkflow extends CloudflareVideoAnalysisWorkflow {}
 
-export default makeMediaProcessorQueueWorker(makeMediaProcessorComposition);
+export default {
+  ...makeMediaProcessorQueueWorker(makeMediaProcessorComposition),
+  /** One bounded private work unit per invocation; no unawaited work or retry
+   * loop. The coordinator owns actual schedule/binding/runtime admission. */
+  async scheduled(
+    _controller: ScheduledController,
+    env: MediaProcessorRuntimeEnv & ModeratedDanceMediaEnv,
+  ): Promise<void> {
+    const maintenance = makeModeratedDanceMaintenanceProcessor(env);
+    if (maintenance === null) return;
+    await maintenance.run();
+    const processor = makeModeratedDanceProcessor(env);
+    if (processor !== null) await processor.run();
+  },
+};

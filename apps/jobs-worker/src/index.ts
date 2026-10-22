@@ -67,11 +67,13 @@ import {
   MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
+import { makeSongFundingRecoveryRuntime } from "./megapot-rewards-runtime.ts";
 import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
+import { makeSongMegapotFundingRecoveryJob } from "./song-megapot-funding-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -745,10 +747,22 @@ export function makeJobsWorkerDeclarations(
   avatars?: AvatarCleanupBuckets,
   spacesReconciliation?: SpacesReconciliationComposition,
   guestStudyRecovery?: GuestStudyRecoveryComposition,
+  songFundingRecovery?: ReturnType<typeof makeSongFundingRecoveryRuntime>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
   ];
+  const fundingJob =
+    songFundingRecovery === undefined
+      ? undefined
+      : makeSongMegapotFundingRecoveryJob({
+          runtime: songFundingRecovery,
+          enabled: true,
+          // One durable item per tick bounds this job; each accepted work policy
+          // still supplies its own attempt, scan, receipt and lease budgets.
+          limit: 1,
+          ensure: songFundingRecovery.ensure,
+        });
   if (communityMaintenanceEnabled) {
     declarations.push(
       makeCommunityCatalogIntegrityJob(sink),
@@ -773,10 +787,11 @@ export function makeJobsWorkerDeclarations(
     learnerAudio === undefined
       ? undefined
       : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
-  if (megapotJob !== undefined && studyJob !== undefined) {
-    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  if (megapotJob !== undefined && (studyJob !== undefined || fundingJob !== undefined)) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob));
   } else if (megapotJob !== undefined) declarations.push(megapotJob);
   else if (studyJob !== undefined) declarations.push(studyJob);
+  if (megapotJob === undefined && fundingJob !== undefined) declarations.push(fundingJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }
@@ -859,6 +874,14 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
+    const songFundingRecovery = !config.MEGAPOT_REWARDS_ENABLED
+      ? undefined
+      : makeSongFundingRecoveryRuntime({
+          controlPlane: megapot?.boundedControlPlane,
+          rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+          environment: config.API_NEXT_ENV,
+          now: () => new Date().toISOString(),
+        });
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -877,6 +900,8 @@ export default {
           })()
         : undefined,
       spacesReconciliation,
+      undefined,
+      songFundingRecovery,
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);

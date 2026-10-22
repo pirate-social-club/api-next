@@ -299,9 +299,11 @@ export function registerVideoAdmissionMatrixPostgresCases(completed: () => void)
         expect(await matrixHistory(f)).toEqual(before);
         const fresh = await matrixComment(f, video.postId, "cutover-new-fact");
         expect(
-          (await f.run(f.store.list({ recipientUserId: actor }))).items.map(
-            (item) => item.target.comment_id,
-          ),
+          (await f.run(f.store.list({ recipientUserId: actor }))).items.map((item) => {
+            expect(item.target.kind).toBe("comment_thread");
+            if (item.target.kind !== "comment_thread") throw new Error("Comment target required");
+            return item.target.comment_id;
+          }),
         ).toEqual([fresh.comment_id]);
       });
       completed();

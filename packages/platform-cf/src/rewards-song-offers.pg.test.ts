@@ -34,7 +34,7 @@ import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeDiagnosticPostgresControlPlaneLayer as makeDirectPostgresControlPlaneLayer } from "./postgres-failure-diagnostics.pg-fixture.ts";
 import { finishAdmittedRefund } from "./reward-admitted-refund.pg-fixture.ts";
 import { makeRewardFundingCoordinator } from "./reward-funding-coordinator.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";

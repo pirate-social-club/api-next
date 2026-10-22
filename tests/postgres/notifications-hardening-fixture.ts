@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import {
   ControlPlaneDb,
   type ControlPlaneStatement,
@@ -8,6 +9,56 @@ import { Client } from "pg";
 import type { withInbox } from "../../packages/platform-cf/src/notifications.pg-fixture.ts";
 
 export type InboxFixture = Parameters<Parameters<typeof withInbox>[0]>[0];
+
+/** A definer SQL function is opaque to outer EXPLAIN. Inspect its exact installed
+ * body only in this owned schema, under the same owner and trusted search path.
+ * Runtime callers still execute the bounded function, never this inspection. */
+export async function installedNotificationRecoverySql(admin: Client, schema: string) {
+  if (!/^api_next_notifications_[0-9a-f]{32}$/u.test(schema))
+    throw new Error("Owned Notifications plan schema required");
+  const result = await admin.query<{ body: string; trusted: boolean }>(
+    `SELECT p.prosrc AS body,
+      p.prosecdef AND p.provolatile='s' AND p.proretset AND p.pronargs=0
+      AND p.proowner=n.nspowner AND p.proowner=current_user::regrole
+      AND current_schema()=n.nspname AND language.lanname='sql'
+      AND p.proconfig=ARRAY[format('search_path=%I, pg_catalog, pg_temp',n.nspname)] AS trusted
+     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     JOIN pg_language language ON language.oid=p.prolang
+     WHERE n.nspname=$1 AND p.proname='pending_recipient_notifications_v2' AND p.pronargs=0`,
+    [schema],
+  );
+  const row = result.rows[0];
+  if (result.rows.length !== 1 || !row || row.trusted !== true)
+    throw new Error("Exact installed recovery function authority required");
+  return row.body;
+}
+
+/** Algorithm-only facts for the exact installed SQL: both families compete for
+ * one oldest-first batch. Real table/index and delivery proof remains separate. */
+export async function verifyRecoveryFamilyOrdering(admin: Client, installedSql: string) {
+  for (const tied of [false, true]) {
+    const epoch = "TIMESTAMPTZ '2026-10-18T00:00:00Z'";
+    const commentTime = tied ? epoch : `${epoch} + n * INTERVAL '2 seconds'`;
+    const danceTime = tied ? epoch : `${epoch} + (n * 2 - 1) * INTERVAL '1 second'`;
+    const rows = await admin.query<{ event_id: string }>(`WITH content_publication_outbox AS (
+      SELECT 'comment-'||lpad(n::text,3,'0') AS outbox_event_id,${commentTime} AS created_at,
+        'comment_notification'::text AS event_type,n=0 AS inbox_delivery_recorded
+      FROM generate_series(0,75) n
+    ), dance_moderated_result_events_v1 AS (
+      SELECT 'dance-'||lpad(n::text,3,'0') AS event_id,${danceTime} AS occurred_at,
+        CASE WHEN n=0 THEN ${epoch} ELSE NULL::timestamptz END AS delivered_at
+      FROM generate_series(0,75) n
+    ) ${installedSql}`);
+    const expected = tied
+      ? Array.from({ length: 50 }, (_, index) => `comment-${String(index + 1).padStart(3, "0")}`)
+      : Array.from({ length: 25 }, (_, index) => {
+          const id = String(index + 1).padStart(3, "0");
+          return [`dance-${id}`, `comment-${id}`];
+        }).flat();
+    expect(rows.rows.map((row) => row.event_id)).toEqual(expected);
+  }
+}
+
 export const gate = () => {
   let release: () => void = () => undefined;
   const promise = new Promise<void>((resolve) => {

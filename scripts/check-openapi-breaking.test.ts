@@ -583,10 +583,30 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    expect(repositoryPolicy.breakingChangeWaivers).toEqual([]);
+    expect(
+      repositoryPolicy.breakingChangeWaivers.map(({ operationId, baselineSha, kind }) => ({
+        operationId,
+        baselineSha,
+        kind,
+      })),
+    ).toEqual([
+      {
+        operationId: "get_meNotifications",
+        baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        kind: "deprecation",
+      },
+    ]);
+    expect(repositoryPolicy.breakingChangeWaivers[0]?.expectedViolations).toHaveLength(6);
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        repositoryPolicy,
+        "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        () => true,
+      ),
+    ).not.toThrow();
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
-    ).not.toThrow();
+    ).toThrow("obsolete baseline");
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

@@ -10,6 +10,7 @@ import {
   initializeNotificationsInboxSchema,
   type NotificationsInboxInitialization,
 } from "./notifications-schema-init.pg-fixture.ts";
+import { makeVideoOrderingHistoricalNotificationStore } from "./notifications-video-historical-reader.pg-fixture.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository.ts";
@@ -71,7 +72,7 @@ export async function withInbox(
         }
       }
     }
-    await use(await setup(admin, url.toString()));
+    await use(await setup(admin, url.toString(), initialization));
   } catch (error) {
     failures.push(error);
   } finally {
@@ -98,7 +99,7 @@ export async function withInbox(
     throw new AggregateError(failures, "Inbox setup/body/cleanup failed", { cause: failures[0] });
 }
 
-async function setup(admin: Client, url: string) {
+async function setup(admin: Client, url: string, initialization: NotificationsInboxInitialization) {
   await admin.query(
     "INSERT INTO users(user_id) VALUES ('inbox-owner'),('inbox-other'),('inbox-author')",
   );
@@ -131,7 +132,12 @@ async function setup(admin: Client, url: string) {
     "INSERT INTO post_slug_aliases(post_id,slug,slug_policy_version) VALUES ('inbox-post','inbox-post','post-slug-v1')",
   );
   const runtime = makeDirectPostgresControlPlaneLayer(url);
-  const store = makeControlPlaneNotificationStore(runtime);
+  // This rehearsal deliberately stops before later notification schema changes.
+  // All current baseline/full-migration fixtures still use the actual current store.
+  const store =
+    initialization === "pre_video_ordering_migrations"
+      ? makeVideoOrderingHistoricalNotificationStore(runtime)
+      : makeControlPlaneNotificationStore(runtime);
   const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.scoped(effect));
   const submit = async (
     key: string,

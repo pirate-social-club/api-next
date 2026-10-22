@@ -4,13 +4,13 @@ import { makeControlPlaneCommentNavigationStore } from "./comment-navigation-rep
 import { makeCommentThreadStore } from "./comment-thread-repository.ts";
 import {
   actor,
-  admitMatrix,
   community,
   matrixComment,
   prepareMatrixVideo,
   startMatrixActors,
 } from "./notifications-video-matrix.pg-fixture.ts";
 import {
+  admitVideoOrderingUpgrade,
   readVideoUpgradeFunctions,
   readVideoUpgradeHistory,
   withVideoOrderingUpgrade,
@@ -28,7 +28,7 @@ suite("populated274-to275 video ordering on PostgreSQL18.6", () => {
       await startMatrixActors(f);
       const video = await prepareMatrixVideo(f, "pg18-ordering-upgrade");
       await video.publish();
-      await admitMatrix(f); // isolated synthetic CI admission, never production cutover
+      await admitVideoOrderingUpgrade(f); // isolated synthetic CI admission, never production cutover
       const facts: { comment_id: string; outbox_event_id: string }[] = [];
       for (let index = 0; index < 41; index++)
         facts.push(await matrixComment(f, video.postId, `pg18-root-${index}`));

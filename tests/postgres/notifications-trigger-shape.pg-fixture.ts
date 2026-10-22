@@ -57,6 +57,8 @@ type Mutation = {
   readonly missingTrigger?: true;
   readonly renameExpected?: true;
   readonly rebound?: true;
+  readonly securityDefiner?: boolean;
+  readonly searchPath?: "reset" | "untrusted";
 };
 
 export function notificationTriggerShapeVariants(): readonly Mutation[] {
@@ -100,6 +102,18 @@ export function notificationTriggerShapeVariants(): readonly Mutation[] {
         },
       );
   }
+  // Preserve all forty earlier trigger mutations and add current function
+  // security/configuration drift. A definer is allowed only for the inbox guard.
+  for (const guard of guards)
+    result.push({
+      guard,
+      name: "wrong-security-mode",
+      securityDefiner: guard.table !== "notification_inbox",
+    });
+  result.push(
+    { guard: guards[1], name: "missing-definer-search-path", searchPath: "reset" },
+    { guard: guards[1], name: "untrusted-definer-search-path", searchPath: "untrusted" },
+  );
   return result;
 }
 
@@ -166,7 +180,7 @@ export async function exerciseNotificationTriggerShapeNegatives(input: {
     ordered(rows).map(({ guards_valid: _guard, ...row }) => row);
 
   const variants = notificationTriggerShapeVariants();
-  expect(variants).toHaveLength(40);
+  expect(variants).toHaveLength(46);
   for (const mutation of variants) {
     const { guard } = mutation;
     const original = baseline.find((row) => row.trigger_name === guard.trigger);
@@ -199,6 +213,8 @@ export async function exerciseNotificationTriggerShapeNegatives(input: {
       await admin.query(`DROP TRIGGER IF EXISTS ${quote(guard.trigger)} ON ${table}`);
       if (current.name === temporary)
         await admin.query(`ALTER FUNCTION ${temporaryFn} RENAME TO ${quote(guard.fn)}`);
+      if (mutation.securityDefiner !== undefined || mutation.searchPath !== undefined)
+        await admin.query(original.function_definition);
       await admin.query(original.definition);
       await admin.query("COMMIT");
       expect(await catalog(), identity).toEqual(baseline);
@@ -221,6 +237,14 @@ export async function exerciseNotificationTriggerShapeNegatives(input: {
             EXECUTE FUNCTION ${quote(schema)}.${quote(fn)}(${mutation.argument ? "'unexpected'" : ""})`);
         }
       }
+      if (mutation.securityDefiner !== undefined)
+        await admin.query(
+          `ALTER FUNCTION ${expectedFn} SECURITY ${mutation.securityDefiner ? "DEFINER" : "INVOKER"}`,
+        );
+      if (mutation.searchPath === "reset")
+        await admin.query(`ALTER FUNCTION ${expectedFn} RESET search_path`);
+      if (mutation.searchPath === "untrusted")
+        await admin.query(`ALTER FUNCTION ${expectedFn} SET search_path=pg_temp,public`);
       await admin.query("COMMIT"); // Separate real LOGIN must see the drift.
       if (mutation.renameExpected)
         expect(

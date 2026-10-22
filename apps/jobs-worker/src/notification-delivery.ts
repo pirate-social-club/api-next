@@ -31,6 +31,10 @@ export function makeNotificationDeliveryJob(
       defect: "high",
     },
     reads: [
+      "postgres:dance_moderated_result_events_v1",
+      "postgres:dance_moderated_reviews_v1",
+      "postgres:dance_review_result_deliveries_v1",
+      "postgres:dance_review_account_fences_v1",
       "postgres:content_publication_outbox",
       "postgres:text_content_submissions",
       "postgres:notification_inbox",
@@ -64,6 +68,8 @@ export function makeNotificationDeliveryJob(
       "postgres:media_video_song_references",
     ],
     writes: [
+      "postgres:dance_moderated_result_events_v1",
+      "postgres:dance_review_result_deliveries_v1",
       "postgres:notification_inbox",
       "postgres:notification_publication_deliveries",
       "postgres:content_publication_outbox",

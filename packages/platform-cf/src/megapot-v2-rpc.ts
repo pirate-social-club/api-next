@@ -59,6 +59,15 @@ export class MegapotV2RpcFailed extends Error {
   }
 }
 
+/** A completed, correctly chained attestation returned different code/config.
+ * Retain the existing RPC reason for callers; distinguish this known negative
+ * from transport, malformed-response and wrong-chain uncertainty. */
+export class MegapotV2AttestationMismatch extends MegapotV2RpcFailed {
+  constructor() {
+    super("invalid-response");
+  }
+}
+
 export function findMegapotV2ClaimRevert(value: unknown): MegapotV2ClaimRevert | null {
   const pending: Array<Readonly<{ value: unknown; depth: number }>> = [{ value, depth: 0 }];
   const seen = new Set<object>();
@@ -145,6 +154,20 @@ export type MegapotV2Transaction = Readonly<{
 }>;
 
 export interface MegapotV2RpcClient {
+  /** Uncached code/config proof at an exact canonical block, including historical receipts. */
+  readonly attestDeploymentAt?: (blockNumber: bigint) => Promise<unknown>;
+  /** Candidate discovery only. A provider log response never proves absence. */
+  readonly readFundingTransferLogs?: (
+    input: Readonly<{
+      sender: string;
+      custody: string;
+      token: string;
+      fromBlock: bigint;
+      toBlock: bigint;
+      maximumBlocks: number;
+      maximumLogs: number;
+    }>,
+  ) => Promise<readonly Readonly<{ transactionHash: string; blockNumber: bigint }>[]>;
   /** Present on the production adapter; test doubles may omit it. */
   readonly deployment?: MegapotV2DeploymentAttestation;
   readonly attestDeployment: () => Promise<{
@@ -459,9 +482,13 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       ]),
     );
 
-  const readCodeHash = async (contract: string): Promise<string> => {
-    const code = hexData(await rpc("eth_getCode", [canonicalAddress(contract), "latest"]));
-    if (code === "0x") throw new MegapotV2RpcFailed("invalid-response");
+  const readCodeHash = async (contract: string, blockNumber?: bigint): Promise<string> => {
+    const code = hexData(
+      await rpc("eth_getCode", [
+        canonicalAddress(contract),
+        blockNumber === undefined ? "latest" : quantityHex(blockNumber),
+      ]),
+    );
     return keccak256(code).toLowerCase();
   };
 
@@ -469,35 +496,42 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   const readFinalizedHead = async () =>
     blockIdentity(await rpc("eth_getBlockByNumber", ["finalized", false]));
 
-  const performDeploymentAttestation = async () => {
+  const performDeploymentAttestation = async (blockNumber?: bigint) => {
     const [
       chainId,
       jackpotCodeHash,
       ticketNftCodeHash,
       usdcCodeHash,
-      configuredTicketNft,
-      configuredUsdc,
+      configuredTicketNftData,
+      configuredUsdcData,
     ] = await Promise.all([
       rpc("eth_chainId", []).then(quantity),
-      readCodeHash(attestation.jackpotAddress),
-      readCodeHash(attestation.ticketNftAddress),
-      readCodeHash(attestation.usdcAddress),
-      ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft()).then(
-        decodeMegapotJackpotTicketNft,
-      ),
-      ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc()).then(
-        decodeMegapotJackpotUsdc,
-      ),
+      readCodeHash(attestation.jackpotAddress, blockNumber),
+      readCodeHash(attestation.ticketNftAddress, blockNumber),
+      readCodeHash(attestation.usdcAddress, blockNumber),
+      ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft(), blockNumber),
+      ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc(), blockNumber),
     ]);
+    if (chainId !== BigInt(attestation.chainId)) {
+      throw new MegapotV2RpcFailed("invalid-response");
+    }
     if (
-      chainId !== BigInt(attestation.chainId) ||
       jackpotCodeHash !== attestation.jackpotCodeHash ||
       ticketNftCodeHash !== attestation.ticketNftCodeHash ||
       usdcCodeHash !== attestation.usdcCodeHash ||
+      [jackpotCodeHash, ticketNftCodeHash, usdcCodeHash].includes(keccak256("0x"))
+    ) {
+      throw new MegapotV2AttestationMismatch();
+    }
+    // Canonical empty code is a known negative on the expected chain. Decode
+    // wiring only after that proof; malformed/provider failures still escape.
+    const configuredTicketNft = decodeMegapotJackpotTicketNft(configuredTicketNftData);
+    const configuredUsdc = decodeMegapotJackpotUsdc(configuredUsdcData);
+    if (
       configuredTicketNft !== attestation.ticketNftAddress ||
       configuredUsdc !== attestation.usdcAddress
     ) {
-      throw new MegapotV2RpcFailed("invalid-response");
+      throw new MegapotV2AttestationMismatch();
     }
     return { jackpotCodeHash, ticketNftCodeHash, usdcCodeHash };
   };
@@ -516,6 +550,56 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   return {
     deployment: attestation,
     attestDeployment,
+    attestDeploymentAt: async (blockNumber) => {
+      if (blockNumber < 0n) throw new MegapotV2RpcFailed("invalid-config");
+      return performDeploymentAttestation(blockNumber);
+    },
+    readFundingTransferLogs: async (input) => {
+      if (
+        !Number.isSafeInteger(input.maximumBlocks) ||
+        input.maximumBlocks < 1 ||
+        !Number.isSafeInteger(input.maximumLogs) ||
+        input.maximumLogs < 1 ||
+        input.fromBlock < 0n ||
+        input.toBlock < input.fromBlock ||
+        input.toBlock - input.fromBlock + 1n > BigInt(input.maximumBlocks)
+      )
+        throw new MegapotV2RpcFailed("invalid-config");
+      const topics = [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        `0x${canonicalAddress(input.sender).slice(2).padStart(64, "0")}`,
+        `0x${canonicalAddress(input.custody).slice(2).padStart(64, "0")}`,
+      ];
+      const token = canonicalAddress(input.token);
+      const result = await rpc("eth_getLogs", [
+        {
+          address: token,
+          topics,
+          fromBlock: quantityHex(input.fromBlock),
+          toBlock: quantityHex(input.toBlock),
+        },
+      ]);
+      if (!Array.isArray(result) || result.length > input.maximumLogs)
+        throw new MegapotV2RpcFailed("invalid-response");
+      return result.map((value) => {
+        const log = object(value);
+        const blockNumber = quantity(log.blockNumber);
+        if (
+          log.removed === true ||
+          canonicalAddress(log.address) !== token ||
+          !Array.isArray(log.topics) ||
+          log.topics.length !== 3 ||
+          log.topics.some((t, i) => canonicalHash(t) !== topics[i]) ||
+          blockNumber < input.fromBlock ||
+          blockNumber > input.toBlock ||
+          quantity(log.logIndex) > BigInt(Number.MAX_SAFE_INTEGER)
+        )
+          throw new MegapotV2RpcFailed("invalid-response");
+        canonicalHash(log.blockHash);
+        hexData(log.data);
+        return { transactionHash: canonicalHash(log.transactionHash), blockNumber };
+      });
+    },
     readCurrentDrawing: async () => {
       const drawingId = decodeMegapotCurrentDrawingId(
         await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId()),

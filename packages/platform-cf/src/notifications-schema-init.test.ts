@@ -122,9 +122,14 @@ function protocol(
       expect(defaultsInstalled).toBe(true);
       expect(config.connectionString).toBe(connectionString);
       expect(config.expectedLedger).toEqual([]);
-      if (options.mode === "pre_video_ordering_migrations")
+      if (options.mode === "pre_video_ordering_migrations") {
         expect(config.migrations).toEqual(selectedPlan);
-      else expect(config.migrations).toBe(plan);
+        expect(config.migrations).toHaveLength(274);
+        expect(config.migrations?.at(-1)?.version).toBe(
+          "0274_author_declared_text_moderation_actions.sql",
+        );
+        expect(config.migrations?.some((m) => Number(m.version.slice(0, 4)) >= 275)).toBe(false);
+      } else expect(config.migrations).toBe(plan);
       if (options.migrateError) throw options.migrateError;
       if (options.dryRun) return { dryRun: true, plan: [] };
       return {
@@ -139,12 +144,26 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0276 set", () => {
-  expect(migrations).toHaveLength(276);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0296 set", () => {
+  expect(migrations).toHaveLength(296);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 276 }, (_, i) => i + 1),
+    Array.from({ length: 296 }, (_, i) => i + 1),
   );
-  expect(migrations.at(-1)?.version).toBe("0276_wallet_send_palm_assertion_lock.sql");
+  expect(migrations[274]).toMatchObject({
+    version: "0275_video_root_comment_ordering.sql",
+    checksum: "ce3a162f0ff721e78bec5fdb065b9da8dc0cdbfb1371aaba4c3952eaa503c8d4",
+  });
+  expect(migrations[275]).toMatchObject({
+    version: "0276_wallet_send_palm_assertion_lock.sql",
+    checksum: "51d53c71b178f84ac730e6a7659319f61b3871d31c6976ee913616a6b87af8e3",
+  });
+  expect(migrations[292]?.version).toBe("0293_moderated_dance_notification_recovery_bounds.sql");
+  expect(migrations[293]?.version).toBe("0294_song_contribution_refusals.sql");
+  expect(migrations[294]?.version).toBe("0295_shared_song_megapot_participation.sql");
+  expect(migrations.at(-1)).toMatchObject({
+    version: "0296_moderated_dance_frozen_context.sql",
+    checksum: "f59d6da6e52ce87e4378f9cc32bb9db00fb5027e7cdebf10c1241a78003cad71",
+  });
 });
 
 test("behavior initialization retains its baseline and pre-DDL callback without running migrations", async () => {
@@ -266,7 +285,7 @@ for (const boundary of ["checksum", "filename"] as const)
             ...migration,
             ...(boundary === "checksum"
               ? { checksum: "0".repeat(64) }
-              : { version: "0276_unreviewed.sql" }),
+              : { version: `${String(migrations.length).padStart(4, "0")}_unreviewed.sql` }),
           },
     );
     const p = protocol({ plan });

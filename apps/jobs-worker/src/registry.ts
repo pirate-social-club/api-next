@@ -4,6 +4,45 @@ import { Context, Data, type Duration, Effect, Schedule } from "effect";
 
 export type TableKey = `postgres:${string}`;
 
+export const SONG_FUNDING_RECOVERY_WRITES = [
+  "postgres:reward_song_context_work_v2",
+  "postgres:reward_context_work_counters_v2",
+  "postgres:reward_funding_leg_snapshots_v2",
+  "postgres:reward_song_slots_v2",
+  "postgres:reward_funding_work_envelopes_v2",
+  "postgres:reward_funding_schedule_witnesses_v2",
+  "postgres:reward_incoming_receipts_v2",
+  "postgres:song_megapot_contributions_v2",
+  "postgres:reward_contribution_reservations_v2",
+  "postgres:reward_funding_account_counters_v2",
+  "postgres:reward_late_principal_liabilities_v2",
+  "postgres:song_reward_offer_legs",
+] as const satisfies readonly TableKey[];
+export const SONG_FUNDING_RECOVERY_READS = [
+  ...SONG_FUNDING_RECOVERY_WRITES,
+  "postgres:reward_shared_song_templates_v2",
+  "postgres:reward_shared_song_template_admissions_v2",
+  "postgres:reward_funding_profiles_v2",
+  "postgres:reward_wallet_nonce_leases",
+  "postgres:megapot_deployment_attestations",
+  "postgres:song_megapot_contribution_commands_v2",
+  "postgres:persona_wallet_assignments",
+  "postgres:reward_operations_control",
+  "postgres:reward_operations_control_events",
+  "postgres:reward_operations_run_lease",
+  "postgres:reward_pool_cohort_seals_v2",
+  "postgres:personas",
+  "postgres:persona_community_bindings",
+  "postgres:users",
+  "postgres:posts",
+  "postgres:communities",
+  "postgres:song_owner_policies",
+  "postgres:song_reward_offers",
+  "postgres:megapot_pool_drawings",
+  "postgres:reward_chain_effects",
+  "postgres:megapot_ticket_purchase_effects",
+] as const satisfies readonly TableKey[];
+
 export interface JobRuntimeContext {
   readonly owner: string;
   readonly attemptId: string;
