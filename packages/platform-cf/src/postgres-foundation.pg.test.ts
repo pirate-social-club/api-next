@@ -1413,6 +1413,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "dance_moderated_reference_receipts_v1",
         "dance_moderated_reference_sources_v1",
         "dance_moderated_replay_claims_v1",
+        "dance_moderated_replay_retirements_v1",
         "dance_moderated_result_events_v1",
         "dance_moderated_review_evidence_v1",
         "dance_moderated_review_intents_v1",

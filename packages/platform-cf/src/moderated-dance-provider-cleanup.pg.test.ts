@@ -377,6 +377,12 @@ suite("moderated Dance provider disposition", () => {
         await expect(
           client.query("SELECT lock_moderated_dance_processing_authority_v1('unowned')"),
         ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+          client.query("SELECT * FROM dance_moderated_replay_retirements_v1"),
+        ).rejects.toMatchObject({ code: "42501" });
+        expect(
+          (await client.query("SELECT drain_moderated_dance_replay_v1() packet")).rows[0]?.packet,
+        ).toEqual({ retiredAttempts: 0 });
         const selected = (
           await client.query(
             "SELECT claim_moderated_dance_provider_cleanup_v1('confined-cleanup') AS packet",

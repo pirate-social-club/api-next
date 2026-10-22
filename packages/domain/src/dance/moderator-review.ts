@@ -1,4 +1,5 @@
 /** Pure moderated family. No media, clock, storage or funding I/O. */
+export const MODERATED_DANCE_REPLAY_RETIRED = "keyed-replay-retired-v1";
 export type ReviewPolicy = Readonly<{
   version: "moderator-review-policy-v1";
   hash: string;
@@ -310,7 +311,7 @@ const intent = (
   holdAuthorityRef,
 });
 
-function validCapture(c: SealedReviewCapture): boolean {
+function validCapture(c: SealedReviewCapture, retainedTerminal = false): boolean {
   const p = c.policy;
   return (
     !!p &&
@@ -340,7 +341,6 @@ function validCapture(c: SealedReviewCapture): boolean {
     [
       c.termsHash,
       c.sourceDigest,
-      c.normalizedDigest,
       p.hash,
       p.qualificationHash,
       p.rubricHash,
@@ -350,6 +350,8 @@ function validCapture(c: SealedReviewCapture): boolean {
       p.retentionHash,
       p.admissionHash,
     ].every(hash) &&
+    (hash(c.normalizedDigest) ||
+      (retainedTerminal && c.normalizedDigest === MODERATED_DANCE_REPLAY_RETIRED)) &&
     [c.audioRevision, c.choreographyRevision, c.analysisRevision, c.accountFenceRevision].every(
       positive,
     ) &&
@@ -575,7 +577,7 @@ export function transitionModeratorReview(
   const c = s.capture;
   if (
     !time(now) ||
-    !validCapture(c) ||
+    !validCapture(c, terminal(s) && s.publication !== "pending") ||
     !positive(s.revision) ||
     s.reviewDeadlineMs !== c.uploadedAtMs + c.policy.reviewWindowMs ||
     now < c.uploadedAtMs

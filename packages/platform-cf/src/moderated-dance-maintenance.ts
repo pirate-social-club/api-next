@@ -232,6 +232,11 @@ export function makeModeratedDanceMaintenance(
     }
     await providerCleanup.run();
     await call(
+      "dance.maintenance.replay-drain",
+      "SELECT drain_moderated_dance_replay_v1() AS packet",
+      [],
+    );
+    await call(
       "dance.maintenance.readiness",
       "SELECT record_moderated_dance_maintenance_v1() AS packet",
       [],

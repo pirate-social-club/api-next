@@ -7846,6 +7846,61 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION drain_moderated_dance_replay_v1() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE candidate TEXT; u dance_moderated_uploads_v1; s dance_moderated_sessions_v1; r dance_moderated_reviews_v1;
+ work dance_moderated_processing_v1; now_at TIMESTAMPTZ; removed BIGINT; drained INTEGER:=0;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'replay drain unavailable' USING ERRCODE='DRV02'; END IF;
+ PERFORM pg_advisory_xact_lock(hashtextextended('moderated-dance-replay-family-v1',0));
+ FOR candidate IN SELECT upload_id FROM dance_moderated_uploads_v1 WHERE replay_expires_at<=clock_timestamp()
+ AND replay_retired_at IS NULL AND normalized_digest IS NOT NULL
+ ORDER BY replay_last_checked_at NULLS FIRST,replay_expires_at,upload_id LIMIT 20 LOOP
+  -- Never wait while holding the family lock for a command which acquired its
+  -- source locks first. A skipped source remains an explicit obligation.
+  SELECT * INTO u FROM dance_moderated_uploads_v1 WHERE upload_id=candidate FOR UPDATE SKIP LOCKED;
+  IF u.upload_id IS NULL THEN CONTINUE; END IF;
+  UPDATE dance_moderated_uploads_v1 SET replay_last_checked_at=clock_timestamp() WHERE upload_id=u.upload_id;
+  SELECT * INTO s FROM dance_moderated_sessions_v1 WHERE session_id=u.session_id FOR UPDATE SKIP LOCKED;
+  IF s.session_id IS NULL THEN CONTINUE; END IF;
+  SELECT * INTO r FROM dance_moderated_reviews_v1 WHERE session_id=s.session_id FOR UPDATE SKIP LOCKED;
+  IF EXISTS(SELECT 1 FROM dance_moderated_reviews_v1 WHERE session_id=s.session_id) AND r.review_id IS NULL THEN CONTINUE; END IF;
+  IF EXISTS(SELECT 1 FROM dance_moderated_processing_v1 WHERE upload_id=u.upload_id) THEN
+   SELECT * INTO work FROM dance_moderated_processing_v1 WHERE upload_id=u.upload_id FOR UPDATE SKIP LOCKED;
+   IF work.upload_id IS NULL OR work.state IN('ready','claimed','unknown') THEN CONTINUE; END IF;
+  END IF;
+  now_at:=clock_timestamp();
+  IF u.replay_retired_at IS NOT NULL OR u.replay_expires_at>now_at
+   OR r.review_id IS NULL AND s.state<>'terminal'
+   OR r.review_id IS NOT NULL AND (r.terminal_at IS NULL OR r.state->>'publication'='pending')
+   OR EXISTS(SELECT 1 FROM dance_moderated_replay_claims_v1 c WHERE c.source_kind='attempt' AND c.source_id=u.upload_id AND c.expires_at>now_at) THEN CONTINUE; END IF;
+  SELECT count(*) INTO removed FROM dance_moderated_replay_claims_v1 WHERE source_kind='attempt' AND source_id=u.upload_id;
+  INSERT INTO dance_moderated_replay_retirements_v1 VALUES(u.upload_id,s.terms_hash,s.terms->'profile'->>'replayKeyEpoch',u.replay_expires_at,now_at,removed);
+  UPDATE dance_moderated_uploads_v1 SET normalized_digest=NULL,replay_retired_at=now_at WHERE upload_id=u.upload_id;
+  IF r.review_id IS NOT NULL THEN
+   UPDATE dance_moderated_reviews_v1 SET state=jsonb_set(state,'{capture,normalizedDigest}','"keyed-replay-retired-v1"'::JSONB) WHERE review_id=r.review_id;
+   UPDATE dance_moderated_review_evidence_v1 SET normalized_digest=NULL WHERE review_id=r.review_id AND normalized_digest IS NOT NULL;
+  END IF;
+  DELETE FROM dance_moderated_replay_claims_v1 WHERE source_kind='attempt' AND source_id=u.upload_id;
+  drained:=drained+1;
+ END LOOP;
+ RETURN jsonb_build_object('retiredAttempts',drained);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='drain_moderated_dance_replay_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
     SET search_path FROM CURRENT
@@ -10268,7 +10323,7 @@ BEGIN
  ELSIF p_purpose='worker' THEN
   names:=ARRAY['next_moderated_dance_review_task_v1','lock_moderated_dance_review_v1','read_moderated_dance_receipt_v1','moderated_dance_review_facts_v1','commit_moderated_dance_review_v1'];
  ELSIF p_purpose='media' THEN
-  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1'];
+  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1','drain_moderated_dance_replay_v1'];
  ELSIF p_purpose='erasure' THEN names:=ARRAY['begin_moderated_dance_account_erasure_v1'];
  ELSIF p_purpose='source_gateway' THEN names:=ARRAY['resolve_moderated_dance_source_v1','resolve_moderated_dance_reference_source_v1'];
  ELSE RAISE EXCEPTION 'unknown runtime purpose' USING ERRCODE='DRV06'; END IF;
@@ -16652,6 +16707,61 @@ BEGIN
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_moderated_dance_provider_usage_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_moderated_dance_replay_retirement_v1() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE upload TEXT; retired BOOLEAN;
+BEGIN
+ IF TG_TABLE_NAME='dance_moderated_uploads_v1' THEN
+  IF OLD.replay_expires_at IS NOT NULL AND NEW.replay_expires_at IS DISTINCT FROM OLD.replay_expires_at THEN RAISE EXCEPTION 'replay retention cannot renew' USING ERRCODE='DRV01'; END IF;
+  IF OLD.replay_retired_at IS NOT NULL THEN
+   IF NEW.normalized_digest IS NOT NULL OR NEW.replay_retired_at IS DISTINCT FROM OLD.replay_retired_at
+    OR NEW.replay_expires_at IS DISTINCT FROM OLD.replay_expires_at THEN RAISE EXCEPTION 'retired replay cannot reopen' USING ERRCODE='DRV01'; END IF;
+   RETURN NEW;
+  END IF;
+  IF NEW.normalized_digest IS NOT DISTINCT FROM OLD.normalized_digest
+   AND NEW.replay_retired_at IS NOT DISTINCT FROM OLD.replay_retired_at
+   AND NEW.replay_expires_at IS NOT DISTINCT FROM OLD.replay_expires_at THEN RETURN NEW; END IF;
+  IF NEW.replay_retired_at IS NULL AND NEW.normalized_digest IS NOT NULL THEN
+   IF OLD.normalized_digest IS NOT NULL AND NEW.normalized_digest<>OLD.normalized_digest THEN RAISE EXCEPTION 'replay identity changed' USING ERRCODE='DRV01'; END IF;
+   RETURN NEW;
+  END IF;
+  IF NEW.replay_retired_at IS NOT NULL AND NEW.normalized_digest IS NULL
+   AND (to_jsonb(NEW)-'normalized_digest'-'replay_retired_at')=(to_jsonb(OLD)-'normalized_digest'-'replay_retired_at') THEN upload:=OLD.upload_id;
+  ELSE IF NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF; RAISE EXCEPTION 'replay retirement unavailable' USING ERRCODE='DRV01'; END IF;
+ ELSIF TG_TABLE_NAME='dance_moderated_reviews_v1' THEN
+  IF NEW.state#>>'{capture,normalizedDigest}' IS NOT DISTINCT FROM OLD.state#>>'{capture,normalizedDigest}' THEN RETURN NEW; END IF;
+  IF NEW.state#>>'{capture,normalizedDigest}'='keyed-replay-retired-v1'
+   AND (to_jsonb(NEW)-'state')=(to_jsonb(OLD)-'state')
+   AND (NEW.state#-'{capture,normalizedDigest}')=(OLD.state#-'{capture,normalizedDigest}') THEN
+   SELECT upload_id INTO upload FROM dance_moderated_uploads_v1 WHERE session_id=OLD.session_id;
+  ELSE RAISE EXCEPTION 'retained capture identity changed' USING ERRCODE='DRV01'; END IF;
+ ELSE
+  IF TG_OP='UPDATE' AND OLD.normalized_digest IS NOT NULL AND NEW.normalized_digest IS NULL
+   AND (to_jsonb(NEW)-'normalized_digest')=(to_jsonb(OLD)-'normalized_digest') THEN
+   SELECT u.upload_id INTO upload FROM dance_moderated_uploads_v1 u JOIN dance_moderated_reviews_v1 r USING(session_id) WHERE r.review_id=OLD.review_id;
+  ELSE RAISE EXCEPTION 'review evidence is immutable' USING ERRCODE='DRV01'; END IF;
+ END IF;
+ SELECT EXISTS(SELECT 1 FROM dance_moderated_replay_retirements_v1 receipt JOIN dance_moderated_uploads_v1 u USING(upload_id)
+ JOIN dance_moderated_sessions_v1 s USING(session_id) WHERE receipt.upload_id=upload AND receipt.terms_hash=s.terms_hash
+ AND receipt.retired_at>=receipt.due_at AND receipt.due_at=u.replay_expires_at) INTO retired;
+ IF NOT retired THEN RAISE EXCEPTION 'replay retirement receipt missing' USING ERRCODE='DRV01'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_moderated_dance_replay_retirement_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
@@ -24936,11 +25046,15 @@ DECLARE work dance_moderated_processing_v1; s dance_moderated_sessions_v1; u dan
  normalized TEXT; until_at TIMESTAMPTZ; now_at TIMESTAMPTZ:=clock_timestamp();
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
+ work:=lock_moderated_dance_processing_authority_v1(p_upload);
+ PERFORM pg_advisory_xact_lock(hashtextextended('moderated-dance-replay-family-v1',0));
+ now_at:=clock_timestamp();
  SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
  SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload FOR UPDATE;
  SELECT * INTO STRICT s FROM dance_moderated_sessions_v1 WHERE session_id=u.session_id;
  profile:=s.terms->'profile';
- IF work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR work.provider_job_id IS NULL
+ IF u.replay_retired_at IS NOT NULL OR EXISTS(SELECT 1 FROM dance_moderated_replay_retirements_v1 WHERE upload_id=p_upload)
+ OR work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR work.provider_job_id IS NULL
  OR work.provider_deadline<=now_at OR jsonb_array_length(p_frames) IS DISTINCT FROM 3
  OR jsonb_array_length(p_claims) IS DISTINCT FROM 2*jsonb_array_length(profile->'replayCompatibleEpochs')
  OR (SELECT count(DISTINCT frame->>'index') FROM jsonb_array_elements(p_frames) frame)<>3 THEN RAISE EXCEPTION 'normalization authority unavailable' USING ERRCODE='DRV05'; END IF;
@@ -24971,7 +25085,7 @@ BEGIN
   INSERT INTO dance_moderated_frame_artifacts_v1 VALUES(p_upload,(frame->>'index')::INTEGER,frame->'identity',frame->>'sha256',(frame->>'timestampMs')::BIGINT,now_at) ON CONFLICT DO NOTHING;
  END LOOP;
  IF (SELECT count(*) FROM dance_moderated_frame_artifacts_v1 WHERE upload_id=p_upload)<>3 THEN RAISE EXCEPTION 'private frames incomplete' USING ERRCODE='DRV06'; END IF;
- UPDATE dance_moderated_uploads_v1 SET state='sealed',sealed_at=bytes_sealed_at,normalized_digest=normalized,
+ UPDATE dance_moderated_uploads_v1 SET state='sealed',sealed_at=bytes_sealed_at,normalized_digest=normalized,replay_expires_at=coalesce(replay_expires_at,until_at),
  normalization_version=s.terms->'capture'->'policy'->>'normalizationVersion',normalization_hash=s.terms->'capture'->'policy'->>'normalizationHash' WHERE upload_id=p_upload;
  UPDATE dance_moderated_processing_v1 SET result=jsonb_build_object('integrity',CASE WHEN blocked THEN 'blocked' ELSE 'unique' END) WHERE upload_id=p_upload;
  INSERT INTO dance_moderated_media_dispositions_v1(upload_id,kind,identity,dispose_by,state,completed_at) VALUES(p_upload,'derived',jsonb_build_object('frames',p_frames),least(s.expires_at,now_at+((SELECT disposition_profile->>'temporaryCleanupWithinMs' FROM dance_review_policy_versions_v1 WHERE policy_id=s.policy_id)::BIGINT*interval '1 millisecond')),'held',NULL) ON CONFLICT(upload_id,kind) DO UPDATE SET identity=EXCLUDED.identity WHERE dance_moderated_media_dispositions_v1.claim_token IS NULL;
@@ -30284,6 +30398,14 @@ BEGIN
   DELETE FROM dance_moderated_maintenance_readiness_v1;
   DELETE FROM dance_moderated_processor_readiness_v1;
   RETURN;
+ END IF;
+ IF EXISTS(SELECT 1 FROM dance_moderated_uploads_v1 WHERE normalized_digest IS NOT NULL AND replay_retired_at IS NULL AND replay_expires_at<=now_at)
+ OR EXISTS(SELECT 1 FROM dance_moderated_media_dispositions_v1 d WHERE d.state IN('pending','running','unknown') AND d.dispose_by<=now_at)
+ OR EXISTS(SELECT 1 FROM dance_moderated_media_dispositions_v1 d JOIN dance_moderated_uploads_v1 u USING(upload_id)
+ JOIN dance_moderated_reviews_v1 r USING(session_id) JOIN dance_moderated_review_intents_v1 i USING(review_id)
+ WHERE d.state='held' AND i.status<>'completed' AND i.deadline_at<=now_at AND
+  (i.kind='hold_review' OR i.kind='cleanup_review' AND d.kind IN('ingress','original') OR i.kind='cleanup_temporary' AND d.kind='derived')) THEN
+  DELETE FROM dance_moderated_maintenance_readiness_v1; DELETE FROM dance_moderated_processor_readiness_v1; RETURN;
  END IF;
  SELECT min((p.operational_profile->>'readinessLeaseMs')::BIGINT) INTO lease_ms FROM dance_review_policy_versions_v1 p
  JOIN dance_review_policy_admissions_v1 a USING(policy_id) WHERE a.accepted AND now_at>=a.effective_at AND now_at<a.valid_until AND now_at>=p.valid_from AND now_at<p.valid_until;
@@ -45486,6 +45608,18 @@ CREATE TABLE dance_moderated_replay_claims_v1 (
     CONSTRAINT dance_moderated_replay_claims_v1_source_kind_check CHECK ((source_kind = ANY (ARRAY['reference'::text, 'attempt'::text])))
 );
 
+CREATE TABLE dance_moderated_replay_retirements_v1 (
+    upload_id text NOT NULL,
+    terms_hash text NOT NULL,
+    key_epoch text NOT NULL,
+    due_at timestamp with time zone NOT NULL,
+    retired_at timestamp with time zone NOT NULL,
+    removed_claims bigint NOT NULL,
+    CONSTRAINT dance_moderated_replay_retirements_v1_check CHECK (((retired_at >= due_at) AND (retired_at <= clock_timestamp()))),
+    CONSTRAINT dance_moderated_replay_retirements_v1_removed_claims_check CHECK ((removed_claims >= 0)),
+    CONSTRAINT dance_moderated_replay_retirements_v1_terms_hash_check CHECK ((terms_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
 CREATE TABLE dance_moderated_result_events_v1 (
     event_id text NOT NULL,
     review_id text NOT NULL,
@@ -45507,7 +45641,7 @@ CREATE TABLE dance_moderated_review_evidence_v1 (
     safety_status text NOT NULL,
     content_rating text NOT NULL,
     integrity_status text NOT NULL,
-    normalized_digest text NOT NULL,
+    normalized_digest text,
     evidence jsonb NOT NULL,
     recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT dance_moderated_review_evidence_v1_analysis_revision_check CHECK ((analysis_revision > 0)),
@@ -45642,16 +45776,20 @@ CREATE TABLE dance_moderated_uploads_v1 (
     seal_token text,
     seal_dispatched_at timestamp with time zone,
     bytes_sealed_at timestamp with time zone,
+    replay_expires_at timestamp with time zone,
+    replay_last_checked_at timestamp with time zone,
+    replay_retired_at timestamp with time zone,
     CONSTRAINT dance_moderated_uploads_v1_check CHECK ((expires_at > reserved_at)),
     CONSTRAINT dance_moderated_uploads_v1_check1 CHECK (((first_stored_at IS NULL) OR (first_stored_at >= reserved_at))),
-    CONSTRAINT dance_moderated_uploads_v1_check2 CHECK (((state <> ALL (ARRAY['sealed'::text, 'held'::text])) OR ((sealed_at IS NOT NULL) AND (first_stored_at IS NOT NULL) AND (server_sha256 IS NOT NULL) AND (normalized_digest IS NOT NULL) AND (normalization_version IS NOT NULL) AND (normalization_hash IS NOT NULL)))),
     CONSTRAINT dance_moderated_uploads_v1_expected_duration_ms_check CHECK ((expected_duration_ms > 0)),
     CONSTRAINT dance_moderated_uploads_v1_expected_size_bytes_check CHECK ((expected_size_bytes > 0)),
     CONSTRAINT dance_moderated_uploads_v1_maximum_bytes_check CHECK ((maximum_bytes > 0)),
     CONSTRAINT dance_moderated_uploads_v1_normalized_digest_check CHECK (((normalized_digest IS NULL) OR (normalized_digest ~ '^[a-f0-9]{64}$'::text))),
     CONSTRAINT dance_moderated_uploads_v1_server_sha256_check CHECK (((server_sha256 IS NULL) OR (server_sha256 ~ '^[a-f0-9]{64}$'::text))),
     CONSTRAINT dance_moderated_uploads_v1_state_check CHECK ((state = ANY (ARRAY['reserved'::text, 'sealing'::text, 'sealed'::text, 'unknown'::text, 'deleted'::text, 'held'::text]))),
-    CONSTRAINT dance_moderated_uploads_v1_upload_id_check CHECK (is_dance_identifier(upload_id))
+    CONSTRAINT dance_moderated_uploads_v1_upload_id_check CHECK (is_dance_identifier(upload_id)),
+    CONSTRAINT moderated_dance_retained_seal_v2 CHECK (((state <> ALL (ARRAY['sealed'::text, 'held'::text])) OR ((sealed_at IS NOT NULL) AND (first_stored_at IS NOT NULL) AND (server_sha256 IS NOT NULL) AND ((normalized_digest IS NOT NULL) OR (replay_retired_at IS NOT NULL)) AND (normalization_version IS NOT NULL) AND (normalization_hash IS NOT NULL)))),
+    CONSTRAINT moderated_dance_retired_digest_absent_v1 CHECK (((replay_retired_at IS NULL) OR (normalized_digest IS NULL)))
 );
 
 CREATE TABLE dance_moderated_verdict_audits_v1 (
@@ -54931,6 +55069,9 @@ ALTER TABLE ONLY dance_moderated_reference_sources_v1
 ALTER TABLE ONLY dance_moderated_replay_claims_v1
     ADD CONSTRAINT dance_moderated_replay_claims_v1_pkey PRIMARY KEY (scope, key_epoch, kind, digest);
 
+ALTER TABLE ONLY dance_moderated_replay_retirements_v1
+    ADD CONSTRAINT dance_moderated_replay_retirements_v1_pkey PRIMARY KEY (upload_id);
+
 ALTER TABLE ONLY dance_moderated_result_events_v1
     ADD CONSTRAINT dance_moderated_result_events_v1_pkey PRIMARY KEY (event_id);
 
@@ -58552,7 +58693,7 @@ CREATE TRIGGER dance_moderated_consents_v1_immutable BEFORE DELETE OR UPDATE ON 
 
 CREATE TRIGGER dance_moderated_consents_v1_no_truncate BEFORE TRUNCATE ON dance_moderated_consents_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
-CREATE TRIGGER dance_moderated_review_evidence_v1_immutable BEFORE DELETE OR UPDATE ON dance_moderated_review_evidence_v1 FOR EACH ROW EXECUTE FUNCTION reject_dance_review_history_v1();
+CREATE TRIGGER dance_moderated_review_evidence_v1_immutable BEFORE DELETE OR UPDATE ON dance_moderated_review_evidence_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_retirement_v1();
 
 CREATE TRIGGER dance_moderated_review_evidence_v1_no_truncate BEFORE TRUNCATE ON dance_moderated_review_evidence_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
@@ -59245,6 +59386,14 @@ CREATE TRIGGER moderated_provider_usage_retained BEFORE DELETE OR UPDATE ON danc
 CREATE TRIGGER moderated_reference_receipt_immutable BEFORE DELETE OR UPDATE ON dance_moderated_reference_receipts_v1 FOR EACH ROW EXECUTE FUNCTION reject_dance_review_history_v1();
 
 CREATE TRIGGER moderated_reference_receipt_no_truncate BEFORE TRUNCATE ON dance_moderated_reference_receipts_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER moderated_replay_retirement_immutable BEFORE DELETE OR UPDATE ON dance_moderated_replay_retirements_v1 FOR EACH ROW EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER moderated_replay_retirement_no_truncate BEFORE TRUNCATE ON dance_moderated_replay_retirements_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER moderated_review_replay_retirement BEFORE UPDATE ON dance_moderated_reviews_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_retirement_v1();
+
+CREATE TRIGGER moderated_upload_replay_retirement BEFORE UPDATE ON dance_moderated_uploads_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_retirement_v1();
 
 CREATE TRIGGER moderation_platform_floor_categories_append_only BEFORE DELETE OR UPDATE ON moderation_platform_floor_category_decisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
@@ -60741,6 +60890,9 @@ ALTER TABLE ONLY dance_moderated_reference_receipts_v1
 
 ALTER TABLE ONLY dance_moderated_reference_sources_v1
     ADD CONSTRAINT dance_moderated_reference_sources_v1_choreography_id_fkey FOREIGN KEY (choreography_id) REFERENCES dance_moderated_reference_commands_v1(choreography_id);
+
+ALTER TABLE ONLY dance_moderated_replay_retirements_v1
+    ADD CONSTRAINT dance_moderated_replay_retirements_v1_upload_id_fkey FOREIGN KEY (upload_id) REFERENCES dance_moderated_uploads_v1(upload_id);
 
 ALTER TABLE ONLY dance_moderated_result_events_v1
     ADD CONSTRAINT dance_moderated_result_events_v1_recipient_account_id_fkey FOREIGN KEY (recipient_account_id) REFERENCES users(user_id);

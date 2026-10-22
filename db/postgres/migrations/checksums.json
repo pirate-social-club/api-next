@@ -298,6 +298,7 @@
     "0295_shared_song_megapot_participation.sql": "8a01f2df8a6483c15951a3e4698f5ff8ec5e829a4330bede6c153a0b9f46d17c",
     "0296_moderated_dance_frozen_context.sql": "f59d6da6e52ce87e4378f9cc32bb9db00fb5027e7cdebf10c1241a78003cad71",
     "0297_moderated_dance_provider_disposition.sql": "6a2b6c84110224f61a1e0c97846f9ada96cc9a93a63d26b519fb74d47b88dd0d",
-    "0298_moderated_dance_cloudconvert_probe.sql": "6e7e87389a509be9895d2a6bda0031c677cd21e1b8f2d90ecb682e7d1a25a3eb"
+    "0298_moderated_dance_cloudconvert_probe.sql": "6e7e87389a509be9895d2a6bda0031c677cd21e1b8f2d90ecb682e7d1a25a3eb",
+    "0299_moderated_dance_replay_retention.sql": "20055cc14cf6644481b526b25b771bba2016cd93f676518093238bbd05ff9c18"
   }
 }
