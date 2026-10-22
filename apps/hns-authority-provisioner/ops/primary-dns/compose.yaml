@@ -4,6 +4,11 @@ services:
     image: powerdns/pdns-auth-51@sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27
     container_name: pirate-hns-authdns
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     # Host networking: the webserver/API must be reachable on the host's
     # loopback by the verifier (127.0.0.1:8081). Under bridge networking a
     # published port cannot reach a service bound to the CONTAINER's loopback,
