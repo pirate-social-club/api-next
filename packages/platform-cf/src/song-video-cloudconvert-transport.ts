@@ -1,4 +1,5 @@
 import { decodeModeratedDanceProbeObservation } from "./moderated-dance-probe-observation.ts";
+import { decodeModeratedDancePublicationBodyObservation } from "./moderated-dance-publication-observation.ts";
 
 /** A deliberately small CloudConvert boundary. POST is never retried here. */
 export type CloudConvertJob = Readonly<{
@@ -292,6 +293,12 @@ export function makeSongVideoCloudConvertTransport(
     async showPrivateProbe(id: string) {
       if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
       return decodeModeratedDanceProbeObservation(record(await request(`/jobs/${id}`, "GET")).data);
+    },
+    async showPrivatePublication(id: string) {
+      if (!ID.test(id)) throw new TypeError("invalid CloudConvert job id");
+      return decodeModeratedDancePublicationBodyObservation(
+        record(await request(`/jobs/${id}`, "GET")).data,
+      );
     },
     /** Identity/status only, without requiring finished export URLs. A 404 is
      * absence only for this previously bound job, never for an uncertain tag. */

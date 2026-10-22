@@ -39,6 +39,19 @@ PostgreSQL tests cover the real functions, lifecycle locks and restricted roles
 with synthetic body identities and a storage stand-in. Neither proves actual
 provider processing, production storage or phone acceptance.
 
-The production body-processing consumer, source capability and provider effect
-budget/disposition still need implementation. Post credit, connected application
-states, cross-community authoring and release acceptance remain separate work.
+The pinned body recipe trims the captured interval, removes recorded audio and
+metadata, bounds the rendition, and preserves a partial final frame at a 48 kHz
+timebase. Its private five-task provider decoder checks task identities,
+dependencies, engine versions and the single output. The bounded output reader
+checks the actual silent H.264 MP4 packet timing, edit list, complete media-data
+coverage and measured digest before returning a storage plan. This input cannot
+pass the ordinary two-track canonical master verifier.
+
+The existing mandatory native media suite runs the actual command strings on
+synthetic local FFmpeg 6.1.1. It proves six through thirty seconds, fractional
+start/end boundaries, no recorded soundtrack or cue, and every output frame
+against the source interval. This is not CloudConvert 6.1.4 conformance or a
+phone recording proof. The new task recipe still needs its durable source grant,
+provider effect budget/disposition and production intent consumer before use.
+Post credit, connected application states, cross-community authoring and release
+acceptance remain separate work.

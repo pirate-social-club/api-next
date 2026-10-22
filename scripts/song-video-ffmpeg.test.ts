@@ -7,6 +7,7 @@ import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import { verifySongVideoMasterAudio } from "../packages/platform-cf/src/song-video-master-verifier/master-audio.ts";
 import { inspectSongVideoMasterStructure } from "../packages/platform-cf/src/song-video-master-verifier/master-structure.ts";
 import { verifyRenderedOutput } from "../packages/platform-cf/src/song-video-output-verification.ts";
+import { proveDancePublicationBodyWithPinnedFfmpeg } from "./dance-publication-ffmpeg.fixture.ts";
 import {
   makeLocalPinnedFfmpegSongVideoEngine,
   SONG_VIDEO_DECODE_CHAIN,
@@ -136,7 +137,7 @@ suite("local song-video engine", () => {
 
   afterAll(async () => {
     if (directory) await rm(directory, { recursive: true, force: true });
-    if (completedTestCount === 8) await Bun.write(sentinelPath, sentinelContents);
+    if (completedTestCount === 9) await Bun.write(sentinelPath, sentinelContents);
   });
 
   test("measures the decoded length, which a frame-sum estimate overstates", async () => {
@@ -334,6 +335,11 @@ suite("local song-video engine", () => {
         await verifySongVideoMasterAudio(result.masterBytes, duration, canonical ?? ""),
       ).toEqual({ pcmSha256: canonical, sampleCount: duration });
     }
+    completedTestCount++;
+  }, 180_000);
+
+  test("trims a private Dance body with exact partial-frame timing, no cue/audio and independent complete-frame verification", async () => {
+    await proveDancePublicationBodyWithPinnedFfmpeg(directory);
     completedTestCount++;
   }, 180_000);
 
