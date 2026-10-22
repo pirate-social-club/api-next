@@ -38,11 +38,19 @@ describe("CloudConvert song-video PCM recipe", () => {
     expect(commands.passTwo).toContain("N\\,150)\\,777\\,DURATION");
   });
 
+  test("covers thirty-second Dance and preserves the final partial frame without extending it", () => {
+    const full = makeSongVideoCloudConvertCommands({ clipDurationSamples: 1_440_000 });
+    expect([full.frameCount, full.lastFrameSamples]).toEqual([900, 1600]);
+    const partial = makeSongVideoCloudConvertCommands({ clipDurationSamples: 1_440_000 - 777 });
+    expect([partial.frameCount, partial.lastFrameSamples]).toEqual([900, 823]);
+    expect(partial.passTwo).toContain("N\\,899)\\,823\\,DURATION");
+  });
+
   test.each([
     { clipDurationSamples: -1 },
     { clipDurationSamples: 0.5 },
     { clipDurationSamples: 143_999 },
-    { clipDurationSamples: 720_001 },
+    { clipDurationSamples: 1_440_001 },
     { clipDurationSamples: Number.MAX_SAFE_INTEGER },
   ])("refuses an invalid interval before making a command: %p", (input) => {
     expect(() => makeSongVideoCloudConvertCommands(input)).toThrow(TypeError);

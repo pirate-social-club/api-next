@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mediaSha256Bytes } from "@pirate/application/media/submission-service";
 import { SONG_VIDEO_MASTER_POLICY_V1 } from "@pirate/domain";
 import { verifySongVideoMasterAudio } from "../packages/platform-cf/src/song-video-master-verifier/master-audio.ts";
+import { inspectSongVideoMasterStructure } from "../packages/platform-cf/src/song-video-master-verifier/master-structure.ts";
 import { verifyRenderedOutput } from "../packages/platform-cf/src/song-video-output-verification.ts";
 import {
   makeLocalPinnedFfmpegSongVideoEngine,
@@ -135,7 +136,7 @@ suite("local song-video engine", () => {
 
   afterAll(async () => {
     if (directory) await rm(directory, { recursive: true, force: true });
-    if (completedTestCount === 7) await Bun.write(sentinelPath, sentinelContents);
+    if (completedTestCount === 8) await Bun.write(sentinelPath, sentinelContents);
   });
 
   test("measures the decoded length, which a frame-sum estimate overstates", async () => {
@@ -259,6 +260,81 @@ suite("local song-video engine", () => {
       }),
     ).toBeNull();
     completedTestCount += 1;
+  }, 180_000);
+
+  test("renders a full thirty-second Dance and a partial last frame with independently bound canonical PCM", async () => {
+    const videoPath = join(directory, "dance-30s.mp4"),
+      songPath = join(directory, "dance-song.mp3");
+    await run([
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=160x128:rate=30:duration=30",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=220:duration=30",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-shortest",
+      videoPath,
+    ]);
+    await run([
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:sample_rate=44100:duration=40",
+      "-c:a",
+      "libmp3lame",
+      "-b:a",
+      "128k",
+      songPath,
+    ]);
+    const video = new Uint8Array(await readFile(videoPath)),
+      audio = new Uint8Array(await readFile(songPath));
+    media.set("media://immutable/dance-30s", video);
+    media.set("media://immutable/dance-song", audio);
+    const longSource = {
+      reference: "media://immutable/dance-30s",
+      sha256: await mediaSha256Bytes(video),
+      byteLength: video.byteLength,
+    };
+    const longSong = {
+      reference: "media://immutable/dance-song",
+      sha256: await mediaSha256Bytes(audio),
+      durationSamples: 40 * SECOND,
+    };
+    const start = 2 * SECOND + 123;
+    for (const duration of [30 * SECOND, 30 * SECOND - 777]) {
+      const result = await engine.render({
+        source: longSource,
+        song: longSong,
+        clipStartSamples: start,
+        clipDurationSamples: duration,
+      });
+      if (!result.ok) throw new Error(`Long Dance render refused: ${result.reason}`);
+      expect(result.facts.videoDurationSamples).toBe(duration);
+      expect(result.facts.audioDurationSamples).toBe(duration);
+      expect(inspectSongVideoMasterStructure(result.masterBytes, duration).videoFrameCount).toBe(
+        900,
+      );
+      const canonical = await engine.canonicalIntervalDigest({
+        songAssetId: longSong.reference,
+        canonicalAudioSha256: longSong.sha256,
+        songDurationSamples: longSong.durationSamples,
+        clipStartSamples: start,
+        clipDurationSamples: duration,
+      });
+      expect(canonical).not.toBeNull();
+      expect(
+        await verifySongVideoMasterAudio(result.masterBytes, duration, canonical ?? ""),
+      ).toEqual({ pcmSha256: canonical, sampleCount: duration });
+    }
+    completedTestCount++;
   }, 180_000);
 
   test("refuses a recording shorter than the interval instead of padding it", async () => {

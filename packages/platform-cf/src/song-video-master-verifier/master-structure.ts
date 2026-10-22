@@ -1,8 +1,9 @@
 /** This is a Worker-specific ceiling, not the broader U.6 storage ceiling. */
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "../song-video-pcm-render-bounds.ts";
 export const MAX_SONG_VIDEO_MASTER_BYTES = 24 * 1024 * 1024;
 const SAMPLE_RATE = 48_000;
 const VIDEO_FRAME_SAMPLES = 1_600; // The admitted command normalizes to 30 fps.
-const MAX_VIDEO_FRAMES = 450;
+const MAX_VIDEO_FRAMES = SONG_VIDEO_PCM_RENDER_MAX_SAMPLES / VIDEO_FRAME_SAMPLES;
 const MAX_CHUNKS = 1_000;
 
 export class SongVideoMasterRejection extends Error {
@@ -409,7 +410,7 @@ export function inspectSongVideoMasterStructure(
   if (
     !Number.isSafeInteger(expectedSamples) ||
     expectedSamples < 3 * SAMPLE_RATE ||
-    expectedSamples > 15 * SAMPLE_RATE
+    expectedSamples > SONG_VIDEO_PCM_RENDER_MAX_SAMPLES
   )
     reject("invalid_expected_duration");
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_SONG_VIDEO_MASTER_BYTES) {

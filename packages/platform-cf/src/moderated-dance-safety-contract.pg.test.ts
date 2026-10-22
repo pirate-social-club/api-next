@@ -279,7 +279,9 @@ suite("native private frame provider contract and irreversible dispatch claims",
     let confined: Client | undefined, role: string | undefined;
     try {
       await admin.query(`CREATE SCHEMA ${quote(schema)};SET search_path TO ${quote(schema)}`);
-      const all = await loadPostgresMigrations(),
+      // The complete loader verifies current source, but this historical proof
+      // must still apply exactly 0300 then 0301 as later migrations are added.
+      const all = (await loadPostgresMigrations()).slice(0, 301),
         prefix = all.slice(0, -1);
       expect(all.at(-1)?.version).toBe("0301_moderated_dance_safety_retention.sql");
       await runPostgresMigrations({

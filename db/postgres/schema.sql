@@ -10461,6 +10461,7 @@ END $$;
 
 CREATE FUNCTION grant_moderated_dance_runtime_v1(p_role text, p_purpose text) RETURNS void
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 DECLARE target RECORD; owner_oid OID; names TEXT[]; f RECORD; t RECORD; found_count INTEGER:=0;
 BEGIN
@@ -10488,6 +10489,18 @@ BEGIN
  IF found_count<>cardinality(names) THEN RAISE EXCEPTION 'exact purpose function closure incomplete' USING ERRCODE='DRV06'; END IF;
  IF p_purpose<>'source_gateway' THEN INSERT INTO dance_moderated_runtime_roles_v1 VALUES(target.oid,p_purpose) ON CONFLICT DO NOTHING; END IF;
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='grant_moderated_dance_runtime_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_role text, p_purpose text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION grant_shared_song_funding_runtime_v2(p_role text, p_purpose text) RETURNS void
     LANGUAGE plpgsql

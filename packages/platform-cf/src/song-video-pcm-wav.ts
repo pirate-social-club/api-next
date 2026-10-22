@@ -1,11 +1,12 @@
 /** Canonical 44-byte PCM WAV wrapper for one bounded song-video excerpt. */
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "./song-video-pcm-render-bounds.ts";
 
 const SAMPLE_RATE_HZ = 48_000;
 const CHANNEL_COUNT = 2;
 const BITS_PER_SAMPLE = 16;
 const BYTES_PER_SAMPLE_FRAME = CHANNEL_COUNT * (BITS_PER_SAMPLE / 8);
 const MIN_SAMPLE_FRAMES = 3 * SAMPLE_RATE_HZ;
-const MAX_SAMPLE_FRAMES = 15 * SAMPLE_RATE_HZ;
+const MAX_SAMPLE_FRAMES = SONG_VIDEO_PCM_RENDER_MAX_SAMPLES;
 
 export function makeSongVideoPcmWavHeader(sampleFrames: number): Uint8Array {
   if (

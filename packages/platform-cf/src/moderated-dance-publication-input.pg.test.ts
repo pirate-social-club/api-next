@@ -425,6 +425,13 @@ suite("native private Dance input adoption and irreversible copy grants", () => 
         const schema = (await admin.query("SELECT current_schema() s")).rows[0]?.s;
         let confined: Client | undefined;
         try {
+          expect(
+            (
+              await admin.query(
+                "SELECT proconfig FROM pg_proc WHERE pronamespace=current_schema()::regnamespace AND proname='grant_moderated_dance_runtime_v1'",
+              )
+            ).rows[0]?.proconfig,
+          ).toContain(`search_path=${schema}, pg_catalog, pg_temp`);
           await admin.query(`GRANT USAGE ON SCHEMA ${quote(schema)} TO ${quote(role)}`);
           await admin.query("SELECT grant_moderated_dance_runtime_v1($1,'media')", [role]);
           const target = new URL(f.connection);

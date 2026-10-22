@@ -58,7 +58,8 @@ describe("frame comparison admission", () => {
   });
   test("bounds intervals and keeps a partial final frame", () => {
     expect(frameCount(144_001)).toBe(91);
-    for (const value of [144_000.5, 143_999, 720_001, NaN])
+    expect(frameCount(1_440_000)).toBe(900);
+    for (const value of [144_000.5, 143_999, 1_440_001, NaN])
       expect(() => frameCount(value)).toThrow();
   });
   test("independently rejects missing frames, shifted PTS and wrong final duration", () => {
