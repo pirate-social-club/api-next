@@ -592,7 +592,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toEqual([
       {
         operationId: "get_meNotifications",
-        baselineSha: "d032109b1ded8d0d83b9038a129c6506221354f2",
+        baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
         kind: "deprecation",
       },
     ]);
@@ -600,7 +600,7 @@ describe("OpenAPI clean-break allowance", () => {
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(
         repositoryPolicy,
-        "d032109b1ded8d0d83b9038a129c6506221354f2",
+        "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
         () => true,
       ),
     ).not.toThrow();

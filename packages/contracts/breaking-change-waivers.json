@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "d032109b1ded8d0d83b9038a129c6506221354f2",
+      "baselineSha": "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
       "operationId": "get_meNotifications",
       "expectedViolations": [
         "response GET /me/notifications: enum value added: \"dance_review_result\" at items.items.kind",
@@ -12,7 +12,7 @@
         "response GET /me/notifications: response/request property removed: items.items.target.post_id"
       ],
       "kind": "deprecation",
-      "reason": "Candidate exact-baseline Spec021section15.11 Dance notification union transition for client129, pending independent source/package/policy review. Existing comment/reply alternative remains byte-exact; genuine127/128 reject pages containing new Dance items. Pair the standalone consumer and reload old tabs before Dance activation. Remove this entry after PR625 normal integration; no permanent or future-baseline allowance."
+      "reason": "Candidate exact-baseline Spec021section15.11 Dance notification union transition for genuine client130, pending independent source/package/policy review. Existing comment/reply alternative remains byte-exact; genuine127/128 reject pages containing new Dance items. Pair the standalone consumer and reload old tabs before Dance activation. Remove this entry after PR625 normal integration; no permanent or future-baseline allowance."
     }
   ]
 }
