@@ -80,6 +80,16 @@ function fixture() {
 }
 
 describe("serving Funding observer/recovery composition", () => {
+  test("missing bounded database composition refuses rather than disabling recovery or using an unbounded fallback", () => {
+    expect(() =>
+      makeSongFundingRecoveryRuntime({
+        controlPlane: undefined,
+        rpcUrl: "https://offline.invalid/no-provider",
+        environment: "development",
+        now: () => "2026-10-21T12:00:00.000Z",
+      }),
+    ).toThrow("Bounded Funding database runtime required");
+  });
   test("disabled serving declarations contain no V2 recovery job or dependency calls", async () => {
     const f = fixture();
     const registry = await Effect.runPromise(buildJobRegistry(f.declarations(false)));

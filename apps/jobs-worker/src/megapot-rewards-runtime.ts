@@ -43,24 +43,31 @@ import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.
 /** Real V2 read-only-provider composition. The serving entrypoint selects this
  * only when Rewards is enabled; no custody signing key enters this runtime. */
 export function makeSongFundingRecoveryRuntime(input: {
-  controlPlane: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+  controlPlane: Layer.Layer<ControlPlaneDb, ControlPlaneError, never> | undefined;
   rpcUrl: string;
   environment: string;
   now: () => string;
 }) {
+  const controlPlane = input.controlPlane;
+  if (controlPlane === undefined) throw new Error("Bounded Funding database runtime required");
   const runtime = makeSongMegapotFundingRecovery({
-    store: makeControlPlaneSongFundingRecoveryStore(input.controlPlane),
+    store: makeControlPlaneSongFundingRecoveryStore(controlPlane),
     observe: (work, hash, discover) =>
-      makeControlPlaneRewardFundingObserver(input.controlPlane, discover)(work, hash),
+      makeControlPlaneRewardFundingObserver(controlPlane, discover)(work, hash),
     now: input.now,
     rpcFor: makeSongFundingRecoveryRouting({
       environment: input.environment,
-      create: (attestation) => makeMegapotV2RpcClient({ rpcUrl: input.rpcUrl, attestation }),
+      create: (attestation) =>
+        makeMegapotV2RpcClient({
+          rpcUrl: input.rpcUrl,
+          attestation,
+          timeoutMs: MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+        }),
     }),
   });
-  const authority = makeControlPlaneRewardRunAuthority(input.controlPlane);
+  const authority = makeControlPlaneRewardRunAuthority(controlPlane);
   const contexts = makeControlPlaneSharedSongContextProducer({
-    runtime: input.controlPlane,
+    runtime: controlPlane,
     now: input.now,
     rpcFor: (deployment) => {
       if (
@@ -68,7 +75,11 @@ export function makeSongFundingRecoveryRuntime(input: {
         (input.environment === "development" ? "test" : input.environment)
       )
         throw new MegapotRewardRoutingRejected({ reason: "attestation-mismatch" });
-      return makeMegapotV2RpcClient({ rpcUrl: input.rpcUrl, attestation: deployment });
+      return makeMegapotV2RpcClient({
+        rpcUrl: input.rpcUrl,
+        attestation: deployment,
+        timeoutMs: MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+      });
     },
   });
   return {
@@ -84,7 +95,10 @@ export function makeSongFundingRecoveryRuntime(input: {
 }
 
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
-import { observeMegapotDrawingForCycle } from "./megapot-rewards-cycle.ts";
+import {
+  MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+  observeMegapotDrawingForCycle,
+} from "./megapot-rewards-cycle.ts";
 import {
   type MegapotAttestationRuntime,
   MegapotRewardRoutingRejected,

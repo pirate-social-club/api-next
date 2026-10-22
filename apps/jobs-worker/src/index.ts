@@ -752,18 +752,17 @@ export function makeJobsWorkerDeclarations(
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
   ];
-  if (songFundingRecovery !== undefined) {
-    declarations.push(
-      makeSongMegapotFundingRecoveryJob({
-        runtime: songFundingRecovery,
-        enabled: true,
-        // One durable item per tick bounds this job; each accepted work policy
-        // still supplies its own attempt, scan, receipt and lease budgets.
-        limit: 1,
-        ensure: songFundingRecovery.ensure,
-      }),
-    );
-  }
+  const fundingJob =
+    songFundingRecovery === undefined
+      ? undefined
+      : makeSongMegapotFundingRecoveryJob({
+          runtime: songFundingRecovery,
+          enabled: true,
+          // One durable item per tick bounds this job; each accepted work policy
+          // still supplies its own attempt, scan, receipt and lease budgets.
+          limit: 1,
+          ensure: songFundingRecovery.ensure,
+        });
   if (communityMaintenanceEnabled) {
     declarations.push(
       makeCommunityCatalogIntegrityJob(sink),
@@ -788,10 +787,11 @@ export function makeJobsWorkerDeclarations(
     learnerAudio === undefined
       ? undefined
       : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
-  if (megapotJob !== undefined && studyJob !== undefined) {
-    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  if (megapotJob !== undefined && (studyJob !== undefined || fundingJob !== undefined)) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob));
   } else if (megapotJob !== undefined) declarations.push(megapotJob);
   else if (studyJob !== undefined) declarations.push(studyJob);
+  if (megapotJob === undefined && fundingJob !== undefined) declarations.push(fundingJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
   }
@@ -877,7 +877,7 @@ export default {
     const songFundingRecovery = !config.MEGAPOT_REWARDS_ENABLED
       ? undefined
       : makeSongFundingRecoveryRuntime({
-          controlPlane: runtime,
+          controlPlane: megapot?.boundedControlPlane,
           rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
           environment: config.API_NEXT_ENV,
           now: () => new Date().toISOString(),
