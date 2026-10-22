@@ -6,8 +6,16 @@ import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-int
 import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
-export async function seedModeratedDanceIntake(admin: Client, connection: string) {
-  const f = moderatedDanceIntakeFacts(),
+export async function seedModeratedDanceIntake(
+  admin: Client,
+  connection: string,
+  runtimeRevision?: string,
+) {
+  const facts = moderatedDanceIntakeFacts(),
+    f =
+      runtimeRevision === undefined
+        ? facts
+        : { ...facts, profile: { ...facts.profile, mediaRuntimeRevision: runtimeRevision } },
     now = Date.now(),
     hash = "a".repeat(64);
   const publication = await Effect.runPromise(

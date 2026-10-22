@@ -4076,12 +4076,16 @@ CREATE FUNCTION capture_moderated_dance_attempt_provider_effects_v1() RETURNS tr
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE s dance_moderated_sessions_v1;
+DECLARE s dance_moderated_sessions_v1; cloudconvert_probe BOOLEAN;
 BEGIN
- SELECT session.* INTO STRICT s FROM dance_moderated_sessions_v1 session JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=NEW.upload_id;
+ SELECT session.* INTO STRICT s FROM dance_moderated_sessions_v1 session
+ JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=NEW.upload_id;
+ cloudconvert_probe:=(s.terms->'profile'->>'mediaRuntimeRevision'='dance-moderated-media-v2');
  IF NEW.probe_phase<>'unclaimed' THEN
-  PERFORM register_moderated_dance_provider_effect_v1(NEW.upload_id,NULL,'probe','qencode',NULL,NEW.probe_attempt->>'providerJobId',
-   s.terms_hash,NEW.provider_deadline,s.terms->'disposition',s.terms->'profile');
+  PERFORM register_moderated_dance_provider_effect_v1(NEW.upload_id,NULL,'probe',
+   CASE WHEN cloudconvert_probe THEN 'cloudconvert' ELSE 'qencode' END,
+   CASE WHEN cloudconvert_probe THEN 'private-probe-'||NEW.upload_id ELSE NULL END,
+   NEW.probe_attempt->>'providerJobId',s.terms_hash,NEW.provider_deadline,s.terms->'disposition',s.terms->'profile');
  END IF;
  IF NEW.normalization_claimed_at IS NOT NULL THEN
   PERFORM register_moderated_dance_provider_effect_v1(NEW.upload_id,NULL,'normalization','cloudconvert',NEW.provider_tag,NEW.provider_job_id,
@@ -5085,9 +5089,8 @@ CREATE FUNCTION claim_moderated_dance_normalization_v1(p_upload text, p_token te
     AS $$
 DECLARE work dance_moderated_processing_v1;
 BEGIN
- IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
- SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
- IF work.observation_token IS DISTINCT FROM p_token OR work.probe_phase<>'complete' OR work.provider_deadline<=clock_timestamp() THEN RAISE EXCEPTION 'normalization authority changed' USING ERRCODE='DRV05'; END IF;
+ work:=lock_moderated_dance_processing_authority_v1(p_upload);
+ IF work.observation_token IS DISTINCT FROM p_token OR work.probe_phase<>'complete' THEN RAISE EXCEPTION 'normalization authority changed' USING ERRCODE='DRV05'; END IF;
  IF work.normalization_claimed_at IS NOT NULL THEN RETURN FALSE; END IF;
  UPDATE dance_moderated_processing_v1 SET normalization_claimed_at=clock_timestamp() WHERE upload_id=p_upload;
  RETURN TRUE;
@@ -5188,9 +5191,8 @@ CREATE FUNCTION claim_moderated_dance_probe_v1(p_upload text, p_token text) RETU
     AS $$
 DECLARE work dance_moderated_processing_v1; fresh BOOLEAN:=FALSE;
 BEGIN
- IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
- SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
- IF work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR work.provider_deadline<=clock_timestamp() THEN RAISE EXCEPTION 'probe authority changed' USING ERRCODE='DRV05'; END IF;
+ work:=lock_moderated_dance_processing_authority_v1(p_upload);
+ IF work.observation_token IS DISTINCT FROM p_token THEN RAISE EXCEPTION 'probe authority changed' USING ERRCODE='DRV05'; END IF;
  IF work.probe_phase='unclaimed' THEN
   fresh:=TRUE;
   UPDATE dance_moderated_processing_v1 SET probe_phase='allocating',probe_attempt=jsonb_build_object('version','media-transform-attempt-v1','runtimeFence',jsonb_build_object('submittedAtMs',floor(extract(epoch FROM work.dispatched_at)*1000)::BIGINT,'runtimeDeadlineMs',floor(extract(epoch FROM work.provider_deadline)*1000)::BIGINT)) WHERE upload_id=p_upload RETURNING * INTO work;
@@ -23838,6 +23840,73 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='lock_moderated_dance_intake_command_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_actor text, p_command jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE TABLE dance_moderated_processing_v1 (
+    upload_id text NOT NULL,
+    state text NOT NULL,
+    source_identity jsonb NOT NULL,
+    account_fence bigint NOT NULL,
+    work_token text,
+    provider_tag text,
+    provider_job_id text,
+    dispatched_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    charged_calls bigint DEFAULT 0 NOT NULL,
+    charged_spend_microunits numeric(78,0) DEFAULT 0 NOT NULL,
+    result jsonb,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    probe_phase text DEFAULT 'unclaimed'::text NOT NULL,
+    probe_attempt jsonb,
+    probe_result jsonb,
+    normalization_claimed_at timestamp with time zone,
+    observation_token text,
+    observation_until timestamp with time zone,
+    provider_deadline timestamp with time zone,
+    CONSTRAINT dance_moderated_processing_v1_charged_calls_check CHECK ((charged_calls >= 0)),
+    CONSTRAINT dance_moderated_processing_v1_charged_spend_microunits_check CHECK ((charged_spend_microunits >= (0)::numeric)),
+    CONSTRAINT dance_moderated_processing_v1_check CHECK (((state = 'ready'::text) = (work_token IS NULL))),
+    CONSTRAINT dance_moderated_processing_v1_probe_phase_check CHECK ((probe_phase = ANY (ARRAY['unclaimed'::text, 'allocating'::text, 'allocated'::text, 'submitting'::text, 'started'::text, 'complete'::text, 'unknown'::text]))),
+    CONSTRAINT dance_moderated_processing_v1_state_check CHECK ((state = ANY (ARRAY['ready'::text, 'claimed'::text, 'unknown'::text, 'screened'::text, 'failed'::text, 'held'::text])))
+);
+
+CREATE FUNCTION lock_moderated_dance_processing_authority_v1(p_upload text) RETURNS dance_moderated_processing_v1
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE actor_id TEXT; s dance_moderated_sessions_v1; f dance_review_account_fences_v1;
+ work dance_moderated_processing_v1;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'media worker unavailable' USING ERRCODE='DRV02'; END IF;
+ SELECT session.account_id INTO STRICT actor_id FROM dance_moderated_sessions_v1 session
+ JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=p_upload;
+ PERFORM 1 FROM users WHERE user_id=actor_id AND status='active' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'processing account unavailable' USING ERRCODE='DRV05'; END IF;
+ SELECT fence.* INTO STRICT f FROM dance_review_account_fences_v1 fence WHERE fence.account_id=actor_id FOR UPDATE;
+ SELECT session.* INTO STRICT s FROM dance_moderated_sessions_v1 session
+ JOIN dance_moderated_uploads_v1 upload USING(session_id) WHERE upload.upload_id=p_upload FOR UPDATE OF session;
+ PERFORM 1 FROM dance_moderated_uploads_v1 WHERE upload_id=p_upload FOR UPDATE;
+ SELECT * INTO STRICT work FROM dance_moderated_processing_v1 WHERE upload_id=p_upload FOR UPDATE;
+ IF NOT active_activity_persona(s.account_id,s.persona_id,s.community_id) THEN
+  RAISE EXCEPTION 'processing persona changed' USING ERRCODE='DRV05';
+ END IF;
+ IF f.erasing OR f.revision<>s.capture_account_fence OR f.revision<>work.account_fence
+ OR work.state NOT IN('claimed','unknown') OR least(work.provider_deadline,s.expires_at)<=clock_timestamp() THEN
+  RAISE EXCEPTION 'processing lifecycle changed' USING ERRCODE='DRV05';
+ END IF;
+ RETURN work;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_moderated_dance_processing_authority_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -45290,34 +45359,6 @@ CREATE TABLE dance_moderated_policy_disclosures_v1 (
     CONSTRAINT dance_moderated_policy_disclosures_safety_policy_snapshot_check CHECK ((jsonb_typeof(safety_policy_snapshot) = 'object'::text)),
     CONSTRAINT dance_moderated_policy_disclosures_v1_admission_receipt_check CHECK ((jsonb_typeof(admission_receipt) = 'object'::text)),
     CONSTRAINT dance_moderated_policy_disclosures_v1_disclosure_check CHECK ((jsonb_typeof(disclosure) = 'object'::text))
-);
-
-CREATE TABLE dance_moderated_processing_v1 (
-    upload_id text NOT NULL,
-    state text NOT NULL,
-    source_identity jsonb NOT NULL,
-    account_fence bigint NOT NULL,
-    work_token text,
-    provider_tag text,
-    provider_job_id text,
-    dispatched_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    charged_calls bigint DEFAULT 0 NOT NULL,
-    charged_spend_microunits numeric(78,0) DEFAULT 0 NOT NULL,
-    result jsonb,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    probe_phase text DEFAULT 'unclaimed'::text NOT NULL,
-    probe_attempt jsonb,
-    probe_result jsonb,
-    normalization_claimed_at timestamp with time zone,
-    observation_token text,
-    observation_until timestamp with time zone,
-    provider_deadline timestamp with time zone,
-    CONSTRAINT dance_moderated_processing_v1_charged_calls_check CHECK ((charged_calls >= 0)),
-    CONSTRAINT dance_moderated_processing_v1_charged_spend_microunits_check CHECK ((charged_spend_microunits >= (0)::numeric)),
-    CONSTRAINT dance_moderated_processing_v1_check CHECK (((state = 'ready'::text) = (work_token IS NULL))),
-    CONSTRAINT dance_moderated_processing_v1_probe_phase_check CHECK ((probe_phase = ANY (ARRAY['unclaimed'::text, 'allocating'::text, 'allocated'::text, 'submitting'::text, 'started'::text, 'complete'::text, 'unknown'::text]))),
-    CONSTRAINT dance_moderated_processing_v1_state_check CHECK ((state = ANY (ARRAY['ready'::text, 'claimed'::text, 'unknown'::text, 'screened'::text, 'failed'::text, 'held'::text])))
 );
 
 CREATE TABLE dance_moderated_processor_readiness_v1 (

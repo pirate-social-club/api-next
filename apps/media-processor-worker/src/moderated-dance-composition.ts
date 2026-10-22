@@ -1,14 +1,14 @@
 import { makeOpenAiTextModerationProvider } from "@pirate/platform-cf/openai-text-moderation";
 import { makeHyperdriveControlPlaneLayer } from "@pirate/platform-cf/postgres";
 import { Schema } from "effect";
+import {
+  MODERATED_DANCE_CLOUDCONVERT_REVISION,
+  makeModeratedDanceCloudConvertProbe,
+  makeR2ModeratedDanceProbeSource,
+} from "../../../packages/platform-cf/src/moderated-dance-cloudconvert-probe.ts";
 import { makeModeratedDanceMaintenance } from "../../../packages/platform-cf/src/moderated-dance-maintenance.ts";
 import { makeModeratedDanceMediaRuntime } from "../../../packages/platform-cf/src/moderated-dance-media-runtime.ts";
 import { makeModeratedDanceReferenceRuntime } from "../../../packages/platform-cf/src/moderated-dance-reference-runtime.ts";
-import {
-  makeQencodeMediaTransform,
-  makeQencodeTaskTransport,
-  makeR2QencodeArtifactStore,
-} from "../../../packages/platform-cf/src/qencode-media-transform.ts";
 import { makeSongVideoCloudConvertTransport } from "../../../packages/platform-cf/src/song-video-cloudconvert-transport.ts";
 
 export type ModeratedDanceMediaEnv = Readonly<{
@@ -60,7 +60,6 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
     env.MEDIA_IMMUTABLE_ORIGINALS === undefined ||
     env.OPENAI_MODERATION_ENABLED !== "true" ||
     !secret(env.OPENAI_API_KEY) ||
-    !secret(env.QENCODE_API_KEY) ||
     !secret(env.CLOUDCONVERT_RENDER_API_KEY) ||
     env.VIDEO_SOURCE_GATEWAY_ORIGIN === undefined ||
     env.DANCE_MODERATED_REPLAY_KEYS === undefined
@@ -91,7 +90,7 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
     transform,
     replayKeys: keys,
     gatewayOrigin: env.VIDEO_SOURCE_GATEWAY_ORIGIN,
-    runtimeRevision: "dance-moderated-media-v1",
+    runtimeRevision: MODERATED_DANCE_CLOUDCONVERT_REVISION,
   });
   const capture = makeModeratedDanceMediaRuntime({
     runtime,
@@ -102,17 +101,15 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
       apiKey: env.CLOUDCONVERT_RENDER_API_KEY ?? "",
       fetch: (url, init) => fetch(url, init),
     }),
-    probeForSource: (issue) =>
-      makeQencodeMediaTransform({
-        enabled: true,
-        apiKey: env.QENCODE_API_KEY ?? "",
-        transport: makeQencodeTaskTransport(),
-        sourceGateway: { issue },
-        artifacts: makeR2QencodeArtifactStore(originals),
+    probeForSource: (_issue, sealed, profile) =>
+      makeModeratedDanceCloudConvertProbe({
+        apiKey: env.CLOUDCONVERT_RENDER_API_KEY ?? "",
+        timeoutSeconds: profile.normalizationTimeoutSeconds,
+        readSource: makeR2ModeratedDanceProbeSource(originals, sealed),
       }),
     replayKeys: keys,
     gatewayOrigin: env.VIDEO_SOURCE_GATEWAY_ORIGIN,
-    runtimeRevision: "dance-moderated-media-v1",
+    runtimeRevision: MODERATED_DANCE_CLOUDCONVERT_REVISION,
     safetyRevision: "private-three-still-openai-v1",
   });
   return {

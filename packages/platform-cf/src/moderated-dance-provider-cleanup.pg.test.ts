@@ -374,6 +374,9 @@ suite("moderated Dance provider disposition", () => {
             "SELECT register_moderated_dance_provider_effect_v1(NULL,NULL,'probe','qencode',NULL,NULL,repeat('a',64),clock_timestamp(),'{}','{}')",
           ),
         ).rejects.toMatchObject({ code: "42501" });
+        await expect(
+          client.query("SELECT lock_moderated_dance_processing_authority_v1('unowned')"),
+        ).rejects.toMatchObject({ code: "42501" });
         const selected = (
           await client.query(
             "SELECT claim_moderated_dance_provider_cleanup_v1('confined-cleanup') AS packet",

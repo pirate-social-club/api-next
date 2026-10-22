@@ -4,4 +4,5 @@ export const reusableModeratedDanceSuites = [
   "packages/platform-cf/src/moderated-dance-context.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-authority.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-provider-cleanup.pg.test.ts",
+  "packages/platform-cf/src/moderated-dance-cloudconvert-probe.pg.test.ts",
 ] as const;

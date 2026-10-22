@@ -21,6 +21,7 @@ import {
 import type { VideoExtractedFrame } from "../../domain/src/video-submission.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import { makeR2MediaSealer } from "./media-sealing-adapter.ts";
+import type { ModeratedDanceProbeJobs } from "./moderated-dance-cloudconvert-probe.ts";
 import {
   decodeModeratedDanceFramehash,
   makeModeratedDanceNormalizationJob,
@@ -154,7 +155,9 @@ export function makeModeratedDanceMediaRuntime(
         expiresAtMs: number;
         requestId: string;
       }) => Promise<{ url: string; expiresAtMs: number }>,
-    ) => MediaTransformVideoJobs;
+      source: typeof Sealed.Type,
+      profile: ModeratedDanceIntakeProfile,
+    ) => ModeratedDanceProbeJobs;
     replayKeys: ReadonlyMap<string, Uint8Array>;
     gatewayOrigin: string;
     runtimeRevision: string;
@@ -462,17 +465,24 @@ export function makeModeratedDanceMediaRuntime(
       ),
     );
     if (probeGrant.phase !== "complete") {
-      const probe = input.probeForSource(async (source) => {
-        if (
-          source.objectKey !== work.source?.destination_ref ||
-          source.sha256 !== work.source.canonical_sha256 ||
-          source.byteLength !== work.sizeBytes ||
-          source.mediaType !== work.contentType ||
-          source.expiresAtMs > (work.providerDeadlineMs ?? 0)
-        )
-          throw new Error("Private probe source changed");
-        return { url: await sourceUrl(work, source.expiresAtMs), expiresAtMs: source.expiresAtMs };
-      });
+      const probe = input.probeForSource(
+        async (source) => {
+          if (
+            source.objectKey !== work.source?.destination_ref ||
+            source.sha256 !== work.source.canonical_sha256 ||
+            source.byteLength !== work.sizeBytes ||
+            source.mediaType !== work.contentType ||
+            source.expiresAtMs > (work.providerDeadlineMs ?? 0)
+          )
+            throw new Error("Private probe source changed");
+          return {
+            url: await sourceUrl(work, source.expiresAtMs),
+            expiresAtMs: source.expiresAtMs,
+          };
+        },
+        work.source,
+        p,
+      );
       const request: MediaTransformVideoProbeInput = {
         version: "media-transform-video-probe-input-v1",
         binding: {
