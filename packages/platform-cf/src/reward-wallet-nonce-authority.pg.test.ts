@@ -1,6 +1,6 @@
 /** SOURCE ONLY: not executed by this source admission. Requires a later,
  * independently admitted PostgreSQL gate and final migration ordinal.
- * Replays the maintained migration prefix through275, then applies276.
+ * Replays the maintained migration prefix through276, then applies277.
  * Replica mode seeds historical/precondition fixtures BEFORE the migration;
  * all new allocation, ownership, concurrency and destructive guards stay on.
  */
@@ -12,6 +12,7 @@ import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   loadRewardFundingWalletNonceOwnerIn,
@@ -332,6 +333,7 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
   test("winner and funding serialize on one authority in both directions", async () => {
     expect(Exit.isSuccess(await reserve(input("v2-first", "v2-first")))).toBe(true);
     const repo = makeControlPlaneRewardWinnerSendRepository();
+    let nonceReads = 0;
     const create = (name: Name) =>
       repo
         .create({
@@ -349,12 +351,25 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
             chainId: chain,
             paidAtomic: 10n,
           },
-          readNonce: Effect.succeed(4n),
+          readNonce: Effect.sync(() => {
+            nonceReads++;
+            return 4n;
+          }),
         })
         .pipe(Effect.provide(layer));
-    expect(Exit.isFailure(await Effect.runPromiseExit(create("v2-first")))).toBe(true);
+    expect(await Effect.runPromise(Effect.flip(create("winner-first")))).toMatchObject({
+      _tag: "RewardWinnerSendVerificationRequired",
+    });
+    expect(nonceReads).toBe(0);
+    await seedVeryRewardEvidence(admin, account, "nonce-authority-current-palm");
+    expect(await Effect.runPromise(Effect.flip(create("v2-first")))).toMatchObject({
+      _tag: "RewardWinnerSendRejected",
+      reason: "sender-busy",
+    });
+    expect(nonceReads).toBe(0);
     const winner = await Effect.runPromise(create("winner-first"));
     expect(winner.nonce).toBe(4n);
+    expect(nonceReads).toBe(1);
     expect(
       (
         await admin.query(
@@ -363,7 +378,13 @@ suite("shared wallet nonce migration/authority (SOURCE ONLY until PG admission)"
         )
       ).rows,
     ).toEqual([{ source: "winner_attempt_v1", owner_id: "send-winner-first" }]);
-    expect(Exit.isFailure(await reserve(input("winner-first", "blocked-after-winner")))).toBe(true);
+    const blocked = await reserve(input("winner-first", "blocked-after-winner"));
+    expect(Exit.isFailure(blocked)).toBe(true);
+    if (Exit.isFailure(blocked)) {
+      expect(blocked.cause).toMatchObject({
+        reasons: [{ error: { _tag: "RewardWalletNonceUnavailable", code: "wallet_nonce_busy" } }],
+      });
+    }
   });
 
   test("two concurrent contribution owners get exactly one immutable lease and no higher skipped nonce", async () => {
