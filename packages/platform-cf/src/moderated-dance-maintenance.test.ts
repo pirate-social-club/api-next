@@ -87,7 +87,7 @@ function fixture(kind: "ingress" | "original" | "derived" = "ingress") {
       }
       if (
         q.text.startsWith("SELECT ") &&
-        !/set_config\(|next_moderated_dance_review_task_v1|claim_moderated_dance_owned_cleanup_v1|finish_moderated_dance_owned_cleanup_v1|claim_moderated_dance_provider_cleanup_v1|drain_moderated_dance_replay_v1|drain_moderated_dance_compatible_replay_v1|record_moderated_dance_maintenance_v1/u.test(
+        !/set_config\(|next_moderated_dance_review_task_v1|claim_moderated_dance_owned_cleanup_v1|finish_moderated_dance_owned_cleanup_v1|claim_moderated_dance_provider_cleanup_v1|claim_moderated_dance_publication_cleanup_v1|drain_moderated_dance_replay_v1|drain_moderated_dance_compatible_replay_v1|record_moderated_dance_maintenance_v1/u.test(
           q.text,
         )
       )

@@ -1411,6 +1411,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "dance_moderated_provider_usage_v1",
         "dance_moderated_public_replay_indexes_v1",
         "dance_moderated_public_replay_v1",
+        "dance_moderated_publication_cleanup_v1",
         "dance_moderated_publication_inputs_v1",
         "dance_moderated_reference_commands_v1",
         "dance_moderated_reference_receipts_v1",

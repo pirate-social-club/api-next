@@ -9,6 +9,10 @@ import { withRetainedControlPlaneCommandTransaction } from "./control-plane-comm
 import { makeControlPlaneModeratorReviewStore } from "./dance-moderator-review-repository.ts";
 import { makeModeratedDanceProviderCleanup } from "./moderated-dance-provider-cleanup.ts";
 import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
+import {
+  type DancePublicationCleanupBucket,
+  makeModeratedDancePublicationCleanup,
+} from "./moderated-dance-publication-storage.ts";
 import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
 const Id = Schema.NonEmptyString,
@@ -76,7 +80,7 @@ export function makeModeratedDanceMaintenance(
   input: Readonly<{
     runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError>;
     ingress: PrivateCleanupBucket;
-    originals: PrivateCleanupBucket;
+    originals: PrivateCleanupBucket & DancePublicationCleanupBucket;
     provider?:
       | Pick<
           ReturnType<typeof makeSongVideoCloudConvertTransport>,
@@ -116,6 +120,11 @@ export function makeModeratedDanceMaintenance(
     input.replayKeys === undefined
       ? undefined
       : makeModeratedDancePublicReplay({ call, keys: input.replayKeys, randomId: input.randomId });
+  const publicationCleanup = makeModeratedDancePublicationCleanup({
+    call,
+    bucket: input.originals,
+    randomId: input.randomId,
+  });
   const run = async () => {
     const raw = await call(
       "dance.maintenance.next-review",
@@ -237,6 +246,7 @@ export function makeModeratedDanceMaintenance(
       );
     }
     await providerCleanup.run();
+    await publicationCleanup.run();
     await call(
       "dance.maintenance.replay-drain",
       "SELECT drain_moderated_dance_replay_v1() AS packet",

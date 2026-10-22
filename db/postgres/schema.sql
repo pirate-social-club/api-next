@@ -5346,6 +5346,49 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION claim_moderated_dance_publication_cleanup_v1(p_token text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE h dance_moderated_publication_inputs_v1; j dance_moderated_publication_cleanup_v1;
+ packet JSONB; fresh BOOLEAN:=FALSE;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'publication cleanup unavailable' USING ERRCODE='42501'; END IF;
+ IF coalesce(btrim(p_token),'')='' OR length(p_token)>192 THEN RAISE EXCEPTION 'cleanup token invalid' USING ERRCODE='DRV06'; END IF;
+ -- Select only. The protocol below acquires recipient/user/fence/review/input
+ -- locks in the same order as adoption, avoiding an input-first deadlock.
+ SELECT i.* INTO h FROM dance_moderated_publication_inputs_v1 i
+ JOIN dance_moderated_reviews_v1 r USING(review_id)
+ JOIN users a ON a.user_id=r.account_id
+ JOIN dance_review_account_fences_v1 f ON f.account_id=r.account_id
+ LEFT JOIN dance_moderated_publication_cleanup_v1 cleanup_row USING(review_id)
+ WHERE i.state IN('preparing','stored','cleanup') AND
+  (i.state='cleanup' OR i.deadline_at<=clock_timestamp() OR r.state->>'publication'<>'pending'
+   OR r.state->>'showPublicly'<>'true' OR a.status<>'active' OR f.erasing
+   OR f.revision<>(r.state->'capture'->>'accountFenceRevision')::BIGINT)
+ ORDER BY cleanup_row.observed_at NULLS FIRST,i.deadline_at,i.review_id LIMIT 1;
+ IF h.review_id IS NULL THEN RETURN NULL; END IF;
+ packet:=moderated_dance_publication_input_v1(h.review_id,'cleanup',jsonb_build_object('token',h.token));
+ IF packet IS NULL OR packet->>'status'<>'cleanup' THEN RETURN NULL; END IF;
+ INSERT INTO dance_moderated_publication_cleanup_v1(review_id,fence_token)
+ VALUES(h.review_id,p_token) ON CONFLICT(review_id) DO NOTHING RETURNING TRUE INTO fresh;
+ SELECT * INTO STRICT j FROM dance_moderated_publication_cleanup_v1 WHERE review_id=h.review_id;
+ RETURN jsonb_build_object('reviewId',h.review_id,'key',packet->>'key','body',packet->'body','plan',packet->'plan',
+  'inputToken',h.token,'fenceToken',j.fence_token,'delivery',CASE WHEN coalesce(fresh,FALSE) THEN 'fresh_grant' ELSE 'recovery_only' END);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_moderated_dance_publication_cleanup_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_token text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION claim_moderated_dance_reference_media_v1(p_token text, p_runtime text, p_epochs jsonb) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -9907,6 +9950,48 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION finish_moderated_dance_publication_cleanup_v1(p_review text, p_token text, p_result jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE h dance_moderated_publication_inputs_v1; j dance_moderated_publication_cleanup_v1; packet JSONB;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'publication cleanup unavailable' USING ERRCODE='42501'; END IF;
+ SELECT * INTO STRICT h FROM dance_moderated_publication_inputs_v1 WHERE review_id=p_review;
+ -- The same lifecycle locks serialize cleanup against adoption/erasure.
+ packet:=moderated_dance_publication_input_v1(p_review,'cleanup',jsonb_build_object('token',h.token));
+ SELECT * INTO STRICT j FROM dance_moderated_publication_cleanup_v1 WHERE review_id=p_review FOR UPDATE;
+ IF j.fence_token IS DISTINCT FROM p_token THEN RAISE EXCEPTION 'cleanup identity changed' USING ERRCODE='DRV05'; END IF;
+ IF j.observation->>'outcome'='fenced' THEN
+  IF j.observation IS DISTINCT FROM p_result THEN RAISE EXCEPTION 'cleanup receipt changed' USING ERRCODE='DRV05'; END IF;
+  RETURN jsonb_build_object('status','cleaned');
+ END IF;
+ IF packet->>'status' IS DISTINCT FROM 'cleanup' THEN RAISE EXCEPTION 'cleanup no longer owns input' USING ERRCODE='DRV05'; END IF;
+ IF (p_result=jsonb_build_object('outcome','unknown')) IS NOT TRUE AND
+  (p_result->>'outcome'='fenced' AND p_result->>'key'=h.destination_key AND p_result->>'fenceToken'=j.fence_token
+   AND coalesce(p_result->>'version','')<>'' AND coalesce(p_result->>'etag','')<>''
+   AND p_result->>'size'=octet_length('{"version":"dance-publication-erasure-fence-v1"}')::TEXT
+   AND p_result-ARRAY['outcome','key','fenceToken','version','etag','size']='{}'::JSONB) IS NOT TRUE
+ THEN RAISE EXCEPTION 'cleanup storage observation invalid' USING ERRCODE='DRV06'; END IF;
+ UPDATE dance_moderated_publication_cleanup_v1 SET observation=p_result,observed_at=clock_timestamp() WHERE review_id=p_review;
+ IF p_result->>'outcome'='fenced' THEN
+  RETURN moderated_dance_publication_input_v1(p_review,'cleaned',jsonb_build_object('token',h.token,'keyFenced',TRUE));
+ END IF;
+ RETURN jsonb_build_object('status','unknown');
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='finish_moderated_dance_publication_cleanup_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_review text, p_token text, p_result jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION finish_shared_song_context_failure_v2(p_work text, p_token text, p_error text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -10479,7 +10564,7 @@ BEGIN
  ELSIF p_purpose='worker' THEN
   names:=ARRAY['next_moderated_dance_review_task_v1','lock_moderated_dance_review_v1','read_moderated_dance_receipt_v1','moderated_dance_review_facts_v1','commit_moderated_dance_review_v1'];
  ELSIF p_purpose='media' THEN
-  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1','drain_moderated_dance_replay_v1','bind_moderated_dance_replay_keys_v1','claim_moderated_dance_public_reindex_v1','finish_moderated_dance_public_reindex_v1','drain_moderated_dance_compatible_replay_v1','moderated_dance_publication_input_v1'];
+  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1','drain_moderated_dance_replay_v1','bind_moderated_dance_replay_keys_v1','claim_moderated_dance_public_reindex_v1','finish_moderated_dance_public_reindex_v1','drain_moderated_dance_compatible_replay_v1','moderated_dance_publication_input_v1','claim_moderated_dance_publication_cleanup_v1','finish_moderated_dance_publication_cleanup_v1'];
  ELSIF p_purpose='erasure' THEN names:=ARRAY['begin_moderated_dance_account_erasure_v1'];
  ELSIF p_purpose='source_gateway' THEN names:=ARRAY['resolve_moderated_dance_source_v1','resolve_moderated_dance_reference_source_v1'];
  ELSE RAISE EXCEPTION 'unknown runtime purpose' USING ERRCODE='DRV06'; END IF;
@@ -12950,6 +13035,30 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_dance_publication_cleanup_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP<>'UPDATE' OR ROW(NEW.review_id,NEW.fence_token,NEW.granted_at)
+  IS DISTINCT FROM ROW(OLD.review_id,OLD.fence_token,OLD.granted_at)
+  OR OLD.observation->>'outcome'='fenced'
+ THEN RAISE EXCEPTION 'publication cleanup identity retained' USING ERRCODE='DRV01'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_dance_publication_cleanup_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_dance_publication_input_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -31069,7 +31178,6 @@ CREATE FUNCTION record_moderated_dance_maintenance_v1() RETURNS void
 DECLARE lease_ms BIGINT; now_at TIMESTAMPTZ:=clock_timestamp();
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() OR NOT dance_review_worker_authorized_v1() THEN RAISE EXCEPTION 'maintenance purposes unavailable' USING ERRCODE='DRV02'; END IF;
- IF EXISTS(SELECT 1 FROM dance_moderated_provider_calls_v1 WHERE provider_contract IS DISTINCT FROM moderated_dance_safety_contract_v1()) THEN DELETE FROM dance_moderated_maintenance_readiness_v1; DELETE FROM dance_moderated_processor_readiness_v1; RETURN; END IF;
  IF EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect
   LEFT JOIN dance_moderated_processing_v1 processing ON processing.upload_id=effect.upload_id
   LEFT JOIN dance_moderated_uploads_v1 upload ON upload.upload_id=effect.upload_id
@@ -31085,6 +31193,9 @@ BEGIN
  JOIN dance_moderated_reviews_v1 r USING(session_id) JOIN dance_moderated_review_intents_v1 i USING(review_id)
  WHERE d.state='held' AND i.status<>'completed' AND i.deadline_at<=now_at AND
   (i.kind='hold_review' OR i.kind='cleanup_review' AND d.kind IN('ingress','original') OR i.kind='cleanup_temporary' AND d.kind='derived')) THEN
+  DELETE FROM dance_moderated_maintenance_readiness_v1; DELETE FROM dance_moderated_processor_readiness_v1; RETURN;
+ END IF;
+ IF EXISTS(SELECT 1 FROM dance_moderated_publication_inputs_v1 WHERE state='cleanup' OR state IN('preparing','stored') AND deadline_at<=now_at) THEN
   DELETE FROM dance_moderated_maintenance_readiness_v1; DELETE FROM dance_moderated_processor_readiness_v1; RETURN;
  END IF;
  SELECT min((p.operational_profile->>'readinessLeaseMs')::BIGINT) INTO lease_ms FROM dance_review_policy_versions_v1 p
@@ -46314,6 +46425,16 @@ CREATE TABLE dance_moderated_public_replay_v1 (
     CONSTRAINT dance_moderated_public_replay_v1_source_sha256_check CHECK ((source_sha256 ~ '^[a-f0-9]{64}$'::text))
 );
 
+CREATE TABLE dance_moderated_publication_cleanup_v1 (
+    review_id text NOT NULL,
+    fence_token text NOT NULL,
+    granted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    observed_at timestamp with time zone,
+    observation jsonb,
+    CONSTRAINT dance_moderated_publication_cleanup_v1_check CHECK (((observed_at IS NULL) = (observation IS NULL))),
+    CONSTRAINT dance_moderated_publication_cleanup_v1_fence_token_check CHECK (((btrim(fence_token) <> ''::text) AND (length(fence_token) <= 192)))
+);
+
 CREATE TABLE dance_moderated_publication_inputs_v1 (
     review_id text NOT NULL,
     token text NOT NULL,
@@ -55868,6 +55989,12 @@ ALTER TABLE ONLY dance_moderated_public_replay_indexes_v1
 ALTER TABLE ONLY dance_moderated_public_replay_v1
     ADD CONSTRAINT dance_moderated_public_replay_v1_pkey PRIMARY KEY (choreography_id, revision);
 
+ALTER TABLE ONLY dance_moderated_publication_cleanup_v1
+    ADD CONSTRAINT dance_moderated_publication_cleanup_v1_fence_token_key UNIQUE (fence_token);
+
+ALTER TABLE ONLY dance_moderated_publication_cleanup_v1
+    ADD CONSTRAINT dance_moderated_publication_cleanup_v1_pkey PRIMARY KEY (review_id);
+
 ALTER TABLE ONLY dance_moderated_publication_inputs_v1
     ADD CONSTRAINT dance_moderated_publication_inputs_v1_destination_key_key UNIQUE (destination_key);
 
@@ -59554,6 +59681,10 @@ CREATE TRIGGER dance_moderator_reference_revisions_v1_no_truncate BEFORE TRUNCAT
 
 CREATE TRIGGER dance_owner_authority_revision BEFORE UPDATE ON community_role_assignments FOR EACH ROW EXECUTE FUNCTION advance_dance_owner_authority_v1();
 
+CREATE TRIGGER dance_publication_cleanup_no_truncate BEFORE TRUNCATE ON dance_moderated_publication_cleanup_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER dance_publication_cleanup_retained BEFORE DELETE OR UPDATE ON dance_moderated_publication_cleanup_v1 FOR EACH ROW EXECUTE FUNCTION guard_dance_publication_cleanup_v1();
+
 CREATE TRIGGER dance_publication_input_no_truncate BEFORE TRUNCATE ON dance_moderated_publication_inputs_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
 CREATE TRIGGER dance_publication_input_retained BEFORE DELETE OR UPDATE ON dance_moderated_publication_inputs_v1 FOR EACH ROW EXECUTE FUNCTION guard_dance_publication_input_v1();
@@ -61749,6 +61880,9 @@ ALTER TABLE ONLY dance_moderated_public_replay_indexes_v1
 
 ALTER TABLE ONLY dance_moderated_public_replay_v1
     ADD CONSTRAINT dance_moderated_public_replay_v1_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_moderator_reference_revisions_v1(choreography_id, revision);
+
+ALTER TABLE ONLY dance_moderated_publication_cleanup_v1
+    ADD CONSTRAINT dance_moderated_publication_cleanup_v1_review_id_fkey FOREIGN KEY (review_id) REFERENCES dance_moderated_publication_inputs_v1(review_id);
 
 ALTER TABLE ONLY dance_moderated_publication_inputs_v1
     ADD CONSTRAINT dance_moderated_publication_inputs_v1_review_id_fkey FOREIGN KEY (review_id) REFERENCES dance_moderated_reviews_v1(review_id);

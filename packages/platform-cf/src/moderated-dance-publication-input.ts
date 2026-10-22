@@ -29,13 +29,13 @@ export function makeModeratedDancePublicationInput(
       ],
     );
   return {
+    inspect: () => command("inspect"),
     begin: () => command("begin"),
     plan: (body: unknown) => command("plan", { body }),
     put: () => command("put"),
     observe: (body: unknown) => command("observe", { body }),
     cleanup: () => command("cleanup"),
     abandon: () => command("abandon"),
-    cleaned: () => command("cleaned", { keyFenced: true }),
     adopt: async () => {
       const raw = await command("inspect");
       if (raw !== null && raw !== undefined) {

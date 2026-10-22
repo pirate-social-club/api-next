@@ -1,186 +1,27 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { Schema } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
-import {
-  applyPostgresTestBaselineConnection,
-  createReusablePostgresTestSchemaOwner,
-} from "../../../scripts/postgres-test-baseline.ts";
+import { createReusablePostgresTestSchemaOwner } from "../../../scripts/postgres-test-baseline.ts";
 import { prepareDancePublicationInput } from "../../application/src/use-cases/dance/publication-input.ts";
+import { crossDeadline, runBlockedQuery } from "./moderated-dance-authority.pg-fixture.ts";
 import {
-  type ModeratorReview,
-  transitionModeratorReview,
-} from "../../domain/src/dance/moderator-review.ts";
-import { ModeratorReviewFactsSchema } from "../../domain/src/dance/moderator-review-schema.ts";
-import {
-  crossDeadline,
-  historicalReview,
-  reviewCommit,
-  runBlockedQuery,
-} from "./moderated-dance-authority.pg-fixture.ts";
-import { seedModeratedDanceIntake as seed } from "./moderated-dance-intake.pg-fixture.ts";
-import { makeModeratedDancePublicationInput } from "./moderated-dance-publication-input.ts";
+  command,
+  makePublicationInputFixture,
+  protocol,
+  stored,
+  token,
+} from "./moderated-dance-publication-input.pg-fixture.ts";
+import { makeModeratedDancePublicationCleanup } from "./moderated-dance-publication-storage.ts";
 import { makeControlPlaneVideoPublicationStore } from "./video-publication-repository.ts";
 
-const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
-if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
-  throw new Error("Native target required");
-const suite = url === undefined ? describe.skip : describe,
-  reusableSchema = createReusablePostgresTestSchemaOwner();
+const suite = process.env.CONTROL_PLANE_POSTGRES_TEST_URL === undefined ? describe.skip : describe;
+const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
+const sql = "SELECT moderated_dance_publication_input_v1($1,$2,$3::jsonb) packet";
 setDefaultTimeout(30_000);
+const reusableSchema = createReusablePostgresTestSchemaOwner();
+const withFixture = makePublicationInputFixture(reusableSchema);
 afterAll(async () => {
   await reusableSchema.dispose();
 });
-const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
-const sql = "SELECT moderated_dance_publication_input_v1($1,$2,$3::jsonb) packet";
-const token = "original-handoff";
-async function withFixture(
-  use: (
-    f: Awaited<ReturnType<typeof seed>>,
-    admin: Client,
-    review: ModeratorReview,
-  ) => Promise<void>,
-  remainingMs?: number,
-  migrated = false,
-) {
-  if (url === undefined) throw new Error("Native target missing");
-  const setup = async ({ admin, schema }: { admin: Client; schema: string }) => {
-    const scoped = new URL(url);
-    scoped.searchParams.set("options", `-c search_path=${schema}`);
-    if (migrated)
-      await runPostgresMigrations({ connectionString: scoped.toString(), dryRun: false });
-    else await applyPostgresTestBaselineConnection({ connectionString: scoped.toString() });
-    await admin.query(`SET search_path TO ${quote(schema)}`);
-    const f = await seed(admin, scoped.toString(), undefined, { transferWithinMs: 300000 });
-    // Synthetic ordinary published song/timing/PCM lineage only. All commands
-    // under test run with guards ON. No real camera, provider or R2 is claimed.
-    await admin.query("BEGIN");
-    try {
-      await admin.query("SET LOCAL session_replication_role=replica");
-      await admin.query("INSERT INTO persona_profiles(persona_id) VALUES($1)", [f.facts.personaId]);
-      await admin.query(
-        "INSERT INTO community_memberships(community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES($1,'dance-member',$2,'member',clock_timestamp(),clock_timestamp(),clock_timestamp())",
-        [f.facts.communityId, f.facts.accountId],
-      );
-      await admin.query(
-        "INSERT INTO song_owner_policy_revisions(community_id,post_id,audio_revision,owner_account_id,policy_revision,third_party_reward_legs,pool_leg,derivative_video,policy_hash) VALUES($1,$2,$3,'private-test-owner',1,'allowed','allowed','allowed',song_owner_policy_hash_v1($1,$2,$3,'private-test-owner',1,'allowed','allowed','allowed'))",
-        [f.facts.communityId, f.facts.songPostId, f.facts.audioRevision],
-      );
-      await admin.query(
-        "INSERT INTO song_owner_policies(community_id,post_id,audio_revision,owner_account_id,current_policy_revision,current_policy_hash) SELECT community_id,post_id,audio_revision,owner_account_id,policy_revision,policy_hash FROM song_owner_policy_revisions",
-      );
-      await admin.query(
-        "INSERT INTO media_song_canonical_timings(song_post_id,audio_revision,song_community_id,canonical_audio_sha256,state,duration_samples,prober_identity,prober_policy_revision,measured_at) VALUES($1,$2,$3,$4,'ready',8640000,'fixture-decoder',1,clock_timestamp())",
-        [f.facts.songPostId, f.facts.audioRevision, f.facts.communityId, "a".repeat(64)],
-      );
-      await admin.query(
-        "INSERT INTO media_song_video_pcm_references(song_post_id,audio_revision,canonical_audio_sha256,duration_samples,pcm_object_key,pcm_object_version,pcm_object_etag,pcm_sha256,pcm_byte_length,decoder_recipe) VALUES($1,$2,$3,8640000,'song-video-pcm/fixture','v1','etag',$3,34560000,'fixture')",
-        [f.facts.songPostId, f.facts.audioRevision, "a".repeat(64)],
-      );
-      await admin.query("COMMIT");
-    } catch (error) {
-      await admin.query("ROLLBACK");
-      throw error;
-    }
-    let review = await historicalReview(f, admin, Date.now() + 604200000);
-    for (const operation of ["visibility", "verdict"] as const) {
-      const actor = {
-        kind: "account",
-        accountId: operation === "visibility" ? f.facts.accountId : "private-test-owner",
-      } as const;
-      const at =
-        operation === "visibility"
-          ? review.capture.uploadedAtMs + 10
-          : remainingMs === undefined
-            ? Date.now()
-            : Date.now() - f.publication.disposition.transferWithinMs + remainingMs;
-      const facts = Schema.decodeUnknownSync(ModeratorReviewFactsSchema)(
-        (
-          await admin.query("SELECT moderated_dance_review_facts_v1($1,$2::jsonb,$3,$4) packet", [
-            review.capture.reviewId,
-            JSON.stringify(actor),
-            operation,
-            at,
-          ])
-        ).rows[0]?.packet,
-      );
-      const change = transitionModeratorReview(
-        review,
-        operation === "visibility"
-          ? {
-              kind: "visibility",
-              showPublicly: true,
-              disclosureVersion: review.capture.policy.disclosureVersion,
-            }
-          : { kind: "verdict", verdict: "passed", version: "dance-owner-verdict-attestation-v1" },
-        actor,
-        review.revision,
-        at,
-        facts,
-      );
-      expect(change.refusal).toBeNull();
-      await admin.query("SELECT commit_moderated_dance_review_v1($1::jsonb)", [
-        JSON.stringify(reviewCommit(review, change, actor, operation, operation, at)),
-      ]);
-      review = change.state;
-    }
-    expect(review.publication).toBe("pending");
-    await use(f, admin, review);
-  };
-  if (!migrated)
-    return reusableSchema.run({
-      baseConnectionString: url,
-      schemaName: "dance_publication_input_pg_v1",
-      use: setup,
-    });
-  const admin = new Client({ connectionString: url }),
-    schema = `dance_input_acl_${crypto.randomUUID().replaceAll("-", "")}`;
-  await admin.connect();
-  try {
-    await admin.query(`CREATE SCHEMA ${quote(schema)}`);
-    await setup({ admin, schema });
-  } finally {
-    await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
-    await admin.end();
-  }
-}
-const command = (
-  admin: Client,
-  reviewId: string,
-  action: string,
-  input: Record<string, unknown> = {},
-) =>
-  admin
-    .query(sql, [reviewId, action, JSON.stringify({ ...input, token, videoTrackEnabled: true })])
-    .then((r) => r.rows[0]?.packet);
-const protocol = (admin: Client, reviewId: string) =>
-  makeModeratedDancePublicationInput({
-    reviewId,
-    token,
-    videoTrackEnabled: true,
-    call: async (_label, text, values) => (await admin.query(text, [...values])).rows[0]?.packet,
-  });
-async function stored(admin: Client, r: ModeratorReview) {
-  const id = r.capture.reviewId,
-    h = await command(admin, id, "begin"),
-    c = r.capture;
-  const body = {
-    key: h.destination_key,
-    sha256: "9".repeat(64),
-    size: 1000,
-    sourceSha256: c.sourceDigest,
-    bodyStartMs: c.bodyStartMs,
-    bodyEndMs: c.bodyEndMs,
-    durationMs: c.bodyEndMs - c.bodyStartMs,
-    transformRevision: "dance-publication-body-v1",
-  };
-  await command(admin, id, "plan", { body });
-  expect((await command(admin, id, "put")).status).toBe("put");
-  await command(admin, id, "observe", {
-    body: { ...body, version: "independent-v1", etag: "independent-etag" },
-  });
-  return { h, body };
-}
 
 suite("native private Dance input adoption and irreversible copy grants", () => {
   test("a lost put reply cannot authorize another write; one adopted input enters normal analysis without multipart fiction", async () =>
@@ -258,6 +99,10 @@ suite("native private Dance input adoption and irreversible copy grants", () => 
       ).toEqual(originalReceipt);
       expect((await command(admin, id, "inspect")).source_identity).toBeNull();
       expect(await p.cleanup()).toBeNull();
+      expect(
+        (await admin.query("SELECT claim_moderated_dance_publication_cleanup_v1('unused') packet"))
+          .rows[0]?.packet,
+      ).toBeNull();
       const normal = makeControlPlaneVideoPublicationStore(f.runtime);
       expect(
         await normal.getReservationForAccount({
@@ -325,6 +170,162 @@ suite("native private Dance input adoption and irreversible copy grants", () => 
           .rows[0]?.state,
       ).toEqual(before);
     }));
+  test("cleanup grants remain one-shot and token-bound, and unresolved physical storage closes readiness", async () =>
+    withFixture(async (_f, admin, r) => {
+      await stored(admin, r);
+      const id = r.capture.reviewId;
+      expect(
+        (
+          await admin.query(
+            "SELECT claim_moderated_dance_publication_cleanup_v1('first-fence') packet",
+          )
+        ).rows[0]?.packet,
+      ).toBeNull();
+      await protocol(admin, id).abandon();
+      const claim = async (t: string) =>
+        (await admin.query("SELECT claim_moderated_dance_publication_cleanup_v1($1) packet", [t]))
+          .rows[0]?.packet;
+      const finish = async (t: string, observation: unknown) =>
+        (
+          await admin.query(
+            "SELECT finish_moderated_dance_publication_cleanup_v1($1,$2,$3::jsonb) packet",
+            [id, t, JSON.stringify(observation)],
+          )
+        ).rows[0]?.packet;
+      // A rolled-back grant dispatches nothing and may be freshly claimed.
+      await admin.query("BEGIN");
+      expect((await claim("rolled-back-fence")).delivery).toBe("fresh_grant");
+      await admin.query("ROLLBACK");
+      const first = await claim("first-fence"),
+        recovery = await claim("replacement-refused");
+      expect(first).toMatchObject({
+        reviewId: id,
+        delivery: "fresh_grant",
+        fenceToken: "first-fence",
+        inputToken: token,
+      });
+      expect(recovery).toEqual({ ...first, delivery: "recovery_only" });
+      await expect(finish("replacement-refused", { outcome: "unknown" })).rejects.toMatchObject({
+        code: "DRV05",
+      });
+      for (const changed of [
+        { outcome: "absent" },
+        { outcome: "fenced", key: first.key },
+        { outcome: "unknown", extra: true },
+      ])
+        await expect(finish("first-fence", changed)).rejects.toMatchObject({ code: "DRV06" });
+      expect(await finish("first-fence", { outcome: "unknown" })).toEqual({ status: "unknown" });
+      expect((await command(admin, id, "inspect")).state).toBe("cleanup");
+      await admin.query(
+        "INSERT INTO dance_moderated_maintenance_readiness_v1 VALUES(TRUE,clock_timestamp(),clock_timestamp()+interval '1 minute') ON CONFLICT(singleton) DO UPDATE SET valid_until=EXCLUDED.valid_until",
+      );
+      await admin.query("SELECT record_moderated_dance_maintenance_v1()");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::INTEGER n FROM dance_moderated_maintenance_readiness_v1",
+          )
+        ).rows[0]?.n,
+      ).toBe(0);
+      expect((await claim("another-refused")).delivery).toBe("recovery_only");
+    }));
+  test("the composed CAS consumer commits only its observed fence and retains the receipt without altering qualification", async () =>
+    withFixture(async (_f, admin, r) => {
+      const { h, body } = await stored(admin, r),
+        id = r.capture.reviewId;
+      await protocol(admin, id).abandon();
+      const before = (
+        await admin.query("SELECT state FROM dance_moderated_reviews_v1 WHERE review_id=$1", [id])
+      ).rows[0]?.state;
+      let head: Awaited<
+        ReturnType<Parameters<typeof makeModeratedDancePublicationCleanup>[0]["bucket"]["head"]>
+      > = {
+        version: "independent-v1",
+        etag: "independent-etag",
+        size: body.size,
+        checksums: { sha256: Uint8Array.from({ length: 32 }, () => 0x99).buffer },
+        httpMetadata: { contentType: "video/mp4" },
+        customMetadata: { dancePublicationInput: token, dancePublicationReview: id },
+      };
+      let writes = 0;
+      const cleanup = makeModeratedDancePublicationCleanup({
+        randomId: () => "physical-fence",
+        call: async (_label, text, values) =>
+          (await admin.query(text, [...values])).rows[0]?.packet,
+        bucket: {
+          head: async (key) => {
+            expect(key).toBe(h.destination_key);
+            return head;
+          },
+          put: async (key, value, options) => {
+            expect(key).toBe(h.destination_key);
+            expect(options.onlyIf).toEqual({ etagMatches: "independent-etag" });
+            writes++;
+            head = {
+              version: "fence-v1",
+              etag: "fence-etag",
+              size: value.length,
+              httpMetadata: options.httpMetadata,
+              customMetadata: options.customMetadata,
+            };
+            return head;
+          },
+        },
+      });
+      await cleanup.run();
+      expect(writes).toBe(1);
+      const saved = (
+        await admin.query(
+          "SELECT observation FROM dance_moderated_publication_cleanup_v1 WHERE review_id=$1",
+          [id],
+        )
+      ).rows[0]?.observation;
+      expect(saved).toMatchObject({
+        outcome: "fenced",
+        key: h.destination_key,
+        version: "fence-v1",
+        etag: "fence-etag",
+        fenceToken: "physical-fence",
+      });
+      const journal = await command(admin, id, "inspect");
+      expect(journal).toMatchObject({
+        state: "cleaned",
+        body_plan: null,
+        body_identity: null,
+        source_identity: null,
+      });
+      expect(journal.deadline_at).toBe(h.deadline_at);
+      await cleanup.run();
+      expect(writes).toBe(1);
+      expect(
+        (
+          await admin.query(
+            "SELECT finish_moderated_dance_publication_cleanup_v1($1,'physical-fence',$2::jsonb) packet",
+            [id, JSON.stringify(saved)],
+          )
+        ).rows[0]?.packet,
+      ).toEqual({ status: "cleaned" });
+      await expect(
+        admin.query(
+          "SELECT finish_moderated_dance_publication_cleanup_v1($1,'physical-fence',$2::jsonb)",
+          [id, JSON.stringify({ ...saved, version: "changed" })],
+        ),
+      ).rejects.toMatchObject({ code: "DRV05" });
+      await expect(
+        admin.query("DELETE FROM dance_moderated_publication_cleanup_v1 WHERE review_id=$1", [id]),
+      ).rejects.toMatchObject({ code: "DRV01" });
+      await expect(
+        admin.query(
+          "UPDATE dance_moderated_publication_cleanup_v1 SET fence_token='replaced' WHERE review_id=$1",
+          [id],
+        ),
+      ).rejects.toMatchObject({ code: "DRV01" });
+      expect(
+        (await admin.query("SELECT state FROM dance_moderated_reviews_v1 WHERE review_id=$1", [id]))
+          .rows[0]?.state,
+      ).toEqual(before);
+      await expect(protocol(admin, id).adopt()).rejects.toMatchObject({ code: "DRV05" });
+    }));
   test("cleanup wins permanently before a late observation or adoption and does not change the passed qualification", async () =>
     withFixture(async (_f, admin, r) => {
       const { h } = await stored(admin, r),
@@ -338,7 +339,11 @@ suite("native private Dance input adoption and irreversible copy grants", () => 
       await expect(
         admin.query(sql, [id, "cleaned", JSON.stringify({ token, keyFenced: false })]),
       ).rejects.toMatchObject({ code: "DRV05" });
-      expect(await p.cleaned()).toEqual({ status: "cleaned" });
+      // SQL protocol fixture only; the composed storage consumer separately
+      // proves a physical fence before supplying this private observation.
+      expect(await command(admin, id, "cleaned", { keyFenced: true })).toEqual({
+        status: "cleaned",
+      });
       expect(await p.cleanup()).toEqual({ status: "cleaned" });
       expect((await command(admin, id, "inspect")).body_identity).toBeNull();
       expect(
@@ -442,6 +447,16 @@ suite("native private Dance input adoption and irreversible copy grants", () => 
           await expect(
             confined.query("SELECT * FROM dance_moderated_publication_inputs_v1"),
           ).rejects.toMatchObject({ code: "42501" });
+          await expect(
+            confined.query("SELECT * FROM dance_moderated_publication_cleanup_v1"),
+          ).rejects.toMatchObject({ code: "42501" });
+          expect(
+            (
+              await confined.query(
+                "SELECT claim_moderated_dance_publication_cleanup_v1('confined') packet",
+              )
+            ).rows[0]?.packet,
+          ).toBeNull();
           await expect(
             confined.query("SELECT moderated_dance_publication_song_v1('{}')"),
           ).rejects.toMatchObject({ code: "42501" });
