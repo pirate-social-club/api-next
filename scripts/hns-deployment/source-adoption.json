@@ -1060,6 +1060,10 @@
     {
       "owned_path": "apps/hns-platform-gateway/ops/caddy-build/systemd/30-production-json.conf",
       "sha256": "47dca85679b8ac2a94d07a71965e752f6739f1c6e03f41de692f9c7c9ea389a7"
+    },
+    {
+      "owned_path": "apps/hns-authority-provisioner/ops/primary-dns/systemd/pirate-deployment-verify@authdns.timer.d/10-initial-verification.conf",
+      "sha256": "f3b2fdd48cc2961dced9cc887868ead21027fad9071e3bf5a256b49e9fa74376"
     }
   ]
 }
