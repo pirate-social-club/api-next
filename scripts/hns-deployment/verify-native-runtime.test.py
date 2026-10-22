@@ -1,5 +1,7 @@
 """Refuse false native health: stale/unsynced tips, redirects and replaced processes."""
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import unittest
 import tempfile
@@ -43,6 +45,45 @@ class NativeAcceptance(unittest.TestCase):
             native.active_process("example.service", "accepted")
         with patch.object(native, "run", side_effect=["active\n", "123\n"]), patch.object(native, "sha256", return_value="changed"), self.assertRaises(native.Refused):
             native.active_process("example.service", "accepted")
+
+    def test_static_gateway_requires_bound_artifact_and_real_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory)
+            root = release / "installed"
+            (root / "bin").mkdir(parents=True)
+            (release / "static-native").mkdir()
+            bundle = root / "bin/gateway.mjs"
+            bundle.write_bytes(b"accepted bundle")
+            digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+            binding = {"schema": "pirate-hns-native-bundle/1", "profile": "static-gateway",
+                       "source_commit": "accepted-source", "bundle_sha256": digest,
+                       "bundle_name": "gateway.mjs", "bun": {"runtime": {"binary_sha256": "runtime"}}}
+            (release / "static-native/bundle-binding.json").write_text(json.dumps(binding))
+            deployment = root / "DEPLOYMENT"
+            accepted = "api-next_commit=accepted-source\nbundle_sha256=" + digest + "\nprofile=production\n"
+            deployment.write_text(accepted)
+            with patch.object(native, "Path", return_value=root), \
+                    patch.object(native, "active_process", return_value=123), \
+                    patch.object(native, "exchange", return_value=(204, {}, b"")) as exchange:
+                self.assertEqual(native.verify_static_gateway(release, "runtime"),
+                                 ("pirate-hns-platform-gateway.service", 123))
+                exchange.assert_called_once_with("http://127.0.0.1:4051/readyz")
+                for metadata in [accepted.replace("accepted-source", "other-source"),
+                                 accepted + "api-next_commit=accepted-source\n"]:
+                    deployment.write_text(metadata)
+                    with self.assertRaises(native.Refused):
+                        native.verify_static_gateway(release, "runtime")
+                deployment.write_text(accepted)
+                bundle.write_bytes(b"replaced bundle")
+                with self.assertRaises(native.Refused):
+                    native.verify_static_gateway(release, "runtime")
+                bundle.write_bytes(b"accepted bundle")
+                for response in [(503, {}, b""), (302, {}, b""), (204, {}, b"unexpected")]:
+                    exchange.return_value = response
+                    with self.assertRaises(native.Refused):
+                        native.verify_static_gateway(release, "runtime")
+                with self.assertRaises(native.Refused):
+                    native.verify_static_gateway(release, "other-runtime")
 
 
 if __name__ == "__main__":

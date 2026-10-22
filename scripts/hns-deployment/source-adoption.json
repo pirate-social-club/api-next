@@ -5,9 +5,10 @@
   "live_gateway_config": {
     "owned_path": "apps/hns-platform-gateway/ops/production/caddy.json",
     "source": "captured effective /etc/caddy/caddy.json on94.103.168.161 at2026-10-20T15:18:38.577525+00:00",
-    "sha256": "ee855db5bab9fa43bc5c60d9dc0b975d04520e9fe21f351c2e122a9adf7cc4c7",
-    "status": "owned candidate changes only DoH upstream8053 to8054; runtime unchanged pending acceptance",
-    "source_capture_sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5"
+    "sha256": "8d50ee4d87d55c3735662dc256697394f18f8811a973533cdc6ecb3ad54934d4",
+    "status": "candidate; requires final source review, real custom-Caddy validation and bounded live acceptance",
+    "source_capture_sha256": "300d7b5407d33e036a89d46056ce7fef44c25e3be6d60608143f656faec478e5",
+    "previous_live_sha256": "ee855db5bab9fa43bc5c60d9dc0b975d04520e9fe21f351c2e122a9adf7cc4c7"
   },
   "files": [
     {
@@ -994,7 +995,7 @@
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/production/bin/stage-release-assets.sh",
-      "sha256": "5f74a47a09b413e6aa8406c7980904ec3a0cf4ec949a41a6f3324e4d92576c1d"
+      "sha256": "2cdf36b2d0ab144cf3f4ba92766752b2e8a2593e6d9c8fbbd297dae93897aa24"
     },
     {
       "owned_path": "apps/hns-platform-gateway/ops/production/deployment-manifest.json",
@@ -1010,23 +1011,27 @@
     },
     {
       "owned_path": "scripts/hns-deployment/build-native-app-bundle.py",
-      "sha256": "4b3dba1f830ae09a1b4a3b226e6015246e2138da318ba6c01e174b901f12bd7e"
+      "sha256": "6b069c45f3a22d0ccdf06cfc9f4849ffef9eb8c01ff91eff488082e4cfb5a413"
     },
     {
       "owned_path": "scripts/hns-deployment/native-runtime-recovery.md",
-      "sha256": "5c036a40b0ecba4f3f49b1a172c646326c0208a4b5a3462c659bf94be9feb713"
+      "sha256": "9d7c0a0ec2a374ad13611bd746f89d04a035030606413a120efc300a274e66a6"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.py",
-      "sha256": "5d22308e5ebd2d6988bafddbe45b956e9c34668ab87eecfdb6e5489ced49db55"
+      "sha256": "dab800ed076ebcca4ca966bbca96dd0551f072f55cd2f78445b93db97e5aae57"
     },
     {
       "owned_path": "scripts/hns-deployment/verify-native-runtime.test.py",
-      "sha256": "7933b026ee3f8f731aaaad0f2ed36d3c953ae6c8891466bf1f13e98a7353abe0"
+      "sha256": "bda3b7f376ba27a07664eceb40f509c746d5fd36bcd7014e131636a1fbeb56be"
     },
     {
       "owned_path": "scripts/hns-native-runtime.test.ts",
       "sha256": "94d3ea36d00afd6311aa9a5434b4e478b335cc2758a771a0cc8547184cd5f619"
+    },
+    {
+      "owned_path": "apps/hns-platform-gateway/ops/production/retire-legacy-verifiers.md",
+      "sha256": "cd049237351befacf3b022b9b9f68fbc7941c555f0272b2a473646c5923f6a78"
     }
   ]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the two accepted production bundles; never installs or rotates them."""
+"""Rebuild accepted production bundles; never installs or rotates them."""
 import argparse
 import hashlib
 import json
@@ -21,6 +21,11 @@ PROFILES = {
         "source_commit": "59dadfffc0364cae8618c23fb682cce377611369",
         "bundle_sha256": "710b561ee87a15288b72bb031d428fbbac4d867bd843051645a5d82e7d2d1f04",
         "bundle_name": "pirate-hns-community-app-gateway.mjs",
+    },
+    "static-gateway": {
+        "source_commit": "e7b0b247613691c27aedfd80da63d8a79615f10d",
+        "bundle_sha256": "619c035de3b8588cd9a429d03df1e997febaf27ebfe5e55ac325e33b00548120",
+        "bundle_name": "pirate-hns-platform-gateway.mjs",
     },
 }
 BUN = {
@@ -90,10 +95,11 @@ def build(profile, output):
                        cwd=source, env=env, check=True)
         subprocess.run(["sha256sum", "--check", "--status", ".pirate-deployment/SHA256SUMS"],
                        cwd=source, check=True)
-        if profile == "observer-driver":
-            subprocess.run([str(compiler), "run", "--cwd", "apps/hns-observer-driver", "build:vps-bundle"],
+        if profile in ("observer-driver", "static-gateway"):
+            app = "hns-observer-driver" if profile == "observer-driver" else "hns-platform-gateway"
+            subprocess.run([str(compiler), "run", "--cwd", "apps/" + app, "build:vps-bundle"],
                            cwd=source, env=env, check=True)
-            bundle = source / "apps/hns-observer-driver/dist" / pin["bundle_name"]
+            bundle = source / "apps" / app / "dist" / pin["bundle_name"]
         else:
             # Exact historical build options. The sealed archive supplies the
             # commit normally read from its clean Git checkout by that builder.
