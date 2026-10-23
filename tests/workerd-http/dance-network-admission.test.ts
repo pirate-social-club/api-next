@@ -1,8 +1,9 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { runInDurableObject, env as testEnv } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DanceNetworkRateLimiterDO } from "../../packages/platform-cf/src/dance-network-admission-do.ts";
 import { DANCE_NETWORK_DAY_MS } from "../../packages/platform-cf/src/dance-network-admission-model.ts";
+import { DANCE_NETWORK_CLEANUP_COORDINATOR } from "../../packages/platform-cf/src/dance-network-cleanup.ts";
 
 const env = testEnv as unknown as {
   DANCE_NETWORK_RATE_LIMITER: DurableObjectNamespace<DanceNetworkRateLimiterDO>;
@@ -10,6 +11,9 @@ const env = testEnv as unknown as {
 const digest = (n: number) => n.toString(16).padStart(64, "0");
 const bucket = (day = Math.floor(Date.now() / DANCE_NETWORK_DAY_MS)) =>
   `dance-network-v1:${day}:${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
+beforeEach(async () => {
+  await env.DANCE_NETWORK_RATE_LIMITER.getByName(DANCE_NETWORK_CLEANUP_COORDINATOR).maintain();
+});
 
 describe("Dance daily network SQLite admission", () => {
   it("persists another cleanup attempt when erasure fails", async () => {
@@ -45,6 +49,7 @@ describe("Dance daily network SQLite admission", () => {
     const stub = env.DANCE_NETWORK_RATE_LIMITER.getByName(bucket());
     await runInDurableObject(stub, async (instance: DanceNetworkRateLimiterDO, state) => {
       await state.storage.setAlarm(Date.now() + DANCE_NETWORK_DAY_MS);
+
       await instance.alarm();
       expect(await state.storage.getAlarm()).toBeNull();
       expect(
