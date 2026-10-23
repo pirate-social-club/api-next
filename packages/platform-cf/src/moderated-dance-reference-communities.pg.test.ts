@@ -209,6 +209,9 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
     const scoped = new URL(url);
     scoped.searchParams.set("options", `-c search_path=${schema}`);
     const role = `dance_ref_reader_${process.pid}_${Date.now()}`;
+    const password = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
     let confined: Client | undefined;
     try {
       await db.query(`CREATE SCHEMA ${quote(schema)};SET search_path TO ${quote(schema)}`);
@@ -241,7 +244,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
         ).rows;
       const before = await snapshot();
       await db.query(
-        `CREATE ROLE ${quote(role)} LOGIN;GRANT USAGE ON SCHEMA ${quote(schema)} TO ${quote(role)}`,
+        `CREATE ROLE ${quote(role)} LOGIN PASSWORD '${password}';GRANT USAGE ON SCHEMA ${quote(schema)} TO ${quote(role)}`,
       );
       await db.query("SELECT grant_moderated_dance_runtime_v1($1,'account')", [role]);
       const result = await runPostgresMigrations({
@@ -263,6 +266,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
       ).toEqual([{ correct: true }]);
       const login = new URL(scoped);
       login.username = role;
+      login.password = password;
       confined = new Client({ connectionString: login.toString() });
       await confined.connect();
       expect(
