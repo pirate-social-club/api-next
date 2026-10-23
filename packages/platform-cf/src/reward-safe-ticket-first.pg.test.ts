@@ -4,6 +4,9 @@
  * reconciliation and cutoff step under test runs with all triggers enforced.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
@@ -14,6 +17,7 @@ import {
   type Hex,
   parseAbi,
 } from "viem";
+import { exportSafePoolCalls } from "../../../scripts/safe-pool-export-calls.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import {
@@ -700,6 +704,47 @@ suite("ticket-first owner-executed Safe pools", () => {
         ])
       ).rows,
     ).toEqual([{ state: "prepared" }]);
+  });
+
+  test("exports each unexecuted owner call as its own Transaction Builder file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "safe-pool-export-"));
+    try {
+      const prepared = (
+        await admin.query<{ effect_id: string; calldata: string }>(
+          `SELECT effect_id, calldata FROM reward_chain_effects
+            WHERE execution_mode='safe_owner_v1' AND state='prepared' ORDER BY effect_id`,
+        )
+      ).rows;
+      expect(prepared.length).toBeGreaterThan(0);
+      const written = await exportSafePoolCalls({
+        attestationId: ATTESTATION,
+        outDirectory: directory,
+        layer: makeDirectPostgresControlPlaneLayer(scoped),
+        now: () => 0,
+      });
+      expect(written).toHaveLength(prepared.length);
+      for (const call of prepared) {
+        const path = written.find((file) => file.endsWith(`-${call.effect_id}.json`));
+        if (path === undefined) throw new Error(`missing export for ${call.effect_id}`);
+        const file = JSON.parse(await readFile(path, "utf8"));
+        expect(file).toMatchObject({
+          chainId: "8453",
+          meta: { createdFromSafeAddress: SAFE },
+          transactions: [{ value: "0", data: call.calldata }],
+        });
+        expect(file.transactions).toHaveLength(1);
+      }
+      await expect(
+        exportSafePoolCalls({
+          attestationId: ATTESTATION,
+          outDirectory: directory,
+          layer: makeDirectPostgresControlPlaneLayer(scoped),
+          now: () => 0,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test("a ticket that landed in another drawing opens nothing and is held", async () => {
