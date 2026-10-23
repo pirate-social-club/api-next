@@ -44,6 +44,50 @@ async function withFixture(use: (f: Intake, db: Client) => Promise<void>) {
   });
 }
 
+async function queuedReferences(f: Intake, db: Client) {
+  const enqueue = async (suffix: string) => {
+    const video = await publishedModeratedDanceVideo(
+      db,
+      f.connection,
+      f.facts.communityId,
+      10000,
+      suffix,
+    );
+    const command = await moderatedReferenceCommand(video, `queue${suffix}`);
+    const choreography = `queue-reference${suffix}`;
+    const create = async () =>
+      (
+        await db.query("SELECT create_moderated_dance_reference_v1($1,$2::jsonb,$3,$4,$5) packet", [
+          video.actor,
+          JSON.stringify(command.body),
+          command.hash,
+          choreography,
+          `segment${suffix}`,
+        ])
+      ).rows[0]?.packet;
+    const receipt = await create();
+    return { video, choreography, create, receipt };
+  };
+  const first = await enqueue(""),
+    second = await enqueue("-second");
+  const claim = async () =>
+    (
+      await db.query("SELECT claim_moderated_dance_reference_media_v1($1,$2,$3::jsonb) packet", [
+        crypto.randomUUID(),
+        f.facts.profile.mediaRuntimeRevision,
+        JSON.stringify(f.facts.profile.replayCompatibleEpochs),
+      ])
+    ).rows[0]?.packet;
+  const state = async (choreography: string) =>
+    (
+      await db.query(
+        "SELECT state,worker_deadline,created_at,observation_until,provider_tag,provider_job_id,result FROM dance_moderated_reference_commands_v1 WHERE choreography_id=$1",
+        [choreography],
+      )
+    ).rows[0];
+  return { first, second, claim, state };
+}
+
 suite("native canonical-song and ordinary-reference community ownership", () => {
   for (const duration of [6000, 30000])
     test(`Community1 song -> Community2 ${duration}ms video -> Community1 capture`, async () =>
@@ -201,7 +245,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
       }
     }));
 
-  test("actual0306->0307 upgrade preserves same-community command, revision and capture documents under confined roles", async () => {
+  test("actual0306->0308 upgrade preserves documents and bounds legacy queued work under confined roles", async () => {
     if (url === undefined) throw new Error("Isolated target required");
     const db = new Client({ connectionString: url });
     await db.connect();
@@ -249,7 +293,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
       await db.query("SELECT grant_moderated_dance_runtime_v1($1,'account')", [role]);
       const result = await runPostgresMigrations({
         connectionString: scoped.toString(),
-        migrations: all,
+        migrations: all.slice(0, 307),
         expectedLedger: prefix,
       });
       if (result.dryRun) throw new Error("Actual upgrade required");
@@ -288,11 +332,163 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
           "UPDATE dance_moderator_reference_revisions_v1 SET reference_community_id=reference_community_id",
         ),
       ).rejects.toMatchObject({ code: "DRV01" });
+      const queuedVideo = await publishedModeratedDanceVideo(
+        db,
+        f.connection,
+        community,
+        6000,
+        "-upgrade-queued",
+      );
+      const queuedCommand = await moderatedReferenceCommand(queuedVideo, "upgrade-queued");
+      const enqueue = async () =>
+        (
+          await db.query(
+            "SELECT create_moderated_dance_reference_v1($1,$2::jsonb,$3,$4,$5) packet",
+            [
+              queuedVideo.actor,
+              JSON.stringify(queuedCommand.body),
+              queuedCommand.hash,
+              "upgrade-queued-reference",
+              "upgrade-queued-segment",
+            ],
+          )
+        ).rows[0]?.packet;
+      const queuedReceipt = await enqueue();
+      const queuedClock = async () =>
+        (
+          await db.query(
+            "SELECT created_at,worker_deadline FROM dance_moderated_reference_commands_v1 WHERE choreography_id='upgrade-queued-reference'",
+          )
+        ).rows[0];
+      const originalClock = await queuedClock();
+      expect(originalClock.worker_deadline).toBeNull();
+      const upgraded = await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: all,
+        expectedLedger: all.slice(0, 307),
+      });
+      if (upgraded.dryRun) throw new Error("Actual queue upgrade required");
+      expect(upgraded.result.applied).toEqual(["0308_moderated_dance_reference_queue.sql"]);
+      expect((await queuedClock()).worker_deadline.getTime()).toBe(
+        originalClock.created_at.getTime() + f.facts.profile.providerWaitMs,
+      );
+      expect(await enqueue()).toEqual(queuedReceipt);
+      expect(await reference.create()).toEqual(reference.receipt);
+      expect(await Effect.runPromise(f.store.command(f.create))).toEqual(captured);
+      await expect(
+        confined.query("SELECT claim_moderated_dance_reference_media_v1('forbidden','x','[]')"),
+      ).rejects.toMatchObject({ code: "42501" });
     } finally {
       await confined?.end();
       await db.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
       await db.query(`DROP ROLE IF EXISTS ${quote(role)}`);
       await db.end();
     }
-  });
+  }, 120000);
+  test("an unavailable oldest reference defers without starving a later real reference", async () =>
+    withFixture(async (f, db) => {
+      const q = await queuedReferences(f, db),
+        initial = await q.state(q.first.choreography);
+      await db.query("UPDATE posts SET status='hidden' WHERE post_id=$1", [q.first.video.postId]);
+      expect(await q.claim()).toMatchObject({ choreographyId: q.second.choreography });
+      expect(initial.worker_deadline.getTime() - initial.created_at.getTime()).toBe(
+        f.facts.profile.providerWaitMs,
+      );
+      const deferred = await q.state(q.first.choreography);
+      expect(deferred.state).toBe("pending");
+      expect(deferred.provider_tag).toBeNull();
+      expect(deferred.observation_until.getTime()).toBeGreaterThan(Date.now());
+      expect(deferred.observation_until.getTime()).toBeLessThanOrEqual(
+        initial.worker_deadline.getTime(),
+      );
+      expect(await q.first.create()).toEqual(q.first.receipt);
+      // A temporary refusal may recover, but never renews the original clock.
+      await db.query("UPDATE posts SET status='published' WHERE post_id=$1", [
+        q.first.video.postId,
+      ]);
+      await db.query(
+        "UPDATE dance_moderated_reference_commands_v1 SET observation_until=clock_timestamp()-interval '1 millisecond' WHERE choreography_id=$1",
+        [q.first.choreography],
+      );
+      expect(await q.claim()).toMatchObject({
+        choreographyId: q.first.choreography,
+        deadlineMs: initial.worker_deadline.getTime(),
+      });
+    }));
+
+  test("exhausted new-work quota does not starve already reserved work", async () =>
+    withFixture(async (f, db) => {
+      const q = await queuedReferences(f, db);
+      expect(await q.claim()).toMatchObject({ choreographyId: q.first.choreography });
+      for (let n = 0; n < 2; n++)
+        expect(
+          (
+            await db.query("SELECT reserve_moderated_dance_provider_work_v1($1,$2::jsonb) ok", [
+              q.first.video.actor,
+              JSON.stringify(f.facts.profile),
+            ])
+          ).rows[0]?.ok,
+        ).toBe(true);
+      // Put the still-pending second command first in the due order. Its
+      // account reservation is exhausted; the first command already owns one.
+      await db.query(
+        "UPDATE dance_moderated_reference_commands_v1 SET created_at=clock_timestamp()-interval '1 minute' WHERE choreography_id=$1",
+        [q.second.choreography],
+      );
+      await db.query(
+        "UPDATE dance_moderated_reference_commands_v1 SET observation_until=NULL WHERE choreography_id=$1",
+        [q.first.choreography],
+      );
+      expect(await q.claim()).toMatchObject({ choreographyId: q.first.choreography });
+      expect((await q.state(q.second.choreography)).state).toBe("pending");
+      expect((await q.state(q.second.choreography)).observation_until.getTime()).toBeGreaterThan(
+        Date.now(),
+      );
+      expect(
+        (
+          await db.query(
+            "SELECT sum(charged_microunits)::text charged FROM dance_moderated_provider_usage_v1 WHERE scope=$1",
+            [`account:${q.first.video.actor}`],
+          )
+        ).rows[0]?.charged,
+      ).toBe(String(f.facts.profile.maximumAccountProviderSpendPerWindow));
+    }));
+
+  test("expired queued work closes without external grants or changing its historical receipt", async () =>
+    withFixture(async (f, db) => {
+      const q = await queuedReferences(f, db);
+      await db.query(
+        "UPDATE dance_moderated_reference_commands_v1 SET worker_deadline=clock_timestamp()-interval '1 millisecond' WHERE choreography_id=$1",
+        [q.first.choreography],
+      );
+      expect(await q.claim()).toMatchObject({ choreographyId: q.second.choreography });
+      expect(await q.state(q.first.choreography)).toMatchObject({
+        state: "failed",
+        provider_tag: null,
+        provider_job_id: null,
+        result: { reason: "reference_work_expired" },
+      });
+      expect(await q.first.create()).toEqual(q.first.receipt);
+    }));
+
+  test("a concurrently locked oldest command does not prevent a later claim", async () =>
+    withFixture(async (f, db) => {
+      const q = await queuedReferences(f, db),
+        lock = new Client({ connectionString: f.connection });
+      await lock.connect();
+      try {
+        await lock.query("BEGIN");
+        await lock.query(
+          "SELECT 1 FROM dance_moderated_reference_commands_v1 WHERE choreography_id=$1 FOR UPDATE",
+          [q.first.choreography],
+        );
+        await db.query("SET statement_timeout='2s'");
+        expect(await q.claim()).toMatchObject({ choreographyId: q.second.choreography });
+        expect((await q.state(q.first.choreography)).state).toBe("pending");
+      } finally {
+        await lock.query("ROLLBACK");
+        await lock.end();
+        await db.query("SET statement_timeout=0");
+      }
+    }));
 });

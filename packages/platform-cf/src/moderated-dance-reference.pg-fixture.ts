@@ -19,13 +19,13 @@ import {
 import {
   actor,
   community,
-  operationId,
+  operationId as originalOperationId,
+  submissionId as originalSubmissionId,
   persona,
   seedPublishedSongFixture,
   seedSongOwner,
   seedVideoActors,
   songReferenceFinalizedFixture,
-  submissionId,
   trustedAnalysis,
   videoSha256,
 } from "./video-publication.pg-fixture.ts";
@@ -38,11 +38,16 @@ export async function publishedModeratedDanceVideo(
   connection: string,
   songCommunity: string,
   durationMs = 10000,
+  successorSuffix = "",
 ) {
-  await seedVideoActors(admin);
-  await seedSongOwner(admin);
+  const submissionId = originalSubmissionId + successorSuffix,
+    operationId = originalOperationId + successorSuffix;
+  if (successorSuffix === "") {
+    await seedVideoActors(admin);
+    await seedSongOwner(admin);
+  }
   const songPersona = songCommunity === community ? persona : "dance-reference-song-persona";
-  if (songCommunity !== community) {
+  if (songCommunity !== community && successorSuffix === "") {
     await createActivePersonaFixture(admin, { accountId: actor, personaId: songPersona });
     await admin.query(
       "INSERT INTO persona_community_bindings(persona_id,account_id,community_id,binding_source) VALUES($1,$2,$3,'activity_participation')",
@@ -50,9 +55,9 @@ export async function publishedModeratedDanceVideo(
     );
   }
   const song = {
-    songPostId: "cross-community-song",
+    songPostId: `cross-community-song${successorSuffix}`,
     communityId: songCommunity,
-    audioAssetRef: "media://song/cross-community-audio",
+    audioAssetRef: `media://song/cross-community-audio${successorSuffix}`,
     canonicalAudioSha256: "e".repeat(64),
     durationSamples: 60 * 48000,
     title: "Cross-community reference",
@@ -66,7 +71,10 @@ export async function publishedModeratedDanceVideo(
   const planId = `song-video-plan:${submissionId}`;
   const { store, finalized } = await songReferenceFinalizedFixture(connection, {
     identity: {
-      reservationId: "media-reservation-00000000-0000-4000-8000-000000000099",
+      reservationId:
+        successorSuffix === ""
+          ? "media-reservation-00000000-0000-4000-8000-000000000099"
+          : `media-reservation-${crypto.randomUUID()}`,
       submissionId,
       operationId,
     },
@@ -79,6 +87,19 @@ export async function publishedModeratedDanceVideo(
   const base = trustedAnalysis();
   const analysis = {
     ...base,
+    operationId,
+    finalizedVideoRef: finalized.state.video?.immutableRef ?? "missing-capture",
+    frames: {
+      ...base.frames,
+      extracted: base.frames.extracted.map((frame) => ({
+        ...frame,
+        artifactRef: frame.artifactRef.replace(originalOperationId, operationId),
+      })) as typeof base.frames.extracted,
+    },
+    safetyRequest: {
+      ...base.safetyRequest,
+      requestId: base.safetyRequest.requestId + successorSuffix,
+    },
     probe: { ...base.probe, durationMs },
     audio: { intent: "song_reference" as const },
   };
@@ -86,12 +107,12 @@ export async function publishedModeratedDanceVideo(
   expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
     status: "processing",
   });
-  const attempt = { planId, attemptId: "dance-reference-render", generation: 1 };
-  const outputKey = "media://immutable/song-video/dance-reference-render/master";
-  const bytes = new TextEncoder().encode("distinct-rendered-Dance-reference");
+  const attempt = { planId, attemptId: `dance-reference-render${successorSuffix}`, generation: 1 };
+  const outputKey = `media://immutable/song-video/dance-reference-render${successorSuffix}/master`;
+  const bytes = new TextEncoder().encode(`distinct-rendered-Dance-reference${successorSuffix}`);
   const masterSha256 = createHash("sha256").update(bytes).digest("hex");
   const soundtrackSha256 = "d".repeat(64);
-  const masterRevisionId = "dance-reference-master";
+  const masterRevisionId = `dance-reference-master${successorSuffix}`;
   await startRenderAttempt(admin, attempt, {
     outputObjectKey: outputKey,
     rendererIdentity: "fixture-renderer",
@@ -152,8 +173,14 @@ export async function publishedModeratedDanceVideo(
     await admin.query("SET LOCAL session_replication_role=replica");
     await admin.query(
       `INSERT INTO media_song_video_pcm_references(song_post_id,audio_revision,canonical_audio_sha256,duration_samples,pcm_object_key,pcm_object_version,pcm_object_etag,pcm_sha256,pcm_byte_length,decoder_recipe)
-      VALUES($1,1,$2,$3,'song-video-pcm/fixture/song.pcm','pcm-v1','pcm-etag',repeat('f',64),$4,'canonical-pcm-s16le-48000-stereo-v1')`,
-      [song.songPostId, song.canonicalAudioSha256, song.durationSamples, song.durationSamples * 4],
+      VALUES($1,1,$2,$3,$5,'pcm-v1','pcm-etag',repeat('f',64),$4,'canonical-pcm-s16le-48000-stereo-v1')`,
+      [
+        song.songPostId,
+        song.canonicalAudioSha256,
+        song.durationSamples,
+        song.durationSamples * 4,
+        `song-video-pcm/fixture/song${successorSuffix}.pcm`,
+      ],
     );
     await admin.query("COMMIT");
   } catch (error) {
