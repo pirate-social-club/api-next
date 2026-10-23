@@ -592,7 +592,7 @@ describe("OpenAPI clean-break allowance", () => {
     ).toEqual([
       {
         operationId: "get_meNotifications",
-        baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        baselineSha: "a54f2b28809d78fb33e840d60e7716d5c6879d10",
         kind: "deprecation",
       },
       ...[
@@ -605,7 +605,7 @@ describe("OpenAPI clean-break allowance", () => {
         "get_publicPostsBySlug",
       ].map((operationId) => ({
         operationId,
-        baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        baselineSha: "a54f2b28809d78fb33e840d60e7716d5c6879d10",
         kind: "deprecation",
       })),
     ]);
@@ -613,7 +613,7 @@ describe("OpenAPI clean-break allowance", () => {
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(
         repositoryPolicy,
-        "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        "a54f2b28809d78fb33e840d60e7716d5c6879d10",
         () => true,
       ),
     ).not.toThrow();

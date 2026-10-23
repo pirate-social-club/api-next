@@ -170,6 +170,8 @@ Status: candidate declaration for the current draft, pending the workspace_owner
 
 The exact baseline is50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63. Seven entries each admit one complete property-addition diagnostic for dance_credit. They admit no other field, response removal, status/error/request change, access/age/privacy/lifecycle change, operation or future baseline. The existing notification transition stays separate and unchanged. The checker implementation and its exact-set/obsolete-baseline safeguards remain unchanged. Tests use the actual baseline Git artifact and candidate generated document, and reject an extra operation removal or another baseline.
 
+October23 main inheritance successor. Main a54f2b28809d78fb33e840d60e7716d5c6879d10 adds HNS container log bounds and matching owned-file custody hashes. Its generated OpenAPI is byte-identical to50f50bfa. The candidate now incorporates that accepted main source and binds its eight declarations to the exact a54f2b28baseline. All thirteen existing diagnostics, operation IDs, reasons and refusal guards remain unchanged. This baseline renewal does not approve the pending transitions, generalize a waiver or change genuine client133. The earlier declaration remains preserved in Git history and sealed source evidence. Whole-PR owner audit and paired consumer/reload acceptance still precede activation.
+
 | Operation | Exact closed-response property |
 | --- | --- |
 | GET /feed/home/public | items.items.post.video.dance_credit |
