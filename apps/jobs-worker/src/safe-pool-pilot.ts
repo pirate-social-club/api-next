@@ -43,6 +43,7 @@ import {
   SAFE_POOL_PILOT_CYCLE_SCHEDULE,
   SAFE_POOL_PILOT_CYCLE_TIMEOUT,
   SAFE_POOL_PILOT_RPC_TIMEOUT_MS,
+  SAFE_POOL_PILOT_SCAN_BLOCKS_PER_CYCLE,
   SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS,
   scanSafeWindows,
 } from "./safe-pool-pilot-cycle.ts";
@@ -149,6 +150,7 @@ export function makeSafePoolPilotJob(
     const purchases = makeRewardSafePurchaseCoordinator({
       ...safeOptions,
       minimumEntrySeconds: options.minimumEntrySeconds,
+      scanBlocksPerCycle: SAFE_POOL_PILOT_SCAN_BLOCKS_PER_CYCLE,
     });
     const claims = makeRewardSafeClaimCoordinator(safeOptions);
     const payouts = makeRewardSafePayoutCoordinator(safeOptions);

@@ -93,6 +93,17 @@ cycle never touches a ticket-first pool.
 A ticket-first commitment is published unsigned under the key id
 `unsigned_owner_safe_v1`, which the database admits only for ticket-first pools.
 
+A purchase not bound by its deadline (`entry_cutoff_at` minus the minimum entry
+window) closes its drawing as `closed_purchase_unavailable` but keeps both the
+prepared call and its reservation. If the owner's execution is bound later, the
+effect goes to `reconciliation_required` and the reservation stays, so the leg
+cannot refund it; the Safe holds a real ticket for a closed drawing. Resolving that
+case is an owner procedure that is not yet built. To keep the scan from being the
+cause, a purchase is prepared only when the scan can catch up to the settled head
+and bind one more cycle's executions before the purchase deadline; otherwise
+preparation returns `scan_lagging`. The October 23 chain rehearsal produced three
+such late purchases while its scan was stalled and then catching up.
+
 ## Claims
 
 A winning drawing's `claimWinnings` call is recorded alone when it is prepared.

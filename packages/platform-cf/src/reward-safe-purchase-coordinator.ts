@@ -28,15 +28,26 @@ import {
  * reconciliation confirms the ticket in that drawing, owned by the Safe. A late
  * execution that lands in another drawing never moves anyone: it is held.
  */
+/** The pilot cycle runs every minute. */
+const PILOT_CYCLE_MS = 60_000;
+
 export function makeRewardSafePurchaseCoordinator(
   options: RewardSafeRuntimeOptions &
     Readonly<{
       /** Entry time that must remain after a ticket confirms; also the purchase deadline. */
       minimumEntrySeconds: number;
+      /** Blocks the pilot cycle scans per run; defaults to one window. */
+      scanBlocksPerCycle?: number;
     }>,
 ) {
   assertRewardSafeRuntimeOptions(options);
-  if (!Number.isSafeInteger(options.minimumEntrySeconds) || options.minimumEntrySeconds < 60) {
+  const scanBlocksPerCycle = options.scanBlocksPerCycle ?? options.maximumScanBlocks;
+  if (
+    !Number.isSafeInteger(options.minimumEntrySeconds) ||
+    options.minimumEntrySeconds < 60 ||
+    !Number.isSafeInteger(scanBlocksPerCycle) ||
+    scanBlocksPerCycle < 1
+  ) {
     throw rewardSafeFailed("invalid_config");
   }
   const now = options.now ?? Date.now;
@@ -86,6 +97,24 @@ export function makeRewardSafePurchaseCoordinator(
     // The owner sets the Safe's Jackpot allowance once; Pirate never spends without it.
     if (allowance < candidate.ticketPriceAtomic) return { kind: "allowance_insufficient" as const };
     if (balance < candidate.ticketPriceAtomic) return { kind: "balance_insufficient" as const };
+    // The scan must reach the owner's execution before the purchase deadline, or a real
+    // ticket ends in reconciliation, as drawing 11161 did in the October 23 rehearsal.
+    // It needs the cycles to catch up to the settled head, then one more to bind.
+    const cursor = yield* provide(
+      purchases.scanCursor({
+        chainId: candidate.deployment.chainId,
+        safeAddress: candidate.deployment.custodyAddress,
+      }),
+    );
+    const settledHead = head.blockNumber - BigInt(options.requiredConfirmations - 1);
+    const lagBlocks = cursor === null || settledHead < cursor ? 0n : settledHead - cursor + 1n;
+    const perCycle = BigInt(scanBlocksPerCycle);
+    const cycles = (lagBlocks + perCycle - 1n) / perCycle + 1n;
+    const purchaseDeadline =
+      Date.parse(candidate.entryCutoffAt) - options.minimumEntrySeconds * 1_000;
+    if (now() + Number(cycles) * PILOT_CYCLE_MS >= purchaseDeadline) {
+      return { kind: "scan_lagging" as const };
+    }
     const calldataHash = yield* rpc(() => sha256Hex(hexToBytes(call.data)));
     const preparedBlockNumber = yield* provide(
       purchases.prepare({

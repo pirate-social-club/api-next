@@ -558,6 +558,11 @@ suite("ticket-first owner-executed Safe pools", () => {
   });
 
   test("one pool runs from its ticket purchase to paying both qualifiers", async () => {
+    // A scan too far behind to reach the owner's execution before the purchase deadline
+    // prepares nothing: about a thousand blocks at one block a cycle is far too slow.
+    const lagging = makeRewardSafePurchaseCoordinator({ ...options(), scanBlocksPerCycle: 1 });
+    expect(await run(lagging.prepare("tf-ok"))).toEqual({ kind: "scan_lagging" });
+    expect(await drawing("tf-ok")).toBeUndefined();
     const purchases = makeRewardSafePurchaseCoordinator(options());
     const purchaseHead = chain.head();
     const prepared = await run(purchases.prepare("tf-ok"));

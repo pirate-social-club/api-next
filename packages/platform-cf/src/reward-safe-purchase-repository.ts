@@ -105,6 +105,23 @@ type RewardSafePurchaseCandidate = Readonly<{
 
 export function makeControlPlaneRewardSafePurchaseStore() {
   return {
+    /** Where the Safe's execution scan resumes; null before the Safe is registered. */
+    scanCursor: (input: { readonly chainId: number; readonly safeAddress: string }) =>
+      mapped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "reward-safe-purchase.scan-cursor.read",
+            text: `SELECT next_block_number FROM reward_safe_execution_cursors
+                    WHERE chain_id=$1 AND safe_address=$2`,
+            values: [input.chainId, input.safeAddress],
+            readonly: true,
+          });
+          const row = result.rows[0];
+          return row === undefined ? null : bigint(row as Row, "next_block_number");
+        }),
+      ),
+
     loadCandidate: (input: { readonly legId: string; readonly minimumEntrySeconds: number }) =>
       mapped(
         Effect.gen(function* () {
