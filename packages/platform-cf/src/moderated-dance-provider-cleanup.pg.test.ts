@@ -63,7 +63,10 @@ async function withFreshFixture(use: FixtureUse, beforeUpgrade?: FixtureUse) {
       migrations: prefix,
       expectedLedger: [],
     });
-    const f = await seed(admin, scoped.toString(), undefined, { publicReplay: !beforeUpgrade }),
+    const f = await seed(admin, scoped.toString(), undefined, {
+        publicReplay: !beforeUpgrade,
+        ...(beforeUpgrade ? { historicalReferenceSchema: "pre-0307" as const } : {}),
+      }),
       review = await historicalReview(f, admin, Date.now() + 604_790_000);
     if (beforeUpgrade) {
       await beforeUpgrade(f, admin, review.capture.uploadId);

@@ -16,6 +16,7 @@ export async function seedModeratedDanceIntake(
     safetyRevision?: string;
     transferWithinMs?: number;
     maximumProviderCalls?: number;
+    historicalReferenceSchema?: "pre-0307";
   }> = {},
 ) {
   const originalFacts = moderatedDanceIntakeFacts(),
@@ -128,7 +129,9 @@ export async function seedModeratedDanceIntake(
       [f.segmentId, f.communityId, f.songPostId, f.audioRevision, hash],
     );
     await admin.query(
-      "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)",
+      options.historicalReferenceSchema === "pre-0307"
+        ? "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)"
+        : "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_community_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,$2,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)",
       [
         f.choreographyId,
         f.communityId,

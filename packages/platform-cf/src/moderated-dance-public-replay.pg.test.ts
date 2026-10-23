@@ -13,6 +13,10 @@ import {
   bindModeratedDanceReplayKeys,
   makeModeratedDancePublicReplay,
 } from "./moderated-dance-public-replay.ts";
+import {
+  preparePublishedModeratedReference,
+  publishedModeratedDanceVideo,
+} from "./moderated-dance-reference.pg-fixture.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
@@ -74,56 +78,15 @@ const drain = async (admin: Client) =>
 suite("native public reference reindex and actual epoch retirement", () => {
   test("real reference publication retains validated public descriptors and restores trusted paths on every replaced function", async () =>
     withFixture(async (f, admin) => {
-      // The accepted renderer graph is synthetic bootstrap only. Publication
-      // itself runs with all ordinary guards and triggers restored.
-      await admin.query("BEGIN");
-      try {
-        await admin.query("SET LOCAL session_replication_role=replica");
-        await admin.query(
-          "INSERT INTO media_song_video_render_plans(plan_id,submission_id,song_post_id,song_asset_id,audio_revision,song_duration_samples,clip_start_samples,clip_duration_samples) VALUES('public-plan','synthetic-reference-submission',$1,'asset',$2,8640000,0,288000)",
-          [f.facts.songPostId, f.facts.audioRevision],
-        );
-        await admin.query(`INSERT INTO media_song_video_masters(master_revision_id,plan_id,attempt_id,attempt_generation,plan_submission_id,source_immutable_ref,source_sha256,master_sha256,master_byte_length,verified_object_key,verified_object_version,measured_video_duration_samples,measured_audio_duration_samples,measured_audio_sample_rate_hz,measured_audio_channels,master_ceiling_bytes,master_policy_revision,renderer_identity,renderer_policy_revision,decision_clip_start_samples,decision_clip_duration_samples,soundtrack_sha256)
-          VALUES('public-master','public-plan','synthetic-attempt',1,'synthetic-reference-submission','synthetic-source',repeat('b',64),repeat('c',64),100,'public-master-key','v1',288000,288000,48000,2,524288000,1,'synthetic-renderer',1,0,288000,repeat('e',64))`);
-        await admin.query(
-          `INSERT INTO dance_moderated_reference_commands_v1(account_id,idempotency_key,request_hash,community_id,song_post_id,persona_id,reference_post_id,master_revision_id,choreography_id,segment_id,policy_id,state,observation_token,worker_deadline,provider_tag,provider_job_id,segment_identity)
-          VALUES('private-test-owner','new-reference',repeat('f',64),$1,$2,'private-owner-persona','private-reference','public-master','published-choreography','published-segment',$3,'normalizing','observer',clock_timestamp()+interval '1 minute','reference-provider','job', $4::jsonb)`,
-          [
-            f.facts.communityId,
-            f.facts.songPostId,
-            f.publication.policy_id,
-            JSON.stringify({
-              key: "public-segment",
-              sha256: "e".repeat(64),
-              version: "v1",
-              etag: "etag",
-              size: 100,
-            }),
-          ],
-        );
-        await admin.query("COMMIT");
-      } catch (error) {
-        await admin.query("ROLLBACK");
-        throw error;
-      }
-      const frames = Array.from({ length: 60 }, () => "f".repeat(64));
-      const computed = await moderatedDanceReplayDigests({
-        scope: f.facts.profile.replayScope,
-        sourceSha256: "c".repeat(64),
-        frames,
-        keys: f.replayKeys,
-      });
-      await admin.query(
-        "SELECT publish_moderated_dance_reference_v1('published-choreography','observer',$1::jsonb,$2::jsonb)",
-        [
-          JSON.stringify({
-            referenceTermsHash: "f".repeat(64),
-            segmentTermsHash: "e".repeat(64),
-            publicFrames: frames,
-          }),
-          JSON.stringify(computed.claims),
-        ],
+      const video = await publishedModeratedDanceVideo(
+        admin,
+        f.connection,
+        f.facts.communityId,
+        6000,
       );
+      const reference = await preparePublishedModeratedReference(admin, f, video);
+      const frames = reference.frames;
+      await reference.publish();
       expect(
         (
           await admin.query(

@@ -5372,7 +5372,8 @@ BEGIN
  SELECT d.*,q.key_epoch,q.retention_ms,q.lease_ms INTO candidate FROM dance_moderated_public_replay_v1 d
  JOIN moderated_dance_public_replay_requirements_v1() q ON q.scope=d.scope AND q.normalization_hash=d.normalization_hash
  JOIN dance_moderator_reference_revisions_v1 r USING(choreography_id,revision)
- JOIN posts p ON p.community_id=r.community_id AND p.post_id=r.reference_post_id AND p.status='published' AND p.visibility='public'
+ JOIN posts p ON p.community_id=r.reference_community_id AND p.post_id=r.reference_post_id
+ JOIN communities reference_community ON reference_community.community_id=p.community_id AND reference_community.status='active' AND p.status='published' AND p.visibility='public'
  LEFT JOIN dance_moderated_public_replay_indexes_v1 i ON i.choreography_id=d.choreography_id AND i.revision=d.revision AND i.key_epoch=q.key_epoch
  WHERE p_epochs ? q.key_epoch AND EXISTS(SELECT 1 FROM dance_moderated_replay_epochs_v1 e WHERE e.key_epoch=q.key_epoch)
  AND NOT EXISTS(SELECT 1 FROM dance_moderated_replay_epoch_retirements_v1 e WHERE e.key_epoch=q.key_epoch)
@@ -5516,9 +5517,16 @@ BEGIN
  PERFORM 1 FROM users WHERE user_id=candidate.account_id AND status='active' FOR UPDATE;
  IF NOT FOUND THEN RETURN NULL; END IF;
  SELECT * INTO command FROM dance_moderated_reference_commands_v1 WHERE choreography_id=candidate.choreography_id FOR UPDATE SKIP LOCKED;
- IF command.choreography_id IS NULL OR command.observation_until>now_at THEN RETURN NULL; END IF;
+ now_at:=clock_timestamp();
+ IF command.choreography_id IS NULL OR command.observation_until>now_at OR command.worker_deadline<=now_at THEN RETURN NULL; END IF;
  SELECT operational_profile INTO profile FROM dance_review_policy_versions_v1 WHERE policy_id=command.policy_id;
  IF NOT active_activity_persona(command.account_id,command.persona_id,command.community_id) OR NOT can_account_access_activity_song(command.account_id,command.community_id,command.song_post_id) THEN RETURN NULL; END IF;
+ PERFORM 1 FROM posts video JOIN communities vc ON vc.community_id=video.community_id AND vc.status='active'
+ WHERE video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
+ AND EXISTS(SELECT 1 FROM video_detail_access_v1(command.account_id,video.post_id) access WHERE access.non_age_allowed AND access.age_allowed) FOR SHARE OF video,vc;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ now_at:=clock_timestamp();
+ IF command.worker_deadline<=now_at THEN RETURN NULL; END IF;
  IF command.state='pending' THEN
   IF NOT reserve_moderated_dance_provider_work_v1(command.account_id,profile) THEN RETURN NULL; END IF;
   UPDATE dance_moderated_reference_commands_v1 SET state='copying',work_token=p_token,provider_tag='dance-reference-'||choreography_id,
@@ -5538,7 +5546,7 @@ BEGIN
  JOIN media_publication_projections song ON song.community_id=command.community_id AND song.post_id=command.song_post_id AND song.media_kind='song' AND song.audio_revision=plan.audio_revision
  JOIN media_song_video_pcm_references pcm ON pcm.song_post_id=song.post_id AND pcm.audio_revision=song.audio_revision AND pcm.canonical_audio_sha256=song.canonical_audio_sha256 AND pcm.duration_samples=plan.song_duration_samples
  JOIN dance_review_policy_versions_v1 policy ON policy.policy_id=command.policy_id
- JOIN posts video ON video.community_id=command.community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
+ JOIN posts video ON video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
  WHERE master.master_revision_id=command.master_revision_id;
  RETURN packet;
 END $$;
@@ -7368,22 +7376,26 @@ BEGIN
  PERFORM pg_advisory_xact_lock(hashtextextended('moderated-dance-replay-family-v1',0));
  IF NOT active_activity_persona(p_actor,p_command->>'persona_id',p_command->>'community_id') OR NOT can_account_access_activity_song(p_actor,p_command->>'community_id',p_command->>'song_post_id') THEN RAISE EXCEPTION 'reference unavailable' USING ERRCODE='DRV02'; END IF;
  SELECT p.*,r.master_revision_id,plan.clip_start_samples,plan.clip_duration_samples INTO reference FROM posts p
- JOIN media_video_song_references r ON r.post_id=p.post_id AND r.song_community_id=p.community_id AND r.song_post_id=p_command->>'song_post_id'
+ JOIN communities reference_community ON reference_community.community_id=p.community_id AND reference_community.status='active'
+ JOIN media_video_song_references r ON r.post_id=p.post_id AND r.song_community_id=p_command->>'community_id' AND r.song_post_id=p_command->>'song_post_id'
  JOIN media_song_video_masters master ON master.master_revision_id=r.master_revision_id
  JOIN media_song_video_accepted_masters accepted ON accepted.master_revision_id=master.master_revision_id AND accepted.plan_id=master.plan_id
- JOIN media_song_video_render_plans plan ON plan.plan_id=master.plan_id AND plan.song_post_id=r.song_post_id AND plan.audio_revision=r.audio_revision
+ JOIN media_song_video_render_plans plan ON plan.plan_id=master.plan_id AND plan.plan_id=r.plan_id AND plan.submission_id=r.submission_id AND plan.song_post_id=r.song_post_id AND plan.audio_revision=r.audio_revision
  JOIN media_publication_projections video ON video.community_id=p.community_id AND video.post_id=p.post_id AND video.media_kind='video' AND video.song_video_master_revision_id=master.master_revision_id AND video.canonical_video_sha256=master.master_sha256
- JOIN media_publication_projections song ON song.community_id=p.community_id AND song.post_id=r.song_post_id AND song.media_kind='song' AND song.audio_revision=r.audio_revision
+ JOIN media_publication_projections song ON song.community_id=r.song_community_id AND song.post_id=r.song_post_id AND song.media_kind='song' AND song.audio_revision=r.audio_revision
  JOIN media_song_video_pcm_references pcm ON pcm.song_post_id=r.song_post_id AND pcm.audio_revision=r.audio_revision AND pcm.canonical_audio_sha256=song.canonical_audio_sha256 AND pcm.duration_samples=plan.song_duration_samples
- WHERE p.community_id=p_command->>'community_id' AND p.post_id=p_command->>'reference_post_id' AND p.post_type='video' AND p.status='published' AND p.visibility='public'
- AND can_account_view_content_rating_v1(p_actor,p.content_rating) AND plan.clip_start_samples%48=0 AND plan.clip_duration_samples%48=0 AND plan.clip_duration_samples BETWEEN 288000 AND 720000;
+ WHERE p.post_id=p_command->>'reference_post_id' AND p.author_user_id=p_actor
+ AND plan.submission_id=video.submission_id AND r.submission_id=video.submission_id AND r.operation_id=video.operation_id
+ AND EXISTS(SELECT 1 FROM video_detail_access_v1(p_actor,p.post_id) access WHERE access.non_age_allowed AND access.age_allowed) AND p.post_type='video' AND p.status='published' AND p.visibility='public'
+ AND can_account_view_content_rating_v1(p_actor,p.content_rating) AND plan.clip_start_samples%48=0 AND plan.clip_duration_samples%48=0 AND plan.clip_duration_samples BETWEEN 288000 AND 1440000 FOR SHARE OF p,reference_community;
  IF reference.post_id IS NULL THEN RAISE EXCEPTION 'canonical playable reference unavailable' USING ERRCODE='DRV07'; END IF;
  SELECT * INTO admission FROM dance_review_policy_admissions_v1 WHERE community_id=p_command->>'community_id' FOR SHARE;
  SELECT * INTO policy FROM dance_review_policy_versions_v1 WHERE policy_id=admission.policy_id FOR SHARE;
+ now_at:=clock_timestamp();
  IF admission.accepted IS DISTINCT FROM TRUE OR now_at<admission.effective_at OR now_at>=admission.valid_until OR now_at<policy.valid_from OR now_at>=policy.valid_until THEN RAISE EXCEPTION 'reference policy unavailable' USING ERRCODE='DRV07'; END IF;
  IF NOT charge_moderated_dance_intake_v1(p_actor,policy.operational_profile,FALSE,FALSE) THEN RAISE EXCEPTION 'reference work limit reached' USING ERRCODE='DRV07'; END IF;
- INSERT INTO dance_moderated_reference_commands_v1(account_id,idempotency_key,request_hash,community_id,song_post_id,persona_id,reference_post_id,master_revision_id,choreography_id,segment_id,policy_id,state)
- VALUES(p_actor,p_command->>'idempotency_key',p_hash,p_command->>'community_id',p_command->>'song_post_id',p_command->>'persona_id',reference.post_id,reference.master_revision_id,p_choreography,p_segment,policy.policy_id,'pending')
+ INSERT INTO dance_moderated_reference_commands_v1(account_id,idempotency_key,request_hash,community_id,song_post_id,persona_id,reference_community_id,reference_post_id,master_revision_id,choreography_id,segment_id,policy_id,state)
+ VALUES(p_actor,p_command->>'idempotency_key',p_hash,p_command->>'community_id',p_command->>'song_post_id',p_command->>'persona_id',reference.community_id,reference.post_id,reference.master_revision_id,p_choreography,p_segment,policy.policy_id,'pending')
  ON CONFLICT(community_id,reference_post_id,master_revision_id) DO NOTHING;
  SELECT * INTO prior FROM dance_moderated_reference_commands_v1 WHERE community_id=p_command->>'community_id' AND reference_post_id=reference.post_id AND master_revision_id=reference.master_revision_id;
  receipt:=jsonb_build_object('version','dance-moderated-reference-v1','choreography_id',prior.choreography_id,'reference_post_id',prior.reference_post_id,'status',prior.state);
@@ -17395,6 +17407,29 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION guard_moderated_reference_community_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF NEW.reference_community_id IS DISTINCT FROM OLD.reference_community_id THEN
+  RAISE EXCEPTION 'Dance reference community is immutable' USING ERRCODE='DRV01';
+ END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_moderated_reference_community_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION guard_moderation_platform_floor_current_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -23874,7 +23909,7 @@ BEGIN
  IF ref.choreography_id IS NULL OR ROW(ref.community_id,ref.song_post_id) IS DISTINCT FROM ROW(p_command->>'community_id',p_command->>'song_post_id')
  OR NOT active_activity_persona(p_actor,p_command->>'persona_id',ref.community_id)
  OR NOT can_account_access_activity_song(p_actor,ref.community_id,ref.song_post_id)
- OR NOT EXISTS(SELECT 1 FROM posts p WHERE p.community_id=ref.community_id AND p.post_id=ref.reference_post_id AND p.post_type='video' AND p.status='published' AND p.visibility='public' AND can_account_view_content_rating_v1(p_actor,p.content_rating))
+ OR NOT EXISTS(SELECT 1 FROM posts p WHERE p.community_id=ref.reference_community_id AND p.post_id=ref.reference_post_id AND EXISTS(SELECT 1 FROM communities rc WHERE rc.community_id=p.community_id AND rc.status='active') AND p.post_type='video' AND p.status='published' AND p.visibility='public' AND can_account_view_content_rating_v1(p_actor,p.content_rating))
  OR EXISTS(SELECT 1 FROM dance_moderator_reference_cutoffs_v1 WHERE choreography_id=ref.choreography_id AND revision=ref.revision) THEN
   RAISE EXCEPTION 'private Dance reference unavailable' USING ERRCODE='DRV02';
  END IF;
@@ -24985,7 +25020,8 @@ CREATE FUNCTION moderated_dance_public_replay_ready_v1(p_scope text, p_normaliza
     LANGUAGE sql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
- SELECT NOT EXISTS(SELECT 1 FROM dance_moderator_reference_revisions_v1 r JOIN posts p ON p.community_id=r.community_id AND p.post_id=r.reference_post_id
+ SELECT NOT EXISTS(SELECT 1 FROM dance_moderator_reference_revisions_v1 r JOIN posts p ON p.community_id=r.reference_community_id AND p.post_id=r.reference_post_id
+ JOIN communities reference_community ON reference_community.community_id=p.community_id AND reference_community.status='active'
  WHERE p.status='published' AND p.visibility='public' AND r.alignment_evidence->>'normalization_hash'=p_normalization
  AND NOT EXISTS(SELECT 1 FROM dance_moderated_public_replay_v1 d JOIN dance_moderated_public_replay_indexes_v1 i USING(choreography_id,revision)
  WHERE d.choreography_id=r.choreography_id AND d.revision=r.revision AND d.scope=p_scope AND d.normalization_hash=p_normalization
@@ -29310,16 +29346,26 @@ CREATE FUNCTION publish_moderated_dance_reference_v1(p_choreography text, p_toke
 DECLARE command dance_moderated_reference_commands_v1; policy dance_review_policy_versions_v1; plan media_song_video_render_plans; master media_song_video_masters; song media_publication_projections; claim JSONB; prior dance_moderated_replay_claims_v1;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'reference worker unavailable' USING ERRCODE='DRV02'; END IF;
+ -- Intake locks the actor before the replay family. Match that order; a
+ -- reference publication may not hold the global lock while awaiting its author.
+ SELECT * INTO STRICT command FROM dance_moderated_reference_commands_v1 WHERE choreography_id=p_choreography;
+ IF NOT active_activity_persona(command.account_id,command.persona_id,command.community_id)
+ OR NOT can_account_access_activity_song(command.account_id,command.community_id,command.song_post_id) THEN RAISE EXCEPTION 'reference author unavailable' USING ERRCODE='DRV05'; END IF;
  PERFORM pg_advisory_xact_lock(hashtextextended('moderated-dance-replay-family-v1',0));
  SELECT * INTO STRICT command FROM dance_moderated_reference_commands_v1 WHERE choreography_id=p_choreography FOR UPDATE;
  SELECT * INTO STRICT policy FROM dance_review_policy_versions_v1 WHERE policy_id=command.policy_id;
  SELECT * INTO STRICT master FROM media_song_video_masters WHERE master_revision_id=command.master_revision_id;
  SELECT * INTO STRICT plan FROM media_song_video_render_plans WHERE plan_id=master.plan_id;
+ PERFORM 1 FROM posts video JOIN communities vc ON vc.community_id=video.community_id AND vc.status='active'
+ WHERE video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
+ AND EXISTS(SELECT 1 FROM video_detail_access_v1(command.account_id,video.post_id) access WHERE access.non_age_allowed AND access.age_allowed) FOR SHARE OF video,vc;
+ IF NOT FOUND THEN RAISE EXCEPTION 'reference publication unavailable' USING ERRCODE='DRV05'; END IF;
  SELECT * INTO STRICT song FROM media_publication_projections WHERE community_id=command.community_id AND post_id=command.song_post_id AND media_kind='song' AND audio_revision=plan.audio_revision;
  IF command.observation_token IS DISTINCT FROM p_token OR command.provider_job_id IS NULL OR command.worker_deadline<=clock_timestamp()
  OR command.segment_identity IS NULL OR jsonb_array_length(p_claims) IS DISTINCT FROM 2*jsonb_array_length(policy.operational_profile->'replayCompatibleEpochs')
  OR (p_document->>'referenceTermsHash'~'^[a-f0-9]{64}$' AND p_document->>'segmentTermsHash'~'^[a-f0-9]{64}$') IS NOT TRUE
- OR NOT EXISTS(SELECT 1 FROM posts WHERE community_id=command.community_id AND post_id=command.reference_post_id AND status='published' AND visibility='public') THEN RAISE EXCEPTION 'reference publication unavailable' USING ERRCODE='DRV05'; END IF;
+ OR NOT EXISTS(SELECT 1 FROM posts WHERE community_id=command.reference_community_id AND post_id=command.reference_post_id AND status='published' AND visibility='public'
+  AND EXISTS(SELECT 1 FROM video_detail_access_v1(command.account_id,command.reference_post_id) access WHERE access.non_age_allowed AND access.age_allowed)) THEN RAISE EXCEPTION 'reference publication unavailable' USING ERRCODE='DRV05'; END IF;
  IF jsonb_typeof(p_document->'publicFrames') IS DISTINCT FROM 'array' OR jsonb_array_length(p_document->'publicFrames') IS DISTINCT FROM ceil(plan.clip_duration_samples::NUMERIC/48000*(policy.operational_profile->>'normalizationFps')::NUMERIC)::INTEGER
  OR jsonb_array_length(p_document->'publicFrames') NOT BETWEEN 1 AND 3600
  OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_document->'publicFrames') frame WHERE jsonb_typeof(frame) IS DISTINCT FROM 'string' OR (frame#>>'{}')!~'^[a-f0-9]{64}$')
@@ -29335,8 +29381,8 @@ BEGIN
  INSERT INTO dance_song_segments(segment_id,community_id,song_post_id,song_submission_id,audio_revision,start_ms,end_ms,canonical_audio_duration_ms,canonical_segment_audio_ref,canonical_segment_sha256,extraction_policy_version,source_media_sha256,segment_terms_hash)
  VALUES(command.segment_id,command.community_id,command.song_post_id,song.submission_id,plan.audio_revision,plan.clip_start_samples/48,(plan.clip_start_samples+plan.clip_duration_samples)/48,plan.song_duration_samples/48,command.segment_identity->>'key',command.segment_identity->>'sha256','canonical-pcm-excerpt-v1',song.canonical_audio_sha256,p_document->>'segmentTermsHash') ON CONFLICT DO NOTHING;
  IF NOT EXISTS(SELECT 1 FROM dance_song_segments WHERE segment_id=command.segment_id AND community_id=command.community_id AND song_post_id=command.song_post_id AND audio_revision=plan.audio_revision AND start_ms=plan.clip_start_samples/48 AND end_ms=(plan.clip_start_samples+plan.clip_duration_samples)/48 AND canonical_segment_sha256=command.segment_identity->>'sha256' AND source_media_sha256=song.canonical_audio_sha256 AND segment_terms_hash=p_document->>'segmentTermsHash') THEN RAISE EXCEPTION 'canonical segment provenance conflict' USING ERRCODE='DRV05'; END IF;
- INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash)
- VALUES(p_choreography,1,command.community_id,command.song_post_id,plan.audio_revision,command.segment_id,command.reference_post_id,master.master_revision_id,master.master_sha256,
+ INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_community_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash)
+ VALUES(p_choreography,1,command.community_id,command.song_post_id,plan.audio_revision,command.segment_id,command.reference_community_id,command.reference_post_id,master.master_revision_id,master.master_sha256,
  jsonb_build_object('kind','verified_canonical_replacement_master_v1','master_revision_id',master.master_revision_id,'plan_id',plan.plan_id,'source_sha256',master.master_sha256,'segment',command.segment_identity),
  jsonb_build_object('kind','verified_canonical_replacement_master_v1','clip_start_samples',plan.clip_start_samples,'clip_duration_samples',plan.clip_duration_samples,'reference_body_start_ms',0,'reference_body_end_ms',plan.clip_duration_samples/48,'normalization_hash',policy.review_policy->>'normalizationHash'),p_document->>'referenceTermsHash');
  INSERT INTO dance_moderated_public_replay_v1(choreography_id,revision,scope,normalization_hash,source_sha256,frames)
@@ -30004,7 +30050,8 @@ BEGIN
  END IF;
  entries:='[]';
  FOR item IN SELECT r.*,seg.duration_ms,seg.start_ms,seg.end_ms FROM dance_moderator_reference_revisions_v1 r
- JOIN dance_song_segments seg USING(segment_id) JOIN posts reference ON reference.community_id=r.community_id AND reference.post_id=r.reference_post_id
+ JOIN dance_song_segments seg USING(segment_id) JOIN posts reference ON reference.community_id=r.reference_community_id AND reference.post_id=r.reference_post_id
+ JOIN communities reference_community ON reference_community.community_id=reference.community_id AND reference_community.status='active'
  WHERE r.community_id=p_community AND r.song_post_id=p_post AND reference.status='published' AND reference.visibility='public'
  AND can_account_view_content_rating_v1(p_actor,reference.content_rating)
  AND (p_cursor IS NULL OR (r.choreography_id,r.revision)>(anchor_id,anchor_revision))
@@ -34917,8 +34964,9 @@ CREATE FUNCTION resolve_moderated_dance_reference_source_v1(p_digest text) RETUR
  SELECT master.verified_object_key,master.verified_object_version,master.verified_object_etag,master.master_byte_length,'video/mp4',master.master_sha256,grant_row.expires_at,'content_etag'
  FROM dance_moderated_reference_sources_v1 grant_row JOIN dance_moderated_reference_commands_v1 command USING(choreography_id)
  JOIN media_song_video_masters master ON master.master_revision_id=command.master_revision_id
- JOIN posts video ON video.community_id=command.community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
- WHERE grant_row.capability_sha256=p_digest AND grant_row.revoked_at IS NULL AND grant_row.expires_at>clock_timestamp() AND grant_row.work_token=command.work_token AND command.state IN('normalizing','unknown') AND command.worker_deadline>clock_timestamp()
+ JOIN posts video ON video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
+ WHERE EXISTS(SELECT 1 FROM video_detail_access_v1(command.account_id,video.post_id) access WHERE access.non_age_allowed AND access.age_allowed)
+ AND grant_row.capability_sha256=p_digest AND grant_row.revoked_at IS NULL AND grant_row.expires_at>clock_timestamp() AND grant_row.work_token=command.work_token AND command.state IN('normalizing','unknown') AND command.worker_deadline>clock_timestamp()
 $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -46880,6 +46928,7 @@ CREATE TABLE dance_moderated_reference_commands_v1 (
     reference_terms_hash text,
     result jsonb,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    reference_community_id text NOT NULL,
     CONSTRAINT dance_moderated_reference_commands_v1_request_hash_check CHECK ((request_hash ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT dance_moderated_reference_commands_v1_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'copying'::text, 'normalizing'::text, 'ready'::text, 'unknown'::text, 'failed'::text])))
 );
@@ -47154,6 +47203,7 @@ CREATE TABLE dance_moderator_reference_revisions_v1 (
     alignment_evidence jsonb NOT NULL,
     terms_hash text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    reference_community_id text NOT NULL,
     CONSTRAINT dance_moderator_reference_revisions_v1_alignment_evidence_check CHECK ((jsonb_typeof(alignment_evidence) = 'object'::text)),
     CONSTRAINT dance_moderator_reference_revisions_v1_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT dance_moderator_reference_revisions_v1_choreography_id_check CHECK (is_dance_identifier(choreography_id)),
@@ -59385,6 +59435,10 @@ CREATE INDEX megapot_pool_shares_drawing_idx ON megapot_pool_shares USING btree 
 
 CREATE INDEX megapot_ticket_inventory_work_idx ON megapot_ticket_inventory USING btree (status, drawing_id, attestation_id, ticket_id);
 
+CREATE INDEX moderated_reference_command_post_v1 ON dance_moderated_reference_commands_v1 USING btree (reference_community_id, reference_post_id);
+
+CREATE INDEX moderated_reference_post_community_v1 ON dance_moderator_reference_revisions_v1 USING btree (reference_community_id, reference_post_id);
+
 CREATE INDEX moderation_actions_target_idx ON moderation_actions USING btree (community_id, target_kind, target_id, created_at DESC);
 
 CREATE INDEX moderation_reports_status_idx ON moderation_reports USING btree (community_id, status, created_at, report_id);
@@ -60786,6 +60840,8 @@ CREATE TRIGGER moderated_public_replay_immutable BEFORE DELETE OR UPDATE ON danc
 CREATE TRIGGER moderated_public_replay_index_epoch BEFORE INSERT OR UPDATE ON dance_moderated_public_replay_indexes_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_dance_replay_epoch_v1();
 
 CREATE TRIGGER moderated_public_replay_no_truncate BEFORE TRUNCATE ON dance_moderated_public_replay_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER moderated_reference_community_immutable_v1 BEFORE UPDATE ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_reference_community_v1();
 
 CREATE TRIGGER moderated_reference_receipt_immutable BEFORE DELETE OR UPDATE ON dance_moderated_reference_receipts_v1 FOR EACH ROW EXECUTE FUNCTION reject_dance_review_history_v1();
 
@@ -62397,9 +62453,6 @@ ALTER TABLE ONLY dance_moderator_reference_cutoffs_v1
     ADD CONSTRAINT dance_moderator_reference_cutoffs_choreography_id_revision_fkey FOREIGN KEY (choreography_id, revision) REFERENCES dance_moderator_reference_revisions_v1(choreography_id, revision);
 
 ALTER TABLE ONLY dance_moderator_reference_revisions_v1
-    ADD CONSTRAINT dance_moderator_reference_rev_community_id_reference_post__fkey FOREIGN KEY (community_id, reference_post_id) REFERENCES posts(community_id, post_id);
-
-ALTER TABLE ONLY dance_moderator_reference_revisions_v1
     ADD CONSTRAINT dance_moderator_reference_revisi_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY dance_moderator_reference_revisions_v1
@@ -63799,6 +63852,12 @@ ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
 
 ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
     ADD CONSTRAINT megapot_usdc_approval_receipt_evidence_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY dance_moderated_reference_commands_v1
+    ADD CONSTRAINT moderated_reference_command_post_v1 FOREIGN KEY (reference_community_id, reference_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY dance_moderator_reference_revisions_v1
+    ADD CONSTRAINT moderated_reference_post_community_v1 FOREIGN KEY (reference_community_id, reference_post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);

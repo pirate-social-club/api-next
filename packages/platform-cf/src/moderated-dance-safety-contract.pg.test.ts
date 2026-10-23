@@ -289,7 +289,9 @@ suite("native private frame provider contract and irreversible dispatch claims",
         migrations: prefix,
         expectedLedger: [],
       });
-      const f = await seed(admin, scoped.toString()),
+      const f = await seed(admin, scoped.toString(), undefined, {
+          historicalReferenceSchema: "pre-0307",
+        }),
         r = await recording(f, admin);
       const original = { frame: r.frame, requestHash: "a".repeat(64), claimToken: "legacy-frame" };
       expect(
