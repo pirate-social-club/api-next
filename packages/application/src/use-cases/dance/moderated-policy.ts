@@ -84,7 +84,9 @@ export const prepareModeratedDancePolicyPublication = Effect.fn(
     input.disclosure.owner_rubric_text,
   ]);
   const normalizationHash = yield* canonicalBodyHash([
-    "dance-body-normalization-v1",
+    // v2 bounds resampled frames by the exclusive body end. Never identify
+    // the repaired recipe as an older, potentially overlong normalization.
+    "dance-body-normalization-v2",
     "6.1.4",
     input.profile.normalizationWidth,
     input.profile.normalizationHeight,

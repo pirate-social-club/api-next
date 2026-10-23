@@ -36,7 +36,12 @@ export function makeModeratedDanceNormalizationJob(
   )
     throw new TypeError("Invalid private normalization binding");
   const seconds = (ms: number) => (ms / 1000).toFixed(3);
-  const body = `trim=start=${seconds(input.bodyStartMs)}:end=${seconds(input.bodyEndMs)},setpts=PTS-STARTPTS,fps=fps=${p.normalizationFps}:start_time=0:round=up:eof_action=pass,scale=${p.normalizationWidth}:${p.normalizationHeight}:flags=bilinear+bitexact,format=gray,settb=expr=1/${p.normalizationFps},setpts=N`;
+  // Upward FPS rounding can emit a frame at the exclusive body end. Clamp
+  // the frame count after resampling: duration-based trim itself rounds a
+  // fractional frame boundary. Never pad; the decoder still rejects shortages.
+  // This recipe is bound by dance-body-normalization-v2 in policy preparation.
+  const frameCount = Math.ceil(((input.bodyEndMs - input.bodyStartMs) * p.normalizationFps) / 1000);
+  const body = `trim=start=${seconds(input.bodyStartMs)}:end=${seconds(input.bodyEndMs)},setpts=PTS-STARTPTS,fps=fps=${p.normalizationFps}:start_time=0:round=up:eof_action=pass,trim=end_frame=${frameCount},scale=${p.normalizationWidth}:${p.normalizationHeight}:flags=bilinear+bitexact,format=gray,settb=expr=1/${p.normalizationFps},setpts=N`;
   const command = (arguments_: string) => ({
     operation: "command",
     input: "import-recording",
