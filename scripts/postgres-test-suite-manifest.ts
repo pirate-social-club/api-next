@@ -3,6 +3,7 @@ export { postgresGeneralSuiteCostEstimates } from "./postgres-test-suite-costs.t
 import { reusableModeratedDanceSuites } from "./postgres-test-suite-dance.ts";
 
 export const reusablePostgresTestSuites = [
+  "packages/platform-cf/src/fixed-usdc-bonus-funding.pg.test.ts",
   "apps/jobs-worker/src/megapot-rewards-funding.pg.test.ts",
   "packages/platform-cf/src/telegram-linking-repository.pg.test.ts",
   "packages/platform-cf/src/content-rating-reconciliation.pg.test.ts",

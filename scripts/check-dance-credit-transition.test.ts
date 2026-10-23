@@ -40,7 +40,7 @@ const expected = [
   ],
 ] as const;
 const policy = (await Bun.file(
-  new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+  new URL("./fixtures/openapi-dance-waivers-20261023.json", import.meta.url),
 ).json()) as BreakingChangePolicy;
 const rawBase = execFileSync(
   "git",
@@ -52,7 +52,7 @@ const current = (await Bun.file(
   new URL("../apps/http-worker/src/generated/openapi.json", import.meta.url),
 ).json()) as OpenApiDocument;
 
-test("public Dance credit declares exactly seven response additions against the actual PR baseline", () => {
+test("public Dance credit declares exactly seven response additions against the preserved Funding baseline", () => {
   const entries = policy.breakingChangeWaivers.filter(
     (row) => row.operationId !== "get_meNotifications",
   );
@@ -98,4 +98,25 @@ test("the same candidate diff remains breaking on a future baseline and stale de
   expect(() => assertNoObsoleteBreakingChangeWaivers(policy, future, () => true)).toThrow(
     "obsolete baseline",
   );
+});
+
+test("the stacked bonus changes no parent contract and retains no consumed waiver", async () => {
+  const parent = "36c28b4928a953d6fcbf57e85178e85367fd1b49";
+  const raw = execFileSync(
+    "git",
+    ["show", `${parent}:apps/http-worker/src/generated/openapi.json`],
+    {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  const actualPolicy = (await Bun.file(
+    new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+  ).json()) as BreakingChangePolicy;
+  expect(actualPolicy.breakingChangeWaivers).toEqual([]);
+  expect(current).toEqual(parseBaselineDocument(parent, raw));
+  expect(filterAllowedBreakingChanges(current, current, actualPolicy, parent)).toEqual([]);
+  expect(() =>
+    assertNoObsoleteBreakingChangeWaivers(actualPolicy, parent, () => true),
+  ).not.toThrow();
 });

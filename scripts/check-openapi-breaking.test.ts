@@ -575,10 +575,10 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps consumed Send and Study transition declarations retired", async () => {
+  test("historical Dance policy keeps consumed Send and Study declarations retired", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
-        new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+        new URL("./fixtures/openapi-dance-waivers-20261023.json", import.meta.url),
       ).text(),
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
