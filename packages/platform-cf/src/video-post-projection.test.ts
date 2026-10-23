@@ -85,6 +85,33 @@ describe("video Post projection row mapping", () => {
     expect(videoPostProjectionFromRow(projectionRow())?.playback).toEqual({ status: "pending" });
   });
 
+  test("Dance credit exposes only the exact public reference association and rejects extra private facts", () => {
+    const song = {
+      video_intent: "song_reference",
+      video_song_post_id: "song",
+      video_song_title: "Song",
+      video_song_author_persona_id: null,
+    };
+    const credit = {
+      choreography_id: "choreography",
+      revision: 2,
+      reference_video_post_id: "reference",
+    };
+    expect(
+      videoPostProjectionFromRow(projectionRow({ ...song, video_dance_credit: credit }))
+        ?.dance_credit,
+    ).toEqual(credit);
+    for (const invalid of [
+      { ...credit, verdict: "passed" },
+      { ...credit, review_id: "private" },
+      { ...credit, revision: 0 },
+    ])
+      expect(
+        videoPostProjectionFromRow(projectionRow({ ...song, video_dance_credit: invalid })),
+      ).toBeNull();
+    expect(videoPostProjectionFromRow(projectionRow({ video_dance_credit: credit }))).toBeNull();
+  });
+
   test("maps only the public original-audio facts", () => {
     const projection = videoPostProjectionFromRow(
       projectionRow({

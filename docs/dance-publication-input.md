@@ -77,3 +77,23 @@ analysis input after a lost create reply or storage reply. Separate native
 FFmpeg and real local R2 tests prove those boundaries. Actual provider and phone
 acceptance, dated operational admission, Post credit/state, connected client
 views, cross-community authoring and release acceptance remain required.
+
+Migration0306 binds the captured choreography revision and reference video to
+an independent input at adoption. Ordinary public video projections read only
+that closed public credit object. They never query private review tables or
+expose a verdict, grade, qualification, account or evidence link. The binding
+cannot be replaced by normal Post edits. Old command receipts remain unchanged.
+
+The fresh author-only publication read returns the actual ordinary submission
+link after adoption. Its `transferred` status means sent for processing. The
+existing ordinary video submission owns processing, review, failure and the
+published Post link. Account erasure closes the private publication read even
+when the independent Post retains its ordinary lifecycle.
+
+Maintenance acknowledges logical pre-pass preparation without pretending a
+physical copy existed. Cancellation closes only after the matching generation
+has no input, or after its input is physically fenced and its original
+publication-provider liability is disposed. Unknown storage/provider outcomes
+stay pending. Ready cancellations are selected independently of unresolved
+ones, and cancellation never becomes a transferred receipt or reverses the
+verdict/qualification. This drain remains composed with intake and Rewards off.

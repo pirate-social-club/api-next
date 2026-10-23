@@ -15,7 +15,11 @@ import {
   type DanceReviewTransaction,
   projectPrivateDanceReview,
 } from "../../application/src/use-cases/dance/moderator-review-services.ts";
-import { DanceOwnerDetailV1, DanceOwnerQueueV1 } from "../../contracts/src/dance-review.ts";
+import {
+  DanceOwnerDetailV1,
+  DanceOwnerQueueV1,
+  ModeratedDancePublicationV1,
+} from "../../contracts/src/dance-review.ts";
 import type { QualificationIntent, ReviewActor } from "../../domain/src/dance/moderator-review.ts";
 import {
   ModeratorReviewFactsSchema,
@@ -216,17 +220,19 @@ export function makeControlPlaneModeratorReviewStore(
     return projectPrivateDanceReview(yield* decode(ModeratorReviewSchema, value));
   });
   const read = Effect.fn("DanceReviewRepository.read")(function* (
-    kind: "latest" | "queue" | "owner",
+    kind: "latest" | "queue" | "owner" | "publication",
     args: readonly unknown[],
   ) {
     const actor = yield* authorization.account();
     if (actor.kind !== "account") return yield* failure("unauthorized");
     const sql =
-      kind === "latest"
-        ? "SELECT latest_owned_moderated_dance_review_v1($1,$2,$3,$4,$5::bigint) AS packet"
-        : kind === "queue"
-          ? "SELECT owner_moderated_dance_queue_v1($1,$2,$3) AS packet"
-          : "SELECT owner_moderated_dance_detail_v1($1,$2,$3) AS packet";
+      kind === "publication"
+        ? "SELECT read_owned_moderated_dance_publication_v1($1,$2,$3) AS packet"
+        : kind === "latest"
+          ? "SELECT latest_owned_moderated_dance_review_v1($1,$2,$3,$4,$5::bigint) AS packet"
+          : kind === "queue"
+            ? "SELECT owner_moderated_dance_queue_v1($1,$2,$3) AS packet"
+            : "SELECT owner_moderated_dance_detail_v1($1,$2,$3) AS packet";
     const value = yield* provided(
       Effect.gen(function* () {
         return yield* packet(
@@ -269,5 +275,9 @@ export function makeControlPlaneModeratorReviewStore(
     read("owner", [communityId, reviewId]).pipe(
       Effect.flatMap((value) => decode(DanceOwnerDetailV1, value)),
     );
-  return { ...services, getOwnResult, getLatest, ownerQueue, ownerDetail };
+  const getPublication = (communityId: string, reviewId: string) =>
+    read("publication", [communityId, reviewId]).pipe(
+      Effect.flatMap((value) => decode(ModeratedDancePublicationV1, value)),
+    );
+  return { ...services, getOwnResult, getLatest, getPublication, ownerQueue, ownerDetail };
 }

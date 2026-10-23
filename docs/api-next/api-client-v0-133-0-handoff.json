@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.133.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "4dfdaad7c7f632e9926c1709efa6726cf937ef81",
+  "validatedSourceCommit": null,
+  "pullRequest": 625,
+  "wireContract": "Retains genuine132 operations. Adds a fresh browser-session-only private Dance publication read linking an adopted input to its ordinary video submission, without changing immutable review receipts or claiming publication. Adds optional public choreography/reference credit to song-referenced videos, with no private review, verdict, grade, account or media evidence.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.133.0.tgz",
+    "sha256": "4fb8f710fb40f6d51bdea6becb6ce96a28198a2f98eb7ccd3b01ae09c8da0676"
+  },
+  "validation": {
+    "status": "Candidate package. Final qualification evidence is recorded with the source checkpoint in the authoritative task record. Whole-feature owner audit, Solid consumer intake and actual provider/phone acceptance remain pending.",
+    "operationalBoundary": "No deployment, production grants, policy admission, provider/storage operation, credential or financial activation. Genuine132 and all earlier artifacts remain immutable."
+  }
+}

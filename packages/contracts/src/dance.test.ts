@@ -288,6 +288,7 @@ describe("Dance reference contracts", () => {
       "WithdrawModeratedDanceReview",
       "RecordModeratedDanceVerdict",
       "GetMyModeratedDanceResult",
+      "GetMyModeratedDancePublication",
       "GetLatestModeratedDanceReview",
       "ListOwnerModeratedDanceReviews",
       "GetOwnerModeratedDanceReview",

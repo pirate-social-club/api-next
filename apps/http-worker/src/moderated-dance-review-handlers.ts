@@ -9,6 +9,7 @@ import {
 import {
   ChangeModeratedDanceVisibility,
   GetLatestModeratedDanceReview,
+  GetMyModeratedDancePublication,
   GetMyModeratedDanceResult,
   GetOwnerModeratedDanceReview,
   ListOwnerModeratedDanceReviews,
@@ -98,6 +99,16 @@ export function makeModeratedDanceReviewHandlers(
       return Effect.runPromise(
         storeForAccount(accountId)
           .getOwnResult(path.communityId, path.reviewId)
+          .pipe(Effect.mapError(error)),
+        { signal: ctx.signal },
+      );
+    },
+    GetMyModeratedDancePublication: (ctx) => {
+      const accountId = actor(ctx.principal),
+        path = decoded(GetMyModeratedDancePublication.request.path, ctx.params);
+      return Effect.runPromise(
+        storeForAccount(accountId)
+          .getPublication(path.communityId, path.reviewId)
           .pipe(Effect.mapError(error)),
         { signal: ctx.signal },
       );

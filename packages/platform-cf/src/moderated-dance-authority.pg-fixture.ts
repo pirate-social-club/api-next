@@ -260,7 +260,7 @@ export function reviewCommit(
   state: ReturnType<typeof transitionModeratorReview>["state"],
   transition: ReturnType<typeof transitionModeratorReview>,
   actor: ReviewActor,
-  operation: "expire" | "verdict" | "visibility",
+  operation: "expire" | "verdict" | "visibility" | "publication_failed",
   key: string,
   at: number,
 ) {

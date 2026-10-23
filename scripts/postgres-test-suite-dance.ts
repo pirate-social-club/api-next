@@ -11,4 +11,5 @@ export const reusableModeratedDanceSuites = [
   "packages/platform-cf/src/moderated-dance-publication-input.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-publication-provider.pg.test.ts",
   "packages/platform-cf/src/moderated-dance-publication-runtime.pg.test.ts",
+  "packages/platform-cf/src/moderated-dance-publication-views.pg.test.ts",
 ] as const;

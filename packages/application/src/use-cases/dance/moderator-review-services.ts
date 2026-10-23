@@ -11,6 +11,7 @@ import {
   decodeDanceReviewPrivateResultV1,
   decodeDanceReviewTaskV1,
   type LatestModeratedDanceReviewV1,
+  type ModeratedDancePublicationV1,
 } from "../../../../contracts/src/dance-review.ts";
 import {
   type ModeratorReview,
@@ -119,6 +120,10 @@ export interface DanceReviewReadStore {
     communityId: string,
     reviewId: string,
   ) => Effect.Effect<DanceReviewPrivateResultV1, DanceReviewServiceFailure>;
+  readonly getPublication: (
+    communityId: string,
+    reviewId: string,
+  ) => Effect.Effect<ModeratedDancePublicationV1, DanceReviewServiceFailure>;
   readonly getLatest: (
     communityId: string,
     postId: string,

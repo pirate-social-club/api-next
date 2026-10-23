@@ -261,6 +261,11 @@ export function makeModeratedDanceMaintenance(
     // retention. Indexing runs only after those independent drains complete.
     await publicReplay?.run();
     await call(
+      "dance.maintenance.publication-intents",
+      "SELECT drain_moderated_dance_publication_intents_v1() AS packet",
+      [],
+    );
+    await call(
       "dance.maintenance.readiness",
       "SELECT record_moderated_dance_maintenance_v1() AS packet",
       [],
