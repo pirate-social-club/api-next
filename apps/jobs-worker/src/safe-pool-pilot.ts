@@ -37,6 +37,7 @@ import {
   SAFE_POOL_PILOT_CYCLE_LANE,
   SAFE_POOL_PILOT_CYCLE_SCHEDULE,
   SAFE_POOL_PILOT_CYCLE_TIMEOUT,
+  SAFE_POOL_PILOT_RPC_TIMEOUT_MS,
 } from "./safe-pool-pilot-cycle.ts";
 
 export type SafePoolPilotJobOptions = Readonly<{
@@ -107,7 +108,8 @@ const SAFE_POOL_PILOT_SEVERITY: SeverityMapping = {
 
 /**
  * The owner-executed Safe pool pilot. It shares tables with the EOA rewards job, so
- * configuration never declares both; see loadSafePoolPilotOptions.
+ * configuration never enables both, and with Study and funding recovery, so it runs
+ * as the financial step of their serial job; see makeJobsWorkerDeclarations.
  */
 export function makeSafePoolPilotJob(
   sink: AlertSink,
@@ -119,7 +121,12 @@ export function makeSafePoolPilotJob(
     const layer = Layer.succeed(ControlPlaneDb, db);
     const observations = makeControlPlaneMegapotDrawingObservationStore(layer);
     const deployment = yield* observations.loadCandidate(options.attestationId);
-    const rpc = makeMegapotAttestedRpc(deployment, options.rpcUrl);
+    const rpc = makeMegapotAttestedRpc(
+      deployment,
+      options.rpcUrl,
+      undefined,
+      SAFE_POOL_PILOT_RPC_TIMEOUT_MS,
+    );
     const safe = { chainId: deployment.chainId, safeAddress: deployment.custodyAddress };
     const custody = { ...safe, attestationId: deployment.attestationId };
     const safePilot = { productionEnabled: options.productionEnabled };

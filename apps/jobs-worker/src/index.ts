@@ -810,6 +810,7 @@ export function makeJobsWorkerDeclarations(
   spacesReconciliation?: SpacesReconciliationComposition,
   guestStudyRecovery?: GuestStudyRecoveryComposition,
   songFundingRecovery?: ReturnType<typeof makeSongFundingRecoveryRuntime>,
+  safePoolJob?: JobDeclaration<unknown, ControlPlaneDb | AlertCollector>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
@@ -844,7 +845,9 @@ export function makeJobsWorkerDeclarations(
   }
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
-  const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
+  // The financial step: the EOA rewards cycle, or the Safe pool pilot where EOA
+  // rewards are off. Configuration never enables both.
+  const megapotJob = megapot === null ? safePoolJob : makeMegapotRewardsJob(sink, megapot);
   const studyJob =
     learnerAudio === undefined
       ? undefined
@@ -936,14 +939,27 @@ export default {
       runtime,
       config.API_NEXT_ENV,
     );
-    const songFundingRecovery = !config.MEGAPOT_REWARDS_ENABLED
-      ? undefined
-      : makeSongFundingRecoveryRuntime({
+    const safePool = makeSafePoolPilotOptions(env, config);
+    // Contributions fund pools in either lane, so their recovery runs with either.
+    const songFundingRecovery = config.MEGAPOT_REWARDS_ENABLED
+      ? makeSongFundingRecoveryRuntime({
           controlPlane: megapot?.boundedControlPlane,
           rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
           environment: config.API_NEXT_ENV,
           now: () => new Date().toISOString(),
-        });
+        })
+      : safePool === null
+        ? undefined
+        : makeSongFundingRecoveryRuntime({
+            controlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+              statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+              connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+              closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+            }),
+            rpcUrl: safePool.rpcUrl,
+            environment: config.API_NEXT_ENV,
+            now: () => new Date().toISOString(),
+          });
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -964,11 +980,11 @@ export default {
       spacesReconciliation,
       undefined,
       songFundingRecovery,
+      safePool === null ? undefined : makeSafePoolPilotJob(sink, safePool),
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);
-    const safePool = makeSafePoolPilotOptions(env, config);
-    if (safePool !== null) declarations.push(makeSafePoolPilotJob(sink, safePool));
+
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);

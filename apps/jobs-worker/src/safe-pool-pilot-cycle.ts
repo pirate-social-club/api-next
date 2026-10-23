@@ -6,9 +6,13 @@ import { Cause, Effect, Exit } from "effect";
 
 export const SAFE_POOL_PILOT_CYCLE_JOB = "safe-pool-pilot.cycle";
 export const SAFE_POOL_PILOT_CYCLE_LANE = "safe-pool-pilot";
-export const SAFE_POOL_PILOT_CYCLE_SCHEDULE = "*/2 * * * *";
-export const SAFE_POOL_PILOT_CYCLE_TIMEOUT = "100 seconds";
-const SAFE_POOL_PILOT_CYCLE_LIMIT = 25;
+// It runs as the financial step of the serial Study and funding job, whose contract
+// is a one-minute schedule and a 50-second budget.
+export const SAFE_POOL_PILOT_CYCLE_SCHEDULE = "* * * * *";
+export const SAFE_POOL_PILOT_CYCLE_TIMEOUT = "50 seconds";
+/** One RPC request bound, so a slow provider cannot hold the joint tick. */
+export const SAFE_POOL_PILOT_RPC_TIMEOUT_MS = 5_000;
+const SAFE_POOL_PILOT_CYCLE_LIMIT = 10;
 
 type Step<A> = Effect.Effect<A, unknown>;
 type BoundEffect = Readonly<{ effectId: string; kind: "ticket_purchase" | "reward_payout" }>;

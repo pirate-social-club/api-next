@@ -124,8 +124,11 @@ owner inputs.
 
 ## Running the pilot
 
-The `safe-pool-pilot.cycle` jobs-worker job runs every two minutes when
-`SAFE_POOL_PILOT_ENABLED` is set; it is off by default. In order, it observes
+The `safe-pool-pilot.cycle` step runs every minute when `SAFE_POOL_PILOT_ENABLED`
+is set; it is off by default. It shares reward legs and credits with Study
+recovery and with contribution funding recovery, so it runs as the financial step
+of their serial job, the place the EOA rewards cycle takes when that lane is on,
+and contribution recovery runs with it. In order, it observes
 the drawing, scans the Safe, settles bound purchases and payouts, closes
 unexecuted purchases, prepares tickets, freezes, publishes commitments, sweeps,
 settles and prepares claims, allocates, observes the Safe's solvency and
