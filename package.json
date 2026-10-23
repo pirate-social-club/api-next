@@ -62,6 +62,8 @@
     "rewards:control": "bun scripts/reward-operations-control.ts",
     "db:preflight:telegram-activation": "bun scripts/telegram-activation-preflight.ts",
     "db:preflight:serving-functions": "bun scripts/serving-function-privileges-preflight.ts",
+    "db:preflight:dance-serving": "bun scripts/dance-serving-permissions-preflight.ts",
+    "db:plan:dance-serving": "bun scripts/dance-serving-grant-plan.ts",
     "db:preflight:reward-activation": "bun scripts/runtime-role-release-preflight.ts",
     "db:bootstrap:megapot-base-sepolia": "bun scripts/bootstrap-megapot-base-sepolia.ts",
     "staging:golden:megapot-base-sepolia": "bun scripts/megapot-base-sepolia-golden.ts",
