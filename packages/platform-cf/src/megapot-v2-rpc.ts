@@ -1,4 +1,11 @@
-import { type Hex, keccak256 } from "viem";
+import {
+  decodeFunctionResult,
+  encodeFunctionData,
+  type Hex,
+  keccak256,
+  parseAbi,
+  toEventSelector,
+} from "viem";
 import {
   decodeMegapotCurrentDrawingId,
   decodeMegapotDrawingState,
@@ -30,6 +37,10 @@ import {
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
 import { readNativeBalance as readNativeBalanceRpc } from "./native-balance.ts";
+
+const safeNonceAbi = parseAbi(["function nonce() view returns (uint256)"]);
+const safeExecutionSuccessTopic = toEventSelector("ExecutionSuccess(bytes32,uint256)");
+const safeExecutionFailureTopic = toEventSelector("ExecutionFailure(bytes32,uint256)");
 
 export const MEGAPOT_V2_RPC_TIMEOUT_MS = 8_000;
 export const MEGAPOT_V2_RPC_MAX_RESPONSE_BYTES = 512 * 1024;
@@ -141,6 +152,16 @@ export type MegapotV2FeeQuote = Readonly<{
   observedBlockHash: string;
 }>;
 
+/** One ExecutionSuccess or ExecutionFailure event emitted by an owner-executed Safe. */
+export type MegapotV2SafeExecutionLog = Readonly<{
+  transactionHash: string;
+  blockNumber: bigint;
+  blockHash: string;
+  logIndex: number;
+  safeTransactionHash: string;
+  outcome: "success" | "failure";
+}>;
+
 /** A transaction as eth_getTransactionByHash returns it; unmined ones have no block. */
 export type MegapotV2Transaction = Readonly<{
   transactionHash: string;
@@ -168,6 +189,18 @@ export interface MegapotV2RpcClient {
       maximumLogs: number;
     }>,
   ) => Promise<readonly Readonly<{ transactionHash: string; blockNumber: bigint }>[]>;
+  /** Candidate discovery only: Safe execution events, which never prove absence. */
+  readonly readSafeExecutionLogs?: (
+    input: Readonly<{
+      safe: string;
+      fromBlock: bigint;
+      toBlock: bigint;
+      maximumBlocks: number;
+      maximumLogs: number;
+    }>,
+  ) => Promise<readonly MegapotV2SafeExecutionLog[]>;
+  /** The Safe's own nonce() at an exact block. Test doubles may omit it. */
+  readonly readSafeNonce?: (safe: string, blockNumber: bigint) => Promise<bigint>;
   /** Present on the production adapter; test doubles may omit it. */
   readonly deployment?: MegapotV2DeploymentAttestation;
   readonly attestDeployment: () => Promise<{
@@ -599,6 +632,68 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
         hexData(log.data);
         return { transactionHash: canonicalHash(log.transactionHash), blockNumber };
       });
+    },
+    readSafeExecutionLogs: async (input) => {
+      if (
+        !Number.isSafeInteger(input.maximumBlocks) ||
+        input.maximumBlocks < 1 ||
+        !Number.isSafeInteger(input.maximumLogs) ||
+        input.maximumLogs < 1 ||
+        input.fromBlock < 0n ||
+        input.toBlock < input.fromBlock ||
+        input.toBlock - input.fromBlock + 1n > BigInt(input.maximumBlocks)
+      )
+        throw new MegapotV2RpcFailed("invalid-config");
+      const safe = canonicalAddress(input.safe);
+      const result = await rpc("eth_getLogs", [
+        {
+          address: safe,
+          topics: [[safeExecutionSuccessTopic, safeExecutionFailureTopic]],
+          fromBlock: quantityHex(input.fromBlock),
+          toBlock: quantityHex(input.toBlock),
+        },
+      ]);
+      if (!Array.isArray(result) || result.length > input.maximumLogs)
+        throw new MegapotV2RpcFailed("invalid-response");
+      return result.map((value) => {
+        const log = object(value);
+        const blockNumber = quantity(log.blockNumber);
+        const logIndex = quantity(log.logIndex);
+        const topics: readonly unknown[] = Array.isArray(log.topics) ? log.topics : [];
+        if (topics.length !== 2) throw new MegapotV2RpcFailed("invalid-response");
+        const topic = canonicalHash(topics[0]);
+        if (
+          log.removed === true ||
+          canonicalAddress(log.address) !== safe ||
+          (topic !== safeExecutionSuccessTopic && topic !== safeExecutionFailureTopic) ||
+          blockNumber < input.fromBlock ||
+          blockNumber > input.toBlock ||
+          logIndex > BigInt(Number.MAX_SAFE_INTEGER) ||
+          hexData(log.data).length !== 66
+        )
+          throw new MegapotV2RpcFailed("invalid-response");
+        return {
+          transactionHash: canonicalHash(log.transactionHash),
+          blockNumber,
+          blockHash: canonicalHash(log.blockHash),
+          logIndex: Number(logIndex),
+          safeTransactionHash: canonicalHash(topics[1]),
+          outcome: topic === safeExecutionSuccessTopic ? "success" : "failure",
+        } as const;
+      });
+    },
+    readSafeNonce: async (safe, blockNumber) => {
+      if (blockNumber < 0n) throw new MegapotV2RpcFailed("invalid-config");
+      const data = await ethCall(
+        safe,
+        encodeFunctionData({ abi: safeNonceAbi, functionName: "nonce" }),
+        blockNumber,
+      );
+      try {
+        return decodeFunctionResult({ abi: safeNonceAbi, functionName: "nonce", data });
+      } catch {
+        throw new MegapotV2RpcFailed("invalid-response");
+      }
     },
     readCurrentDrawing: async () => {
       const drawingId = decodeMegapotCurrentDrawingId(
