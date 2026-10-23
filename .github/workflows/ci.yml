@@ -10,7 +10,8 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Keep the pinned audit proxy on its known runner generation.
+    runs-on: ubuntu-24.04
     steps:
       # Full history: the breaking-change check diffs against the pushed
       # commit's first parent or the pull request base commit.
@@ -32,6 +33,19 @@ jobs:
           version: 0.41.0
           egress-rules: .github/egress/check.yml
           warn: true
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - run: bun install --frozen-lockfile
       - name: Install pinned FFmpeg 6.1.1
         run: |
@@ -151,7 +165,7 @@ jobs:
 
   postgres17-namespace:
     name: postgres17-namespace
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
@@ -198,6 +212,19 @@ jobs:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
           warn: true
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - name: Remove stale completion sentinel
         run: >-
           rm -f
@@ -366,7 +393,7 @@ jobs:
 
   postgres17-general:
     name: postgres17-general-${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -408,6 +435,19 @@ jobs:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
           warn: true
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - run: bun install --frozen-lockfile
       - name: Install pinned FFmpeg 6.1.1
         run: |
