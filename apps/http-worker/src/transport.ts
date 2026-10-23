@@ -6,6 +6,7 @@ import {
 import {
   type IdentityRegistrationHandlerServices,
   makeIdentityRegistrationHandler,
+  PERSONA_WALLET_SETUP_SESSION_SCOPE,
 } from "@pirate/application/use-cases/identity-registration-handler";
 import {
   MAX_BROWSER_SESSION_TTL_SECONDS,
@@ -1354,4 +1355,33 @@ function isSessionExchangeResult(value: unknown): value is SessionExchangeHandle
     typeof value.sessionToken === "string" &&
     typeof value.sessionTtlSeconds === "number"
   );
+}
+
+/** The private byte resource uses the same cookie parser/session verifier as
+ * generated browser routes. No bearer, mixed credentials, malformed/duplicate
+ * sensitive cookie or persona-wallet setup session can authorize playback. */
+export async function authenticatePrivateBrowserMedia(
+  context: HttpContext,
+  authenticate: HttpWorkerOptions["authenticate"],
+  endpoint: EndpointDefinition,
+): Promise<Principal> {
+  if (context.req.method !== "GET" && context.req.method !== "HEAD")
+    throw new AuthError({ message: "Authentication failed" });
+  const parsed = parseCookies(context);
+  if (
+    context.req.header("authorization") !== undefined ||
+    authenticate === undefined ||
+    parsed.duplicateNames.has(SESSION_COOKIE_NAME) ||
+    parsed.duplicateNames.has(CSRF_COOKIE_NAME) ||
+    parsed.invalidNames.has(SESSION_COOKIE_NAME) ||
+    parsed.invalidNames.has(CSRF_COOKIE_NAME)
+  )
+    throw new AuthError({ message: "Authentication failed" });
+  const sessionCookie = parsed.values.get(SESSION_COOKIE_NAME);
+  if (sessionCookie === undefined || sessionCookie === "")
+    throw new AuthError({ message: "Authentication required" });
+  const principal = await authenticate({ endpoint, credentials: { sessionCookie } });
+  if (principal.kind !== "user" || principal.scopes?.includes(PERSONA_WALLET_SETUP_SESSION_SCOPE))
+    throw new AuthError({ message: "Authentication failed" });
+  return principal;
 }

@@ -53,3 +53,39 @@ test("page contract bounds results and recipient selection is absent", () => {
   expect(ReadMyNotification.auth).toEqual({ policy: { kind: "user" } });
   expect("body" in ReadMyNotification.request).toBe(false);
 });
+
+test("Dance terminal notifications navigate only to the recipient-private result", () => {
+  const decode = Schema.decodeUnknownSync(NotificationV1, exact);
+  const dance = {
+    notification_id: id,
+    kind: "dance_review_result",
+    occurred_at: fact.occurred_at,
+    read_at: null,
+    target: { kind: "private_dance_result", community_id: "community", review_id: "review" },
+    outcome: "passed",
+  } as const;
+  for (const outcome of ["passed", "not_passed", "review_expired"] as const)
+    expect(decode({ ...dance, outcome })).toEqual({ ...dance, outcome });
+  for (const forged of [
+    { ...dance, outcome: "withdrawn" },
+    { ...dance, outcome: undefined },
+    { ...dance, target: fact.target },
+    { ...fact, target: dance.target },
+    { ...dance, target: { ...dance.target, account_id: "other" } },
+    { ...dance, recording_url: "https://private.invalid/recording" },
+    { ...dance, qualification_id: "qualification" },
+    { ...dance, reviewer_account_id: "owner" },
+  ])
+    expect(() => decode(forged)).toThrow();
+  expect(
+    Schema.decodeUnknownSync(
+      ListMyNotifications.response,
+      exact,
+    )({
+      object: "notification_page",
+      items: [fact, dance],
+      next_cursor: null,
+      unread_count: 2,
+    }).items,
+  ).toEqual([fact, dance]);
+});

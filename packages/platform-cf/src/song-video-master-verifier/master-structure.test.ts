@@ -55,7 +55,7 @@ describe("strict Song video master structure", () => {
       inspectSongVideoMasterStructure(bytes.subarray(0, bytes.length - 1), 150_000),
     ).toThrow("invalid_box_envelope");
     expect(() => inspectSongVideoMasterStructure(bytes, 150_001)).toThrow(SongVideoMasterRejection);
-    expect(() => inspectSongVideoMasterStructure(bytes, 15 * 48_000 + 1)).toThrow(
+    expect(() => inspectSongVideoMasterStructure(bytes, 30 * 48_000 + 1)).toThrow(
       "invalid_expected_duration",
     );
   });

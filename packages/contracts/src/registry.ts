@@ -2,8 +2,19 @@ import { Schema } from "effect";
 import { activityCompletionRegistry } from "./activity-completion.ts";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
+import { moderatedDanceContextRegistry } from "./dance-moderated-context.ts";
+import {
+  CreateModeratedDanceMediaAccess,
+  CreateModeratedDanceReference,
+  GetModeratedDanceCaptureOptions,
+  GetModeratedDanceReferenceStatus,
+  moderatedDanceIntakeRegistry,
+} from "./dance-moderated-intake.ts";
+import { moderatedDanceReviewRegistry } from "./dance-review.ts";
 import { endpoint } from "./endpoint.ts";
 import { guestParticipationRegistry } from "./guest-registry.ts";
+import { GetSharedSongMegapotSummaryV2 } from "./shared-song-megapot.ts";
+import { GetSharedSongMegapotParticipationV2 } from "./shared-song-megapot-participation.ts";
 import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
 import { telegramLinkingRegistry } from "./telegram-linking.ts";
@@ -98,6 +109,7 @@ import {
   StartStudySession,
   SubmitStudyAnswer,
 } from "./rewards-qualification.ts";
+import { songMegapotContributionRegistryV2 } from "./rewards-song-contributions-v2.ts";
 import {
   AddAssetBonusLeg,
   AddMegapotPoolLeg,
@@ -171,6 +183,16 @@ import {
 } from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...moderatedDanceContextRegistry,
+  ...moderatedDanceReviewRegistry,
+  ...moderatedDanceIntakeRegistry,
+  GetSharedSongMegapotSummaryV2,
+  GetSharedSongMegapotParticipationV2,
+  GetModeratedDanceCaptureOptions,
+  GetModeratedDanceReferenceStatus,
+  CreateModeratedDanceReference,
+  CreateModeratedDanceMediaAccess,
+  ...songMegapotContributionRegistryV2,
   ...activityCompletionRegistry,
   ...guestParticipationRegistry,
   GetPublicProfileActivity,

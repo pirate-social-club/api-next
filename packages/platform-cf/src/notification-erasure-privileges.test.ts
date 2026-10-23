@@ -41,15 +41,22 @@ const fact = (rows: ReturnType<typeof ready>, name: string) => {
 };
 
 describe("bounded Notifications account-status executor admission", () => {
-  test("the real catalog fixture covers forty distinct drift variants of the retained DDL without adding PG entrypoints", async () => {
+  test("the real catalog fixture retains forty trigger negatives and adds exact current function security drift", async () => {
     const ddl = (
       await Bun.file(
         new URL("../../../db/postgres/migrations/0271_notifications_inbox.sql", import.meta.url),
       ).text()
     ).replace(/\s+/gu, " ");
     const variants = notificationTriggerShapeVariants(); // Pure builder; no SQL/client call.
-    expect(variants).toHaveLength(40);
-    expect(new Set(variants.map(({ guard, name }) => `${guard.table}/${name}`)).size).toBe(40);
+    expect(variants).toHaveLength(46);
+    expect(new Set(variants.map(({ guard, name }) => `${guard.table}/${name}`)).size).toBe(46);
+    expect(variants.filter(({ securityDefiner }) => securityDefiner !== undefined)).toHaveLength(4);
+    expect(variants.filter(({ searchPath }) => searchPath !== undefined)).toHaveLength(2);
+    expect(
+      variants
+        .filter(({ searchPath }) => searchPath !== undefined)
+        .every(({ guard }) => guard.table === "notification_inbox"),
+    ).toBe(true);
     for (const table of [
       "users",
       "notification_inbox",

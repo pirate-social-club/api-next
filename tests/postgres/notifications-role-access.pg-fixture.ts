@@ -110,6 +110,31 @@ export async function verifyNotificationRoleAccess(
     }
   }
 
+  for (const [signature, allowed] of [
+    [
+      "readable_recipient_notification_v2(text,text,text)",
+      caller === "http" || caller === "forward",
+    ],
+    ["pending_recipient_notifications_v2()", caller === "jobs" || caller === "forward"],
+    ["deliver_recipient_notification_v2(text)", caller === "jobs" || caller === "forward"],
+  ] as const)
+    expect(
+      (
+        await client.query("SELECT has_function_privilege(current_user,$1,'EXECUTE') AS allowed", [
+          signature,
+        ])
+      ).rows,
+    ).toEqual([{ allowed }]);
+  for (const table of ["dance_moderated_reviews_v1", "dance_moderated_result_events_v1"])
+    expect(
+      (
+        await client.query(
+          "SELECT has_table_privilege(current_user,$1,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,$1,'SELECT,INSERT,UPDATE,REFERENCES') AS allowed",
+          [table],
+        )
+      ).rows,
+    ).toEqual([{ allowed: false }]);
+
   // Real LOGIN denials after the actual migration's ACL cleanup, before any
   // workflow. No fixture REVOKE or operator/evidence grant manufactures this.
   const denied = async (sql: string, values: unknown[] = []) =>

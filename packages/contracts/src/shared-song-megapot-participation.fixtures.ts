@@ -1,0 +1,125 @@
+const hash = "a".repeat(64);
+// Fictional decoding vectors, never a policy admission or financial configuration.
+export function participantProjectionFixture() {
+  const bindings = ["study", "karaoke", "dance"].map((activity) => ({
+    template_key: `test-template-${activity}`,
+    activity,
+    grading_family: activity === "dance" ? "moderator_verdict" : "numeric",
+    qualification_policy_id: `test-policy-${activity}`,
+    qualification_policy_hash: hash,
+    numeric_floor_bps: activity === "dance" ? null : 8000,
+    choreography_scope: activity === "dance" ? "any_policy_accepted" : "not_applicable",
+    admission_id: `test-admission-${activity}`,
+    admission_hash: hash,
+    disclosure_version: "test-disclosure",
+    binding_id: `test-binding-${activity}`,
+    objective_id: `test-objective-${activity}`,
+    offer_id: "test-offer",
+    leg_id: "test-leg",
+  }));
+  const rules = bindings.map((binding) => ({
+    binding,
+    currently_available: true,
+    rule:
+      binding.activity === "study"
+        ? {
+            kind: "study_session_first_pass_v2",
+            qualification_policy_version_id: binding.qualification_policy_id,
+            required_correct_bps: 7000,
+          }
+        : binding.activity === "karaoke"
+          ? {
+              kind: "karaoke_qualification_v2",
+              qualification_policy_version_id: binding.qualification_policy_id,
+              minimum_scored_line_count: 5,
+              minimum_coverage_bps: 8500,
+              minimum_final_score_bps: 7000,
+              eligible_playback_kinds: ["full_mix", "instrumental"],
+            }
+          : {
+              kind: "dance_owner_verdict_v1",
+              qualification_policy_version_id: binding.qualification_policy_id,
+              grading_mode: "moderator_verdict",
+              verdict: "passed",
+            },
+  }));
+  return {
+    object: "shared_song_megapot_participation",
+    version: 2,
+    as_of: "2026-10-22T12:00:00.000Z",
+    target: {
+      kind: "committed",
+      community_id: "test-community",
+      post_id: "test-song",
+      canonical_song_id: "test-song",
+      audio_revision: 1,
+      offer_id: "test-offer",
+      pool_leg_id: "test-leg",
+    },
+    terms: {
+      version: "shared-song-megapot-v2",
+      profile_id: "test-profile",
+      profile_hash: hash,
+      terms_hash: hash,
+      funding_policy_revision: 1,
+      funding_policy_hash: hash,
+      budget_source: "leg_budget",
+      empty_behavior: "no_purchase",
+      eligible_activities: ["study", "karaoke", "dance"],
+      dance_scope: "any_policy_accepted",
+      starts_at: "2026-10-22T10:00:00.000Z",
+      ends_at: "2026-10-25T17:00:00.000Z",
+      first_drawing_id: "200",
+      last_planned_drawing_id: "201",
+      ticket_price_ceiling_atomic: "2000000",
+      disclosure_version: "test-disclosure",
+      origin_prospective_terms_hash: hash,
+      origin_slot_generation: 0,
+      reward_policy_hash: hash,
+      qualification_bindings: bindings,
+      qualification_bindings_hash: hash,
+      planned_drawing_ids: ["200", "201"],
+      planned_schedule_hash: hash,
+    },
+    chain_id: 84532,
+    token_address: `0x${"1".repeat(40)}`,
+    token_decimals: 6,
+    offer_status: "active",
+    leg_status: "active",
+    confirmed_contributed_atomic: "10000000",
+    remaining_budget_atomic: "8000000",
+    participation_available: true,
+    qualification_rules: rules,
+    drawings: [
+      {
+        kind: "materialized",
+        planned_drawing_id: "200",
+        drawing_at: "2026-10-22T17:00:00.000Z",
+        drawing: {
+          object: "megapot_pool_drawing_projection",
+          drawing_id: "200",
+          lifecycle_status: "entry_open",
+          state: "entry_open",
+          entry_cutoff_at: "2026-10-22T16:55:00.000Z",
+          beneficiary_count: 0,
+          ticket_price_ceiling_atomic: "2000000",
+          actual_ticket_cost_atomic: "0",
+          gross_prize_pool_atomic: null,
+          global_tickets_bought: null,
+          prize_pool_observed_at: null,
+          prize_pool_basis:
+            "gross_observed_before_referral_win_share_terminal_last_observed_pre_rollover",
+          global_tickets_basis: "drawing_wide_all_megapot_buyers",
+          net_winnings_atomic: "0",
+          commitment_reference: null,
+          snapshot_hash: null,
+          ticket_id: null,
+          purchase_transaction_hash: null,
+          claim_transaction_hash: null,
+        },
+        standing: { share_held: false, credit: null },
+      },
+      { kind: "not_open", planned_drawing_id: "201" },
+    ],
+  };
+}

@@ -5,7 +5,7 @@ import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
 import { HTTP_AVATAR_REQUIRED, HTTP_BINDING_KINDS } from "./http-binding-contract.ts";
 import { JOBS_BINDING_KINDS } from "./jobs-binding-contract.ts";
-import { MEDIA_BINDING_KINDS, mediaUsesCloudConvert } from "./media-binding-contract.ts";
+import { MEDIA_BINDING_KINDS, requiredMediaBindingNames } from "./media-binding-contract.ts";
 
 type BindingKind = "platform" | "secret" | "var";
 type BindingManifest<T extends object> = { [K in keyof T]-?: BindingKind };
@@ -58,6 +58,7 @@ const DATA_CONFIG_PATH = new URL(
 );
 
 interface RawWranglerEnvironment {
+  readonly hyperdrive?: readonly { readonly binding: string }[];
   readonly images?: { readonly binding: string };
   readonly vpc_services?: readonly { readonly binding: string; readonly service_id: string }[];
   readonly r2_buckets?: readonly { readonly binding: string; readonly bucket_name: string }[];
@@ -270,20 +271,6 @@ const JOBS_DATA_BALANCE_REQUIRED = [
   "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI",
 ] as const;
 
-const MEDIA_ENABLED_REQUIRED = [
-  "ACRCLOUD_IDENTIFY_HOST",
-  "ACRCLOUD_ACCESS_KEY",
-  "ACRCLOUD_ACCESS_SECRET",
-  "ELEVENLABS_API_KEY",
-  "OPENAI_API_KEY",
-] as const;
-
-const SONG_SOURCE_RECORDING_REQUIRED = [
-  "ACRCLOUD_CONSOLE_ORIGIN",
-  "ACRCLOUD_CONSOLE_TOKEN",
-  "ACRCLOUD_SOURCE_BUCKET_ID",
-] as const;
-
 const HTTP_STUDY_GENERATION_REQUIRED = [
   "STUDY_GENERATION_ENABLED",
   "STUDY_GENERATION_OPENROUTER_MODEL",
@@ -330,21 +317,7 @@ const requiredNamesFor = (
     return ["DATA_REGISTRATION_ENABLED", ...DATA_ENABLED_REQUIRED, signerSecret];
   }
   if (worker === "media") {
-    const required: string[] =
-      environment.vars.MEDIA_PROCESSING_ENABLED === "true"
-        ? ["MEDIA_PROCESSING_ENABLED", ...MEDIA_ENABLED_REQUIRED]
-        : ["MEDIA_PROCESSING_ENABLED"];
-    if (environment.vars.SONG_SOURCE_RECORDING_ENABLED === "true") {
-      required.push("SONG_SOURCE_RECORDING_ENABLED", ...SONG_SOURCE_RECORDING_REQUIRED);
-    }
-    if (mediaUsesCloudConvert(environment.vars)) {
-      required.push(
-        "CLOUDCONVERT_RENDER_API_KEY",
-        "VIDEO_SOURCE_GATEWAY_ORIGIN",
-        "MEDIA_IMMUTABLE_ORIGINALS",
-      );
-    }
-    return required;
+    return requiredMediaBindingNames(environment.vars);
   }
   if (worker === "jobs") {
     const required: string[] = [...JOBS_ALWAYS_REQUIRED];
@@ -444,6 +417,9 @@ const auditRequiredBindings = (): readonly string[] => {
       const environment = declaredEnvironment(configs[worker], environmentName);
       const names = new Set([
         ...declaredNames(environment),
+        ...(rawEnvironment(configs[worker], environmentName).hyperdrive ?? []).map(
+          (database) => database.binding,
+        ),
         ...(rawEnvironment(configs[worker], environmentName).r2_buckets ?? []).map(
           (bucket) => bucket.binding,
         ),

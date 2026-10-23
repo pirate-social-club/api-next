@@ -20,7 +20,15 @@ describe("song-video PCM WAV header", () => {
     expect(view.getUint32(40, true)).toBe(2_880_000);
   });
 
-  test.each([-1, 0, 0.5, 143_999, 720_001, Number.MAX_SAFE_INTEGER])(
+  test("retains exact PCM byte lengths up to the thirty-second boundary", () => {
+    for (const samples of [720_001, 1_440_000]) {
+      const view = new DataView(makeSongVideoPcmWavHeader(samples).buffer);
+      expect(view.getUint32(4, true)).toBe(36 + samples * 4);
+      expect(view.getUint32(40, true)).toBe(samples * 4);
+    }
+  });
+
+  test.each([-1, 0, 0.5, 143_999, 1_440_001, Number.MAX_SAFE_INTEGER])(
     "refuses an invalid sample-frame count: %p",
     (sampleFrames) => {
       expect(() => makeSongVideoPcmWavHeader(sampleFrames)).toThrow(TypeError);

@@ -219,6 +219,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...RUNTIME_SECRET_NAMES,
       ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
       "MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS",
+      "DANCE_MODERATED_REPLAY_KEYS",
       ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...STAGING_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
       ...PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
@@ -258,6 +259,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     requiredNames: requiredWhenRuntimeEnabled("prod", PRODUCTION_RUNTIME_SECRET_NAMES),
     allowedNames: [
       ...PRODUCTION_RUNTIME_SECRET_NAMES,
+      "DANCE_MODERATED_REPLAY_KEYS",
       // Optional while production rewards are disabled; activation is guarded in the tests.
       "MEGAPOT_V2_RPC_URL",
       ...PRODUCTION_PROVISIONABLE_DATA_RUNTIME_SECRET_NAMES,

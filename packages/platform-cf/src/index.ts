@@ -302,6 +302,11 @@ export {
 } from "./queue-retry";
 export * from "./reward-effect-attestation-repository.ts";
 export * from "./reward-funding-coordinator.ts";
+export {
+  makeCurrentFundingRecoveryEvidence,
+  makeMegapotFundingHistoricalVerifier,
+  makeRewardFundingReceiptDiscovery,
+} from "./reward-funding-receipt-discovery.ts";
 export * from "./reward-funding-repository.ts";
 export * from "./reward-gas-topup-coordinator.ts";
 export * from "./reward-gas-topup-repository.ts";
@@ -361,6 +366,10 @@ export {
   SessionTokenVerificationError,
   type SessionTokenVerifier,
 } from "./session-tokens";
+export {
+  makeControlPlaneSongFundingRecoveryStore,
+  type SongFundingWork,
+} from "./song-megapot-contribution-repository.ts";
 export * from "./song-owner-video-policy-repository.ts";
 export * from "./song-reward-offer-repository.ts";
 export {

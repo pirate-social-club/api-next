@@ -583,10 +583,43 @@ describe("OpenAPI clean-break allowance", () => {
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
 
-    expect(repositoryPolicy.breakingChangeWaivers).toEqual([]);
+    expect(
+      repositoryPolicy.breakingChangeWaivers.map(({ operationId, baselineSha, kind }) => ({
+        operationId,
+        baselineSha,
+        kind,
+      })),
+    ).toEqual([
+      {
+        operationId: "get_meNotifications",
+        baselineSha: "1efaee94d9da600c97d08f61888824e286b14f2d",
+        kind: "deprecation",
+      },
+      ...[
+        "get_feedHomePublic",
+        "get_feedHome",
+        "get_postsPostId",
+        "get_publicCommunitiesCommunityRefFeed",
+        "get_publicPersonasPersonaIdActivity",
+        "get_publicPostsByIdPostIdCanonicalRoute",
+        "get_publicPostsBySlug",
+      ].map((operationId) => ({
+        operationId,
+        baselineSha: "1efaee94d9da600c97d08f61888824e286b14f2d",
+        kind: "deprecation",
+      })),
+    ]);
+    expect(repositoryPolicy.breakingChangeWaivers[0]?.expectedViolations).toHaveLength(6);
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(
+        repositoryPolicy,
+        "1efaee94d9da600c97d08f61888824e286b14f2d",
+        () => true,
+      ),
+    ).not.toThrow();
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
-    ).not.toThrow();
+    ).toThrow("obsolete baseline");
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

@@ -26,7 +26,7 @@ import {
 import { seedActivitySong } from "./activity-participation-composed-song.pg-fixture.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeDiagnosticPostgresControlPlaneLayer as makeDirectPostgresControlPlaneLayer } from "./postgres-failure-diagnostics.pg-fixture.ts";
 import { makeControlPlaneRewardEffectAttestationStore } from "./reward-effect-attestation-repository.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";

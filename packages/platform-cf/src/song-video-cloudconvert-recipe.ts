@@ -1,10 +1,11 @@
 /** The two pinned CloudConvert commands for a pre-cut PCM WAV and video source. */
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "./song-video-pcm-render-bounds.ts";
 
 export const SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION = "6.1.4";
 
 const SAMPLE_RATE_HZ = 48_000;
 const MIN_DURATION_SAMPLES = 3 * SAMPLE_RATE_HZ;
-const MAX_DURATION_SAMPLES = 15 * SAMPLE_RATE_HZ;
+const MAX_DURATION_SAMPLES = SONG_VIDEO_PCM_RENDER_MAX_SAMPLES;
 const SAMPLES_PER_VIDEO_FRAME = SAMPLE_RATE_HZ / 30;
 
 export type SongVideoCloudConvertCommands = Readonly<{

@@ -56,6 +56,8 @@ test("private Guest stages are absent unless a reviewed composition is supplied"
       name: "notifications.recover-publications",
       lane: "notification-delivery",
       writes: [
+        "postgres:dance_moderated_result_events_v1",
+        "postgres:dance_review_result_deliveries_v1",
         "postgres:notification_inbox",
         "postgres:notification_publication_deliveries",
         "postgres:content_publication_outbox",

@@ -10,7 +10,8 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Keep the pinned audit proxy on its known runner generation.
+    runs-on: ubuntu-24.04
     steps:
       # Full history: the breaking-change check diffs against the pushed
       # commit's first parent or the pull request base commit.
@@ -21,15 +22,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y sqlite3 zstd
+      # Bootstrap the pinned runner tool before the optional audit proxy.
+      # Its GitHub cache/download DNS has repeatedly failed behind the proxy.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
           version: 0.41.0
           egress-rules: .github/egress/check.yml
           warn: true
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.0
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - run: bun install --frozen-lockfile
       - name: Install pinned FFmpeg 6.1.1
         run: |
@@ -149,7 +165,7 @@ jobs:
 
   postgres17-namespace:
     name: postgres17-namespace
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
@@ -189,13 +205,26 @@ jobs:
         run: bun run check:baseline:fresh
       # Iron Proxy intentionally removes Docker socket access. Start it after
       # freshness has exercised the pinned pg_dump image; the general shard
-      # jobs separately audit the same pinned setup and dependency install.
+      # jobs separately audit the same pinned dependency install.
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
           warn: true
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - name: Remove stale completion sentinel
         run: >-
           rm -f
@@ -364,7 +393,7 @@ jobs:
 
   postgres17-general:
     name: postgres17-general-${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -395,15 +424,30 @@ jobs:
         with:
           # Reset tests verify immutable approved Git artifacts, not HEAD's schema.
           fetch-depth: 0
+      # Bootstrap the pinned runner tool before the optional audit proxy.
+      # Its GitHub cache/download DNS has repeatedly failed behind the proxy.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
           warn: true
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.0
+      - name: Verify audited network readiness
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if timeout 5 getent ahostsv4 registry.npmjs.org >/dev/null &&
+              curl --fail --silent --show-error --max-time 5 https://registry.npmjs.org/-/ping >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          tail -80 /var/log/iron-proxy.log || true
+          exit 1
       - run: bun install --frozen-lockfile
       - name: Install pinned FFmpeg 6.1.1
         run: |

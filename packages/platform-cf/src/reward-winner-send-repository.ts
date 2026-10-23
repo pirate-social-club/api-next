@@ -3,7 +3,6 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
   type RewardWinnerSendContext,
-  type RewardWinnerSendNonceReader,
   type RewardWinnerSendOutcome,
   type RewardWinnerSendRecord,
   RewardWinnerSendRejected,
@@ -14,6 +13,10 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import { CONFIRMED_PAYOUT_WALLET } from "./reward-gas-topup-repository.ts";
+import {
+  lockRewardWalletNonceSenderIn,
+  reserveRewardWinnerWalletNonceIn as reserveSenderNonceIn,
+} from "./reward-wallet-nonce-authority.ts";
 import {
   requireCurrentWalletSendPalm,
   WalletSendVerificationRequired,
@@ -209,61 +212,17 @@ function lockIn(
   });
 }
 
-/** Serializes every nonce reservation for one sender on one chain. */
+/** Shared sender lock; preserve the winner API's existing error vocabulary. */
 function lockSenderIn(
   transaction: ControlPlaneTransaction,
   sender: { readonly chainId: number; readonly senderAddress: string },
 ) {
-  return transaction.execute({
-    label: "reward-winner-send.sender.lock",
-    text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-    values: [`reward-winner-send:${sender.chainId}:${sender.senderAddress}`],
-    readonly: false,
-  });
-}
-
-/**
- * Under the sender lock: refuse while the sender has an open send, then read
- * the nonce and require it above every nonce the sender ever reserved, so a
- * stale read can never reuse a consumed or reserved nonce.
- */
-function reserveSenderNonceIn(
-  transaction: ControlPlaneTransaction,
-  input: {
-    readonly chainId: number;
-    readonly senderAddress: string;
-    readonly readNonce: RewardWinnerSendNonceReader;
-  },
-) {
-  return Effect.gen(function* () {
-    yield* lockSenderIn(transaction, input);
-    const open = yield* transaction.execute<Row>({
-      label: "reward-winner-send.sender-open.read",
-      text: `SELECT 1 FROM reward_winner_sends
-              WHERE chain_id=$1 AND sender_address=$2 AND status IN ('retryable','pending')
-              LIMIT 1`,
-      values: [input.chainId, input.senderAddress],
-      readonly: false,
-    });
-    if (open.rows.length > 0) return yield* rejected("sender-busy");
-    const highest = yield* transaction.execute<Row>({
-      label: "reward-winner-send.sender-nonce.read",
-      text: `SELECT max(attempt.nonce)::text AS nonce
-               FROM reward_winner_send_attempts attempt
-               JOIN reward_winner_sends send ON send.send_id=attempt.send_id
-              WHERE send.chain_id=$1 AND send.sender_address=$2`,
-      values: [input.chainId, input.senderAddress],
-      readonly: false,
-    });
-    const row = highest.rows[0] as Row | undefined;
-    const reserved =
-      row === undefined || row.nonce === null ? null : yield* parse(() => bigint(row, "nonce"));
-    const nonce = yield* input.readNonce;
-    if (nonce < 0n || (reserved !== null && nonce <= reserved)) {
-      return yield* rejected("nonce-not-consumed");
-    }
-    return nonce;
-  });
+  return lockRewardWalletNonceSenderIn(transaction, {
+    chainId: sender.chainId,
+    senderAddress: sender.senderAddress,
+  }).pipe(
+    Effect.catchTag("RewardWalletNonceUnavailable", () => Effect.fail(storage("invalid-row"))),
+  );
 }
 
 function attemptHashesIn(

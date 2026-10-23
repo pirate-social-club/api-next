@@ -4,7 +4,7 @@ The media-processor Worker owns provider creation, strict PCM master verificatio
 
 The database records a thirty-minute provider deadline before dispatch. A durable create intent precedes the only POST. A lost acknowledgement is observed by exact attempt tag; an empty search is inconclusive and duplicate jobs cannot become a master. Two outstanding create intents occupy the fixed capacity, including unresolved responses. The job ID, PCM digest and deadline are immutable.
 
-The excerpt is at most fifteen seconds of admitted, version-bound stereo PCM. Its WAV grant expires after fifteen minutes or at the earlier provider deadline. It authorizes that exact transient object through the source gateway. The capture grant authorizes the sealed source's recorded media type and object identity. Provider output never receives R2 write credentials. Downloads and Worker readback are bounded to 24 MiB, independently checked and verified again before sealing. The database checks `clock_timestamp()` at master insertion and the started-to-sealed transition, after verification; a late transaction rolls back.
+The excerpt is at most thirty seconds of admitted, version-bound stereo PCM. Its WAV grant expires after fifteen minutes or at the earlier provider deadline. It authorizes that exact transient object through the source gateway. The capture grant authorizes the sealed source's recorded media type and object identity. Provider output never receives R2 write credentials. Downloads and Worker readback are bounded to 24 MiB, independently checked and verified again before sealing. The database checks `clock_timestamp()` at master insertion and the started-to-sealed transition, after verification; a late transaction rolls back.
 
 ## Staging activation receipt
 

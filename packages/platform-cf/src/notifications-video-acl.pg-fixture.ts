@@ -200,6 +200,44 @@ export async function proveNotificationsVideoPrivateAcl(
       await denied("UPDATE video_notification_cutovers_v1 SET paired_solid_sha256=$1", [
         "c".repeat(64),
       ]);
+      // These post-Dance notification functions deliberately revoke hostile
+      // default/inherited EXECUTE. Bind each actual purpose through the owned
+      // migration function; this does not grant access to private Dance rows.
+      const notificationFunctions = [
+        "readable_recipient_notification_v2(text,text,text)",
+        "pending_recipient_notifications_v2()",
+        "deliver_recipient_notification_v2(text)",
+      ];
+      for (const fn of notificationFunctions)
+        expect(
+          (
+            await runtime.query(
+              "SELECT has_function_privilege(current_user,$1,'EXECUTE') AS allowed",
+              [fn],
+            )
+          ).rows[0].allowed,
+        ).toBe(false);
+      await denied("SELECT * FROM dance_moderated_reviews_v1");
+      await denied("SELECT grant_dance_result_notification_runtime_v2($1,'account')", [
+        runtimeRole,
+      ]);
+      await f.admin.query("SELECT grant_dance_result_notification_runtime_v2($1,'account')", [
+        runtimeRole,
+      ]);
+      await f.admin.query(
+        "SELECT grant_dance_result_notification_runtime_v2($1,'notification_worker')",
+        [runtimeRole],
+      );
+      for (const fn of notificationFunctions)
+        expect(
+          (
+            await runtime.query(
+              "SELECT has_function_privilege(current_user,$1,'EXECUTE') AS allowed",
+              [fn],
+            )
+          ).rows[0].allowed,
+        ).toBe(true);
+      await denied("SELECT * FROM dance_moderated_reviews_v1");
       // Ordinary runtime inbox access survives removal of the private defaults.
       expect(
         await f.run(

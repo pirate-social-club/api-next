@@ -24,3 +24,13 @@ Keep separate files even while the domains coincide so later job-specific
 traffic does not widen every job. Re-observe after a dependency source,
 installer, action, or workflow change and before switching Iron from warn mode
 to enforcement.
+
+The three audited jobs in the main CI workflow pin Ubuntu24.04. After
+ubuntu-latest began moving to26.04, a2026-10-23 job completed proxy startup
+but immediately failed all568 package downloads with DNSResolveFailed and
+recorded no proxy traffic. The observed resolved-socket and sudo warnings
+suggest runner/proxy compatibility; no exact startup cause is asserted. A
+bounded DNS and HTTPS probe now checks readiness before the audited workload
+and retains the last80 proxy log lines on failure. Frozen dependency installs
+and the complete test gates remain behind the proxy. Requalify this pinned
+action and binary before changing these jobs to a newer runner generation.

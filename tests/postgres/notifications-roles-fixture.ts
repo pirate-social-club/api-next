@@ -75,6 +75,15 @@ export async function exerciseNotificationRoles() {
       }
       await grantNotificationVideoReads(f.admin, [http, jobs, forward]);
       for (const role of [http, forward])
+        await f.admin.query("SELECT grant_dance_result_notification_runtime_v2($1,'account')", [
+          role,
+        ]);
+      for (const role of [jobs, forward])
+        await f.admin.query(
+          "SELECT grant_dance_result_notification_runtime_v2($1,'notification_worker')",
+          [role],
+        );
+      for (const role of [http, forward])
         await grant(`GRANT SELECT ON ${navigationReads.join(",")} TO ${role}`);
       await grant(`GRANT UPDATE(read_at) ON notification_inbox TO ${http}`);
       await grant(`GRANT SELECT ON notification_publication_deliveries TO ${jobs}`);

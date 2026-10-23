@@ -128,6 +128,7 @@ describe("narrow production v1 song infrastructure", () => {
       ]),
     );
     expect(resourceNames(configs.media.r2_buckets, "bucket_name")).toEqual([
+      "pirate-media-ingress-production",
       "pirate-media-immutable-production",
       "pirate-media-derived-production",
     ]);
@@ -207,6 +208,7 @@ describe("narrow production v1 song infrastructure", () => {
     expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("true");
     expect((configs.media.secrets as JsonRecord).required).toEqual([
       "CLOUDCONVERT_RENDER_API_KEY",
+      "DANCE_MODERATED_REPLAY_KEYS",
       "VIDEO_WORKFLOW_READ_TOKEN",
       "VIDEO_STREAM_API_TOKEN",
       "ACRCLOUD_ACCESS_KEY",

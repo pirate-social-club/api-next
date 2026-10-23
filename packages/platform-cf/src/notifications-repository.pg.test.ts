@@ -195,9 +195,13 @@ suite("persisted recipient-private inbox", () => {
           expect(page.items).toHaveLength(2);
           expect(page.unread_count).toBe(2);
           expect(
-            page.items.every((item) =>
-              controls.some((source) => source.commentId === item.target.comment_id),
-            ),
+            page.items.every((item) => {
+              const target = item.target;
+              return (
+                target.kind === "comment_thread" &&
+                controls.some((source) => source.commentId === target.comment_id)
+              );
+            }),
           ).toBe(true);
           for (const item of page.items)
             expect(
@@ -726,7 +730,9 @@ suite("persisted recipient-private inbox", () => {
       if (!page.next_cursor) throw new Error("missing cursor");
       await run(store.read({ recipientUserId: "inbox-owner", notificationId: page.next_cursor }));
       await admin.query("UPDATE comments SET status='hidden' WHERE comment_id=$1", [
-        page.items[19]?.target.comment_id,
+        page.items[19]?.target.kind === "comment_thread"
+          ? page.items[19].target.comment_id
+          : undefined,
       ]);
       const late = await publish("late");
       await run(store.deliver({ sourceEventId: late.eventId }));

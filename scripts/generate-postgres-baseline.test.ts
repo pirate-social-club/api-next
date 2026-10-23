@@ -249,10 +249,24 @@ INSERT INTO public.seed_table VALUES ('2026-08-31 17:07:43.49507+00');`,
     expect(normalized).toContain('TRUNCATE TABLE\n  "seed_table",\n  "z_table"');
     expect(normalized).toContain("RESTART IDENTITY CASCADE;");
     expect(normalized).toContain("SET LOCAL session_replication_role = replica;");
-    expect(normalized).toContain("SET LOCAL session_replication_role = origin;");
+    expect(normalized.indexOf("SET LOCAL session_replication_role = replica;")).toBeLessThan(
+      normalized.indexOf("TRUNCATE TABLE"),
+    );
+    expect(normalized).toEndWith("SET LOCAL session_replication_role = origin;\n");
     expect(normalized).toContain("INSERT INTO seed_table VALUES ('2000-01-01 00:00:00+00');");
     expect(normalized).not.toContain("public.seed_table");
     expect(normalized).not.toContain("statement_timeout");
+  });
+
+  test("brackets truncation with fixture mode even without migration-owned seeds", () => {
+    const normalized = normalizePostgresBaselineResetDump("-- No seed rows.\n", ["empty_table"]);
+
+    expect(normalized).toContain("SET LOCAL session_replication_role = replica;");
+    expect(normalized).toContain('TRUNCATE TABLE\n  "empty_table"\nRESTART IDENTITY CASCADE;');
+    expect(normalized.indexOf("SET LOCAL session_replication_role = replica;")).toBeLessThan(
+      normalized.indexOf("TRUNCATE TABLE"),
+    );
+    expect(normalized).toEndWith("SET LOCAL session_replication_role = origin;\n");
   });
 
   test("fails closed when migration-owned seed tables drift from the manifest", () => {

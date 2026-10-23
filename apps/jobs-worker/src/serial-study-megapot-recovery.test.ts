@@ -7,16 +7,18 @@ import {
 } from "@pirate/application";
 import { Effect, Layer } from "effect";
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
-import { buildJobRegistry, JobContext } from "./registry.ts";
+import { buildJobRegistry, JobContext, SONG_FUNDING_RECOVERY_WRITES } from "./registry.ts";
 import {
   makeSerialStudyMegapotRecoveryJob,
   runSerialStudyMegapotRecovery,
 } from "./serial-study-megapot-recovery.ts";
+import { makeSongMegapotFundingRecoveryJob } from "./song-megapot-funding-recovery.ts";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
 const { makeMegapotRewardsJob } = await import("./megapot-rewards.ts");
 const { makeStudySpokenAnswerRecoveryJob } = await import("./study-spoken-answer-recovery.ts");
 const { makeHnsRootHealthRenewalJob } = await import("./hns-root-health-renewal.ts");
+const { makeJobsWorkerDeclarations } = await import("./index.ts");
 
 const options: MegapotRewardsJobOptions = {
   environment: "staging",
@@ -41,6 +43,17 @@ const options: MegapotRewardsJobOptions = {
 const bucket = {
   head: async () => null,
   delete: async () => {},
+};
+const unexpectedStorage = (): never => {
+  throw new Error("Registry inspection cannot perform storage work");
+};
+const registryBucket: R2Bucket = {
+  ...bucket,
+  get: unexpectedStorage,
+  put: unexpectedStorage,
+  list: unexpectedStorage,
+  createMultipartUpload: unexpectedStorage,
+  resumeMultipartUpload: unexpectedStorage,
 };
 
 test("one serial writer owns the complete Account recovery/Megapot union alongside HNS", async () => {
@@ -213,3 +226,176 @@ test("a missing or backward original clock refuses before either source runs", a
   }
   expect(calls).toBe(0);
 });
+
+test.each([false, true])(
+  "the real serving registry owns Funding and cycle writes once with Study %s",
+  async (withStudy) => {
+    const runtime = { run: () => Effect.void, ensure: () => Effect.void };
+    const funding = makeSongMegapotFundingRecoveryJob({
+      runtime,
+      enabled: true,
+      limit: 1,
+      ensure: runtime.ensure,
+    });
+    const megapot = makeMegapotRewardsJob({}, options);
+    await expect(Effect.runPromise(buildJobRegistry([funding, megapot]))).rejects.toMatchObject({
+      reason: "duplicate-table-writer",
+      key: "postgres:song_reward_offer_legs",
+    });
+    const declarations = makeJobsWorkerDeclarations(
+      {},
+      "https://rpc.invalid/",
+      { enabled: false },
+      "staging",
+      options,
+      false,
+      withStudy ? registryBucket : undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      runtime,
+    );
+    const registry = await Effect.runPromise(buildJobRegistry(declarations));
+    expect(registry.byName.has(funding.name)).toBe(false);
+    const joint = registry.byName.get(megapot.name);
+    if (joint === undefined) throw new Error("Joint writer missing");
+    const study = withStudy ? makeStudySpokenAnswerRecoveryJob({}, bucket) : undefined;
+    expect(new Set(joint.writes)).toEqual(
+      new Set([...megapot.writes, ...SONG_FUNDING_RECOVERY_WRITES, ...(study?.writes ?? [])]),
+    );
+    expect(new Set(joint.reads)).toEqual(
+      new Set([...megapot.reads, ...funding.reads, ...(study?.reads ?? [])]),
+    );
+    expect(joint.timeout).toBe("50 seconds");
+    expect(joint.requiresAdapterSafety).toBe(true);
+  },
+);
+
+test("Funding waits for the settled cycle and shares the original attempt clock", async () => {
+  const trace: string[] = [];
+  let now = 1000;
+  let release = () => {};
+  let started = () => {};
+  const runningCycle = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const settledCycle = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const running = Effect.runPromise(
+    runSerialStudyMegapotRecovery({
+      study: Effect.sync(() => {
+        trace.push("study");
+        now = 2000;
+      }),
+      financial: Effect.promise(async () => {
+        trace.push("cycle");
+        started();
+        await settledCycle;
+        now = 25_000;
+        trace.push("cycle-settled");
+      }),
+      funding: Effect.sync(() => {
+        trace.push("funding");
+      }),
+      outerStartedAtMs: 1000,
+      now: () => now,
+    }),
+  );
+  try {
+    await runningCycle;
+    expect(trace).toEqual(["study", "cycle"]);
+  } finally {
+    release();
+  }
+  expect(await running).toEqual({
+    financial: "ran",
+    remainingMs: 49_000,
+    funding: "ran",
+    fundingRemainingMs: 26_000,
+  });
+  expect(trace).toEqual(["study", "cycle", "cycle-settled", "funding"]);
+});
+
+test.each([28_000, 29_000, 51_000])(
+  "the original clock defers Funding at %s without starting or retrying it",
+  async (afterCycle) => {
+    let now = 1000,
+      calls = 0;
+    const result = await Effect.runPromise(
+      runSerialStudyMegapotRecovery({
+        study: Effect.void,
+        financial: Effect.sync(() => {
+          now = afterCycle;
+        }),
+        funding: Effect.sync(() => {
+          calls++;
+        }),
+        outerStartedAtMs: 1000,
+        now: () => now,
+      }),
+    );
+    expect(result).toEqual({
+      financial: "ran",
+      remainingMs: 50_000,
+      funding: "skipped_remaining_budget",
+      fundingRemainingMs: 51_000 - afterCycle,
+    });
+    expect(calls).toBe(0);
+  },
+);
+
+test("Funding COMMIT uncertainty ends the tick without replaying either stage", async () => {
+  const failure = new ControlPlaneTransactionOutcomeUnknown({
+    phase: "commit",
+    label: "song-funding.work.finish",
+    limitMs: 2000,
+    elapsedMs: 2000,
+  });
+  let cycleCalls = 0,
+    fundingCalls = 0;
+  const result = await Effect.runPromise(
+    Effect.flip(
+      runSerialStudyMegapotRecovery({
+        study: Effect.void,
+        financial: Effect.sync(() => {
+          cycleCalls++;
+        }),
+        funding: Effect.sync(() => {
+          fundingCalls++;
+        }).pipe(Effect.andThen(Effect.fail(failure))),
+        outerStartedAtMs: 1000,
+        now: () => 1000,
+      }),
+    ),
+  );
+  expect(result).toBe(failure);
+  expect([cycleCalls, fundingCalls]).toEqual([1, 1]);
+});
+
+test("Funding timeout awaits interrupted cleanup and never retries the settled cycle", async () => {
+  const trace: string[] = [];
+  await expect(
+    Effect.runPromise(
+      runSerialStudyMegapotRecovery({
+        study: Effect.void,
+        financial: Effect.sync(() => {
+          trace.push("cycle");
+        }),
+        funding: Effect.never.pipe(
+          Effect.ensuring(
+            Effect.promise(async () => {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              trace.push("funding-closed");
+            }),
+          ),
+        ),
+        outerStartedAtMs: 1000,
+        now: () => 1000,
+      }),
+    ),
+  ).rejects.toMatchObject({ _tag: "TimeoutError" });
+  expect(trace).toEqual(["cycle", "funding-closed"]);
+}, 20_000);

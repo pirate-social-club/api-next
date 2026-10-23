@@ -236,19 +236,14 @@ export function normalizePostgresBaselineResetDump(
     "  false",
     ");",
     "",
+    "SET LOCAL session_replication_role = replica;",
+    "",
     "TRUNCATE TABLE",
     `  ${quotedTables}`,
     "RESTART IDENTITY CASCADE;",
-    ...(seedStatements.length === 0
-      ? []
-      : [
-          "",
-          "SET LOCAL session_replication_role = replica;",
-          "",
-          seedStatements,
-          "",
-          "SET LOCAL session_replication_role = origin;",
-        ]),
+    ...(seedStatements.length === 0 ? [] : ["", seedStatements]),
+    "",
+    "SET LOCAL session_replication_role = origin;",
     "",
   ].join("\n");
 }

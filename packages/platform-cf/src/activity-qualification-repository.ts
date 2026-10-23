@@ -351,7 +351,7 @@ export const recordQualificationProjections = (
     readonly communityId: string;
     readonly personaId: string;
     readonly postId: string;
-    readonly activity: "study" | "karaoke";
+    readonly activity: "study" | "karaoke" | "dance";
     readonly qualificationId: string;
     readonly qualifiedAt: string;
     readonly streakDay: string;

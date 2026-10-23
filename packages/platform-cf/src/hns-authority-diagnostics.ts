@@ -29,7 +29,7 @@ export function makeHnsAuthorityDiagnostic(id: string | null): AuthorityDiagnost
 }
 
 export const withHnsAuthoritySpan = Effect.fn("hns.authority.diagnostic-span")(function* <A, E, R>(
-  phase: "authority" | "client_initialization" | "connection_acquisition" | "query",
+  phase: Exclude<WorkerDiagnosticFields["phase"], "request_entry">,
   effect: Effect.Effect<A, E, R>,
 ) {
   const authorityDiagnostic = yield* HnsAuthorityDiagnostic;

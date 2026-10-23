@@ -6,7 +6,10 @@ export type WorkerDiagnosticFields = Readonly<{
     | "authority"
     | "client_initialization"
     | "connection_acquisition"
-    | "query";
+    | "query"
+    | "study_request"
+    | "study_transcription"
+    | "study_archive";
   outcome?: "started" | "success" | "failed" | "canceled";
   correlation_id?: string;
   elapsed_ms?: number;
@@ -36,6 +39,23 @@ export function makeWorkerRequestDiagnostics(
   let sequence = 0;
   return {
     current: () => storage.getStore(),
+    /** Bind internal operation timings to this same request, without exposing
+     * its route, account, audio, SQL or provider response. Existing diagnostic
+     * ownership wins; nested work never invents another request/instance. */
+    correlateDatabase<A>(use: () => A): A {
+      const current = storage.getStore();
+      if (current === undefined || current.database_correlation_id !== undefined) return use();
+      let correlationId: string;
+      try {
+        correlationId = randomUUID();
+      } catch {
+        return use();
+      }
+      return storage.run(
+        Object.freeze({ ...current, database_correlation_id: correlationId }),
+        use,
+      );
+    },
     run<A>(version: string | null, use: () => A, databaseCorrelationId?: string): A {
       const requestStartedAt = now();
       instanceId ??= randomUUID();

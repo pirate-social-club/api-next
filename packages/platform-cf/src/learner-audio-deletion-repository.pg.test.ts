@@ -14,7 +14,10 @@ import {
   finishHistoricalAudioDeletionFixture,
 } from "./learner-audio-deletion-history.pg-fixture.ts";
 import { makeControlPlaneLearnerAudioDeletionStore } from "./learner-audio-deletion-repository.ts";
-import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import {
+  makeDiagnosticPostgresControlPlaneLayer as makeDirectPostgresControlPlaneLayer,
+  observeAudioDeletionFailure,
+} from "./postgres-failure-diagnostics.pg-fixture.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -168,10 +171,12 @@ suite("learner audio deletion repository", () => {
 
       let failStorage = true;
       const deletedKeys: string[][] = [];
+      let bucketCalls = 0;
       const store = makeControlPlaneLearnerAudioDeletionStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
         {
           delete: async (keys) => {
+            bucketCalls += 1;
             deletedKeys.push(typeof keys === "string" ? [keys] : [...keys]);
             if (failStorage) throw new Error("fixture storage unavailable");
             for (const key of typeof keys === "string" ? [keys] : keys)
@@ -180,7 +185,12 @@ suite("learner audio deletion repository", () => {
         },
       );
       const run = (accountId: string, deletedAt: string) =>
-        Effect.runPromise(store.deleteBatch({ accountId, deletedAt }));
+        Effect.runPromise(
+          observeAudioDeletionFailure(
+            store.deleteBatch({ accountId, deletedAt }),
+            () => bucketCalls,
+          ),
+        );
 
       await expect(run("account-1", "2026-08-29T09:00:00.000Z")).rejects.toMatchObject({
         reason: "storage-unavailable",
@@ -441,17 +451,24 @@ suite("learner audio deletion repository", () => {
 
         let failStorage = true;
         const deletedKeys: string[][] = [];
+        let bucketCalls = 0;
         const store = makeControlPlaneLearnerAudioDeletionStore(
           makeDirectPostgresControlPlaneLayer(scopedConnection),
           {
             delete: async (keys) => {
+              bucketCalls += 1;
               deletedKeys.push(typeof keys === "string" ? [keys] : [...keys]);
               if (failStorage) throw new Error("fixture storage unavailable");
             },
           },
         );
         const run = (accountId: string, deletedAt: string) =>
-          Effect.runPromise(store.deleteBatch({ accountId, deletedAt }));
+          Effect.runPromise(
+            observeAudioDeletionFailure(
+              store.deleteBatch({ accountId, deletedAt }),
+              () => bucketCalls,
+            ),
+          );
 
         await expect(run("account-1", "2026-08-29T09:00:00.000Z")).rejects.toMatchObject({
           reason: "storage-unavailable",
@@ -694,10 +711,12 @@ suite("learner audio deletion repository", () => {
 
         const deletedKeys: string[][] = [];
         const storage = new Set<string>();
+        let bucketCalls = 0;
         const store = makeControlPlaneLearnerAudioDeletionStore(
           makeDirectPostgresControlPlaneLayer(scopedConnection),
           {
             delete: async (keys) => {
+              bucketCalls += 1;
               const batch = typeof keys === "string" ? [keys] : [...keys];
               deletedKeys.push(batch);
               for (const key of batch) storage.delete(key);
@@ -706,7 +725,10 @@ suite("learner audio deletion repository", () => {
         );
         const run = (accountId: string) =>
           Effect.runPromise(
-            store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }),
+            observeAudioDeletionFailure(
+              store.deleteBatch({ accountId, deletedAt: "2026-08-29T10:00:00.000Z" }),
+              () => bucketCalls,
+            ),
           );
         const settle = (
           client: Client,

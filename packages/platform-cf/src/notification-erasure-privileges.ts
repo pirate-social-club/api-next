@@ -55,13 +55,15 @@ export const NOTIFICATION_ERASURE_PRIVILEGES_SQL = `WITH anchor AS (
   FROM pg_namespace n JOIN pg_class u ON u.relnamespace=n.oid AND u.relname='users' AND u.relkind='r'
   JOIN pg_roles actor ON actor.rolname=current_user WHERE n.nspname=$1
 ), guards AS (
-  -- Exact0271 DDL: ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16.
-  -- The users condition lives inside the retained invoker function; none of
-  -- these triggers has a WHEN predicate, arguments or a transition relation.
+  -- Exact trigger shapes retained from0271. The inbox guard alone became a
+  -- trusted-schema definer in0283 to read private Dance provenance. Every other
+  -- guard remains invoker; no trigger has WHEN, arguments or transition relations.
   SELECT count(*)=4 AND COALESCE(bool_and(COALESCE(
     t.oid IS NOT NULL AND fn.oid IS NOT NULL
     AND t.tgenabled='O' AND NOT t.tgisinternal
-    AND t.tgfoid=fn.oid AND fn.proowner=a.relowner AND NOT fn.prosecdef
+    AND t.tgfoid=fn.oid AND fn.proowner=a.relowner
+    AND fn.prosecdef=required.security_definer
+    AND (NOT required.security_definer OR fn.proconfig=ARRAY[format('search_path=%I, pg_catalog, pg_temp',a.nspname)])
     AND t.tgtype=required.trigger_type
     AND t.tgnargs=0 AND octet_length(t.tgargs)=0 AND t.tgqual IS NULL
     AND t.tgconstraint=0 AND NOT t.tgdeferrable AND NOT t.tginitdeferred
@@ -74,11 +76,11 @@ export const NOTIFICATION_ERASURE_PRIVILEGES_SQL = `WITH anchor AS (
       ORDER BY updated.attribute_order)=required.update_columns
     ,FALSE)),FALSE) AS guards_valid
   FROM anchor a CROSS JOIN (VALUES
-    ('users','users_delete_notification_inbox','delete_recipient_notification_inbox_v1()',17,ARRAY['status']::text[]),
-    ('notification_inbox','notification_inbox_guard','guard_notification_inbox_v1()',31,ARRAY[]::text[]),
-    ('notification_publication_deliveries','notification_delivery_guard','guard_notification_delivery_v1()',31,ARRAY[]::text[]),
-    ('content_publication_outbox','comment_notification_fact_guard','guard_comment_notification_fact_v1()',27,ARRAY[]::text[])
-  ) required(table_name,trigger_name,signature,trigger_type,update_columns)
+    ('users','users_delete_notification_inbox','delete_recipient_notification_inbox_v1()',17,ARRAY['status']::text[],FALSE),
+    ('notification_inbox','notification_inbox_guard','guard_notification_inbox_v1()',31,ARRAY[]::text[],TRUE),
+    ('notification_publication_deliveries','notification_delivery_guard','guard_notification_delivery_v1()',31,ARRAY[]::text[],FALSE),
+    ('content_publication_outbox','comment_notification_fact_guard','guard_comment_notification_fact_v1()',27,ARRAY[]::text[],FALSE)
+  ) required(table_name,trigger_name,signature,trigger_type,update_columns,security_definer)
   LEFT JOIN pg_trigger t ON t.tgrelid=to_regclass(format('%I.%I',a.nspname,required.table_name)) AND t.tgname=required.trigger_name
   LEFT JOIN pg_proc fn ON fn.oid=to_regprocedure(format('%I',a.nspname)||'.'||required.signature)
 ), objects AS (
