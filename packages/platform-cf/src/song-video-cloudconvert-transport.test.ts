@@ -9,6 +9,80 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("CloudConvert transport", () => {
+  test("retains bounded private Dance failure facts without provider messages or URLs", async () => {
+    const privateUrl = "https://private.test/private-object?cap=secret-value";
+    const transport = makeSongVideoCloudConvertTransport({
+      apiKey: "private-key",
+      fetch: async () =>
+        json({
+          data: {
+            ...job,
+            status: "error",
+            tasks: [
+              {
+                name: "import-recording",
+                operation: "import/url",
+                status: "error",
+                code: "OPEN_FAILED",
+                message: `HTTP 404 fetching ${privateUrl}`,
+              },
+              {
+                name: "body-identity",
+                operation: "command",
+                status: "error",
+                code: "INPUT_TASK_FAILED",
+                message: privateUrl,
+              },
+              {
+                name: "sample-0",
+                operation: "command",
+                status: "error",
+                code: privateUrl,
+                message: "x".repeat(4097),
+              },
+              {
+                name: "import-recording",
+                operation: "import/url",
+                status: "error",
+                code: "OPEN_FAILED",
+                message: "HTTP 500",
+              },
+              { name: privateUrl, operation: "command", status: "error", code: "OPEN_FAILED" },
+              { name: "sample-1", operation: "unexpected", status: "error", code: "OPEN_FAILED" },
+              { name: "sample-2", operation: "command", status: "finished", code: "OPEN_FAILED" },
+            ],
+          },
+        }),
+    });
+    const observed = await transport.showPrivateDance(job.id);
+    expect(observed).toEqual({
+      ...job,
+      status: "error",
+      exports: null,
+      taskFailures: [
+        { task: "import-recording", code: "OPEN_FAILED", reportedHttpStatus: 404 },
+        { task: "body-identity", code: "INPUT_TASK_FAILED", reportedHttpStatus: null },
+        { task: "sample-0", code: "OTHER_PROVIDER_ERROR", reportedHttpStatus: null },
+      ],
+    });
+    expect(JSON.stringify(observed)).not.toContain("private-object");
+    expect(JSON.stringify(observed)).not.toContain("secret-value");
+    expect(JSON.stringify(observed)).not.toContain("private-key");
+  });
+
+  test("an error without task detail remains a terminal private Dance error", async () => {
+    const transport = makeSongVideoCloudConvertTransport({
+      apiKey: "private-key",
+      fetch: async () => json({ data: { ...job, status: "error" } }),
+    });
+    expect(await transport.showPrivateDance(job.id)).toEqual({
+      ...job,
+      status: "error",
+      exports: null,
+      taskFailures: [],
+    });
+  });
+
   test("creates once with the fixed API origin and never sends the key elsewhere", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const transport = makeSongVideoCloudConvertTransport({

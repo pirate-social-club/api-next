@@ -29,6 +29,7 @@ test("production v1 includes the complete HTTP lifecycle for the coordinator's f
     "v4",
     "v5",
     "v6",
+    "v7",
   ]);
   expect(production.migrations).toEqual(config.migrations);
   expect(production.durable_objects.bindings).toEqual(config.durable_objects.bindings);
@@ -36,6 +37,23 @@ test("production v1 includes the complete HTTP lifecycle for the coordinator's f
     expect(production.durable_objects.bindings.find((binding) => binding.name === name)).toEqual({
       name,
       class_name: "VideoPlaybackRateLimiterDO",
+    });
+  }
+});
+
+test("Dance network admission has its own persistent namespace in every HTTP environment", () => {
+  for (const environment of [config, config.env.staging, config.env.production]) {
+    expect(
+      environment.durable_objects.bindings.find(
+        (binding) => binding.name === "DANCE_NETWORK_RATE_LIMITER",
+      ),
+    ).toEqual({
+      name: "DANCE_NETWORK_RATE_LIMITER",
+      class_name: "DanceNetworkRateLimiterDO",
+    });
+    expect(environment.migrations ?? config.migrations).toContainEqual({
+      tag: "v7",
+      new_sqlite_classes: ["DanceNetworkRateLimiterDO"],
     });
   }
 });

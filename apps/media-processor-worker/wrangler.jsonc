@@ -4,8 +4,8 @@
   "main": "src/entrypoint.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Media custom operational logs are intentionally unsampled. Traces are
-  // controlled at 10%; they do not imply cross-invocation operation linkage.
+  // Keep sanitized operational logs. Automatic traces attach private object
+  // keys and provider capability URLs, so collection and persistence are off.
   "observability": {
     "enabled": true,
     "logs": {
@@ -14,9 +14,9 @@
       "persist": true
     },
     "traces": {
-      "enabled": true,
-      "head_sampling_rate": 0.1,
-      "persist": true
+      "enabled": false,
+      "head_sampling_rate": 0,
+      "persist": false
     }
   },
   "hyperdrive": [
@@ -96,9 +96,9 @@
           "persist": true
         },
         "traces": {
-          "enabled": true,
-          "head_sampling_rate": 0.1,
-          "persist": true
+          "enabled": false,
+          "head_sampling_rate": 0,
+          "persist": false
         }
       },
       "hyperdrive": [
@@ -196,9 +196,9 @@
           "persist": true
         },
         "traces": {
-          "enabled": true,
-          "head_sampling_rate": 0.1,
-          "persist": true
+          "enabled": false,
+          "head_sampling_rate": 0,
+          "persist": false
         }
       },
       "hyperdrive": [

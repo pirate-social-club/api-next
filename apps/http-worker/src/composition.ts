@@ -266,6 +266,10 @@ import {
   makeControlPlaneModeratedDanceIntakeStore,
   makeModeratedDanceUploadSigner,
 } from "../../../packages/platform-cf/src/dance-moderated-intake-repository.ts";
+import {
+  type DanceNetworkNamespace,
+  makeDanceNetworkAdmission,
+} from "../../../packages/platform-cf/src/dance-network-admission.ts";
 import { makeModeratedDanceMediaAccessStore } from "../../../packages/platform-cf/src/moderated-dance-media-access.ts";
 import { makeSharedSongMegapotParticipationReader } from "../../../packages/platform-cf/src/shared-song-megapot-participation.ts";
 import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
@@ -374,6 +378,7 @@ export interface HttpWorkerBindings
     TelegramLinkBindings,
     SpacesRuntimeBindings,
     GuestStudyManagedBindings {
+  readonly DANCE_NETWORK_RATE_LIMITER?: DanceNetworkNamespace;
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
   /** Reviewed nonproduction release only; absent keeps all Guest serving disabled. */
@@ -2012,12 +2017,18 @@ export async function createProductionHttpWorker(
           worker: () => Effect.fail(new DanceReviewServiceFailure({ reason: "unauthorized" })),
         }),
       ),
-      ...makeModeratedDanceIntakeHandlers((accountId) => {
+      ...makeModeratedDanceIntakeHandlers((accountId, edgeClientIp) => {
         const account = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID,
           bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME,
           accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID,
           secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
         return makeControlPlaneModeratedDanceIntakeStore(controlPlane, accountId, {
+          admitNewCapture: makeDanceNetworkAdmission({
+            accountId,
+            edgeClientIp,
+            namespace: bindings.DANCE_NETWORK_RATE_LIMITER,
+            hmacKeyBase64: bindings.VIDEO_PLAYBACK_SOURCE_HMAC_BASE64,
+          }),
           rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
           signer:
             bindings.MEDIA_INGRESS !== undefined &&

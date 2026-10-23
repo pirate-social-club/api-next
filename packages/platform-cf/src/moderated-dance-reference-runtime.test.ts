@@ -4,7 +4,7 @@ import { makeModeratedDanceReferenceRuntime } from "./moderated-dance-reference-
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientLike } from "./postgres.ts";
 import { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
-function fixture(finished = false) {
+function fixture(finished = false, failed = false) {
   const { profile } = moderatedDanceIntakeFacts();
   const hash = "a".repeat(64);
   const work = {
@@ -44,14 +44,14 @@ function fixture(finished = false) {
       sha256: hash,
     },
     providerTag: "private-reference-choreo",
-    providerJobId: finished ? "job-known" : null,
+    providerJobId: finished || failed ? "job-known" : null,
     normalizationClaimed: false,
     deadlineMs: 61000,
   };
   const providerCalls: string[] = [],
     observations: unknown[] = [];
   const publications: unknown[] = [];
-  let consumed = finished,
+  let consumed = finished || failed,
     lostCommit = false,
     pendingLostCommit = false;
   const driver: PostgresClientLike = {
@@ -107,31 +107,46 @@ function fixture(finished = false) {
           throw new Error("offline response lost; provider may have accepted");
         return new Response(
           JSON.stringify({
-            data: finished
+            data: failed
               ? {
                   id: "job-known",
                   tag: work.providerTag,
-                  status: "finished",
+                  status: "error",
                   tasks: [
                     {
-                      name: "export-dance",
-                      operation: "export/url",
-                      status: "finished",
-                      result: {
-                        files: [
-                          "recording.framehash",
-                          "frame-0.jpg",
-                          "frame-1.jpg",
-                          "frame-2.jpg",
-                        ].map((filename) => ({
-                          filename,
-                          url: `https://storage.cloudconvert.com/${filename}`,
-                        })),
-                      },
+                      name: "import-recording",
+                      operation: "import/url",
+                      status: "error",
+                      code: "OPEN_FAILED",
+                      message: "HTTP 404 fetching https://source.test/private-object?cap=secret",
                     },
                   ],
                 }
-              : [],
+              : finished
+                ? {
+                    id: "job-known",
+                    tag: work.providerTag,
+                    status: "finished",
+                    tasks: [
+                      {
+                        name: "export-dance",
+                        operation: "export/url",
+                        status: "finished",
+                        result: {
+                          files: [
+                            "recording.framehash",
+                            "frame-0.jpg",
+                            "frame-1.jpg",
+                            "frame-2.jpg",
+                          ].map((filename) => ({
+                            filename,
+                            url: `https://storage.cloudconvert.com/${filename}`,
+                          })),
+                        },
+                      },
+                    ],
+                  }
+                : [],
           }),
         );
       },
@@ -168,6 +183,22 @@ function fixture(finished = false) {
 }
 
 describe("canonical reference production with offline SQL/provider ports", () => {
+  test("persists safe provider failure detail before terminal reference cleanup can run", async () => {
+    const f = fixture(false, true);
+    expect(await f.processor.run()).toEqual({ outcome: "failed" });
+    expect(f.observations).toEqual([
+      {
+        status: "error",
+        id: "job-known",
+        tag: "private-reference-choreo",
+        taskFailures: [{ task: "import-recording", code: "OPEN_FAILED", reportedHttpStatus: 404 }],
+      },
+    ]);
+    expect(f.providerCalls).toEqual(["GET https://api.cloudconvert.com/v2/jobs/job-known"]);
+    expect(f.publications).toEqual([]);
+    expect(JSON.stringify(f.observations)).not.toContain("private-object");
+    expect(JSON.stringify(f.observations)).not.toContain("cap=secret");
+  });
   test("validated public frame hashes reach the immutable descriptor publication with both matching claims", async () => {
     const f = fixture(true);
     expect(await f.processor.run()).toEqual({ outcome: "ready" });

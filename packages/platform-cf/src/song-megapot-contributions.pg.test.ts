@@ -16,6 +16,7 @@ import {
 } from "../../application/src/ports.ts";
 import {
   digestFundingPreimageV2,
+  FundingRefusalPacket,
   makeSongMegapotContributions,
   SongContributionFailure,
 } from "../../application/src/rewards/song-megapot-contributions.ts";
@@ -1275,37 +1276,57 @@ suite(
           ).rows,
         ).toEqual([{ packet: null }]);
       }
-      const command = (
+      // Refusal UUIDs can sort before successful commands. Exercise both
+      // retained read shapes with a refusal first, independent of random IDs.
+      const commands = (
         await admin.query(
-          "SELECT * FROM song_megapot_contribution_commands_v2 ORDER BY command_id LIMIT 1",
+          "SELECT * FROM song_megapot_contribution_commands_v2 ORDER BY (refusal_code IS NOT NULL) DESC,command_id",
         )
-      ).rows[0];
-      if (!command) throw new Error("Expected immutable command fixture");
-      const scope = {
-        accountId: command.account_id,
-        communityId: command.community_id,
-        postId: command.post_id,
-      };
-      const own = (
-        await admin.query("SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet", [
-          json(scope),
-          command.operation,
-          command.idempotency_key,
-        ])
-      ).rows[0].packet;
-      expect(Schema.decodeUnknownSync(C.FundingCommandReceiptV2)(own.receipt)).toEqual(
-        command.receipt,
-      );
-      expect(own.receipt).not.toHaveProperty("delivery");
-      expect(
-        (
+      ).rows;
+      expect(commands[0]?.refusal_code).toBe("policy_unavailable");
+      expect(commands.some((command) => command.refusal_code === null)).toBe(true);
+      for (const command of commands) {
+        const scope = {
+          accountId: command.account_id,
+          communityId: command.community_id,
+          postId: command.post_id,
+        };
+        const own = (
           await admin.query("SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet", [
-            json({ ...scope, postId: "foreign_post" }),
+            json(scope),
             command.operation,
             command.idempotency_key,
           ])
-        ).rows,
-      ).toEqual([{ packet: null }]);
+        ).rows[0].packet;
+        if (command.refusal_code === null) {
+          expect(Schema.decodeUnknownSync(C.FundingCommandReceiptV2)(own.receipt)).toEqual(
+            command.receipt,
+          );
+          expect(own.receipt).not.toHaveProperty("delivery");
+          expect(own).not.toHaveProperty("refusal");
+        } else {
+          const refused = Schema.decodeUnknownSync(FundingRefusalPacket, {
+            onExcessProperty: "error",
+          })(own);
+          expect(refused.refusal).toEqual({
+            code: command.refusal_code,
+            receipt: command.receipt,
+          });
+          expect(own).not.toHaveProperty("receipt");
+        }
+        expect(
+          (
+            await admin.query(
+              "SELECT read_song_contribution_command_v2($1::jsonb,$2,$3) AS packet",
+              [
+                json({ ...scope, postId: "foreign_post" }),
+                command.operation,
+                command.idempotency_key,
+              ],
+            )
+          ).rows,
+        ).toEqual([{ packet: null }]);
+      }
       expect(
         (
           await admin.query(

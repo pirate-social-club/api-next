@@ -12,9 +12,9 @@ const digest = async (value: string): Promise<string> =>
  */
 export async function insertStudySongFixture(
   admin: Pick<Client, "query">,
-  options?: { readonly accountAlreadyBorn?: true },
+  options?: { readonly accountAlreadyBorn?: true; readonly lines?: readonly string[] },
 ) {
-  const lines = [
+  const lines = options?.lines ?? [
     "I can love you",
     "We keep moving forward",
     "Hold the rhythm closer",

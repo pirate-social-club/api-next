@@ -240,6 +240,21 @@ const readSession = Effect.fn("readStudyV2Session")(function* (
   });
 });
 
+// New sessions omit confidently classified nonlexical refrains. Missing or
+// uncertain enrichment still permits deterministic spoken practice. The same
+// predicate owns availability and selection, before the ten-card limit.
+const lexicalStudySelection = `(latest.exercise_type <> 'say_it_back' OR NOT EXISTS (
+  SELECT 1 FROM study_language_profile_units unit
+   WHERE unit.community_id=latest.community_id AND unit.post_id=latest.post_id
+     AND unit.lyrics_revision=latest.lyrics_revision
+     AND unit.study_unit_id=latest.study_unit_id
+     AND unit.language_profile_revision=coalesce(latest.language_profile_revision, (
+       SELECT max(profile.language_profile_revision) FROM study_language_profiles profile
+        WHERE profile.community_id=latest.community_id AND profile.post_id=latest.post_id
+          AND profile.lyrics_revision=latest.lyrics_revision
+     )) AND unit.vocable_only AND unit.confidence >= 0.8
+))`;
+
 const exerciseRows = (
   db: ControlPlaneTransaction,
   input: {
@@ -299,6 +314,7 @@ const exerciseRows = (
              AND review.target_language IS NOT DISTINCT FROM latest.target_language
              AND review.learner_band IS NOT DISTINCT FROM latest.learner_band
              AND review.lifecycle_status='active'
+           WHERE ${lexicalStudySelection}
         ORDER BY coalesce(review.repetitions,0),
                  review.last_reviewed_at NULLS FIRST,
                  latest.ordinal, latest.exercise_review_key
@@ -490,8 +506,8 @@ export const makeControlPlaneStudyV2Repository = (
         }
         const rows = yield* db.execute<Row>({
           label: "study-v2.availability",
-          text: `SELECT exercise.exercise_type, exercise.target_language,
-                        exercise.learner_band, count(DISTINCT exercise.exercise_review_key)::bigint AS count
+          text: `WITH latest AS (
+                 SELECT DISTINCT ON (exercise.exercise_review_key) exercise.*
                    FROM study_exercise_versions exercise
                    JOIN media_publication_projections publication
                      ON publication.community_id=exercise.community_id
@@ -502,7 +518,11 @@ export const makeControlPlaneStudyV2Repository = (
                     AND submission.current_lyrics_revision=exercise.lyrics_revision
                   WHERE exercise.community_id=$1 AND exercise.post_id=$2
                     AND exercise.retired_at IS NULL
-                  GROUP BY exercise.exercise_type, exercise.target_language, exercise.learner_band`,
+                  ORDER BY exercise.exercise_review_key, exercise.content_revision DESC
+                 ) SELECT latest.exercise_type, latest.target_language, latest.learner_band,
+                          count(*)::bigint AS count
+                     FROM latest WHERE ${lexicalStudySelection}
+                    GROUP BY latest.exercise_type, latest.target_language, latest.learner_band`,
           values: [input.communityId, input.postId],
           readonly: true,
         });
@@ -526,17 +546,9 @@ export const makeControlPlaneStudyV2Repository = (
         ]);
         const ready = candidateCounts.some((count) => count >= 4);
         if (!ready) {
-          const total = rows.rows.reduce((sum, row) => sum + integer(row, "count"), 0);
           return decode(StudyAvailabilityV2, {
-            state: total === 0 ? "unavailable" : "processing",
-            ...(total === 0
-              ? { reason: "insufficient_exercises" }
-              : {
-                  available_exercise_types: [
-                    ...new Set(rows.rows.map((row) => text(row, "exercise_type"))),
-                  ],
-                  pending_exercise_types: [],
-                }),
+            state: "unavailable",
+            reason: "insufficient_exercises",
           });
         }
         return decode(StudyAvailabilityV2, {
@@ -674,7 +686,7 @@ export const makeControlPlaneStudyV2Repository = (
                 qualification_policy_revision, timezone, idempotency_key, request_hash, created_at,
                 current_session_item_id, current_presented_at, language_profile_revision, telegram_practice_only
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,'en',$8,$9,1,1,
-                'study_selection_v1','study_session_first_pass_v2@1',$10,$11,$12,$13::timestamptz,
+                'study_selection_lexical_v2','study_session_first_pass_v2@1',$10,$11,$12,$13::timestamptz,
                 $14,$13::timestamptz,$15,$16)`,
               values: [
                 input.sessionId,

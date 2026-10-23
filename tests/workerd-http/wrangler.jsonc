@@ -28,6 +28,7 @@
   },
   "durable_objects": {
     "bindings": [
+      { "name": "DANCE_NETWORK_RATE_LIMITER", "class_name": "DanceNetworkRateLimiterDO" },
       {
         "name": "VIDEO_PLAYBACK_RATE_LIMITER",
         "class_name": "VideoPlaybackRateLimiterDO"
@@ -55,6 +56,7 @@
     ]
   },
   "migrations": [
+    { "tag": "dance-network-v1", "new_sqlite_classes": ["DanceNetworkRateLimiterDO"] },
     {
       "tag": "video-rate-v1",
       "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"]

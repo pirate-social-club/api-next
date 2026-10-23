@@ -51,6 +51,10 @@
         "class_name": "VideoPlaybackRateLimiterDO"
       },
       {
+        "name": "DANCE_NETWORK_RATE_LIMITER",
+        "class_name": "DanceNetworkRateLimiterDO"
+      },
+      {
         "name": "KARAOKE_ATTEMPT",
         "class_name": "KaraokeAttemptDO"
       }
@@ -92,6 +96,12 @@
       "tag": "v6",
       "new_sqlite_classes": [
         "VideoPlaybackRateLimiterDO"
+      ]
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": [
+        "DanceNetworkRateLimiterDO"
       ]
     }
   ],
@@ -449,6 +459,10 @@
           {
             "name": "VIDEO_PLAYBACK_RATE_LIMITER",
             "class_name": "VideoPlaybackRateLimiterDO"
+          },
+          {
+            "name": "DANCE_NETWORK_RATE_LIMITER",
+            "class_name": "DanceNetworkRateLimiterDO"
           },
           {
             "name": "KARAOKE_ATTEMPT",

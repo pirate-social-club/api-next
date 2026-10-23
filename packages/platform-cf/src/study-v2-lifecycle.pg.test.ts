@@ -33,6 +33,120 @@ const connectionForSchema = (raw: string, schema: string): string => {
 };
 
 suite("Study v2 spoken lifecycle", () => {
+  test("new selection excludes confirmed vocables before the card limit while preserving frozen sessions and the four-card minimum", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const schema = `api_next_study_lexical_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const scoped = connectionForSchema(connectionString, schema);
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+    try {
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+      const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+      await makeOwnedOrdinaryAccountBirthFixture(runtime)("study-account");
+      await insertStudySongFixture(admin, {
+        accountAlreadyBorn: true,
+        lines: Array.from({ length: 12 }, (_, index) =>
+          index < 2 ? `${index === 0 ? "Na na" : "La la"}` : `We learn this song line ${index}`,
+        ),
+      });
+      const study = makeControlPlaneStudyV2Repository();
+      const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
+        Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(runtime))));
+      const scope = {
+        accountId: "study-account",
+        communityId: "study-community",
+        postId: "study-post",
+      };
+      const input = {
+        ...scope,
+        personaId: "study-persona",
+        createdAt: new Date().toISOString(),
+        targetLanguage: null,
+        learnerBand: null,
+        timezone: "UTC",
+        requestHash: "5".repeat(64),
+        idempotencyKey: "before-profile",
+        sessionId: "before-profile",
+      };
+      const before = await run(study.startSession(input));
+      expect(before.items).toHaveLength(10);
+      expect(before.items.some((item) => item.line.study_unit_id === "unit-1")).toBe(true);
+      await admin.query("SET session_replication_role=replica");
+      try {
+        // A stale profile must not outweigh the latest exact lyrics profile.
+        for (const revision of [1, 2]) {
+          await admin.query(
+            `INSERT INTO study_language_profiles(community_id,post_id,lyrics_revision,language_profile_revision,source_hash,provider_id,provider_model,prompt_revision,validator_revision,request_hash,accepted_at)
+            VALUES('study-community','study-post',1,$1,$2,'fixture','fixture','fixture','fixture',$2,clock_timestamp())`,
+            [revision, String(revision).repeat(64)],
+          );
+          for (let ordinal = 1; ordinal <= 12; ordinal++) {
+            await admin.query(
+              `INSERT INTO study_language_profile_units(community_id,post_id,lyrics_revision,language_profile_revision,study_unit_id,detected_languages,dominant_language,mixed,vocable_only,proper_name_only,confidence)
+              VALUES('study-community','study-post',1,$1,$2,'[]'::jsonb,NULL,FALSE,$3,FALSE,1)`,
+              [revision, `unit-${ordinal}`, revision === 1 || ordinal <= 2],
+            );
+          }
+        }
+      } finally {
+        await admin.query("SET session_replication_role=origin");
+      }
+      expect(await run(study.getAvailability(scope))).toMatchObject({ state: "ready" });
+      const after = await run(
+        study.startSession({
+          ...input,
+          idempotencyKey: "after-profile",
+          sessionId: "after-profile",
+        }),
+      );
+      expect(after.selection_policy_revision).toBe("study_selection_lexical_v2");
+      expect(after.items).toHaveLength(10);
+      expect(after.items.map((item) => item.line.study_unit_id)).toEqual(
+        Array.from({ length: 10 }, (_, index) => `unit-${index + 3}`),
+      );
+      expect(await run(study.getSession({ ...scope, sessionId: before.session_id }))).toEqual(
+        before,
+      );
+      expect(await run(study.startSession(input))).toEqual(before);
+      await admin.query("SET session_replication_role=replica");
+      try {
+        await admin.query(
+          "UPDATE study_language_profile_units SET confidence=0.7 WHERE language_profile_revision=2 AND study_unit_id='unit-2'",
+        );
+      } finally {
+        await admin.query("SET session_replication_role=origin");
+      }
+      const uncertain = await run(
+        study.startSession({
+          ...input,
+          idempotencyKey: "uncertain-profile",
+          sessionId: "uncertain-profile",
+        }),
+      );
+      expect(uncertain.items.some((item) => item.line.study_unit_id === "unit-2")).toBe(true);
+      await admin.query("SET session_replication_role=replica");
+      try {
+        await admin.query(
+          "UPDATE study_language_profile_units SET vocable_only=TRUE,confidence=1 WHERE language_profile_revision=2 AND study_unit_id NOT IN ('unit-10','unit-11','unit-12')",
+        );
+      } finally {
+        await admin.query("SET session_replication_role=origin");
+      }
+      expect(await run(study.getAvailability(scope))).toEqual({
+        state: "unavailable",
+        reason: "insufficient_exercises",
+      });
+      await expect(
+        run(study.startSession({ ...input, idempotencyKey: "too-few", sessionId: "too-few" })),
+      ).rejects.toMatchObject({ reason: "insufficient-exercises" });
+    } finally {
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+  });
+
   for (const practiceOnly of [false, true])
     test(`requeues a missed spoken card, keeps reload continuity and reward isolation (Telegram practice: ${practiceOnly})`, async () => {
       if (connectionString === undefined) throw new Error("test URL was not configured");

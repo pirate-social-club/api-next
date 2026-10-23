@@ -1,4 +1,11 @@
-import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "@pirate/contracts";
+import {
+  AuthError,
+  BadRequest,
+  Conflict,
+  InternalError,
+  NotFound,
+  RateLimited,
+} from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import type { DanceReviewServiceFailure } from "../../../packages/application/src/use-cases/dance/moderator-review-services.ts";
 import { moderatedDanceContextRegistry } from "../../../packages/contracts/src/dance-moderated-context.ts";
@@ -16,21 +23,23 @@ const actor = (p: Principal | null) => {
     throw new AuthError({ message: "Authentication required" });
   return p.subject;
 };
-const mapped = (e: DanceReviewServiceFailure) =>
-  e.reason === "not_found"
-    ? new NotFound({ message: "Private Dance session unavailable" })
-    : e.reason === "invalid_request"
-      ? new BadRequest({ message: "Invalid private capture request" })
-      : e.reason === "idempotency_conflict" || e.reason === "revision_conflict"
-        ? new Conflict({
-            message: "Capture changed; recover the original command or refresh status",
-          })
-        : new InternalError({
-            message:
-              e.reason === "outcome_unknown"
-                ? "Outcome unknown; recover the same command key"
-                : "Private Dance intake unavailable",
-          });
+const mapped = (e: DanceReviewServiceFailure | RateLimited) =>
+  e instanceof RateLimited
+    ? e
+    : e.reason === "not_found"
+      ? new NotFound({ message: "Private Dance session unavailable" })
+      : e.reason === "invalid_request"
+        ? new BadRequest({ message: "Invalid private capture request" })
+        : e.reason === "idempotency_conflict" || e.reason === "revision_conflict"
+          ? new Conflict({
+              message: "Capture changed; recover the original command or refresh status",
+            })
+          : new InternalError({
+              message:
+                e.reason === "outcome_unknown"
+                  ? "Outcome unknown; recover the same command key"
+                  : "Private Dance intake unavailable",
+            });
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) => {
   try {
     return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value);
@@ -39,7 +48,10 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
   }
 };
 export function makeModeratedDanceIntakeHandlers(
-  forAccount: (account: string) => ReturnType<typeof makeControlPlaneModeratedDanceIntakeStore>,
+  forAccount: (
+    account: string,
+    edgeClientIp?: string,
+  ) => ReturnType<typeof makeControlPlaneModeratedDanceIntakeStore>,
 ): Readonly<Record<string, EndpointHandler>> {
   const handlers: Record<string, EndpointHandler> = {};
   for (const name of [
@@ -58,9 +70,12 @@ export function makeModeratedDanceIntakeHandlers(
         ("session_id" in body && (!("sessionId" in path) || path.sessionId !== body.session_id))
       )
         throw new BadRequest({ message: "Capture path does not match command" });
-      return Effect.runPromise(forAccount(account).command(body).pipe(Effect.mapError(mapped)), {
-        signal: ctx.signal,
-      });
+      return Effect.runPromise(
+        forAccount(account, ctx.edgeClientIp).command(body).pipe(Effect.mapError(mapped)),
+        {
+          signal: ctx.signal,
+        },
+      );
     };
   }
   handlers.GetModeratedDanceSession = (ctx) => {
