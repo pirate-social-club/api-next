@@ -89,7 +89,10 @@ function scenario(executions: readonly Execution[], parentNonce = 41n) {
   }));
   return {
     nonceReads,
-    run: (calls: readonly RewardSafeCall[], overrides: Partial<{ logs: typeof logs }> = {}) =>
+    run: (
+      calls: readonly (RewardSafeCall & Readonly<{ notBeforeBlock?: bigint }>)[],
+      overrides: Partial<{ logs: typeof logs }> = {},
+    ) =>
       findRewardSafeExecutions({
         safeAddress: SAFE,
         calls,
@@ -243,4 +246,18 @@ test("refuses missing transactions, duplicate log positions and conflicting bloc
     run([payoutA], { logs: [log, { ...log, logIndex: 2, blockHash: `0x${"cc".repeat(32)}` }] }),
   ).rejects.toThrow();
   await expect(run([payoutA], { logs: [{ ...log, blockNumber: 101n }] })).rejects.toThrow();
+});
+
+test("an execution before a call was prepared is never bound to it", async () => {
+  const { run } = scenario([
+    {
+      hash: tx(1),
+      blockNumber: 100n,
+      logIndex: 1,
+      input: envelope(payoutA),
+      safeTransactionHash: safeHash(payoutA, 41n),
+    },
+  ]);
+  expect(await run([{ ...payoutA, notBeforeBlock: 101n }])).toEqual([]);
+  expect((await run([{ ...payoutA, notBeforeBlock: 100n }]))[0]?.kind).toBe("matched");
 });

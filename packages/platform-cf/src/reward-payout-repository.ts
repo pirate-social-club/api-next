@@ -221,7 +221,7 @@ function candidateFromRow(row: Row): RewardPayoutCandidate {
   };
 }
 
-function loadCandidateIn(
+export function loadCandidateIn(
   transaction: ControlPlaneTransaction,
   input: { readonly creditId: string; readonly lock: boolean },
 ): Effect.Effect<RewardPayoutCandidate, RewardPayoutFailure | ControlPlaneError> {

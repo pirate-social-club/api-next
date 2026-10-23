@@ -86,10 +86,12 @@ suite("owner-executed Safe reward chain effects", () => {
   }
 
   const prepare = (id: string, call = CALL, callHash = CALL_HASH) =>
-    move(id, 2, "state='prepared', calldata=$3, calldata_hash=$4, prepared_at=clock_timestamp()", [
-      call,
-      callHash,
-    ]);
+    move(
+      id,
+      2,
+      "state='prepared', calldata=$3, calldata_hash=$4, prepared_at=clock_timestamp(), safe_prepared_block_number=1",
+      [call, callHash],
+    );
 
   let observed = 0;
   const unique = (prefix: string) => {
@@ -127,16 +129,26 @@ suite("owner-executed Safe reward chain effects", () => {
       move(
         id,
         2,
-        "state='prepared', calldata=$3, calldata_hash=$4, prepared_at=clock_timestamp(), nonce=1",
+        "state='prepared', calldata=$3, calldata_hash=$4, prepared_at=clock_timestamp(), safe_prepared_block_number=1, nonce=1",
         [CALL, CALL_HASH],
       ),
     ).rejects.toThrow(/reward_chain_effect_prepared_shape/u);
     // A regex check on NULL is NULL, which a CHECK accepts; the Safe branch must not.
     await expect(
-      move(id, 2, "state='prepared', calldata_hash=$3, prepared_at=clock_timestamp()", [CALL_HASH]),
+      move(
+        id,
+        2,
+        "state='prepared', calldata_hash=$3, prepared_at=clock_timestamp(), safe_prepared_block_number=1",
+        [CALL_HASH],
+      ),
     ).rejects.toThrow(/reward_chain_effect_prepared_shape/u);
     await expect(
-      move(id, 2, "state='prepared', calldata=$3, prepared_at=clock_timestamp()", [CALL]),
+      move(
+        id,
+        2,
+        "state='prepared', calldata=$3, prepared_at=clock_timestamp(), safe_prepared_block_number=1",
+        [CALL],
+      ),
     ).rejects.toThrow(/reward_chain_effect_prepared_shape/u);
     await prepare(id);
     await expect(

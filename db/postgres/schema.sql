@@ -18329,9 +18329,9 @@ BEGIN
     RAISE EXCEPTION 'prepared reward transaction bytes are immutable';
   END IF;
   IF OLD.execution_mode = 'safe_owner_v1' AND OLD.prepared_at IS NOT NULL AND ROW(
-    NEW.calldata, NEW.calldata_hash, NEW.prepared_at
+    NEW.calldata, NEW.calldata_hash, NEW.prepared_at, NEW.safe_prepared_block_number
   ) IS DISTINCT FROM ROW(
-    OLD.calldata, OLD.calldata_hash, OLD.prepared_at
+    OLD.calldata, OLD.calldata_hash, OLD.prepared_at, OLD.safe_prepared_block_number
   ) THEN
     RAISE EXCEPTION 'prepared Safe reward call is immutable';
   END IF;
@@ -18352,7 +18352,8 @@ BEGIN
       NEW.receipt_block_hash, NEW.receipt_hash, NEW.confirmations,
       NEW.failure_class, NEW.failure_reason, NEW.prepared_at,
       NEW.broadcast_at, NEW.confirmed_at, NEW.safe_nonce, NEW.safe_transaction_hash,
-      NEW.safe_executor_address, NEW.safe_execution_outcome, NEW.safe_execution_log_index
+      NEW.safe_executor_address, NEW.safe_execution_outcome, NEW.safe_execution_log_index,
+      NEW.safe_prepared_block_number
     ) IS DISTINCT FROM ROW(
       OLD.state, OLD.settled_amount_atomic, OLD.nonce, OLD.calldata, OLD.calldata_hash,
       OLD.signed_transaction, OLD.signed_transaction_hash, OLD.transaction_hash,
@@ -18360,7 +18361,8 @@ BEGIN
       OLD.receipt_block_hash, OLD.receipt_hash, OLD.confirmations,
       OLD.failure_class, OLD.failure_reason, OLD.prepared_at,
       OLD.broadcast_at, OLD.confirmed_at, OLD.safe_nonce, OLD.safe_transaction_hash,
-      OLD.safe_executor_address, OLD.safe_execution_outcome, OLD.safe_execution_log_index
+      OLD.safe_executor_address, OLD.safe_execution_outcome, OLD.safe_execution_log_index,
+      OLD.safe_prepared_block_number
     ) THEN
       RAISE EXCEPTION 'reward chain state change requires next version';
     END IF;
@@ -18839,6 +18841,23 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_reward_payout_effect_single_live() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM reward_payout_effects payout
+      JOIN reward_chain_effects effect ON effect.effect_id = payout.payout_effect_id
+     WHERE payout.credit_id = NEW.credit_id
+       AND payout.payout_effect_id <> NEW.payout_effect_id
+       AND NOT (effect.execution_mode = 'safe_owner_v1' AND effect.state = 'reverted')
+  ) THEN
+    RAISE EXCEPTION 'reward credit already has a live payout' USING ERRCODE = '23505';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_reward_refund_effect() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -19007,6 +19026,34 @@ BEGIN
    WHERE singleton FOR SHARE;
   IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_reward_safe_execution_cursor() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Safe execution cursors cannot be deleted';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM reward_signer_nonces authority
+       WHERE authority.chain_id = NEW.chain_id
+         AND authority.signer_address = NEW.safe_address
+         AND authority.nonce_authority = 'safe_owner_v1'
+    ) THEN
+      RAISE EXCEPTION 'Safe execution cursor requires a Safe nonce authority';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF ROW(NEW.chain_id, NEW.safe_address, NEW.created_at)
+       IS DISTINCT FROM ROW(OLD.chain_id, OLD.safe_address, OLD.created_at)
+     OR NEW.next_block_number < OLD.next_block_number
+     OR NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'Safe execution cursor only moves forward';
   END IF;
   RETURN NEW;
 END
@@ -52925,9 +52972,10 @@ CREATE TABLE reward_chain_effects (
     safe_executor_address text,
     safe_execution_outcome text,
     safe_execution_log_index integer,
+    safe_prepared_block_number bigint,
     CONSTRAINT reward_chain_effect_failure_shape CHECK ((((state <> ALL (ARRAY['reclaimable_failed'::text, 'reconciliation_required'::text, 'terminal_failed'::text])) AND (failure_class IS NULL) AND (failure_reason IS NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'reconciliation_required'::text, 'terminal_failed'::text])) AND (btrim(failure_class) <> ''::text) AND (btrim(failure_reason) <> ''::text)))),
     CONSTRAINT reward_chain_effect_lease_shape CHECK ((((lease_owner IS NULL) AND (lease_expires_at IS NULL)) OR ((btrim(lease_owner) <> ''::text) AND (lease_expires_at IS NOT NULL)))),
-    CONSTRAINT reward_chain_effect_prepared_shape CHECK ((((execution_mode = 'eoa'::text) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL) AND (((state = 'planned'::text) AND (nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = ANY (ARRAY['prepared'::text, 'broadcast_pending'::text, 'confirming'::text, 'confirmed'::text, 'reverted'::text, 'replaced'::text, 'reconciliation_required'::text])) AND (nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'terminal_failed'::text])) AND (((nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)))))) OR ((execution_mode = 'safe_owner_v1'::text) AND (nonce IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (((state = ANY (ARRAY['planned'::text, 'terminal_failed'::text])) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (prepared_at IS NULL) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL)) OR ((state = 'prepared'::text) AND (calldata IS NOT NULL) AND (calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'::text) AND (calldata_hash IS NOT NULL) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL)) OR ((state = ANY (ARRAY['confirming'::text, 'confirmed'::text, 'reverted'::text, 'reconciliation_required'::text])) AND (calldata IS NOT NULL) AND (calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'::text) AND (calldata_hash IS NOT NULL) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL) AND (safe_nonce IS NOT NULL) AND (safe_transaction_hash IS NOT NULL) AND (safe_executor_address IS NOT NULL) AND (safe_execution_outcome IS NOT NULL) AND (safe_execution_log_index IS NOT NULL)))))),
+    CONSTRAINT reward_chain_effect_prepared_shape CHECK ((((execution_mode = 'eoa'::text) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL) AND (safe_prepared_block_number IS NULL) AND (((state = 'planned'::text) AND (nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = ANY (ARRAY['prepared'::text, 'broadcast_pending'::text, 'confirming'::text, 'confirmed'::text, 'reverted'::text, 'replaced'::text, 'reconciliation_required'::text])) AND (nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'terminal_failed'::text])) AND (((nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)))))) OR ((execution_mode = 'safe_owner_v1'::text) AND (nonce IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (((state = ANY (ARRAY['planned'::text, 'terminal_failed'::text])) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (prepared_at IS NULL) AND (safe_prepared_block_number IS NULL) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL)) OR ((state = 'prepared'::text) AND (calldata IS NOT NULL) AND (calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'::text) AND (calldata_hash IS NOT NULL) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL) AND (safe_prepared_block_number IS NOT NULL) AND (safe_nonce IS NULL) AND (safe_transaction_hash IS NULL) AND (safe_executor_address IS NULL) AND (safe_execution_outcome IS NULL) AND (safe_execution_log_index IS NULL)) OR ((state = ANY (ARRAY['confirming'::text, 'confirmed'::text, 'reverted'::text, 'reconciliation_required'::text])) AND (calldata IS NOT NULL) AND (calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'::text) AND (calldata_hash IS NOT NULL) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL) AND (safe_prepared_block_number IS NOT NULL) AND (safe_nonce IS NOT NULL) AND (safe_transaction_hash IS NOT NULL) AND (safe_executor_address IS NOT NULL) AND (safe_execution_outcome IS NOT NULL) AND (safe_execution_log_index IS NOT NULL)))))),
     CONSTRAINT reward_chain_effect_receipt_shape CHECK ((((state <> ALL (ARRAY['confirmed'::text, 'reverted'::text])) AND (receipt_status IS NULL) AND (receipt_block_number IS NULL) AND (receipt_block_hash IS NULL) AND (receipt_hash IS NULL) AND (confirmations IS NULL) AND (confirmed_at IS NULL)) OR ((state = 'confirmed'::text) AND (receipt_status = 'success'::text) AND (receipt_block_number IS NOT NULL) AND (receipt_block_hash IS NOT NULL) AND (receipt_hash IS NOT NULL) AND (confirmations IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (settled_amount_atomic IS NOT NULL) AND ((execution_mode = 'eoa'::text) OR (safe_execution_outcome = 'success'::text))) OR ((state = 'reverted'::text) AND (execution_mode = 'eoa'::text) AND (receipt_status = 'reverted'::text) AND (receipt_block_number IS NOT NULL) AND (receipt_block_hash IS NOT NULL) AND (receipt_hash IS NOT NULL) AND (confirmations IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (settled_amount_atomic IS NULL)) OR ((state = 'reverted'::text) AND (execution_mode = 'safe_owner_v1'::text) AND (receipt_status = 'success'::text) AND (safe_execution_outcome = 'failure'::text) AND (receipt_block_number IS NOT NULL) AND (receipt_block_hash IS NOT NULL) AND (receipt_hash IS NOT NULL) AND (confirmations IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (settled_amount_atomic IS NULL)))),
     CONSTRAINT reward_chain_effect_replacement_shape CHECK ((((state = 'replaced'::text) AND (replaced_by_effect_id IS NOT NULL)) OR (state <> 'replaced'::text))),
     CONSTRAINT reward_chain_effect_time_order CHECK (((updated_at >= created_at) AND ((prepared_at IS NULL) OR (prepared_at >= created_at)) AND ((broadcast_at IS NULL) OR (broadcast_at >= prepared_at)) AND ((confirmed_at IS NULL) OR (confirmed_at >= broadcast_at)))),
@@ -52947,6 +52995,7 @@ CREATE TABLE reward_chain_effects (
     CONSTRAINT reward_chain_effects_safe_execution_outcome_check CHECK (((safe_execution_outcome IS NULL) OR (safe_execution_outcome = ANY (ARRAY['success'::text, 'failure'::text])))),
     CONSTRAINT reward_chain_effects_safe_executor_address_check CHECK (((safe_executor_address IS NULL) OR (safe_executor_address ~ '^0x[0-9a-f]{40}$'::text))),
     CONSTRAINT reward_chain_effects_safe_nonce_check CHECK (((safe_nonce IS NULL) OR (safe_nonce >= (0)::numeric))),
+    CONSTRAINT reward_chain_effects_safe_prepared_block_number_check CHECK (((safe_prepared_block_number IS NULL) OR (safe_prepared_block_number >= 0))),
     CONSTRAINT reward_chain_effects_safe_transaction_hash_check CHECK (((safe_transaction_hash IS NULL) OR (safe_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT reward_chain_effects_settled_amount_atomic_check CHECK ((settled_amount_atomic >= (0)::numeric)),
     CONSTRAINT reward_chain_effects_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-f]{40}$'::text)),
@@ -53379,6 +53428,39 @@ CREATE TABLE reward_refund_effects (
     CONSTRAINT reward_refund_effects_pro_rata_denominator_atomic_check CHECK ((pro_rata_denominator_atomic > (0)::numeric)),
     CONSTRAINT reward_refund_effects_pro_rata_numerator_atomic_check CHECK ((pro_rata_numerator_atomic > (0)::numeric)),
     CONSTRAINT reward_refund_fraction CHECK ((pro_rata_numerator_atomic <= pro_rata_denominator_atomic))
+);
+
+CREATE TABLE reward_safe_execution_cursors (
+    chain_id bigint NOT NULL,
+    safe_address text NOT NULL,
+    next_block_number bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_safe_execution_cursors_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_safe_execution_cursors_next_block_number_check CHECK ((next_block_number >= 0)),
+    CONSTRAINT reward_safe_execution_cursors_safe_address_check CHECK ((safe_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
+CREATE TABLE reward_safe_unbound_executions (
+    chain_id bigint NOT NULL,
+    safe_address text NOT NULL,
+    transaction_hash text NOT NULL,
+    log_index integer NOT NULL,
+    block_number bigint NOT NULL,
+    block_hash text NOT NULL,
+    safe_transaction_hash text NOT NULL,
+    outcome text NOT NULL,
+    reason text NOT NULL,
+    observed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_safe_unbound_executions_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_safe_unbound_executions_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT reward_safe_unbound_executions_chain_id_check CHECK ((chain_id > 0)),
+    CONSTRAINT reward_safe_unbound_executions_log_index_check CHECK ((log_index >= 0)),
+    CONSTRAINT reward_safe_unbound_executions_outcome_check CHECK ((outcome = ANY (ARRAY['success'::text, 'failure'::text]))),
+    CONSTRAINT reward_safe_unbound_executions_reason_check CHECK ((reason = 'undecodable'::text)),
+    CONSTRAINT reward_safe_unbound_executions_safe_address_check CHECK ((safe_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT reward_safe_unbound_executions_safe_transaction_hash_check CHECK ((safe_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT reward_safe_unbound_executions_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
 );
 
 CREATE TABLE reward_shared_song_template_admissions_v2 (
@@ -58462,9 +58544,6 @@ ALTER TABLE ONLY reward_operations_run_lease
     ADD CONSTRAINT reward_operations_run_lease_pkey PRIMARY KEY (singleton);
 
 ALTER TABLE ONLY reward_payout_effects
-    ADD CONSTRAINT reward_payout_effects_credit_id_key UNIQUE (credit_id);
-
-ALTER TABLE ONLY reward_payout_effects
     ADD CONSTRAINT reward_payout_effects_pkey PRIMARY KEY (payout_effect_id);
 
 ALTER TABLE ONLY reward_pool_cohort_members_v2
@@ -58487,6 +58566,12 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_pkey PRIMARY KEY (refund_effect_id);
+
+ALTER TABLE ONLY reward_safe_execution_cursors
+    ADD CONSTRAINT reward_safe_execution_cursors_pkey PRIMARY KEY (chain_id, safe_address);
+
+ALTER TABLE ONLY reward_safe_unbound_executions
+    ADD CONSTRAINT reward_safe_unbound_executions_pkey PRIMARY KEY (chain_id, transaction_hash, log_index);
 
 ALTER TABLE ONLY reward_shared_song_template_admissions_v2
     ADD CONSTRAINT reward_shared_song_template_admissions_v2_pkey PRIMARY KEY (community_id);
@@ -59621,6 +59706,8 @@ CREATE UNIQUE INDEX reward_gas_topup_wallet_active_uidx ON reward_gas_topup_wall
 CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created_at, topup_id) WHERE (status = ANY (ARRAY['requested'::text, 'broadcast'::text]));
 
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
+
+CREATE INDEX reward_payout_effects_credit_idx ON reward_payout_effects USING btree (credit_id);
 
 CREATE INDEX reward_sponsored_sends_account_day_idx ON wallet_sponsored_sends USING btree (account_id, created_at);
 
@@ -61198,6 +61285,8 @@ CREATE TRIGGER reward_operations_run_lease_events_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER reward_payout_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
 
+CREATE TRIGGER reward_payout_effects_single_live BEFORE INSERT ON reward_payout_effects FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect_single_live();
+
 CREATE TRIGGER reward_pool_cohort_members_v2_append_only BEFORE DELETE OR UPDATE ON reward_pool_cohort_members_v2 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
 
 CREATE TRIGGER reward_pool_cohort_members_v2_no_truncate BEFORE TRUNCATE ON reward_pool_cohort_members_v2 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
@@ -61221,6 +61310,10 @@ CREATE TRIGGER reward_run_lease_nonce_insert_guard BEFORE INSERT ON reward_signe
 CREATE TRIGGER reward_run_lease_signature_guard BEFORE UPDATE ON reward_chain_effects FOR EACH ROW WHEN (((old.state = 'nonce_reserved'::text) AND (new.state = 'prepared'::text))) EXECUTE FUNCTION guard_reward_run_lease_signature();
 
 CREATE TRIGGER reward_safe_call_preparation_guard BEFORE UPDATE ON reward_chain_effects FOR EACH ROW WHEN (((old.execution_mode = 'safe_owner_v1'::text) AND (old.state = 'planned'::text) AND (new.state = 'prepared'::text))) EXECUTE FUNCTION guard_reward_safe_call_preparation();
+
+CREATE TRIGGER reward_safe_execution_cursors_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_safe_execution_cursors FOR EACH ROW EXECUTE FUNCTION guard_reward_safe_execution_cursor();
+
+CREATE TRIGGER reward_safe_unbound_executions_append_only BEFORE DELETE OR UPDATE ON reward_safe_unbound_executions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
 
@@ -64363,6 +64456,12 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_refund_effects
     ADD CONSTRAINT reward_refund_effects_solvency_observation_fk FOREIGN KEY (solvency_observation_id) REFERENCES custody_solvency_observations(observation_id);
+
+ALTER TABLE ONLY reward_safe_execution_cursors
+    ADD CONSTRAINT reward_safe_execution_cursors_chain_id_safe_address_fkey FOREIGN KEY (chain_id, safe_address) REFERENCES reward_signer_nonces(chain_id, signer_address);
+
+ALTER TABLE ONLY reward_safe_unbound_executions
+    ADD CONSTRAINT reward_safe_unbound_executions_chain_id_safe_address_fkey FOREIGN KEY (chain_id, safe_address) REFERENCES reward_safe_execution_cursors(chain_id, safe_address);
 
 ALTER TABLE ONLY reward_shared_song_template_admissions_v2
     ADD CONSTRAINT reward_shared_song_template_admis_community_id_template_id_fkey FOREIGN KEY (community_id, template_id) REFERENCES reward_shared_song_templates_v2(community_id, template_id);

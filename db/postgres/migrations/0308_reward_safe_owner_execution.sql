@@ -26,6 +26,11 @@ ALTER TABLE reward_chain_effects
   ),
   ADD COLUMN safe_execution_log_index INTEGER CHECK (
     safe_execution_log_index IS NULL OR safe_execution_log_index >= 0
+  ),
+  -- The chain head when the call was prepared. An execution in an earlier block
+  -- cannot be this call, however identical its content.
+  ADD COLUMN safe_prepared_block_number BIGINT CHECK (
+    safe_prepared_block_number IS NULL OR safe_prepared_block_number >= 0
   );
 
 -- The EOA branch is the 0055 expression unchanged. A Safe effect has no nonce or
@@ -39,7 +44,7 @@ ALTER TABLE reward_chain_effects
     (execution_mode = 'eoa'
       AND safe_nonce IS NULL AND safe_transaction_hash IS NULL
       AND safe_executor_address IS NULL AND safe_execution_outcome IS NULL
-      AND safe_execution_log_index IS NULL
+      AND safe_execution_log_index IS NULL AND safe_prepared_block_number IS NULL
       AND (
         (state = 'planned' AND nonce IS NULL AND calldata IS NULL AND calldata_hash IS NULL
           AND signed_transaction IS NULL AND signed_transaction_hash IS NULL
@@ -72,20 +77,21 @@ ALTER TABLE reward_chain_effects
       AND (
         (state IN ('planned', 'terminal_failed')
           AND calldata IS NULL AND calldata_hash IS NULL AND prepared_at IS NULL
+          AND safe_prepared_block_number IS NULL
           AND safe_nonce IS NULL AND safe_transaction_hash IS NULL
           AND safe_executor_address IS NULL AND safe_execution_outcome IS NULL
           AND safe_execution_log_index IS NULL)
         OR (state = 'prepared'
           AND calldata IS NOT NULL AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
           AND calldata_hash IS NOT NULL AND calldata_hash ~ '^[0-9a-f]{64}$'
-          AND prepared_at IS NOT NULL
+          AND prepared_at IS NOT NULL AND safe_prepared_block_number IS NOT NULL
           AND safe_nonce IS NULL AND safe_transaction_hash IS NULL
           AND safe_executor_address IS NULL AND safe_execution_outcome IS NULL
           AND safe_execution_log_index IS NULL)
         OR (state IN ('confirming', 'confirmed', 'reverted', 'reconciliation_required')
           AND calldata IS NOT NULL AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
           AND calldata_hash IS NOT NULL AND calldata_hash ~ '^[0-9a-f]{64}$'
-          AND prepared_at IS NOT NULL
+          AND prepared_at IS NOT NULL AND safe_prepared_block_number IS NOT NULL
           AND safe_nonce IS NOT NULL AND safe_transaction_hash IS NOT NULL
           AND safe_executor_address IS NOT NULL AND safe_execution_outcome IS NOT NULL
           AND safe_execution_log_index IS NOT NULL)))
@@ -188,9 +194,9 @@ BEGIN
     RAISE EXCEPTION 'prepared reward transaction bytes are immutable';
   END IF;
   IF OLD.execution_mode = 'safe_owner_v1' AND OLD.prepared_at IS NOT NULL AND ROW(
-    NEW.calldata, NEW.calldata_hash, NEW.prepared_at
+    NEW.calldata, NEW.calldata_hash, NEW.prepared_at, NEW.safe_prepared_block_number
   ) IS DISTINCT FROM ROW(
-    OLD.calldata, OLD.calldata_hash, OLD.prepared_at
+    OLD.calldata, OLD.calldata_hash, OLD.prepared_at, OLD.safe_prepared_block_number
   ) THEN
     RAISE EXCEPTION 'prepared Safe reward call is immutable';
   END IF;
@@ -211,7 +217,8 @@ BEGIN
       NEW.receipt_block_hash, NEW.receipt_hash, NEW.confirmations,
       NEW.failure_class, NEW.failure_reason, NEW.prepared_at,
       NEW.broadcast_at, NEW.confirmed_at, NEW.safe_nonce, NEW.safe_transaction_hash,
-      NEW.safe_executor_address, NEW.safe_execution_outcome, NEW.safe_execution_log_index
+      NEW.safe_executor_address, NEW.safe_execution_outcome, NEW.safe_execution_log_index,
+      NEW.safe_prepared_block_number
     ) IS DISTINCT FROM ROW(
       OLD.state, OLD.settled_amount_atomic, OLD.nonce, OLD.calldata, OLD.calldata_hash,
       OLD.signed_transaction, OLD.signed_transaction_hash, OLD.transaction_hash,
@@ -219,7 +226,8 @@ BEGIN
       OLD.receipt_block_hash, OLD.receipt_hash, OLD.confirmations,
       OLD.failure_class, OLD.failure_reason, OLD.prepared_at,
       OLD.broadcast_at, OLD.confirmed_at, OLD.safe_nonce, OLD.safe_transaction_hash,
-      OLD.safe_executor_address, OLD.safe_execution_outcome, OLD.safe_execution_log_index
+      OLD.safe_executor_address, OLD.safe_execution_outcome, OLD.safe_execution_log_index,
+      OLD.safe_prepared_block_number
     ) THEN
       RAISE EXCEPTION 'reward chain state change requires next version';
     END IF;
