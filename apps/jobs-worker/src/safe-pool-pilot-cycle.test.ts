@@ -1,12 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   MegapotDrawingWork,
   MegapotDrawingWorkStatus,
 } from "@pirate/platform-cf/megapot-work-repository";
 import { Data, Effect } from "effect";
 import { buildJobRegistry } from "./registry.ts";
-import { makeSafePoolPilotJob } from "./safe-pool-pilot.ts";
-import { runSafePoolPilotCycle, type SafePoolPilotRuntime } from "./safe-pool-pilot-cycle.ts";
+import {
+  runSafePoolPilotCycle,
+  type SafePoolPilotRuntime,
+  scanSafeWindows,
+} from "./safe-pool-pilot-cycle.ts";
+
+// The job's import graph reaches Durable Object classes; stub the Workers-only module
+// so this file passes on its own, not only after another test has stubbed it.
+mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
+const { makeSafePoolPilotJob } = await import("./safe-pool-pilot.ts");
 
 class StepFailed extends Data.TaggedError("StepFailed")<{
   readonly reason: string;
@@ -107,6 +115,30 @@ describe("Safe pool pilot cycle", () => {
     expect(calls).toContain("prepare_purchase:leg-b");
     expect(calls.at(-1)).toBe("prepare_payout:credit-1");
     expect(JSON.stringify(summary)).not.toContain("provider text");
+  });
+
+  test("scans successive windows until the settled head, at most five per cycle", async () => {
+    const windows = (remaining: number) => {
+      let calls = 0;
+      return {
+        scan: () =>
+          Effect.sync(() => {
+            calls += 1;
+            return { scanned: calls <= remaining };
+          }),
+        calls: () => calls,
+      };
+    };
+    const caughtUp = windows(2);
+    expect(await Effect.runPromise(scanSafeWindows(caughtUp.scan))).toBe(2);
+    expect(caughtUp.calls()).toBe(3);
+    const behind = windows(50);
+    expect(await Effect.runPromise(scanSafeWindows(behind.scan))).toBe(5);
+    expect(behind.calls()).toBe(5);
+    const failing = scanSafeWindows(() =>
+      Effect.fail(new StepFailed({ reason: "rpc_unavailable", detail: "range" })),
+    );
+    await expect(Effect.runPromise(failing)).rejects.toMatchObject({ reason: "rpc_unavailable" });
   });
 
   test("declares a job the registry accepts, and never beside an EOA rewards writer", async () => {

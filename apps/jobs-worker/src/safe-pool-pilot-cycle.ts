@@ -12,6 +12,29 @@ export const SAFE_POOL_PILOT_CYCLE_SCHEDULE = "* * * * *";
 export const SAFE_POOL_PILOT_CYCLE_TIMEOUT = "50 seconds";
 /** One RPC request bound, so a slow provider cannot hold the joint tick. */
 export const SAFE_POOL_PILOT_RPC_TIMEOUT_MS = 5_000;
+/**
+ * Providers cap eth_getLogs ranges; Base Sepolia's public endpoint refuses more than
+ * 201 blocks, which stalled the scan at 500 in the October 23 chain rehearsal. Each
+ * window stays within that, and a cycle reads a few windows to catch up.
+ */
+export const SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS = 200;
+export const SAFE_POOL_PILOT_SCAN_WINDOWS_PER_CYCLE = 5;
+
+/** Scans successive windows until the scanner reaches the settled head or the bound. */
+export function scanSafeWindows<E>(
+  scan: () => Effect.Effect<Readonly<{ scanned: boolean }>, E>,
+  windows: number = SAFE_POOL_PILOT_SCAN_WINDOWS_PER_CYCLE,
+): Effect.Effect<number, E> {
+  return Effect.gen(function* () {
+    let scanned = 0;
+    while (scanned < windows) {
+      const result = yield* scan();
+      if (!result.scanned) break;
+      scanned += 1;
+    }
+    return scanned;
+  });
+}
 const SAFE_POOL_PILOT_CYCLE_LIMIT = 10;
 
 type Step<A> = Effect.Effect<A, unknown>;

@@ -43,6 +43,8 @@ import {
   SAFE_POOL_PILOT_CYCLE_SCHEDULE,
   SAFE_POOL_PILOT_CYCLE_TIMEOUT,
   SAFE_POOL_PILOT_RPC_TIMEOUT_MS,
+  SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS,
+  scanSafeWindows,
 } from "./safe-pool-pilot-cycle.ts";
 
 export type SafePoolPilotJobOptions = Readonly<{
@@ -141,7 +143,7 @@ export function makeSafePoolPilotJob(
       rpc,
       requiredConfirmations: options.requiredConfirmations,
       productionEnabled: options.productionEnabled,
-      maximumScanBlocks: 500,
+      maximumScanBlocks: SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS,
       maximumScanLogs: 200,
     };
     const purchases = makeRewardSafePurchaseCoordinator({
@@ -193,7 +195,7 @@ export function makeSafePoolPilotJob(
     const summary = yield* runSafePoolPilotCycle({
       observeDrawing: () =>
         observeMegapotDrawingForCycle(observer.observe(deployment.attestationId)),
-      scan: () => scan(safe),
+      scan: () => scanSafeWindows(() => scan(safe)),
       loadBoundEffects: (limit) => safeWork.loadBoundEffects(custody, limit),
       settlePurchase: purchases.settle,
       settlePayout: payouts.settle,
