@@ -29,6 +29,7 @@ import type {
   MegapotV2Transaction,
 } from "./megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeRewardSafeClaimCoordinator } from "./reward-safe-claim-coordinator.ts";
 import { rewardSafeTransactionHash } from "./reward-safe-execution.ts";
 import { makeRewardSafePurchaseCoordinator } from "./reward-safe-purchase-coordinator.ts";
 import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
@@ -46,6 +47,7 @@ const JACKPOT = address("2");
 const NFT = address("4");
 const USDC = address("3");
 const OWNER = address("9");
+const REFERRER = address("6");
 const ATTESTATION = "megapot-base-safe-pilot";
 const SOURCE = hash("8");
 const PRICE = 1_000_000n;
@@ -57,7 +59,11 @@ const abi = parseAbi([
   "event TicketPurchased(address indexed recipient, uint256 indexed currentDrawingId, bytes32 indexed source, uint256 userTicketId, uint8[] normals, uint8 bonusball, bytes32 referralScheme)",
   "event TicketOrderProcessed(address indexed buyer, address indexed recipient, uint256 indexed currentDrawingId, uint256 numberOfTickets, uint256 lpEarnings, uint256 referralFees)",
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+  "function claimWinnings(uint256[] _userTicketIds)",
+  "event TicketWinningsClaimed(address indexed userAddress, uint256 indexed drawingId, uint256 userTicketId, uint256 matchedNormals, bool bonusballMatch, uint256 winningsAmount)",
+  "event ReferralFeeCollected(address indexed referrer, uint256 amount)",
 ]);
+const erc20 = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
 // encodeEventTopics allows null or OR-ed entries for filters; these events set every
 // indexed argument, so each topic is one value.
 const topics = (value: readonly (Hex | Hex[] | null)[]) => value as [Hex, ...Hex[]];
@@ -71,6 +77,13 @@ function fakeChain() {
   let currentDrawingId = 212n;
   let tier = 0n;
   const nonceAt = new Map<bigint, bigint>();
+  // Balance changes by block, so reads at a block see only what landed by then.
+  const usdcDeltas: Array<{ block: bigint; amount: bigint }> = [];
+  const referralDeltas: Array<{ block: bigint; amount: bigint }> = [];
+  const at = (deltas: typeof usdcDeltas, base: bigint, blockNumber: bigint | undefined) =>
+    deltas
+      .filter((delta) => blockNumber === undefined || delta.block <= blockNumber)
+      .reduce((sum, delta) => sum + delta.amount, base);
   const transactions = new Map<string, MegapotV2Transaction>();
   const receipts = new Map<string, MegapotTransactionReceipt>();
   const executions: MegapotV2SafeExecutionLog[] = [];
@@ -106,8 +119,8 @@ function fakeChain() {
         BigInt(index) === tier && tier !== 0n && tier !== 2n ? 1_001n : 0n,
       ),
     readTicketTierIds: async (ticketIds) => ticketIds.map(() => tier),
-    readReferralFees: async () => 0n,
-    readUsdcBalance: async () => 50_000_000n,
+    readReferralFees: async (_referrer, blockNumber) => at(referralDeltas, 0n, blockNumber),
+    readUsdcBalance: async (_owner, blockNumber) => at(usdcDeltas, 50_000_000n, blockNumber),
     readNativeBalance: async () => 0n,
     readUsdcAllowance: async () => 50_000_000n,
     readTicketOwner: async () => SAFE,
@@ -168,8 +181,72 @@ function fakeChain() {
     });
     const base = { transactionHash, blockHash, blockNumber: block };
     const logs: MegapotReceiptLog[] = [];
-    if (outcome === "success") {
-      const decoded = decodeFunctionData({ abi, data: call.data });
+    const decoded = decodeFunctionData({ abi, data: call.data });
+    if (outcome === "success" && decoded.functionName === "claimWinnings") {
+      const claimed = decoded.args[0][0];
+      if (claimed === undefined) throw new Error("no ticket");
+      const net = 901n;
+      const referral = 100n;
+      usdcDeltas.push({ block, amount: net });
+      referralDeltas.push({ block, amount: referral });
+      logs.push(
+        {
+          ...base,
+          address: JACKPOT,
+          logIndex: 0,
+          topics: topics(
+            encodeEventTopics({
+              abi,
+              eventName: "TicketWinningsClaimed",
+              args: { userAddress: SAFE as Hex, drawingId: 212n },
+            }),
+          ),
+          data: encodeAbiParameters(
+            [{ type: "uint256" }, { type: "uint256" }, { type: "bool" }, { type: "uint256" }],
+            [claimed, 3n, false, net],
+          ),
+        },
+        {
+          ...base,
+          address: JACKPOT,
+          logIndex: 1,
+          topics: topics(
+            encodeEventTopics({
+              abi,
+              eventName: "ReferralFeeCollected",
+              args: { referrer: REFERRER as Hex },
+            }),
+          ),
+          data: encodeAbiParameters([{ type: "uint256" }], [referral]),
+        },
+        {
+          ...base,
+          address: NFT,
+          logIndex: 2,
+          topics: topics(
+            encodeEventTopics({
+              abi,
+              eventName: "Transfer",
+              args: { from: SAFE as Hex, to: ZERO, tokenId: claimed },
+            }),
+          ),
+          data: "0x",
+        },
+        {
+          ...base,
+          address: USDC,
+          logIndex: 3,
+          topics: topics(
+            encodeEventTopics({
+              abi: erc20,
+              eventName: "Transfer",
+              args: { from: JACKPOT as Hex, to: SAFE as Hex },
+            }),
+          ),
+          data: encodeAbiParameters([{ type: "uint256" }], [net]),
+        },
+      );
+    } else if (outcome === "success") {
       if (decoded.functionName !== "buyTickets") throw new Error("not a purchase");
       const ticket = decoded.args[0][0];
       if (ticket === undefined) throw new Error("no ticket");
@@ -348,7 +425,7 @@ suite("ticket-first owner-executed Safe pools", () => {
         USDC,
         NFT,
         SAFE,
-        address("6"),
+        REFERRER,
         SOURCE,
         hash("7"),
         hash("e"),
@@ -501,6 +578,65 @@ suite("ticket-first owner-executed Safe pools", () => {
       netWinningsAtomic: 901n,
     });
     expect(await drawing("tf-ok")).toMatchObject({ status: "winnings_detected" });
+
+    // The owner's first claim execution fails; the attempt is released and a second
+    // attempt is prepared, executed and settled.
+    const claims = makeRewardSafeClaimCoordinator(options());
+    const subject = { poolLegId: "tf-ok", drawingId: 212n };
+    const first = await run(claims.prepare(subject));
+    if (first.kind !== "prepared") throw new Error(`claim not prepared: ${first.kind}`);
+    expect(await run(claims.prepare(subject))).toMatchObject({
+      kind: "prepared",
+      effectId: first.effectId,
+    });
+    chain.execute(callOf(first.transactionBuilderFile), "failure");
+    chain.mine(2n);
+    await scan();
+    expect(await run(claims.settle(subject))).toEqual({ kind: "released" });
+    expect(await drawing("tf-ok")).toMatchObject({ status: "winnings_detected" });
+    const second = await run(claims.prepare(subject));
+    if (second.kind !== "prepared") throw new Error(`claim not prepared: ${second.kind}`);
+    expect(second.effectId).not.toBe(first.effectId);
+    chain.execute(callOf(second.transactionBuilderFile), "success");
+    expect(await run(claims.settle(subject))).toEqual({ kind: "not_bound" });
+    chain.mine(2n);
+    await scan();
+    expect(await run(claims.settle(subject))).toEqual({
+      kind: "claimed",
+      effectId: second.effectId,
+      netWinningsAtomic: 901n,
+    });
+    expect(await run(claims.settle(subject))).toEqual({
+      kind: "claimed",
+      effectId: second.effectId,
+    });
+    expect(await drawing("tf-ok")).toMatchObject({ status: "claimed" });
+    expect(
+      (
+        await admin.query(
+          `SELECT evidence.custody_balance_before_atomic::text AS before,
+                  evidence.custody_balance_after_atomic::text AS after,
+                  evidence.net_winnings_atomic::text AS net,
+                  ticket.status AS ticket_status,
+                  (SELECT amount_atomic::text FROM platform_referral_revenue_ledger
+                    WHERE pool_leg_id='tf-ok') AS referral
+             FROM megapot_claim_receipt_evidence evidence
+             JOIN megapot_ticket_inventory ticket
+               ON ticket.attestation_id=evidence.attestation_id
+              AND ticket.ticket_id=evidence.ticket_id
+            WHERE evidence.claim_effect_id=$1`,
+          [second.effectId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        before: "50000000",
+        after: "50000901",
+        net: "901",
+        ticket_status: "claimed",
+        referral: "100",
+      },
+    ]);
   });
 
   test("an ExecutionFailure releases the reservation and closes the drawing unopened", async () => {
