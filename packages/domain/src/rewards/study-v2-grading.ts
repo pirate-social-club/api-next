@@ -194,7 +194,7 @@ export const gradeTranscriptV2 = (
   const v3 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3;
   const v4 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V4;
   const english = dominantLanguage?.split("-", 1)[0] === "en";
-  const alignWordBoundaries = v4 && english;
+  let alignWordBoundaries = v4 && english;
   const expand = v4 ? expandEnglishContractionsV4 : expandEnglishContractions;
   let expected = tokens(reference, dominantLanguage, expand);
   let actual = tokens(heardTranscript, dominantLanguage, expand);
@@ -202,11 +202,11 @@ export const gradeTranscriptV2 = (
   const actualForms = alignWordBoundaries
     ? englishRecallWordForms(heardTranscript, expand)
     : actual;
-  // Revision v3 refuses vacuous comparisons: when article and stopword
+  // Revisions v3 and v4 refuse vacuous comparisons: when article and stopword
   // filtering empties both sides, compare the unfiltered segmentation so an
   // article-only line versus silence is incorrect while the same article on
   // both sides stays exact.
-  if (v3 && expected.length === 0 && actual.length === 0) {
+  if ((v3 || v4) && expected.length === 0 && actual.length === 0) {
     const rawExpected = rawTokens(reference, dominantLanguage, expand);
     const rawActual = rawTokens(heardTranscript, dominantLanguage, expand);
     if (rawExpected.length === 0) {
@@ -225,6 +225,8 @@ export const gradeTranscriptV2 = (
     }
     expected = rawExpected;
     actual = rawActual;
+    // The filtered word-form arrays no longer index these unfiltered tokens.
+    alignWordBoundaries = false;
   }
   const distance = Array.from({ length: expected.length + 1 }, (_, left) =>
     Array.from({ length: actual.length + 1 }, (_, right) =>
