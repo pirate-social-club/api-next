@@ -295,7 +295,9 @@ suite("HTTP database reward admission", () => {
               [pid],
             )
           ).rows[0];
-          if (evidence?.blockers.includes(blocker)) break;
+          // The lock manager and activity wait fields are sampled separately.
+          // Wait for both asserted facts instead of stopping in that brief gap.
+          if (evidence?.blockers.includes(blocker) && evidence.wait_event_type === "Lock") break;
           await Bun.sleep(10);
         }
         console.info("reward pause blocker", { evidence, trace: [...trace] });
