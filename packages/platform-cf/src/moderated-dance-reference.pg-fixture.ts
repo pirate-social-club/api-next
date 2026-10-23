@@ -85,16 +85,17 @@ export async function publishedModeratedDanceVideo(
     source: { sha256: videoSha256, sizeBytes: 1024 },
   });
   const base = trustedAnalysis();
+  const successorFrame = (index: 0 | 1 | 2) => ({
+    ...base.frames.extracted[index],
+    artifactRef: base.frames.extracted[index].artifactRef.replace(originalOperationId, operationId),
+  });
   const analysis = {
     ...base,
     operationId,
     finalizedVideoRef: finalized.state.video?.immutableRef ?? "missing-capture",
     frames: {
       ...base.frames,
-      extracted: base.frames.extracted.map((frame) => ({
-        ...frame,
-        artifactRef: frame.artifactRef.replace(originalOperationId, operationId),
-      })) as typeof base.frames.extracted,
+      extracted: [successorFrame(0), successorFrame(1), successorFrame(2)] as const,
     },
     safetyRequest: {
       ...base.safetyRequest,
