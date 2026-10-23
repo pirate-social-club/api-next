@@ -258,6 +258,7 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
     withFixture(async (f, admin) => {
       const review = await historicalReview(f, admin, Date.now() + 60_000);
       const store = makeControlPlaneModeratedDanceIntakeStore(f.runtime, "private-test-owner", {
+        admitNewCapture: () => Effect.void,
         signer: null,
       });
       const wire = await Effect.runPromise(
@@ -300,6 +301,7 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
     withFixture(async (f, admin) => {
       const review = await historicalReview(f, admin, Date.now() - 1000);
       const store = makeControlPlaneModeratedDanceIntakeStore(f.runtime, "private-test-owner", {
+        admitNewCapture: () => Effect.void,
         signer: null,
       });
       await expect(
@@ -343,6 +345,7 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
       const deadline = Date.now() + 2000;
       const review = await historicalReview(f, admin, deadline);
       const store = makeControlPlaneModeratedDanceIntakeStore(f.runtime, "private-test-owner", {
+        admitNewCapture: () => Effect.void,
         signer: null,
       });
       await Effect.runPromise(store.ownerRubric(f.facts.communityId, review.capture.reviewId));
@@ -370,7 +373,10 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
       const ownerStore = makeControlPlaneModeratedDanceIntakeStore(
         f.runtime,
         "private-test-owner",
-        { signer: null },
+        {
+          admitNewCapture: () => Effect.void,
+          signer: null,
+        },
       );
       await Effect.runPromise(ownerStore.ownerRubric(f.facts.communityId, review.capture.reviewId));
       const dancer = makeControlPlaneModeratorReviewStore(f.runtime, {
@@ -480,7 +486,10 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
         const store = makeControlPlaneModeratedDanceIntakeStore(
           makeDirectPostgresControlPlaneLayer(conn.toString()),
           f.facts.accountId,
-          { signer: null },
+          {
+            admitNewCapture: () => Effect.void,
+            signer: null,
+          },
         );
         expect(
           (await Effect.runPromise(store.captureContext(f.facts.communityId, session.session_id)))

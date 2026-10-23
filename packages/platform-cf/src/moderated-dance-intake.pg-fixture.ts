@@ -187,6 +187,7 @@ export async function seedModeratedDanceIntake(
   }
   const runtime = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeControlPlaneModeratedDanceIntakeStore(runtime, f.accountId, {
+    admitNewCapture: () => Effect.void,
     signer: {
       presign: async () => {
         throw new Error("No storage URL requested by these SQL cases");

@@ -1,3 +1,5 @@
+export { DanceNetworkRateLimiterDO } from "../../../packages/platform-cf/src/dance-network-admission-do.ts";
+
 /**
  * @pirate/http-worker — generated route table and transport composition root.
  *
