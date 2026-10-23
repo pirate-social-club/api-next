@@ -139,6 +139,7 @@ export function matchRewardSafeCall(
 
 /** The Safe command that a conforming execution signed, using the nonce it consumed. */
 export function rewardSafeCommandFromExecution(input: {
+  readonly chainId: number;
   readonly safeAddress: string;
   readonly nonce: bigint;
   readonly call: RewardSafeCall;
@@ -146,8 +147,9 @@ export function rewardSafeCommandFromExecution(input: {
 }): RewardSafeCommand {
   const match = matchRewardSafeCall([input.call], input.executed);
   if (match === null || !match.conforming || input.nonce < 0n) refuse("invalid-execution");
+  if (input.chainId !== 8453 && input.chainId !== 84_532) refuse("invalid-execution");
   return {
-    chainId: 8453,
+    chainId: input.chainId,
     safeAddress: address(input.safeAddress, "invalid-execution"),
     nonce: input.nonce,
     to: input.call.to,
@@ -163,6 +165,7 @@ export function rewardSafeCommandFromExecution(input: {
  * warn that the file has no checksum; Pirate does not compute one.
  */
 export function rewardSafeTransactionBuilderFile(input: {
+  readonly chainId: number;
   readonly safeAddress: string;
   readonly call: RewardSafeCall;
   readonly name: string;
@@ -170,7 +173,7 @@ export function rewardSafeTransactionBuilderFile(input: {
   readonly createdAtMs: number;
 }): Readonly<{
   version: "1.0";
-  chainId: "8453";
+  chainId: "8453" | "84532";
   createdAt: number;
   meta: Readonly<{ name: string; description: string; createdFromSafeAddress: Address }>;
   transactions: readonly Readonly<{
@@ -182,9 +185,10 @@ export function rewardSafeTransactionBuilderFile(input: {
   }>[];
 }> {
   if (!Number.isSafeInteger(input.createdAtMs) || input.createdAtMs < 0) refuse("invalid-call");
+  if (input.chainId !== 8453 && input.chainId !== 84_532) refuse("invalid-call");
   return {
     version: "1.0",
-    chainId: "8453",
+    chainId: input.chainId === 8453 ? "8453" : "84532",
     createdAt: input.createdAtMs,
     meta: {
       name: input.name,

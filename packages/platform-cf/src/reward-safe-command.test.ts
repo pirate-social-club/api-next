@@ -117,6 +117,7 @@ test("unrelated executions match nothing and duplicate prepared calls are ambigu
 
 test("rebuilds the signed Safe command from the nonce the execution consumed", () => {
   const command = rewardSafeCommandFromExecution({
+    chainId: 8453,
     safeAddress: SAFE,
     nonce: 7n,
     call: payout,
@@ -134,10 +135,30 @@ test("rebuilds the signed Safe command from the nonce the execution consumed", (
   expect(rewardSafeTransactionHash(command)).toMatch(/^0x[0-9a-f]{64}$/u);
   expect(() =>
     rewardSafeCommandFromExecution({
+      chainId: 8453,
       safeAddress: SAFE,
       nonce: 7n,
       call: payout,
       executed: decodeRewardSafeExecutedCall(executed(payout, { gasPrice: 1n })),
+    }),
+  ).toThrow("invalid-execution");
+  const rehearsal = rewardSafeCommandFromExecution({
+    chainId: 84_532,
+    safeAddress: SAFE,
+    nonce: 7n,
+    call: payout,
+    executed: decodeRewardSafeExecutedCall(executed(payout, { safeTxGas: 150_000n })),
+  });
+  // The chain is part of the Safe's EIP-712 domain, so the same call hashes differently.
+  expect(rehearsal.chainId).toBe(84_532);
+  expect(rewardSafeTransactionHash(rehearsal)).not.toBe(rewardSafeTransactionHash(command));
+  expect(() =>
+    rewardSafeCommandFromExecution({
+      chainId: 1,
+      safeAddress: SAFE,
+      nonce: 7n,
+      call: payout,
+      executed: decodeRewardSafeExecutedCall(executed(payout)),
     }),
   ).toThrow("invalid-execution");
 });
@@ -145,6 +166,7 @@ test("rebuilds the signed Safe command from the nonce the execution consumed", (
 test("writes a one-call Transaction Builder file with zero value", () => {
   expect(
     rewardSafeTransactionBuilderFile({
+      chainId: 8453,
       safeAddress: SAFE.toLowerCase(),
       call: payout,
       name: "Pirate payout payout-1",
@@ -170,4 +192,18 @@ test("writes a one-call Transaction Builder file with zero value", () => {
       },
     ],
   });
+});
+
+test("names the rehearsal chain in a Base Sepolia file and refuses any other chain", () => {
+  const file = (chainId: number) =>
+    rewardSafeTransactionBuilderFile({
+      chainId,
+      safeAddress: SAFE,
+      call: payout,
+      name: "Pirate payout payout-1",
+      description: "USDC payout for one accepted credit",
+      createdAtMs: 1_792_723_368_000,
+    });
+  expect(file(84_532).chainId).toBe("84532");
+  expect(() => file(1)).toThrow("invalid-call");
 });

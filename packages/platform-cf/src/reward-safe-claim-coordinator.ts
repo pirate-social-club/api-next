@@ -123,6 +123,7 @@ export function makeRewardSafeClaimCoordinator(options: RewardSafeRuntimeOptions
       effectId: attempt.effectId,
       preparedBlockNumber,
       transactionBuilderFile: rewardSafeTransactionBuilderFile({
+        chainId: candidate.chainId,
         safeAddress: candidate.custodyAddress,
         call,
         name: `Pirate claim ${candidate.poolLegId} drawing ${candidate.drawingId}`,
@@ -158,6 +159,7 @@ export function makeRewardSafeClaimCoordinator(options: RewardSafeRuntimeOptions
     });
     const execution = yield* readRewardSafeExecution(options, {
       effectId,
+      chainId: candidate.chainId,
       safeAddress: candidate.custodyAddress,
       to: candidate.jackpotAddress,
       calldata: settlement.calldata,

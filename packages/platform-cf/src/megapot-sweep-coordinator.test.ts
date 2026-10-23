@@ -195,7 +195,7 @@ describe("Megapot sweep coordinator", () => {
     expect(testHarness.completeCalls()).toBe(0);
   });
 
-  test("admits production only for ticket-first Safe pools on Base under the pilot switch", async () => {
+  test("admits production only for ticket-first Safe pools on Base under the pilot switch, and rehearsal on Base Sepolia", async () => {
     const safePool = {
       purchaseOrder: "ticket_first_v1",
       drawingStatus: "committed",
@@ -223,6 +223,10 @@ describe("Megapot sweep coordinator", () => {
     ).resolves.toMatchObject({ kind: "complete", outcome: "winnings_detected" });
     await expect(
       sweep({ tierId: 7n, candidate: { ...safePool, environment: "staging" } }),
+    ).resolves.toMatchObject({ kind: "complete" });
+    // Staging rehearses a Safe pool on Base Sepolia.
+    await expect(
+      sweep({ tierId: 7n, candidate: { ...safePool, environment: "staging", chainId: 84_532 } }),
     ).resolves.toMatchObject({ kind: "complete" });
   });
 });

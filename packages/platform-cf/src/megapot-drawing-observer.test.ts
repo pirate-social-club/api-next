@@ -185,7 +185,7 @@ describe("Megapot drawing observer", () => {
     expect(changedTickets.observationId).not.toBe(baseline.observationId);
   });
 
-  test("admits Base only in a Safe pilot instance, and production only under its switch", async () => {
+  test("admits Safe custody chains only in a Safe pilot instance, production only under its switch", async () => {
     const observe = (
       authority: MegapotDrawingObserverCandidate,
       safePilot?: { readonly productionEnabled: boolean },
@@ -208,7 +208,6 @@ describe("Megapot drawing observer", () => {
     for (const [authority, safePilot] of [
       [base, undefined],
       [production, { productionEnabled: false }],
-      [candidate(), { productionEnabled: true }],
     ] as const) {
       await expect(observe(authority, safePilot)).rejects.toMatchObject({
         reason: "production-disabled",
@@ -218,6 +217,10 @@ describe("Megapot drawing observer", () => {
       drawingId: 101n,
     });
     await expect(observe(production, { productionEnabled: true })).resolves.toMatchObject({
+      drawingId: 101n,
+    });
+    // Staging rehearses the Safe pilot on Base Sepolia.
+    await expect(observe(candidate(), { productionEnabled: false })).resolves.toMatchObject({
       drawingId: 101n,
     });
   });

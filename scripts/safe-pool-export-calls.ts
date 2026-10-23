@@ -66,6 +66,7 @@ export async function exportSafePoolCalls(input: {
   const written: string[] = [];
   for (const [index, call] of calls.entries()) {
     const file = rewardSafeTransactionBuilderFile({
+      chainId: custody.chainId,
       safeAddress: custody.safeAddress,
       call: rewardSafeCall({ effectId: call.effectId, to: call.to, data: call.data }),
       name: `Pirate ${call.kind} ${call.effectId}`,

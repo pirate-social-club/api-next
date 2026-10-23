@@ -11,6 +11,7 @@ import {
   classifyRewardSafeExecution,
   type RewardSafeCommand,
   type RewardSafeOuterTransaction,
+  rewardSafeChainAdmitted,
   rewardSafeTransactionHash,
   validateRewardSafeExecution,
 } from "./reward-safe-execution.ts";
@@ -254,4 +255,15 @@ test("refuses malformed execution calldata and malformed Safe events", () => {
       receipt: { ...input.receipt, logs: [{ ...input.event, data: "0x" }] },
     }),
   ).toThrow();
+});
+
+test("admits Base, production only under its switch, and Base Sepolia outside production", () => {
+  const admitted = (chainId: number, environment: string, productionEnabled: boolean) =>
+    rewardSafeChainAdmitted({ chainId, environment, productionEnabled });
+  expect(admitted(8453, "production", true)).toBe(true);
+  expect(admitted(8453, "production", false)).toBe(false);
+  expect(admitted(84_532, "staging", false)).toBe(true);
+  expect(admitted(84_532, "test", false)).toBe(true);
+  expect(admitted(84_532, "production", true)).toBe(false);
+  expect(admitted(1, "staging", true)).toBe(false);
 });

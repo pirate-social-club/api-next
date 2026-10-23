@@ -94,6 +94,7 @@ function scenario(executions: readonly Execution[], parentNonce = 41n) {
       overrides: Partial<{ logs: typeof logs }> = {},
     ) =>
       findRewardSafeExecutions({
+        chainId: 8453,
         safeAddress: SAFE,
         calls,
         logs: overrides.logs ?? logs,

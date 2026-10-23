@@ -471,7 +471,7 @@ describe("Megapot v2 Worker runtime adapters", () => {
     });
   });
 
-  test("observes Base Safe custody only in a Safe pilot instance, production under its switch", async () => {
+  test("observes Safe custody only in a Safe pilot instance, production under its switch", async () => {
     const sepolia = attestation();
     const production = { ...sepolia, chainId: 8453, environment: "production" as const };
     // Every RPC read fails, so an admitted observation stops at deployment attestation.
@@ -506,16 +506,21 @@ describe("Megapot v2 Worker runtime adapters", () => {
     for (const [deployment, safePilot] of [
       [production, undefined],
       [production, { productionEnabled: false }],
-      [sepolia, { productionEnabled: true }],
     ] as const) {
       await expect(observe(deployment, safePilot)).rejects.toMatchObject({
         reason: "production_disabled",
       });
     }
-    await expect(observe(production, { productionEnabled: true })).rejects.toMatchObject({
-      reason: "observation_invalid",
-      stage: "deployment_attestation",
-    });
+    // Admitted observations, production under its switch and the Base Sepolia rehearsal.
+    for (const [deployment, productionEnabled] of [
+      [production, true],
+      [sepolia, false],
+    ] as const) {
+      await expect(observe(deployment, { productionEnabled })).rejects.toMatchObject({
+        reason: "observation_invalid",
+        stage: "deployment_attestation",
+      });
+    }
   });
 
   test("fails closed on the wrong chain, stale code, or mismatched Jackpot wiring", async () => {

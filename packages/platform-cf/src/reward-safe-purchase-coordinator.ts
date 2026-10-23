@@ -103,6 +103,7 @@ export function makeRewardSafePurchaseCoordinator(
       drawingId: candidate.drawingId,
       preparedBlockNumber,
       transactionBuilderFile: rewardSafeTransactionBuilderFile({
+        chainId: candidate.deployment.chainId,
         safeAddress: candidate.deployment.custodyAddress,
         call,
         name: `Pirate ticket ${candidate.legId} drawing ${candidate.drawingId}`,
@@ -128,6 +129,7 @@ export function makeRewardSafePurchaseCoordinator(
     });
     const execution = yield* readRewardSafeExecution(options, {
       effectId,
+      chainId: settlement.deployment.chainId,
       safeAddress: settlement.deployment.custodyAddress,
       to: settlement.deployment.jackpotAddress,
       calldata: settlement.calldata,

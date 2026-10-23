@@ -12,6 +12,7 @@ import {
   classifyRewardSafeExecution,
   type RewardSafeCommand,
   type RewardSafeOuterTransaction,
+  rewardSafeChainAdmitted,
 } from "./reward-safe-execution.ts";
 import { makeControlPlaneRewardSafeExecutionStore } from "./reward-safe-execution-repository.ts";
 import { findRewardSafeExecutions } from "./reward-safe-reconciliation.ts";
@@ -53,16 +54,17 @@ export function assertRewardSafeRuntimeOptions(input: RewardSafeRuntimeOptions):
   }
 }
 
-/** Owner-executed Safe custody exists only on Base, and production needs its own switch. */
+/** Safe custody runs on Base or, outside production, Base Sepolia; production needs its switch. */
 export function admitRewardSafeDeployment(
   options: RewardSafeRuntimeOptions,
   deployment: { readonly environment: string; readonly chainId: number },
 ): Effect.Effect<void, RewardSafeSettlementFailed> {
-  return deployment.chainId !== 8453
-    ? Effect.fail(rewardSafeFailed("not_safe_chain"))
-    : deployment.environment === "production" && !options.productionEnabled
-      ? Effect.fail(rewardSafeFailed("production_disabled"))
-      : Effect.void;
+  if (deployment.chainId !== 8453 && deployment.chainId !== 84_532) {
+    return Effect.fail(rewardSafeFailed("not_safe_chain"));
+  }
+  return rewardSafeChainAdmitted({ ...deployment, productionEnabled: options.productionEnabled })
+    ? Effect.void
+    : Effect.fail(rewardSafeFailed("production_disabled"));
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -110,6 +112,7 @@ export function makeRewardSafeExecutionScanner(options: RewardSafeRuntimeOptions
     const findings = yield* Effect.tryPromise({
       try: () =>
         findRewardSafeExecutions({
+          chainId: safe.chainId,
           safeAddress: safe.safeAddress,
           calls: state.calls,
           logs,
@@ -151,6 +154,7 @@ export function readRewardSafeExecution(
   options: RewardSafeRuntimeOptions,
   input: {
     readonly effectId: string;
+    readonly chainId: number;
     readonly safeAddress: string;
     readonly to: string;
     readonly calldata: Hex;
@@ -193,6 +197,7 @@ export function readRewardSafeExecution(
     let outcome: "success" | "failure";
     try {
       command = rewardSafeCommandFromExecution({
+        chainId: input.chainId,
         safeAddress: input.safeAddress,
         nonce: input.safeNonce,
         call: rewardSafeCall({ effectId: input.effectId, to: input.to, data: input.calldata }),

@@ -10,9 +10,9 @@ import { Effect } from "effect";
 import { sha256, toBytes } from "viem";
 import type { MegapotV2DeploymentAttestation } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
-const BASE_CHAIN_ID = 8453;
 
 const rejected = (reason: MegapotDrawingObservationRejected["reason"]) =>
   new MegapotDrawingObservationRejected({ reason });
@@ -118,9 +118,9 @@ export function makeMegapotDrawingObserver(input: {
   readonly rpc: MegapotV2RpcClient;
   readonly observationTtlMs: number;
   /**
-   * Set only by the Safe pilot cycle: that instance observes Base deployments, with
-   * production behind the pilot's own switch. Every other instance is limited to Base
-   * Sepolia outside production.
+   * Set only by the Safe pilot cycle: that instance observes Safe-custody deployments on
+   * Base, with production behind the pilot's own switch, or on Base Sepolia outside
+   * production. Every other instance is limited to Base Sepolia outside production.
    */
   readonly safePilot?: { readonly productionEnabled: boolean };
   readonly now?: () => number;
@@ -138,8 +138,11 @@ export function makeMegapotDrawingObserver(input: {
       const admitted =
         input.safePilot === undefined
           ? candidate.environment !== "production" && candidate.chainId === BASE_SEPOLIA_CHAIN_ID
-          : candidate.chainId === BASE_CHAIN_ID &&
-            (candidate.environment !== "production" || input.safePilot.productionEnabled);
+          : rewardSafeChainAdmitted({
+              chainId: candidate.chainId,
+              environment: candidate.environment,
+              productionEnabled: input.safePilot.productionEnabled,
+            });
       if (!admitted) return yield* rejected("production-disabled");
       const expectedDeployment = deployment(candidate);
       if (

@@ -6,6 +6,7 @@ import type {
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { type MegapotV2RpcClient, MegapotV2RpcFailed } from "./megapot-v2-rpc.ts";
+import { rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 type CustodySolvencyRpcStage =
   | "deployment_attestation"
@@ -79,8 +80,8 @@ export function makeCustodySolvencyCoordinator(input: {
   readonly ttlSeconds?: number;
   /**
    * Set only by the Safe pilot cycle: that instance observes the Safe's custody on
-   * Base, with production behind the pilot's own switch. Every other instance is
-   * limited to Base Sepolia outside production.
+   * Base, with production behind the pilot's own switch, or on Base Sepolia outside
+   * production. Every other instance is limited to Base Sepolia outside production.
    */
   readonly safePilot?: { readonly productionEnabled: boolean };
   readonly now?: () => number;
@@ -113,8 +114,11 @@ export function makeCustodySolvencyCoordinator(input: {
         const admitted =
           input.safePilot === undefined
             ? candidate.environment !== "production" && candidate.chainId === 84_532
-            : candidate.chainId === 8453 &&
-              (candidate.environment !== "production" || input.safePilot.productionEnabled);
+            : rewardSafeChainAdmitted({
+                chainId: candidate.chainId,
+                environment: candidate.environment,
+                productionEnabled: input.safePilot.productionEnabled,
+              });
         if (!admitted) return yield* failed("production_disabled");
         const attested = yield* rpcEffect("deployment_attestation", () =>
           input.rpc.attestDeployment(),

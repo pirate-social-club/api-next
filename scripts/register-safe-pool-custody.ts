@@ -1,6 +1,6 @@
 /**
- * Registers the owner's Safe as the production Megapot custody for the Safe pool
- * pilot. It verifies the Megapot deployment and the Safe on Base and prints what it
+ * Registers the owner's Safe as the Megapot custody for the Safe pool pilot: on Base
+ * for production, or on Base Sepolia for a staging rehearsal. It verifies the Megapot deployment and the Safe on Base and prints what it
  * found; only with --apply does it record, in one transaction, the settlement asset,
  * the deployment attestation and the Safe's owner-executed nonce authority. It never
  * signs or sends. Production writes still need the reward run lease.
@@ -25,9 +25,12 @@ const Hash = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{64}$/u));
 
 const SafeCustodyManifest = Schema.Struct({
   domain: Schema.Literal("pirate.megapot-safe-custody-bootstrap.v1"),
-  attestation_id: Schema.Literal("megapot-base-v2-safe-pilot"),
-  environment: Schema.Literal("production"),
-  chain_id: Schema.Literal(8_453),
+  attestation_id: Schema.Literals([
+    "megapot-base-v2-safe-pilot",
+    "megapot-base-sepolia-v2-safe-pilot",
+  ]),
+  environment: Schema.Literals(["production", "staging"]),
+  chain_id: Schema.Literals([8_453, 84_532]),
   jackpot_address: Address,
   usdc_address: Address,
   ticket_nft_address: Address,
@@ -63,11 +66,20 @@ export type SafeCustodyPlan = Readonly<{
   verifiedAt: string;
 }>;
 
-const manifestUrl = new URL("../infra/megapot/base-v2-safe-pilot.json", import.meta.url);
+const manifests = {
+  production: new URL("../infra/megapot/base-v2-safe-pilot.json", import.meta.url),
+  // A staging rehearsal: one active attestation per environment, so the staging EOA
+  // attestation must be retired first, and EOA rewards must be off there.
+  staging: new URL("../infra/megapot/base-sepolia-v2-safe-pilot.json", import.meta.url),
+} as const;
 
-async function loadManifest(): Promise<SafeCustodyManifest> {
-  const value: unknown = JSON.parse(await readFile(manifestUrl, "utf8"));
-  return Schema.decodeUnknownSync(SafeCustodyManifest, { onExcessProperty: "error" })(value);
+async function loadManifest(environment: "production" | "staging"): Promise<SafeCustodyManifest> {
+  const value: unknown = JSON.parse(await readFile(manifests[environment], "utf8"));
+  const manifest = Schema.decodeUnknownSync(SafeCustodyManifest, { onExcessProperty: "error" })(
+    value,
+  );
+  if (manifest.environment !== environment) throw new Error("Manifest environment mismatch");
+  return manifest;
 }
 
 function lowerAddress(value: string, name: string): string {
@@ -202,20 +214,25 @@ export async function persistSafePoolCustody(
             text: `INSERT INTO reward_asset_whitelist (
                      chain_id, token_address, decimals, symbol, asset_kind, environment,
                      status, policy_version, activated_at, plain_erc20_verified_at
-                   ) VALUES ($1,$2,6,'USDC','settlement_usdc','production','active',
+                   ) VALUES ($1,$2,6,'USDC','settlement_usdc',$4,'active',
                              'megapot-settlement-usdc-v1',$3::timestamptz,$3::timestamptz)
                    ON CONFLICT (chain_id, token_address) DO NOTHING`,
-            values: [manifest.chain_id, manifest.usdc_address, plan.verifiedAt],
+            values: [
+              manifest.chain_id,
+              manifest.usdc_address,
+              plan.verifiedAt,
+              manifest.environment,
+            ],
             readonly: false,
           });
           yield* check(
             "safe-pool-custody.asset.verify",
             `SELECT 1 FROM reward_asset_whitelist
               WHERE chain_id=$1 AND token_address=$2 AND decimals=6 AND symbol='USDC'
-                AND asset_kind='settlement_usdc' AND environment='production'
+                AND asset_kind='settlement_usdc' AND environment=$3
                 AND status='active'`,
-            [manifest.chain_id, manifest.usdc_address],
-            "The production USDC asset row does not match",
+            [manifest.chain_id, manifest.usdc_address, manifest.environment],
+            "The USDC asset row does not match",
           );
           yield* transaction.execute({
             label: "safe-pool-custody.attestation",
@@ -225,7 +242,7 @@ export async function persistSafePoolCustody(
                      jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
                      attestation_block_number, attestation_block_hash, abi_version, status,
                      verified_at
-                   ) VALUES ($1,'production',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                   ) VALUES ($1,$15,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
                              'megapot_v2','active',$14::timestamptz)
                    ON CONFLICT (attestation_id) DO NOTHING`,
             values: [
@@ -243,13 +260,14 @@ export async function persistSafePoolCustody(
               plan.anchorBlockNumber.toString(),
               plan.anchorBlockHash,
               plan.verifiedAt,
+              manifest.environment,
             ],
             readonly: false,
           });
           yield* check(
             "safe-pool-custody.attestation.verify",
             `SELECT 1 FROM megapot_deployment_attestations
-              WHERE attestation_id=$1 AND environment='production' AND chain_id=$2
+              WHERE attestation_id=$1 AND environment=$12 AND chain_id=$2
                 AND jackpot_address=$3 AND usdc_address=$4 AND ticket_nft_address=$5
                 AND custody_address=$6 AND referrer_address=$7 AND source_tag=$8
                 AND jackpot_code_hash=$9 AND usdc_code_hash=$10
@@ -266,8 +284,9 @@ export async function persistSafePoolCustody(
               manifest.jackpot_code_hash,
               manifest.usdc_code_hash,
               manifest.ticket_nft_code_hash,
+              manifest.environment,
             ],
-            "The production attestation does not match this Safe and deployment",
+            "The attestation does not match this Safe and deployment",
           );
           yield* transaction.execute({
             label: "safe-pool-custody.nonce-authority",
@@ -309,14 +328,17 @@ if (import.meta.main) {
   try {
     const args = Bun.argv.slice(2);
     if (args.some((argument) => argument !== "--apply")) throw new Error("usage: [--apply]");
-    if (process.env.API_NEXT_ENV !== "production") {
-      throw new Error("Safe pool custody is registered only with API_NEXT_ENV=production");
+    const environment = process.env.API_NEXT_ENV;
+    if (environment !== "production" && environment !== "staging") {
+      throw new Error(
+        "Safe pool custody is registered only with API_NEXT_ENV=production or staging",
+      );
     }
     const rpcUrl = new URL(required("SAFE_POOL_RPC_URL"));
     if (rpcUrl.protocol !== "https:" || rpcUrl.username || rpcUrl.password) {
       throw new Error("SAFE_POOL_RPC_URL must be a credential-free HTTPS URL");
     }
-    const manifest = await loadManifest();
+    const manifest = await loadManifest(environment);
     const safeAddress = lowerAddress(required("SAFE_POOL_SAFE_ADDRESS"), "SAFE_POOL_SAFE_ADDRESS");
     const referrerAddress = lowerAddress(
       required("SAFE_POOL_REFERRER_ADDRESS"),

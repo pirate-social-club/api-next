@@ -52,6 +52,50 @@ const inspect = (safeAddress: string, singleton = manifest.safe_singleton_addres
     requiredConfirmations: 3,
   });
 
+const stagingManifest = JSON.parse(
+  await readFile(
+    new URL("../infra/megapot/base-sepolia-v2-safe-pilot.json", import.meta.url),
+    "utf8",
+  ),
+);
+
+describe("Safe pool custody manifests", () => {
+  test("match the fork evidence on Base and the Base Sepolia deployment manifest", async () => {
+    const evidence = JSON.parse(
+      await readFile(
+        new URL("../infra/megapot/safe-pilot/fork-evidence.json", import.meta.url),
+        "utf8",
+      ),
+    ).contracts;
+    expect(manifest).toMatchObject({
+      environment: "production",
+      chain_id: 8453,
+      jackpot_address: evidence.jackpot.address.toLowerCase(),
+      jackpot_code_hash: evidence.jackpot.codeHash,
+      usdc_address: evidence.usdc.address.toLowerCase(),
+      usdc_code_hash: evidence.usdc.codeHash,
+      ticket_nft_address: evidence.nft.address.toLowerCase(),
+      ticket_nft_code_hash: evidence.nft.codeHash,
+      safe_singleton_address: evidence.safe.address.toLowerCase(),
+    });
+    const sepolia = JSON.parse(
+      await readFile(new URL("../infra/megapot/base-sepolia-v2.json", import.meta.url), "utf8"),
+    );
+    expect(stagingManifest).toMatchObject({
+      environment: "staging",
+      chain_id: 84532,
+      jackpot_address: sepolia.jackpot_address,
+      jackpot_code_hash: sepolia.jackpot_code_hash,
+      usdc_address: sepolia.usdc_address,
+      usdc_code_hash: sepolia.usdc_code_hash,
+      ticket_nft_address: sepolia.ticket_nft_address,
+      ticket_nft_code_hash: sepolia.ticket_nft_code_hash,
+      // The same Safe 1.4.1 singleton address and code are deployed on Base Sepolia.
+      safe_singleton_address: manifest.safe_singleton_address,
+    });
+  });
+});
+
 describe("Safe pool custody inspection", () => {
   test("refuses an address that is not a Safe on the pinned singleton", async () => {
     await expect(inspect(SAFE, `0x${"3".repeat(40)}`)).rejects.toThrow("not a Safe 1.4.1 proxy");
@@ -112,5 +156,33 @@ suite("Safe pool custody registration", () => {
     await expect(persistSafePoolCustody(layer, await inspect(OTHER_SAFE))).rejects.toThrow(
       "does not match this Safe",
     );
+  });
+
+  test("records a staging rehearsal custody on Base Sepolia", async () => {
+    const layer = makeDirectPostgresControlPlaneLayer(scoped);
+    const plan = await inspectSafePoolCustody({
+      manifest: stagingManifest,
+      rpc,
+      safe: reader(stagingManifest.safe_singleton_address),
+      safeAddress: OTHER_SAFE,
+      referrerAddress: REFERRER,
+      sourceTag: SOURCE,
+      requiredConfirmations: 3,
+    });
+    await persistSafePoolCustody(layer, plan);
+    expect(
+      (
+        await admin.query(
+          `SELECT attestation.environment, attestation.chain_id::int AS chain_id,
+                  signer.nonce_authority
+             FROM megapot_deployment_attestations attestation
+             JOIN reward_signer_nonces signer
+               ON signer.chain_id=attestation.chain_id
+              AND signer.signer_address=attestation.custody_address
+            WHERE attestation.attestation_id=$1`,
+          [stagingManifest.attestation_id],
+        )
+      ).rows,
+    ).toEqual([{ environment: "staging", chain_id: 84532, nonce_authority: "safe_owner_v1" }]);
   });
 });

@@ -52,6 +52,7 @@ function same(left: string, right: string): boolean {
  * an earlier execution with identical content cannot have been this call.
  */
 export async function findRewardSafeExecutions(input: {
+  readonly chainId: number;
   readonly safeAddress: string;
   readonly calls: readonly (RewardSafeCall & Readonly<{ notBeforeBlock?: bigint }>)[];
   readonly logs: readonly MegapotV2SafeExecutionLog[];
@@ -119,6 +120,7 @@ export async function findRewardSafeExecutions(input: {
       continue;
     }
     const command = rewardSafeCommandFromExecution({
+      chainId: input.chainId,
       safeAddress: input.safeAddress,
       nonce: safeNonce,
       call: match.call,

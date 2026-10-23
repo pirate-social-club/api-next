@@ -54,6 +54,7 @@ export function makeRewardSafePayoutCoordinator(options: RewardSafeRuntimeOption
       effectId: call.effectId,
       preparedBlockNumber,
       transactionBuilderFile: rewardSafeTransactionBuilderFile({
+        chainId: candidate.chainId,
         safeAddress: candidate.custodyAddress,
         call,
         name: `Pirate payout ${call.effectId}`,
@@ -76,6 +77,7 @@ export function makeRewardSafePayoutCoordinator(options: RewardSafeRuntimeOption
       });
     const execution = yield* readRewardSafeExecution(options, {
       effectId,
+      chainId: settlement.deployment.chainId,
       safeAddress: settlement.deployment.custodyAddress,
       to: settlement.tokenAddress,
       calldata: settlement.calldata,

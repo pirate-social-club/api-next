@@ -33,9 +33,23 @@ const safeTypes = {
   ],
 } as const;
 
+/**
+ * Owner-executed Safe custody runs on Base, with production behind the pilot's own
+ * switch, or on Base Sepolia outside production so that staging can rehearse it.
+ */
+export function rewardSafeChainAdmitted(input: {
+  readonly chainId: number;
+  readonly environment: string;
+  readonly productionEnabled: boolean;
+}): boolean {
+  return input.chainId === 8453
+    ? input.environment !== "production" || input.productionEnabled
+    : input.chainId === 84_532 && input.environment !== "production";
+}
+
 /** The pilot pays execution gas outside the pool; native value and refunds are zero. */
 export type RewardSafeCommand = Readonly<{
-  chainId: 8453;
+  chainId: 8453 | 84532;
   safeAddress: Address;
   nonce: bigint;
   to: Address;
@@ -79,7 +93,7 @@ function hash(value: string): Hex {
 /** Safe 1.4.1 EIP-712 identity, distinct from the outer execution transaction hash. */
 export function rewardSafeTransactionHash(command: RewardSafeCommand): Hex {
   if (
-    command.chainId !== 8453 ||
+    (command.chainId !== 8453 && command.chainId !== 84_532) ||
     command.nonce < 0n ||
     command.safeTxGas < 0n ||
     (command.operation !== 0 && command.operation !== 1) ||

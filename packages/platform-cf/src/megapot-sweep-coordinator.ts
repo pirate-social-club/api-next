@@ -7,6 +7,7 @@ import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { MEGAPOT_REFERRAL_SPLIT_SCALE } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 export class MegapotSweepCoordinatorFailed extends Data.TaggedError(
   "MegapotSweepCoordinatorFailed",
@@ -98,12 +99,15 @@ export function makeMegapotSweepCoordinator(input: {
     const existing = yield* input.store.findResult(sweepId);
     if (existing !== null) return completed(existing);
     const candidate = yield* input.store.loadCandidate(command);
-    // Ticket-first pools are owner-executed Safe pools on Base; every other pool is
-    // still limited to Base Sepolia outside production.
+    // Ticket-first pools are owner-executed Safe pools; every other pool is still
+    // limited to Base Sepolia outside production.
     const admitted =
       candidate.purchaseOrder === "ticket_first_v1"
-        ? candidate.chainId === 8453 &&
-          (candidate.environment !== "production" || input.safeProductionEnabled === true)
+        ? rewardSafeChainAdmitted({
+            chainId: candidate.chainId,
+            environment: candidate.environment,
+            productionEnabled: input.safeProductionEnabled === true,
+          })
         : candidate.environment !== "production" && candidate.chainId === 84_532;
     if (!admitted) return yield* failed("production_disabled");
     yield* rpcEffect(() => input.rpc.attestDeployment()).pipe(
