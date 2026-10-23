@@ -310,11 +310,13 @@ export function makeControlPlaneMegapotWorkRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "megapot-work.chain-effects.read",
+            // These coordinators sign and broadcast. A Safe effect has no signed
+            // bytes and is reconciled only by matching the owner's execution.
             text: `SELECT effect_id,effect_kind FROM reward_chain_effects
                     WHERE effect_kind IN (
                       'usdc_approval','ticket_purchase','winnings_claim','reward_payout',
                       'reward_refund'
-                    ) AND state IN (
+                    ) AND execution_mode='eoa' AND state IN (
                       'nonce_reserved','prepared','broadcast_pending','confirming',
                       'reconciliation_required'
                     )
