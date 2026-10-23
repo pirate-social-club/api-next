@@ -8,6 +8,9 @@ const BINDING_KINDS = {
   MEDIA_IMMUTABLE_ORIGINALS: "platform",
 } as const satisfies { [K in keyof VideoSourceGatewayEnv]-?: "platform" | "secret" | "var" };
 type GatewayConfig = {
+  name?: string;
+  workers_dev?: boolean;
+  preview_urls?: boolean;
   hyperdrive?: readonly { binding: string }[];
   r2_buckets?: readonly { binding: string }[];
   vars?: unknown;
@@ -21,6 +24,22 @@ const config = BunRuntime.JSONC.parse(
     new URL("../apps/video-source-gateway/wrangler.jsonc", import.meta.url),
   ).text(),
 ) as GatewayConfig & { env: Record<string, GatewayConfig> };
+
+test("the staging provider source origin has a reachable Worker route", async () => {
+  const media = BunRuntime.JSONC.parse(
+    await BunRuntime.file(
+      new URL("../apps/media-processor-worker/wrangler.jsonc", import.meta.url),
+    ).text(),
+  ) as { env: { staging: { vars: { VIDEO_SOURCE_GATEWAY_ORIGIN: string } } } };
+  const staging = config.env.staging;
+  expect(media.env.staging.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe(
+    `https://${staging?.name}.piratesocialclub.workers.dev`,
+  );
+  expect(staging?.workers_dev).toBe(true);
+  expect(staging?.preview_urls).toBe(false);
+  expect(config.workers_dev).toBe(false);
+  expect(config.env.production?.workers_dev).toBe(false);
+});
 
 test("video source gateway has only its two bindings and never persists invocation URLs or traces", () => {
   for (const environment of ["development", "staging", "production"] as const) {

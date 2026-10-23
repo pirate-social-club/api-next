@@ -38,7 +38,7 @@
   "env": {
     "staging": {
       "name": "pirate-video-source-gateway-staging",
-      "workers_dev": false,
+      "workers_dev": true,
       "preview_urls": false,
       "hyperdrive": [
         {
