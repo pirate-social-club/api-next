@@ -21,11 +21,19 @@ export class RewardSafePurchaseStoreFailed extends Data.TaggedError(
     | "not-found"
     | "not-safe-custody"
     | "outcome-unknown"
+    | "recovery-not-isolated"
+    | "recovery-refused"
     | "unavailable";
 }> {}
 
 const failed = (reason: RewardSafePurchaseStoreFailed["reason"]) =>
   new RewardSafePurchaseStoreFailed({ reason });
+
+// The owner-only late purchase recovery names why it refused.
+const recoveryRefusals: Readonly<Record<string, RewardSafePurchaseStoreFailed["reason"]>> = {
+  PR004: "recovery-not-isolated",
+  PR005: "recovery-refused",
+};
 
 const mapped = <A, E, R>(effect: Effect.Effect<A, E | ControlPlaneError, R>) =>
   effect.pipe(
@@ -102,6 +110,47 @@ type RewardSafePurchaseCandidate = Readonly<{
   sourceTag: Hex;
   deployment: ReturnType<typeof deployment>;
 }>;
+
+const SETTLEMENT_SELECT = `
+  SELECT effect.effect_id, effect.version, effect.failure_reason, effect.transaction_hash,
+         effect.reserved_amount_atomic,
+         effect.safe_nonce, effect.calldata, effect.safe_execution_outcome, effect.broadcast_at,
+         purchase.pool_leg_id, purchase.drawing_id, purchase.normal_one, purchase.normal_two,
+         purchase.normal_three, purchase.normal_four, purchase.normal_five, purchase.bonusball,
+         drawing.status AS drawing_status, drawing.terminal_reason AS drawing_terminal_reason,
+         ${deploymentColumns}
+    FROM reward_chain_effects effect
+    JOIN megapot_ticket_purchase_effects purchase
+      ON purchase.purchase_effect_id=effect.effect_id
+    JOIN megapot_deployment_attestations attestation
+      ON attestation.attestation_id=purchase.attestation_id
+    LEFT JOIN megapot_pool_drawings drawing
+      ON drawing.purchase_effect_id=effect.effect_id`;
+
+function settlementFromRow(effectId: string, row: Row) {
+  return {
+    effectId,
+    transactionHash: text(row, "transaction_hash"),
+    observedAt: instant(row, "broadcast_at"),
+    safeNonce: bigint(row, "safe_nonce"),
+    calldata: text(row, "calldata") as Hex,
+    outcome: text(row, "safe_execution_outcome") as "success" | "failure",
+    legId: text(row, "pool_leg_id"),
+    drawingId: bigint(row, "drawing_id"),
+    ticket: {
+      normals: [
+        Number(bigint(row, "normal_one")),
+        Number(bigint(row, "normal_two")),
+        Number(bigint(row, "normal_three")),
+        Number(bigint(row, "normal_four")),
+        Number(bigint(row, "normal_five")),
+      ] as const,
+      bonusball: Number(bigint(row, "bonusball")),
+    },
+    sourceTag: text(row, "source_tag") as Hex,
+    deployment: deployment(row),
+  };
+}
 
 export function makeControlPlaneRewardSafePurchaseStore() {
   return {
@@ -383,48 +432,115 @@ export function makeControlPlaneRewardSafePurchaseStore() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "reward-safe-purchase.settlement.read",
-            text: `SELECT effect.transaction_hash, effect.safe_nonce, effect.calldata,
-                          effect.safe_execution_outcome, effect.broadcast_at,
-                          purchase.pool_leg_id, purchase.drawing_id, purchase.normal_one,
-                          purchase.normal_two, purchase.normal_three, purchase.normal_four,
-                          purchase.normal_five, purchase.bonusball, ${deploymentColumns}
-                     FROM reward_chain_effects effect
-                     JOIN megapot_ticket_purchase_effects purchase
-                       ON purchase.purchase_effect_id=effect.effect_id
-                     JOIN megapot_deployment_attestations attestation
-                       ON attestation.attestation_id=purchase.attestation_id
+            text: `${SETTLEMENT_SELECT}
                     WHERE effect.effect_id=$1 AND effect.execution_mode='safe_owner_v1'
                       AND effect.state='confirming'`,
             values: [effectId],
             readonly: true,
           });
           if (result.rows.length === 0) return null;
-          const row = result.rows[0] as Row;
           return yield* Effect.try({
-            try: () => ({
-              effectId,
-              transactionHash: text(row, "transaction_hash"),
-              observedAt: instant(row, "broadcast_at"),
-              safeNonce: bigint(row, "safe_nonce"),
-              calldata: text(row, "calldata") as Hex,
-              outcome: text(row, "safe_execution_outcome") as "success" | "failure",
-              legId: text(row, "pool_leg_id"),
-              drawingId: bigint(row, "drawing_id"),
-              ticket: {
-                normals: [
-                  Number(bigint(row, "normal_one")),
-                  Number(bigint(row, "normal_two")),
-                  Number(bigint(row, "normal_three")),
-                  Number(bigint(row, "normal_four")),
-                  Number(bigint(row, "normal_five")),
-                ] as const,
-                bonusball: Number(bigint(row, "bonusball")),
-              },
-              sourceTag: text(row, "source_tag") as Hex,
-              deployment: deployment(row),
-            }),
+            try: () => settlementFromRow(effectId, result.rows[0] as Row),
             catch: () => failed("invalid-row"),
           });
+        }),
+      ),
+
+    /**
+     * Bound ticket purchases held for reconciliation, with why they were held and where
+     * their drawing stands; one effect, or every one on an attestation.
+     */
+    loadHeld: (input: { readonly effectId: string } | { readonly attestationId: string }) =>
+      mapped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const byEffect = "effectId" in input;
+          const result = yield* db.execute<Row>({
+            label: "reward-safe-purchase.held.read",
+            text: `${SETTLEMENT_SELECT}
+                    WHERE ${byEffect ? "effect.effect_id=$1" : "purchase.attestation_id=$1"}
+                      AND effect.execution_mode='safe_owner_v1'
+                      AND effect.effect_kind='ticket_purchase'
+                      AND effect.state='reconciliation_required'
+                    ORDER BY effect.effect_id`,
+            values: [byEffect ? input.effectId : input.attestationId],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () =>
+              (result.rows as Row[]).map((row) => ({
+                ...settlementFromRow(text(row, "effect_id"), row),
+                effectVersion: bigint(row, "version"),
+                reservedAtomic: bigint(row, "reserved_amount_atomic"),
+                failureReason: typeof row.failure_reason === "string" ? row.failure_reason : null,
+                drawingStatus: typeof row.drawing_status === "string" ? row.drawing_status : null,
+                drawingTerminalReason:
+                  typeof row.drawing_terminal_reason === "string"
+                    ? row.drawing_terminal_reason
+                    : null,
+              })),
+            catch: () => failed("invalid-row"),
+          });
+        }),
+      ),
+
+    /**
+     * Settle one late purchase through the owner-only database function, which checks
+     * the stopped system, the exact effect version and everything Pirate recorded.
+     */
+    recoverLate: (input: {
+      readonly effectId: string;
+      readonly effectVersion: bigint;
+      readonly brakeRevision: bigint;
+      readonly ticketId: bigint;
+      readonly purchaseLogIndex: number;
+      readonly mintLogIndex: number;
+      readonly blockNumber: bigint;
+      readonly blockHash: string;
+      readonly receiptHash: string;
+      readonly confirmations: number;
+      readonly referralFeesAtomic: bigint;
+      readonly lpEarningsAtomic: bigint;
+      readonly verifiedAt: string;
+    }) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.execute({
+          label: "reward-safe-purchase.late-recovery.apply",
+          text: `SELECT recover_late_safe_purchase_v1(
+                   $1,$2::bigint,$3::bigint,$4::numeric,$5,$6,$7::bigint,$8,$9,$10,
+                   $11::numeric,$12::numeric,$13::timestamptz)`,
+          values: [
+            input.effectId,
+            input.effectVersion.toString(),
+            input.brakeRevision.toString(),
+            input.ticketId.toString(),
+            input.purchaseLogIndex,
+            input.mintLogIndex,
+            input.blockNumber.toString(),
+            input.blockHash,
+            input.receiptHash,
+            input.confirmations,
+            input.referralFeesAtomic.toString(),
+            input.lpEarningsAtomic.toString(),
+            input.verifiedAt,
+          ],
+          readonly: false,
+        });
+      }).pipe(
+        Effect.mapError((error) => {
+          const refusal =
+            typeof error === "object" &&
+            error !== null &&
+            "_tag" in error &&
+            error._tag === "ControlPlaneStatementFailed" &&
+            "sqlState" in error &&
+            typeof error.sqlState === "string"
+              ? recoveryRefusals[error.sqlState]
+              : undefined;
+          return refusal === undefined
+            ? mapRewardReservationFailure<never, RewardSafePurchaseStoreFailed>(error, failed)
+            : failed(refusal);
         }),
       ),
 

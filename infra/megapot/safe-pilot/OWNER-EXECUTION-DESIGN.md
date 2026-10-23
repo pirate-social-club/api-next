@@ -111,9 +111,29 @@ A purchase not bound by its deadline (`entry_cutoff_at` minus the minimum entry
 window) closes its drawing as `closed_purchase_unavailable` but keeps both the
 prepared call and its reservation. If the owner's execution is bound later, the
 effect goes to `reconciliation_required` and the reservation stays, so the leg
-cannot refund it; the Safe holds a real ticket for a closed drawing. Resolving that
-case is an owner procedure that is not yet built. To keep the scan from being the
-cause, a purchase is prepared only when the scan can catch up to the settled head
+cannot refund it; the Safe holds a real ticket for a closed drawing. The custody
+solvency observation still counts that reservation on top of the USDC the purchase
+spent, which in the October 23 rehearsal refused every payout.
+
+The owner settles that case with `scripts/safe-pool-recover-late-purchase.ts`. Its dry
+run re-verifies each held purchase through the same checks as settlement: the
+canonical receipt of the exact prepared call, a ticket for the intended drawing, and
+the Safe as its owner. With `--apply` it settles one purchase through the owner-only
+function `recover_late_safe_purchase_v1` (migration 0315), which refuses unless
+reward operations are paused at the stated brake revision and no run holds a live
+lease. It requires the effect version just assessed and the purchase held only as
+`safe_purchase_after_close` behind a drawing closed as `safe_purchase_not_executed`.
+One transaction then confirms the effect and stores the receipt evidence. It records
+the ticket as `held_late` inventory and moves the cost from reserved to spent, and the
+effect transition records the evidence. The closed drawing and its history do not
+change. Entries never open and no beneficiary snapshot is made. A `held_late` ticket
+has no transitions, so its winnings are neither claimed nor assigned until owner
+terms for late and empty drawings are ratified. A purchase that landed in another
+drawing, an orphaned or unreadable receipt, or a ticket the Safe does not own stays
+held with its reservation. A referral fee on such a purchase is kept in its receipt
+evidence but not entered in platform referral revenue.
+
+To keep the scan from being the cause, a purchase is prepared only when the scan can catch up to the settled head
 and bind one more cycle's executions before the purchase deadline; otherwise
 preparation returns `scan_lagging`. The October 23 chain rehearsal produced three
 such late purchases while its scan was stalled and then catching up.

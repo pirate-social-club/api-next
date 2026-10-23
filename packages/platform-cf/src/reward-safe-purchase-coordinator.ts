@@ -31,6 +31,82 @@ import {
 /** The pilot cycle runs every minute. */
 const PILOT_CYCLE_MS = 60_000;
 
+type RewardSafePurchaseSettlement = NonNullable<
+  Effect.Success<
+    ReturnType<ReturnType<typeof makeControlPlaneRewardSafePurchaseStore>["loadSettlement"]>
+  >
+>;
+
+/**
+ * Everything the chain must show before a bound purchase may count as a ticket: the
+ * canonical receipt of the exact prepared call, a ticket for the intended drawing, and
+ * the Safe as its owner at that block. Settlement and the late purchase recovery both
+ * decide from this alone. `held` names why the evidence does not qualify.
+ */
+export function verifyRewardSafePurchase(
+  options: RewardSafeRuntimeOptions,
+  settlement: RewardSafePurchaseSettlement,
+) {
+  const rpc = <A>(operation: () => Promise<A>) =>
+    Effect.tryPromise({ try: operation, catch: () => rewardSafeFailed("rpc_unavailable") });
+  return Effect.gen(function* () {
+    const execution = yield* readRewardSafeExecution(options, {
+      effectId: settlement.effectId,
+      chainId: settlement.deployment.chainId,
+      safeAddress: settlement.deployment.custodyAddress,
+      to: settlement.deployment.jackpotAddress,
+      calldata: settlement.calldata,
+      safeNonce: settlement.safeNonce,
+      transactionHash: settlement.transactionHash,
+      recordedOutcome: settlement.outcome,
+      observedAt: settlement.observedAt,
+    });
+    if (execution.kind === "pending") return { kind: "pending" as const };
+    if (execution.kind === "invalid") return { kind: "held" as const, reason: execution.reason };
+    if (execution.outcome === "failure") return { kind: "failed" as const, execution };
+    let evidence: ReturnType<typeof validateMegapotPurchaseReceipt>;
+    try {
+      evidence = validateMegapotPurchaseReceipt({
+        deployment: settlement.deployment,
+        receipt: execution.receipt,
+        drawingId: settlement.drawingId,
+        source: settlement.sourceTag,
+        tickets: [settlement.ticket],
+        safeExecution: { command: execution.command, transaction: execution.transaction },
+      });
+    } catch (error) {
+      // Includes a late execution that bought a ticket in a later drawing.
+      return {
+        kind: "held" as const,
+        reason:
+          error instanceof MegapotV2EvidenceInvalid && error.reason === "wrong-drawing"
+            ? "safe_purchase_wrong_drawing"
+            : "safe_purchase_receipt_invalid",
+      };
+    }
+    const ticketId = evidence.ticketIds[0];
+    const purchaseLogIndex = evidence.purchaseLogIndices[0];
+    const mintLogIndex = evidence.mintLogIndices[0];
+    if (ticketId === undefined || purchaseLogIndex === undefined || mintLogIndex === undefined) {
+      return { kind: "held" as const, reason: "safe_purchase_receipt_incomplete" };
+    }
+    const owner = yield* rpc(() =>
+      options.rpc.readTicketOwner(ticketId, execution.receipt.blockNumber),
+    );
+    if (owner.toLowerCase() !== settlement.deployment.custodyAddress.toLowerCase()) {
+      return { kind: "held" as const, reason: "safe_purchase_ticket_owner_mismatch" };
+    }
+    return {
+      kind: "verified" as const,
+      execution,
+      evidence,
+      ticketId,
+      purchaseLogIndex,
+      mintLogIndex,
+    };
+  });
+}
+
 export function makeRewardSafePurchaseCoordinator(
   options: RewardSafeRuntimeOptions &
     Readonly<{
@@ -156,20 +232,11 @@ export function makeRewardSafePurchaseCoordinator(
       yield* provide(purchases.holdDrawing({ effectId, reason }));
       return { kind: "reconciliation_required" as const, reason };
     });
-    const execution = yield* readRewardSafeExecution(options, {
-      effectId,
-      chainId: settlement.deployment.chainId,
-      safeAddress: settlement.deployment.custodyAddress,
-      to: settlement.deployment.jackpotAddress,
-      calldata: settlement.calldata,
-      safeNonce: settlement.safeNonce,
-      transactionHash: settlement.transactionHash,
-      recordedOutcome: settlement.outcome,
-      observedAt: settlement.observedAt,
-    });
-    if (execution.kind === "pending") return { kind: "pending" as const };
-    if (execution.kind === "invalid") return yield* hold(execution.reason);
-    if (execution.outcome === "failure") {
+    const verified = yield* verifyRewardSafePurchase(options, settlement);
+    if (verified.kind === "pending") return { kind: "pending" as const };
+    if (verified.kind === "held") return yield* hold(verified.reason);
+    if (verified.kind === "failed") {
+      const { execution } = verified;
       yield* provide(
         purchases.releaseFailedExecution({
           effectId,
@@ -183,36 +250,7 @@ export function makeRewardSafePurchaseCoordinator(
       );
       return { kind: "released" as const };
     }
-    let evidence: ReturnType<typeof validateMegapotPurchaseReceipt>;
-    try {
-      evidence = validateMegapotPurchaseReceipt({
-        deployment: settlement.deployment,
-        receipt: execution.receipt,
-        drawingId: settlement.drawingId,
-        source: settlement.sourceTag,
-        tickets: [settlement.ticket],
-        safeExecution: { command: execution.command, transaction: execution.transaction },
-      });
-    } catch (error) {
-      // Includes a late execution that bought a ticket in a later drawing.
-      return yield* hold(
-        error instanceof MegapotV2EvidenceInvalid && error.reason === "wrong-drawing"
-          ? "safe_purchase_wrong_drawing"
-          : "safe_purchase_receipt_invalid",
-      );
-    }
-    const ticketId = evidence.ticketIds[0];
-    const purchaseLogIndex = evidence.purchaseLogIndices[0];
-    const mintLogIndex = evidence.mintLogIndices[0];
-    if (ticketId === undefined || purchaseLogIndex === undefined || mintLogIndex === undefined) {
-      return yield* hold("safe_purchase_receipt_incomplete");
-    }
-    const owner = yield* rpc(() =>
-      options.rpc.readTicketOwner(ticketId, execution.receipt.blockNumber),
-    );
-    if (owner.toLowerCase() !== settlement.deployment.custodyAddress.toLowerCase()) {
-      return yield* hold("safe_purchase_ticket_owner_mismatch");
-    }
+    const { execution, evidence, ticketId, purchaseLogIndex, mintLogIndex } = verified;
     const confirmed = yield* ledger
       .confirm({
         effectId,
