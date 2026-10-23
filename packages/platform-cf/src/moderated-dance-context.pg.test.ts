@@ -234,7 +234,7 @@ suite("moderated Dance frozen context with real PostgreSQL authority", () => {
               // invariant; no provider provisioning or chain effect occurs.
               await third.query("SET CONSTRAINTS ALL DEFERRED");
               await third.query(
-                "INSERT INTO persona_wallet_assignments(assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,reservation_idempotency_key,tombstoned_at) VALUES('context-retired-wallet',$1,$2,'evm',0,'tombstoned','context-retirement',clock_timestamp())",
+                "INSERT INTO persona_wallet_assignments(assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,status,reservation_idempotency_key,created_at,updated_at,tombstoned_at) VALUES('context-retired-wallet',$1,$2,'evm',0,'tombstoned','context-retirement',statement_timestamp(),statement_timestamp(),statement_timestamp())",
                 [f.facts.personaId, f.facts.accountId],
               );
               await third.query(
