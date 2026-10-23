@@ -254,4 +254,63 @@ describe("reward funding coordinator", () => {
       expect(reconciliations).toEqual(["funding_receipt_evidence_invalid"]);
     }
   });
+
+  test("confirms Safe custody funding on Base only in a Safe pilot instance under its switch", async () => {
+    const intentFor = (input: Parameters<RewardFundingStore["plan"]>[0]): RewardFundingIntent => ({
+      ...input,
+      legKind: "megapot_pool",
+      recipientAddress: CUSTODY,
+      state: "planned",
+      transactionHash: null,
+      confirmedAmountAtomic: null,
+      transferLogIndex: null,
+      blockNumber: null,
+      blockHash: null,
+      attestationId: "megapot-base-v2-safe-pilot",
+      environment: "production",
+      chainId: 8453,
+      tokenAddress: USDC,
+      tokenDecimals: 6,
+      usdcAddress: USDC,
+      custodyAddress: CUSTODY,
+      jackpotAddress: JACKPOT,
+      ticketNftAddress: NFT,
+      referrerAddress: REFERRER,
+      jackpotCodeHash: hash("7"),
+      usdcCodeHash: hash("8"),
+      ticketNftCodeHash: hash("9"),
+    });
+    const plan = (safePilot?: { readonly productionEnabled: boolean }) => {
+      const store = {
+        plan: (input: Parameters<RewardFundingStore["plan"]>[0]) =>
+          Effect.succeed(intentFor(input)),
+        find: () => Effect.succeed(null),
+      } as unknown as RewardFundingStore;
+      const rpc = {
+        attestDeployment: async () => ({
+          jackpotCodeHash: hash("7"),
+          ticketNftCodeHash: hash("9"),
+          usdcCodeHash: hash("8"),
+        }),
+      } as unknown as MegapotV2RpcClient;
+      return Effect.runPromise(
+        makeRewardFundingCoordinator({
+          store,
+          rpc,
+          ...(safePilot === undefined ? {} : { safePilot }),
+        }).plan({
+          legId: "leg-safe",
+          funderAccountId: "account-owner",
+          senderAddress: SENDER,
+          expectedAmountAtomic: 10_000_000n,
+          requiredConfirmations: 3,
+          idempotencyKey: "fund-safe-1",
+        }),
+      );
+    };
+    for (const safePilot of [undefined, { productionEnabled: false }]) {
+      await expect(plan(safePilot)).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    await expect(plan({ productionEnabled: true })).resolves.toMatchObject({ kind: "planned" });
+  });
 });

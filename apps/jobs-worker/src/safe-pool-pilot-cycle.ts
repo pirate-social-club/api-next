@@ -27,6 +27,8 @@ export interface SafePoolPilotRuntime {
   readonly loadBoundEffects: (limit: number) => Step<readonly BoundEffect[]>;
   readonly settlePurchase: (effectId: string) => Step<unknown>;
   readonly settlePayout: (effectId: string) => Step<unknown>;
+  readonly loadPendingFunding: (limit: number) => Step<readonly string[]>;
+  readonly reconcileFunding: (fundingEffectId: string) => Step<unknown>;
   readonly closeUnexecutedPurchases: (limit: number) => Step<unknown>;
   readonly loadLegs: (limit: number) => Step<readonly string[]>;
   readonly preparePurchase: (legId: string) => Step<unknown>;
@@ -100,6 +102,12 @@ export function runSafePoolPilotCycle(
       "settle_payout",
       bound?.filter((effect) => effect.kind === "reward_payout"),
       (effect) => runtime.settlePayout(effect.effectId),
+    );
+    // A funding transfer that confirms activates its leg before tickets are prepared.
+    yield* each(
+      "reconcile_funding",
+      yield* attempt("load_funding", runtime.loadPendingFunding(limit)),
+      runtime.reconcileFunding,
     );
     yield* attempt("close_unexecuted_purchases", runtime.closeUnexecutedPurchases(limit));
     yield* each("prepare_purchase", yield* attempt("load_legs", runtime.loadLegs(limit)), (leg) =>

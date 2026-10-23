@@ -11,6 +11,7 @@ import {
   validateMegapotUsdcFundingReceipt,
 } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 export class RewardFundingCoordinatorFailed extends Data.TaggedError(
   "RewardFundingCoordinatorFailed",
@@ -135,6 +136,12 @@ export interface RewardFundingCoordinator {
 export function makeRewardFundingCoordinator(input: {
   readonly store: RewardFundingStore;
   readonly rpc: MegapotV2RpcClient;
+  /**
+   * Set only by the Safe pilot cycle: that instance confirms funding into Safe custody
+   * on Base, with production behind the pilot's own switch, or on Base Sepolia outside
+   * production. Every other instance is limited to Base Sepolia outside production.
+   */
+  readonly safePilot?: { readonly productionEnabled: boolean };
   readonly now?: () => number;
 }): RewardFundingCoordinator {
   const now = input.now ?? Date.now;
@@ -144,9 +151,15 @@ export function makeRewardFundingCoordinator(input: {
   const attest = Effect.fn("RewardFundingCoordinator.attest")(function* (
     intent: RewardFundingIntent,
   ) {
-    if (intent.environment === "production" || intent.chainId !== 84_532) {
-      return yield* failed("production_disabled");
-    }
+    const admitted =
+      input.safePilot === undefined
+        ? intent.environment !== "production" && intent.chainId === 84_532
+        : rewardSafeChainAdmitted({
+            chainId: intent.chainId,
+            environment: intent.environment,
+            productionEnabled: input.safePilot.productionEnabled,
+          });
+    if (!admitted) return yield* failed("production_disabled");
     yield* rpcEffect(() => input.rpc.attestDeployment());
   });
 

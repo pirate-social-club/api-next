@@ -38,6 +38,8 @@ import type {
   MegapotV2Transaction,
 } from "./megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeRewardFundingCoordinator } from "./reward-funding-coordinator.ts";
+import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeRewardSafeClaimCoordinator } from "./reward-safe-claim-coordinator.ts";
 import { rewardSafeTransactionHash } from "./reward-safe-execution.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
@@ -376,6 +378,41 @@ function fakeChain() {
     settle: (ticketTier: bigint) => {
       currentDrawingId = 213n;
       tier = ticketTier;
+    },
+    /** A funder's own USDC transfer into the Safe; its block reads back with the same hash. */
+    fund: (sender: string, amount: bigint) => {
+      sequence += 1;
+      head += 1n;
+      const block = head;
+      const transactionHash = `0x${sequence.toString(16).padStart(64, "0")}`;
+      usdcDeltas.push({ block, amount });
+      receipts.set(transactionHash, {
+        chainId: 8453,
+        status: "success",
+        transactionHash,
+        from: sender,
+        to: USDC,
+        blockHash: hash("1"),
+        blockNumber: block,
+        logs: [
+          {
+            address: USDC,
+            topics: topics(
+              encodeEventTopics({
+                abi: erc20,
+                eventName: "Transfer",
+                args: { from: sender as Hex, to: SAFE as Hex },
+              }),
+            ),
+            data: encodeAbiParameters([{ type: "uint256" }], [amount]),
+            logIndex: 0,
+            transactionHash,
+            blockHash: hash("1"),
+            blockNumber: block,
+          },
+        ],
+      });
+      return transactionHash;
     },
   };
 }
@@ -1027,5 +1064,85 @@ suite("ticket-first owner-executed Safe pools", () => {
       kind: "prepared",
       drawingId: 213n,
     });
+  });
+
+  test("a funder's transfer into the Safe funds and activates a ticket-first leg", async () => {
+    const sender = address("e");
+    await admin.query("SET session_replication_role = replica");
+    await admin.query(
+      "INSERT INTO users (user_id) VALUES ('account-owner') ON CONFLICT DO NOTHING",
+    );
+    await admin.query(
+      "INSERT INTO personas (persona_id, account_id) VALUES ('persona-owner','account-owner') ON CONFLICT DO NOTHING",
+    );
+    await admin.query(
+      `INSERT INTO persona_wallet_assignments (assignment_id, persona_id, account_id,
+         chain_account_kind, status, reservation_idempotency_key, address, assigned_at,
+         hd_wallet_index, created_at, updated_at)
+       VALUES ('wallet-owner','persona-owner','account-owner','evm','active','reserve-owner',
+         $1,now(),9,now(),now())`,
+      [sender],
+    );
+    await admin.query(
+      `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
+         created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
+         reward_policy_version_id, activated_at)
+       VALUES ('offer-tf-funded','community-tf','post-tf-funded',1,'account-owner','active',
+         clock_timestamp()-interval '1 day', clock_timestamp()+interval '30 days','{}'::jsonb,
+         $1,'policy-tf',clock_timestamp())`,
+      ["d".repeat(64)],
+    );
+    await admin.query(
+      `INSERT INTO song_reward_offer_legs (leg_id, offer_id, kind, status, funder_account_id,
+         refund_policy, leg_terms_hash, participation_starts_at, chain_id, token_address,
+         token_decimals, tickets_per_drawing, max_ticket_price_atomic, entry_cutoff_seconds,
+         beneficiary_algorithm_version, ticket_selection_version, attestation_id,
+         participation_starts_drawing_id, eligible_activities, min_score_bps,
+         empty_pool_policy, funding_source, funded_atomic, purchase_order, legal_activation_gate)
+       VALUES ('tf-funded','offer-tf-funded','megapot_pool','funding','account-owner',
+         'refund_to_funders_pro_rata',$1,clock_timestamp()-interval '1 day',8453,$2,6,1,
+         $3,300,'equal_v1','keccak_packed_v1',$4,1,ARRAY['study','karaoke'],7000,
+         'no_purchase','leg_budget',0,'ticket_first_v1','production_approved')`,
+      [hash("3"), USDC, PRICE.toString(), ATTESTATION],
+    );
+    await admin.query("SET session_replication_role = origin");
+    const store = makeControlPlaneRewardFundingStore(makeDirectPostgresControlPlaneLayer(scoped));
+    const funding = (productionEnabled?: boolean) =>
+      makeRewardFundingCoordinator({
+        store,
+        rpc: chain.rpc,
+        ...(productionEnabled === undefined ? {} : { safePilot: { productionEnabled } }),
+      });
+    const request = {
+      legId: "tf-funded",
+      funderAccountId: "account-owner",
+      senderAddress: sender,
+      expectedAmountAtomic: 5_000_000n,
+      requiredConfirmations: 3,
+      idempotencyKey: "fund-tf-1",
+    };
+    // An instance outside the pilot refuses production Safe custody.
+    await expect(run(funding().plan(request))).rejects.toMatchObject({
+      reason: "production_disabled",
+    });
+    const planned = await run(funding(true).plan(request));
+    const transactionHash = chain.fund(sender, 5_000_000n);
+    chain.mine(2n);
+    expect(
+      await run(
+        funding(true).observe({
+          fundingEffectId: planned.intent.fundingEffectId,
+          transactionHash,
+        }),
+      ),
+    ).toMatchObject({ kind: "confirmed" });
+    expect(
+      (
+        await admin.query(
+          `SELECT status, purchase_order, funded_atomic::text AS funded
+             FROM song_reward_offer_legs WHERE leg_id='tf-funded'`,
+        )
+      ).rows,
+    ).toEqual([{ status: "active", purchase_order: "ticket_first_v1", funded: "5000000" }]);
   });
 });

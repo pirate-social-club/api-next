@@ -1,5 +1,10 @@
 import { AlertCollector, ControlPlaneDb } from "@pirate/application";
-import type { AlertSink, MegapotCommitmentBucket } from "@pirate/platform-cf";
+import {
+  type AlertSink,
+  type MegapotCommitmentBucket,
+  makeControlPlaneRewardFundingStore,
+  makeRewardFundingCoordinator,
+} from "@pirate/platform-cf";
 import { makeCustodySolvencyCoordinator } from "@pirate/platform-cf/custody-solvency-coordinator";
 import { makeControlPlaneCustodySolvencyStore } from "@pirate/platform-cf/custody-solvency-repository";
 import { makeMegapotAllocationCoordinator } from "@pirate/platform-cf/megapot-allocation-coordinator";
@@ -58,6 +63,7 @@ const SAFE_POOL_PILOT_READS = [
   "postgres:megapot_drawing_observations",
   "postgres:song_reward_offers",
   "postgres:song_reward_offer_legs",
+  "postgres:song_reward_leg_funding_effects",
   "postgres:megapot_pool_drawings",
   "postgres:megapot_pool_drawing_transitions",
   "postgres:megapot_pool_shares",
@@ -175,6 +181,8 @@ export function makeSafePoolPilotJob(
       authority: makeControlPlaneRewardRunAuthority(layer),
     });
     const cutoff = makeMegapotTicketFirstCutoff({ layer });
+    const fundingStore = makeControlPlaneRewardFundingStore(layer);
+    const funding = makeRewardFundingCoordinator({ store: fundingStore, rpc, safePilot });
     const allocation = makeMegapotAllocationCoordinator({
       store: makeControlPlaneMegapotAllocationStore(layer),
     });
@@ -189,6 +197,15 @@ export function makeSafePoolPilotJob(
       loadBoundEffects: (limit) => safeWork.loadBoundEffects(custody, limit),
       settlePurchase: purchases.settle,
       settlePayout: payouts.settle,
+      loadPendingFunding: (limit) =>
+        work.loadPendingFunding({ limit, cursor: Math.floor(Date.now() / 60_000) }),
+      // The listing covers every deployment; only the pilot's own funding is confirmed here.
+      reconcileFunding: (fundingEffectId) =>
+        Effect.gen(function* () {
+          const intent = yield* fundingStore.find(fundingEffectId);
+          if (intent?.attestationId !== deployment.attestationId) return null;
+          return yield* funding.reconcile(fundingEffectId);
+        }),
       closeUnexecutedPurchases: purchases.closeUnexecuted,
       loadLegs: (limit) => safeWork.loadLegs(custody, limit),
       preparePurchase: purchases.prepare,
