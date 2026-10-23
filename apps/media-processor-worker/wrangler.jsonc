@@ -185,6 +185,7 @@
     },
     "production": {
       "name": "pirate-media-processor-worker-production",
+      "triggers": { "crons": ["* * * * *"] },
       "workers_dev": false,
       "preview_urls": false,
       "observability": {
@@ -232,6 +233,10 @@
       },
       "r2_buckets": [
         {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-production"
+        },
+        {
           "binding": "MEDIA_IMMUTABLE_ORIGINALS",
           "bucket_name": "pirate-media-immutable-production"
         },
@@ -246,7 +251,7 @@
       "vars": {
         "OPENAI_MODERATION_ENABLED": "true",
     "MEDIA_PROCESSING_ENABLED": "true",
-    "DANCE_MODERATED_PROCESSING_ENABLED": "false",
+    "DANCE_MODERATED_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "true",
         "VIDEO_DELIVERY_ENABLED": "true",
         "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "true",
@@ -268,6 +273,7 @@
       "secrets": {
         "required": [
           "CLOUDCONVERT_RENDER_API_KEY",
+          "DANCE_MODERATED_REPLAY_KEYS",
           "VIDEO_WORKFLOW_READ_TOKEN",
           "VIDEO_STREAM_API_TOKEN",
           "ACRCLOUD_ACCESS_KEY",

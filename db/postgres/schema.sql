@@ -3731,6 +3731,33 @@ BEGIN
   END LOOP;
 END $$;
 
+CREATE FUNCTION bound_moderated_dance_reference_queue_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE width BIGINT;
+BEGIN
+ IF NEW.state='pending' AND NEW.worker_deadline IS NULL THEN
+  SELECT (operational_profile->>'providerWaitMs')::BIGINT INTO STRICT width
+  FROM dance_review_policy_versions_v1 WHERE policy_id=NEW.policy_id;
+  IF width IS NULL OR width<=0 THEN RAISE EXCEPTION 'reference work bound unavailable' USING ERRCODE='DRV07'; END IF;
+  NEW.worker_deadline:=NEW.created_at+(width*interval '1 millisecond');
+ END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='bound_moderated_dance_reference_queue_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION can_account_access_activity_song(expected_account_id text, expected_community_id text, expected_post_id text) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
@@ -5529,31 +5556,44 @@ CREATE FUNCTION claim_moderated_dance_reference_media_v1(p_token text, p_runtime
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
     AS $$
-DECLARE candidate RECORD; command dance_moderated_reference_commands_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); packet JSONB;
+DECLARE candidate RECORD; command dance_moderated_reference_commands_v1; profile JSONB; now_at TIMESTAMPTZ:=clock_timestamp(); packet JSONB; actor_status TEXT;
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'reference media worker unavailable' USING ERRCODE='DRV02'; END IF;
- SELECT c.choreography_id,c.account_id INTO candidate FROM dance_moderated_reference_commands_v1 c JOIN dance_review_policy_versions_v1 p USING(policy_id)
+ FOR candidate IN SELECT c.choreography_id,c.account_id FROM dance_moderated_reference_commands_v1 c JOIN dance_review_policy_versions_v1 p USING(policy_id)
  WHERE c.state IN('pending','copying','normalizing','unknown') AND (c.observation_until IS NULL OR c.observation_until<=now_at)
- AND (c.worker_deadline IS NULL OR c.worker_deadline>now_at) AND p.operational_profile->>'mediaRuntimeRevision'=p_runtime AND (p.operational_profile->'replayCompatibleEpochs')<@p_epochs
- ORDER BY c.created_at,c.choreography_id LIMIT 1;
- IF candidate.choreography_id IS NULL THEN RETURN NULL; END IF;
- PERFORM 1 FROM users WHERE user_id=candidate.account_id AND status='active' FOR UPDATE;
- IF NOT FOUND THEN RETURN NULL; END IF;
- SELECT * INTO command FROM dance_moderated_reference_commands_v1 WHERE choreography_id=candidate.choreography_id FOR UPDATE SKIP LOCKED;
+ AND p.operational_profile->>'mediaRuntimeRevision'=p_runtime AND (p.operational_profile->'replayCompatibleEpochs')<@p_epochs
+ ORDER BY coalesce(c.observation_until,c.created_at),c.created_at,c.choreography_id LIMIT 20 LOOP
+ -- Preserve actor-before-command lock ordering; a busy actor/command does not
+ -- prevent this bounded pass from inspecting another due reference.
+ SELECT status INTO actor_status FROM users WHERE user_id=candidate.account_id FOR UPDATE SKIP LOCKED;
+ IF NOT FOUND THEN CONTINUE; END IF;
+ SELECT * INTO command FROM dance_moderated_reference_commands_v1 WHERE choreography_id=candidate.choreography_id AND state IN('pending','copying','normalizing','unknown') FOR UPDATE SKIP LOCKED;
  now_at:=clock_timestamp();
- IF command.choreography_id IS NULL OR command.observation_until>now_at OR command.worker_deadline<=now_at THEN RETURN NULL; END IF;
+ IF command.choreography_id IS NULL THEN CONTINUE; END IF;
+ IF command.worker_deadline<=now_at THEN
+  UPDATE dance_moderated_reference_commands_v1 SET state='failed',observation_token=NULL,observation_until=NULL,
+   result=jsonb_build_object('reason','reference_work_expired') WHERE choreography_id=command.choreography_id;
+  -- Original command receipts, provider identity and cleanup liabilities remain.
+  CONTINUE;
+ END IF;
+ IF command.observation_until>now_at THEN CONTINUE; END IF;
  SELECT operational_profile INTO profile FROM dance_review_policy_versions_v1 WHERE policy_id=command.policy_id;
- IF NOT active_activity_persona(command.account_id,command.persona_id,command.community_id) OR NOT can_account_access_activity_song(command.account_id,command.community_id,command.song_post_id) THEN RETURN NULL; END IF;
+ -- A temporary gate or exhausted account budget cannot hold the queue head.
+ -- Use the captured lease for retry, capped by the original absolute deadline.
+ UPDATE dance_moderated_reference_commands_v1 SET observation_token=NULL,
+  observation_until=least(worker_deadline,now_at+((profile->>'workLeaseMs')::BIGINT*interval '1 millisecond'))
+ WHERE choreography_id=command.choreography_id;
+ IF actor_status<>'active' THEN CONTINUE; END IF;
+ IF NOT active_activity_persona(command.account_id,command.persona_id,command.community_id) OR NOT can_account_access_activity_song(command.account_id,command.community_id,command.song_post_id) THEN CONTINUE; END IF;
  PERFORM 1 FROM posts video JOIN communities vc ON vc.community_id=video.community_id AND vc.status='active'
  WHERE video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
  AND EXISTS(SELECT 1 FROM video_detail_access_v1(command.account_id,video.post_id) access WHERE access.non_age_allowed AND access.age_allowed) FOR SHARE OF video,vc;
- IF NOT FOUND THEN RETURN NULL; END IF;
+ IF NOT FOUND THEN CONTINUE; END IF;
  now_at:=clock_timestamp();
- IF command.worker_deadline<=now_at THEN RETURN NULL; END IF;
+ IF command.worker_deadline<=now_at THEN CONTINUE; END IF;
  IF command.state='pending' THEN
-  IF NOT reserve_moderated_dance_provider_work_v1(command.account_id,profile) THEN RETURN NULL; END IF;
-  UPDATE dance_moderated_reference_commands_v1 SET state='copying',work_token=p_token,provider_tag='dance-reference-'||choreography_id,
-   worker_deadline=now_at+((profile->>'providerWaitMs')::BIGINT*interval '1 millisecond') WHERE choreography_id=command.choreography_id RETURNING * INTO command;
+  IF NOT reserve_moderated_dance_provider_work_v1(command.account_id,profile) THEN CONTINUE; END IF;
+  UPDATE dance_moderated_reference_commands_v1 SET state='copying',work_token=p_token,provider_tag='dance-reference-'||choreography_id WHERE choreography_id=command.choreography_id RETURNING * INTO command;
  END IF;
  UPDATE dance_moderated_reference_commands_v1 SET observation_token=p_token,observation_until=least(worker_deadline,now_at+((profile->>'workLeaseMs')::BIGINT*interval '1 millisecond')) WHERE choreography_id=command.choreography_id;
  SELECT jsonb_build_object('choreographyId',command.choreography_id,'segmentId',command.segment_id,'token',p_token,'state',command.state,
@@ -5571,7 +5611,9 @@ BEGIN
  JOIN dance_review_policy_versions_v1 policy ON policy.policy_id=command.policy_id
  JOIN posts video ON video.community_id=command.reference_community_id AND video.post_id=command.reference_post_id AND video.status='published' AND video.visibility='public'
  WHERE master.master_revision_id=command.master_revision_id;
- RETURN packet;
+ IF packet IS NOT NULL THEN RETURN packet; END IF;
+ END LOOP;
+ RETURN NULL;
 END $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -61137,6 +61179,8 @@ CREATE TRIGGER moderated_public_replay_index_epoch BEFORE INSERT OR UPDATE ON da
 CREATE TRIGGER moderated_public_replay_no_truncate BEFORE TRUNCATE ON dance_moderated_public_replay_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
 CREATE TRIGGER moderated_reference_community_immutable_v1 BEFORE UPDATE ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_reference_community_v1();
+
+CREATE TRIGGER moderated_reference_queue_bound_v1 BEFORE INSERT ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION bound_moderated_dance_reference_queue_v1();
 
 CREATE TRIGGER moderated_reference_receipt_immutable BEFORE DELETE OR UPDATE ON dance_moderated_reference_receipts_v1 FOR EACH ROW EXECUTE FUNCTION reject_dance_review_history_v1();
 

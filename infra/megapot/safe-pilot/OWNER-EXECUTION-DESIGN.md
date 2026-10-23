@@ -82,7 +82,7 @@ version reverses that, following the October 22 owner clarification:
 4. Sweep, winnings claim, `equal_v1` allocation, credits, participant Claim and
    payout follow the existing order.
 
-Migration 0310 adds that transition set for ticket-first drawings. Existing legs
+Migration 0311 adds that transition set for ticket-first drawings. Existing legs
 keep their order, and every work listing serves one purchase order, so the EOA
 cycle never touches a ticket-first pool.
 

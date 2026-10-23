@@ -36,7 +36,7 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_context_work_counters_v2",
   ],
   "0285_shared_song_qualification_consumers.sql": ["reward_activity_objective_captures_v2"],
-  "0309_reward_safe_execution_scans.sql": [
+  "0310_reward_safe_execution_scans.sql": [
     "reward_safe_execution_cursors",
     "reward_safe_unbound_executions",
   ],
