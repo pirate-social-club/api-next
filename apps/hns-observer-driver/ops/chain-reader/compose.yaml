@@ -8,6 +8,11 @@ services:
     image: pirate-hsd-observer:8.0.0
     container_name: pirate-hsd-observer
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     init: true
     network_mode: host
     read_only: true

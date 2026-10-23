@@ -11,6 +11,11 @@ services:
     image: powerdns/dnsdist-19:1.9.16@sha256:260b1120947a10c494fad4d93cde33ebace34bf4800c88ebb114dd7f9e829809
     container_name: pirate-hns-dnsdist
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     init: true
     network_mode: host
     read_only: true
@@ -35,6 +40,11 @@ services:
     image: pirate-hnsd:2.0.0
     container_name: pirate-hns-spv
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     init: true
     # host networking so both listeners land on this host's loopback, where
     # dnsdist reaches them. The entrypoint refuses any non-loopback bind.
