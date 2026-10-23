@@ -143,6 +143,16 @@ configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused. Production
 reward work still requires the run lease and an unpaused brake, and a production
 leg must carry `legal_activation_gate = 'production_approved'` to be active.
 
+The HTTP worker serves the offer, funding, Claim and credit routes for the
+pilot's attestation when its own `SAFE_POOL_PILOT_ENABLED` is set, with
+`SAFE_POOL_ATTESTATION_ID` and `SAFE_POOL_RPC_URL`. It refuses that together with
+`MEGAPOT_REWARDS_ENABLED`, and serves a production attestation only when
+`SAFE_POOL_PRODUCTION_ENABLED` is also set; otherwise the routes stay mounted and
+answer that rewards are unavailable. In pilot mode it confirms funding into the
+Safe and offers no gas top-ups or winner sends: winners send onward with the
+sponsored Wallet Send, which production serves only when
+`PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED` is set and then only for Base USDC.
+
 A leg is created through the offer API (`OpenSongRewardOffer`,
 `AddMegapotPoolLeg`) on the active attestation; migration 0312 makes it
 ticket-first because its custody is the Safe. Its funder sends USDC from their own
@@ -155,23 +165,28 @@ Dance is active.
 
 Safe custody is admitted on Base Sepolia outside production, so staging can run
 the whole pilot with test funds: retire the staging EOA attestation (one active
-attestation per environment), turn `MEGAPOT_REWARDS_ENABLED` off in the jobs
-worker only, register a Base Sepolia Safe with
+attestation per environment), turn `MEGAPOT_REWARDS_ENABLED` off in both
+workers, register a Base Sepolia Safe with
 `API_NEXT_ENV=staging bun scripts/register-safe-pool-custody.ts --apply`, set the
-pilot variables, then open and fund a leg through the staging API. The staging
-HTTP worker keeps its reward endpoints, and onward Send already works on Base
-Sepolia. Someone must hold the test Safe's owner key to execute its calls; creating
+pilot variables in both workers, then open and fund a leg through the staging
+API. Onward Send already works on Base Sepolia. Someone must hold the test Safe's owner key to execute its calls; creating
 that key is the owner's decision.
 
 ### What production still needs
 
-- The offer, funding, Claim and credit endpoints are served only when the HTTP
-  worker's `MEGAPOT_REWARDS_ENABLED` is on, and the production posture forbids
-  that. Production needs those endpoints scoped to the pilot.
-- Funding and onward Send are signed from a persona wallet on Base, which needs
-  gas. Production refuses wallet sponsorship today, and the winner send and the
-  Solid Send model accept only Base Sepolia. Which way participants pay gas on
-  Base decides which of these is extended.
+- A production pool leg. `AddMegapotPoolLeg` refuses a production attestation,
+  and a leg's `legal_activation_gate` is fixed when the leg is created: the offer
+  API always writes `test_only`, and the database refuses to activate a
+  production leg unless it is `production_approved`. Recording a pilot leg's
+  legal approval at creation depends on the Spec 015 terms and is not built.
+- Base in the reward responses. `MegapotPoolLegV1`, `MegapotFundingV1`,
+  `SongMegapotPoolProjectionV1` and the other reward schemas fix `chain_id` to
+  84532. Admitting 8453 adds a response enum value, which the breaking-change
+  check refuses without a declared waiver, and Solid has to accept it.
+- Gas on Base. Participants pay through Privy sponsorship (owner decision
+  2026-10-23), built behind `PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED`. Privy's
+  own gas sponsorship has to be enabled for Base mainnet, and the Solid winnings
+  Send accepts only Base Sepolia.
 - The Spec 015 amendment and the owner inputs listed above.
 
 ## Verification
@@ -181,7 +196,10 @@ cycle's order. `reward-safe-ticket-first.pg.test.ts` drives one pool on
 PostgreSQL with a fake chain from purchase through participant payout (legs,
 shares and identities seeded), plus the failure, deadline, wrong-drawing,
 empty-drawing, export, custody-order, planned-drawing and Safe funding cases;
-`reward-safe-payout.pg.test.ts` covers payouts from seeded credits. These run on
+`reward-safe-payout.pg.test.ts` covers payouts from seeded credits, and
+`reward-safe-pilot-routes.pg.test.ts` composes the HTTP worker against PostgreSQL
+and shows the pool route served for an admitted Safe attestation and unavailable
+otherwise. These run on
 Base; the Base Sepolia rules are covered by unit tests. The fork
 proof remains the contract-compatibility evidence. None of this has run against
 a live chain.

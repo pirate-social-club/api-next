@@ -92,6 +92,7 @@ import {
   loadConfigFrom,
   parseRewardGasTopupConfig,
   parseSponsoredSendConfig,
+  sponsoredSendEligibleAsset,
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeControlledAccountSpokenComposition } from "@pirate/platform-cf/controlled-account-spoken-composition";
@@ -191,6 +192,7 @@ import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-f
 import { makeControlPlaneRewardGasTopupRequestStore } from "@pirate/platform-cf/reward-gas-topup-repository";
 import { makeRewardOperationsRunningReader } from "@pirate/platform-cf/reward-operations-control";
 import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
+import { rewardSafeChainAdmitted } from "@pirate/platform-cf/reward-safe-execution";
 import { makeRewardWinnerSendChain } from "@pirate/platform-cf/reward-winner-send-chain";
 import { makeControlPlaneRewardWinnerSendStore } from "@pirate/platform-cf/reward-winner-send-repository";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "@pirate/platform-cf/route-attachment-completion-repository";
@@ -503,7 +505,12 @@ export interface HttpWorkerBindings
   readonly MEGAPOT_GAS_TOPUP_MAX_WEI?: string;
   readonly MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT?: string;
   readonly MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI?: string;
+  readonly SAFE_POOL_PILOT_ENABLED?: string;
+  readonly SAFE_POOL_PRODUCTION_ENABLED?: string;
+  readonly SAFE_POOL_ATTESTATION_ID?: string;
+  readonly SAFE_POOL_RPC_URL?: string;
   readonly PRIVY_SPONSORED_SEND_ENABLED?: string;
+  readonly PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED?: string;
   readonly PERSONA_WALLET_BASE_RPC_URL?: string;
   readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT?: string;
   readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT?: string;
@@ -732,7 +739,12 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     MEGAPOT_GAS_TOPUP_MAX_WEI: bindings.MEGAPOT_GAS_TOPUP_MAX_WEI,
     MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: bindings.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT,
     MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: bindings.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI,
+    SAFE_POOL_PILOT_ENABLED: bindings.SAFE_POOL_PILOT_ENABLED,
+    SAFE_POOL_PRODUCTION_ENABLED: bindings.SAFE_POOL_PRODUCTION_ENABLED,
+    SAFE_POOL_ATTESTATION_ID: bindings.SAFE_POOL_ATTESTATION_ID,
+    SAFE_POOL_RPC_URL: bindings.SAFE_POOL_RPC_URL,
     PRIVY_SPONSORED_SEND_ENABLED: bindings.PRIVY_SPONSORED_SEND_ENABLED,
+    PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: bindings.PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED,
     PERSONA_WALLET_BASE_RPC_URL: bindings.PERSONA_WALLET_BASE_RPC_URL,
     PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
     PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: bindings.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
@@ -774,6 +786,18 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
       // and database I/O are allowed to degrade the reward routes at request
       // time; malformed endpoint configuration must still fail closed here.
       fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV);
+    }
+    if (config.SAFE_POOL_PILOT_ENABLED) {
+      // The Safe pool pilot serves the same reward routes, so it never runs beside
+      // the EOA reward lane.
+      if (
+        config.MEGAPOT_REWARDS_ENABLED ||
+        config.SAFE_POOL_ATTESTATION_ID.length === 0 ||
+        config.SAFE_POOL_ATTESTATION_ID.trim() !== config.SAFE_POOL_ATTESTATION_ID
+      ) {
+        throw new Error("invalid Safe pool pilot configuration");
+      }
+      fundingRpcUrl(Redacted.value(config.SAFE_POOL_RPC_URL), config.API_NEXT_ENV);
     }
     const openAiApiKey = Redacted.value(config.OPENAI_API_KEY);
     if (
@@ -1682,6 +1706,7 @@ export async function createProductionHttpWorker(
     makeControlPlanePlatformPirateHandleStore(controlPlane),
   );
   const sponsoredLimits = parseSponsoredSendConfig(config);
+  const sponsoredAsset = sponsoredSendEligibleAsset(config.API_NEXT_ENV);
   const walletSponsoredSendHandlers = makeWalletSponsoredSendHandlers(
     sponsoredLimits === null
       ? null
@@ -1691,12 +1716,9 @@ export async function createProductionHttpWorker(
           appSecret: Redacted.value(config.PRIVY_APP_SECRET),
           chain: makeWalletSponsoredChain(
             Redacted.value(config.PERSONA_WALLET_BASE_RPC_URL),
-            84_532,
+            sponsoredAsset.chainId,
           ),
-          eligibleAsset: {
-            chainId: 84_532,
-            tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-          },
+          eligibleAsset: sponsoredAsset,
           requiredConfirmations: 3,
           ids: () => crypto.randomUUID().replaceAll("-", ""),
         }),
@@ -1725,15 +1747,44 @@ export async function createProductionHttpWorker(
         rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
       }),
   });
+  // The EOA reward lane and the owner-executed Safe pool pilot serve the same offer,
+  // funding, Claim and credit routes, each for its own attestation; loadWorkerConfig
+  // refuses both at once.
+  const rewardRoutes = config.MEGAPOT_REWARDS_ENABLED
+    ? {
+        attestationId: config.MEGAPOT_ATTESTATION_ID,
+        rpcUrl: config.MEGAPOT_V2_RPC_URL,
+        safePilot: undefined,
+      }
+    : config.SAFE_POOL_PILOT_ENABLED
+      ? {
+          attestationId: config.SAFE_POOL_ATTESTATION_ID,
+          rpcUrl: config.SAFE_POOL_RPC_URL,
+          safePilot: { productionEnabled: config.SAFE_POOL_PRODUCTION_ENABLED },
+        }
+      : null;
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
-    config.MEGAPOT_REWARDS_ENABLED
+    rewardRoutes !== null
       ? makeLazySongRewardOfferHandlers(async () => {
+          const { safePilot } = rewardRoutes;
           const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
           const candidate = await Effect.runPromise(
-            observationStore.loadCandidate(config.MEGAPOT_ATTESTATION_ID),
+            observationStore.loadCandidate(rewardRoutes.attestationId),
           );
+          // The pilot serves Base only behind its production switch, and Base Sepolia
+          // outside production.
+          if (
+            safePilot !== undefined &&
+            !rewardSafeChainAdmitted({
+              chainId: candidate.chainId,
+              environment: candidate.environment,
+              productionEnabled: safePilot.productionEnabled,
+            })
+          ) {
+            throw new ProviderUnavailable({ message: "Reward services are unavailable" });
+          }
           const rpc = makeMegapotV2RpcClient({
-            rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+            rpcUrl: fundingRpcUrl(Redacted.value(rewardRoutes.rpcUrl), config.API_NEXT_ENV),
             attestation: {
               attestationId: candidate.attestationId,
               environment: candidate.environment,
@@ -1749,7 +1800,8 @@ export async function createProductionHttpWorker(
             },
           });
           const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
-          const gasTopupLimits = parseRewardGasTopupConfig(config);
+          // Pilot participants pay gas through Wallet sponsorship, not top-ups.
+          const gasTopupLimits = safePilot === undefined ? parseRewardGasTopupConfig(config) : null;
           const gasTopups =
             gasTopupLimits === null
               ? null
@@ -1765,9 +1817,10 @@ export async function createProductionHttpWorker(
                   ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
                 });
           // Winner sends read any sender's nonce and transactions on the
-          // attested chain, which must be the chain the record is fixed to.
+          // attested chain, which must be the chain the record is fixed to. Pilot
+          // winners send onward with the sponsored Wallet Send instead.
           const winnerSends =
-            candidate.chainId === REWARD_WINNER_SEND_CHAIN_ID
+            safePilot === undefined && candidate.chainId === REWARD_WINNER_SEND_CHAIN_ID
               ? makeRewardWinnerSendService({
                   store: makeControlPlaneRewardWinnerSendStore(controlPlane),
                   chain: makeRewardWinnerSendChain(rpc),
@@ -1782,7 +1835,7 @@ export async function createProductionHttpWorker(
                 ? null
                 : {
                     environment: config.API_NEXT_ENV === "staging" ? "staging" : "test",
-                    attestationId: config.MEGAPOT_ATTESTATION_ID,
+                    attestationId: rewardRoutes.attestationId,
                   },
             clock: { now: Effect.sync(() => Date.now()) },
             ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
@@ -1791,7 +1844,11 @@ export async function createProductionHttpWorker(
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,
             winnerSends,
-            funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
+            funding: makeRewardFundingCoordinator({
+              store: rewardFundingStore,
+              rpc,
+              ...(safePilot === undefined ? {} : { safePilot }),
+            }),
             requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
             externalFallbackPolicy: null,
           });

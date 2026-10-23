@@ -140,6 +140,7 @@
     "./megapot-work-repository": "./src/megapot-work-repository.ts",
     "./megapot-ticket-first-cutoff": "./src/megapot-ticket-first-cutoff.ts",
     "./reward-safe-claim-coordinator": "./src/reward-safe-claim-coordinator.ts",
+    "./reward-safe-execution": "./src/reward-safe-execution.ts",
     "./reward-safe-payout-coordinator": "./src/reward-safe-payout-coordinator.ts",
     "./reward-safe-purchase-coordinator": "./src/reward-safe-purchase-coordinator.ts",
     "./reward-safe-settlement": "./src/reward-safe-settlement.ts",

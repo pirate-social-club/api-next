@@ -99,6 +99,22 @@ const RewardGasTopupConfigFields = {
   ),
 } as const;
 
+/**
+ * The owner-executed Safe pool pilot, read by the jobs worker's cycle and by the HTTP
+ * worker's reward endpoints. Off unless set; production deployments also need
+ * SAFE_POOL_PRODUCTION_ENABLED.
+ */
+const SafePoolPilotConfigFields = {
+  SAFE_POOL_PILOT_ENABLED: Config.boolean("SAFE_POOL_PILOT_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  SAFE_POOL_PRODUCTION_ENABLED: Config.boolean("SAFE_POOL_PRODUCTION_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  SAFE_POOL_ATTESTATION_ID: Config.string("SAFE_POOL_ATTESTATION_ID").pipe(Config.withDefault("")),
+  SAFE_POOL_RPC_URL: secret("SAFE_POOL_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
+} as const;
+
 const SponsoredSendConfigFields = {
   PERSONA_WALLET_BASE_RPC_URL: secret("PERSONA_WALLET_BASE_RPC_URL").pipe(
     Config.withDefault(Redacted.make("")),
@@ -106,6 +122,10 @@ const SponsoredSendConfigFields = {
   PRIVY_SPONSORED_SEND_ENABLED: Config.boolean("PRIVY_SPONSORED_SEND_ENABLED").pipe(
     Config.withDefault(false),
   ),
+  // Production sponsorship for the Safe pool pilot (owner decision 2026-10-23).
+  PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: Config.boolean(
+    "PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED",
+  ).pipe(Config.withDefault(false)),
   PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: Config.string(
     "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT",
   ).pipe(Config.withDefault("")),
@@ -139,9 +159,14 @@ export type SponsoredSendConfigValue = Readonly<{
   platformDailyGasBudgetWei: bigint;
 }>;
 
+/**
+ * Sponsorship is off unless every limit is set. Production also needs
+ * PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED, which is refused anywhere else.
+ */
 export function parseSponsoredSendConfig(input: {
   readonly API_NEXT_ENV: AppEnvValue["API_NEXT_ENV"];
   readonly PRIVY_SPONSORED_SEND_ENABLED: boolean;
+  readonly PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: boolean;
   readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: string;
   readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: string;
   readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: string;
@@ -159,10 +184,17 @@ export function parseSponsoredSendConfig(input: {
     input.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
     input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
   ];
-  if (!input.PRIVY_SPONSORED_SEND_ENABLED && values.every((value) => value === "")) return null;
+  const production = input.API_NEXT_ENV === "production";
+  if (
+    !input.PRIVY_SPONSORED_SEND_ENABLED &&
+    !input.PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED &&
+    values.every((value) => value === "")
+  ) {
+    return null;
+  }
   if (
     !input.PRIVY_SPONSORED_SEND_ENABLED ||
-    input.API_NEXT_ENV === "production" ||
+    input.PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED !== production ||
     values.slice(0, 3).some((value) => !/^[1-9][0-9]{0,3}$/u.test(value)) ||
     values.slice(3).some((value) => !WEI_SETTING.test(value))
   ) {
@@ -195,6 +227,15 @@ export function parseSponsoredSendConfig(input: {
     walletDailyGasBudgetWei: BigInt(walletGas),
     platformDailyGasBudgetWei: BigInt(platformGas),
   };
+}
+
+/** The one asset the persona-wallet Send sponsors: Base USDC in production, Base Sepolia USDC elsewhere. */
+export function sponsoredSendEligibleAsset(
+  environment: AppEnvValue["API_NEXT_ENV"],
+): Readonly<{ chainId: 8453 | 84532; tokenAddress: string }> {
+  return environment === "production"
+    ? { chainId: 8453, tokenAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" }
+    : { chainId: 84_532, tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e" };
 }
 
 export type RewardGasTopupConfigValue = Readonly<{
@@ -284,16 +325,7 @@ export const JobsWorkerConfig = Config.all({
   MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: Config.nonEmptyString(
     "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC",
   ),
-  // The owner-executed Safe pool pilot. Off unless set; production deployments also
-  // need SAFE_POOL_PRODUCTION_ENABLED.
-  SAFE_POOL_PILOT_ENABLED: Config.boolean("SAFE_POOL_PILOT_ENABLED").pipe(
-    Config.withDefault(false),
-  ),
-  SAFE_POOL_PRODUCTION_ENABLED: Config.boolean("SAFE_POOL_PRODUCTION_ENABLED").pipe(
-    Config.withDefault(false),
-  ),
-  SAFE_POOL_ATTESTATION_ID: Config.string("SAFE_POOL_ATTESTATION_ID").pipe(Config.withDefault("")),
-  SAFE_POOL_RPC_URL: secret("SAFE_POOL_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
+  ...SafePoolPilotConfigFields,
   SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN: secret("SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN").pipe(
     Config.withDefault(Redacted.make("")),
   ),
@@ -626,6 +658,7 @@ export const HttpWorkerConfig = Config.all({
   ),
   ...MegapotRewardConfigFields,
   MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
+  ...SafePoolPilotConfigFields,
   ...RewardGasTopupConfigFields,
   ...SponsoredSendConfigFields,
   HNS_ACTIVATION_CURRENT_VIEW: HnsActivationCurrentViewConfig,
