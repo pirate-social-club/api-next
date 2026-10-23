@@ -8,7 +8,7 @@ import {
   parseBaselineDocument,
 } from "./check-openapi-breaking.ts";
 
-const baseline = "a54f2b28809d78fb33e840d60e7716d5c6879d10";
+const baseline = "1efaee94d9da600c97d08f61888824e286b14f2d";
 const expected = [
   [
     "get_feedHomePublic",
