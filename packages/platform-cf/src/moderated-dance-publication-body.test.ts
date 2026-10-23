@@ -15,10 +15,17 @@ const binding = {
   bodyEndMs: 15017,
 };
 const source = `https://gateway.example/.well-known/pirate/video-source/v1/${"x".repeat(43)}`;
-const exportUrl = "https://storage.cloudconvert.com/private/body.mp4?ephemeral=fictional";
+const exportUrl =
+  "https://eu-central.storage.cloudconvert.com/private/body.mp4?ephemeral=fictional";
 function observation() {
   const tasks = [
-    { id: "import-id", name: "import-recording", operation: "import/url", status: "finished" },
+    {
+      id: "import-id",
+      name: "import-recording",
+      operation: "import/url",
+      status: "finished",
+      depends_on_task_ids: [],
+    },
     {
       id: "trim-id",
       name: "trim-recording",
@@ -26,7 +33,7 @@ function observation() {
       status: "finished",
       engine: "ffmpeg",
       engine_version: "6.1.4",
-      depends_on_tasks: { "import-id": [] },
+      depends_on_task_ids: ["import-id"],
     },
     {
       id: "finish-id",
@@ -35,7 +42,7 @@ function observation() {
       status: "finished",
       engine: "ffmpeg",
       engine_version: "6.1.4",
-      depends_on_tasks: { "trim-id": [] },
+      depends_on_task_ids: ["trim-id"],
     },
     {
       id: "probe-id",
@@ -44,7 +51,7 @@ function observation() {
       status: "finished",
       engine: "ffmpeg",
       engine_version: "6.1.4",
-      depends_on_tasks: { "finish-id": [] },
+      depends_on_task_ids: ["finish-id"],
       result: { metadata: {} },
     },
     {
@@ -52,7 +59,7 @@ function observation() {
       name: "export-body",
       operation: "export/url",
       status: "finished",
-      depends_on_tasks: { "finish-id": [] },
+      depends_on_task_ids: ["finish-id"],
       result: { files: [{ filename: "body.mp4", url: exportUrl }] },
     },
   ];
@@ -121,10 +128,25 @@ describe("private Dance body recipe and provider boundary", () => {
     const changes = [
       { ...complete, tasks: complete.tasks.slice(1) },
       { ...complete, tasks: [...complete.tasks, complete.tasks[0]] },
+      { ...complete, tasks: complete.tasks.map(({ depends_on_task_ids: _ids, ...task }) => task) },
+      {
+        ...complete,
+        tasks: complete.tasks.map((task) =>
+          task.name === "import-recording" ? { ...task, depends_on_task_ids: ["foreign"] } : task,
+        ),
+      },
+      {
+        ...complete,
+        tasks: complete.tasks.map((task) =>
+          task.name === "trim-recording"
+            ? { ...task, depends_on_task_ids: ["import-id", "import-id"] }
+            : task,
+        ),
+      },
       {
         ...complete,
         tasks: complete.tasks.map((t) =>
-          t.name === "trim-recording" ? { ...t, depends_on_tasks: { "foreign-source": [] } } : t,
+          t.name === "trim-recording" ? { ...t, depends_on_task_ids: ["foreign-source"] } : t,
         ),
       },
       {

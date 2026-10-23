@@ -1,3 +1,4 @@
+import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { MAX_SONG_VIDEO_MASTER_BYTES } from "./song-video-master-verifier/master-structure.ts";
 
 /** No redirects or CloudConvert bearer token are sent to the signed export URL. */
@@ -17,8 +18,7 @@ export async function downloadSongVideoCloudConvertMaster(
   }
   if (
     url.protocol !== "https:" ||
-    (url.hostname !== "storage.cloudconvert.com" &&
-      url.hostname !== "us-east.storage.cloudconvert.com") ||
+    !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname) ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== "" ||

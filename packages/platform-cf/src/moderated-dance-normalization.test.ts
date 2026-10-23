@@ -23,6 +23,9 @@ describe("private moderated media normalization", () => {
     });
     expect(job.tasks["body-identity"].engine_version).toBe("6.1.4");
     expect(job.tasks["body-identity"].arguments).toContain("trim=start=2.000:end=8.000");
+    expect(job.tasks["body-identity"].arguments).toContain(
+      "eof_action=pass,trim=end_frame=60,scale=",
+    );
     expect(job.tasks["body-identity"].arguments).not.toContain("opaque");
     expect(job.tasks["body-identity"].arguments).not.toContain("cue");
     expect(job.tasks["body-identity"].timeout).toBe(profile.normalizationTimeoutSeconds);
@@ -37,10 +40,38 @@ describe("private moderated media normalization", () => {
       }),
     ).toThrow();
   });
+  test("real provider output preserves fractional body boundaries without admitting an overrun", async () => {
+    const bytes = new Uint8Array(
+      await Bun.file(
+        new URL("./moderated-dance-normalization-fixtures/body-6001ms.framehash", import.meta.url),
+      ).arrayBuffer(),
+    );
+    expect(decodeModeratedDanceFramehash(bytes, profile, 6001)).toHaveLength(61);
+    expect(() => decodeModeratedDanceFramehash(bytes, profile, 6000)).toThrow(
+      "Incomplete normalized body",
+    );
+    for (const [bodyEndMs, frames] of [
+      [8000, 60],
+      [8001, 61],
+      [8100, 61],
+    ] as const) {
+      const job = makeModeratedDanceNormalizationJob({
+        tag: "fractional-body",
+        sourceUrl: "https://private.example/synthetic",
+        bodyStartMs: 2000,
+        bodyEndMs,
+        profile,
+      });
+      expect(job.tasks["body-identity"].arguments).toContain(
+        `eof_action=pass,trim=end_frame=${frames},scale=`,
+      );
+    }
+  });
   test("exact normalized frame evidence rejects short bodies, timestamp/stream/dimension substitution", () => {
     const good = framehash();
     expect(decodeModeratedDanceFramehash(encoder.encode(good), profile, 6000)).toHaveLength(60);
     for (const bad of [
+      `${good}0, 60, 60, 1, 4096, ${"a".repeat(64)}\n`,
       good.replace(`0, 59, 59, 1, 4096, ${"9".repeat(64)}`, ""),
       good.replace("0, 0, 0, 1", "0, 1, 1, 1"),
       good.replace("#dimensions 0: 64x64", "#dimensions 0: 32x32"),
@@ -88,7 +119,7 @@ describe("private moderated media normalization", () => {
   test("bounded private export reads never redirect or leak a provider bearer", async () => {
     const calls: RequestInit[] = [];
     const bytes = await readModeratedDanceExport(
-      "https://storage.cloudconvert.com/private",
+      "https://eu-central.storage.cloudconvert.com/private",
       10,
       new AbortController().signal,
       async (_url, init) => {
@@ -111,7 +142,7 @@ describe("private moderated media normalization", () => {
     ).rejects.toThrow();
     await expect(
       readModeratedDanceExport(
-        "https://storage.cloudconvert.com/private",
+        "https://eu-central.storage.cloudconvert.com/private",
         3,
         new AbortController().signal,
         async () => new Response("oversize"),
@@ -120,7 +151,7 @@ describe("private moderated media normalization", () => {
   });
   test("private job observation requires all four exact, bounded exports and rejects duplicate/foreign artifacts", async () => {
     const files = ["recording.framehash", "frame-0.jpg", "frame-1.jpg", "frame-2.jpg"].map(
-      (filename) => ({ filename, url: `https://storage.cloudconvert.com/${filename}` }),
+      (filename) => ({ filename, url: `https://eu-central.storage.cloudconvert.com/${filename}` }),
     );
     const transport = (entries: unknown[]) =>
       makeSongVideoCloudConvertTransport({

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION as ENGINE } from "./song-video-cloudconvert-recipe.ts";
 
 const Id = Schema.NonEmptyString.check(Schema.isMaxLength(192));
@@ -10,7 +11,7 @@ const Task = Schema.Struct({
   status: Status,
   engine: Schema.optional(Schema.NullOr(Schema.String)),
   engine_version: Schema.optional(Schema.NullOr(Schema.String)),
-  depends_on_tasks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  depends_on_task_ids: Schema.Array(Id),
   result: Schema.optional(Schema.Unknown),
 });
 const Job = Schema.Struct({ id: Id, tag: Id, status: Status, tasks: Schema.Array(Task) });
@@ -43,9 +44,9 @@ export function decodeModeratedDancePublicationBodyObservation(value: unknown) {
       matches.length !== 1 ||
       task === undefined ||
       task.operation !== operation ||
-      Object.keys(task.depends_on_tasks ?? {})
-        .sort()
-        .join(",") !== parentId ||
+      (parent === null
+        ? task.depends_on_task_ids.length !== 0
+        : task.depends_on_task_ids.length !== 1 || task.depends_on_task_ids[0] !== parentId) ||
       ((operation === "command" || operation === "metadata") &&
         ((task.engine != null && task.engine !== "ffmpeg") ||
           (task.engine_version != null && task.engine_version !== ENGINE))) ||
@@ -74,7 +75,7 @@ export function decodeModeratedDancePublicationBodyObservation(value: unknown) {
   const url = new URL(exportUrl);
   if (
     url.protocol !== "https:" ||
-    !["storage.cloudconvert.com", "us-east.storage.cloudconvert.com"].includes(url.hostname) ||
+    !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname) ||
     url.username !== "" ||
     url.password !== "" ||
     url.port !== "" ||

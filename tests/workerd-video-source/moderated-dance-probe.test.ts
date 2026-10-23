@@ -56,7 +56,7 @@ describe("private probe stream in Workerd with real R2 and intercepted provider"
       send: async (url, init) => {
         methods.push(String(init.method));
         if (init.method === "POST") {
-          expect(url).toBe("https://upload.cloudconvert.com/original-import/");
+          expect(url).toBe("https://eu-central.storage.cloudconvert.com/original-import");
           if (!(init.headers instanceof Headers) || !(init.body instanceof ReadableStream))
             throw new Error("Expected streamed upload with headers");
           expect(init.headers.has("Authorization")).toBe(false);
@@ -84,9 +84,10 @@ describe("private probe stream in Workerd with real R2 and intercepted provider"
                 name: "import-recording",
                 operation: "import/upload",
                 status,
+                depends_on_task_ids: [],
                 result: {
                   form: {
-                    url: "https://upload.cloudconvert.com/original-import/",
+                    url: "https://eu-central.storage.cloudconvert.com/original-import",
                     parameters: { signature: "fictional-signature", arbitrary_field: "dynamic" },
                   },
                 },
@@ -98,7 +99,7 @@ describe("private probe stream in Workerd with real R2 and intercepted provider"
                 status,
                 engine: "ffmpeg",
                 engine_version: "6.1.4",
-                depends_on_tasks: { "original-import": [] },
+                depends_on_task_ids: ["original-import"],
                 result: {
                   metadata: {
                     format: { duration: "12", size: String(bytes.length) },

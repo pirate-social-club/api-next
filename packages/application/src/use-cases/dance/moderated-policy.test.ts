@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { moderatedDanceIntakeFacts } from "../../../../testing/src/moderated-dance-intake-fixture.ts";
+import { canonicalBodyHash } from "../content/common.ts";
 import { prepareModeratedDancePolicyPublication } from "./moderated-policy.ts";
 
 const draft = () => {
@@ -54,6 +55,21 @@ describe("moderated policy publication preparation (no runtime acceptance)", () 
     );
     expect(changed.policy.consentHash).not.toBe(prepared.policy.consentHash);
     expect(changed.policy.hash).not.toBe(prepared.policy.hash);
+  });
+  test("the repaired frame boundary cannot reuse the former normalization identity", async () => {
+    const input = draft();
+    const prepared = await Effect.runPromise(prepareModeratedDancePolicyPublication(input));
+    const oldHash = await Effect.runPromise(
+      canonicalBodyHash([
+        "dance-body-normalization-v1",
+        "6.1.4",
+        input.profile.normalizationWidth,
+        input.profile.normalizationHeight,
+        input.profile.normalizationFps,
+        "body-only/no-audio/grayscale/framehash-sha256",
+      ]),
+    );
+    expect(prepared.policy.normalizationHash).not.toBe(oldHash);
   });
   test("missing limits, missing hold authority or invalid windows cannot provision intake", async () => {
     const input = draft();

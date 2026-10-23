@@ -65,6 +65,7 @@
   "vars": {
     "OPENAI_MODERATION_ENABLED": "false",
     "MEDIA_PROCESSING_ENABLED": "false",
+    "DANCE_MODERATED_PROCESSING_ENABLED": "false",
     "VIDEO_ANALYSIS_ENABLED": "false",
         "VIDEO_DELIVERY_ENABLED": "false",
       "VIDEO_SOURCE_GATEWAY_ORIGIN": "",
@@ -86,6 +87,7 @@
   "env": {
     "staging": {
       "name": "pirate-media-processor-worker-staging",
+      "triggers": { "crons": ["* * * * *"] },
       "observability": {
         "enabled": true,
         "logs": {
@@ -131,6 +133,10 @@
       },
       "r2_buckets": [
         {
+          "binding": "MEDIA_INGRESS",
+          "bucket_name": "pirate-media-ingress-staging"
+        },
+        {
           "binding": "MEDIA_IMMUTABLE_ORIGINALS",
           "bucket_name": "pirate-media-immutable-staging"
         },
@@ -145,6 +151,7 @@
       "vars": {
         "OPENAI_MODERATION_ENABLED": "true",
     "MEDIA_PROCESSING_ENABLED": "true",
+    "DANCE_MODERATED_PROCESSING_ENABLED": "true",
         "VIDEO_ANALYSIS_ENABLED": "true",
         "VIDEO_DELIVERY_ENABLED": "true",
     "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "true",
@@ -164,6 +171,7 @@
       "secrets": {
         "required": [
           "CLOUDCONVERT_RENDER_API_KEY",
+          "DANCE_MODERATED_REPLAY_KEYS",
           "VIDEO_WORKFLOW_READ_TOKEN",
           "VIDEO_STREAM_API_TOKEN",
           "ACRCLOUD_ACCESS_KEY",
@@ -238,6 +246,7 @@
       "vars": {
         "OPENAI_MODERATION_ENABLED": "true",
     "MEDIA_PROCESSING_ENABLED": "true",
+    "DANCE_MODERATED_PROCESSING_ENABLED": "false",
         "VIDEO_ANALYSIS_ENABLED": "true",
         "VIDEO_DELIVERY_ENABLED": "true",
         "VIDEO_CLOUDCONVERT_RENDER_ENABLED": "true",
