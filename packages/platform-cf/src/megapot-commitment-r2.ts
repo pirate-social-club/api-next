@@ -2,6 +2,7 @@ import type { MegapotCommitmentPublisher } from "./megapot-commitment-coordinato
 
 const COMMITMENT_ID = /^megapot_commitment_[0-9a-f]{64}$/u;
 const PAYLOAD_HASH = /^[0-9a-f]{64}$/u;
+const UNSIGNED_OWNER_SAFE_KEY = "unsigned_owner_safe_v1";
 
 type StoredObject = Readonly<{
   uploaded: Date;
@@ -60,13 +61,16 @@ function canonicalDocument(input: {
   readonly payload: string;
   readonly payloadHash: string;
   readonly signingKeyId: string;
-  readonly signature: string;
+  readonly signature: string | null;
 }): string {
   if (
     input.payload.length === 0 ||
     !PAYLOAD_HASH.test(input.payloadHash) ||
     input.signingKeyId.length === 0 ||
-    input.signature.length === 0
+    // Only the owner-Safe key publishes without a signature, and it never carries one.
+    (input.signature === null
+      ? input.signingKeyId !== UNSIGNED_OWNER_SAFE_KEY
+      : input.signingKeyId === UNSIGNED_OWNER_SAFE_KEY || input.signature.length === 0)
   ) {
     throw new MegapotCommitmentR2Failed("invalid-request");
   }

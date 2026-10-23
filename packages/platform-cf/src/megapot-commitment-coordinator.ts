@@ -15,9 +15,18 @@ const rejected = (reason: MegapotCommitmentRejected["reason"]) =>
 export interface MegapotCommitmentSigner {
   readonly sign: (payload: Uint8Array) => Promise<{
     readonly signingKeyId: string;
-    readonly signature: string;
+    readonly signature: string | null;
   }>;
 }
+
+/**
+ * The owner's Safe cannot sign a beneficiary commitment, so a ticket-first pool
+ * publishes it unsigned under a key id that says so. The database admits this key
+ * only for ticket-first pools.
+ */
+export const megapotUnsignedOwnerSafeSigner: MegapotCommitmentSigner = {
+  sign: async () => ({ signingKeyId: "unsigned_owner_safe_v1", signature: null }),
+};
 
 export interface MegapotCommitmentPublisher {
   readonly publish: (input: {
@@ -25,7 +34,7 @@ export interface MegapotCommitmentPublisher {
     readonly payload: string;
     readonly payloadHash: string;
     readonly signingKeyId: string;
-    readonly signature: string;
+    readonly signature: string | null;
   }) => Promise<{
     readonly publicReference: string;
     readonly publishedAt: string;

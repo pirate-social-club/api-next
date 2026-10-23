@@ -76,4 +76,32 @@ describe("R2 Megapot commitment publisher", () => {
       }).publish(request),
     ).rejects.toMatchObject({ reason: "conflict" });
   });
+
+  test("publishes an owner-Safe commitment unsigned and says so", async () => {
+    const fixture = bucketFixture();
+    await makeR2MegapotCommitmentPublisher({
+      bucket: fixture.bucket,
+      publicOrigin: "https://api-next-staging.pirate.sc",
+    }).publish({ ...request, signingKeyId: "unsigned_owner_safe_v1", signature: null });
+    expect(JSON.parse(fixture.body() ?? "")).toMatchObject({
+      signingKeyId: "unsigned_owner_safe_v1",
+      signature: null,
+    });
+  });
+
+  test("refuses a missing signature on a signing key and a signature on the unsigned key", async () => {
+    for (const mismatch of [
+      { signingKeyId: request.signingKeyId, signature: null },
+      { signingKeyId: "unsigned_owner_safe_v1", signature: request.signature },
+    ]) {
+      const fixture = bucketFixture();
+      await expect(
+        makeR2MegapotCommitmentPublisher({
+          bucket: fixture.bucket,
+          publicOrigin: "https://api-next-staging.pirate.sc",
+        }).publish({ ...request, ...mismatch }),
+      ).rejects.toMatchObject({ reason: "invalid-request" });
+      expect(fixture.writes()).toBe(0);
+    }
+  });
 });

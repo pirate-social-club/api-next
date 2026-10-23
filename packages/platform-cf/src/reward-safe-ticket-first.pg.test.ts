@@ -14,6 +14,13 @@ import {
   type Hex,
   parseAbi,
 } from "viem";
+import {
+  makeMegapotCommitmentCoordinator,
+  megapotUnsignedOwnerSafeSigner,
+} from "./megapot-commitment-coordinator.ts";
+import { makeControlPlaneMegapotCommitmentStore } from "./megapot-commitment-repository.ts";
+import { makeMegapotSweepCoordinator } from "./megapot-sweep-coordinator.ts";
+import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { makeMegapotTicketFirstCutoff } from "./megapot-ticket-first-cutoff.ts";
 import type { MegapotReceiptLog, MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type {
@@ -60,6 +67,9 @@ function fakeChain() {
   let safeNonce = 3n;
   let ticketId = 500n;
   let sequence = 0;
+  // Drawing 212 settles when the test says so, with the pool ticket in `tier`.
+  let currentDrawingId = 212n;
+  let tier = 0n;
   const nonceAt = new Map<bigint, bigint>();
   const transactions = new Map<string, MegapotV2Transaction>();
   const receipts = new Map<string, MegapotTransactionReceipt>();
@@ -68,13 +78,34 @@ function fakeChain() {
     throw new Error("unused");
   };
   const rpc: MegapotV2RpcClient = {
-    attestDeployment: unused,
+    attestDeployment: async () => ({
+      jackpotCodeHash: hash("7"),
+      ticketNftCodeHash: hash("f"),
+      usdcCodeHash: hash("e"),
+    }),
     readCurrentDrawing: unused,
     readTicketPurchasesAllowed: async () => true,
-    readCurrentDrawingId: async () => 212n,
-    readDrawing: unused,
-    readDrawingTierPayouts: async () => [],
-    readTicketTierIds: async () => [],
+    readCurrentDrawingId: async () => currentDrawingId,
+    readDrawing: async () => ({
+      prizePool: 10_000_000n,
+      ticketPrice: PRICE,
+      edgePerTicket: 100_000n,
+      referralWinShare: 100_000_000_000_000_000n,
+      referralFee: 100_000_000_000_000_000n,
+      globalTicketsBought: 10n,
+      lpEarnings: 9_000_000n,
+      drawingTime: 1_800_000_000n,
+      winningTicket: currentDrawingId > 212n ? 123n : 0n,
+      ballMax: 30,
+      bonusballMax: 10,
+      payoutCalculator: address("a"),
+      jackpotLock: false,
+    }),
+    readDrawingTierPayouts: async () =>
+      Array.from({ length: 12 }, (_, index) =>
+        BigInt(index) === tier && tier !== 0n && tier !== 2n ? 1_001n : 0n,
+      ),
+    readTicketTierIds: async (ticketIds) => ticketIds.map(() => tier),
     readReferralFees: async () => 0n,
     readUsdcBalance: async () => 50_000_000n,
     readNativeBalance: async () => 0n,
@@ -237,6 +268,10 @@ function fakeChain() {
     execute,
     mine: (blocks: bigint) => {
       head += blocks;
+    },
+    settle: (ticketTier: bigint) => {
+      currentDrawingId = 213n;
+      tier = ticketTier;
     },
   };
 }
@@ -425,6 +460,47 @@ suite("ticket-first owner-executed Safe pools", () => {
       status: "cutoff_frozen",
       frozen_share_count: 2,
     });
+
+    const layer = makeDirectPostgresControlPlaneLayer(scoped);
+    const commitment = makeMegapotCommitmentCoordinator({
+      store: makeControlPlaneMegapotCommitmentStore(layer),
+      signer: megapotUnsignedOwnerSafeSigner,
+      publisher: {
+        publish: async (request) => ({
+          publicReference: `https://commitments.test/${request.idempotencyKey}.json`,
+          publishedAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      },
+      authority: { ensure: () => Effect.void },
+    });
+    expect(await run(commitment.commit({ poolLegId: "tf-ok", drawingId: 212n }))).toMatchObject({
+      state: "published",
+      signingKeyId: "unsigned_owner_safe_v1",
+      signature: null,
+    });
+    expect(await drawing("tf-ok")).toMatchObject({ status: "committed" });
+
+    const sweep = (safeProductionEnabled: boolean) =>
+      run(
+        makeMegapotSweepCoordinator({
+          store: makeControlPlaneMegapotSweepStore(layer),
+          rpc: chain.rpc,
+          requiredConfirmations: 3,
+          safeProductionEnabled,
+        }).sweep({ poolLegId: "tf-ok", drawingId: 212n }),
+      );
+    await expect(sweep(false)).rejects.toMatchObject({ reason: "production_disabled" });
+    expect(await sweep(true)).toMatchObject({ kind: "drawing_pending" });
+    expect(await drawing("tf-ok")).toMatchObject({ status: "drawing_pending" });
+    chain.settle(7n);
+    expect(await sweep(true)).toMatchObject({
+      kind: "complete",
+      outcome: "winnings_detected",
+      grossWinningsAtomic: 1_001n,
+      referralAccrualAtomic: 100n,
+      netWinningsAtomic: 901n,
+    });
+    expect(await drawing("tf-ok")).toMatchObject({ status: "winnings_detected" });
   });
 
   test("an ExecutionFailure releases the reservation and closes the drawing unopened", async () => {

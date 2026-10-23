@@ -17,6 +17,7 @@ const candidate: MegapotSweepCandidate = {
   drawingId: 101n,
   drawingVersion: 7,
   drawingStatus: "tickets_confirmed",
+  purchaseOrder: "commit_first",
   attestationId: "megapot-base-sepolia-v2",
   environment: "staging",
   chainId: 84_532,
@@ -51,13 +52,16 @@ function harness(options: {
   readonly tierId: bigint;
   readonly settled?: boolean;
   readonly owner?: string;
+  readonly candidate?: Partial<MegapotSweepCandidate>;
+  readonly safeProductionEnabled?: boolean;
 }) {
+  const subject: MegapotSweepCandidate = { ...candidate, ...options.candidate };
   let stored: MegapotSweepResult | null = null;
   let pendingCalls = 0;
   let completeCalls = 0;
   let reviewCalls = 0;
   const store = {
-    loadCandidate: () => Effect.succeed(candidate),
+    loadCandidate: () => Effect.succeed(subject),
     findResult: () => Effect.succeed(stored),
     markDrawingPending: () => {
       pendingCalls += 1;
@@ -124,6 +128,9 @@ function harness(options: {
       store,
       rpc,
       requiredConfirmations: 3,
+      ...(options.safeProductionEnabled === undefined
+        ? {}
+        : { safeProductionEnabled: options.safeProductionEnabled }),
       now: () => Date.parse("2026-08-26T00:00:00.000Z"),
     }),
     pendingCalls: () => pendingCalls,
@@ -186,5 +193,36 @@ describe("Megapot sweep coordinator", () => {
     });
     expect(testHarness.reviewCalls()).toBe(1);
     expect(testHarness.completeCalls()).toBe(0);
+  });
+
+  test("admits production only for ticket-first Safe pools on Base under the pilot switch", async () => {
+    const safePool = {
+      purchaseOrder: "ticket_first_v1",
+      drawingStatus: "committed",
+      environment: "production",
+      chainId: 8453,
+    } as const;
+    const sweep = (options: Parameters<typeof harness>[0]) =>
+      Effect.runPromise(
+        harness(options).coordinator.sweep({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      );
+    for (const refused of [
+      { tierId: 7n, candidate: safePool },
+      { tierId: 7n, candidate: safePool, safeProductionEnabled: false },
+      { tierId: 7n, candidate: { ...safePool, chainId: 84_532 }, safeProductionEnabled: true },
+      {
+        tierId: 7n,
+        candidate: { ...safePool, purchaseOrder: "commit_first" },
+        safeProductionEnabled: true,
+      },
+    ] as const) {
+      await expect(sweep(refused)).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    await expect(
+      sweep({ tierId: 7n, candidate: safePool, safeProductionEnabled: true }),
+    ).resolves.toMatchObject({ kind: "complete", outcome: "winnings_detected" });
+    await expect(
+      sweep({ tierId: 7n, candidate: { ...safePool, environment: "staging" } }),
+    ).resolves.toMatchObject({ kind: "complete" });
   });
 });

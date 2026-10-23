@@ -51,13 +51,21 @@ export class MegapotWorkStorageFailed extends Data.TaggedError("MegapotWorkStora
   readonly reason: "invalid-row" | "outcome-unknown" | "unavailable";
 }> {}
 
+/**
+ * Commit-first pools run in the EOA cycle; ticket-first pools are owner-executed Safe
+ * pools and run only in the Safe pilot cycle. Each listing serves exactly one of them.
+ */
+export type MegapotPurchaseOrder = "commit_first" | "ticket_first_v1";
+
 export interface MegapotWorkStore {
   readonly loadDrawings: (input: {
     readonly statuses: readonly MegapotDrawingWorkStatus[];
+    readonly purchaseOrder: MegapotPurchaseOrder;
     readonly limit: number;
   }) => Effect.Effect<readonly MegapotDrawingWork[], MegapotWorkStorageFailed>;
   readonly loadCredits: (
     limit: number,
+    purchaseOrder: MegapotPurchaseOrder,
   ) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
   readonly loadRefunds: (
     limit: number,
@@ -185,6 +193,7 @@ export function makeControlPlaneMegapotWorkRepository() {
   return {
     loadDrawings: (input: {
       readonly statuses: readonly MegapotDrawingWorkStatus[];
+      readonly purchaseOrder: MegapotPurchaseOrder;
       readonly limit: number;
     }) =>
       mapped(
@@ -201,10 +210,10 @@ export function makeControlPlaneMegapotWorkRepository() {
                      JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
                      JOIN megapot_drawing_observations observation
                        ON observation.observation_id=drawing.observation_id
-                    WHERE drawing.status=ANY($1::text[])
+                    WHERE drawing.status=ANY($1::text[]) AND drawing.purchase_order=$3
                     ORDER BY drawing.updated_at,drawing.pool_leg_id,drawing.drawing_id
                     LIMIT $2`,
-            values: [input.statuses, input.limit],
+            values: [input.statuses, input.limit, input.purchaseOrder],
             readonly: true,
           });
           return yield* Effect.try({
@@ -214,7 +223,7 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
-    loadCredits: (limit: number) =>
+    loadCredits: (limit: number, purchaseOrder: MegapotPurchaseOrder) =>
       mapped(
         Effect.gen(function* () {
           if (!validLimit(limit)) return yield* failed("invalid-row");
@@ -222,14 +231,22 @@ export function makeControlPlaneMegapotWorkRepository() {
           const result = yield* db.execute<Row>({
             label: "megapot-work.credits.read",
             // Participant credits are paid only after an accepted claim
-            // (Spec 015 §5.2a); fallback and bonus credits are unchanged.
+            // (Spec 015 §5.2a); fallback and bonus credits are unchanged. A credit
+            // allocated from a ticket-first pool is paid from the owner's Safe.
             text: `SELECT credit.credit_id FROM reward_ledger_credits credit
                     WHERE credit.state='credited'
                       AND (credit.source_kind <> 'megapot_allocation' OR EXISTS (
                      SELECT 1 FROM megapot_participant_claims claim
                       WHERE claim.credit_id=credit.credit_id AND claim.status='accepted'))
+                      AND EXISTS (
+                     SELECT 1 FROM megapot_allocations allocation
+                       JOIN megapot_allocation_batches batch
+                         ON batch.allocation_batch_id=allocation.allocation_batch_id
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+                      WHERE allocation.credit_id=credit.credit_id
+                        AND leg.purchase_order='ticket_first_v1') = ($2='ticket_first_v1')
                     ORDER BY credit.created_at,credit.credit_id LIMIT $1`,
-            values: [limit],
+            values: [limit, purchaseOrder],
             readonly: true,
           });
           return yield* Effect.try({
@@ -262,6 +279,9 @@ export function makeControlPlaneMegapotWorkRepository() {
                       JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
                       JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
                      WHERE funding.state='confirmed' AND leg.funded_atomic > 0
+                       -- A ticket-first leg is funded into the owner's Safe and has no
+                       -- automated refund.
+                       AND leg.purchase_order='commit_first'
                        AND leg.status IN ('exhausted','ended')
                        AND (leg.funding_source='leg_budget' OR leg.kind='asset_bonus')
                        AND leg.reserved_atomic=0
@@ -495,7 +515,7 @@ export const makeControlPlaneMegapotWorkStore = (
     mapped(Effect.provide(layer)(effect));
   return {
     loadDrawings: (input) => provide(repository.loadDrawings(input)),
-    loadCredits: (limit) => provide(repository.loadCredits(limit)),
+    loadCredits: (limit, purchaseOrder) => provide(repository.loadCredits(limit, purchaseOrder)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
     loadPendingFunding: (input) => provide(repository.loadPendingFunding(input)),

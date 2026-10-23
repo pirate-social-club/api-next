@@ -52,9 +52,12 @@ function bigint(row: Row, field: string): bigint {
 function candidateFromRow(row: Row): MegapotSweepCandidate {
   const environment = text(row, "environment");
   const drawingStatus = text(row, "drawing_status");
+  const purchaseOrder = text(row, "purchase_order");
   if (
     (environment !== "test" && environment !== "staging" && environment !== "production") ||
-    (drawingStatus !== "tickets_confirmed" && drawingStatus !== "drawing_pending")
+    (purchaseOrder !== "commit_first" && purchaseOrder !== "ticket_first_v1") ||
+    (drawingStatus !== "drawing_pending" &&
+      drawingStatus !== (purchaseOrder === "commit_first" ? "tickets_confirmed" : "committed"))
   ) {
     throw new Error("invalid sweep candidate");
   }
@@ -63,6 +66,7 @@ function candidateFromRow(row: Row): MegapotSweepCandidate {
     drawingId: bigint(row, "drawing_id"),
     drawingVersion: integer(row, "drawing_version"),
     drawingStatus,
+    purchaseOrder,
     attestationId: text(row, "attestation_id"),
     environment,
     chainId: integer(row, "chain_id"),
@@ -81,6 +85,7 @@ function candidateFromRow(row: Row): MegapotSweepCandidate {
 const CANDIDATE_SELECT = `
   SELECT drawing.pool_leg_id, drawing.drawing_id,
          drawing.version AS drawing_version, drawing.status AS drawing_status,
+         drawing.purchase_order,
          ticket.ticket_id, attestation.attestation_id, attestation.environment,
          attestation.chain_id, attestation.jackpot_address,
          attestation.usdc_address, attestation.ticket_nft_address,
@@ -103,7 +108,8 @@ function loadCandidateIn(
       label: "megapot-sweep.candidate.read",
       text: `${CANDIDATE_SELECT}
               WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
-                AND drawing.status IN ('tickets_confirmed','drawing_pending')
+                AND (drawing.status IN ('tickets_confirmed','drawing_pending')
+                  OR (drawing.purchase_order='ticket_first_v1' AND drawing.status='committed'))
                 AND ticket.status='custodied'
               ${input.lock ? "FOR UPDATE OF drawing, ticket" : ""}`,
       values: [input.poolLegId, input.drawingId.toString()],
@@ -141,6 +147,7 @@ function sameCandidate(left: MegapotSweepCandidate, right: MegapotSweepCandidate
     left.drawingId === right.drawingId &&
     left.drawingVersion === right.drawingVersion &&
     left.drawingStatus === right.drawingStatus &&
+    left.purchaseOrder === right.purchaseOrder &&
     left.attestationId === right.attestationId &&
     left.chainId === right.chainId &&
     left.ticketId === right.ticketId &&
@@ -168,12 +175,13 @@ function moveDrawingPending(
       text: `UPDATE megapot_pool_drawings
                 SET status='drawing_pending', version=$3, updated_at=clock_timestamp()
               WHERE pool_leg_id=$1 AND drawing_id=$2
-                AND status='tickets_confirmed' AND version=$4`,
+                AND status=$5 AND version=$4`,
       values: [
         candidate.poolLegId,
         candidate.drawingId.toString(),
         nextVersion,
         candidate.drawingVersion,
+        candidate.drawingStatus,
       ],
       readonly: false,
     });
