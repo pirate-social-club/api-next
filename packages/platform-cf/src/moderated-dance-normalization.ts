@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { ModeratedDanceIntakeProfile } from "../../application/src/use-cases/dance/moderated-intake.ts";
+import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { hmac, sha256Hex } from "./r2-upload-signing.ts";
 import { SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION } from "./song-video-cloudconvert-recipe.ts";
 
@@ -182,7 +183,7 @@ export async function readModeratedDanceExport(
   const url = new URL(urlValue);
   if (
     url.protocol !== "https:" ||
-    !["storage.cloudconvert.com", "us-east.storage.cloudconvert.com"].includes(url.hostname) ||
+    !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname) ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== "" ||

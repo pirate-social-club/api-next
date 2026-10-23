@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import type { MediaTransformVideoProbe } from "../../application/src/media/transform.ts";
+import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION as ENGINE } from "./song-video-cloudconvert-recipe.ts";
 
 const Id = Schema.NonEmptyString.check(Schema.isMaxLength(192));
@@ -11,7 +12,7 @@ const Task = Schema.Struct({
   status: Status,
   engine: Schema.optional(Schema.NullOr(Schema.String)),
   engine_version: Schema.optional(Schema.NullOr(Schema.String)),
-  depends_on_tasks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  depends_on_task_ids: Schema.Array(Id),
   result: Schema.optional(Schema.Unknown),
 });
 const Job = Schema.Struct({ id: Id, tag: Id, status: Status, tasks: Schema.Array(Task) });
@@ -69,9 +70,9 @@ export function decodeModeratedDanceProbeObservation(value: unknown) {
     probe.operation !== "metadata" ||
     (probe.engine != null && probe.engine !== "ffmpeg") ||
     (probe.engine_version != null && probe.engine_version !== ENGINE) ||
-    probe.depends_on_tasks === undefined ||
-    Object.keys(probe.depends_on_tasks).length !== 1 ||
-    !Object.hasOwn(probe.depends_on_tasks, source.id)
+    source.depends_on_task_ids.length !== 0 ||
+    probe.depends_on_task_ids.length !== 1 ||
+    probe.depends_on_task_ids[0] !== source.id
   )
     throw new TypeError("Private probe provenance changed");
   const waiting = job.status === "waiting" && source.status === "waiting";
@@ -81,13 +82,14 @@ export function decodeModeratedDanceProbeObservation(value: unknown) {
       pairs = Object.entries(form.parameters);
     if (
       url.protocol !== "https:" ||
-      url.hostname !== "upload.cloudconvert.com" ||
+      (url.hostname !== "upload.cloudconvert.com" &&
+        !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname)) ||
       url.port !== "" ||
       url.username !== "" ||
       url.password !== "" ||
       url.hash !== "" ||
       url.search !== "" ||
-      !/^\/[A-Za-z0-9_-]+\/$/u.test(url.pathname) ||
+      !/^\/[A-Za-z0-9_-]+\/?$/u.test(url.pathname) ||
       pairs.length < 1 ||
       pairs.length > 64 ||
       pairs.some(

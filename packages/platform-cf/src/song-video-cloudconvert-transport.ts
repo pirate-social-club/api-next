@@ -1,3 +1,4 @@
+import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { decodeModeratedDanceProbeObservation } from "./moderated-dance-probe-observation.ts";
 import { decodeModeratedDancePublicationBodyObservation } from "./moderated-dance-publication-observation.ts";
 
@@ -82,8 +83,7 @@ function parseObservation(value: unknown, exportKind: "video" | "pcm"): CloudCon
   }
   if (
     url.protocol !== "https:" ||
-    (url.hostname !== "storage.cloudconvert.com" &&
-      url.hostname !== "us-east.storage.cloudconvert.com") ||
+    !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname) ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== "" ||
@@ -164,7 +164,7 @@ function privateDanceObservation(value: unknown): CloudConvertPrivateDanceObserv
     }
     if (
       url.protocol !== "https:" ||
-      !["storage.cloudconvert.com", "us-east.storage.cloudconvert.com"].includes(url.hostname) ||
+      !CLOUDCONVERT_STORAGE_HOSTS.includes(url.hostname) ||
       url.port !== "" ||
       url.username !== "" ||
       url.password !== "" ||

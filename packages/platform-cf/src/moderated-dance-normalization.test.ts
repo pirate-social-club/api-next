@@ -88,7 +88,7 @@ describe("private moderated media normalization", () => {
   test("bounded private export reads never redirect or leak a provider bearer", async () => {
     const calls: RequestInit[] = [];
     const bytes = await readModeratedDanceExport(
-      "https://storage.cloudconvert.com/private",
+      "https://eu-central.storage.cloudconvert.com/private",
       10,
       new AbortController().signal,
       async (_url, init) => {
@@ -111,7 +111,7 @@ describe("private moderated media normalization", () => {
     ).rejects.toThrow();
     await expect(
       readModeratedDanceExport(
-        "https://storage.cloudconvert.com/private",
+        "https://eu-central.storage.cloudconvert.com/private",
         3,
         new AbortController().signal,
         async () => new Response("oversize"),
@@ -120,7 +120,7 @@ describe("private moderated media normalization", () => {
   });
   test("private job observation requires all four exact, bounded exports and rejects duplicate/foreign artifacts", async () => {
     const files = ["recording.framehash", "frame-0.jpg", "frame-1.jpg", "frame-2.jpg"].map(
-      (filename) => ({ filename, url: `https://storage.cloudconvert.com/${filename}` }),
+      (filename) => ({ filename, url: `https://eu-central.storage.cloudconvert.com/${filename}` }),
     );
     const transport = (entries: unknown[]) =>
       makeSongVideoCloudConvertTransport({

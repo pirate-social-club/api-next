@@ -53,10 +53,11 @@ function observation(status = "waiting") {
     id: "original-import",
     name: "import-recording",
     operation: "import/upload",
+    depends_on_task_ids: [] as string[],
     status,
     result: {
       form: {
-        url: "https://upload.cloudconvert.com/original-import/",
+        url: "https://eu-central.storage.cloudconvert.com/upload-bucket",
         parameters: {
           expires: 61,
           signature: "fictional-form-signature",
@@ -65,7 +66,7 @@ function observation(status = "waiting") {
       },
     },
   };
-  const dependencies: Record<string, unknown> = { "original-import": [] };
+  const dependencies = ["original-import"];
   const probe = {
     id: "original-metadata",
     name: "source-probe",
@@ -73,7 +74,7 @@ function observation(status = "waiting") {
     status,
     engine: "ffmpeg",
     engine_version: "6.1.4",
-    depends_on_tasks: dependencies,
+    depends_on_task_ids: dependencies,
     result: { metadata: metadata() },
   };
   return {
@@ -108,7 +109,7 @@ function fixture() {
     },
     send: async (url, init) => {
       calls.push({ url, init });
-      if (url.startsWith("https://upload.cloudconvert.com/")) {
+      if (url.startsWith("https://eu-central.storage.cloudconvert.com/")) {
         if (!(init.body instanceof ReadableStream)) throw new Error("Expected a streamed body");
         uploads.push(await new Response(init.body).text());
         if (loseUpload) throw new Error("Upload reply lost after provider received the file");
@@ -291,6 +292,44 @@ describe("strict private probe provider facts", () => {
     ])
       expect(() => decodeModeratedDanceProbeMetadata(value, 5, "bound-proof")).toThrow();
   });
+  test("observed regional upload form keeps exact host, path and dependency boundaries", () => {
+    for (const url of [
+      "https://eu-central.storage.cloudconvert.com/upload-bucket",
+      "https://eu-central.storage.cloudconvert.com/upload-bucket/",
+      "https://upload.cloudconvert.com/original-import/",
+    ]) {
+      const value = observation();
+      value.tasks[0].result.form.url = url;
+      expect(decodeModeratedDanceProbeObservation(value).form?.url).toBe(url);
+    }
+    for (const url of [
+      "https://eu-central.storage.cloudconvert.com.attacker.example/bucket",
+      "https://attacker.eu-central.storage.cloudconvert.com/bucket",
+      "https://eu-central.storage.cloudconvert.com:444/bucket",
+      "https://user:password@eu-central.storage.cloudconvert.com/bucket",
+      "http://eu-central.storage.cloudconvert.com/bucket",
+      "https://eu-central.storage.cloudconvert.com/bucket?redirect=1",
+      "https://eu-central.storage.cloudconvert.com/bucket/file",
+    ]) {
+      const value = observation();
+      value.tasks[0].result.form.url = url;
+      expect(() => decodeModeratedDanceProbeObservation(value)).toThrow();
+    }
+    for (const dependencies of [[], ["foreign"], ["original-import", "original-import"]]) {
+      const value = observation();
+      value.tasks[1].depends_on_task_ids = dependencies;
+      expect(() => decodeModeratedDanceProbeObservation(value)).toThrow();
+    }
+    const missing = observation();
+    expect(() =>
+      decodeModeratedDanceProbeObservation({
+        ...missing,
+        tasks: missing.tasks.map(({ depends_on_task_ids: _ids, ...task }) => task),
+      }),
+    ).toThrow();
+    missing.tasks[0].depends_on_task_ids = ["unexpected-source"];
+    expect(() => decodeModeratedDanceProbeObservation(missing)).toThrow();
+  });
   test("finished tasks require exact dependency, version, task closure and consistent status", () => {
     expect(decodeModeratedDanceProbeObservation(observation("finished")).metadata).toEqual(
       metadata(),
@@ -300,7 +339,7 @@ describe("strict private probe provider facts", () => {
         if (v.tasks[0]) v.tasks.push(v.tasks[0]);
       },
       (v: ReturnType<typeof observation>) => {
-        if (v.tasks[1]) v.tasks[1].depends_on_tasks = {};
+        if (v.tasks[1]) v.tasks[1].depends_on_task_ids = [];
       },
       (v: ReturnType<typeof observation>) => {
         if (v.tasks[0]) v.tasks[0].status = "waiting";
