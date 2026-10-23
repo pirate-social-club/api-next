@@ -129,8 +129,9 @@ is set; it is off by default. It shares reward legs and credits with Study
 recovery and with contribution funding recovery, so it runs as the financial step
 of their serial job, the place the EOA rewards cycle takes when that lane is on,
 and contribution recovery runs with it. In order, it observes
-the drawing, scans the Safe, settles bound purchases and payouts, closes
-unexecuted purchases, prepares tickets, freezes, publishes commitments, sweeps,
+the drawing, scans the Safe, settles bound purchases and payouts, confirms
+pending funding transfers into the Safe, closes unexecuted purchases, prepares
+tickets, freezes, publishes commitments, sweeps,
 settles and prepares claims, allocates, observes the Safe's solvency and
 prepares payouts for accepted participant credits. It never signs or sends.
 
@@ -142,16 +143,45 @@ configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused. Production
 reward work still requires the run lease and an unpaused brake, and a production
 leg must carry `legal_activation_gate = 'production_approved'` to be active.
 
-Still open before a real pool: creating and funding a Safe-funded ticket-first
-leg, the participant screens for a payout that waits on the owner and for Send
-on Base, the Spec 015 amendment, and the owner inputs listed above.
+A leg is created through the offer API (`OpenSongRewardOffer`,
+`AddMegapotPoolLeg`) on the active attestation; migration 0312 makes it
+ticket-first because its custody is the Safe. Its funder sends USDC from their own
+persona wallet into the Safe and submits the transfer (`ObserveMegapotPoolFunding`);
+the pilot cycle confirms it and the leg becomes active once it holds one ticket's
+price. Shared-song contribution legs also name Dance and cannot be created until
+Dance is active.
+
+### Staging rehearsal on Base Sepolia
+
+Safe custody is admitted on Base Sepolia outside production, so staging can run
+the whole pilot with test funds: retire the staging EOA attestation (one active
+attestation per environment), turn `MEGAPOT_REWARDS_ENABLED` off in the jobs
+worker only, register a Base Sepolia Safe with
+`API_NEXT_ENV=staging bun scripts/register-safe-pool-custody.ts --apply`, set the
+pilot variables, then open and fund a leg through the staging API. The staging
+HTTP worker keeps its reward endpoints, and onward Send already works on Base
+Sepolia. Someone must hold the test Safe's owner key to execute its calls; creating
+that key is the owner's decision.
+
+### What production still needs
+
+- The offer, funding, Claim and credit endpoints are served only when the HTTP
+  worker's `MEGAPOT_REWARDS_ENABLED` is on, and the production posture forbids
+  that. Production needs those endpoints scoped to the pilot.
+- Funding and onward Send are signed from a persona wallet on Base, which needs
+  gas. Production refuses wallet sponsorship today, and the winner send and the
+  Solid Send model accept only Base Sepolia. Which way participants pay gas on
+  Base decides which of these is extended.
+- The Spec 015 amendment and the owner inputs listed above.
 
 ## Verification
 
 Unit tests cover the pure functions, the coordinators' admission rules and the
 cycle's order. `reward-safe-ticket-first.pg.test.ts` drives one pool on
-PostgreSQL with a fake chain from purchase through allocation, plus the failure,
-deadline, wrong-drawing and empty-drawing cases and the call export;
-`reward-safe-payout.pg.test.ts` covers payouts from seeded credits. The fork
+PostgreSQL with a fake chain from purchase through participant payout (legs,
+shares and identities seeded), plus the failure, deadline, wrong-drawing,
+empty-drawing, export, custody-order, planned-drawing and Safe funding cases;
+`reward-safe-payout.pg.test.ts` covers payouts from seeded credits. These run on
+Base; the Base Sepolia rules are covered by unit tests. The fork
 proof remains the contract-compatibility evidence. None of this has run against
 a live chain.
