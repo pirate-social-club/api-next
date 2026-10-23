@@ -14,6 +14,8 @@ import {
   type Hex,
   parseAbi,
 } from "viem";
+import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
+import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import {
   makeMegapotCommitmentCoordinator,
   megapotUnsignedOwnerSafeSigner,
@@ -413,6 +415,13 @@ suite("ticket-first owner-executed Safe pools", () => {
     );
     await admin.query("SET session_replication_role = replica");
     await admin.query(
+      `INSERT INTO reward_asset_whitelist (chain_id, token_address, decimals, symbol, asset_kind,
+         environment, status, policy_version, activated_at, plain_erc20_verified_at)
+       VALUES (8453,$1,6,'USDC','settlement_usdc','production','active','base-usdc-v1',
+         now(),now())`,
+      [USDC],
+    );
+    await admin.query(
       `INSERT INTO megapot_deployment_attestations (attestation_id, environment, chain_id,
          jackpot_address, usdc_address, ticket_nft_address, custody_address, referrer_address,
          source_tag, jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
@@ -636,6 +645,26 @@ suite("ticket-first owner-executed Safe pools", () => {
         ticket_status: "claimed",
         referral: "100",
       },
+    ]);
+
+    // The claimed net winnings are split equally across the frozen qualifiers.
+    await run(
+      makeMegapotAllocationCoordinator({
+        store: makeControlPlaneMegapotAllocationStore(layer),
+      }).allocate(subject),
+    );
+    expect(await drawing("tf-ok")).toMatchObject({ status: "credited" });
+    expect(
+      (
+        await admin.query(
+          `SELECT account_id, amount_atomic::text AS amount, state, chain_id
+             FROM reward_ledger_credits WHERE source_kind='megapot_allocation'
+            ORDER BY account_id`,
+        )
+      ).rows,
+    ).toEqual([
+      { account_id: "account-a", amount: "451", state: "credited", chain_id: "8453" },
+      { account_id: "account-b", amount: "450", state: "credited", chain_id: "8453" },
     ]);
   });
 
