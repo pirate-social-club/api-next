@@ -50,12 +50,12 @@ are rewritten per mode. Existing EOA rows keep their exact constraints.
 | confirmed | execution success plus the business receipt validated with confirmations |
 | reverted | the Safe emitted `ExecutionFailure` for the matching call; nonce spent, no business effect |
 | reconciliation_required | ambiguous evidence; reservation kept |
-| terminal_failed | prepared command withdrawn before any execution was found |
+| terminal_failed | ended before any calldata was fixed |
 
-Withdrawing a prepared command is only safe while it is unexecuted. Because a
-queued Safe transaction can still execute later, withdrawal keeps a content
-watch: a later matching execution moves the effect to reconciliation, never to
-silent success or loss.
+A prepared call is never withdrawn by Pirate. An exported Safe transaction can
+still execute later, so a prepared effect only moves forward on an observed
+execution, and the pool drawing that needed it closes around it while the
+effect keeps its reservation.
 
 The purchase, claim, approval and payout repositories keep their business
 confirmation steps (inventory, receipt evidence, leg spend, allocation, credit
