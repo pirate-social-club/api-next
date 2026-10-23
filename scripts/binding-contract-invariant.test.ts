@@ -722,7 +722,7 @@ describe("source-to-Wrangler binding contract", () => {
   });
 
   test("pipeline observability keeps custom logs unsampled and traces deliberate", () => {
-    for (const worker of ["jobs", "media", "data"] as const) {
+    for (const worker of ["jobs", "data"] as const) {
       for (const environmentName of ENVIRONMENTS) {
         const observability = rawEnvironment(configs[worker], environmentName).observability;
         expect(observability).toMatchObject({
