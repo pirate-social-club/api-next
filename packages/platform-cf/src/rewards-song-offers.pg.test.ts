@@ -812,6 +812,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         { legal_activation_gate: "production_approved", purchase_order: "ticket_first_v1" },
       ]);
     });
+    completedTestCount += 1;
   });
 
   test("binds offer-open to the current owner policy, not the creation snapshot", async () => {
