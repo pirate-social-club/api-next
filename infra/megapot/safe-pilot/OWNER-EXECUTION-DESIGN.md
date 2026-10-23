@@ -15,12 +15,17 @@ tolerated by reconciliation but make operator review harder.
 
 ## How the owner executes a command
 
-An operator command writes a Safe Transaction Builder file for one prepared
-effect: chain 8453, one call, `value` 0. The owner imports it in the Transaction
-Builder app and executes it. A single call becomes a direct `execTransaction`
-with operation 0, which is the only shape the existing Safe receipt validator
-accepts. USDC approval is its own command, ahead of purchases, so no MultiSend
-batch is needed.
+`scripts/safe-pool-export-calls.ts` writes one Safe Transaction Builder file
+for each prepared call: chain 8453, one call, `value` 0. The owner imports a
+file in the Transaction Builder app and executes it as its own transaction. A
+single call becomes a direct `execTransaction` with operation 0, which is the
+only shape the Safe receipt validator accepts; a call executed inside a MultiSend
+batch is not recognized.
+
+The owner sets the Safe's USDC allowance for the Jackpot once, directly in
+Safe{Wallet}. Pirate prepares no approval call: before each purchase it reads
+the allowance and the Safe's USDC balance and prepares nothing while either is
+short.
 
 Safe{Wallet} chooses the Safe nonce. Pirate therefore does not reserve Safe
 nonces. It binds each command by content: target, calldata, value 0 and
@@ -32,8 +37,9 @@ outer transaction hash are stored separately.
 
 Content binding needs unique calldata among unresolved commands. Purchases and
 claims are unique by construction (derived ticket numbers, exact ticket ids).
-A payout is a USDC `transfer(recipient, amount)`, which can repeat, so Pirate
-refuses to prepare a payout whose calldata matches another unresolved command.
+A payout is a USDC `transfer(recipient, amount)`, which can repeat, so the
+database refuses a second prepared, confirming or held Safe call with the same
+target and calldata until the first resolves.
 
 ## Effect machine mapping
 
@@ -76,8 +82,24 @@ version reverses that, following the October 22 owner clarification:
 4. Sweep, winnings claim, `equal_v1` allocation, credits, participant Claim and
    payout follow the existing order.
 
-This needs a new allowed-transition set for pilot drawings in
-`guard_megapot_pool_drawing`. Existing legs keep their order.
+Migration 0310 adds that transition set for ticket-first drawings. Existing legs
+keep their order, and every work listing serves one purchase order, so the EOA
+cycle never touches a ticket-first pool.
+
+A ticket-first commitment is published unsigned under the key id
+`unsigned_owner_safe_v1`, which the database admits only for ticket-first pools.
+
+## Claims
+
+A winning drawing's `claimWinnings` call is recorded alone when it is prepared.
+When reconciliation binds the owner's execution, settlement validates the claim
+receipt and reads the Safe's USDC and referral balances at the execution's
+parent block and at its block, because the Safe may execute other calls between
+preparation and the claim. One transaction then reserves the ticket, records the
+claim detail with those balances, and confirms the claim with the EOA claim
+ledger code. An `ExecutionFailure` reverts that attempt and leaves the drawing
+`winnings_detected`; up to three attempts are prepared before the drawing is
+held. Megapot burns a claimed ticket, so no attempt can pay twice.
 
 ## Payouts
 
@@ -100,9 +122,33 @@ custody. Both need a dated amendment. Empty-entry winnings disposition, the
 Safe identity and threshold, the entry cutoff and spend/gas limits remain
 owner inputs.
 
-## Verification without load
+## Running the pilot
 
-Pure functions (command build, Transaction Builder export, execution decoding,
-content matching) get focused unit tests. Database constraints get focused
-PostgreSQL cases once heavy local work is acceptable again. The existing fork
-proof remains the contract-compatibility evidence.
+The `safe-pool-pilot.cycle` jobs-worker job runs every two minutes when
+`SAFE_POOL_PILOT_ENABLED` is set; it is off by default. In order, it observes
+the drawing, scans the Safe, settles bound purchases and payouts, closes
+unexecuted purchases, prepares tickets, freezes, publishes commitments, sweeps,
+settles and prepares claims, allocates, observes the Safe's solvency and
+prepares payouts for accepted participant credits. It never signs or sends.
+
+Enabling it needs `SAFE_POOL_ATTESTATION_ID`, `SAFE_POOL_RPC_URL`,
+`SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN`, `SAFE_POOL_MINIMUM_ENTRY_SECONDS` (at least
+60) and the `MEGAPOT_COMMITMENTS` bucket, and production attestations also need
+`SAFE_POOL_PRODUCTION_ENABLED`. It shares tables with the EOA rewards job, so
+configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused. Production
+reward work still requires the run lease and an unpaused brake, and a production
+leg must carry `legal_activation_gate = 'production_approved'` to be active.
+
+Still open before a real pool: creating and funding a Safe-funded ticket-first
+leg, the participant screens for a payout that waits on the owner and for Send
+on Base, the Spec 015 amendment, and the owner inputs listed above.
+
+## Verification
+
+Unit tests cover the pure functions, the coordinators' admission rules and the
+cycle's order. `reward-safe-ticket-first.pg.test.ts` drives one pool on
+PostgreSQL with a fake chain from purchase through allocation, plus the failure,
+deadline, wrong-drawing and empty-drawing cases and the call export;
+`reward-safe-payout.pg.test.ts` covers payouts from seeded credits. The fork
+proof remains the contract-compatibility evidence. None of this has run against
+a live chain.
