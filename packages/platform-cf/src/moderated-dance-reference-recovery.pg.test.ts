@@ -101,7 +101,7 @@ suite("native recovery of the same published Dance reference", () => {
       const all = await loadPostgresMigrations();
       const upgraded = await runPostgresMigrations({
         connectionString: f.connection,
-        migrations: all,
+        migrations: all.slice(0, 309),
         expectedLedger: all.slice(0, 308),
       });
       if (upgraded.dryRun) throw new Error("Actual recovery upgrade required");
