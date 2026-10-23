@@ -1,6 +1,7 @@
 import type { SongVideoPcmRangeReader } from "./song-video-pcm-excerpt.ts";
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "./song-video-pcm-render-bounds.ts";
 
-const MAX_EXCERPT_BYTES = 15 * 48_000 * 4;
+const MAX_EXCERPT_BYTES = SONG_VIDEO_PCM_RENDER_MAX_SAMPLES * 4;
 
 /** Conditional R2 range read, bound to the admitted object's version and ETag. */
 export function makeR2SongVideoPcmRangeReader(

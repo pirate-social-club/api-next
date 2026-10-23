@@ -10,6 +10,7 @@ import type {
   SealedReviewCapture,
   SubmitReceipt,
 } from "./moderator-review.ts";
+import { MODERATED_DANCE_REPLAY_RETIRED } from "./moderator-review.ts";
 
 const Id = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
@@ -48,7 +49,7 @@ const Objective: Schema.Codec<FrozenObjective> = Schema.Struct({
   fundingPolicyHash: Hash,
   gradingMode: Schema.Literal("moderator_verdict"),
 });
-export const SealedModeratorCaptureSchema: Schema.Codec<SealedReviewCapture> = Schema.Struct({
+const CaptureFields = {
   reviewId: Id,
   sessionId: Id,
   attemptId: Id,
@@ -90,6 +91,12 @@ export const SealedModeratorCaptureSchema: Schema.Codec<SealedReviewCapture> = S
     version: Id,
     policyHash: Hash,
   }),
+};
+export const SealedModeratorCaptureSchema: Schema.Codec<SealedReviewCapture> =
+  Schema.Struct(CaptureFields);
+const RetainedCapture = Schema.Struct({
+  ...CaptureFields,
+  normalizedDigest: Schema.Union([Hash, Schema.Literal(MODERATED_DANCE_REPLAY_RETIRED)]),
 });
 const Submit: Schema.Codec<SubmitReceipt> = Schema.Struct({
   id: Id,
@@ -130,7 +137,7 @@ const State: Schema.Codec<ReviewState> = Schema.Literals([
   "processing_failed",
 ]);
 export const ModeratorReviewSchema: Schema.Codec<ModeratorReview> = Schema.Struct({
-  capture: SealedModeratorCaptureSchema,
+  capture: RetainedCapture,
   revision: Positive,
   state: State,
   reviewDeadlineMs: Natural,
@@ -140,14 +147,23 @@ export const ModeratorReviewSchema: Schema.Codec<ModeratorReview> = Schema.Struc
   showPublicly: Schema.NullOr(Schema.Boolean),
   choiceRevision: Natural,
   generation: Natural,
-  publication: Schema.Literals(["none", "staged", "cancelled", "pending", "failed"]),
+  publication: Schema.Literals(["none", "staged", "cancelled", "pending", "failed", "transferred"]),
   publicationRevision: Natural,
   transferDeadlineMs: Schema.NullOr(Natural),
   terminalAtMs: Schema.NullOr(Natural),
   verdict: Schema.NullOr(Schema.Literals(["passed", "not_passed"])),
   attestation: Schema.NullOr(Attestation),
   qualificationRef: Schema.NullOr(Id),
-});
+}).check(
+  Schema.makeFilter((s) =>
+    s.capture.normalizedDigest !== MODERATED_DANCE_REPLAY_RETIRED ||
+    (s.terminalAtMs !== null &&
+      !["uploaded", "screening", "awaiting_review"].includes(s.state) &&
+      s.publication !== "pending")
+      ? undefined
+      : "Replay material may retire only after review and handoff close",
+  ),
+);
 const Disposition: Schema.Codec<DispositionAuthority> = Schema.Struct({
   accepted: Schema.Boolean,
   version: Id,

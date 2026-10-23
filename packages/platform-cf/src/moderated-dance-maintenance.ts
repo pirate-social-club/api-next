@@ -7,6 +7,13 @@ import {
 } from "../../application/src/use-cases/dance/moderator-review-services.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import { makeControlPlaneModeratorReviewStore } from "./dance-moderator-review-repository.ts";
+import { makeModeratedDanceProviderCleanup } from "./moderated-dance-provider-cleanup.ts";
+import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
+import {
+  type DancePublicationCleanupBucket,
+  makeModeratedDancePublicationCleanup,
+} from "./moderated-dance-publication-storage.ts";
+import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
 const Id = Schema.NonEmptyString,
   NumberId = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }));
@@ -73,7 +80,14 @@ export function makeModeratedDanceMaintenance(
   input: Readonly<{
     runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError>;
     ingress: PrivateCleanupBucket;
-    originals: PrivateCleanupBucket;
+    originals: PrivateCleanupBucket & DancePublicationCleanupBucket;
+    provider?:
+      | Pick<
+          ReturnType<typeof makeSongVideoCloudConvertTransport>,
+          "inspect" | "findByTag" | "remove"
+        >
+      | undefined;
+    replayKeys?: ReadonlyMap<string, Uint8Array> | undefined;
     randomId?: () => string;
   }>,
 ) {
@@ -96,6 +110,20 @@ export function makeModeratedDanceMaintenance(
   const reviewStore = makeControlPlaneModeratorReviewStore(input.runtime, {
     account: () => Effect.fail(new DanceReviewServiceFailure({ reason: "unauthorized" })),
     worker: () => Effect.succeed({ kind: "worker", accountId: "moderated-dance-maintenance" }),
+  });
+  const providerCleanup = makeModeratedDanceProviderCleanup({
+    call,
+    provider: input.provider,
+    randomId: input.randomId,
+  });
+  const publicReplay =
+    input.replayKeys === undefined
+      ? undefined
+      : makeModeratedDancePublicReplay({ call, keys: input.replayKeys, randomId: input.randomId });
+  const publicationCleanup = makeModeratedDancePublicationCleanup({
+    call,
+    bucket: input.originals,
+    randomId: input.randomId,
   });
   const run = async () => {
     const raw = await call(
@@ -217,6 +245,26 @@ export function makeModeratedDanceMaintenance(
         [cleanup.uploadId, cleanup.kind, cleanup.token, JSON.stringify({ outcome, observations })],
       );
     }
+    await providerCleanup.run();
+    await publicationCleanup.run();
+    await call(
+      "dance.maintenance.replay-drain",
+      "SELECT drain_moderated_dance_replay_v1() AS packet",
+      [],
+    );
+    await call(
+      "dance.maintenance.compatible-replay-drain",
+      "SELECT drain_moderated_dance_compatible_replay_v1() AS packet",
+      [],
+    );
+    // Missing or changed keys never skip already-due payload/provider/private
+    // retention. Indexing runs only after those independent drains complete.
+    await publicReplay?.run();
+    await call(
+      "dance.maintenance.publication-intents",
+      "SELECT drain_moderated_dance_publication_intents_v1() AS packet",
+      [],
+    );
     await call(
       "dance.maintenance.readiness",
       "SELECT record_moderated_dance_maintenance_v1() AS packet",

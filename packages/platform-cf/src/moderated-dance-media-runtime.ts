@@ -21,12 +21,15 @@ import {
 import type { VideoExtractedFrame } from "../../domain/src/video-submission.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import { makeR2MediaSealer } from "./media-sealing-adapter.ts";
+import type { ModeratedDanceProbeJobs } from "./moderated-dance-cloudconvert-probe.ts";
 import {
   decodeModeratedDanceFramehash,
   makeModeratedDanceNormalizationJob,
   moderatedDanceReplayDigests,
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
+import { bindModeratedDanceReplayKeys } from "./moderated-dance-public-replay.ts";
+import { makeModeratedDanceSafetyProtocol } from "./moderated-dance-safety-contract.ts";
 import { sha256Hex } from "./r2-upload-signing.ts";
 import type { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 import {
@@ -154,7 +157,9 @@ export function makeModeratedDanceMediaRuntime(
         expiresAtMs: number;
         requestId: string;
       }) => Promise<{ url: string; expiresAtMs: number }>,
-    ) => MediaTransformVideoJobs;
+      source: typeof Sealed.Type,
+      profile: ModeratedDanceIntakeProfile,
+    ) => ModeratedDanceProbeJobs;
     replayKeys: ReadonlyMap<string, Uint8Array>;
     gatewayOrigin: string;
     runtimeRevision: string;
@@ -331,14 +336,11 @@ export function makeModeratedDanceMediaRuntime(
     };
   }
   function safetyStore(work: Work): VideoSafetyEvidenceStore {
-    const protocol = (action: string, value: unknown) =>
-      call(
-        `dance.media.safety.${action}`,
-        "SELECT moderated_dance_safety_protocol_v1($1,$2,$3,$4::jsonb) AS packet",
-        [work.uploadId, work.token, action, JSON.stringify(value)],
-      );
-    const requestHash = (frame: unknown) =>
-      Effect.runPromise(canonicalBodyHash(["private-dance-safety-frame-v1", work.uploadId, frame]));
+    const protocol = makeModeratedDanceSafetyProtocol({
+      call,
+      uploadId: work.uploadId,
+      token: work.token,
+    });
     const interpretClaim = (
       raw: unknown,
       sha: string,
@@ -358,7 +360,7 @@ export function makeModeratedDanceMediaRuntime(
     };
     return {
       load: async (_i, inputDigest) => {
-        const e = await protocol("load", { inputDigest });
+        const e = await protocol.evidence("load", { inputDigest });
         return e === null
           ? null
           : Schema.decodeUnknownSync(Schema.Struct({ fact: PrivateSafetyFact }), {
@@ -366,7 +368,7 @@ export function makeModeratedDanceMediaRuntime(
             })(e).fact;
       },
       save: async (_i, evidence) => {
-        const saved = await protocol("save", {
+        const saved = await protocol.evidence("save", {
           inputDigest: evidence.inputDigest,
           policyHash: Schema.decodeUnknownSync(Schema.Struct({ safetyHash: Hash }), {
             onExcessProperty: "ignore",
@@ -378,18 +380,13 @@ export function makeModeratedDanceMediaRuntime(
         })(saved).fact;
       },
       inspectFrame: async (frame) => {
-        const claim = interpretClaim(
-          await protocol("inspect", { frame, requestHash: await requestHash(frame) }),
-          frame.frameSha256,
-        );
+        const claim = interpretClaim(await protocol.frame("inspect", frame), frame.frameSha256);
         if (claim.status === "dispatch") throw new Error("Read cannot issue a safety grant");
         return claim;
       },
       claimFrame: async (frame) => {
         const claim = interpretClaim(
-          await protocol("claim", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("claim", frame, {
             claimToken: id(),
           }),
           frame.frameSha256,
@@ -399,9 +396,7 @@ export function makeModeratedDanceMediaRuntime(
       },
       succeedFrame: async (frame, claimToken, result) =>
         validateVideoSafetyFrameProviderResult(
-          await protocol("succeed", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("succeed", frame, {
             claimToken,
             result,
           }),
@@ -409,9 +404,7 @@ export function makeModeratedDanceMediaRuntime(
         ),
       failFrame: async (frame, claimToken, result) =>
         validateVideoSafetyFrameProviderFailure(
-          await protocol("fail", {
-            frame,
-            requestHash: await requestHash(frame),
+          await protocol.frame("fail", frame, {
             claimToken,
             result,
           }),
@@ -462,17 +455,24 @@ export function makeModeratedDanceMediaRuntime(
       ),
     );
     if (probeGrant.phase !== "complete") {
-      const probe = input.probeForSource(async (source) => {
-        if (
-          source.objectKey !== work.source?.destination_ref ||
-          source.sha256 !== work.source.canonical_sha256 ||
-          source.byteLength !== work.sizeBytes ||
-          source.mediaType !== work.contentType ||
-          source.expiresAtMs > (work.providerDeadlineMs ?? 0)
-        )
-          throw new Error("Private probe source changed");
-        return { url: await sourceUrl(work, source.expiresAtMs), expiresAtMs: source.expiresAtMs };
-      });
+      const probe = input.probeForSource(
+        async (source) => {
+          if (
+            source.objectKey !== work.source?.destination_ref ||
+            source.sha256 !== work.source.canonical_sha256 ||
+            source.byteLength !== work.sizeBytes ||
+            source.mediaType !== work.contentType ||
+            source.expiresAtMs > (work.providerDeadlineMs ?? 0)
+          )
+            throw new Error("Private probe source changed");
+          return {
+            url: await sourceUrl(work, source.expiresAtMs),
+            expiresAtMs: source.expiresAtMs,
+          };
+        },
+        work.source,
+        p,
+      );
       const request: MediaTransformVideoProbeInput = {
         version: "media-transform-video-probe-input-v1",
         binding: {
@@ -701,6 +701,7 @@ export function makeModeratedDanceMediaRuntime(
     return initialize(work);
   }
   const run = async () => {
+    await bindModeratedDanceReplayKeys(call, input.replayKeys);
     await invokeVoid(
       "dance.media.readiness",
       "SELECT announce_moderated_dance_processor_v1($1,$2,$3::jsonb)",

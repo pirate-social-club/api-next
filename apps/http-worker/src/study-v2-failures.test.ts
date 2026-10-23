@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   StudyV2CommandRejected,
   type StudyV2Store,
   StudyV2StoreFailed,
 } from "@pirate/application/use-cases/rewards/study-v2";
+import { withHnsAuthoritySpan } from "@pirate/platform-cf/hns-authority-diagnostics";
+import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { Effect } from "effect";
 import { makeStudyV2Handlers } from "./study-v2-handlers.ts";
 
@@ -66,4 +68,65 @@ test("unrelated storage constraint stays an internal error", async () => {
     status: 500,
     message: "Study operation failed",
   });
+});
+
+test("real Study handlers correlate overlapping SQL and operation failures without logging private request facts", async () => {
+  const records: Record<string, unknown>[] = [];
+  const logger = spyOn(console, "info").mockImplementation((_event, record) =>
+    records.push(record),
+  );
+  const handlers = makeStudyV2Handlers({
+    store,
+    clock: { now: Effect.succeed(0) },
+    ids: { next: Effect.succeed("unused") },
+    controlledSpoken: {
+      submitSpokenAnswer: () =>
+        Effect.gen(function* () {
+          yield* withHnsAuthoritySpan("query", Effect.void);
+          return yield* new StudyV2StoreFailed({ reason: "constraint" });
+        }),
+    },
+  });
+  try {
+    await Promise.all(
+      [1, 2].map(() =>
+        httpRequestDiagnostics.run("version", () =>
+          expect(handlers.SubmitStudyAnswerV2(request)).rejects.toMatchObject({ status: 500 }),
+        ),
+      ),
+    );
+    const entries = records.filter((r) => r.phase === "request_entry");
+    expect(entries).toHaveLength(2);
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      const phases = records.filter(
+        (r) => r.request_sequence === entry.request_sequence && r.phase !== "request_entry",
+      );
+      expect(phases.map((r) => [r.phase, r.outcome])).toEqual([
+        ["study_request", "started"],
+        ["query", "started"],
+        ["query", "success"],
+        ["study_request", "failed"],
+      ]);
+      const id = phases[0]?.correlation_id;
+      if (typeof id !== "string") throw new Error("Missing operation correlation");
+      expect(id).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(phases.every((r) => r.correlation_id === id)).toBe(true);
+      ids.add(id);
+    }
+    expect(ids.size).toBe(2);
+    for (const privateValue of [
+      "recording",
+      "account",
+      "community",
+      "session",
+      "constraint",
+      "audio/webm",
+    ]) {
+      expect(JSON.stringify(records)).not.toContain(privateValue);
+    }
+    expect(httpRequestDiagnostics.current()).toBeUndefined();
+  } finally {
+    logger.mockRestore();
+  }
 });

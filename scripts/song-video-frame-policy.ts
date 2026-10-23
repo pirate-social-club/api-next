@@ -1,4 +1,5 @@
 /** Qualification policy, frozen before evaluating any provider master. */
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "../packages/platform-cf/src/song-video-pcm-render-bounds.ts";
 export const SONG_VIDEO_FRAME_POLICY = {
   revision: 1,
   ffmpegVersion: "6.1.1",
@@ -26,7 +27,7 @@ export function frameCount(durationSamples: number): number {
   if (
     !Number.isSafeInteger(durationSamples) ||
     durationSamples < 144_000 ||
-    durationSamples > 720_000
+    durationSamples > SONG_VIDEO_PCM_RENDER_MAX_SAMPLES
   ) {
     throw new Error("frame qualification requires a bounded frozen sample interval");
   }

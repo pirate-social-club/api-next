@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
@@ -11,6 +11,10 @@ import { makeControlPlaneVideoPublicationStore } from "./video-publication-repos
 import { makeVideoReservationCleanup } from "./video-reservation-cleanup.ts";
 
 const reusableSchema = createReusablePostgresTestSchemaOwner();
+
+// Includes a real 2.1-second expiry wait and a fresh native schema. Keep the
+// resource-owning case and afterAll bounded without a five-second setup race.
+setDefaultTimeout(30_000);
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url)

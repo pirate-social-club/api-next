@@ -2295,7 +2295,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -3314,7 +3315,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -4317,7 +4319,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -5328,7 +5331,8 @@
                             "staged",
                             "cancelled",
                             "pending",
-                            "failed"
+                            "failed",
+                            "transferred"
                           ]
                         },
                         "publication_revision": {
@@ -6184,7 +6188,8 @@
                         "staged",
                         "cancelled",
                         "pending",
-                        "failed"
+                        "failed",
+                        "transferred"
                       ]
                     },
                     "publication_revision": {
@@ -6565,6 +6570,301 @@
           "Conflict",
           "NotFound",
           "RateLimited",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/dance/reviews/{reviewId}/publication": {
+      "get": {
+        "operationId": "get_communitiesCommunityIdDanceReviewsReviewIdPublication",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          {
+            "name": "reviewId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "enum": [
+                        "dance-moderated-publication-v1"
+                      ]
+                    },
+                    "review_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "staged",
+                        "cancelled",
+                        "pending",
+                        "failed",
+                        "transferred"
+                      ]
+                    },
+                    "submission": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "submission_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                },
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "submission_id",
+                            "href"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "review_id",
+                    "status",
+                    "submission"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-cache-control": "private, no-store",
+        "x-errors": [
+          "AuthError",
+          "NotFound",
           "InternalError"
         ]
       }
@@ -7068,7 +7368,8 @@
                                 "staged",
                                 "cancelled",
                                 "pending",
-                                "failed"
+                                "failed",
+                                "transferred"
                               ]
                             },
                             "publication_revision": {
@@ -65091,6 +65392,48 @@
                                                       "render_mode"
                                                     ],
                                                     "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "dance_credit": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "choreography_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "revision": {
+                                                        "type": "integer",
+                                                        "allOf": [
+                                                          {
+                                                            "minimum": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "reference_video_post_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "choreography_id",
+                                                      "revision",
+                                                      "reference_video_post_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "null"
                                                   }
                                                 ]
                                               },
@@ -164185,6 +164528,48 @@
                                         }
                                       ]
                                     },
+                                    "dance_credit": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "choreography_id": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                }
+                                              ]
+                                            },
+                                            "revision": {
+                                              "type": "integer",
+                                              "allOf": [
+                                                {
+                                                  "minimum": 1
+                                                }
+                                              ]
+                                            },
+                                            "reference_video_post_id": {
+                                              "type": "string",
+                                              "allOf": [
+                                                {
+                                                  "minLength": 1
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "choreography_id",
+                                            "revision",
+                                            "reference_video_post_id"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
                                     "playback": {
                                       "anyOf": [
                                         {
@@ -173261,6 +173646,48 @@
                                                   }
                                                 ]
                                               },
+                                              "dance_credit": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "choreography_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "revision": {
+                                                        "type": "integer",
+                                                        "allOf": [
+                                                          {
+                                                            "minimum": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "reference_video_post_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "choreography_id",
+                                                      "revision",
+                                                      "reference_video_post_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
                                               "playback": {
                                                 "anyOf": [
                                                   {
@@ -175392,6 +175819,48 @@
                                                   "render_mode"
                                                 ],
                                                 "additionalProperties": false
+                                              }
+                                            ]
+                                          },
+                                          "dance_credit": {
+                                            "anyOf": [
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "choreography_id": {
+                                                    "type": "string",
+                                                    "allOf": [
+                                                      {
+                                                        "minLength": 1
+                                                      }
+                                                    ]
+                                                  },
+                                                  "revision": {
+                                                    "type": "integer",
+                                                    "allOf": [
+                                                      {
+                                                        "minimum": 1
+                                                      }
+                                                    ]
+                                                  },
+                                                  "reference_video_post_id": {
+                                                    "type": "string",
+                                                    "allOf": [
+                                                      {
+                                                        "minLength": 1
+                                                      }
+                                                    ]
+                                                  }
+                                                },
+                                                "required": [
+                                                  "choreography_id",
+                                                  "revision",
+                                                  "reference_video_post_id"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              {
+                                                "type": "null"
                                               }
                                             ]
                                           },
@@ -178309,6 +178778,48 @@
                                                       "render_mode"
                                                     ],
                                                     "additionalProperties": false
+                                                  }
+                                                ]
+                                              },
+                                              "dance_credit": {
+                                                "anyOf": [
+                                                  {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "choreography_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "revision": {
+                                                        "type": "integer",
+                                                        "allOf": [
+                                                          {
+                                                            "minimum": 1
+                                                          }
+                                                        ]
+                                                      },
+                                                      "reference_video_post_id": {
+                                                        "type": "string",
+                                                        "allOf": [
+                                                          {
+                                                            "minLength": 1
+                                                          }
+                                                        ]
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "choreography_id",
+                                                      "revision",
+                                                      "reference_video_post_id"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  {
+                                                    "type": "null"
                                                   }
                                                 ]
                                               },
@@ -265559,6 +266070,48 @@
                   }
                 ]
               },
+              "dance_credit": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "choreography_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 1
+                          }
+                        ]
+                      },
+                      "reference_video_post_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choreography_id",
+                      "revision",
+                      "reference_video_post_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "playback": {
                 "anyOf": [
                   {
@@ -267596,6 +268149,48 @@
                       "render_mode"
                     ],
                     "additionalProperties": false
+                  }
+                ]
+              },
+              "dance_credit": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "choreography_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 1
+                          }
+                        ]
+                      },
+                      "reference_video_post_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choreography_id",
+                      "revision",
+                      "reference_video_post_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },

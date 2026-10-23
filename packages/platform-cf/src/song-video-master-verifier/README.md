@@ -6,7 +6,7 @@ provide the expected 48 kHz sample count and SHA-256 of interleaved signed
 16-bit stereo PCM for the selected source-song excerpt. Those facts must be
 derived independently of the provider output.
 
-The verifier limits the master to 24 MiB and 3–15 seconds, checks the admitted
+The verifier limits the master to 24 MiB and 3–30 seconds, checks the admitted
 MP4 box and sample-table shape, requires one H.264 track and one 48 kHz stereo
 signed-16-bit PCM track with matching zero-based timing, copies its bounded
 chunks in sample order and compares the exact PCM digest. It materializes no

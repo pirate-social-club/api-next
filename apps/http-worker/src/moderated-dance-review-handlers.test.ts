@@ -43,6 +43,18 @@ function fixture() {
         calls.push(`result:${communityId}:${reviewId}`);
         return Effect.succeed(result);
       },
+      getPublication: (communityId, reviewId) => {
+        calls.push(`publication:${communityId}:${reviewId}`);
+        return Effect.succeed({
+          version: "dance-moderated-publication-v1",
+          review_id: reviewId,
+          status: "transferred",
+          submission: {
+            submission_id: "ordinary-input",
+            href: "/media-post-submissions/ordinary-input",
+          },
+        });
+      },
       getLatest: () =>
         Effect.succeed({
           object: "latest_moderated_dance_review",
@@ -113,6 +125,22 @@ describe("moderated Dance browser/private HTTP surface", () => {
       },
     });
     expect(f.calls).toEqual(["principal:dancer", "transaction"]);
+  });
+  test("publication reads return only the current author link, without a publication claim", async () => {
+    const f = fixture();
+    const response = await f.worker.request(`${base}/publication`, { headers });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({
+      version: "dance-moderated-publication-v1",
+      review_id: "review",
+      status: "transferred",
+      submission: {
+        submission_id: "ordinary-input",
+        href: "/media-post-submissions/ordinary-input",
+      },
+    });
+    expect(f.calls).toEqual(["principal:dancer", "publication:community:review"]);
   });
   test("own results are private/no-store and ordinary activity is not gated by Rewards", async () => {
     const f = fixture();

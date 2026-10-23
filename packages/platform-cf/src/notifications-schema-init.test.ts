@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0296 set", () => {
-  expect(migrations).toHaveLength(296);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0307 set", () => {
+  expect(migrations).toHaveLength(307);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 296 }, (_, i) => i + 1),
+    Array.from({ length: 307 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -160,9 +160,53 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   expect(migrations[292]?.version).toBe("0293_moderated_dance_notification_recovery_bounds.sql");
   expect(migrations[293]?.version).toBe("0294_song_contribution_refusals.sql");
   expect(migrations[294]?.version).toBe("0295_shared_song_megapot_participation.sql");
-  expect(migrations.at(-1)).toMatchObject({
+  expect(migrations[295]).toMatchObject({
     version: "0296_moderated_dance_frozen_context.sql",
     checksum: "f59d6da6e52ce87e4378f9cc32bb9db00fb5027e7cdebf10c1241a78003cad71",
+  });
+  expect(migrations[296]).toMatchObject({
+    version: "0297_moderated_dance_provider_disposition.sql",
+    checksum: "6a2b6c84110224f61a1e0c97846f9ada96cc9a93a63d26b519fb74d47b88dd0d",
+  });
+  expect(migrations[297]).toMatchObject({
+    version: "0298_moderated_dance_cloudconvert_probe.sql",
+    checksum: "6e7e87389a509be9895d2a6bda0031c677cd21e1b8f2d90ecb682e7d1a25a3eb",
+  });
+  expect(migrations[298]).toMatchObject({
+    version: "0299_moderated_dance_replay_retention.sql",
+    checksum: "20055cc14cf6644481b526b25b771bba2016cd93f676518093238bbd05ff9c18",
+  });
+  expect(migrations[299]).toMatchObject({
+    version: "0300_moderated_dance_public_replay_epochs.sql",
+    checksum: "864c0f8588bfea996fbd3d3d62c6b03841aa1932c9a0f66a5c3872232f782ea1",
+  });
+  expect(migrations[300]).toMatchObject({
+    version: "0301_moderated_dance_safety_retention.sql",
+    checksum: "f81cd893e131ee2a61f61cc61d990ded633774eb706849d38c420d2c2dd5d7ff",
+  });
+  expect(migrations[301]).toMatchObject({
+    version: "0302_moderated_dance_publication_input.sql",
+    checksum: "b1d532c4a55b9f879d215cdba3a5f4092766831efa9812337f1936ead7d81f3c",
+  });
+  expect(migrations[302]).toMatchObject({
+    version: "0303_moderated_dance_publication_grant_path.sql",
+    checksum: "c8f25fb6f082c90675e1213d21d150c834020ccb0f94b8cb05c7ca5b997abe6b",
+  });
+  expect(migrations[303]).toMatchObject({
+    version: "0304_moderated_dance_publication_cleanup.sql",
+    checksum: "ffb4f17a382971d4c3e2b0eb17de77121626eaec503e3ee2c4db98616173f231",
+  });
+  expect(migrations[304]).toMatchObject({
+    version: "0305_moderated_dance_publication_provider.sql",
+    checksum: "96b1354fd8e76d402d1b2723d12fcef28b3a2759f925f193006fb1472dbdbcad",
+  });
+  expect(migrations[305]).toMatchObject({
+    version: "0306_moderated_dance_publication_views.sql",
+    checksum: "11e0fa953283e832a0f072f1321f8580ca1b29528f6a3a6bbde38275d51285cb",
+  });
+  expect(migrations.at(-1)).toMatchObject({
+    version: "0307_moderated_dance_reference_communities.sql",
+    checksum: "de246a85b233c6620a872891de836ac96f15f6176b6d59feae32f58c362c5e24",
   });
 });
 

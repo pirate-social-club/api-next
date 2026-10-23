@@ -1,8 +1,9 @@
 /** This is a Worker-specific ceiling, not the broader U.6 storage ceiling. */
+import { SONG_VIDEO_PCM_RENDER_MAX_SAMPLES } from "../song-video-pcm-render-bounds.ts";
 export const MAX_SONG_VIDEO_MASTER_BYTES = 24 * 1024 * 1024;
 const SAMPLE_RATE = 48_000;
 const VIDEO_FRAME_SAMPLES = 1_600; // The admitted command normalizes to 30 fps.
-const MAX_VIDEO_FRAMES = 450;
+const MAX_VIDEO_FRAMES = SONG_VIDEO_PCM_RENDER_MAX_SAMPLES / VIDEO_FRAME_SAMPLES;
 const MAX_CHUNKS = 1_000;
 
 export class SongVideoMasterRejection extends Error {
@@ -409,7 +410,7 @@ export function inspectSongVideoMasterStructure(
   if (
     !Number.isSafeInteger(expectedSamples) ||
     expectedSamples < 3 * SAMPLE_RATE ||
-    expectedSamples > 15 * SAMPLE_RATE
+    expectedSamples > SONG_VIDEO_PCM_RENDER_MAX_SAMPLES
   )
     reject("invalid_expected_duration");
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_SONG_VIDEO_MASTER_BYTES) {
@@ -464,4 +465,50 @@ export function inspectSongVideoMasterStructure(
     audioChunkCount: audioData.chunks.length,
     audioChunks: audioData.chunks,
   };
+}
+
+/** A private Dance's independently trimmed input has one silent H.264 track.
+ * Reuse the strict packet/edit-list/extent checks without weakening the
+ * two-track canonical PCM master contract above. This proves timing and byte
+ * coverage; the caller must separately bind the source interval and recipe. */
+export function inspectSilentSongVideoInputStructure(bytes: Uint8Array, durationSamples: number) {
+  if (
+    !Number.isSafeInteger(durationSamples) ||
+    durationSamples < 6 * SAMPLE_RATE ||
+    durationSamples > SONG_VIDEO_PCM_RENDER_MAX_SAMPLES
+  )
+    reject("invalid_expected_duration");
+  if (bytes.byteLength < 1 || bytes.byteLength > 16 * 1024 * 1024) reject("input_size");
+  const boxes = topLevelBoxes(bytes),
+    moov = boxes[1],
+    mdat = boxes.at(-1);
+  if (moov?.type !== "moov" || mdat?.type !== "mdat") reject("unexpected_box_layout");
+  if (
+    childBoxes(bytes, moov.dataStart, moov.end)
+      .map((box) => box.type)
+      .join(",") !== "mvhd,trak,udta"
+  )
+    reject("unexpected_tracks");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    mvhd = findChild(bytes, moov, "mvhd");
+  if (
+    mvhd.end - mvhd.dataStart < 20 ||
+    view.getUint32(mvhd.dataStart) !== 0 ||
+    view.getUint32(mvhd.dataStart + 12) !== SAMPLE_RATE ||
+    view.getUint32(mvhd.dataStart + 16) !== durationSamples
+  )
+    reject("invalid_mvhd");
+  const tracks = sampleTimings(bytes, moov, durationSamples),
+    track = tracks[0];
+  if (tracks.length !== 1 || track?.handler !== "vide" || track.duration !== durationSamples)
+    reject("unexpected_tracks");
+  validateTrackShape(bytes, track, SAMPLE_RATE, durationSamples);
+  const data = trackChunks(bytes, track, mdat, durationSamples);
+  let covered = mdat.dataStart;
+  for (const range of [...data.ranges].sort((a, b) => a.start - b.start)) {
+    if (range.start !== covered) reject("mdat_sample_coverage");
+    covered = range.end;
+  }
+  if (covered !== mdat.end) reject("mdat_sample_coverage");
+  return { videoFrameCount: track.count, durationSamples };
 }

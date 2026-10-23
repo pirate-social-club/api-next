@@ -13,6 +13,7 @@ import {
   ServingFunctionPrivilegesRefused,
   servingFunctionPrivilegeParameters,
 } from "../packages/platform-cf/src/serving-function-privileges.ts";
+import { withDanceServingPermissionsDeployment } from "./dance-serving-permissions-preflight.ts";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 
 /** Workers whose CONTROL_PLANE connection calls the owner-only entry points. */
@@ -77,12 +78,13 @@ export async function withServingFunctionPrivilegesDeployment<T>(
   preflight: (connectionString: string) => Promise<unknown> = runServingFunctionPrivilegesPreflight,
   writeDiagnostic: (text: string) => void = (text) => process.stderr.write(text),
 ): Promise<T> {
-  if (!SERVING_CONFIGS.has(configPath)) return operation();
+  const checkedOperation = () => withDanceServingPermissionsDeployment(root, configPath, operation);
+  if (!SERVING_CONFIGS.has(configPath)) return checkedOperation();
   if (
     !(await BunRuntime.file(resolve(root, SOURCE_MARKER)).exists()) &&
     !(await BunRuntime.file(resolve(root, ERASURE_SOURCE_MARKER)).exists())
   )
-    return operation();
+    return checkedOperation();
   const url = process.env.RUNTIME_POSTGRES_URL ?? process.env.CONTROL_PLANE_POSTGRES_RUNTIME_URL;
   if (!url) throw Error("Serving-role function admission requires the serving-role database URL");
   try {
@@ -98,7 +100,7 @@ export async function withServingFunctionPrivilegesDeployment<T>(
       { cause: error },
     );
   }
-  return operation();
+  return checkedOperation();
 }
 
 if (import.meta.main) {

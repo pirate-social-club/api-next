@@ -1,4 +1,6 @@
 import type { LocalizedPostDocument } from "@pirate/application";
+import { VideoDanceCreditV1 } from "@pirate/contracts";
+import { Schema } from "effect";
 
 type PublicPostDocument = Extract<LocalizedPostDocument, { readonly post: unknown }>;
 export type PublicVideoPostProjection = NonNullable<PublicPostDocument["video"]>;
@@ -19,7 +21,8 @@ export const videoPostProjectionSelect = `video_projection.media_kind AS video_m
   stream_enrichment.state AS video_stream_enrichment_state,
   thumbnail_enrichment.state AS video_thumbnail_state,
   video_projection.poster_artifact_ref AS video_thumbnail_artifact_ref,
-  video_data_registration.state AS video_data_registration_state`;
+  video_data_registration.state AS video_data_registration_state,
+  CASE WHEN video_submission.status='published' THEN video_submission.start_input->'dance_credit' END AS video_dance_credit`;
 
 export const videoPostProjectionJoins = `LEFT JOIN media_publication_projections AS video_projection
     ON video_projection.community_id = p.community_id
@@ -147,6 +150,17 @@ const soundtrackFromRow = (row: Row): PublicVideoPostProjection["soundtrack"] | 
 };
 
 export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection | null => {
+  let danceCredit: typeof VideoDanceCreditV1.Type | undefined;
+  if (row.video_dance_credit !== null && row.video_dance_credit !== undefined) {
+    try {
+      danceCredit = Schema.decodeUnknownSync(VideoDanceCreditV1, { onExcessProperty: "error" })(
+        row.video_dance_credit,
+      );
+    } catch {
+      return null;
+    }
+    if (row.video_intent !== "song_reference") return null;
+  }
   const caption = nullableText(row, "video_caption");
   const soundtrack = soundtrackFromRow(row);
   const streamState = requiredText(row, "video_stream_state");
@@ -199,6 +213,7 @@ export const videoPostProjectionFromRow = (row: Row): PublicVideoPostProjection 
     caption_dir: caption === null ? null : "auto",
     caption_lang: null,
     soundtrack,
+    ...(danceCredit === undefined ? {} : { dance_credit: danceCredit }),
     playback: row.video_stream_enrichment_state === "failed" ? { status: "unavailable" } : playback,
     thumbnail,
     data_registration: registration,

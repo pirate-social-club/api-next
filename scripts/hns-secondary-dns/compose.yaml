@@ -4,6 +4,11 @@ services:
     image: powerdns/pdns-auth-51@sha256:77ff4efdbb9ec30e9309c8a1cbed6121a67fa3be25c848bbbfa756fc75bf9a27
     container_name: pirate-hns-secondary-dns
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     network_mode: host
     entrypoint: ["/bin/sh", "-lc", "umask 0002 && exec /usr/local/sbin/pdns_server-startup $$@", "--"]
     command:

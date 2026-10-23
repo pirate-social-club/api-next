@@ -4,12 +4,50 @@ import { canonicalBodyHash } from "../../application/src/use-cases/content/commo
 import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
 import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
 import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
+import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
-export async function seedModeratedDanceIntake(admin: Client, connection: string) {
-  const f = moderatedDanceIntakeFacts(),
+export async function seedModeratedDanceIntake(
+  admin: Client,
+  connection: string,
+  runtimeRevision?: string,
+  options: Readonly<{
+    publicReplay?: boolean;
+    safetyRevision?: string;
+    transferWithinMs?: number;
+    maximumProviderCalls?: number;
+    historicalReferenceSchema?: "pre-0307";
+  }> = {},
+) {
+  const originalFacts = moderatedDanceIntakeFacts(),
+    facts =
+      options.safetyRevision === undefined
+        ? originalFacts
+        : {
+            ...originalFacts,
+            profile: { ...originalFacts.profile, safetyProviderRevision: options.safetyRevision },
+          },
+    selected =
+      runtimeRevision === undefined
+        ? facts
+        : { ...facts, profile: { ...facts.profile, mediaRuntimeRevision: runtimeRevision } },
+    f =
+      options.maximumProviderCalls === undefined
+        ? selected
+        : {
+            ...selected,
+            profile: { ...selected.profile, maximumProviderCalls: options.maximumProviderCalls },
+          },
     now = Date.now(),
     hash = "a".repeat(64);
+  const disposition =
+    options.transferWithinMs === undefined
+      ? f.disposition
+      : {
+          ...f.disposition,
+          transferWithinMs: options.transferWithinMs,
+          cleanupWithinMs: Math.max(f.disposition.cleanupWithinMs, options.transferWithinMs),
+        };
   const publication = await Effect.runPromise(
     prepareModeratedDancePolicyPublication({
       version: "dance-moderated-policy-publication-v1",
@@ -19,7 +57,7 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
       profile: f.profile,
       safety_policy: f.safetyPolicy,
       disposition: {
-        ...f.disposition,
+        ...disposition,
         validUntilMs: now + 10 * 86400000,
         hold: { ...f.disposition.hold, disposeByMs: now + 10 * 86400000 },
       },
@@ -91,7 +129,9 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
       [f.segmentId, f.communityId, f.songPostId, f.audioRevision, hash],
     );
     await admin.query(
-      "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)",
+      options.historicalReferenceSchema === "pre-0307"
+        ? "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)"
+        : "INSERT INTO dance_moderator_reference_revisions_v1(choreography_id,revision,community_id,song_post_id,audio_revision,segment_id,reference_community_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash) VALUES($1,1,$2,$3,$4,$5,$2,'private-reference','fictional-verified-master',$6,'{}',$7::jsonb,$8)",
       [
         f.choreographyId,
         f.communityId,
@@ -119,6 +159,32 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
   await admin.query("SELECT publish_moderated_dance_policy_v1($1::jsonb)", [
     JSON.stringify(publication),
   ]);
+  const replayKeys = new Map(
+    f.profile.replayCompatibleEpochs.map((epoch) => [epoch, new Uint8Array(32).fill(1)] as const),
+  );
+  const publicFrames = Array.from(
+    { length: Math.ceil((f.bodyDurationMs * f.profile.normalizationFps) / 1000) },
+    () => "d".repeat(64),
+  );
+  if (options.publicReplay !== false) {
+    // Explicit synthetic PUBLIC descriptor and actual keyed index, never a
+    // fallback for pre-upgrade schema or evidence of a provider recording.
+    await admin.query(
+      "INSERT INTO dance_moderated_public_replay_v1(choreography_id,revision,scope,normalization_hash,source_sha256,frames) VALUES($1,1,$2,$3,$4,$5::jsonb)",
+      [
+        f.choreographyId,
+        f.profile.replayScope,
+        publication.policy.normalizationHash,
+        hash,
+        JSON.stringify(publicFrames),
+      ],
+    );
+    const publicReplay = makeModeratedDancePublicReplay({
+      call: async (_label, sql, values) => (await admin.query(sql, [...values])).rows[0]?.packet,
+      keys: replayKeys,
+    });
+    await publicReplay.run();
+  }
   const runtime = makeDirectPostgresControlPlaneLayer(connection);
   const store = makeControlPlaneModeratedDanceIntakeStore(runtime, f.accountId, {
     signer: {
@@ -147,5 +213,15 @@ export async function seedModeratedDanceIntake(admin: Client, connection: string
       JSON.stringify(f.profile.replayCompatibleEpochs),
     ]);
   };
-  return { store, create, ready, facts: f, publication, connection, runtime };
+  return {
+    store,
+    create,
+    ready,
+    facts: f,
+    publication,
+    connection,
+    runtime,
+    replayKeys,
+    publicFrames,
+  };
 }

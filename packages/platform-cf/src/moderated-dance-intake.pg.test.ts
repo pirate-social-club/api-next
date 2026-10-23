@@ -186,7 +186,7 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
     withFixture(async (f, admin) => {
       await f.ready();
       await admin.query(
-        "INSERT INTO dance_moderator_reference_revisions_v1 SELECT 'page-'||lpad(n::TEXT,2,'0'),revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash,created_at FROM dance_moderator_reference_revisions_v1 CROSS JOIN generate_series(1,21) n WHERE choreography_id=$1",
+        "INSERT INTO dance_moderator_reference_revisions_v1 SELECT 'page-'||lpad(n::TEXT,2,'0'),revision,community_id,song_post_id,audio_revision,segment_id,reference_post_id,video_render_revision,reference_digest,source_binding,alignment_evidence,terms_hash,created_at,reference_community_id FROM dance_moderator_reference_revisions_v1 CROSS JOIN generate_series(1,21) n WHERE choreography_id=$1",
         [f.facts.choreographyId],
       );
       const first = await Effect.runPromise(

@@ -150,7 +150,14 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
   publication_choice_revision: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   ),
-  publication_status: Schema.Literals(["none", "staged", "cancelled", "pending", "failed"]),
+  publication_status: Schema.Literals([
+    "none",
+    "staged",
+    "cancelled",
+    "pending",
+    "failed",
+    "transferred",
+  ]),
   publication_revision: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   ),
@@ -203,7 +210,7 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
     )
       return "Invalid owner attestation";
     if (
-      r.publication_status === "pending" &&
+      (r.publication_status === "pending" || r.publication_status === "transferred") &&
       (r.verdict !== "passed" || r.show_publicly_if_passed !== true)
     )
       return "No conditional release authority";
@@ -298,6 +305,34 @@ export const GetMyModeratedDanceResult = endpoint({
   response: DanceReviewPrivateResultV1,
   errors,
 });
+/** Fresh author-only link to the independently owned ordinary video submission.
+ * This does not modify or reinterpret immutable Submit/verdict receipts. */
+export const ModeratedDancePublicationV1 = Schema.Struct({
+  version: Schema.Literal("dance-moderated-publication-v1"),
+  review_id: Id,
+  status: Schema.Literals(["none", "staged", "cancelled", "pending", "failed", "transferred"]),
+  submission: Schema.NullOr(Schema.Struct({ submission_id: Id, href: Schema.NonEmptyString })),
+}).check(
+  Schema.makeFilter((value) =>
+    value.submission !== null &&
+    (value.status !== "transferred" ||
+      value.submission.href !==
+        `/media-post-submissions/${encodeURIComponent(value.submission.submission_id)}`)
+      ? "Only a secured ordinary input has a submission link"
+      : undefined,
+  ),
+);
+export type ModeratedDancePublicationV1 = typeof ModeratedDancePublicationV1.Type;
+export const GetMyModeratedDancePublication = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/dance/reviews/:reviewId/publication",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: reviewPath },
+  response: ModeratedDancePublicationV1,
+  errors: [AuthError, NotFound, InternalError],
+});
+
 export const LatestModeratedDanceReviewV1 = Schema.Struct({
   object: Schema.Literal("latest_moderated_dance_review"),
   latest_submitted: Schema.NullOr(DanceReviewPrivateResultV1),
@@ -378,6 +413,7 @@ export const moderatedDanceReviewRegistry = {
   WithdrawModeratedDanceReview,
   RecordModeratedDanceVerdict,
   GetMyModeratedDanceResult,
+  GetMyModeratedDancePublication,
   GetLatestModeratedDanceReview,
   ListOwnerModeratedDanceReviews,
   GetOwnerModeratedDanceReview,

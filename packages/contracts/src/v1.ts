@@ -632,12 +632,19 @@ export const VideoSoundtrackProjectionV1 = Schema.Union([
 ]);
 export type VideoSoundtrackProjectionV1 = Schema.Schema.Type<typeof VideoSoundtrackProjectionV1>;
 
+export const VideoDanceCreditV1 = Schema.Struct({
+  choreography_id: Schema.NonEmptyString,
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  reference_video_post_id: Schema.NonEmptyString,
+});
+
 export const VideoPostProjectionV1 = Schema.Struct({
   track: Schema.Literal("video"),
   caption: Schema.NullOr(Schema.String),
   caption_dir: Schema.NullOr(Schema.Literals(["ltr", "rtl", "auto"])),
   caption_lang: Schema.NullOr(LanguageTagV1),
   soundtrack: VideoSoundtrackProjectionV1,
+  dance_credit: Schema.optional(VideoDanceCreditV1),
   playback: Schema.Union([
     Schema.Struct({
       status: Schema.Literal("ready"),

@@ -57,4 +57,23 @@ describe("R2 song-video PCM range", () => {
       expect(await reader.readExact(request)).toBeNull();
     }
   });
+
+  test("reads the complete thirty-second PCM interval and refuses an extra sample before I/O", async () => {
+    const length = 30 * 48_000 * 4,
+      bytes = new Uint8Array(length);
+    bytes[0] = 7;
+    bytes[length - 1] = 9;
+    let calls = 0;
+    const reader = makeR2SongVideoPcmRangeReader({
+      get: async () => {
+        calls++;
+        return object(bytes, { range: { offset: request.offset, length } }) as R2ObjectBody;
+      },
+    });
+    expect(await reader.readExact({ ...request, length })).toEqual(bytes);
+    await expect(reader.readExact({ ...request, length: length + 4 })).rejects.toThrow(
+      "invalid PCM range",
+    );
+    expect(calls).toBe(1);
+  });
 });
