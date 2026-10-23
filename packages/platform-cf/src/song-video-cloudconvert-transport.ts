@@ -13,6 +13,11 @@ export type CloudConvertJobObservation = CloudConvertJob & Readonly<{ exportUrl:
 export type CloudConvertPrivateDanceObservation = CloudConvertJob &
   Readonly<{
     exports: Readonly<{ identity: string; frames: readonly [string, string, string] }> | null;
+    taskFailures?: readonly Readonly<{
+      task: string;
+      code: string;
+      reportedHttpStatus: number | null;
+    }>[];
   }>;
 
 export class CloudConvertTransportError extends Error {
@@ -133,6 +138,68 @@ function record(value: unknown): Record<string, unknown> {
 
 function privateDanceObservation(value: unknown): CloudConvertPrivateDanceObservation {
   const job = parseJob(value);
+  if (job.status === "error") {
+    const tasks = record(value).tasks;
+    const expectedOperations: Readonly<Record<string, string>> = {
+      "import-recording": "import/url",
+      "body-identity": "command",
+      "sample-0": "command",
+      "sample-1": "command",
+      "sample-2": "command",
+      "export-dance": "export/url",
+    };
+    // Only fixed task names, known provider codes and a numeric HTTP hint may
+    // survive cleanup. Provider messages can contain source capabilities,
+    // object names and signed URLs and must never be retained here.
+    const knownCodes: readonly string[] = [
+      "INPUT_TASK_FAILED",
+      "OPEN_FAILED",
+      "FILE_NOT_FOUND",
+      "DOWNLOAD_FAILED",
+      "INVALID_DATA",
+      "CONVERSION_FAILED",
+      "COMMAND_FAILED",
+      "TIMEOUT",
+      "TASK_TIMEOUT",
+      "CREDITS_EXCEEDED",
+      "INVALID_OPTION",
+      "INVALID_OPTIONS",
+      "ENGINE_NOT_AVAILABLE",
+      "INVALID_CONVERSION_TYPE",
+      "UNKNOWN_ERROR",
+    ];
+    const seen = new Set<string>();
+    const taskFailures: NonNullable<CloudConvertPrivateDanceObservation["taskFailures"]>[number][] =
+      [];
+    if (Array.isArray(tasks)) {
+      for (const raw of tasks) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const task = raw as Record<string, unknown>;
+        if (
+          typeof task.name !== "string" ||
+          !Object.hasOwn(expectedOperations, task.name) ||
+          task.operation !== expectedOperations[task.name] ||
+          task.status !== "error" ||
+          seen.has(task.name)
+        )
+          continue;
+        seen.add(task.name);
+        const http =
+          typeof task.message === "string" && task.message.length <= 4096
+            ? /\b(?:HTTP|status(?: code)?)\s*:?\s*([45]\d\d)\b/iu.exec(task.message)
+            : null;
+        taskFailures.push({
+          task: task.name,
+          code:
+            typeof task.code === "string" && knownCodes.includes(task.code)
+              ? task.code
+              : "OTHER_PROVIDER_ERROR",
+          reportedHttpStatus: http?.[1] === undefined ? null : Number(http[1]),
+        });
+      }
+    }
+    return { ...job, exports: null, taskFailures };
+  }
   if (job.status !== "finished") return { ...job, exports: null };
   const tasks = record(value).tasks;
   if (!Array.isArray(tasks)) throw new CloudConvertTransportError("uncertain");

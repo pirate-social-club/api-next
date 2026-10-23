@@ -258,7 +258,12 @@ export function makeModeratedDanceReferenceRuntime(
         [
           w.choreographyId,
           w.token,
-          JSON.stringify({ status: "error", id: observed.id, tag: observed.tag }),
+          JSON.stringify({
+            status: "error",
+            id: observed.id,
+            tag: observed.tag,
+            taskFailures: observed.taskFailures ?? [],
+          }),
         ],
       );
       return { outcome: "failed" as const };
