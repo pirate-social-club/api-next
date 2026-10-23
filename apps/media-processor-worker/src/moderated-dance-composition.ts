@@ -8,6 +8,7 @@ import {
 import { makeModeratedDanceMaintenance } from "../../../packages/platform-cf/src/moderated-dance-maintenance.ts";
 import { makeModeratedDanceMediaRuntime } from "../../../packages/platform-cf/src/moderated-dance-media-runtime.ts";
 import { decodeModeratedDanceReplayKeys } from "../../../packages/platform-cf/src/moderated-dance-public-replay.ts";
+import { makeModeratedDancePublicationRuntime } from "../../../packages/platform-cf/src/moderated-dance-publication-runtime.ts";
 import { makeModeratedDanceReferenceRuntime } from "../../../packages/platform-cf/src/moderated-dance-reference-runtime.ts";
 import { MODERATED_DANCE_SAFETY_REVISION } from "../../../packages/platform-cf/src/moderated-dance-safety-contract.ts";
 import { makeSongVideoCloudConvertTransport } from "../../../packages/platform-cf/src/song-video-cloudconvert-transport.ts";
@@ -18,6 +19,8 @@ export type ModeratedDanceMediaEnv = Readonly<{
   MEDIA_IMMUTABLE_ORIGINALS?: R2Bucket;
   MEDIA_PROCESSING_ENABLED?: string;
   DANCE_MODERATED_PROCESSING_ENABLED?: string;
+  VIDEO_ANALYSIS_ENABLED?: string;
+  VIDEO_CLOUDCONVERT_RENDER_ENABLED?: string;
   OPENAI_MODERATION_ENABLED?: string;
   OPENAI_API_KEY?: string;
   QENCODE_API_KEY?: string;
@@ -112,11 +115,21 @@ export function makeModeratedDanceProcessor(env: ModeratedDanceMediaEnv) {
     runtimeRevision: MODERATED_DANCE_CLOUDCONVERT_REVISION,
     safetyRevision: MODERATED_DANCE_SAFETY_REVISION,
   });
+  const publication = makeModeratedDancePublicationRuntime({
+    runtime,
+    bucket: originals,
+    provider: transform,
+    gatewayOrigin: env.VIDEO_SOURCE_GATEWAY_ORIGIN,
+    runtimeRevision: MODERATED_DANCE_CLOUDCONVERT_REVISION,
+    videoTrackEnabled:
+      env.VIDEO_ANALYSIS_ENABLED === "true" && env.VIDEO_CLOUDCONVERT_RENDER_ENABLED === "true",
+  });
   return {
     async run() {
+      const publicationResult = await publication.run();
       const referenceResult = await reference.run();
       const captureResult = await capture.run();
-      return { reference: referenceResult, capture: captureResult };
+      return { publication: publicationResult, reference: referenceResult, capture: captureResult };
     },
   };
 }

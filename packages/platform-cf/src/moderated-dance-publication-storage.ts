@@ -34,6 +34,15 @@ const hex = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 const digest = async (bytes: Uint8Array) => hex(await crypto.subtle.digest("SHA-256", bytes));
 type Call = (label: string, sql: string, values: readonly unknown[]) => Promise<unknown>;
+export type DancePublicationStorageBucket = Readonly<{
+  head: R2Bucket["head"];
+  get: R2Bucket["get"];
+  put: (
+    key: string,
+    body: Uint8Array,
+    options: R2PutOptions & { onlyIf: R2Conditional },
+  ) => Promise<R2Object | null>;
+}>;
 
 /** The body producer must have measured the trimmed video before calling this
  * adapter. SQL rechecks its frozen capture and deadline. Storage proves bytes,
@@ -44,7 +53,7 @@ export function makeModeratedDancePublicationStorage(
     reviewId: string;
     token: string;
     videoTrackEnabled: boolean;
-    bucket: Pick<R2Bucket, "get" | "head" | "put">;
+    bucket: DancePublicationStorageBucket;
     signal: AbortSignal;
   }>,
 ) {

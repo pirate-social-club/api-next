@@ -53,7 +53,10 @@ export function makeVideoSourceGrantResolver(
             FROM resolve_moderated_dance_source_v1($1)
           UNION ALL
           SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind
-            FROM resolve_moderated_dance_reference_source_v1($1)`,
+            FROM resolve_moderated_dance_reference_source_v1($1)
+          UNION ALL
+          SELECT physical_key,object_version,etag,size_bytes,content_type,canonical_sha256,expires_at,identity_kind
+            FROM resolve_moderated_dance_publication_source_v1($1)`,
             values: [digest],
           });
         }).pipe(Effect.provide(runtime)),

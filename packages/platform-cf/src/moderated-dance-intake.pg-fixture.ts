@@ -15,6 +15,7 @@ export async function seedModeratedDanceIntake(
     publicReplay?: boolean;
     safetyRevision?: string;
     transferWithinMs?: number;
+    maximumProviderCalls?: number;
   }> = {},
 ) {
   const originalFacts = moderatedDanceIntakeFacts(),
@@ -25,10 +26,17 @@ export async function seedModeratedDanceIntake(
             ...originalFacts,
             profile: { ...originalFacts.profile, safetyProviderRevision: options.safetyRevision },
           },
-    f =
+    selected =
       runtimeRevision === undefined
         ? facts
         : { ...facts, profile: { ...facts.profile, mediaRuntimeRevision: runtimeRevision } },
+    f =
+      options.maximumProviderCalls === undefined
+        ? selected
+        : {
+            ...selected,
+            profile: { ...selected.profile, maximumProviderCalls: options.maximumProviderCalls },
+          },
     now = Date.now(),
     hash = "a".repeat(64);
   const disposition =

@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0304 set", () => {
-  expect(migrations).toHaveLength(304);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0305 set", () => {
+  expect(migrations).toHaveLength(305);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 304 }, (_, i) => i + 1),
+    Array.from({ length: 305 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -192,9 +192,13 @@ test("the actual checksum loader supplies the complete contiguous repository 000
     version: "0303_moderated_dance_publication_grant_path.sql",
     checksum: "c8f25fb6f082c90675e1213d21d150c834020ccb0f94b8cb05c7ca5b997abe6b",
   });
-  expect(migrations.at(-1)).toMatchObject({
+  expect(migrations[303]).toMatchObject({
     version: "0304_moderated_dance_publication_cleanup.sql",
     checksum: "ffb4f17a382971d4c3e2b0eb17de77121626eaec503e3ee2c4db98616173f231",
+  });
+  expect(migrations.at(-1)).toMatchObject({
+    version: "0305_moderated_dance_publication_provider.sql",
+    checksum: "96b1354fd8e76d402d1b2723d12fcef28b3a2759f925f193006fb1472dbdbcad",
   });
 });
 

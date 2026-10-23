@@ -51,7 +51,29 @@ The existing mandatory native media suite runs the actual command strings on
 synthetic local FFmpeg 6.1.1. It proves six through thirty seconds, fractional
 start/end boundaries, no recorded soundtrack or cue, and every output frame
 against the source interval. This is not CloudConvert 6.1.4 conformance or a
-phone recording proof. The new task recipe still needs its durable source grant,
-provider effect budget/disposition and production intent consumer before use.
-Post credit, connected application states, cross-community authoring and release
-acceptance remain separate work.
+phone recording proof.
+
+Migration 0305 and the scheduled consumer connect that body to storage and
+ordinary Post adoption. A captured processing-purpose allowance of at least
+seven and a separate reservation under the existing account/global spend bounds
+are required for the optional Post job. Six-purpose captures do not gain a new
+budget implicitly. Every provider create grant commits with its original
+liability first; lost replies observe only the same tag or job. A short-lived
+source capability stores only its digest and cannot outlive the original
+handoff deadline or captured media lease. Erasure and terminal input ownership
+close that source. A late job identity can still become historical cleanup
+knowledge without authorizing more processing.
+
+Publication jobs have their own cleanup eligibility. The older capture's
+screened/terminal state cannot delete a live handoff job. Stored/adopted or
+cancelled inputs and the original deadline make that job disposable. Storage
+PUT grants also recheck time after current song-rights lock waits. No replay,
+timeout or job retry extends the transfer or retention window.
+
+The consumer is composed under the existing Dance/media and video processing
+flags; it runs a bounded handoff before longer capture/reference work. Real SQL
+tests use provider, measured-body and storage stand-ins to prove one ordinary
+analysis input after a lost create reply or storage reply. Separate native
+FFmpeg and real local R2 tests prove those boundaries. Actual provider and phone
+acceptance, dated operational admission, Post credit/state, connected client
+views, cross-community authoring and release acceptance remain required.

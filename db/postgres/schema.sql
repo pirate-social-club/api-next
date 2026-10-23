@@ -5261,7 +5261,7 @@ BEGIN
  LEFT JOIN dance_moderated_reviews_v1 review ON review.session_id=session.session_id
  LEFT JOIN dance_moderated_reference_commands_v1 reference ON reference.choreography_id=effect.choreography_id
  WHERE effect.state<>'completed' AND (effect.lease_until IS NULL OR effect.lease_until<=now_at)
- AND (effect.work_deadline<=now_at OR processing.state IN('screened','failed','held') OR session.state='terminal' OR reference.state IN('ready','failed'))
+ AND (effect.work_deadline<=now_at OR effect.purpose='publication' AND EXISTS(SELECT 1 FROM dance_moderated_publication_inputs_v1 handoff WHERE handoff.review_id=review.review_id AND handoff.state IN('stored','adopted','cleanup','cleaned')) OR effect.purpose<>'publication' AND (processing.state IN('screened','failed','held') OR session.state='terminal' OR reference.state IN('ready','failed')))
  AND ((processing.state IS DISTINCT FROM 'held' AND review.status IS DISTINCT FROM 'held') OR effect.hold_dispose_by<=now_at)
  ORDER BY effect.last_observed_at NULLS FIRST,effect.dispose_by,effect.effect_id LIMIT 1;
  IF candidate IS NULL THEN RETURN NULL; END IF;
@@ -5289,7 +5289,7 @@ BEGIN
   LEFT JOIN dance_moderated_reviews_v1 review ON review.session_id=session.session_id
   LEFT JOIN dance_moderated_reference_commands_v1 reference ON reference.choreography_id=effect.choreography_id
   WHERE effect.effect_id=item.effect_id
-  AND (effect.work_deadline<=clock_timestamp() OR processing.state IN('screened','failed','held') OR session.state='terminal' OR reference.state IN('ready','failed'))
+  AND (effect.work_deadline<=clock_timestamp() OR effect.purpose='publication' AND EXISTS(SELECT 1 FROM dance_moderated_publication_inputs_v1 handoff WHERE handoff.review_id=review.review_id AND handoff.state IN('stored','adopted','cleanup','cleaned')) OR effect.purpose<>'publication' AND (processing.state IN('screened','failed','held') OR session.state='terminal' OR reference.state IN('ready','failed')))
   AND ((processing.state IS DISTINCT FROM 'held' AND review.status IS DISTINCT FROM 'held') OR effect.hold_dispose_by<=clock_timestamp())) THEN RETURN NULL; END IF;
  UPDATE dance_moderated_provider_effects_v1 SET state='leased',claim_token=p_token,
   lease_until=clock_timestamp()+lease_ms*interval '1 millisecond',last_observed_at=clock_timestamp() WHERE effect_id=item.effect_id;
@@ -5384,6 +5384,66 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='claim_moderated_dance_publication_cleanup_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_token text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION claim_moderated_dance_publication_v1(p_token text, p_runtime text, p_video boolean) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE candidate RECORD; h dance_moderated_publication_inputs_v1;j dance_moderated_publication_jobs_v1;
+ s dance_moderated_sessions_v1;packet JSONB;input_token TEXT;now_at TIMESTAMPTZ;action TEXT;timeout_s BIGINT;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'publication media role unavailable' USING ERRCODE='42501'; END IF;
+ IF NOT p_video OR p_video IS NULL THEN RETURN NULL; END IF;
+ IF coalesce(btrim(p_token),'')='' OR length(p_token)>192 THEN RAISE EXCEPTION 'publication lease invalid' USING ERRCODE='DRV06'; END IF;
+ FOR candidate IN SELECT r.review_id,r.session_id,r.state FROM dance_moderated_reviews_v1 r
+ JOIN dance_moderated_sessions_v1 session USING(session_id)
+ LEFT JOIN dance_moderated_publication_inputs_v1 input ON input.review_id=r.review_id
+ LEFT JOIN dance_moderated_publication_jobs_v1 job ON job.review_id=r.review_id
+ WHERE r.status='reviewed' AND r.state->>'verdict'='passed' AND r.state->>'showPublicly'='true' AND r.state->>'publication'='pending'
+ AND (r.state->>'transferDeadlineMs')::NUMERIC>extract(epoch FROM clock_timestamp())*1000
+ AND session.terms->'profile'->>'mediaRuntimeRevision'=p_runtime
+ AND (input.review_id IS NULL OR input.state IN('preparing','stored'))
+ AND (job.lease_until IS NULL OR job.lease_until<=clock_timestamp())
+ ORDER BY job.last_observed_at NULLS FIRST,r.submitted_at,r.review_id LIMIT 20 LOOP
+  SELECT token INTO input_token FROM dance_moderated_publication_inputs_v1 WHERE review_id=candidate.review_id;
+  input_token:=coalesce(input_token,p_token);
+  BEGIN
+   packet:=moderated_dance_publication_input_v1(candidate.review_id,'begin',jsonb_build_object('token',input_token,'videoTrackEnabled',TRUE));
+  EXCEPTION WHEN SQLSTATE 'DRV05' THEN CONTINUE; END;
+  SELECT * INTO STRICT h FROM dance_moderated_publication_inputs_v1 WHERE review_id=candidate.review_id;
+  SELECT * INTO STRICT s FROM dance_moderated_sessions_v1 WHERE session_id=candidate.session_id;
+  INSERT INTO dance_moderated_publication_jobs_v1(review_id,provider_tag) VALUES(h.review_id,'dance-publication:'||h.review_id||':'||h.generation) ON CONFLICT(review_id) DO NOTHING;
+  SELECT * INTO STRICT j FROM dance_moderated_publication_jobs_v1 WHERE review_id=h.review_id FOR UPDATE;
+  now_at:=clock_timestamp();
+  IF h.deadline_at<=now_at OR j.lease_until>now_at THEN CONTINUE; END IF;
+  action:=CASE WHEN h.state='stored' THEN 'adopt' WHEN h.put_consumed THEN 'recover' WHEN j.create_consumed THEN 'observe' ELSE 'create' END;
+  -- The seventh effect is optional Post work, not part of the six-purpose
+  -- capture reservation. No captured admission is enlarged retrospectively.
+  IF action='create' AND (s.terms->'profile'->>'maximumProviderCalls')::BIGINT<7 THEN
+   UPDATE dance_moderated_publication_jobs_v1 SET last_observed_at=now_at WHERE review_id=h.review_id;
+   CONTINUE;
+  END IF;
+  timeout_s:=least(300,(s.terms->'profile'->>'normalizationTimeoutSeconds')::BIGINT,floor(extract(epoch FROM h.deadline_at-now_at))::BIGINT);
+  IF timeout_s<1 THEN CONTINUE; END IF;
+  UPDATE dance_moderated_publication_jobs_v1 SET lease_token=p_token,lease_until=least(h.deadline_at,now_at+(s.terms->'profile'->>'workLeaseMs')::BIGINT*interval '1 millisecond'),last_observed_at=now_at WHERE review_id=h.review_id;
+  RETURN jsonb_build_object('reviewId',h.review_id,'inputToken',h.token,'leaseToken',p_token,'action',action,
+   'tag',j.provider_tag,'jobId',j.provider_job_id,'timeoutSeconds',timeout_s,'deadlineMs',floor(extract(epoch FROM h.deadline_at)*1000)::BIGINT,
+   'bodyStartMs',candidate.state->'capture'->'bodyStartMs','bodyEndMs',candidate.state->'capture'->'bodyEndMs','sourceSha256',candidate.state->'capture'->'sourceDigest');
+ END LOOP;
+ RETURN NULL;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='claim_moderated_dance_publication_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_token text, p_runtime text, p_video boolean';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -10564,9 +10624,9 @@ BEGIN
  ELSIF p_purpose='worker' THEN
   names:=ARRAY['next_moderated_dance_review_task_v1','lock_moderated_dance_review_v1','read_moderated_dance_receipt_v1','moderated_dance_review_facts_v1','commit_moderated_dance_review_v1'];
  ELSIF p_purpose='media' THEN
-  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1','drain_moderated_dance_replay_v1','bind_moderated_dance_replay_keys_v1','claim_moderated_dance_public_reindex_v1','finish_moderated_dance_public_reindex_v1','drain_moderated_dance_compatible_replay_v1','moderated_dance_publication_input_v1','claim_moderated_dance_publication_cleanup_v1','finish_moderated_dance_publication_cleanup_v1'];
+  names:=ARRAY['announce_moderated_dance_processor_v1','claim_moderated_dance_media_v1','persist_moderated_dance_seal_v1','mark_moderated_dance_media_unknown_v1','attach_moderated_dance_provider_v1','issue_moderated_dance_source_v1','claim_moderated_dance_probe_v1','persist_moderated_dance_probe_v1','claim_moderated_dance_normalization_v1','persist_moderated_dance_normalization_v1','moderated_dance_safety_protocol_v1','load_moderated_dance_sealed_capture_v1','initialize_moderated_dance_review_v1','claim_moderated_dance_reference_media_v1','persist_moderated_dance_reference_segment_v1','record_moderated_dance_reference_provider_v1','claim_moderated_dance_reference_normalization_v1','attach_moderated_dance_reference_provider_v1','issue_moderated_dance_reference_source_v1','publish_moderated_dance_reference_v1','claim_moderated_dance_owned_cleanup_v1','finish_moderated_dance_owned_cleanup_v1','record_moderated_dance_maintenance_v1','claim_moderated_dance_provider_cleanup_v1','identify_moderated_dance_provider_cleanup_v1','finish_moderated_dance_provider_cleanup_v1','drain_moderated_dance_replay_v1','bind_moderated_dance_replay_keys_v1','claim_moderated_dance_public_reindex_v1','finish_moderated_dance_public_reindex_v1','drain_moderated_dance_compatible_replay_v1','moderated_dance_publication_input_v1','claim_moderated_dance_publication_cleanup_v1','finish_moderated_dance_publication_cleanup_v1','claim_moderated_dance_publication_v1','moderated_dance_publication_provider_v1'];
  ELSIF p_purpose='erasure' THEN names:=ARRAY['begin_moderated_dance_account_erasure_v1'];
- ELSIF p_purpose='source_gateway' THEN names:=ARRAY['resolve_moderated_dance_source_v1','resolve_moderated_dance_reference_source_v1'];
+ ELSIF p_purpose='source_gateway' THEN names:=ARRAY['resolve_moderated_dance_source_v1','resolve_moderated_dance_reference_source_v1','resolve_moderated_dance_publication_source_v1'];
  ELSE RAISE EXCEPTION 'unknown runtime purpose' USING ERRCODE='DRV06'; END IF;
  FOR f IN SELECT p.oid::regprocedure signature FROM pg_proc p WHERE p.pronamespace=current_schema()::regnamespace AND p.proname=ANY(names) LOOP
   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I',f.signature,p_role);found_count:=found_count+1;
@@ -13089,6 +13149,30 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION guard_dance_publication_job_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP<>'UPDATE' OR ROW(NEW.review_id,NEW.provider_tag,NEW.created_at) IS DISTINCT FROM ROW(OLD.review_id,OLD.provider_tag,OLD.created_at)
+ OR OLD.create_consumed AND (NOT NEW.create_consumed OR NEW.request_hash IS DISTINCT FROM OLD.request_hash)
+ OR OLD.provider_job_id IS NOT NULL AND NEW.provider_job_id IS DISTINCT FROM OLD.provider_job_id
+ THEN RAISE EXCEPTION 'publication provider identity retained' USING ERRCODE='DRV01'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_dance_publication_job_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION guard_dance_publication_reservation_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -13114,6 +13198,28 @@ BEGIN
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_dance_publication_reservation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_dance_publication_source_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_OP<>'UPDATE' OR (to_jsonb(NEW)-'revoked_at') IS DISTINCT FROM (to_jsonb(OLD)-'revoked_at')
+ OR OLD.revoked_at IS NOT NULL THEN RAISE EXCEPTION 'publication source retained' USING ERRCODE='DRV01'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_dance_publication_source_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
@@ -24876,6 +24982,11 @@ BEGIN
   AND p_input->>'videoTrackEnabled'='true') IS NOT TRUE
  THEN RAISE EXCEPTION 'publication release unavailable' USING ERRCODE='DRV05'; END IF;
  song:=moderated_dance_publication_song_v1(r.state);
+ -- Current policy/persona locks may wait beyond the snapshot taken above.
+ -- Recheck before EVERY fresh input action, including body-plan/PUT grants.
+ now_ms:=floor(extract(epoch FROM clock_timestamp())*1000)::BIGINT;
+ IF now_ms>=(r.state->>'transferDeadlineMs')::BIGINT OR now_ms>=(facts->'disposition'->>'validUntilMs')::BIGINT OR h.review_id IS NOT NULL AND h.deadline_at<=clock_timestamp()
+ THEN RAISE EXCEPTION 'publication transfer expired after rights wait' USING ERRCODE='DRV05'; END IF;
  IF p_action='begin' THEN
   IF h.review_id IS NULL THEN
    SELECT * INTO STRICT u FROM dance_moderated_uploads_v1 WHERE upload_id=c->>'uploadId' AND state='sealed' FOR SHARE;
@@ -25009,6 +25120,85 @@ BEGIN
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='moderated_dance_publication_input_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_review text, p_action text, p_input jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION moderated_dance_publication_provider_v1(p_review text, p_action text, p_input jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE h dance_moderated_publication_inputs_v1;j dance_moderated_publication_jobs_v1;s dance_moderated_sessions_v1;
+ r dance_moderated_reviews_v1;grant_row dance_moderated_publication_sources_v1;until_at TIMESTAMPTZ;timeout_s BIGINT;request TEXT;effect TEXT;
+BEGIN
+ IF NOT moderated_dance_media_runtime_v1() THEN RAISE EXCEPTION 'publication media role unavailable' USING ERRCODE='42501'; END IF;
+ SELECT * INTO STRICT h FROM dance_moderated_publication_inputs_v1 WHERE review_id=p_review;
+ IF h.token IS DISTINCT FROM p_input->>'inputToken' THEN RAISE EXCEPTION 'publication input identity changed' USING ERRCODE='DRV05'; END IF;
+ IF p_action IN('identify','release') THEN
+  -- Historical identity/lease receipts grant no new source read or processing.
+  SELECT * INTO STRICT j FROM dance_moderated_publication_jobs_v1 WHERE review_id=p_review FOR UPDATE;
+  IF p_action='release' THEN
+   IF j.lease_token IS DISTINCT FROM p_input->>'leaseToken' THEN RAISE EXCEPTION 'publication observer changed' USING ERRCODE='DRV05'; END IF;
+   UPDATE dance_moderated_publication_jobs_v1 SET lease_token=NULL,lease_until=NULL,last_observed_at=clock_timestamp() WHERE review_id=p_review;
+   RETURN NULL;
+  END IF;
+  IF NOT j.create_consumed OR j.provider_tag IS DISTINCT FROM p_input->>'tag' OR (p_input->>'jobId'~'^[A-Za-z0-9][A-Za-z0-9_-]{0,191}$') IS NOT TRUE
+   OR j.provider_job_id IS NOT NULL AND j.provider_job_id IS DISTINCT FROM p_input->>'jobId'
+  THEN RAISE EXCEPTION 'publication provider identity changed' USING ERRCODE='DRV05'; END IF;
+  SELECT * INTO STRICT r FROM dance_moderated_reviews_v1 WHERE review_id=p_review;
+  effect:='attempt:'||(r.state->'capture'->>'uploadId')||':publication';
+  UPDATE dance_moderated_provider_effects_v1 SET provider_job_id=p_input->>'jobId' WHERE effect_id=effect AND provider_tag=j.provider_tag AND (provider_job_id IS NULL OR provider_job_id=p_input->>'jobId');
+  IF NOT FOUND THEN RAISE EXCEPTION 'publication liability missing' USING ERRCODE='DRV05'; END IF;
+  UPDATE dance_moderated_publication_jobs_v1 SET provider_job_id=p_input->>'jobId' WHERE review_id=p_review;
+  RETURN jsonb_build_object('jobId',p_input->>'jobId','tag',j.provider_tag);
+ END IF;
+ -- All fresh grants use the actual existing account/review/source/rights locks.
+ PERFORM moderated_dance_publication_input_v1(p_review,'begin',jsonb_build_object('token',h.token,'videoTrackEnabled',p_input->'videoTrackEnabled'));
+ SELECT * INTO STRICT h FROM dance_moderated_publication_inputs_v1 WHERE review_id=p_review;
+ SELECT * INTO STRICT j FROM dance_moderated_publication_jobs_v1 WHERE review_id=p_review FOR UPDATE;
+ SELECT * INTO STRICT r FROM dance_moderated_reviews_v1 WHERE review_id=p_review;
+ SELECT * INTO STRICT s FROM dance_moderated_sessions_v1 WHERE session_id=r.session_id;
+ IF j.lease_token IS NULL OR j.lease_until IS NULL OR j.lease_token IS DISTINCT FROM p_input->>'leaseToken' OR j.lease_until<=clock_timestamp() OR h.state<>'preparing'
+ OR h.generation IS DISTINCT FROM (r.state->>'generation')::BIGINT
+ OR h.deadline_at IS DISTINCT FROM to_timestamp((r.state->>'transferDeadlineMs')::NUMERIC/1000)
+ THEN RAISE EXCEPTION 'publication observer expired' USING ERRCODE='DRV05'; END IF;
+ IF p_action='observe' THEN
+  IF NOT j.create_consumed THEN RAISE EXCEPTION 'publication provider not dispatched' USING ERRCODE='DRV05'; END IF;
+  RETURN jsonb_build_object('status','observe','jobId',j.provider_job_id,'tag',j.provider_tag);
+ ELSIF p_action='source' THEN
+  IF j.create_consumed THEN RETURN NULL; END IF;
+  IF (p_input->>'capabilitySha256'~'^[a-f0-9]{64}$') IS NOT TRUE THEN RAISE EXCEPTION 'publication capability invalid' USING ERRCODE='DRV06'; END IF;
+  until_at:=least(h.deadline_at,clock_timestamp()+(s.terms->'profile'->>'mediaLeaseMs')::BIGINT*interval '1 millisecond');
+  UPDATE dance_moderated_publication_sources_v1 SET revoked_at=clock_timestamp() WHERE review_id=p_review AND revoked_at IS NULL;
+  INSERT INTO dance_moderated_publication_sources_v1(capability_sha256,review_id,expires_at) VALUES(p_input->>'capabilitySha256',p_review,until_at);
+  RETURN jsonb_build_object('expiresAtMs',floor(extract(epoch FROM until_at)*1000)::BIGINT);
+ ELSIF p_action='create' THEN
+  IF j.create_consumed THEN RETURN jsonb_build_object('status','unknown'); END IF;
+  IF (s.terms->'profile'->>'maximumProviderCalls')::BIGINT<7 THEN RAISE EXCEPTION 'publication purpose not admitted' USING ERRCODE='DRV07'; END IF;
+  SELECT * INTO STRICT grant_row FROM dance_moderated_publication_sources_v1 WHERE review_id=p_review AND capability_sha256=p_input->>'capabilitySha256' AND revoked_at IS NULL AND expires_at>clock_timestamp();
+  IF NOT reserve_moderated_dance_provider_work_v1(r.account_id,s.terms->'profile') THEN RETURN jsonb_build_object('status','budget_refused'); END IF;
+  -- Usage-row waits may cross either original authority bound.
+  IF h.deadline_at<=clock_timestamp() OR j.lease_until<=clock_timestamp() OR grant_row.expires_at<=clock_timestamp()
+  THEN RAISE EXCEPTION 'publication grant expired during budget wait' USING ERRCODE='DRV05'; END IF;
+  timeout_s:=least(300,(s.terms->'profile'->>'normalizationTimeoutSeconds')::BIGINT,floor(extract(epoch FROM h.deadline_at-clock_timestamp()))::BIGINT);
+  IF timeout_s<1 THEN RAISE EXCEPTION 'publication deadline expired' USING ERRCODE='DRV05'; END IF;
+  request:=encode(sha256(convert_to(jsonb_build_object('recipe','dance-publication-body-v1','reviewId',p_review,'generation',h.generation,'source',h.source_identity,
+   'bodyStartMs',r.state->'capture'->'bodyStartMs','bodyEndMs',r.state->'capture'->'bodyEndMs','capabilitySha256',grant_row.capability_sha256,'timeoutSeconds',timeout_s)::TEXT,'UTF8')),'hex');
+  PERFORM register_moderated_dance_provider_effect_v1(r.state->'capture'->>'uploadId',NULL,'publication','cloudconvert',j.provider_tag,NULL,s.terms_hash,h.deadline_at,s.terms->'disposition',s.terms->'profile');
+  UPDATE dance_moderated_publication_jobs_v1 SET create_consumed=TRUE,request_hash=request WHERE review_id=p_review;
+  RETURN jsonb_build_object('status','create','tag',j.provider_tag,'timeoutSeconds',timeout_s);
+ END IF;
+ RAISE EXCEPTION 'publication provider action unavailable' USING ERRCODE='DRV06';
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_publication_provider_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_review text, p_action text, p_input jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
@@ -34541,6 +34731,36 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='resolve_moderated_dance_media_lease_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_actor text, p_community text, p_review text, p_lease text, p_charge boolean';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION resolve_moderated_dance_publication_source_v1(p_digest text) RETURNS TABLE(physical_key text, object_version text, etag text, size_bytes bigint, content_type text, canonical_sha256 text, expires_at timestamp with time zone, identity_kind text)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT h.source_identity->>'destination_ref',h.source_identity->>'version',h.source_identity->>'etag',
+ (h.source_identity->>'size_bytes')::BIGINT,u.content_type,h.source_identity->>'canonical_sha256',g.expires_at,'upload_version'
+ FROM dance_moderated_publication_sources_v1 g JOIN dance_moderated_publication_inputs_v1 h USING(review_id)
+ JOIN dance_moderated_publication_jobs_v1 job USING(review_id) JOIN dance_moderated_reviews_v1 r USING(review_id)
+ JOIN dance_moderated_sessions_v1 s USING(session_id) JOIN dance_moderated_uploads_v1 u USING(session_id)
+ JOIN users a ON a.user_id=r.account_id JOIN dance_review_account_fences_v1 f ON f.account_id=r.account_id
+ WHERE g.capability_sha256=p_digest AND g.revoked_at IS NULL AND g.expires_at>clock_timestamp() AND h.deadline_at>clock_timestamp()
+ AND h.state='preparing' AND job.create_consumed AND h.generation=(r.state->>'generation')::BIGINT
+ AND r.status='reviewed' AND r.state->>'verdict'='passed' AND r.state->>'publication'='pending' AND r.state->>'showPublicly'='true'
+ AND a.status='active' AND NOT f.erasing AND f.revision=(r.state->'capture'->>'accountFenceRevision')::BIGINT
+ AND active_activity_persona(r.account_id,s.persona_id,r.community_id) AND u.state='sealed'
+ AND h.source_identity=u.immutable_object_identity AND h.source_identity->>'canonical_sha256'=r.state->'capture'->>'sourceDigest'
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='resolve_moderated_dance_publication_source_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_digest text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -46385,7 +46605,7 @@ CREATE TABLE dance_moderated_provider_effects_v1 (
     CONSTRAINT dance_moderated_provider_effects_v1_check3 CHECK (((state = 'completed'::text) = (completed_at IS NOT NULL))),
     CONSTRAINT dance_moderated_provider_effects_v1_lease_ms_check CHECK ((lease_ms > 0)),
     CONSTRAINT dance_moderated_provider_effects_v1_provider_check CHECK ((provider = ANY (ARRAY['cloudconvert'::text, 'qencode'::text]))),
-    CONSTRAINT dance_moderated_provider_effects_v1_purpose_check CHECK ((purpose = ANY (ARRAY['probe'::text, 'normalization'::text]))),
+    CONSTRAINT dance_moderated_provider_effects_v1_purpose_check CHECK ((purpose = ANY (ARRAY['probe'::text, 'normalization'::text, 'publication'::text]))),
     CONSTRAINT dance_moderated_provider_effects_v1_state_check CHECK ((state = ANY (ARRAY['registered'::text, 'leased'::text, 'unknown'::text, 'completed'::text]))),
     CONSTRAINT dance_moderated_provider_effects_v1_terms_hash_check CHECK ((terms_hash ~ '^[a-f0-9]{64}$'::text))
 );
@@ -46462,6 +46682,34 @@ CREATE TABLE dance_moderated_publication_inputs_v1 (
     CONSTRAINT dance_moderated_publication_inputs_v1_generation_check CHECK ((generation > 0)),
     CONSTRAINT dance_moderated_publication_inputs_v1_state_check CHECK ((state = ANY (ARRAY['preparing'::text, 'stored'::text, 'adopted'::text, 'cleanup'::text, 'cleaned'::text]))),
     CONSTRAINT dance_moderated_publication_inputs_v1_token_check CHECK (((btrim(token) <> ''::text) AND (length(token) <= 192)))
+);
+
+CREATE TABLE dance_moderated_publication_jobs_v1 (
+    review_id text NOT NULL,
+    provider_tag text NOT NULL,
+    create_consumed boolean DEFAULT false NOT NULL,
+    request_hash text,
+    provider_job_id text,
+    lease_token text,
+    lease_until timestamp with time zone,
+    last_observed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_moderated_publication_jobs_v1_check CHECK ((create_consumed = (request_hash IS NOT NULL))),
+    CONSTRAINT dance_moderated_publication_jobs_v1_check1 CHECK (((provider_job_id IS NULL) OR create_consumed)),
+    CONSTRAINT dance_moderated_publication_jobs_v1_check2 CHECK (((lease_token IS NULL) = (lease_until IS NULL))),
+    CONSTRAINT dance_moderated_publication_jobs_v1_provider_job_id_check CHECK ((provider_job_id ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,191}$'::text)),
+    CONSTRAINT dance_moderated_publication_jobs_v1_provider_tag_check CHECK ((provider_tag ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$'::text)),
+    CONSTRAINT dance_moderated_publication_jobs_v1_request_hash_check CHECK ((request_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
+CREATE TABLE dance_moderated_publication_sources_v1 (
+    capability_sha256 text NOT NULL,
+    review_id text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_moderated_publication_sources_v1_capability_sha256_check CHECK ((capability_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT dance_moderated_publication_sources_v1_check CHECK ((expires_at > created_at))
 );
 
 CREATE TABLE dance_moderated_reference_commands_v1 (
@@ -56010,6 +56258,18 @@ ALTER TABLE ONLY dance_moderated_publication_inputs_v1
 ALTER TABLE ONLY dance_moderated_publication_inputs_v1
     ADD CONSTRAINT dance_moderated_publication_inputs_v1_submission_id_key UNIQUE (submission_id);
 
+ALTER TABLE ONLY dance_moderated_publication_jobs_v1
+    ADD CONSTRAINT dance_moderated_publication_jobs_v1_pkey PRIMARY KEY (review_id);
+
+ALTER TABLE ONLY dance_moderated_publication_jobs_v1
+    ADD CONSTRAINT dance_moderated_publication_jobs_v1_provider_job_id_key UNIQUE (provider_job_id);
+
+ALTER TABLE ONLY dance_moderated_publication_jobs_v1
+    ADD CONSTRAINT dance_moderated_publication_jobs_v1_provider_tag_key UNIQUE (provider_tag);
+
+ALTER TABLE ONLY dance_moderated_publication_sources_v1
+    ADD CONSTRAINT dance_moderated_publication_sources_v1_pkey PRIMARY KEY (capability_sha256);
+
 ALTER TABLE ONLY dance_moderated_reference_commands_v1
     ADD CONSTRAINT dance_moderated_reference_com_community_id_reference_post_i_key UNIQUE (community_id, reference_post_id, master_revision_id);
 
@@ -58783,6 +59043,8 @@ CREATE INDEX dance_moderated_review_queue_v1 ON dance_moderated_reviews_v1 USING
 
 CREATE INDEX dance_publication_input_work_v1 ON dance_moderated_publication_inputs_v1 USING btree (deadline_at, review_id) WHERE (state <> ALL (ARRAY['adopted'::text, 'cleaned'::text]));
 
+CREATE UNIQUE INDEX dance_publication_one_source_v1 ON dance_moderated_publication_sources_v1 USING btree (review_id) WHERE (revoked_at IS NULL);
+
 CREATE INDEX dance_reference_outbox_claim_idx ON dance_reference_outbox USING btree (state, next_eligible_at, lease_expires_at, created_at) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
 
 CREATE INDEX dance_reference_processing_attempts_lease_idx ON dance_reference_processing_attempts USING btree (state, lease_expires_at, created_at) WHERE (state = 'leased'::text);
@@ -59689,7 +59951,15 @@ CREATE TRIGGER dance_publication_input_no_truncate BEFORE TRUNCATE ON dance_mode
 
 CREATE TRIGGER dance_publication_input_retained BEFORE DELETE OR UPDATE ON dance_moderated_publication_inputs_v1 FOR EACH ROW EXECUTE FUNCTION guard_dance_publication_input_v1();
 
+CREATE TRIGGER dance_publication_job_no_truncate BEFORE TRUNCATE ON dance_moderated_publication_jobs_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER dance_publication_job_retained BEFORE DELETE OR UPDATE ON dance_moderated_publication_jobs_v1 FOR EACH ROW EXECUTE FUNCTION guard_dance_publication_job_v1();
+
 CREATE TRIGGER dance_publication_reservation_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW WHEN ((old.input_source = 'dance_handoff'::text)) EXECUTE FUNCTION guard_dance_publication_reservation_v1();
+
+CREATE TRIGGER dance_publication_source_no_truncate BEFORE TRUNCATE ON dance_moderated_publication_sources_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
+
+CREATE TRIGGER dance_publication_source_retained BEFORE DELETE OR UPDATE ON dance_moderated_publication_sources_v1 FOR EACH ROW EXECUTE FUNCTION guard_dance_publication_source_v1();
 
 CREATE TRIGGER dance_reference_actions_append_only BEFORE DELETE OR UPDATE ON dance_reference_actions FOR EACH ROW EXECUTE FUNCTION reject_dance_reference_action_change();
 
@@ -61886,6 +62156,12 @@ ALTER TABLE ONLY dance_moderated_publication_cleanup_v1
 
 ALTER TABLE ONLY dance_moderated_publication_inputs_v1
     ADD CONSTRAINT dance_moderated_publication_inputs_v1_review_id_fkey FOREIGN KEY (review_id) REFERENCES dance_moderated_reviews_v1(review_id);
+
+ALTER TABLE ONLY dance_moderated_publication_jobs_v1
+    ADD CONSTRAINT dance_moderated_publication_jobs_v1_review_id_fkey FOREIGN KEY (review_id) REFERENCES dance_moderated_publication_inputs_v1(review_id);
+
+ALTER TABLE ONLY dance_moderated_publication_sources_v1
+    ADD CONSTRAINT dance_moderated_publication_sources_v1_review_id_fkey FOREIGN KEY (review_id) REFERENCES dance_moderated_publication_inputs_v1(review_id);
 
 ALTER TABLE ONLY dance_moderated_reference_commands_v1
     ADD CONSTRAINT dance_moderated_reference_commands_v1_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

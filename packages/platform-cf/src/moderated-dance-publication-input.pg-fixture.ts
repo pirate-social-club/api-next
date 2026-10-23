@@ -32,6 +32,7 @@ export function makePublicationInputFixture(
     ) => Promise<void>,
     remainingMs?: number,
     migrated = false,
+    maximumProviderCalls = 6,
   ) {
     if (url === undefined) throw new Error("Native target missing");
     const setup = async ({ admin, schema }: { admin: Client; schema: string }) => {
@@ -41,7 +42,10 @@ export function makePublicationInputFixture(
         await runPostgresMigrations({ connectionString: scoped.toString(), dryRun: false });
       else await applyPostgresTestBaselineConnection({ connectionString: scoped.toString() });
       await admin.query(`SET search_path TO ${quote(schema)}`);
-      const f = await seed(admin, scoped.toString(), undefined, { transferWithinMs: 300000 });
+      const f = await seed(admin, scoped.toString(), undefined, {
+        transferWithinMs: 300000,
+        maximumProviderCalls,
+      });
       // Synthetic ordinary published song/timing/PCM lineage only. All commands
       // under test run with guards ON. No real camera, provider or R2 is claimed.
       await admin.query("BEGIN");
