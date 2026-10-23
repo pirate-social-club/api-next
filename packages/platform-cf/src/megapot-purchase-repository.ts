@@ -1074,9 +1074,12 @@ export function makeControlPlaneMegapotPurchaseRepository() {
             }
             const drawing = yield* transaction.execute<Row>({
               label: "megapot-purchase.drawing-confirm.read",
-              text: `SELECT version FROM megapot_pool_drawings
-                      WHERE pool_leg_id=$1 AND drawing_id=$2
-                        AND status='purchase_pending' AND purchase_effect_id=$3
+              // A ticket-first drawing was created for this purchase and opens entries
+              // when its ticket is confirmed; a commit-first drawing confirms its tickets.
+              text: `SELECT version, purchase_order FROM megapot_pool_drawings
+                      WHERE pool_leg_id=$1 AND drawing_id=$2 AND purchase_effect_id=$3
+                        AND ((purchase_order='commit_first' AND status='purchase_pending')
+                          OR (purchase_order='ticket_first_v1' AND status='ticket_pending'))
                       FOR UPDATE`,
               values: [
                 text(row, "pool_leg_id"),
@@ -1087,11 +1090,15 @@ export function makeControlPlaneMegapotPurchaseRepository() {
             });
             if (drawing.rows.length !== 1) return yield* rejected("effect-conflict");
             const drawingVersion = integer(drawing.rows[0] as Row, "version") + 1;
+            const confirmedStatus =
+              text(drawing.rows[0] as Row, "purchase_order") === "ticket_first_v1"
+                ? "entry_open"
+                : "tickets_confirmed";
             yield* transaction.execute({
               label: "megapot-purchase.drawing-confirm-transition.create",
               text: `INSERT INTO megapot_pool_drawing_transitions (
                        pool_leg_id, drawing_id, target_version, event_type, event
-                     ) VALUES ($1,$2,$3,'tickets_confirmed',jsonb_build_object(
+                     ) VALUES ($1,$2,$3,$6,jsonb_build_object(
                        'purchase_effect_id',$4::text,'ticket_id',$5::text
                      ))`,
               values: [
@@ -1100,13 +1107,14 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                 drawingVersion,
                 input.effectId,
                 input.ticketId.toString(),
+                confirmedStatus,
               ],
               readonly: false,
             });
             const drawingConfirmed = yield* transaction.execute({
               label: "megapot-purchase.drawing.confirm",
               text: `UPDATE megapot_pool_drawings
-                        SET status='tickets_confirmed', version=$3,
+                        SET status=$5, version=$3,
                             actual_ticket_cost_atomic=$4,
                             updated_at=clock_timestamp()
                       WHERE pool_leg_id=$1 AND drawing_id=$2`,
@@ -1115,6 +1123,7 @@ export function makeControlPlaneMegapotPurchaseRepository() {
                 bigint(row, "drawing_id").toString(),
                 drawingVersion,
                 amount.toString(),
+                confirmedStatus,
               ],
               readonly: false,
             });

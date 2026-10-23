@@ -16931,6 +16931,7 @@ DECLARE
   leg_record song_reward_offer_legs%ROWTYPE;
   offer_record song_reward_offers%ROWTYPE;
   observation_record megapot_drawing_observations%ROWTYPE;
+  purchase_record reward_chain_effects%ROWTYPE;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Megapot pool drawings cannot be deleted';
@@ -16942,7 +16943,26 @@ BEGIN
      WHERE offer_id = leg_record.offer_id FOR SHARE;
     SELECT * INTO observation_record FROM megapot_drawing_observations
      WHERE observation_id = NEW.observation_id FOR SHARE;
-    IF NEW.status <> 'entry_open' OR leg_record.kind <> 'megapot_pool'
+    IF NEW.purchase_order IS DISTINCT FROM leg_record.purchase_order THEN
+      RAISE EXCEPTION 'Megapot pool drawing purchase order must match its leg';
+    END IF;
+    IF leg_record.purchase_order = 'ticket_first_v1' THEN
+      -- A ticket-first drawing exists only for its prepared owner-executed purchase;
+      -- entries open later, when that ticket is confirmed in this drawing.
+      SELECT * INTO purchase_record FROM reward_chain_effects
+       WHERE effect_id = NEW.purchase_effect_id FOR SHARE;
+      IF NEW.status <> 'ticket_pending' OR purchase_record.effect_id IS NULL
+         OR purchase_record.effect_kind <> 'ticket_purchase'
+         OR purchase_record.execution_mode <> 'safe_owner_v1'
+         OR purchase_record.state <> 'prepared'
+         OR NEW.reserved_ticket_cost_atomic <> purchase_record.reserved_amount_atomic
+         OR NEW.reserved_ticket_cost_atomic > leg_record.max_ticket_price_atomic THEN
+        RAISE EXCEPTION 'ticket-first Megapot pool drawing requires its prepared Safe purchase';
+      END IF;
+    ELSIF NEW.status <> 'entry_open' THEN
+      RAISE EXCEPTION 'Megapot pool drawing does not match live leg and observation';
+    END IF;
+    IF leg_record.kind <> 'megapot_pool'
        OR leg_record.status <> 'active'
        OR offer_record.offer_id IS NULL
        OR offer_record.status <> 'active'
@@ -16963,10 +16983,10 @@ BEGIN
   END IF;
   IF ROW(
     NEW.pool_leg_id, NEW.drawing_id, NEW.observation_id, NEW.entry_cutoff_at,
-    NEW.ticket_price_ceiling_atomic, NEW.created_at
+    NEW.ticket_price_ceiling_atomic, NEW.created_at, NEW.purchase_order
   ) IS DISTINCT FROM ROW(
     OLD.pool_leg_id, OLD.drawing_id, OLD.observation_id, OLD.entry_cutoff_at,
-    OLD.ticket_price_ceiling_atomic, OLD.created_at
+    OLD.ticket_price_ceiling_atomic, OLD.created_at, OLD.purchase_order
   ) THEN
     RAISE EXCEPTION 'Megapot pool drawing identity is immutable';
   END IF;
@@ -16979,6 +16999,32 @@ BEGIN
   END IF;
   IF NEW.version <> OLD.version + 1 OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'Megapot pool drawing transition requires next version and time';
+  END IF;
+  IF OLD.purchase_order = 'ticket_first_v1' THEN
+    -- The ticket is bought before entries open, so there is no purchase step after
+    -- the commitment, and a closed drawing keeps watching its unexecuted call.
+    IF NEW.purchase_effect_id IS DISTINCT FROM OLD.purchase_effect_id
+       OR NEW.reserved_ticket_cost_atomic <> OLD.reserved_ticket_cost_atomic THEN
+      RAISE EXCEPTION 'ticket-first Megapot purchase is fixed when the drawing is created';
+    END IF;
+    IF NOT (
+      (OLD.status = 'ticket_pending' AND NEW.status IN (
+        'entry_open', 'closed_purchase_unavailable', 'operational_hold'
+      ))
+      OR (OLD.status = 'entry_open' AND NEW.status IN ('cutoff_frozen', 'operational_hold'))
+      OR (OLD.status = 'cutoff_frozen' AND NEW.status IN ('committed', 'operational_hold'))
+      OR (OLD.status = 'committed' AND NEW.status IN ('drawing_pending', 'operational_hold'))
+      OR (OLD.status = 'drawing_pending' AND NEW.status IN (
+        'no_win', 'winnings_detected', 'operational_hold'
+      ))
+      OR (OLD.status = 'winnings_detected' AND NEW.status IN ('claim_pending', 'operational_hold'))
+      OR (OLD.status = 'claim_pending' AND NEW.status IN ('claimed', 'operational_hold'))
+      OR (OLD.status = 'claimed' AND NEW.status IN ('allocated', 'operational_hold'))
+      OR (OLD.status = 'allocated' AND NEW.status IN ('credited', 'operational_hold'))
+    ) THEN
+      RAISE EXCEPTION 'invalid ticket-first Megapot pool drawing transition';
+    END IF;
+    RETURN NEW;
   END IF;
   IF NEW.status='closed_purchase_unavailable' AND NEW.purchase_effect_id IS NOT NULL
     AND OLD.status <> 'purchase_pending' THEN
@@ -17112,6 +17158,25 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_purchase_effect_order() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  leg_order TEXT;
+  chain_mode TEXT;
+BEGIN
+  SELECT purchase_order INTO leg_order FROM song_reward_offer_legs
+   WHERE leg_id = NEW.pool_leg_id FOR SHARE;
+  SELECT execution_mode INTO chain_mode FROM reward_chain_effects
+   WHERE effect_id = NEW.purchase_effect_id FOR SHARE;
+  IF (leg_order = 'ticket_first_v1') <> (NEW.snapshot_id IS NULL)
+     OR (leg_order = 'ticket_first_v1' AND chain_mode IS DISTINCT FROM 'safe_owner_v1') THEN
+    RAISE EXCEPTION 'Megapot purchase order does not match its leg';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_megapot_ticket_inventory() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -17201,6 +17266,22 @@ BEGIN
        OR chain_record.state <> 'terminal_failed' THEN
       RAISE EXCEPTION 'Megapot ticket review claim evidence mismatch';
     END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_megapot_unsigned_commitment() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.signing_key_id = 'unsigned_owner_safe_v1' AND NOT EXISTS (
+    SELECT 1 FROM megapot_pool_beneficiary_snapshots snapshot
+      JOIN song_reward_offer_legs leg ON leg.leg_id = snapshot.pool_leg_id
+     WHERE snapshot.snapshot_id = NEW.snapshot_id
+       AND leg.purchase_order = 'ticket_first_v1'
+  ) THEN
+    RAISE EXCEPTION 'only a ticket-first pool may publish an unsigned commitment';
   END IF;
   RETURN NEW;
 END
@@ -19634,6 +19715,17 @@ BEGIN
     ) THEN
       RAISE EXCEPTION 'invalid song reward funding transition';
     END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_song_reward_leg_purchase_order() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.purchase_order IS DISTINCT FROM OLD.purchase_order THEN
+    RAISE EXCEPTION 'reward leg purchase order is immutable';
   END IF;
   RETURN NEW;
 END
@@ -51648,7 +51740,7 @@ CREATE TABLE megapot_pool_commitment_effects (
     snapshot_id text NOT NULL,
     payload_hash text NOT NULL,
     signing_key_id text NOT NULL,
-    signature text NOT NULL,
+    signature text,
     state text NOT NULL,
     prepared_at timestamp with time zone NOT NULL,
     published_at timestamp with time zone,
@@ -51657,7 +51749,7 @@ CREATE TABLE megapot_pool_commitment_effects (
     CONSTRAINT megapot_commitment_effect_shape CHECK ((((state = 'prepared'::text) AND (published_at IS NULL) AND (public_reference IS NULL)) OR ((state = 'published'::text) AND (published_at IS NOT NULL) AND (btrim(public_reference) <> ''::text) AND (published_at >= prepared_at)))),
     CONSTRAINT megapot_pool_commitment_effects_commitment_effect_id_check CHECK (((btrim(commitment_effect_id) <> ''::text) AND (commitment_effect_id = btrim(commitment_effect_id)) AND (octet_length(commitment_effect_id) <= 128))),
     CONSTRAINT megapot_pool_commitment_effects_payload_hash_check CHECK ((payload_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT megapot_pool_commitment_effects_signature_check CHECK ((btrim(signature) <> ''::text)),
+    CONSTRAINT megapot_pool_commitment_effects_signature_check CHECK ((((signing_key_id = 'unsigned_owner_safe_v1'::text) AND (signature IS NULL)) OR ((signing_key_id <> 'unsigned_owner_safe_v1'::text) AND (signature IS NOT NULL) AND (btrim(signature) <> ''::text)))),
     CONSTRAINT megapot_pool_commitment_effects_signing_key_id_check CHECK ((btrim(signing_key_id) <> ''::text)),
     CONSTRAINT megapot_pool_commitment_effects_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'published'::text])))
 );
@@ -51698,19 +51790,21 @@ CREATE TABLE megapot_pool_drawings (
     cutoff_frozen_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     terminal_at timestamp with time zone,
-    CONSTRAINT megapot_pool_drawing_effect_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))),
-    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))),
-    CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))),
+    purchase_order text DEFAULT 'commit_first'::text NOT NULL,
+    CONSTRAINT megapot_pool_drawing_effect_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'cutoff_frozen'::text, 'closed_purchase_unavailable'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))))),
+    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((purchase_order = 'commit_first'::text) AND (((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR ((status <> ALL (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count > 0) AND (fallback_beneficiary = false) AND (cutoff_frozen_at IS NOT NULL)))))),
+    CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))))),
     CONSTRAINT megapot_pool_drawing_reservation CHECK (((actual_ticket_cost_atomic <= reserved_ticket_cost_atomic) AND (reserved_ticket_cost_atomic <= ticket_price_ceiling_atomic) AND (net_winnings_atomic <= gross_winnings_atomic))),
-    CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK (((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NOT NULL)))),
+    CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (snapshot_id IS NOT NULL)))))),
     CONSTRAINT megapot_pool_drawing_terminal_shape CHECK ((((status = ANY (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (terminal_at IS NOT NULL)) OR ((status <> ALL (ARRAY['no_win'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (terminal_at IS NULL)))),
     CONSTRAINT megapot_pool_drawing_time_order CHECK (((updated_at >= created_at) AND ((cutoff_frozen_at IS NULL) OR (cutoff_frozen_at >= created_at)) AND ((terminal_at IS NULL) OR (terminal_at >= created_at)))),
     CONSTRAINT megapot_pool_drawings_actual_ticket_cost_atomic_check CHECK ((actual_ticket_cost_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_drawing_id_check CHECK ((drawing_id >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_gross_winnings_atomic_check CHECK ((gross_winnings_atomic >= (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_net_winnings_atomic_check CHECK ((net_winnings_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_pool_drawings_purchase_order_check CHECK ((purchase_order = ANY (ARRAY['commit_first'::text, 'ticket_first_v1'::text]))),
     CONSTRAINT megapot_pool_drawings_reserved_ticket_cost_atomic_check CHECK ((reserved_ticket_cost_atomic >= (0)::numeric)),
-    CONSTRAINT megapot_pool_drawings_status_check CHECK ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text]))),
+    CONSTRAINT megapot_pool_drawings_status_check CHECK ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text, 'ticket_pending'::text]))),
     CONSTRAINT megapot_pool_drawings_ticket_price_ceiling_atomic_check CHECK ((ticket_price_ceiling_atomic > (0)::numeric)),
     CONSTRAINT megapot_pool_drawings_version_check CHECK ((version > 0))
 );
@@ -51819,8 +51913,8 @@ CREATE TABLE megapot_ticket_purchase_effects (
     drawing_id numeric(78,0) NOT NULL,
     attestation_id text NOT NULL,
     drawing_observation_id text NOT NULL,
-    snapshot_id text NOT NULL,
-    commitment_effect_id text NOT NULL,
+    snapshot_id text,
+    commitment_effect_id text,
     source_tag text NOT NULL,
     recipient_address text NOT NULL,
     ticket_price_atomic numeric(78,0) NOT NULL,
@@ -51832,6 +51926,7 @@ CREATE TABLE megapot_ticket_purchase_effects (
     bonusball smallint NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT megapot_purchase_ticket_numbers CHECK (((normal_one >= 1) AND (normal_one < normal_two) AND (normal_two < normal_three) AND (normal_three < normal_four) AND (normal_four < normal_five) AND (bonusball >= 1))),
+    CONSTRAINT megapot_ticket_purchase_commitment_pair CHECK (((snapshot_id IS NULL) = (commitment_effect_id IS NULL))),
     CONSTRAINT megapot_ticket_purchase_effects_recipient_address_check CHECK ((recipient_address ~ '^0x[0-9a-f]{40}$'::text)),
     CONSTRAINT megapot_ticket_purchase_effects_source_tag_check CHECK ((source_tag ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_ticket_purchase_effects_ticket_price_atomic_check CHECK ((ticket_price_atomic > (0)::numeric))
@@ -53866,9 +53961,11 @@ CREATE TABLE song_reward_offer_legs (
     qualification_policies jsonb,
     qualification_family_v2 text DEFAULT 'numeric'::text NOT NULL,
     shared_song_terms_v2 jsonb,
+    purchase_order text DEFAULT 'commit_first'::text NOT NULL,
     CONSTRAINT shared_song_leg_family_v2 CHECK (((((qualification_family_v2 = 'numeric'::text) AND (shared_song_terms_v2 IS NULL)) OR ((qualification_family_v2 = 'shared_song'::text) AND (kind = 'megapot_pool'::text) AND (min_score_bps IS NULL) AND (empty_pool_policy = 'no_purchase'::text) AND (funding_source = 'leg_budget'::text) AND (eligible_activities = ARRAY['study'::text, 'karaoke'::text, 'dance'::text]) AND (jsonb_typeof(shared_song_terms_v2) = 'object'::text) AND ((shared_song_terms_v2 ->> 'version'::text) = 'shared-song-megapot-v2'::text) AND ((shared_song_terms_v2 ->> 'terms_hash'::text) = SUBSTRING(leg_terms_hash FROM 3)))) IS TRUE)),
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
     CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
+    CONSTRAINT song_reward_leg_purchase_order_shape CHECK (((purchase_order = 'commit_first'::text) OR ((kind = 'megapot_pool'::text) AND (funding_source = 'leg_budget'::text) AND (empty_pool_policy = 'no_purchase'::text)))),
     CONSTRAINT song_reward_leg_qualification_shape CHECK (((qualification_policies IS NULL) OR ((jsonb_typeof(qualification_policies) = 'array'::text) AND (((qualification_family_v2 = 'numeric'::text) AND ((jsonb_array_length(qualification_policies) >= 1) AND (jsonb_array_length(qualification_policies) <= 2))) OR ((qualification_family_v2 = 'shared_song'::text) AND (jsonb_array_length(qualification_policies) = 3)))))),
     CONSTRAINT song_reward_leg_terminal_shape CHECK ((((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'operational_hold'::text])) AND (participation_ends_at IS NULL)) OR ((status = ANY (ARRAY['exhausted'::text, 'ended'::text])) AND (participation_ends_at IS NOT NULL)))),
     CONSTRAINT song_reward_leg_time_order CHECK (((participation_ends_at IS NULL) OR (participation_ends_at > participation_starts_at))),
@@ -53883,6 +53980,7 @@ CREATE TABLE song_reward_offer_legs (
     CONSTRAINT song_reward_offer_legs_owner_policy_hash_check CHECK (((owner_policy_hash IS NULL) OR (owner_policy_hash ~ '^[0-9a-f]{64}$'::text))),
     CONSTRAINT song_reward_offer_legs_owner_policy_kind_check CHECK ((owner_policy_kind = ANY (ARRAY['frozen_policy'::text, 'legacy_pre_policy'::text]))),
     CONSTRAINT song_reward_offer_legs_owner_policy_revision_check CHECK (((owner_policy_revision IS NULL) OR ((owner_policy_revision >= 1) AND (owner_policy_revision <= '9007199254740991'::bigint)))),
+    CONSTRAINT song_reward_offer_legs_purchase_order_check CHECK ((purchase_order = ANY (ARRAY['commit_first'::text, 'ticket_first_v1'::text]))),
     CONSTRAINT song_reward_offer_legs_qualification_family_v2_check CHECK ((qualification_family_v2 = ANY (ARRAY['numeric'::text, 'shared_song'::text]))),
     CONSTRAINT song_reward_offer_legs_refund_policy_check CHECK ((refund_policy = 'refund_to_funders_pro_rata'::text)),
     CONSTRAINT song_reward_offer_legs_refunded_atomic_check CHECK ((refunded_atomic >= (0)::numeric)),
@@ -60949,6 +61047,8 @@ CREATE TRIGGER megapot_claim_receipt_evidence_append_only BEFORE DELETE OR UPDAT
 
 CREATE TRIGGER megapot_commitment_effects_change_guard BEFORE DELETE OR UPDATE ON megapot_pool_commitment_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_commitment_effect();
 
+CREATE TRIGGER megapot_commitment_effects_unsigned_guard BEFORE INSERT ON megapot_pool_commitment_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_unsigned_commitment();
+
 CREATE TRIGGER megapot_deployment_attestations_change_guard BEFORE DELETE OR UPDATE ON megapot_deployment_attestations FOR EACH ROW EXECUTE FUNCTION guard_megapot_attestation_change();
 
 CREATE TRIGGER megapot_drawing_observations_append_only BEFORE DELETE OR UPDATE ON megapot_drawing_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
@@ -60982,6 +61082,8 @@ CREATE CONSTRAINT TRIGGER megapot_sweep_ticket_evidence_exact AFTER INSERT ON me
 CREATE TRIGGER megapot_ticket_inventory_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_inventory FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_inventory();
 
 CREATE TRIGGER megapot_ticket_purchase_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_purchase_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_purchase_effect();
+
+CREATE TRIGGER megapot_ticket_purchase_effects_order_guard BEFORE INSERT ON megapot_ticket_purchase_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_purchase_effect_order();
 
 CREATE TRIGGER megapot_ticket_review_evidence_append_only BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_review_evidence FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_review_evidence();
 
@@ -61410,6 +61512,8 @@ CREATE TRIGGER song_reward_offer_actions_change_guard BEFORE INSERT OR DELETE OR
 CREATE TRIGGER song_reward_offer_asset_legs_asset_guard BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_asset_bonus_leg_asset();
 
 CREATE TRIGGER song_reward_offer_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_leg();
+
+CREATE TRIGGER song_reward_offer_legs_purchase_order_guard BEFORE UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_leg_purchase_order();
 
 CREATE TRIGGER song_reward_offers_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offers FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer();
 

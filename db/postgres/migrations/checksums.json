@@ -309,6 +309,7 @@
     "0306_moderated_dance_publication_views.sql": "11e0fa953283e832a0f072f1321f8580ca1b29528f6a3a6bbde38275d51285cb",
     "0307_moderated_dance_reference_communities.sql": "de246a85b233c6620a872891de836ac96f15f6176b6d59feae32f58c362c5e24",
     "0308_reward_safe_owner_execution.sql": "53a24c879f52e2d724ff01f5889bd86cab0cf6cbf8ea22cbe3e6e47496a504df",
-    "0309_reward_safe_execution_scans.sql": "26885d9f07113b682978ef1ea5db397d13a07590e255e8b09f499ae00c76cc93"
+    "0309_reward_safe_execution_scans.sql": "26885d9f07113b682978ef1ea5db397d13a07590e255e8b09f499ae00c76cc93",
+    "0310_reward_ticket_first_pool.sql": "07b49f41ca0c5465ce8202f2e1d55284fe686d2624c88068e28473d8f96b6f6c"
   }
 }
