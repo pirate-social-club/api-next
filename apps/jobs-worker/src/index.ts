@@ -72,6 +72,7 @@ import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import { makeSafePoolPilotJob, type SafePoolPilotJobOptions } from "./safe-pool-pilot.ts";
 import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 import { makeSongMegapotFundingRecoveryJob } from "./song-megapot-funding-recovery.ts";
 import {
@@ -181,6 +182,12 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
   readonly MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING?: string;
   readonly MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
+  readonly SAFE_POOL_PILOT_ENABLED?: string;
+  readonly SAFE_POOL_PRODUCTION_ENABLED?: string;
+  readonly SAFE_POOL_ATTESTATION_ID?: string;
+  readonly SAFE_POOL_RPC_URL?: string;
+  readonly SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN?: string;
+  readonly SAFE_POOL_MINIMUM_ENTRY_SECONDS?: string;
 }
 
 function makeJobsAlertSink(env: JobsWorkerEnv): AlertSink {
@@ -215,6 +222,12 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
       MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: env.MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING,
       MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC:
         env.MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
+      SAFE_POOL_PILOT_ENABLED: env.SAFE_POOL_PILOT_ENABLED,
+      SAFE_POOL_PRODUCTION_ENABLED: env.SAFE_POOL_PRODUCTION_ENABLED,
+      SAFE_POOL_ATTESTATION_ID: env.SAFE_POOL_ATTESTATION_ID,
+      SAFE_POOL_RPC_URL: env.SAFE_POOL_RPC_URL,
+      SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN: env.SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN,
+      SAFE_POOL_MINIMUM_ENTRY_SECONDS: env.SAFE_POOL_MINIMUM_ENTRY_SECONDS,
     });
   } catch {
     throw new Error("Jobs worker configuration is incomplete or invalid");
@@ -315,6 +328,55 @@ function makeMegapotOptions(
     sharedSponsorDailySpendCeilingAtomic: parsePositiveBigintSetting(
       config.MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
     ),
+  };
+}
+
+/**
+ * The Safe pool pilot shares its tables with the EOA rewards job, and the registry
+ * allows one writer per table, so the two are never enabled together.
+ */
+function makeSafePoolPilotOptions(
+  env: JobsWorkerEnv,
+  config: JobsWorkerConfigValue,
+): SafePoolPilotJobOptions | null {
+  if (!config.SAFE_POOL_PILOT_ENABLED) return null;
+  const commitmentPublicOrigin = Redacted.value(config.SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN);
+  let origin: URL;
+  try {
+    origin = new URL(commitmentPublicOrigin);
+  } catch {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  if (
+    config.MEGAPOT_REWARDS_ENABLED ||
+    env.MEGAPOT_COMMITMENTS === undefined ||
+    config.SAFE_POOL_ATTESTATION_ID.length === 0 ||
+    config.SAFE_POOL_ATTESTATION_ID.trim() !== config.SAFE_POOL_ATTESTATION_ID ||
+    !Number.isSafeInteger(config.SAFE_POOL_MINIMUM_ENTRY_SECONDS) ||
+    config.SAFE_POOL_MINIMUM_ENTRY_SECONDS < 60 ||
+    config.MEGAPOT_REQUIRED_CONFIRMATIONS < 1 ||
+    !Number.isSafeInteger(config.MEGAPOT_OBSERVATION_TTL_SECONDS) ||
+    config.MEGAPOT_OBSERVATION_TTL_SECONDS < 1 ||
+    config.MEGAPOT_OBSERVATION_TTL_SECONDS > 900 ||
+    origin.protocol !== "https:" ||
+    origin.pathname !== "/" ||
+    origin.search.length > 0 ||
+    origin.hash.length > 0 ||
+    origin.username.length > 0 ||
+    origin.password.length > 0
+  ) {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  return {
+    environment: config.API_NEXT_ENV,
+    attestationId: config.SAFE_POOL_ATTESTATION_ID,
+    rpcUrl: fundingRpcUrl(Redacted.value(config.SAFE_POOL_RPC_URL), config.API_NEXT_ENV),
+    requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+    productionEnabled: config.SAFE_POOL_PRODUCTION_ENABLED,
+    minimumEntrySeconds: config.SAFE_POOL_MINIMUM_ENTRY_SECONDS,
+    observationTtlMs: config.MEGAPOT_OBSERVATION_TTL_SECONDS * 1_000,
+    commitmentBucket: env.MEGAPOT_COMMITMENTS,
+    commitmentPublicOrigin,
   };
 }
 
@@ -905,6 +967,8 @@ export default {
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);
+    const safePool = makeSafePoolPilotOptions(env, config);
+    if (safePool !== null) declarations.push(makeSafePoolPilotJob(sink, safePool));
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);

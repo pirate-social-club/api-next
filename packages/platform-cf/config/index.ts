@@ -284,6 +284,22 @@ export const JobsWorkerConfig = Config.all({
   MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: Config.nonEmptyString(
     "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC",
   ),
+  // The owner-executed Safe pool pilot. Off unless set; production deployments also
+  // need SAFE_POOL_PRODUCTION_ENABLED.
+  SAFE_POOL_PILOT_ENABLED: Config.boolean("SAFE_POOL_PILOT_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  SAFE_POOL_PRODUCTION_ENABLED: Config.boolean("SAFE_POOL_PRODUCTION_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  SAFE_POOL_ATTESTATION_ID: Config.string("SAFE_POOL_ATTESTATION_ID").pipe(Config.withDefault("")),
+  SAFE_POOL_RPC_URL: secret("SAFE_POOL_RPC_URL").pipe(Config.withDefault(Redacted.make(""))),
+  SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN: secret("SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  SAFE_POOL_MINIMUM_ENTRY_SECONDS: Config.int("SAFE_POOL_MINIMUM_ENTRY_SECONDS").pipe(
+    Config.withDefault(0),
+  ),
 });
 
 /**
