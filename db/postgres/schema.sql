@@ -763,6 +763,44 @@ CREATE FUNCTION active_owned_persona(expected_account_id text, expected_persona_
   )
 $$;
 
+CREATE FUNCTION admit_fixed_usdc_bonus_custody_v1(p_policy jsonb, p_hash text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE preimage JSONB; prior fixed_usdc_bonus_custodies_v1; at_ms BIGINT; result JSONB;
+BEGIN
+ preimage:=fixed_usdc_bonus_preimage_v1(p_policy);
+ IF p_policy->>'version'<>'fixed-usdc-bonus-custody-v1' OR p_hash IS DISTINCT FROM encode(sha256(convert_to(canonical_reward_funding_array_v2(preimage),'UTF8')),'hex') THEN RAISE EXCEPTION 'fixed bonus policy hash mismatch' USING ERRCODE='FUB00'; END IF;
+ -- Serialize both the custody identity and the actual Safe. Different Safe
+ -- inputs cannot race the same custody ID into a generic unique violation.
+ PERFORM pg_advisory_xact_lock(hashtextextended('fixed-usdc-bonus-id:'||(p_policy->>'custody_id'),0));
+ PERFORM pg_advisory_xact_lock(hashtextextended('fixed-usdc-bonus:'||(p_policy->>'safe_address'),0));
+ SELECT * INTO prior FROM fixed_usdc_bonus_custodies_v1 WHERE custody_id=p_policy->>'custody_id';
+ IF FOUND THEN
+  IF prior.policy_hash IS DISTINCT FROM p_hash OR prior.policy_document IS DISTINCT FROM p_policy THEN RAISE EXCEPTION 'fixed bonus custody conflict' USING ERRCODE='FUB01'; END IF;
+  RETURN prior.receipt;
+ END IF;
+ IF EXISTS(SELECT 1 FROM fixed_usdc_bonus_custodies_v1 WHERE safe_address=p_policy->>'safe_address') THEN RAISE EXCEPTION 'fixed bonus Safe already assigned' USING ERRCODE='FUB01'; END IF;
+ at_ms:=floor(extract(epoch FROM clock_timestamp())*1000)::BIGINT;
+ IF at_ms<(p_policy->>'valid_from_ms')::BIGINT OR at_ms>=(p_policy->>'valid_until_ms')::BIGINT THEN RAISE EXCEPTION 'fixed bonus custody unavailable' USING ERRCODE='FUB03'; END IF;
+ result:=jsonb_build_object('version','fixed-usdc-bonus-custody-receipt-v1','custody_id',p_policy->>'custody_id','policy_hash',p_hash,'admitted_at_ms',at_ms);
+ INSERT INTO fixed_usdc_bonus_custodies_v1(custody_id,safe_address,policy_document,policy_hash,funded_cap_atomic,maximum_budget_count,maximum_observation_age_ms,minimum_confirmations,valid_from_ms,valid_until_ms,receipt)
+ VALUES(p_policy->>'custody_id',p_policy->>'safe_address',p_policy,p_hash,(p_policy->>'funded_cap_atomic')::NUMERIC,(p_policy->>'maximum_budget_count')::INTEGER,(p_policy->>'maximum_observation_age_ms')::BIGINT,(p_policy->>'minimum_confirmations')::BIGINT,(p_policy->>'valid_from_ms')::BIGINT,(p_policy->>'valid_until_ms')::BIGINT,result);
+ RETURN result;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='admit_fixed_usdc_bonus_custody_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_policy jsonb, p_hash text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION admit_hns_community_root_import_v1(input_actor_id text, input_community_id text, input_root_label text) RETURNS boolean
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -839,6 +877,59 @@ BEGIN
   RETURN next_generation;
 END;
 $$;
+
+CREATE FUNCTION allocate_fixed_usdc_bonus_budget_v1(p_command jsonb, p_hash text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE preimage JSONB; custody fixed_usdc_bonus_custodies_v1; prior fixed_usdc_bonus_budgets_v1; observation fixed_usdc_bonus_observations_v1; at_ms BIGINT; starts_ms BIGINT; committed NUMERIC; budget_count BIGINT; total NUMERIC; result JSONB;
+BEGIN
+ preimage:=fixed_usdc_bonus_preimage_v1(p_command);
+ IF p_command->>'version'<>'fixed-usdc-bonus-budget-v1' OR p_hash IS DISTINCT FROM encode(sha256(convert_to(canonical_reward_funding_array_v2(preimage),'UTF8')),'hex') THEN RAISE EXCEPTION 'fixed bonus budget hash mismatch' USING ERRCODE='FUB00'; END IF;
+ SELECT * INTO custody FROM fixed_usdc_bonus_custodies_v1 WHERE custody_id=p_command->>'custody_id' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'fixed bonus custody unavailable' USING ERRCODE='FUB03'; END IF;
+ SELECT * INTO prior FROM fixed_usdc_bonus_budgets_v1 WHERE custody_id=custody.custody_id AND idempotency_key=p_command->>'idempotency_key';
+ IF FOUND THEN
+  IF prior.request_hash IS DISTINCT FROM p_hash OR prior.command_document IS DISTINCT FROM p_command THEN RAISE EXCEPTION 'fixed bonus budget conflict' USING ERRCODE='FUB01'; END IF;
+  RETURN prior.receipt;
+ END IF;
+ IF EXISTS(SELECT 1 FROM fixed_usdc_bonus_budgets_v1 WHERE budget_id=p_command->>'budget_id') THEN RAISE EXCEPTION 'fixed bonus budget identity reused' USING ERRCODE='FUB01'; END IF;
+ -- Authority locks precede the final freshness check. A concurrent community
+ -- or Post change must not outlive an earlier positive access observation.
+ PERFORM 1 FROM communities WHERE community_id=p_command->>'community_id' AND status='active' FOR SHARE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'fixed bonus song unavailable' USING ERRCODE='FUB04'; END IF;
+ PERFORM 1 FROM posts p JOIN media_publication_projections m ON m.community_id=p.community_id AND m.post_id=p.post_id AND m.media_kind='song'
+  WHERE p.community_id=p_command->>'community_id' AND p.post_id=p_command->>'song_post_id' AND p.post_type='song' AND p.status='published' AND p.visibility='public' AND m.audio_revision=(p_command->>'audio_revision')::BIGINT FOR SHARE OF p,m;
+ IF NOT FOUND THEN RAISE EXCEPTION 'fixed bonus song unavailable' USING ERRCODE='FUB04'; END IF;
+ -- Re-evaluate time after every potentially blocking authority lock.
+ at_ms:=floor(extract(epoch FROM clock_timestamp())*1000)::BIGINT;
+ SELECT * INTO observation FROM fixed_usdc_bonus_observations_v1 WHERE custody_id=custody.custody_id ORDER BY observation_sequence DESC LIMIT 1;
+ IF NOT FOUND OR custody.held OR NOT observation.solvent OR at_ms<custody.valid_from_ms OR at_ms>=custody.valid_until_ms
+  OR at_ms-observation.observed_at_ms>custody.maximum_observation_age_ms THEN RAISE EXCEPTION 'fixed bonus custody unavailable' USING ERRCODE='FUB03'; END IF;
+ starts_ms:=greatest((p_command->>'starts_at_ms')::BIGINT,at_ms);
+ IF (p_command->>'ends_at_ms')::BIGINT<=starts_ms OR (p_command->>'ends_at_ms')::BIGINT>custody.valid_until_ms THEN RAISE EXCEPTION 'fixed bonus budget interval unavailable' USING ERRCODE='FUB03'; END IF;
+ SELECT coalesce(sum(total_atomic),0),count(*) INTO committed,budget_count FROM fixed_usdc_bonus_budgets_v1 WHERE custody_id=custody.custody_id;
+ total:=(p_command->>'amount_per_account_atomic')::NUMERIC*(p_command->>'maximum_accounts')::NUMERIC;
+ IF committed+total>custody.funded_cap_atomic OR budget_count>=custody.maximum_budget_count THEN RAISE EXCEPTION 'fixed bonus funded capacity exceeded' USING ERRCODE='FUB02'; END IF;
+ result:=jsonb_build_object('version','fixed-usdc-bonus-budget-receipt-v1','custody_id',custody.custody_id,'budget_id',p_command->>'budget_id','request_hash',p_hash,'amount_per_account_atomic',p_command->>'amount_per_account_atomic','maximum_accounts',(p_command->>'maximum_accounts')::BIGINT,'total_atomic',total::TEXT,'funded_at_ms',at_ms,'participation_starts_at_ms',starts_ms,'ends_at_ms',(p_command->>'ends_at_ms')::BIGINT);
+ INSERT INTO fixed_usdc_bonus_budgets_v1(budget_id,custody_id,idempotency_key,community_id,song_post_id,audio_revision,command_document,request_hash,amount_per_account_atomic,maximum_accounts,total_atomic,funded_at_ms,participation_starts_at_ms,ends_at_ms,receipt)
+ VALUES(p_command->>'budget_id',custody.custody_id,p_command->>'idempotency_key',p_command->>'community_id',p_command->>'song_post_id',(p_command->>'audio_revision')::BIGINT,p_command,p_hash,(p_command->>'amount_per_account_atomic')::NUMERIC,(p_command->>'maximum_accounts')::BIGINT,total,at_ms,starts_ms,(p_command->>'ends_at_ms')::BIGINT,result)
+ ON CONFLICT DO NOTHING;
+ IF NOT FOUND THEN RAISE EXCEPTION 'fixed bonus budget identity reused' USING ERRCODE='FUB01'; END IF;
+ RETURN result;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='allocate_fixed_usdc_bonus_budget_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_command jsonb, p_hash text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION announce_moderated_dance_processor_v1(p_runtime text, p_safety text, p_epochs jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -10224,6 +10315,78 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION fixed_usdc_bonus_preimage_v1(p jsonb) RETURNS jsonb
+    LANGUAGE plpgsql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE keys TEXT[]; ids TEXT[]; numbers TEXT[]; atomics TEXT[]; hashes TEXT[]; key TEXT;
+BEGIN
+ IF jsonb_typeof(p) IS DISTINCT FROM 'object' THEN RAISE EXCEPTION 'invalid fixed bonus document' USING ERRCODE='FUB00'; END IF;
+ CASE p->>'version'
+ WHEN 'fixed-usdc-bonus-custody-v1' THEN
+  keys:=ARRAY['version','custody_id','chain_id','token_address','token_decimals','asset_policy_version','safe_address','safe_binding_hash','funded_cap_atomic','maximum_budget_count','minimum_confirmations','maximum_observation_age_ms','valid_from_ms','valid_until_ms','accepted_by','acceptance_ref','acceptance_hash'];
+  ids:=ARRAY['custody_id','accepted_by','acceptance_ref'];
+  numbers:=ARRAY['chain_id','token_decimals','maximum_budget_count','minimum_confirmations','maximum_observation_age_ms','valid_from_ms','valid_until_ms'];
+  atomics:=ARRAY['funded_cap_atomic']; hashes:=ARRAY['safe_binding_hash','acceptance_hash'];
+ WHEN 'fixed-usdc-bonus-solvency-v1' THEN
+  keys:=ARRAY['version','observation_id','custody_id','chain_id','token_address','token_decimals','safe_address','safe_binding_hash','block_number','block_hash','head_block_number','block_timestamp_ms','observed_at_ms','balance_atomic'];
+  ids:=ARRAY['custody_id','observation_id']; numbers:=ARRAY['chain_id','token_decimals','block_timestamp_ms','observed_at_ms'];
+  atomics:=ARRAY['block_number','head_block_number','balance_atomic']; hashes:=ARRAY['safe_binding_hash'];
+ WHEN 'fixed-usdc-bonus-budget-v1' THEN
+  keys:=ARRAY['version','idempotency_key','budget_id','custody_id','community_id','song_post_id','audio_revision','amount_per_account_atomic','maximum_accounts','starts_at_ms','ends_at_ms'];
+  ids:=ARRAY['idempotency_key','budget_id','custody_id','community_id','song_post_id'];
+  numbers:=ARRAY['audio_revision','maximum_accounts','starts_at_ms','ends_at_ms'];
+  atomics:=ARRAY['amount_per_account_atomic']; hashes:=ARRAY[]::TEXT[];
+ ELSE RAISE EXCEPTION 'invalid fixed bonus document' USING ERRCODE='FUB00';
+ END CASE;
+ IF p-keys<>'{}'::JSONB OR NOT p ?& keys THEN RAISE EXCEPTION 'invalid fixed bonus fields' USING ERRCODE='FUB00'; END IF;
+ FOREACH key IN ARRAY ids LOOP
+  IF (jsonb_typeof(p->key)='string' AND p->>key~'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus identity' USING ERRCODE='FUB00'; END IF;
+ END LOOP;
+ FOREACH key IN ARRAY numbers LOOP
+  IF (jsonb_typeof(p->key)='number' AND p->>key~'^[0-9]+$') IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus number' USING ERRCODE='FUB00'; END IF;
+  IF (p->>key)::NUMERIC>9007199254740991 THEN RAISE EXCEPTION 'unsafe fixed bonus number' USING ERRCODE='FUB00'; END IF;
+ END LOOP;
+ FOREACH key IN ARRAY atomics LOOP
+  IF (jsonb_typeof(p->key)='string' AND p->>key~'^(0|[1-9][0-9]{0,77})$') IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus amount' USING ERRCODE='FUB00'; END IF;
+  IF (p->>key)::NUMERIC>=115792089237316195423570985008687907853269984665640564039457584007913129639936 THEN RAISE EXCEPTION 'fixed bonus amount overflow' USING ERRCODE='FUB00'; END IF;
+ END LOOP;
+ FOREACH key IN ARRAY hashes LOOP
+  IF (jsonb_typeof(p->key)='string' AND p->>key~'^[a-f0-9]{64}$') IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus hash' USING ERRCODE='FUB00'; END IF;
+ END LOOP;
+ IF p->>'version'<>'fixed-usdc-bonus-budget-v1' THEN
+  IF (p->'chain_id'='8453'::JSONB AND p->>'token_address'='0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' AND p->'token_decimals'='6'::JSONB
+   AND jsonb_typeof(p->'safe_address')='string' AND p->>'safe_address'~'^0x[0-9a-f]{40}$'
+   AND p->>'safe_address'<>('0x'||repeat('0',40)) AND p->>'safe_address'<>p->>'token_address') IS NOT TRUE THEN RAISE EXCEPTION 'fixed bonus custody mismatch' USING ERRCODE='FUB00'; END IF;
+ END IF;
+ CASE p->>'version'
+ WHEN 'fixed-usdc-bonus-custody-v1' THEN
+  IF (p->>'asset_policy_version'='base-native-usdc-fixed-bonus-v1' AND (p->>'funded_cap_atomic')::NUMERIC>0
+   AND (p->>'maximum_budget_count')::BIGINT BETWEEN 1 AND 10000 AND (p->>'minimum_confirmations')::BIGINT>0
+   AND (p->>'maximum_observation_age_ms')::BIGINT>0 AND (p->>'valid_until_ms')::BIGINT>(p->>'valid_from_ms')::BIGINT) IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus policy' USING ERRCODE='FUB00'; END IF;
+ WHEN 'fixed-usdc-bonus-solvency-v1' THEN
+  IF (p->>'block_hash'~'^0x[a-f0-9]{64}$' AND jsonb_typeof(p->'block_hash')='string'
+   AND (p->>'head_block_number')::NUMERIC>=(p->>'block_number')::NUMERIC AND (p->>'block_timestamp_ms')::BIGINT<=(p->>'observed_at_ms')::BIGINT) IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus observation' USING ERRCODE='FUB00'; END IF;
+ WHEN 'fixed-usdc-bonus-budget-v1' THEN
+  IF ((p->>'audio_revision')::BIGINT>0 AND (p->>'maximum_accounts')::BIGINT>0 AND (p->>'amount_per_account_atomic')::NUMERIC>0
+   AND (p->>'maximum_accounts')::NUMERIC*(p->>'amount_per_account_atomic')::NUMERIC<115792089237316195423570985008687907853269984665640564039457584007913129639936
+   AND (p->>'ends_at_ms')::BIGINT>(p->>'starts_at_ms')::BIGINT) IS NOT TRUE THEN RAISE EXCEPTION 'invalid fixed bonus budget' USING ERRCODE='FUB00'; END IF;
+ END CASE;
+ RETURN (SELECT jsonb_agg(p->field ORDER BY position) FROM unnest(keys) WITH ORDINALITY AS ordered(field,position));
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='fixed_usdc_bonus_preimage_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION freeze_reward_leg_qualification_terms() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -14097,6 +14260,29 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_fixed_usdc_bonus_history_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF TG_TABLE_NAME='fixed_usdc_bonus_custodies_v1' AND TG_OP='UPDATE' THEN
+  IF (to_jsonb(NEW)-'held')=(to_jsonb(OLD)-'held') AND (NOT OLD.held OR NEW.held) THEN RETURN NEW; END IF;
+ END IF;
+ RAISE EXCEPTION 'fixed bonus history is immutable' USING ERRCODE='FUB01';
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_fixed_usdc_bonus_history_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_guest_credential_insert_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -25688,6 +25874,52 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='note_learner_audio_multipart_id_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_upload text, p_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION observe_fixed_usdc_bonus_solvency_v1(p_observation jsonb, p_hash text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE preimage JSONB; custody fixed_usdc_bonus_custodies_v1; prior fixed_usdc_bonus_observations_v1; latest fixed_usdc_bonus_observations_v1; at_ms BIGINT; enough BOOLEAN; result JSONB;
+BEGIN
+ preimage:=fixed_usdc_bonus_preimage_v1(p_observation);
+ IF p_observation->>'version'<>'fixed-usdc-bonus-solvency-v1' OR p_hash IS DISTINCT FROM encode(sha256(convert_to(canonical_reward_funding_array_v2(preimage),'UTF8')),'hex') THEN RAISE EXCEPTION 'fixed bonus observation hash mismatch' USING ERRCODE='FUB00'; END IF;
+ SELECT * INTO custody FROM fixed_usdc_bonus_custodies_v1 WHERE custody_id=p_observation->>'custody_id' FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'fixed bonus custody unavailable' USING ERRCODE='FUB03'; END IF;
+ SELECT * INTO prior FROM fixed_usdc_bonus_observations_v1 WHERE custody_id=custody.custody_id AND observation_id=p_observation->>'observation_id';
+ IF FOUND THEN
+  IF prior.observation_hash IS DISTINCT FROM p_hash OR prior.observation_document IS DISTINCT FROM p_observation THEN RAISE EXCEPTION 'fixed bonus observation conflict' USING ERRCODE='FUB01'; END IF;
+  RETURN prior.receipt;
+ END IF;
+ at_ms:=floor(extract(epoch FROM clock_timestamp())*1000)::BIGINT;
+ IF p_observation->>'safe_address' IS DISTINCT FROM custody.safe_address OR p_observation->>'safe_binding_hash' IS DISTINCT FROM custody.policy_document->>'safe_binding_hash'
+  OR (p_observation->>'observed_at_ms')::BIGINT>at_ms OR at_ms-(p_observation->>'observed_at_ms')::BIGINT>custody.maximum_observation_age_ms
+  OR (p_observation->>'head_block_number')::NUMERIC-(p_observation->>'block_number')::NUMERIC+1<custody.minimum_confirmations THEN RAISE EXCEPTION 'fixed bonus observation unavailable' USING ERRCODE='FUB03'; END IF;
+ SELECT * INTO latest FROM fixed_usdc_bonus_observations_v1 WHERE custody_id=custody.custody_id ORDER BY observation_sequence DESC LIMIT 1;
+ IF FOUND AND ((p_observation->>'block_number')::NUMERIC<latest.block_number OR (p_observation->>'observed_at_ms')::BIGINT<latest.observed_at_ms) THEN RAISE EXCEPTION 'fixed bonus observation regressed' USING ERRCODE='FUB03'; END IF;
+ IF EXISTS(SELECT 1 FROM fixed_usdc_bonus_observations_v1 WHERE custody_id=custody.custody_id AND block_number=(p_observation->>'block_number')::NUMERIC AND block_hash<>p_observation->>'block_hash') THEN
+  -- Persist the negative result, rather than rolling back the hold and leaving
+  -- a previously positive observation available for another allocation.
+  UPDATE fixed_usdc_bonus_custodies_v1 SET held=TRUE WHERE custody_id=custody.custody_id;
+  custody.held:=TRUE;
+ END IF;
+ enough:=NOT custody.held AND (p_observation->>'balance_atomic')::NUMERIC>=custody.funded_cap_atomic;
+ result:=jsonb_build_object('version','fixed-usdc-bonus-observation-receipt-v1','custody_id',custody.custody_id,'observation_id',p_observation->>'observation_id','observation_hash',p_hash,'solvent',enough,'recorded_at_ms',at_ms);
+ INSERT INTO fixed_usdc_bonus_observations_v1(custody_id,observation_id,observation_document,observation_hash,block_number,block_hash,observed_at_ms,balance_atomic,solvent,receipt)
+ VALUES(custody.custody_id,p_observation->>'observation_id',p_observation,p_hash,(p_observation->>'block_number')::NUMERIC,p_observation->>'block_hash',(p_observation->>'observed_at_ms')::BIGINT,(p_observation->>'balance_atomic')::NUMERIC,enough,result);
+ RETURN result;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='observe_fixed_usdc_bonus_solvency_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_observation jsonb, p_hash text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -48016,6 +48248,83 @@ CREATE TABLE evidence_receipts (
     CONSTRAINT evidence_receipts_subject_binding_shape_check CHECK ((((subject_key_id IS NULL) AND (subject_binding_event_id IS NULL) AND (subject_binding_epoch IS NULL)) OR ((subject_key_id IS NOT NULL) AND (subject_binding_event_id IS NOT NULL) AND (subject_binding_epoch IS NOT NULL))))
 );
 
+CREATE TABLE fixed_usdc_bonus_budgets_v1 (
+    budget_id text NOT NULL,
+    custody_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    community_id text NOT NULL,
+    song_post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    command_document jsonb NOT NULL,
+    request_hash text NOT NULL,
+    amount_per_account_atomic reward_funding_atomic_v2 NOT NULL,
+    maximum_accounts bigint NOT NULL,
+    total_atomic reward_funding_atomic_v2 NOT NULL,
+    funded_at_ms bigint NOT NULL,
+    participation_starts_at_ms bigint NOT NULL,
+    ends_at_ms bigint NOT NULL,
+    receipt jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_amount_per_account_atomic_check CHECK (((amount_per_account_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_check CHECK (((total_atomic)::numeric = ((amount_per_account_atomic)::numeric * (maximum_accounts)::numeric))),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_check1 CHECK ((participation_starts_at_ms >= funded_at_ms)),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_check2 CHECK ((ends_at_ms > participation_starts_at_ms)),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_funded_at_ms_check CHECK ((funded_at_ms >= 0)),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_maximum_accounts_check CHECK (((maximum_accounts >= 1) AND (maximum_accounts <= '9007199254740991'::bigint))),
+    CONSTRAINT fixed_usdc_bonus_budgets_v1_request_hash_check CHECK ((request_hash ~ '^[a-f0-9]{64}$'::text))
+);
+
+CREATE TABLE fixed_usdc_bonus_custodies_v1 (
+    custody_id text NOT NULL,
+    safe_address text NOT NULL,
+    policy_document jsonb NOT NULL,
+    policy_hash text NOT NULL,
+    funded_cap_atomic reward_funding_atomic_v2 NOT NULL,
+    maximum_budget_count integer NOT NULL,
+    maximum_observation_age_ms bigint NOT NULL,
+    minimum_confirmations bigint NOT NULL,
+    valid_from_ms bigint NOT NULL,
+    valid_until_ms bigint NOT NULL,
+    held boolean DEFAULT false NOT NULL,
+    receipt jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_check CHECK ((valid_until_ms > valid_from_ms)),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_funded_cap_atomic_check CHECK (((funded_cap_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_maximum_budget_count_check CHECK (((maximum_budget_count >= 1) AND (maximum_budget_count <= 10000))),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_maximum_observation_age_ms_check CHECK ((maximum_observation_age_ms > 0)),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_minimum_confirmations_check CHECK ((minimum_confirmations > 0)),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_policy_hash_check CHECK ((policy_hash ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT fixed_usdc_bonus_custodies_v1_valid_from_ms_check CHECK ((valid_from_ms >= 0))
+);
+
+CREATE TABLE fixed_usdc_bonus_observations_v1 (
+    custody_id text NOT NULL,
+    observation_id text NOT NULL,
+    observation_sequence bigint NOT NULL,
+    observation_document jsonb NOT NULL,
+    observation_hash text NOT NULL,
+    block_number reward_funding_atomic_v2 NOT NULL,
+    block_hash text NOT NULL,
+    observed_at_ms bigint NOT NULL,
+    balance_atomic reward_funding_atomic_v2 NOT NULL,
+    solvent boolean NOT NULL,
+    receipt jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT fixed_usdc_bonus_observations_v1_block_hash_check CHECK ((block_hash ~ '^0x[a-f0-9]{64}$'::text)),
+    CONSTRAINT fixed_usdc_bonus_observations_v1_observation_hash_check CHECK ((observation_hash ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT fixed_usdc_bonus_observations_v1_observed_at_ms_check CHECK ((observed_at_ms >= 0))
+);
+
+ALTER TABLE fixed_usdc_bonus_observations_v1 ALTER COLUMN observation_sequence ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME fixed_usdc_bonus_observations_v1_observation_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 CREATE TABLE guest_attachment_intents (
     intent_id text NOT NULL,
     owner_id text NOT NULL,
@@ -56770,6 +57079,24 @@ ALTER TABLE ONLY evidence_receipts
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_pkey PRIMARY KEY (evidence_receipt_id);
 
+ALTER TABLE ONLY fixed_usdc_bonus_budgets_v1
+    ADD CONSTRAINT fixed_usdc_bonus_budgets_v1_custody_id_idempotency_key_key UNIQUE (custody_id, idempotency_key);
+
+ALTER TABLE ONLY fixed_usdc_bonus_budgets_v1
+    ADD CONSTRAINT fixed_usdc_bonus_budgets_v1_pkey PRIMARY KEY (budget_id);
+
+ALTER TABLE ONLY fixed_usdc_bonus_custodies_v1
+    ADD CONSTRAINT fixed_usdc_bonus_custodies_v1_pkey PRIMARY KEY (custody_id);
+
+ALTER TABLE ONLY fixed_usdc_bonus_custodies_v1
+    ADD CONSTRAINT fixed_usdc_bonus_custodies_v1_safe_address_key UNIQUE (safe_address);
+
+ALTER TABLE ONLY fixed_usdc_bonus_observations_v1
+    ADD CONSTRAINT fixed_usdc_bonus_observations_v1_observation_sequence_key UNIQUE (observation_sequence);
+
+ALTER TABLE ONLY fixed_usdc_bonus_observations_v1
+    ADD CONSTRAINT fixed_usdc_bonus_observations_v1_pkey PRIMARY KEY (custody_id, observation_id);
+
 ALTER TABLE ONLY guest_attachment_intents
     ADD CONSTRAINT guest_attachment_intents_intent_id_owner_id_origin_key UNIQUE (intent_id, owner_id, origin);
 
@@ -59275,6 +59602,14 @@ CREATE INDEX evidence_receipts_session_observed_idx ON evidence_receipts USING b
 
 CREATE INDEX evidence_receipts_user_observed_idx ON evidence_receipts USING btree (user_id, observed_at DESC, evidence_receipt_id);
 
+CREATE INDEX fixed_usdc_bonus_budgets_custody_idx ON fixed_usdc_bonus_budgets_v1 USING btree (custody_id);
+
+CREATE INDEX fixed_usdc_bonus_budgets_song_idx ON fixed_usdc_bonus_budgets_v1 USING btree (community_id, song_post_id);
+
+CREATE INDEX fixed_usdc_bonus_observations_block_idx ON fixed_usdc_bonus_observations_v1 USING btree (custody_id, block_number, block_hash);
+
+CREATE INDEX fixed_usdc_bonus_observations_latest_idx ON fixed_usdc_bonus_observations_v1 USING btree (custody_id, observation_sequence DESC);
+
 CREATE INDEX guest_credential_owner_proof_lookup ON guest_credentials USING btree (owner_id, origin, state);
 
 CREATE INDEX guest_empty_alias_target_idx ON guest_empty_owner_aliases USING btree (canonical_owner_id);
@@ -60246,6 +60581,12 @@ CREATE TRIGGER evidence_receipts_validate_metadata BEFORE INSERT OR UPDATE ON ev
 CREATE TRIGGER fallback_cutoff_activity_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_fallback_cutoff_activity_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER fallback_cutoff_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_fallback_cutoff_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER fixed_usdc_bonus_budgets_history_guard BEFORE DELETE OR UPDATE ON fixed_usdc_bonus_budgets_v1 FOR EACH ROW EXECUTE FUNCTION guard_fixed_usdc_bonus_history_v1();
+
+CREATE TRIGGER fixed_usdc_bonus_custodies_history_guard BEFORE DELETE OR UPDATE ON fixed_usdc_bonus_custodies_v1 FOR EACH ROW EXECUTE FUNCTION guard_fixed_usdc_bonus_history_v1();
+
+CREATE TRIGGER fixed_usdc_bonus_observations_history_guard BEFORE DELETE OR UPDATE ON fixed_usdc_bonus_observations_v1 FOR EACH ROW EXECUTE FUNCTION guard_fixed_usdc_bonus_history_v1();
 
 CREATE CONSTRAINT TRIGGER guest_alias_state_closure AFTER INSERT ON guest_empty_owner_aliases DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_guest_alias_state_v1();
 
@@ -62601,6 +62942,15 @@ ALTER TABLE ONLY evidence_receipts
 
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY fixed_usdc_bonus_budgets_v1
+    ADD CONSTRAINT fixed_usdc_bonus_budgets_v1_community_id_song_post_id_fkey FOREIGN KEY (community_id, song_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY fixed_usdc_bonus_budgets_v1
+    ADD CONSTRAINT fixed_usdc_bonus_budgets_v1_custody_id_fkey FOREIGN KEY (custody_id) REFERENCES fixed_usdc_bonus_custodies_v1(custody_id);
+
+ALTER TABLE ONLY fixed_usdc_bonus_observations_v1
+    ADD CONSTRAINT fixed_usdc_bonus_observations_v1_custody_id_fkey FOREIGN KEY (custody_id) REFERENCES fixed_usdc_bonus_custodies_v1(custody_id);
 
 ALTER TABLE ONLY guest_attachment_intents
     ADD CONSTRAINT guest_attachment_intents_credential_source_owner_id_origin_fkey FOREIGN KEY (credential_source_owner_id, origin, credential_id) REFERENCES guest_credentials(owner_id, origin, credential_id);
