@@ -39,9 +39,14 @@ const expected = [
     "response GET /public/posts/by-slug: property added to closed response: content.video.dance_credit",
   ],
 ] as const;
-const policy = (await Bun.file(
-  new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
-).json()) as BreakingChangePolicy;
+// The declaration was consumed when PR625 landed as 3e0e0790 and the active policy
+// retired it. This proof keeps checking the declaration exactly as it landed.
+const landed = "3e0e079027a616da5ec718a7feef9d8faec5e5fe";
+const policy = JSON.parse(
+  execFileSync("git", ["show", `${landed}:packages/contracts/breaking-change-waivers.json`], {
+    encoding: "utf8",
+  }),
+) as BreakingChangePolicy;
 const rawBase = execFileSync(
   "git",
   ["show", `${baseline}:apps/http-worker/src/generated/openapi.json`],
