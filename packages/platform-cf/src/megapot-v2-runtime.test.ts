@@ -15,6 +15,7 @@ import { makeCustodySolvencyCoordinator } from "./custody-solvency-coordinator.t
 import { encodeMegapotV2ClaimRevert } from "./megapot-v2.ts";
 import {
   findMegapotV2ClaimRevert,
+  type MegapotV2RpcClient,
   type MegapotV2RpcClientOptions,
   MegapotV2RpcFailed,
   makeMegapotV2RpcClient,
@@ -467,6 +468,53 @@ describe("Megapot v2 Worker runtime adapters", () => {
       stage: "head",
       rpcReason: "unavailable",
       message: "observation_invalid:head:unavailable",
+    });
+  });
+
+  test("observes Base Safe custody only in a Safe pilot instance, production under its switch", async () => {
+    const sepolia = attestation();
+    const production = { ...sepolia, chainId: 8453, environment: "production" as const };
+    // Every RPC read fails, so an admitted observation stops at deployment attestation.
+    const unreachable = new Proxy(
+      {},
+      {
+        get: () => async () => {
+          throw new Error("unreachable");
+        },
+      },
+    ) as MegapotV2RpcClient;
+    const observe = (
+      deployment: typeof sepolia,
+      safePilot?: { readonly productionEnabled: boolean },
+    ) => {
+      const store: CustodySolvencyStore = {
+        listTokenAddresses: () => Effect.succeed([deployment.usdcAddress]),
+        loadCandidate: () =>
+          Effect.succeed({ ...deployment, tokenAddress: deployment.usdcAddress }),
+        findObservation: () => Effect.succeed(null),
+        record: () => Effect.die("unexpected solvency record"),
+      };
+      return Effect.runPromise(
+        makeCustodySolvencyCoordinator({
+          store,
+          rpc: unreachable,
+          requiredConfirmations: 3,
+          ...(safePilot === undefined ? {} : { safePilot }),
+        }).observe(deployment.attestationId),
+      );
+    };
+    for (const [deployment, safePilot] of [
+      [production, undefined],
+      [production, { productionEnabled: false }],
+      [sepolia, { productionEnabled: true }],
+    ] as const) {
+      await expect(observe(deployment, safePilot)).rejects.toMatchObject({
+        reason: "production_disabled",
+      });
+    }
+    await expect(observe(production, { productionEnabled: true })).rejects.toMatchObject({
+      reason: "observation_invalid",
+      stage: "deployment_attestation",
     });
   });
 

@@ -185,6 +185,43 @@ describe("Megapot drawing observer", () => {
     expect(changedTickets.observationId).not.toBe(baseline.observationId);
   });
 
+  test("admits Base only in a Safe pilot instance, and production only under its switch", async () => {
+    const observe = (
+      authority: MegapotDrawingObserverCandidate,
+      safePilot?: { readonly productionEnabled: boolean },
+    ) =>
+      Effect.runPromise(
+        makeMegapotDrawingObserver({
+          store: {
+            loadCandidate: () => Effect.succeed(authority),
+            recordAndOpen: (observation) =>
+              Effect.succeed({ ...observation, openedPoolLegIds: [] }),
+          },
+          rpc: rpc(authority),
+          observationTtlMs: 60_000,
+          now: () => Date.parse("2026-04-29T00:01:00.000Z"),
+          ...(safePilot === undefined ? {} : { safePilot }),
+        }).observe(authority.attestationId),
+      );
+    const base = { ...candidate(), chainId: 8453 };
+    const production = { ...base, environment: "production" } as const;
+    for (const [authority, safePilot] of [
+      [base, undefined],
+      [production, { productionEnabled: false }],
+      [candidate(), { productionEnabled: true }],
+    ] as const) {
+      await expect(observe(authority, safePilot)).rejects.toMatchObject({
+        reason: "production-disabled",
+      });
+    }
+    await expect(observe(base, { productionEnabled: false })).resolves.toMatchObject({
+      drawingId: 101n,
+    });
+    await expect(observe(production, { productionEnabled: true })).resolves.toMatchObject({
+      drawingId: 101n,
+    });
+  });
+
   test("rejects an RPC configured for a different deployment", async () => {
     const authority = candidate();
     const mismatched = { ...authority, jackpotAddress: address("f") };

@@ -77,6 +77,12 @@ export function makeCustodySolvencyCoordinator(input: {
   readonly rpc: MegapotV2RpcClient;
   readonly requiredConfirmations: number;
   readonly ttlSeconds?: number;
+  /**
+   * Set only by the Safe pilot cycle: that instance observes the Safe's custody on
+   * Base, with production behind the pilot's own switch. Every other instance is
+   * limited to Base Sepolia outside production.
+   */
+  readonly safePilot?: { readonly productionEnabled: boolean };
   readonly now?: () => number;
 }): CustodySolvencyCoordinator {
   const ttlSeconds = input.ttlSeconds ?? 900;
@@ -104,9 +110,12 @@ export function makeCustodySolvencyCoordinator(input: {
     observe: Effect.fn("CustodySolvencyCoordinator.observe")(
       function* (attestationId, tokenAddress) {
         const candidate = yield* input.store.loadCandidate(attestationId, tokenAddress);
-        if (candidate.environment === "production" || candidate.chainId !== 84_532) {
-          return yield* failed("production_disabled");
-        }
+        const admitted =
+          input.safePilot === undefined
+            ? candidate.environment !== "production" && candidate.chainId === 84_532
+            : candidate.chainId === 8453 &&
+              (candidate.environment !== "production" || input.safePilot.productionEnabled);
+        if (!admitted) return yield* failed("production_disabled");
         const attested = yield* rpcEffect("deployment_attestation", () =>
           input.rpc.attestDeployment(),
         );
