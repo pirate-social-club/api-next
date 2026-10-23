@@ -163,3 +163,23 @@ nor a passing local policy gate is independent acceptance or a deployment.
 October22 separately reviewed current-baseline candidate. The notification transition has not landed. Published main50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63 preserves the original d032 notification operation byte-for-byte. Recomputing the complete candidate diff against each baseline produces exactly the same six recorded diagnostics, with sorted-list SHA2569edf24d000be876fa6f59bc393b4788b5f7062e880981e587c7e671d8fabc8b0. The prospective declaration binds the actual current main50f50 baseline; it introduces no additional expected violation and changes no schema, detector, client runtime or gate. The historical d032 declaration remains in Git history and admits no later transition.
 
 Current paired source is genuine130, including the same notification union and the participant addition, with artifactSHA25634d756f7c9f81f894e9317ce5f88c8b66729e0e1d838b0eabfdab14200f98051. Published main129 and the distinct earlier Funding129 are separately preserved; the canonical main129 namespace client is not the Dance consumer. Exact postimage and current-baseline comparison are independently reviewed before this metadata repair is consumed. Old-tab refusal/reload, participant privacy, complete required checks and the whole-PR/rehearsal/release gates remain. No source checkpoint lifts deployment, Rewards, policy-money or Mainnet holds. Retire this pending transition entry after normal PR625 integration.
+
+## 2026-10-23 Dance reference credit deprecation
+
+Status: candidate declaration for the current draft, pending the workspace_owner's whole-PR audit. Spec021section15.8 requires the independent public Post to carry Dance credit without a verdict, grade or private-result/evidence link. Migration0306 binds the captured public choreography revision and reference video to the ordinary input; genuine client133 admits exactly those three public fields. This declaration follows Foundationsection5's explicit-deprecation route. It is not a detector correction: adding an optional field to a closed response breaks older decoders.
+
+The exact baseline is50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63. Seven entries each admit one complete property-addition diagnostic for dance_credit. They admit no other field, response removal, status/error/request change, access/age/privacy/lifecycle change, operation or future baseline. The existing notification transition stays separate and unchanged. The checker implementation and its exact-set/obsolete-baseline safeguards remain unchanged. Tests use the actual baseline Git artifact and candidate generated document, and reject an extra operation removal or another baseline.
+
+| Operation | Exact closed-response property |
+| --- | --- |
+| GET /feed/home/public | items.items.post.video.dance_credit |
+| GET /feed/home | items.items.post.video.dance_credit |
+| GET /posts/{postId} | video.dance_credit |
+| GET /public-communities/{communityRef}/feed | items.items.video.dance_credit |
+| GET /public/personas/{personaId}/activity | items.items.content.video.dance_credit |
+| GET /public/posts/by-id/{postId}/canonical-route | content.video.dance_credit |
+| GET /public/posts/by-slug | content.video.dance_credit |
+
+The field contains only choreography_id, revision and reference_video_post_id. It does not attest qualification or expose account, owner verdict, score, recording identity, private receipt, private href or provider evidence. Ordinary public Post authorization and lifecycle gates remain authoritative.
+
+The immutable133archive SHA256 is4fb8f710fb40f6d51bdea6becb6ce96a28198a2f98eb7ccd3b01ae09c8da0676, OpenAPI SHA256545062916e74cdf984aa27393b11c61c7d89c1ff67cec88bed7db6c64cf05306. Solidbf56a517 consumes that artifact and protects the exact old/new runtime-table transition. No archive is repacked. Older open tabs must reload onto the paired consumer before Dance activation; otherwise their closed decoders refuse credited video reads or feeds. The coordinated release/activation rehearsal must prove that handoff, rather than assuming a source declaration updates a serving browser. This adds no deployment, admission, credential or financial authority. Remove the seven entries after normal PR625 integration; they are not permanent exceptions.

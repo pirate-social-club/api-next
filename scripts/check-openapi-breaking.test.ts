@@ -595,6 +595,19 @@ describe("OpenAPI clean-break allowance", () => {
         baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
         kind: "deprecation",
       },
+      ...[
+        "get_feedHomePublic",
+        "get_feedHome",
+        "get_postsPostId",
+        "get_publicCommunitiesCommunityRefFeed",
+        "get_publicPersonasPersonaIdActivity",
+        "get_publicPostsByIdPostIdCanonicalRoute",
+        "get_publicPostsBySlug",
+      ].map((operationId) => ({
+        operationId,
+        baselineSha: "50f50bfacac8e49e7d75e0cec3c1ff97a4ac9a63",
+        kind: "deprecation",
+      })),
     ]);
     expect(repositoryPolicy.breakingChangeWaivers[0]?.expectedViolations).toHaveLength(6);
     expect(() =>
