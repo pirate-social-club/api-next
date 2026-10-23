@@ -69,3 +69,12 @@ reconciliation, participant pending/paid views and Base Palm-gated Send.
 There is no separate participant Claim. The existing production lottery
 refusal stays in place. None of those missing capabilities is represented as
 complete by a custody or budget receipt.
+
+The bonus PR is stacked on Funding36c28b49 and changes no public contract.
+Its current breaking-change policy is empty: the inherited eight Dance
+declarations apply only to the parent PR's50f50bfa baseline and would be stale
+against this branch's actual base. Their exact original bytes remain in a
+historical test fixture, with the complete addition/removal and extra-break
+refusal tests retained. This does not retire the parent PR's declarations or
+approve that separate transition. The historical0306-to0307 native rehearsal
+also pins its terminal at0307 rather than silently applying later migrations.
