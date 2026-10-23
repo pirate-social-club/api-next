@@ -240,7 +240,7 @@ suite("owner-executed Safe payouts", () => {
       `INSERT INTO reward_asset_whitelist (chain_id, token_address, decimals, symbol, asset_kind,
          environment, status, policy_version, activated_at, plain_erc20_verified_at)
        VALUES (8453,$1,6,'USDC','settlement_usdc','production','active','base-usdc-v1',
-         clock_timestamp(),clock_timestamp())`,
+         now(),now())`,
       [USDC],
     );
     await admin.query(
