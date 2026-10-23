@@ -1,7 +1,7 @@
 {
   "breakingChangeWaivers": [
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_meNotifications",
       "expectedViolations": [
         "response GET /me/notifications: enum value added: \"dance_review_result\" at items.items.kind",
@@ -15,7 +15,7 @@
       "reason": "Candidate exact-baseline Spec021section15.11 Dance notification union transition for genuine client130, pending independent source/package/policy review. Existing comment/reply alternative remains byte-exact; genuine127/128 reject pages containing new Dance items. Pair the standalone consumer and reload old tabs before Dance activation. Remove this entry after PR625 normal integration; no permanent or future-baseline allowance."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_feedHomePublic",
       "expectedViolations": [
         "response GET /feed/home/public: property added to closed response: items.items.post.video.dance_credit"
@@ -24,7 +24,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_feedHome",
       "expectedViolations": [
         "response GET /feed/home: property added to closed response: items.items.post.video.dance_credit"
@@ -33,7 +33,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_postsPostId",
       "expectedViolations": [
         "response GET /posts/{postId}: property added to closed response: video.dance_credit"
@@ -42,7 +42,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_publicCommunitiesCommunityRefFeed",
       "expectedViolations": [
         "response GET /public-communities/{communityRef}/feed: property added to closed response: items.items.video.dance_credit"
@@ -51,7 +51,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_publicPersonasPersonaIdActivity",
       "expectedViolations": [
         "response GET /public/personas/{personaId}/activity: property added to closed response: items.items.content.video.dance_credit"
@@ -60,7 +60,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_publicPostsByIdPostIdCanonicalRoute",
       "expectedViolations": [
         "response GET /public/posts/by-id/{postId}/canonical-route: property added to closed response: content.video.dance_credit"
@@ -69,7 +69,7 @@
       "reason": "Candidate exact-baseline Spec021section15.8 public Dance reference-credit transition, declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-dance-reference-credit-deprecation. Genuine133 explicitly admits the closed public choreography/revision/reference-Post association. Pair the standalone133consumer and reload old tabs before Dance activation; old clients reject credited video responses. Pending whole-PR owner audit; no deployment/admission or future-baseline allowance. Remove after PR625 normal integration."
     },
     {
-      "baselineSha": "a54f2b28809d78fb33e840d60e7716d5c6879d10",
+      "baselineSha": "1efaee94d9da600c97d08f61888824e286b14f2d",
       "operationId": "get_publicPostsBySlug",
       "expectedViolations": [
         "response GET /public/posts/by-slug: property added to closed response: content.video.dance_credit"
