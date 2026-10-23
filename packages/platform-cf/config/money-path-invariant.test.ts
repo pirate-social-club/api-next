@@ -226,6 +226,16 @@ const MONEY_PATH_POSTURES = [
     evidenceLimitation:
       "This checks the production declaration is absent, not the live Cloudflare secret inventory or the endpoint's actual chain. Staging chain reads separately verify eth_chainId before balance and receipt use.",
   },
+  {
+    kind: "secret_rpc_url",
+    name: "SAFE_POOL_RPC_URL",
+    posture: "guarded_optional_secret_rpc",
+    productionDeclaration: "forbidden",
+    guard:
+      "The jobs worker reads this endpoint only when SAFE_POOL_PILOT_ENABLED is true, refuses that together with MEGAPOT_REWARDS_ENABLED, and admits a production Safe-custody attestation only when SAFE_POOL_PRODUCTION_ENABLED is also true; the Safe pilot only reads the chain and prepares calls for the owner's Safe",
+    evidenceLimitation:
+      "The absence assertion covers checked-in declarations only and cannot prove that a remotely provisioned Worker secret is absent. Enabling the pilot in production is a separate owner decision that changes this posture. Nothing here validates the endpoint or its network.",
+  },
 ] as const satisfies readonly MoneyPathEntry[];
 
 type WranglerProductionBlock = Readonly<{
