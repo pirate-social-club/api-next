@@ -37,12 +37,15 @@ const USDC = address("3");
 const OWNER = address("9");
 const WALLET_A = address("a");
 const WALLET_B = address("b");
+const WALLET_C = address("c");
+const WALLET_D = address("d");
 const ATTESTATION = "megapot-base-safe-pilot";
 const abi = parseAbi([
   "function execTransaction(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,bytes signatures) payable returns (bool)",
   "event ExecutionSuccess(bytes32 indexed txHash,uint256 payment)",
   "event ExecutionFailure(bytes32 indexed txHash,uint256 payment)",
   "event Transfer(address indexed from,address indexed to,uint256 value)",
+  "function transfer(address to,uint256 amount) returns (bool)",
 ]);
 
 /** A small in-memory Base: owner executions land in blocks the coordinator reads. */
@@ -187,6 +190,7 @@ function fakeChain() {
   return {
     rpc,
     execute,
+    head: () => head,
     mine: (blocks: bigint) => {
       head += blocks;
     },
@@ -288,6 +292,8 @@ suite("owner-executed Safe payouts", () => {
     for (const [ordinal, account, persona, wallet, amount] of [
       [0, "account-a", "persona-a", WALLET_A, 1_110_000],
       [1, "account-b", "persona-b", WALLET_B, 2_220_000],
+      [2, "account-c", "persona-c", WALLET_C, 1_000_000],
+      [3, "account-d", "persona-d", WALLET_D, 1_000_000],
     ] as const) {
       const creditId = `credit-${account}`;
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [account]);
@@ -341,7 +347,8 @@ suite("owner-executed Safe payouts", () => {
   test("prepares, binds and confirms one owner-executed payout exactly once", async () => {
     const payouts = coordinator();
     const prepared = await run(payouts.prepare("credit-account-a"));
-    expect(prepared.preparedBlockNumber).toBe(1_000n);
+    // The first eligible block is the one after the mined head at preparation.
+    expect(prepared.preparedBlockNumber).toBe(1_001n);
     const file = prepared.transactionBuilderFile;
     expect(file).toMatchObject({
       chainId: "8453",
@@ -449,6 +456,45 @@ suite("owner-executed Safe payouts", () => {
     });
   });
 
+  test("an identical transfer mined in the preparation head never binds; the next block does", async () => {
+    const payouts = coordinator();
+    // An unrelated owner transfer with this payout's exact target and calldata, already
+    // mined in the head the payout is prepared at.
+    const identical = {
+      to: USDC,
+      data: encodeFunctionData({
+        abi,
+        functionName: "transfer",
+        args: [WALLET_C as Hex, 1_000_000n],
+      }),
+    } as const;
+    const earlier = chain.execute(identical, "success");
+    const preparationHead = chain.head();
+    const prepared = await run(payouts.prepare("credit-account-c"));
+    expect(prepared.preparedBlockNumber).toBe(preparationHead + 1n);
+    expect(prepared.transactionBuilderFile.transactions).toEqual([
+      expect.objectContaining({ to: identical.to, data: identical.data }),
+    ]);
+    chain.mine(2n);
+    const missed = await run(payouts.scan({ chainId: 8453, safeAddress: SAFE }));
+    expect(missed).toMatchObject({ scanned: true, findings: [] });
+    expect(await run(payouts.settle(prepared.effectId))).toEqual({ kind: "not_bound" });
+    expect(await credit("credit-account-c")).toMatchObject({ state: "payout_pending" });
+
+    const authorized = chain.execute(identical, "success");
+    expect(authorized).not.toBe(earlier);
+    chain.mine(2n);
+    await run(payouts.scan({ chainId: 8453, safeAddress: SAFE }));
+    expect(await run(payouts.settle(prepared.effectId))).toEqual({
+      kind: "confirmed",
+      transactionHash: authorized,
+    });
+    expect(await credit("credit-account-c")).toMatchObject({
+      state: "sent",
+      paid_atomic: "1000000",
+    });
+  });
+
   test("a scan whose snapshot missed a newly prepared call is refused", async () => {
     const store = makeControlPlaneRewardSafeExecutionStore();
     const layer = makeDirectPostgresControlPlaneLayer(scoped);
@@ -500,5 +546,17 @@ suite("owner-executed Safe payouts", () => {
     expect(
       (await admin.query("SELECT reason, outcome FROM reward_safe_unbound_executions")).rows,
     ).toEqual([{ reason: "undecodable", outcome: "success" }]);
+  });
+
+  test("a cursor already beyond the block after the head is the first eligible block", async () => {
+    const payouts = coordinator();
+    const ahead = chain.head() + 25n;
+    await admin.query(
+      `UPDATE reward_safe_execution_cursors SET next_block_number=$1, updated_at=clock_timestamp()
+        WHERE chain_id=8453 AND safe_address=$2`,
+      [ahead.toString(), SAFE],
+    );
+    const prepared = await run(payouts.prepare("credit-account-d"));
+    expect(prepared.preparedBlockNumber).toBe(ahead);
   });
 });

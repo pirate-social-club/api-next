@@ -48,8 +48,9 @@ function same(left: string, right: string): boolean {
  * executions in the same block. Executions of unrelated calls are dropped. An event
  * whose outer transaction did not call the Safe directly cannot be matched by content
  * and is returned as `undecodable`, because it might still have run Pirate's call.
- * A call is only considered from its `notBeforeBlock`, the head when it was prepared:
- * an earlier execution with identical content cannot have been this call.
+ * A call is only considered from its `notBeforeBlock`, the first block after the head
+ * when it was prepared: an execution with identical content mined by then cannot
+ * have been this call.
  */
 export async function findRewardSafeExecutions(input: {
   readonly chainId: number;

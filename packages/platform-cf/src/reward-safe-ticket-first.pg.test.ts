@@ -372,6 +372,7 @@ function fakeChain() {
   return {
     rpc,
     execute,
+    head: () => head,
     mine: (blocks: bigint) => {
       head += blocks;
     },
@@ -453,6 +454,15 @@ suite("ticket-first owner-executed Safe pools", () => {
         [legId],
       )
     ).rows[0];
+  const firstEligibleBlock = async (effectId: string) =>
+    BigInt(
+      (
+        await admin.query<{ block: string }>(
+          "SELECT safe_prepared_block_number::text AS block FROM reward_chain_effects WHERE effect_id=$1",
+          [effectId],
+        )
+      ).rows[0]?.block ?? "-1",
+    );
   const callOf = (file: { readonly transactions: readonly { to: string; data: Hex }[] }) => {
     const call = file.transactions[0];
     if (call === undefined) throw new Error("missing call");
@@ -549,8 +559,11 @@ suite("ticket-first owner-executed Safe pools", () => {
 
   test("one pool runs from its ticket purchase to paying both qualifiers", async () => {
     const purchases = makeRewardSafePurchaseCoordinator(options());
+    const purchaseHead = chain.head();
     const prepared = await run(purchases.prepare("tf-ok"));
     if (prepared.kind !== "prepared") throw new Error(`not prepared: ${prepared.kind}`);
+    // Each Safe call's first eligible block is the one after the mined head.
+    expect(await firstEligibleBlock(prepared.effectId)).toBe(purchaseHead + 1n);
     expect(prepared.drawingId).toBe(212n);
     expect(await drawing("tf-ok")).toMatchObject({
       status: "ticket_pending",
@@ -654,8 +667,10 @@ suite("ticket-first owner-executed Safe pools", () => {
     // attempt is prepared, executed and settled.
     const claims = makeRewardSafeClaimCoordinator(options());
     const subject = { poolLegId: "tf-ok", drawingId: 212n };
+    const claimHead = chain.head();
     const first = await run(claims.prepare(subject));
     if (first.kind !== "prepared") throw new Error(`claim not prepared: ${first.kind}`);
+    expect(await firstEligibleBlock(first.effectId)).toBe(claimHead + 1n);
     expect(await run(claims.prepare(subject))).toMatchObject({
       kind: "prepared",
       effectId: first.effectId,

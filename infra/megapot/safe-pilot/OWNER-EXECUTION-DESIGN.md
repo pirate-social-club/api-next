@@ -39,7 +39,11 @@ Content binding needs unique calldata among unresolved commands. Purchases and
 claims are unique by construction (derived ticket numbers, exact ticket ids).
 A payout is a USDC `transfer(recipient, amount)`, which can repeat, so the
 database refuses a second prepared, confirming or held Safe call with the same
-target and calldata until the first resolves.
+target and calldata until the first resolves. Each call also records its first
+eligible block, the block after the mined head when it was prepared (or the scan
+cursor, if later), and only an execution from that block on can bind to it. An
+identical transfer already mined when the call was prepared cannot have been that
+call.
 
 ## Effect machine mapping
 

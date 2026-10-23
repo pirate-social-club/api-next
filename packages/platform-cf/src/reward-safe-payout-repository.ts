@@ -191,8 +191,11 @@ export function makeControlPlaneRewardSafePayoutStore() {
               });
               if (cursor.rows.length !== 1) return yield* storage("invalid-row");
               const cursorBlock = bigint(cursor.rows[0] as Row, "next_block_number");
+              // The first block in which an execution may be this call: never the mined
+              // head, which already held any identical transfer before this call existed.
+              const firstEligibleBlock = input.headBlockNumber + 1n;
               const preparedBlock =
-                cursorBlock > input.headBlockNumber ? cursorBlock : input.headBlockNumber;
+                cursorBlock > firstEligibleBlock ? cursorBlock : firstEligibleBlock;
               const created = yield* transaction.execute({
                 label: "reward-safe-payout.effect.create",
                 text: `INSERT INTO reward_chain_effects (
