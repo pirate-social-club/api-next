@@ -35,6 +35,13 @@ reads the Safe nonce at the parent block, recomputes the Safe EIP-712 hash and
 then runs the existing business receipt checks. The Safe message hash and the
 outer transaction hash are stored separately.
 
+Settlement acts on a bound execution only once its receipt is at the confirmation
+depth and its block is the canonical block at that height. A receipt from a
+replaced block, whether it reports `ExecutionSuccess` or `ExecutionFailure`, puts
+the effect in `reconciliation_required` with its reservation kept: nothing is spent,
+paid or released, and no new call is prepared for it. When the canonical block
+cannot be read, settlement fails for that cycle and changes nothing.
+
 Content binding needs unique calldata among unresolved commands. Purchases and
 claims are unique by construction (derived ticket numbers, exact ticket ids).
 A payout is a USDC `transfer(recipient, amount)`, which can repeat, so the

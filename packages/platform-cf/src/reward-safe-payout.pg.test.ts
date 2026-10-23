@@ -39,6 +39,9 @@ const WALLET_A = address("a");
 const WALLET_B = address("b");
 const WALLET_C = address("c");
 const WALLET_D = address("d");
+const WALLET_E = address("e");
+const WALLET_F = address("f");
+const WALLET_G = address("1");
 const ATTESTATION = "megapot-base-safe-pilot";
 const abi = parseAbi([
   "function execTransaction(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,bytes signatures) payable returns (bool)",
@@ -56,6 +59,9 @@ function fakeChain() {
   const transactions = new Map<string, MegapotV2Transaction>();
   const receipts = new Map<string, MegapotTransactionReceipt>();
   const executions: MegapotV2SafeExecutionLog[] = [];
+  // The canonical block at each height; an orphaned execution's receipt keeps its own.
+  const canonical = new Map<bigint, string>();
+  let blocksUnreadable = false;
   let sequence = 0;
   const rpc: MegapotV2RpcClient = {
     attestDeployment: async () => {
@@ -86,7 +92,10 @@ function fakeChain() {
     },
     readReceipt: async (transactionHash) => receipts.get(transactionHash) ?? null,
     readHead: async () => ({ blockNumber: head, blockHash: hash("1") }),
-    readBlock: async (blockNumber) => ({ blockNumber, blockHash: hash("1") }),
+    readBlock: async (blockNumber) => {
+      if (blocksUnreadable) throw new Error("block unavailable");
+      return { blockNumber, blockHash: canonical.get(blockNumber) ?? hash("1") };
+    },
     readTransaction: async (transactionHash) => transactions.get(transactionHash) ?? null,
     readSafeNonce: async (_safe, blockNumber) => {
       let nonce = 7n;
@@ -107,6 +116,7 @@ function fakeChain() {
     const block = head;
     const transactionHash = `0x${sequence.toString(16).padStart(64, "0")}`;
     const blockHash = hash(sequence % 2 === 0 ? "c" : "d");
+    canonical.set(block, blockHash);
     const safeTxGas = 90_000n;
     const safeTransactionHash = rewardSafeTransactionHash({
       chainId: 8453,
@@ -193,6 +203,13 @@ function fakeChain() {
     head: () => head,
     mine: (blocks: bigint) => {
       head += blocks;
+    },
+    /** A reorganization replaces the block at this height; old receipts still name it. */
+    orphan: (blockNumber: bigint) => {
+      canonical.set(blockNumber, hash("e"));
+    },
+    blocksUnreadable: (value: boolean) => {
+      blocksUnreadable = value;
     },
   };
 }
@@ -294,6 +311,9 @@ suite("owner-executed Safe payouts", () => {
       [1, "account-b", "persona-b", WALLET_B, 2_220_000],
       [2, "account-c", "persona-c", WALLET_C, 1_000_000],
       [3, "account-d", "persona-d", WALLET_D, 1_000_000],
+      [4, "account-e", "persona-e", WALLET_E, 1_000_000],
+      [5, "account-f", "persona-f", WALLET_F, 1_000_000],
+      [6, "account-g", "persona-g", WALLET_G, 1_000_000],
     ] as const) {
       const creditId = `credit-${account}`;
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [account]);
@@ -454,6 +474,87 @@ suite("owner-executed Safe payouts", () => {
       state: "sent",
       paid_atomic: "2220000",
     });
+  });
+
+  for (const [outcome, creditId] of [
+    ["success", "credit-account-e"],
+    ["failure", "credit-account-f"],
+  ] as const) {
+    test(`an orphaned ${outcome} receipt is held and the credit stays owed`, async () => {
+      const payouts = coordinator();
+      const prepared = await run(payouts.prepare(creditId));
+      const transaction = prepared.transactionBuilderFile.transactions[0];
+      if (transaction === undefined) throw new Error("missing call");
+      chain.execute(transaction, outcome);
+      const block = chain.head();
+      chain.mine(2n);
+      await run(payouts.scan({ chainId: 8453, safeAddress: SAFE }));
+      chain.orphan(block);
+      expect(await run(payouts.settle(prepared.effectId))).toEqual({
+        kind: "reconciliation_required",
+      });
+      expect(
+        (
+          await admin.query(
+            `SELECT state, failure_reason, receipt_block_hash, settled_amount_atomic
+               FROM reward_chain_effects WHERE effect_id=$1`,
+            [prepared.effectId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          state: "reconciliation_required",
+          failure_reason: "safe_execution_receipt_not_canonical",
+          receipt_block_hash: null,
+          settled_amount_atomic: null,
+        },
+      ]);
+      // Neither paid nor released: the credit keeps its reservation under reconciliation
+      // and no second call is prepared.
+      expect(await credit(creditId)).toEqual({
+        state: "reconciliation_required",
+        reserved_atomic: "1000000",
+        paid_atomic: "0",
+      });
+      await expect(run(payouts.prepare(creditId))).rejects.toMatchObject({
+        reason: "credit-not-payable",
+      });
+      expect(await run(payouts.settle(prepared.effectId))).toEqual({ kind: "not_bound" });
+    });
+  }
+
+  test("an unreadable canonical block settles, releases and retries nothing", async () => {
+    const payouts = coordinator();
+    const prepared = await run(payouts.prepare("credit-account-g"));
+    const transaction = prepared.transactionBuilderFile.transactions[0];
+    if (transaction === undefined) throw new Error("missing call");
+    chain.execute(transaction, "failure");
+    chain.mine(2n);
+    await run(payouts.scan({ chainId: 8453, safeAddress: SAFE }));
+    chain.blocksUnreadable(true);
+    try {
+      await expect(run(payouts.settle(prepared.effectId))).rejects.toMatchObject({
+        reason: "rpc_unavailable",
+      });
+      expect(
+        (
+          await admin.query("SELECT state FROM reward_chain_effects WHERE effect_id=$1", [
+            prepared.effectId,
+          ])
+        ).rows,
+      ).toEqual([{ state: "confirming" }]);
+      expect(await credit("credit-account-g")).toMatchObject({
+        state: "payout_pending",
+        reserved_atomic: "1000000",
+      });
+      await expect(run(payouts.prepare("credit-account-g"))).rejects.toMatchObject({
+        reason: "credit-not-payable",
+      });
+    } finally {
+      chain.blocksUnreadable(false);
+    }
+    // Once the chain answers, the bound failure releases the credit as usual.
+    expect(await run(payouts.settle(prepared.effectId))).toEqual({ kind: "released" });
   });
 
   test("an identical transfer mined in the preparation head never binds; the next block does", async () => {

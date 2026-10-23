@@ -148,7 +148,8 @@ type RewardSafeBoundExecution = Readonly<{
 /**
  * The receipt-side evidence for one bound Safe execution, once it is deep enough.
  * `invalid` means the outer envelope or outcome no longer matches what the scan
- * recorded; the caller must hold the effect for reconciliation.
+ * recorded, or the receipt is not on the canonical chain; the caller must hold the
+ * effect for reconciliation. An unreadable chain is an error and changes nothing.
  */
 export function readRewardSafeExecution(
   options: RewardSafeRuntimeOptions,
@@ -182,6 +183,12 @@ export function readRewardSafeExecution(
     }
     const depth = head.blockNumber - receipt.blockNumber + 1n;
     if (depth < BigInt(options.requiredConfirmations)) return { kind: "pending" as const };
+    // A provider can still serve the receipt of an orphaned block. Before either outcome
+    // settles anything, its block must be the canonical block at that height.
+    const block = yield* rpc(() => options.rpc.readBlock(receipt.blockNumber));
+    if (block.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+      return { kind: "invalid" as const, reason: "safe_execution_receipt_not_canonical" };
+    }
     const receiptHash = yield* rpc(() => sha256Hex(toBytes(canonicalReceipt(receipt))));
     const outer: RewardSafeOuterTransaction = {
       chainId: transaction.chainId ?? receipt.chainId,

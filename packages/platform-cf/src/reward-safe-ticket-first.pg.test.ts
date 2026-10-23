@@ -100,6 +100,8 @@ function fakeChain() {
   const transactions = new Map<string, MegapotV2Transaction>();
   const receipts = new Map<string, MegapotTransactionReceipt>();
   const executions: MegapotV2SafeExecutionLog[] = [];
+  // The canonical block at each height; an orphaned execution's receipt keeps its own.
+  const canonical = new Map<bigint, string>();
   const unused = async (): Promise<never> => {
     throw new Error("unused");
   };
@@ -145,7 +147,10 @@ function fakeChain() {
     },
     readReceipt: async (transactionHash) => receipts.get(transactionHash) ?? null,
     readHead: async () => ({ blockNumber: head, blockHash: hash("1") }),
-    readBlock: async (blockNumber) => ({ blockNumber, blockHash: hash("1") }),
+    readBlock: async (blockNumber) => ({
+      blockNumber,
+      blockHash: canonical.get(blockNumber) ?? hash("1"),
+    }),
     readTransaction: async (transactionHash) => transactions.get(transactionHash) ?? null,
     readSafeNonce: async (_safe, blockNumber) => {
       let nonce = 3n;
@@ -166,6 +171,7 @@ function fakeChain() {
     const block = head;
     const transactionHash = `0x${sequence.toString(16).padStart(64, "0")}`;
     const blockHash = hash(sequence % 2 === 0 ? "c" : "d");
+    canonical.set(block, blockHash);
     const safeTxGas = 120_000n;
     const safeTransactionHash = rewardSafeTransactionHash({
       chainId: 8453,
@@ -376,6 +382,10 @@ function fakeChain() {
     mine: (blocks: bigint) => {
       head += blocks;
     },
+    /** A reorganization replaces the block at this height; old receipts still name it. */
+    orphan: (blockNumber: bigint) => {
+      canonical.set(blockNumber, hash("e"));
+    },
     settle: (ticketTier: bigint) => {
       currentDrawingId = 213n;
       tier = ticketTier;
@@ -469,6 +479,34 @@ suite("ticket-first owner-executed Safe pools", () => {
     return call;
   };
 
+  /** An active ticket-first leg with its own offer, funded for ten tickets. */
+  const seedLeg = async (legId: string) => {
+    await admin.query(
+      `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
+       created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
+       reward_policy_version_id, activated_at)
+     VALUES ($2,'community-tf',$3,1,'account-owner','active',
+       clock_timestamp()-interval '1 day', clock_timestamp()+interval '30 days','{}'::jsonb,
+       $1,'policy-tf',clock_timestamp())`,
+      ["d".repeat(64), `offer-${legId}`, `post-${legId}`],
+    );
+    await admin.query(
+      `INSERT INTO song_reward_offer_legs (leg_id, offer_id, kind, status, funder_account_id,
+         refund_policy, leg_terms_hash, participation_starts_at, chain_id, token_address,
+         token_decimals, tickets_per_drawing, max_ticket_price_atomic, entry_cutoff_seconds,
+         beneficiary_algorithm_version, ticket_selection_version, attestation_id,
+         participation_starts_drawing_id, eligible_activities, min_score_bps,
+         empty_pool_policy, funding_source, funded_atomic, purchase_order, legal_activation_gate,
+         activated_at)
+       VALUES ($1,$6,'megapot_pool','active','account-owner',
+         'refund_to_funders_pro_rata',$2,clock_timestamp()-interval '1 day',8453,$3,6,1,
+         $4,300,'equal_v1','keccak_packed_v1',$5,1,ARRAY['study','karaoke'],7000,
+         'no_purchase','leg_budget',10000000,'ticket_first_v1','production_approved',
+         clock_timestamp())`,
+      [legId, hash("3"), USDC, PRICE.toString(), ATTESTATION, `offer-${legId}`],
+    );
+  };
+
   beforeAll(async () => {
     await admin.connect();
     await admin.query(`CREATE SCHEMA "${schema}"`);
@@ -524,30 +562,7 @@ suite("ticket-first owner-executed Safe pools", () => {
       [ATTESTATION, PRICE.toString(), hash("b"), "c".repeat(64)],
     );
     for (const legId of ["tf-ok", "tf-fail", "tf-late", "tf-wrong", "tf-empty"]) {
-      await admin.query(
-        `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
-         created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
-         reward_policy_version_id, activated_at)
-       VALUES ($2,'community-tf',$3,1,'account-owner','active',
-         clock_timestamp()-interval '1 day', clock_timestamp()+interval '30 days','{}'::jsonb,
-         $1,'policy-tf',clock_timestamp())`,
-        ["d".repeat(64), `offer-${legId}`, `post-${legId}`],
-      );
-      await admin.query(
-        `INSERT INTO song_reward_offer_legs (leg_id, offer_id, kind, status, funder_account_id,
-           refund_policy, leg_terms_hash, participation_starts_at, chain_id, token_address,
-           token_decimals, tickets_per_drawing, max_ticket_price_atomic, entry_cutoff_seconds,
-           beneficiary_algorithm_version, ticket_selection_version, attestation_id,
-           participation_starts_drawing_id, eligible_activities, min_score_bps,
-           empty_pool_policy, funding_source, funded_atomic, purchase_order, legal_activation_gate,
-           activated_at)
-         VALUES ($1,$6,'megapot_pool','active','account-owner',
-           'refund_to_funders_pro_rata',$2,clock_timestamp()-interval '1 day',8453,$3,6,1,
-           $4,300,'equal_v1','keccak_packed_v1',$5,1,ARRAY['study','karaoke'],7000,
-           'no_purchase','leg_budget',10000000,'ticket_first_v1','production_approved',
-           clock_timestamp())`,
-        [legId, hash("3"), USDC, PRICE.toString(), ATTESTATION, `offer-${legId}`],
-      );
+      await seedLeg(legId);
     }
     await admin.query("SET session_replication_role = origin");
   });
@@ -931,6 +946,46 @@ suite("ticket-first owner-executed Safe pools", () => {
       ).rows,
     ).toEqual([{ state: "reconciliation_required" }]);
   });
+
+  for (const outcome of ["success", "failure"] as const) {
+    test(`an orphaned ${outcome} purchase receipt is held with its reservation`, async () => {
+      const legId = `tf-orphan-${outcome}`;
+      // Seeded only now, so its budget is no obligation in the earlier payout cases.
+      await admin.query("SET session_replication_role = replica");
+      await seedLeg(legId);
+      await admin.query("SET session_replication_role = origin");
+      const purchases = makeRewardSafePurchaseCoordinator(options());
+      const prepared = await run(purchases.prepare(legId));
+      if (prepared.kind !== "prepared") throw new Error("not prepared");
+      chain.execute(callOf(prepared.transactionBuilderFile), outcome);
+      const block = chain.head();
+      chain.mine(2n);
+      await scan();
+      chain.orphan(block);
+      expect(await run(purchases.settle(prepared.effectId))).toEqual({
+        kind: "reconciliation_required",
+        reason: "safe_execution_receipt_not_canonical",
+      });
+      expect(await drawing(legId)).toMatchObject({
+        status: "operational_hold",
+        terminal_reason: "safe_execution_receipt_not_canonical",
+        actual: "0",
+      });
+      // Neither spent nor released, and no ticket enters inventory.
+      expect(await leg(legId)).toEqual({ reserved: "1000000", spent: "0" });
+      expect(
+        (
+          await admin.query(
+            `SELECT effect.state, effect.receipt_block_hash,
+                    (SELECT count(*)::int FROM megapot_ticket_inventory ticket
+                      WHERE ticket.purchase_effect_id=effect.effect_id) AS tickets
+               FROM reward_chain_effects effect WHERE effect.effect_id=$1`,
+            [prepared.effectId],
+          )
+        ).rows,
+      ).toEqual([{ state: "reconciliation_required", receipt_block_hash: null, tickets: 0 }]);
+    });
+  }
 
   test("a ticketed drawing with no qualifiers is held, never allocated", async () => {
     const purchases = makeRewardSafePurchaseCoordinator(options());
