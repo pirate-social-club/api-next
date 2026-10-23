@@ -2418,6 +2418,29 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION assign_song_reward_leg_purchase_order() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.kind <> 'megapot_pool' THEN
+    RETURN NEW;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM megapot_deployment_attestations attestation
+      JOIN reward_signer_nonces signer
+        ON signer.chain_id = attestation.chain_id
+       AND signer.signer_address = attestation.custody_address
+     WHERE attestation.attestation_id = NEW.attestation_id
+       AND signer.nonce_authority = 'safe_owner_v1'
+  ) THEN
+    NEW.purchase_order := 'ticket_first_v1';
+  ELSIF NEW.purchase_order <> 'commit_first' THEN
+    RAISE EXCEPTION 'ticket-first pool legs require owner-executed Safe custody';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION attach_moderated_dance_provider_v1(p_upload text, p_token text, p_job text, p_tag text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -61512,6 +61535,8 @@ CREATE TRIGGER song_reward_offer_actions_change_guard BEFORE INSERT OR DELETE OR
 CREATE TRIGGER song_reward_offer_asset_legs_asset_guard BEFORE INSERT OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_asset_bonus_leg_asset();
 
 CREATE TRIGGER song_reward_offer_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_leg();
+
+CREATE TRIGGER song_reward_offer_legs_purchase_order_assign BEFORE INSERT ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION assign_song_reward_leg_purchase_order();
 
 CREATE TRIGGER song_reward_offer_legs_purchase_order_guard BEFORE UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_leg_purchase_order();
 

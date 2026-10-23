@@ -126,6 +126,11 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                         WHERE candidate.attestation_id=leg.attestation_id
                           AND candidate.expires_at > clock_timestamp()
                           AND NOT candidate.drawing_locked
+                          -- A shared-song leg buys only the drawings its terms planned;
+                          -- participation is admitted for no other drawing.
+                          AND (leg.qualification_family_v2 IS DISTINCT FROM 'shared_song'
+                            OR (leg.shared_song_terms_v2->'planned_drawing_ids')
+                                 @> jsonb_build_array(candidate.drawing_id::TEXT))
                         ORDER BY candidate.drawing_id DESC, candidate.observed_at DESC
                         LIMIT 1
                      ) observation ON true

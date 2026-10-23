@@ -790,4 +790,133 @@ suite("ticket-first owner-executed Safe pools", () => {
       frozen_share_count: 0,
     });
   });
+
+  test("a pool leg's purchase order follows its custody", async () => {
+    await admin.query("SET session_replication_role = replica");
+    await admin.query(
+      "INSERT INTO users (user_id) VALUES ('account-owner') ON CONFLICT DO NOTHING",
+    );
+    await admin.query(
+      `INSERT INTO megapot_deployment_attestations (attestation_id, environment, chain_id,
+         jackpot_address, usdc_address, ticket_nft_address, custody_address, referrer_address,
+         source_tag, jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
+         attestation_block_number, attestation_block_hash, abi_version, status, verified_at,
+         retired_at)
+       SELECT 'megapot-base-eoa', environment, chain_id, jackpot_address, usdc_address,
+              ticket_nft_address, $1, referrer_address, source_tag, jackpot_code_hash,
+              usdc_code_hash, ticket_nft_code_hash, attestation_block_number,
+              attestation_block_hash, abi_version, 'retired', verified_at, verified_at
+         FROM megapot_deployment_attestations WHERE attestation_id=$2`,
+      [address("7"), ATTESTATION],
+    );
+    for (const offerId of ["offer-order-safe", "offer-order-eoa", "offer-order-refused"]) {
+      await admin.query(
+        `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
+           created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
+           reward_policy_version_id)
+         VALUES ($1,'community-tf',$1,1,'account-owner','draft',clock_timestamp(),
+           clock_timestamp()+interval '30 days','{}'::jsonb,$2,'policy-tf')`,
+        [offerId, "d".repeat(64)],
+      );
+    }
+    await admin.query("SET session_replication_role = origin");
+    // Only the assignment trigger runs, inside this test's own schema.
+    await admin.query("ALTER TABLE song_reward_offer_legs DISABLE TRIGGER USER");
+    await admin.query(
+      "ALTER TABLE song_reward_offer_legs ENABLE TRIGGER song_reward_offer_legs_purchase_order_assign",
+    );
+    const insertLeg = (legId: string, attestationId: string, purchaseOrder?: string) =>
+      admin.query(
+        `INSERT INTO song_reward_offer_legs (leg_id, offer_id, kind, status, funder_account_id,
+           refund_policy, leg_terms_hash, participation_starts_at, chain_id, token_address,
+           token_decimals, tickets_per_drawing, max_ticket_price_atomic, entry_cutoff_seconds,
+           beneficiary_algorithm_version, ticket_selection_version, attestation_id,
+           participation_starts_drawing_id, eligible_activities, min_score_bps,
+           empty_pool_policy, funding_source${purchaseOrder === undefined ? "" : ", purchase_order"})
+         VALUES ($1,$2,'megapot_pool','draft','account-owner','refund_to_funders_pro_rata',$3,
+           clock_timestamp(),8453,$4,6,1,$5,300,'equal_v1','keccak_packed_v1',$6,1,
+           ARRAY['study','karaoke'],7000,'no_purchase','leg_budget'
+           ${purchaseOrder === undefined ? "" : ",$7"})`,
+        [
+          legId,
+          `offer-${legId}`,
+          hash("3"),
+          USDC,
+          PRICE.toString(),
+          attestationId,
+          ...(purchaseOrder === undefined ? [] : [purchaseOrder]),
+        ],
+      );
+    try {
+      await insertLeg("order-safe", ATTESTATION);
+      await insertLeg("order-eoa", "megapot-base-eoa");
+      await expect(
+        insertLeg("order-refused", "megapot-base-eoa", "ticket_first_v1"),
+      ).rejects.toThrow("ticket-first pool legs require owner-executed Safe custody");
+    } finally {
+      await admin.query("ALTER TABLE song_reward_offer_legs ENABLE TRIGGER USER");
+    }
+    expect(
+      (
+        await admin.query(
+          `SELECT leg_id, purchase_order FROM song_reward_offer_legs
+            WHERE leg_id LIKE 'order-%' ORDER BY leg_id`,
+        )
+      ).rows,
+    ).toEqual([
+      { leg_id: "order-eoa", purchase_order: "commit_first" },
+      { leg_id: "order-safe", purchase_order: "ticket_first_v1" },
+    ]);
+  });
+
+  test("a shared-song leg buys only a drawing its terms planned", async () => {
+    const termsHash = hash("4");
+    await admin.query("SET session_replication_role = replica");
+    // Shared-song legs name Dance, which the baseline leaves reserved.
+    await admin.query(
+      `UPDATE activity_registry SET status='active', producer_version='dance_test',
+              current_policy_version_id='dance-policy-test' WHERE activity_key='dance'`,
+    );
+    await admin.query(
+      `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
+         created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
+         reward_policy_version_id, activated_at)
+       VALUES ('offer-tf-planned','community-tf','post-tf-planned',1,'account-owner','active',
+         clock_timestamp()-interval '1 day', clock_timestamp()+interval '30 days','{}'::jsonb,
+         $1,'policy-tf',clock_timestamp())`,
+      ["d".repeat(64)],
+    );
+    await admin.query(
+      `INSERT INTO song_reward_offer_legs (leg_id, offer_id, kind, status, funder_account_id,
+         refund_policy, leg_terms_hash, participation_starts_at, chain_id, token_address,
+         token_decimals, tickets_per_drawing, max_ticket_price_atomic, entry_cutoff_seconds,
+         beneficiary_algorithm_version, ticket_selection_version, attestation_id,
+         participation_starts_drawing_id, eligible_activities, empty_pool_policy,
+         funding_source, funded_atomic, purchase_order, legal_activation_gate, activated_at,
+         qualification_family_v2, shared_song_terms_v2)
+       VALUES ('tf-planned','offer-tf-planned','megapot_pool','active','account-owner',
+         'refund_to_funders_pro_rata',$1,clock_timestamp()-interval '1 day',8453,$2,6,1,$3,300,
+         'equal_v1','keccak_packed_v1',$4,1,ARRAY['study','karaoke','dance'],'no_purchase',
+         'leg_budget',10000000,'ticket_first_v1','production_approved',clock_timestamp(),
+         'shared_song',jsonb_build_object('version','shared-song-megapot-v2',
+           'terms_hash',substring($1 from 3),'planned_drawing_ids',jsonb_build_array('213')))`,
+      [termsHash, USDC, PRICE.toString(), ATTESTATION],
+    );
+    await admin.query("SET session_replication_role = origin");
+    const purchases = makeRewardSafePurchaseCoordinator(options());
+    expect(await run(purchases.prepare("tf-planned"))).toEqual({ kind: "no_drawing" });
+    await admin.query(
+      `INSERT INTO megapot_drawing_observations (observation_id, attestation_id, chain_id,
+         drawing_id, ticket_price_atomic, drawing_time, ball_max, bonusball_max, drawing_locked,
+         referral_fee_wei, referral_win_share_wei, block_number, block_hash, block_timestamp,
+         confirmations, observed_at, expires_at, raw_state_hash)
+       VALUES ('observation-213',$1,8453,213,$2,clock_timestamp()+interval '3 hours',30,10,false,
+         0,0,995,$3,clock_timestamp(),3,clock_timestamp(),clock_timestamp()+interval '1 hour',$4)`,
+      [ATTESTATION, PRICE.toString(), hash("c"), "d".repeat(64)],
+    );
+    expect(await run(purchases.prepare("tf-planned"))).toMatchObject({
+      kind: "prepared",
+      drawingId: 213n,
+    });
+  });
 });
