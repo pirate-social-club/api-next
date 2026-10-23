@@ -108,6 +108,12 @@ export function rewardSafeTransactionHash(command: RewardSafeCommand): Hex {
   });
 }
 
+export type RewardSafeExecutionEvidence = Readonly<{
+  safeTransactionHash: Hex;
+  transactionHash: Hex;
+  executionLogIndex: number;
+}>;
+
 /**
  * Validate one direct execTransaction envelope, without rewriting receipt parties.
  * The caller must pin Safe code/config, establish finality and separately validate
@@ -117,7 +123,21 @@ export function validateRewardSafeExecution(input: {
   readonly command: RewardSafeCommand;
   readonly transaction: RewardSafeOuterTransaction;
   readonly receipt: MegapotTransactionReceipt;
-}): Readonly<{ safeTransactionHash: Hex; transactionHash: Hex; executionLogIndex: number }> {
+}): RewardSafeExecutionEvidence {
+  const { outcome, ...evidence } = classifyRewardSafeExecution(input);
+  if (outcome !== "success") refuse();
+  return evidence;
+}
+
+/**
+ * Same envelope checks, but also accepts one ExecutionFailure for the command. A failure
+ * spends the Safe nonce without running the inner call, so it is a known non-payment.
+ */
+export function classifyRewardSafeExecution(input: {
+  readonly command: RewardSafeCommand;
+  readonly transaction: RewardSafeOuterTransaction;
+  readonly receipt: MegapotTransactionReceipt;
+}): RewardSafeExecutionEvidence & Readonly<{ outcome: "success" | "failure" }> {
   const { command, transaction, receipt } = input;
   const safeTransactionHash = rewardSafeTransactionHash(command);
   const transactionHash = hash(transaction.hash);
@@ -157,6 +177,7 @@ export function validateRewardSafeExecution(input: {
   }
   const seen = new Set<number>();
   let executionLogIndex: number | undefined;
+  let outcome: "success" | "failure" | undefined;
   for (const log of receipt.logs) {
     address(log.address);
     if (
@@ -181,7 +202,6 @@ export function validateRewardSafeExecution(input: {
       strict: true,
     });
     if (
-      event.eventName !== "ExecutionSuccess" ||
       hash(event.args.txHash) !== safeTransactionHash ||
       event.args.payment !== 0n ||
       executionLogIndex !== undefined
@@ -189,7 +209,8 @@ export function validateRewardSafeExecution(input: {
       refuse();
     }
     executionLogIndex = log.logIndex;
+    outcome = event.eventName === "ExecutionSuccess" ? "success" : "failure";
   }
-  if (executionLogIndex === undefined) refuse();
-  return { safeTransactionHash, transactionHash, executionLogIndex };
+  if (executionLogIndex === undefined || outcome === undefined) refuse();
+  return { outcome, safeTransactionHash, transactionHash, executionLogIndex };
 }

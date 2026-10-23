@@ -8,6 +8,7 @@ import {
 } from "viem";
 import type { MegapotReceiptLog, MegapotTransactionReceipt } from "./megapot-v2.ts";
 import {
+  classifyRewardSafeExecution,
   type RewardSafeCommand,
   type RewardSafeOuterTransaction,
   rewardSafeTransactionHash,
@@ -116,6 +117,40 @@ test("refuses successful outer receipt carrying Safe inner failure", () => {
   };
   expect(() =>
     validateRewardSafeExecution({ ...input, receipt: { ...input.receipt, logs: [event] } }),
+  ).toThrow();
+});
+
+test("classifies an inner failure as a known non-payment with the same envelope checks", () => {
+  const input = fixture();
+  const failure = {
+    ...input.event,
+    topics: encodeEventTopics({
+      abi,
+      eventName: "ExecutionFailure",
+      args: { txHash: rewardSafeTransactionHash(command) },
+    }) as [Hex, ...Hex[]],
+  };
+  expect(
+    classifyRewardSafeExecution({ ...input, receipt: { ...input.receipt, logs: [failure] } }),
+  ).toEqual({
+    outcome: "failure",
+    safeTransactionHash: rewardSafeTransactionHash(command),
+    transactionHash: TX,
+    executionLogIndex: 3,
+  });
+  expect(classifyRewardSafeExecution(input).outcome).toBe("success");
+  expect(() =>
+    classifyRewardSafeExecution({
+      ...input,
+      receipt: { ...input.receipt, logs: [input.event, { ...failure, logIndex: 4 }] },
+    }),
+  ).toThrow();
+  expect(() =>
+    classifyRewardSafeExecution({
+      ...input,
+      command: { ...command, nonce: 8n },
+      receipt: { ...input.receipt, logs: [failure] },
+    }),
   ).toThrow();
 });
 
