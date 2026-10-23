@@ -23,12 +23,12 @@
     }
   ],
   "observability": {
-    "enabled": true,
+    "enabled": false,
     "logs": {
-      "enabled": true,
+      "enabled": false,
       "head_sampling_rate": 1,
       "invocation_logs": false,
-      "persist": true
+      "persist": false
     },
     "traces": {
       "enabled": false,
@@ -54,12 +54,12 @@
         }
       ],
       "observability": {
-        "enabled": true,
+        "enabled": false,
         "logs": {
-          "enabled": true,
+          "enabled": false,
           "head_sampling_rate": 1,
           "invocation_logs": false,
-          "persist": true
+          "persist": false
         },
         "traces": {
           "enabled": false,
@@ -88,12 +88,12 @@
         }
       ],
       "observability": {
-        "enabled": true,
+        "enabled": false,
         "logs": {
-          "enabled": true,
+          "enabled": false,
           "head_sampling_rate": 1,
           "invocation_logs": false,
-          "persist": true
+          "persist": false
         },
         "traces": {
           "enabled": false,

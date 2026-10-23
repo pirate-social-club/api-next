@@ -41,7 +41,7 @@ test("the staging provider source origin has a reachable Worker route", async ()
   expect(config.env.production?.workers_dev).toBe(false);
 });
 
-test("video source gateway has only its two bindings and never persists invocation URLs or traces", () => {
+test("video source gateway has only its two bindings and disables request-context persistence for capability URLs", () => {
   for (const environment of ["development", "staging", "production"] as const) {
     const block = environment === "development" ? config : config.env[environment];
     if (block === undefined) throw new Error("missing gateway environment");
@@ -63,8 +63,8 @@ test("video source gateway has only its two bindings and never persists invocati
         : undefined,
     );
     expect(block.observability).toEqual({
-      enabled: true,
-      logs: { enabled: true, head_sampling_rate: 1, invocation_logs: false, persist: true },
+      enabled: false,
+      logs: { enabled: false, head_sampling_rate: 1, invocation_logs: false, persist: false },
       traces: { enabled: false, persist: false },
     });
     expect(Object.keys(block).sort()).toEqual(
