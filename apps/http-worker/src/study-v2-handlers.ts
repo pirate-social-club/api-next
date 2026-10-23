@@ -18,6 +18,8 @@ import {
   RetryableConflict,
   type StudyAnswerSubmissionV2,
 } from "@pirate/contracts";
+import { withHnsAuthoritySpan } from "@pirate/platform-cf/hns-authority-diagnostics";
+import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
@@ -99,11 +101,13 @@ export const makeStudyV2Handlers = (services: {
 }): StudyV2Handlers => {
   const study = makeStudyV2Service(services.store, services.spoken);
   const run = <A, E>(effect: Effect.Effect<A, E, Clock | IdGen>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.provideService(Clock, services.clock),
-        Effect.provideService(IdGen, services.ids),
-        Effect.mapError((error) => wireFailure(error as StudyV2Failure)),
+    httpRequestDiagnostics.correlateDatabase(() =>
+      Effect.runPromise(
+        withHnsAuthoritySpan("study_request", effect).pipe(
+          Effect.provideService(Clock, services.clock),
+          Effect.provideService(IdGen, services.ids),
+          Effect.mapError((error) => wireFailure(error as StudyV2Failure)),
+        ),
       ),
     );
   return {
