@@ -93,7 +93,7 @@ version reverses that, following the October 22 owner clarification:
 4. Sweep, winnings claim, `equal_v1` allocation, credits, participant Claim and
    payout follow the existing order.
 
-Migration 0311 adds that transition set for ticket-first drawings. Existing legs
+Migration 0312 adds that transition set for ticket-first drawings. Existing legs
 keep their order, and every work listing serves one purchase order, so the EOA
 cycle never touches a ticket-first pool.
 
@@ -177,7 +177,7 @@ sponsored Wallet Send, which production serves only when
 `PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED` is set and then only for Base USDC.
 
 A leg is created through the offer API (`OpenSongRewardOffer`,
-`AddMegapotPoolLeg`) on the active attestation; migration 0312 makes it
+`AddMegapotPoolLeg`) on the active attestation; migration 0313 makes it
 ticket-first because its custody is the Safe. Its funder sends USDC from their own
 persona wallet into the Safe and submits the transfer (`ObserveMegapotPoolFunding`);
 the pilot cycle confirms it and the leg becomes active once it holds one ticket's
@@ -194,7 +194,7 @@ workers, register a Base Sepolia Safe with
 pilot variables in both workers, then open and fund a leg through the staging
 API. Onward Send already works on Base Sepolia. The workspace_owner authorized a
 throwaway Base Sepolia owner key for the test Safe on 2026-10-23. Applying
-migrations 0309 to 0312 to staging before this branch reaches main would fork
+migrations 0310 to 0313 to staging before this branch reaches main would fork
 staging's migration ledger from main.
 
 ### Production activation

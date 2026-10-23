@@ -176,6 +176,19 @@ describe("Study v3 grader revision", () => {
     expect(gradeEnglishTranscriptV3("", "")).toMatchObject({ correct: false, matchKind: "none" });
   });
 
+  test("v4 retains the vacuous-comparison safeguard without rejecting spoken articles", () => {
+    expect(gradeEnglishTranscriptV4("the", "")).toMatchObject({
+      correct: false,
+      matchKind: "none",
+      missing: [{ token: "the", position: 0 }],
+    });
+    expect(gradeEnglishTranscriptV4("the", "the")).toMatchObject({
+      correct: true,
+      matchKind: "exact",
+    });
+    expect(gradeEnglishTranscriptV4("", "")).toMatchObject({ correct: false, matchKind: "none" });
+  });
+
   test("keeps the calibrated accepted variations under v3", () => {
     expect(gradeEnglishTranscriptV3("hold me close", "hold me closed")).toMatchObject({
       correct: true,

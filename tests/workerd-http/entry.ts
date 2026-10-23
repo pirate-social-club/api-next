@@ -1,3 +1,5 @@
+export { DanceNetworkRateLimiterDO } from "../../packages/platform-cf/src/dance-network-admission-do.ts";
+
 import {
   CommunityModerationStoreError,
   type CommunityModerationStoreService,

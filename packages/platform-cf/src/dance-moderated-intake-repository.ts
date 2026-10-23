@@ -22,11 +22,13 @@ import {
   ModeratedDanceReferenceStatus,
   ModeratedDanceSessionView,
 } from "../../contracts/src/dance-moderated-intake.ts";
+import { RateLimited } from "../../contracts/src/errors.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import {
   decodeModeratedDanceCaptureContext,
   decodeModeratedDanceOwnerRubric,
 } from "./dance-moderated-context.ts";
+import type { DanceNetworkAdmission } from "./dance-network-admission.ts";
 import {
   amzDate,
   canonicalQuery,
@@ -59,7 +61,7 @@ const call = Effect.fn("ModeratedDanceIntake.call")(function* (
   return result.rows[0].packet;
 });
 function classify(error: unknown) {
-  if (error instanceof DanceReviewServiceFailure) return error;
+  if (error instanceof DanceReviewServiceFailure || error instanceof RateLimited) return error;
   if (
     error instanceof ControlPlaneTransactionOutcomeUnknown ||
     (error instanceof ControlPlaneOperationTimedOut && error.outcomeCertainty === "unknown")
@@ -164,6 +166,7 @@ export function makeControlPlaneModeratedDanceIntakeStore(
     /** Exact configured producer revisions, checked only for NEW capture. An
      * immutable receipt still recovers when processing is unavailable/paused. */
     signer: ModeratedDanceUploadSigner | null;
+    admitNewCapture: DanceNetworkAdmission;
     rewardsEnabled?: boolean;
     randomId?: () => string;
     randomU32?: () => number;
@@ -196,6 +199,7 @@ export function makeControlPlaneModeratedDanceIntakeStore(
         }
         let terms: unknown = null;
         if (body.operation === "create") {
+          yield* input.admitNewCapture(body.idempotency_key);
           const facts = yield* parse(
             ModeratedDanceCreationFacts,
             yield* call(

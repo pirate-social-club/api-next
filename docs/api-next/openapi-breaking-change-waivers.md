@@ -164,7 +164,7 @@ October22 separately reviewed current-baseline candidate. The notification trans
 
 Current paired source is genuine130, including the same notification union and the participant addition, with artifactSHA25634d756f7c9f81f894e9317ce5f88c8b66729e0e1d838b0eabfdab14200f98051. Published main129 and the distinct earlier Funding129 are separately preserved; the canonical main129 namespace client is not the Dance consumer. Exact postimage and current-baseline comparison are independently reviewed before this metadata repair is consumed. Old-tab refusal/reload, participant privacy, complete required checks and the whole-PR/rehearsal/release gates remain. No source checkpoint lifts deployment, Rewards, policy-money or Mainnet holds. Retire this pending transition entry after normal PR625 integration.
 
-PR625 landed on main as 3e0e079027a616da5ec718a7feef9d8faec5e5fe. This consumed
+PR625 landed on main as d7f92fcf1e54130b24bca202bcf336c186a9e955. This consumed
 entry is now retired; its baseline is an ancestor of main and the obsolete-entry
 guard rejects it. The declaration remains in Git history and admits no later
 contract change.
@@ -191,7 +191,7 @@ The field contains only choreography_id, revision and reference_video_post_id. I
 
 The immutable133archive SHA256 is4fb8f710fb40f6d51bdea6becb6ce96a28198a2f98eb7ccd3b01ae09c8da0676, OpenAPI SHA256545062916e74cdf984aa27393b11c61c7d89c1ff67cec88bed7db6c64cf05306. Solidbf56a517 consumes that artifact and protects the exact old/new runtime-table transition. No archive is repacked. Older open tabs must reload onto the paired consumer before Dance activation; otherwise their closed decoders refuse credited video reads or feeds. The coordinated release/activation rehearsal must prove that handoff, rather than assuming a source declaration updates a serving browser. This adds no deployment, admission, credential or financial authority. Remove the seven entries after normal PR625 integration; they are not permanent exceptions.
 
-PR625 landed on main as 3e0e079027a616da5ec718a7feef9d8faec5e5fe. The seven consumed
+PR625 landed on main as d7f92fcf1e54130b24bca202bcf336c186a9e955. The seven consumed
 entries are now retired and the active policy is empty. The declarations remain in
 Git history and admit no later contract change.
 
@@ -204,7 +204,7 @@ on Base. Megapot pool legs, pool funding and the public song pool projection
 therefore admit `chain_id` 8453 beside 84532. This follows Foundation section 5's
 explicit-deprecation route: an added response enum value breaks older decoders.
 
-The exact baseline is main 3e0e079027a616da5ec718a7feef9d8faec5e5fe. Four entries
+The exact baseline is main d7f92fcf1e54130b24bca202bcf336c186a9e955. Four entries
 admit seven complete diagnostics, each an added 8453 at a `chain_id`:
 
 | Operation | Response locations |

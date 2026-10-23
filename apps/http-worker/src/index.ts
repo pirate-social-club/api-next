@@ -1,3 +1,5 @@
+export { DanceNetworkRateLimiterDO } from "../../../packages/platform-cf/src/dance-network-admission-do.ts";
+
 /**
  * @pirate/http-worker — generated route table and transport composition root.
  *
@@ -9,6 +11,7 @@
 import type { ExecutionContext, ScheduledController } from "@cloudflare/workers-types";
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { httpRequestDiagnostics } from "@pirate/platform-cf/worker-request-diagnostics";
+import { maintainDanceNetworkCleanup } from "../../../packages/platform-cf/src/dance-network-cleanup.ts";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 import { offeringListDiagnosticId } from "./offering-list-diagnostics.ts";
 import { makeRetryingPromiseCache } from "./production-app-cache.ts";
@@ -39,8 +42,14 @@ const app = {
     bindings: HttpWorkerBindings,
     _ctx: ExecutionContext,
   ) {
-    const worker = await productionApp(bindings);
-    await worker.continuePublicationChecks(event.scheduledTime);
+    const results = await Promise.allSettled([
+      maintainDanceNetworkCleanup(bindings.DANCE_NETWORK_RATE_LIMITER),
+      productionApp(bindings).then((worker) =>
+        worker.continuePublicationChecks(event.scheduledTime),
+      ),
+    ]);
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Scheduled maintenance incomplete");
   },
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {
     // Durable work, such as a stored Telegram update, may continue after the response.

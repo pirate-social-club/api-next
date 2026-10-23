@@ -7,6 +7,7 @@ import {
   ControlPlaneTransactionOutcomeUnknown,
 } from "../../application/src/ports.ts";
 import type { ModeratedDanceIntakeReceipt } from "../../contracts/src/dance-moderated-intake.ts";
+import { RateLimited } from "../../contracts/src/errors.ts";
 import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
 import {
   makeControlPlaneModeratedDanceIntakeStore,
@@ -25,6 +26,8 @@ const create = {
   expected_policy_hash: "a".repeat(64),
 } as const;
 function fixture() {
+  const networkCalls: string[] = [];
+  let networkDenied = false;
   let facts = moderatedDanceIntakeFacts(),
     lostCommit = false,
     denied = false,
@@ -131,6 +134,12 @@ function fixture() {
     }),
   );
   const store = makeControlPlaneModeratedDanceIntakeStore(layer, "dancer", {
+    admitNewCapture: (key) =>
+      Effect.gen(function* () {
+        networkCalls.push(key);
+        if (networkDenied)
+          return yield* new RateLimited({ message: "Network limit", retry_after_seconds: 120 });
+      }),
     signer: {
       presign: async () => {
         throw new Error("should not sign during command");
@@ -141,6 +150,10 @@ function fixture() {
   });
   return {
     store,
+    networkCalls,
+    denyNetwork: () => {
+      networkDenied = true;
+    },
     failSql: (label: string, state: string) => {
       sqlFailure = { label, state };
     },
@@ -161,6 +174,22 @@ function fixture() {
   };
 }
 describe("actual private intake repository protocol (offline driver, not SQL proof)", () => {
+  test("network refusal precedes fresh facts and allocation but cannot block committed recovery", async () => {
+    const f = fixture();
+    const receipt = await Effect.runPromise(f.store.command(create));
+    expect(f.networkCalls).toEqual([create.idempotency_key]);
+    f.denyNetwork();
+    f.calls.length = 0;
+    expect(await Effect.runPromise(f.store.command(create))).toEqual(receipt);
+    expect(f.networkCalls).toEqual([create.idempotency_key]);
+    expect(f.calls).toEqual(["dance.intake.lock-replay"]);
+    f.calls.length = 0;
+    await expect(
+      Effect.runPromise(f.store.command({ ...create, idempotency_key: "new-command" })),
+    ).rejects.toMatchObject({ _tag: "RateLimited", retry_after_seconds: 120 });
+    expect(f.calls).toEqual(["dance.intake.lock-replay"]);
+    expect(f.receipts.size).toBe(1);
+  });
   test("only the capture-options DRV06 cursor refusal maps to invalid_request", async () => {
     const invalid = fixture();
     invalid.failSql("dance.intake.capture-options", "DRV06");

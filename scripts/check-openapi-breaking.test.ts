@@ -582,7 +582,7 @@ describe("OpenAPI clean-break allowance", () => {
       ).text(),
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
-    const baselineSha = "3e0e079027a616da5ec718a7feef9d8faec5e5fe";
+    const baselineSha = "d7f92fcf1e54130b24bca202bcf336c186a9e955";
 
     expect(
       repositoryPolicy.breakingChangeWaivers.map(({ operationId, baselineSha, kind }) => ({

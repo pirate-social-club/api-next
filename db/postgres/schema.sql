@@ -7458,11 +7458,27 @@ BEGIN
  SELECT * INTO policy FROM dance_review_policy_versions_v1 WHERE policy_id=admission.policy_id FOR SHARE;
  now_at:=clock_timestamp();
  IF admission.accepted IS DISTINCT FROM TRUE OR now_at<admission.effective_at OR now_at>=admission.valid_until OR now_at<policy.valid_from OR now_at>=policy.valid_until THEN RAISE EXCEPTION 'reference policy unavailable' USING ERRCODE='DRV07'; END IF;
- IF NOT charge_moderated_dance_intake_v1(p_actor,policy.operational_profile,FALSE,FALSE) THEN RAISE EXCEPTION 'reference work limit reached' USING ERRCODE='DRV07'; END IF;
- INSERT INTO dance_moderated_reference_commands_v1(account_id,idempotency_key,request_hash,community_id,song_post_id,persona_id,reference_community_id,reference_post_id,master_revision_id,choreography_id,segment_id,policy_id,state)
- VALUES(p_actor,p_command->>'idempotency_key',p_hash,p_command->>'community_id',p_command->>'song_post_id',p_command->>'persona_id',reference.community_id,reference.post_id,reference.master_revision_id,p_choreography,p_segment,policy.policy_id,'pending')
- ON CONFLICT(community_id,reference_post_id,master_revision_id) DO NOTHING;
- SELECT * INTO prior FROM dance_moderated_reference_commands_v1 WHERE community_id=p_command->>'community_id' AND reference_post_id=reference.post_id AND master_revision_id=reference.master_revision_id;
+ -- The family lock above serializes new commands. Lock the selected row too:
+ -- processing/cleanup must not change its terminal state beneath this decision.
+ SELECT * INTO prior FROM dance_moderated_reference_commands_v1
+ WHERE community_id=p_command->>'community_id' AND reference_post_id=reference.post_id
+ AND master_revision_id=reference.master_revision_id AND state<>'failed' FOR UPDATE;
+ IF prior.choreography_id IS NULL THEN
+  -- A failed attempt is never reset. Unknown consumed provider work must first
+  -- reach a bound disposal receipt, including when its effect row is missing.
+  IF EXISTS(SELECT 1 FROM dance_moderated_reference_commands_v1 old
+   LEFT JOIN dance_moderated_provider_effects_v1 effect ON effect.choreography_id=old.choreography_id AND effect.purpose='normalization'
+   WHERE old.community_id=p_command->>'community_id' AND old.reference_post_id=reference.post_id
+   AND old.master_revision_id=reference.master_revision_id AND old.state='failed'
+   AND (effect.state IS NOT NULL AND effect.state<>'completed'
+    OR old.normalization_claimed_at IS NOT NULL AND effect.state IS DISTINCT FROM 'completed')) THEN
+   RAISE EXCEPTION 'prior reference provider cleanup pending' USING ERRCODE='DRV07';
+  END IF;
+  IF NOT charge_moderated_dance_intake_v1(p_actor,policy.operational_profile,FALSE,FALSE) THEN RAISE EXCEPTION 'reference work limit reached' USING ERRCODE='DRV07'; END IF;
+  INSERT INTO dance_moderated_reference_commands_v1(account_id,idempotency_key,request_hash,community_id,song_post_id,persona_id,reference_community_id,reference_post_id,master_revision_id,choreography_id,segment_id,policy_id,state)
+  VALUES(p_actor,p_command->>'idempotency_key',p_hash,p_command->>'community_id',p_command->>'song_post_id',p_command->>'persona_id',reference.community_id,reference.post_id,reference.master_revision_id,p_choreography,p_segment,policy.policy_id,'pending')
+  RETURNING * INTO prior;
+ END IF;
  receipt:=jsonb_build_object('version','dance-moderated-reference-v1','choreography_id',prior.choreography_id,'reference_post_id',prior.reference_post_id,'status',prior.state);
  INSERT INTO dance_moderated_reference_receipts_v1 VALUES(p_actor,p_command->>'idempotency_key',p_hash,prior.choreography_id,receipt);
  RETURN receipt;
@@ -17570,6 +17586,29 @@ BEGIN
     INTO STRICT target_function
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='guard_moderated_reference_community_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_moderated_reference_failure_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF OLD.state='failed' AND NEW.state IS DISTINCT FROM OLD.state THEN
+  RAISE EXCEPTION 'failed reference is terminal' USING ERRCODE='DRV05';
+ END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_moderated_reference_failure_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
@@ -56787,9 +56826,6 @@ ALTER TABLE ONLY dance_moderated_publication_sources_v1
     ADD CONSTRAINT dance_moderated_publication_sources_v1_pkey PRIMARY KEY (capability_sha256);
 
 ALTER TABLE ONLY dance_moderated_reference_commands_v1
-    ADD CONSTRAINT dance_moderated_reference_com_community_id_reference_post_i_key UNIQUE (community_id, reference_post_id, master_revision_id);
-
-ALTER TABLE ONLY dance_moderated_reference_commands_v1
     ADD CONSTRAINT dance_moderated_reference_commands_v1_choreography_id_key UNIQUE (choreography_id);
 
 ALTER TABLE ONLY dance_moderated_reference_commands_v1
@@ -59760,6 +59796,8 @@ CREATE INDEX megapot_pool_shares_drawing_idx ON megapot_pool_shares USING btree 
 
 CREATE INDEX megapot_ticket_inventory_work_idx ON megapot_ticket_inventory USING btree (status, drawing_id, attestation_id, ticket_id);
 
+CREATE UNIQUE INDEX moderated_reference_active_master_v1 ON dance_moderated_reference_commands_v1 USING btree (community_id, reference_post_id, master_revision_id) WHERE (state <> 'failed'::text);
+
 CREATE INDEX moderated_reference_command_post_v1 ON dance_moderated_reference_commands_v1 USING btree (reference_community_id, reference_post_id);
 
 CREATE INDEX moderated_reference_post_community_v1 ON dance_moderator_reference_revisions_v1 USING btree (reference_community_id, reference_post_id);
@@ -61179,6 +61217,8 @@ CREATE TRIGGER moderated_public_replay_index_epoch BEFORE INSERT OR UPDATE ON da
 CREATE TRIGGER moderated_public_replay_no_truncate BEFORE TRUNCATE ON dance_moderated_public_replay_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_dance_review_history_v1();
 
 CREATE TRIGGER moderated_reference_community_immutable_v1 BEFORE UPDATE ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_reference_community_v1();
+
+CREATE TRIGGER moderated_reference_failure_terminal_v1 BEFORE UPDATE OF state ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION guard_moderated_reference_failure_v1();
 
 CREATE TRIGGER moderated_reference_queue_bound_v1 BEFORE INSERT ON dance_moderated_reference_commands_v1 FOR EACH ROW EXECUTE FUNCTION bound_moderated_dance_reference_queue_v1();
 
