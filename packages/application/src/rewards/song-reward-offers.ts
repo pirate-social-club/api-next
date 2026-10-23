@@ -136,7 +136,7 @@ export type ScarceRewardPolicyV1 = Readonly<{
     age: null;
     geography: null;
     disclosure: null;
-    environment: "test_staging_empty_v1";
+    environment: RewardLegalEligibilityLabel;
   }>;
 }>;
 
@@ -360,11 +360,19 @@ const validInstant = (value: string): boolean => {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 };
 
+/**
+ * Legal-eligibility rules are empty in every environment. Production offers say so
+ * under their own label: the workspace_owner excluded legal, licensing and counsel
+ * work until after launch (rewards-mainnet-megapot-runtime record, 2026-10-21).
+ */
+export type RewardLegalEligibilityLabel = "test_staging_empty_v1" | "production_empty_v1";
+
 export function makeSongRewardOfferService(input: {
   readonly store: SongRewardOfferStore;
   readonly funding: RewardFundingPlanner;
   readonly requiredConfirmations: number;
   readonly externalFallbackPolicy: ExternalFallbackPolicy | null;
+  readonly legalEligibility?: RewardLegalEligibilityLabel;
 }): SongRewardOfferService {
   const openOffer = Effect.fn("SongRewardOffer.openOffer")(function* (
     request: Parameters<SongRewardOfferService["openOffer"]>[0],
@@ -393,7 +401,7 @@ export function makeSongRewardOfferService(input: {
         age: null,
         geography: null,
         disclosure: null,
-        environment: "test_staging_empty_v1",
+        environment: input.legalEligibility ?? "test_staging_empty_v1",
       },
     } as const satisfies ScarceRewardPolicyV1;
     const rewardPolicyHash = yield* hash(rewardPolicy);

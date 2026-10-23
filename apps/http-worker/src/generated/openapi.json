@@ -220041,7 +220041,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -220256,7 +220257,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -220422,7 +220424,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -220637,7 +220640,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -221274,7 +221278,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -221872,7 +221877,8 @@
                         "chain_id": {
                           "type": "number",
                           "enum": [
-                            84532
+                            84532,
+                            8453
                           ]
                         },
                         "token_address": {
@@ -222441,7 +222447,8 @@
                             "chain_id": {
                               "type": "number",
                               "enum": [
-                                84532
+                                84532,
+                                8453
                               ]
                             },
                             "token_address": {

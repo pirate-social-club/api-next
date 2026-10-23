@@ -141,7 +141,8 @@ Enabling it needs `SAFE_POOL_ATTESTATION_ID`, `SAFE_POOL_RPC_URL`,
 `SAFE_POOL_PRODUCTION_ENABLED`. It shares tables with the EOA rewards job, so
 configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused. Production
 reward work still requires the run lease and an unpaused brake, and a production
-leg must carry `legal_activation_gate = 'production_approved'` to be active.
+leg must carry `legal_activation_gate = 'production_approved'` to be active (see
+Production activation below).
 
 The HTTP worker serves the offer, funding, Claim and credit routes for the
 pilot's attestation when its own `SAFE_POOL_PILOT_ENABLED` is set, with
@@ -169,25 +170,42 @@ attestation per environment), turn `MEGAPOT_REWARDS_ENABLED` off in both
 workers, register a Base Sepolia Safe with
 `API_NEXT_ENV=staging bun scripts/register-safe-pool-custody.ts --apply`, set the
 pilot variables in both workers, then open and fund a leg through the staging
-API. Onward Send already works on Base Sepolia. Someone must hold the test Safe's owner key to execute its calls; creating
-that key is the owner's decision.
+API. Onward Send already works on Base Sepolia. The workspace_owner authorized a
+throwaway Base Sepolia owner key for the test Safe on 2026-10-23. Applying
+migrations 0309 to 0312 to staging before this branch reaches main would fork
+staging's migration ledger from main.
 
-### What production still needs
+### Production activation
 
-- A production pool leg. `AddMegapotPoolLeg` refuses a production attestation,
-  and a leg's `legal_activation_gate` is fixed when the leg is created: the offer
-  API always writes `test_only`, and the database refuses to activate a
-  production leg unless it is `production_approved`. Recording a pilot leg's
-  legal approval at creation depends on the Spec 015 terms and is not built.
-- Base in the reward responses. `MegapotPoolLegV1`, `MegapotFundingV1`,
-  `SongMegapotPoolProjectionV1` and the other reward schemas fix `chain_id` to
-  84532. Admitting 8453 adds a response enum value, which the breaking-change
-  check refuses without a declared waiver, and Solid has to accept it.
-- Gas on Base. Participants pay through Privy sponsorship (owner decision
-  2026-10-23), built behind `PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED`. Privy's
-  own gas sponsorship has to be enabled for Base mainnet, and the Solid winnings
-  Send accepts only Base Sepolia.
-- The Spec 015 amendment and the owner inputs listed above.
+Spec 015 section 13 defines a dated, per-environment production activation gate,
+and migration 0053's `legal_activation_gate` records it on each pool leg. The
+pilot writes it: behind `SAFE_POOL_PRODUCTION_ENABLED`, `AddMegapotPoolLeg`
+creates a production leg only on owner-executed Safe custody with `no_purchase`,
+recorded `production_approved`, so turning that switch on is the pilot's
+activation. Every other production leg is still refused. A production offer labels
+its empty legal-eligibility rules `production_empty_v1`.
+
+Requirements with a source. Section 13 asks, before production activation, for the
+deployment attestation (the custody registration script records it), Base 8453
+admission (in place for the pilot), live custody solvency observation (the pilot
+cycle), exercised kill switches (the reward operations brake exists and has not
+been exercised in production), a real testnet-to-mainnet claim-and-payout proof or
+a countersigned bounded-risk waiver, and an evidence-based 24-hour staging closeout
+under Spec 004 section 15. Its legal disclosure and counsel sign-off items are not
+current launch gates: the workspace_owner excluded Megapot legal, licensing,
+nationality, counsel and jurisdiction work until after launch (record
+rewards-mainnet-megapot-runtime, 2026-10-21). Its external-sponsor referral item
+does not apply, because pilot legs have no funder fallback.
+
+Unfinished implementation. Solid has to take api-client 0.134.0, which admits
+chain 8453 on pool legs, pool funding and the pool projection under a declared
+deprecation, and its winnings Send has to accept Base. Privy's own gas sponsorship
+has to be enabled for Base mainnet. The staging rehearsal and closeout have not
+run.
+
+Owner choices that remain are the Spec 015 amendment's terms: empty-drawing
+disposition, the Safe and its threshold, the entry cutoff and minimum entry
+window, and ticket, spend and gas limits.
 
 ## Verification
 

@@ -40,7 +40,8 @@ const expected = [
   ],
 ] as const;
 // The declaration was consumed when PR625 landed as 3e0e0790 and the active policy
-// retired it. This proof keeps checking the declaration exactly as it landed.
+// retired it. This proof keeps checking the declaration and the contract exactly as
+// they landed, so later contract changes are judged by their own declarations.
 const landed = "3e0e079027a616da5ec718a7feef9d8faec5e5fe";
 const policy = JSON.parse(
   execFileSync("git", ["show", `${landed}:packages/contracts/breaking-change-waivers.json`], {
@@ -53,9 +54,12 @@ const rawBase = execFileSync(
   { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
 );
 const before = parseBaselineDocument(baseline, rawBase);
-const current = (await Bun.file(
-  new URL("../apps/http-worker/src/generated/openapi.json", import.meta.url),
-).json()) as OpenApiDocument;
+const current = JSON.parse(
+  execFileSync("git", ["show", `${landed}:apps/http-worker/src/generated/openapi.json`], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  }),
+) as OpenApiDocument;
 
 test("public Dance credit declares exactly seven response additions against the actual PR baseline", () => {
   const entries = policy.breakingChangeWaivers.filter(

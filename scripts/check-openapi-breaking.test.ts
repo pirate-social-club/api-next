@@ -575,18 +575,41 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps active policy empty after landed transitions", async () => {
+  test("keeps only the Megapot pool Base chain declarations active", async () => {
     const repositoryPolicy = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
       ).text(),
     ) as BreakingChangePolicy;
     const unchanged = document([], []);
+    const baselineSha = "3e0e079027a616da5ec718a7feef9d8faec5e5fe";
 
-    expect(repositoryPolicy.breakingChangeWaivers).toEqual([]);
+    expect(
+      repositoryPolicy.breakingChangeWaivers.map(({ operationId, baselineSha, kind }) => ({
+        operationId,
+        baselineSha,
+        kind,
+      })),
+    ).toEqual(
+      [
+        "get_communitiesCommunityIdPostsPostIdRewardsMegapotPool",
+        "get_rewardOfferLegsLegIdFundingFundingEffectId",
+        "post_rewardOfferLegsLegIdFundingFundingEffectIdObservations",
+        "post_rewardOffersOfferIdMegapotPoolLegs",
+      ].map((operationId) => ({ operationId, baselineSha, kind: "deprecation" })),
+    );
+    for (const waiver of repositoryPolicy.breakingChangeWaivers) {
+      for (const violation of waiver.expectedViolations) {
+        expect(violation).toEndWith(".chain_id");
+        expect(violation).toContain("enum value added: 8453 at ");
+      }
+    }
+    expect(() =>
+      assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, baselineSha, () => true),
+    ).not.toThrow();
     expect(() =>
       assertNoObsoleteBreakingChangeWaivers(repositoryPolicy, OTHER_BASELINE_SHA, () => true),
-    ).not.toThrow();
+    ).toThrow("obsolete baseline");
     expect(
       filterAllowedBreakingChanges(unchanged, unchanged, repositoryPolicy, BASELINE_SHA),
     ).toEqual([]);

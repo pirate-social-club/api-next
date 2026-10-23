@@ -1839,7 +1839,13 @@ export async function createProductionHttpWorker(
                   },
             clock: { now: Effect.sync(() => Date.now()) },
             ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
-            store: makeControlPlaneSongRewardOfferStore(controlPlane),
+            store: makeControlPlaneSongRewardOfferStore(controlPlane, {
+              safeProductionLegs: safePilot?.productionEnabled === true,
+            }),
+            legalEligibility:
+              config.API_NEXT_ENV === "production"
+                ? "production_empty_v1"
+                : "test_staging_empty_v1",
             fundingStore: rewardFundingStore,
             projections: makeControlPlaneRewardProjectionStore(controlPlane),
             gasTopups,

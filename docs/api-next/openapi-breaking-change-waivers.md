@@ -194,3 +194,30 @@ The immutable133archive SHA256 is4fb8f710fb40f6d51bdea6becb6ce96a28198a2f98eb7cc
 PR625 landed on main as 3e0e079027a616da5ec718a7feef9d8faec5e5fe. The seven consumed
 entries are now retired and the active policy is empty. The declarations remain in
 Git history and admit no later contract change.
+
+## 2026-10-23 Megapot pool Base chain deprecation
+
+Status: candidate declaration on PR656, pending the workspace_owner's audit. The
+workspace_owner's October 23 decision 3 has the HTTP worker serve the offer,
+funding, Claim and credit routes for the owner-executed Safe pool pilot, which runs
+on Base. Megapot pool legs, pool funding and the public song pool projection
+therefore admit `chain_id` 8453 beside 84532. This follows Foundation section 5's
+explicit-deprecation route: an added response enum value breaks older decoders.
+
+The exact baseline is main 3e0e079027a616da5ec718a7feef9d8faec5e5fe. Four entries
+admit seven complete diagnostics, each an added 8453 at a `chain_id`:
+
+| Operation | Response locations |
+| --- | --- |
+| GET /communities/{communityId}/posts/{postId}/rewards/megapot-pool | pool.chain_id |
+| GET /reward-offer-legs/{legId}/funding/{fundingEffectId} | funding.chain_id |
+| POST /reward-offer-legs/{legId}/funding/{fundingEffectId}/observations | funding.chain_id |
+| POST /reward-offers/{offerId}/megapot-pool-legs (200 and 201) | leg.chain_id, funding.chain_id |
+
+They admit no other field, operation, status, error, request change or later
+baseline. Asset bonus legs, winner sends and the admitted asset catalogue stay on
+84532. Existing Base Sepolia responses are unchanged. Client 0.134.0 accepts 8453
+(OpenAPI SHA256 02a5dcb37bed391a2e5f19aa5013fa1a5fe717c78e340452d15bfe472cd31810); a client that accepts only 84532 rejects a Base pilot
+pool, so Solid takes 0.134.0 before any Base pool opens. This adds no deployment,
+admission, credential or financial authority. Remove the four entries after PR656
+integrates normally.

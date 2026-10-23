@@ -58,7 +58,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 29;
+const testCount = 30;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -639,6 +639,179 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });
     });
     completedTestCount += 1;
+  });
+
+  test("creates a production pool leg only on owner-executed Safe custody behind the pilot switch", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "safe-production", address("d"));
+      const safe = address("c");
+      await admin.query(
+        `INSERT INTO reward_asset_whitelist (
+           chain_id, token_address, decimals, symbol, asset_kind, environment,
+           status, policy_version, activated_at, plain_erc20_verified_at
+         ) VALUES (8453, $1, 6, 'USDC', 'settlement_usdc', 'production',
+           'active', 'base-usdc-v1', statement_timestamp(), statement_timestamp())`,
+        [address("b")],
+      );
+      await admin.query(
+        `INSERT INTO megapot_deployment_attestations (
+           attestation_id, environment, chain_id, jackpot_address, usdc_address,
+           ticket_nft_address, custody_address, referrer_address, source_tag,
+           jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
+           attestation_block_number, attestation_block_hash, abi_version, status, verified_at
+         ) VALUES (
+           'megapot-base-safe-pilot', 'production', 8453, $1, $2, $3, $4, $5, $6,
+           $7, $8, $9, 100, $10, 'megapot_v2', 'active', clock_timestamp()
+         )`,
+        [
+          address("2"),
+          address("b"),
+          address("3"),
+          safe,
+          address("5"),
+          bytes32("6"),
+          bytes32("7"),
+          bytes32("8"),
+          bytes32("9"),
+          bytes32("a"),
+        ],
+      );
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-safe-production', 'megapot-base-safe-pilot', 8453, 41,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 141, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("4"), hash("4")],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const ordinary = makeControlPlaneSongRewardOfferStore(layer);
+      const pilot = makeControlPlaneSongRewardOfferStore(layer, { safeProductionLegs: true });
+      const offerId = "reward-offer-safe-production";
+      const opened = await Effect.runPromise(
+        pilot.openOffer({
+          actionId: "reward-action-open-safe-production",
+          offerId,
+          accountId: identity.accountId,
+          personaId: identity.personaId,
+          communityId: identity.communityId,
+          postId: identity.postId,
+          idempotencyKey: "open-safe-production",
+          requestHash: hash("5"),
+          termsHash: hash("6"),
+          rewardPolicy: {
+            version: "scarce_reward_v1",
+            community_id: identity.communityId,
+            offer_id: offerId,
+            requirements: ["human.personhood", "credential.subject_unique"],
+            uniqueness: { kind: "single_authority", authority_id: offerId },
+            legal_eligibility: {
+              age: null,
+              geography: null,
+              disclosure: null,
+              environment: "production_empty_v1",
+            },
+          },
+          rewardPolicyHash: hash("a"),
+          startsAt: new Date().toISOString(),
+          endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      expect(
+        (
+          await admin.query(
+            `SELECT policy->'legal_eligibility'->>'environment' AS policy_label,
+                    compiled_plan->>'legal_eligibility' AS plan_label
+               FROM policy_versions WHERE uniqueness_authority_id=$1`,
+            [offerId],
+          )
+        ).rows,
+      ).toEqual([{ policy_label: "production_empty_v1", plan_label: "production_empty_v1" }]);
+      const study = (await Effect.runPromise(pilot.qualificationPolicies())).find(
+        (entry) => entry.activity === "study",
+      );
+      if (study === undefined) throw new Error("study policy missing");
+      const leg = (attempt: string) => ({
+        actionId: `reward-action-leg-${attempt}`,
+        legId: `reward-leg-${attempt}`,
+        offerId: opened.offer.offerId,
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        idempotencyKey: `leg-${attempt}`,
+        requestHash: hash("7"),
+        legTermsHash: bytes32("8"),
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        maxTicketPriceAtomic: 20_000n,
+        entryCutoffSeconds: 300,
+        eligibleActivities: ["study"] as const,
+        expectedQualificationPolicyVersions: {
+          study: study.policy.qualification_policy_version_id,
+        },
+        minScoreBps: 7_000,
+        emptyPoolPolicy: "no_purchase" as const,
+        fallbackPayoutPersonaId: null,
+        referralAllocationVersion: null,
+        referralPolicyHash: null,
+        referralDisclosedAt: null,
+      });
+      const refused = { _tag: "SongRewardOfferRejected", reason: "fallback-policy-unavailable" };
+
+      // Custody that is not an owner-executed Safe is refused even behind the switch.
+      await expect(Effect.runPromise(pilot.addMegapotPoolLeg(leg("eoa")))).rejects.toMatchObject(
+        refused,
+      );
+      await admin.query(
+        `INSERT INTO reward_signer_nonces (chain_id,signer_address,next_nonce,
+           observed_pending_nonce,observed_block_number,observed_block_hash,observed_at,
+           nonce_authority)
+         VALUES (8453,$1,0,0,1,$2,clock_timestamp(),'safe_owner_v1')`,
+        [safe, bytes32("1")],
+      );
+      // The Safe without the pilot's production switch, and a funder fallback with it.
+      await expect(
+        Effect.runPromise(ordinary.addMegapotPoolLeg(leg("switch-off"))),
+      ).rejects.toMatchObject(refused);
+      await expect(
+        Effect.runPromise(
+          pilot.addMegapotPoolLeg({
+            ...leg("fallback"),
+            emptyPoolPolicy: "funder_fallback",
+            fallbackPayoutPersonaId: identity.personaId,
+          }),
+        ),
+      ).rejects.toMatchObject(refused);
+      expect(
+        (await admin.query("SELECT count(*)::integer AS legs FROM song_reward_offer_legs")).rows,
+      ).toEqual([{ legs: 0 }]);
+
+      const added = await Effect.runPromise(pilot.addMegapotPoolLeg(leg("safe")));
+      expect(added.leg).toMatchObject({
+        status: "funding",
+        chainId: 8453,
+        tokenAddress: address("b"),
+        custodyAddress: safe,
+      });
+      expect(
+        (
+          await admin.query(
+            `SELECT legal_activation_gate, purchase_order FROM song_reward_offer_legs
+              WHERE leg_id=$1`,
+            [added.leg.legId],
+          )
+        ).rows,
+      ).toEqual([
+        { legal_activation_gate: "production_approved", purchase_order: "ticket_first_v1" },
+      ]);
+    });
   });
 
   test("binds offer-open to the current owner policy, not the creation snapshot", async () => {
