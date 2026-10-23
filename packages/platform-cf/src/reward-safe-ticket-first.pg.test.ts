@@ -18,6 +18,9 @@ import {
   parseAbi,
 } from "viem";
 import { exportSafePoolCalls } from "../../../scripts/safe-pool-export-calls.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
+import { makeCustodySolvencyCoordinator } from "./custody-solvency-coordinator.ts";
+import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import {
@@ -37,6 +40,7 @@ import type {
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeRewardSafeClaimCoordinator } from "./reward-safe-claim-coordinator.ts";
 import { rewardSafeTransactionHash } from "./reward-safe-execution.ts";
+import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
 import { makeRewardSafePurchaseCoordinator } from "./reward-safe-purchase-coordinator.ts";
 import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
 
@@ -66,6 +70,7 @@ const abi = parseAbi([
   "event TicketOrderProcessed(address indexed buyer, address indexed recipient, uint256 indexed currentDrawingId, uint256 numberOfTickets, uint256 lpEarnings, uint256 referralFees)",
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
   "function claimWinnings(uint256[] _userTicketIds)",
+  "function transfer(address to, uint256 amount) returns (bool)",
   "event TicketWinningsClaimed(address indexed userAddress, uint256 indexed drawingId, uint256 userTicketId, uint256 matchedNormals, bool bonusballMatch, uint256 winningsAmount)",
   "event ReferralFeeCollected(address indexed referrer, uint256 amount)",
 ]);
@@ -188,7 +193,23 @@ function fakeChain() {
     const base = { transactionHash, blockHash, blockNumber: block };
     const logs: MegapotReceiptLog[] = [];
     const decoded = decodeFunctionData({ abi, data: call.data });
-    if (outcome === "success" && decoded.functionName === "claimWinnings") {
+    if (outcome === "success" && decoded.functionName === "transfer") {
+      const [recipient, amount] = decoded.args;
+      usdcDeltas.push({ block, amount: -amount });
+      logs.push({
+        ...base,
+        address: USDC,
+        logIndex: 0,
+        topics: topics(
+          encodeEventTopics({
+            abi: erc20,
+            eventName: "Transfer",
+            args: { from: SAFE as Hex, to: recipient },
+          }),
+        ),
+        data: encodeAbiParameters([{ type: "uint256" }], [amount]),
+      });
+    } else if (outcome === "success" && decoded.functionName === "claimWinnings") {
       const claimed = decoded.args[0][0];
       if (claimed === undefined) throw new Error("no ticket");
       const net = 901n;
@@ -489,7 +510,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     await admin.end();
   });
 
-  test("a confirmed ticket opens entries and a freeze snapshots its qualifiers", async () => {
+  test("one pool runs from its ticket purchase to paying both qualifiers", async () => {
     const purchases = makeRewardSafePurchaseCoordinator(options());
     const prepared = await run(purchases.prepare("tf-ok"));
     if (prepared.kind !== "prepared") throw new Error(`not prepared: ${prepared.kind}`);
@@ -669,6 +690,94 @@ suite("ticket-first owner-executed Safe pools", () => {
     ).toEqual([
       { account_id: "account-a", amount: "451", state: "credited", chain_id: "8453" },
       { account_id: "account-b", amount: "450", state: "credited", chain_id: "8453" },
+    ]);
+
+    // Each qualifier claims with palm-scan evidence, and the owner's Safe pays the
+    // credit to the persona wallet. Wallets and evidence are participant identity
+    // fixtures; acceptance, solvency and payout run the real code.
+    const wallets = { "account-a": address("b"), "account-b": address("c") } as const;
+    await admin.query("SET session_replication_role = replica");
+    for (const [ordinal, account] of (["account-a", "account-b"] as const).entries()) {
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (assignment_id, persona_id, account_id,
+           chain_account_kind, status, reservation_idempotency_key, address, assigned_at,
+           hd_wallet_index, created_at, updated_at)
+         VALUES ($1,$2,$3,'evm','active',$4,$5,now(),$6,now(),now())`,
+        [
+          `wallet-${account}`,
+          `persona-${account}`,
+          account,
+          `reserve-${account}`,
+          wallets[account],
+          ordinal,
+        ],
+      );
+    }
+    await admin.query("SET session_replication_role = origin");
+    const credits = (
+      await admin.query<{ credit_id: string; account_id: "account-a" | "account-b" }>(
+        `SELECT credit_id, account_id FROM reward_ledger_credits
+          WHERE source_kind='megapot_allocation' ORDER BY account_id`,
+      )
+    ).rows;
+    for (const [ordinal, credit] of credits.entries()) {
+      await seedVeryRewardEvidence(
+        admin,
+        credit.account_id,
+        `tf-claim-${credit.account_id}`,
+        String(ordinal + 2).repeat(64),
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT outcome, claim_status FROM accept_megapot_participant_claim_v1($1, $2)",
+            [credit.credit_id, credit.account_id],
+          )
+        ).rows,
+      ).toEqual([{ outcome: "accepted", claim_status: "accepted" }]);
+    }
+    await run(
+      makeCustodySolvencyCoordinator({
+        store: makeControlPlaneCustodySolvencyStore(layer),
+        rpc: chain.rpc,
+        requiredConfirmations: 3,
+        safePilot: { productionEnabled: true },
+      }).observe(ATTESTATION),
+    );
+    const payouts = makeRewardSafePayoutCoordinator(options());
+    for (const credit of credits) {
+      const payout = await run(payouts.prepare(credit.credit_id));
+      chain.execute(callOf(payout.transactionBuilderFile), "success");
+      chain.mine(2n);
+      await scan();
+      expect(await run(payouts.settle(payout.effectId))).toMatchObject({ kind: "confirmed" });
+    }
+    expect(
+      (
+        await admin.query(
+          `SELECT credit.account_id, credit.state, credit.paid_atomic::text AS paid,
+                  effect.state AS effect_state, effect.target_address
+             FROM reward_ledger_credits credit
+             JOIN reward_payout_effects payout ON payout.credit_id=credit.credit_id
+             JOIN reward_chain_effects effect ON effect.effect_id=payout.payout_effect_id
+            WHERE credit.source_kind='megapot_allocation' ORDER BY credit.account_id`,
+        )
+      ).rows,
+    ).toEqual([
+      {
+        account_id: "account-a",
+        state: "sent",
+        paid: "451",
+        effect_state: "confirmed",
+        target_address: USDC,
+      },
+      {
+        account_id: "account-b",
+        state: "sent",
+        paid: "450",
+        effect_state: "confirmed",
+        target_address: USDC,
+      },
     ]);
   });
 
