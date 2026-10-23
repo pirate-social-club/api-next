@@ -37,6 +37,9 @@ jobs:
           sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+        env:
+          # Match the action's resolver target without claiming the runner's other DNS sockets.
+          IRON_DNS_LISTEN: 127.0.0.1:53
         with:
           version: 0.41.0
           egress-rules: .github/egress/check.yml
@@ -226,6 +229,9 @@ jobs:
           sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+        env:
+          # Match the action's resolver target without claiming the runner's other DNS sockets.
+          IRON_DNS_LISTEN: 127.0.0.1:53
         with:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
@@ -458,6 +464,9 @@ jobs:
           sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
+        env:
+          # Match the action's resolver target without claiming the runner's other DNS sockets.
+          IRON_DNS_LISTEN: 127.0.0.1:53
         with:
           version: 0.41.0
           egress-rules: .github/egress/postgres17.yml
