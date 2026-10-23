@@ -18,7 +18,7 @@ export const SAFE_POOL_PILOT_RPC_TIMEOUT_MS = 5_000;
  * window stays within that, and a cycle reads a few windows to catch up.
  */
 export const SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS = 200;
-export const SAFE_POOL_PILOT_SCAN_WINDOWS_PER_CYCLE = 5;
+const SAFE_POOL_PILOT_SCAN_WINDOWS_PER_CYCLE = 5;
 
 /** Scans successive windows until the scanner reaches the settled head or the bound. */
 export function scanSafeWindows<E>(
