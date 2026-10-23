@@ -10,6 +10,7 @@ concurrency:
 
 jobs:
   check:
+    timeout-minutes: 30
     # Keep the pinned audit proxy on its known runner generation.
     runs-on: ubuntu-24.04
     steps:
@@ -27,6 +28,13 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
+      - name: Fence DNS resolver reactivation before egress audit
+        run: |
+          set -euo pipefail
+          sudo ss -H -lunp '( sport = :53 )'
+          # Keep the resolver available for the action's downloads. Its own stop
+          # step then frees port 53; the runtime mask prevents D-Bus reactivation.
+          sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
@@ -44,6 +52,8 @@ jobs:
             sleep 2
           done
           echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          systemctl show systemd-resolved.service -p LoadState -p ActiveState -p SubState -p MainPID || true
+          ss -H -lun '( sport = :53 )' || true
           tail -80 /var/log/iron-proxy.log || true
           exit 1
       - run: bun install --frozen-lockfile
@@ -106,6 +116,7 @@ jobs:
           /tmp/api-next-song-video-ffmpeg-suite-complete
           /tmp/api-next-video-analysis-ffmpeg-suite-complete
       - run: bun run test
+        timeout-minutes: 20
         env:
           SONG_VIDEO_FFMPEG_REQUIRED: "1"
       - name: Require media completion sentinels
@@ -206,6 +217,13 @@ jobs:
       # Iron Proxy intentionally removes Docker socket access. Start it after
       # freshness has exercised the pinned pg_dump image; the general shard
       # jobs separately audit the same pinned dependency install.
+      - name: Fence DNS resolver reactivation before egress audit
+        run: |
+          set -euo pipefail
+          sudo ss -H -lunp '( sport = :53 )'
+          # Keep the resolver available for the action's downloads. Its own stop
+          # step then frees port 53; the runtime mask prevents D-Bus reactivation.
+          sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
@@ -223,6 +241,8 @@ jobs:
             sleep 2
           done
           echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          systemctl show systemd-resolved.service -p LoadState -p ActiveState -p SubState -p MainPID || true
+          ss -H -lun '( sport = :53 )' || true
           tail -80 /var/log/iron-proxy.log || true
           exit 1
       - name: Remove stale completion sentinel
@@ -429,6 +449,13 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
+      - name: Fence DNS resolver reactivation before egress audit
+        run: |
+          set -euo pipefail
+          sudo ss -H -lunp '( sport = :53 )'
+          # Keep the resolver available for the action's downloads. Its own stop
+          # step then frees port 53; the runtime mask prevents D-Bus reactivation.
+          sudo systemctl mask --runtime systemd-resolved.service
       - name: Start warn-only egress audit
         uses: ironsh/iron-proxy-action@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         with:
@@ -446,6 +473,8 @@ jobs:
             sleep 2
           done
           echo '::error::The egress audit proxy did not establish DNS and HTTPS readiness'
+          systemctl show systemd-resolved.service -p LoadState -p ActiveState -p SubState -p MainPID || true
+          ss -H -lun '( sport = :53 )' || true
           tail -80 /var/log/iron-proxy.log || true
           exit 1
       - run: bun install --frozen-lockfile
