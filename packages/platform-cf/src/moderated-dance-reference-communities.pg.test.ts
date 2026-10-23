@@ -364,7 +364,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
       expect(originalClock.worker_deadline).toBeNull();
       const upgraded = await runPostgresMigrations({
         connectionString: scoped.toString(),
-        migrations: all,
+        migrations: all.slice(0, 308),
         expectedLedger: all.slice(0, 307),
       });
       if (upgraded.dryRun) throw new Error("Actual queue upgrade required");
