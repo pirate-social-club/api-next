@@ -546,8 +546,10 @@ export function makeControlPlaneRewardSafePurchaseStore() {
 
     /**
      * A confirmed ExecutionFailure bought nothing: the effect is recorded as reverted
-     * with its successful outer receipt, the reservation returns to the leg and the
-     * drawing closes without ever opening entries.
+     * with its successful outer receipt and the reservation returns to the leg, once.
+     * A drawing still waiting for this ticket closes without ever opening entries. One
+     * that already closed at its deadline, before the owner's late execution, stays
+     * exactly as it closed.
      */
     releaseFailedExecution: (input: {
       readonly effectId: string;
@@ -568,13 +570,16 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                 text: `SELECT effect.version, effect.transaction_hash,
                               effect.safe_execution_outcome, effect.reserved_amount_atomic,
                               drawing.pool_leg_id, drawing.drawing_id,
-                              drawing.version AS drawing_version
+                              drawing.version AS drawing_version, drawing.status AS drawing_status
                          FROM reward_chain_effects effect
                          JOIN megapot_pool_drawings drawing
                            ON drawing.purchase_effect_id=effect.effect_id
                           AND drawing.purchase_order='ticket_first_v1'
                         WHERE effect.effect_id=$1 AND effect.execution_mode='safe_owner_v1'
-                          AND effect.state='confirming' AND drawing.status='ticket_pending'
+                          AND effect.state='confirming'
+                          AND (drawing.status='ticket_pending'
+                            OR (drawing.status='closed_purchase_unavailable'
+                              AND drawing.terminal_reason='safe_purchase_not_executed'))
                         FOR UPDATE OF effect, drawing`,
                 values: [input.effectId],
                 readonly: false,
@@ -630,6 +635,7 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                 readonly: false,
               });
               if (released.rowCount !== 1) return yield* failed("effect-conflict");
+              if (row.drawing_status !== "ticket_pending") return;
               yield* closeDrawing(transaction, {
                 legId: text(row, "pool_leg_id"),
                 drawingId: bigint(row, "drawing_id"),

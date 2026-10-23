@@ -115,6 +115,12 @@ cannot refund it; the Safe holds a real ticket for a closed drawing. The custody
 solvency observation still counts that reservation on top of the USDC the purchase
 spent, which in the October 23 rehearsal refused every payout.
 
+A late execution that ends in `ExecutionFailure` bought nothing and spent nothing.
+Settlement records it as reverted and returns its reservation to the leg once, as
+for a failure in time, but leaves the closed drawing exactly as it closed. The
+released price becomes refundable to the leg's funders, so solvency is unchanged.
+An orphaned or unreadable failure keeps its reservation like any other.
+
 The owner settles that case with `scripts/safe-pool-recover-late-purchase.ts`. Its dry
 run re-verifies each held purchase through the same checks as settlement: the
 canonical receipt of the exact prepared call, a ticket for the intended drawing, and

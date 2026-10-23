@@ -40,14 +40,17 @@ const suite = url ? describe : describe.skip;
 /** An accepted participant credit from an earlier drawing, unrelated to the late ticket. */
 const CREDIT = 2_500_000n;
 
-suite("late Safe purchase recovery", () => {
-  const schema = `reward_safe_late_purchase_${process.pid}_${Date.now()}`;
+/**
+ * One schema and fake chain per suite. The Safe starts with `usdcBalance`, and an
+ * accepted credit of CREDIT from an earlier drawing is payable from it.
+ */
+function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
+  const schema = `${prefix}_${process.pid}_${Date.now()}`;
   const admin = new Client({ connectionString: url });
   const scoped = `${url}${url?.includes("?") ? "&" : "?"}options=${encodeURIComponent(
     `-c search_path=${schema}`,
   )}`;
-  // The Safe holds the credit it owes and one ticket's price, which the late purchase spends.
-  const chain = fakeSafeChain({ usdcBalance: CREDIT + PRICE, purchaseSpends: true });
+  const chain = fakeSafeChain({ usdcBalance, purchaseSpends: true });
   const layer = () => makeDirectPostgresControlPlaneLayer(scoped);
   const options = (minimumEntrySeconds = 600) => ({
     layer: layer(),
@@ -152,10 +155,14 @@ suite("late Safe purchase recovery", () => {
   };
 
   /**
-   * The owner executes a leg's purchase only after its drawing closed unexecuted, so
-   * settlement holds it. The ticket lands in `landedDrawingId`.
+   * The owner executes a leg's purchase only after its drawing closed unexecuted and
+   * the scan binds it. A successful ticket lands in `landedDrawingId`.
    */
-  const latePurchase = async (legId: string, landedDrawingId = 212n) => {
+  const lateExecution = async (
+    legId: string,
+    outcome: "success" | "failure",
+    landedDrawingId = 212n,
+  ) => {
     await seedLeg(legId);
     const purchases = makeRewardSafePurchaseCoordinator(options());
     const prepared = await run(purchases.prepare(legId));
@@ -166,14 +173,19 @@ suite("late Safe purchase recovery", () => {
     ).toBe(1);
     const ticketId = chain.execute(
       callOf(prepared.transactionBuilderFile),
-      "success",
+      outcome,
       landedDrawingId,
     );
     const block = chain.head();
     chain.mine(2n);
     await scan();
-    const settled = await run(purchases.settle(prepared.effectId));
-    return { effectId: prepared.effectId, ticketId, block, settled };
+    const settle = () => run(purchases.settle(prepared.effectId));
+    return { effectId: prepared.effectId, ticketId, block, settle };
+  };
+  /** A late successful purchase, which settlement holds. */
+  const latePurchase = async (legId: string, landedDrawingId = 212n) => {
+    const late = await lateExecution(legId, "success", landedDrawingId);
+    return { ...late, settled: await late.settle() };
   };
 
   beforeAll(async () => {
@@ -290,6 +302,44 @@ suite("late Safe purchase recovery", () => {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     await admin.end();
   });
+
+  return {
+    admin,
+    scoped,
+    chain,
+    options,
+    recovery,
+    run,
+    observeSolvency,
+    one,
+    leg,
+    drawing,
+    brakeRevision,
+    setPaused,
+    recover,
+    lateExecution,
+    latePurchase,
+  };
+}
+
+suite("late Safe purchase recovery", () => {
+  // The Safe holds the credit it owes and one ticket's price, which the late purchase spends.
+  const {
+    admin,
+    scoped,
+    chain,
+    options,
+    recovery,
+    run,
+    observeSolvency,
+    one,
+    leg,
+    drawing,
+    brakeRevision,
+    setPaused,
+    recover,
+    latePurchase,
+  } = lateSafePurchaseFixture("reward_safe_late_purchase", CREDIT + PRICE);
 
   test("a recovered late purchase stops blocking an unrelated payout without new funding", async () => {
     const late = await latePurchase("late-ok");
@@ -613,5 +663,123 @@ suite("late Safe purchase recovery", () => {
           WHERE state='reconciliation_required' AND effect_kind='ticket_purchase'`,
       ),
     ).toEqual([{ held: 4 }]);
+  });
+});
+
+suite("late failed Safe purchase", () => {
+  // The Safe holds the credit it owes and the leg's ticket price, which a failed
+  // execution never spends.
+  const { chain, options, run, observeSolvency, one, leg, drawing, lateExecution } =
+    lateSafePurchaseFixture("reward_safe_late_failure", CREDIT + PRICE);
+  const failures = async (effectId: string) =>
+    one(
+      `SELECT effect.state, effect.receipt_status, effect.safe_execution_outcome,
+              effect.settled_amount_atomic,
+              (SELECT count(*)::int FROM reward_chain_effect_transitions event
+                WHERE event.effect_id=effect.effect_id
+                  AND event.event_type='safe_execution_failed') AS failed_events,
+              (SELECT count(*)::int FROM megapot_ticket_inventory ticket
+                WHERE ticket.purchase_effect_id=effect.effect_id) AS tickets
+         FROM reward_chain_effects effect WHERE effect.effect_id=$1`,
+      [effectId],
+    );
+
+  test("a canonical late failure releases its reservation once and leaves its drawing closed", async () => {
+    const late = await lateExecution("fail-ok", "failure");
+    expect(await leg("fail-ok")).toEqual({ reserved: "1000000", spent: "0" });
+    const closed = await drawing("fail-ok");
+    expect(closed).toMatchObject({
+      status: "closed_purchase_unavailable",
+      terminal_reason: "safe_purchase_not_executed",
+      actual: "0",
+      snapshot_id: null,
+      shares: 0,
+    });
+    // The failed purchase spent nothing, so the ticket price still in the Safe backs
+    // the reservation: unlike a late ticket, a late failure never froze payouts.
+    expect(await observeSolvency()).toMatchObject({
+      balanceAtomic: CREDIT + PRICE,
+      reservedPurchaseAtomic: PRICE,
+      pendingRefundAtomic: 0n,
+      outstandingCreditAtomic: CREDIT,
+      solvent: true,
+    });
+
+    expect(await late.settle()).toEqual({ kind: "released" });
+    expect(await leg("fail-ok")).toEqual({ reserved: "0", spent: "0" });
+    expect(await failures(late.effectId)).toEqual([
+      {
+        state: "reverted",
+        receipt_status: "success",
+        safe_execution_outcome: "failure",
+        settled_amount_atomic: null,
+        failed_events: 1,
+        tickets: 0,
+      },
+    ]);
+    // The drawing stays exactly as it closed: no entries, no snapshot, no new history.
+    expect(await drawing("fail-ok")).toEqual(closed);
+    // Exactly once: a replay finds nothing to settle and changes nothing.
+    expect(await late.settle()).toEqual({ kind: "not_bound" });
+    expect(await leg("fail-ok")).toEqual({ reserved: "0", spent: "0" });
+
+    // The released price is owed back to the leg's funders instead, so the obligations
+    // are unchanged and the unrelated credit is paid without new funding.
+    chain.mine(1n);
+    expect(await observeSolvency()).toMatchObject({
+      balanceAtomic: CREDIT + PRICE,
+      reservedPurchaseAtomic: 0n,
+      pendingRefundAtomic: PRICE,
+      outstandingCreditAtomic: CREDIT,
+      solvent: true,
+    });
+    const payout = await run(makeRewardSafePayoutCoordinator(options()).prepare("credit-earlier"));
+    expect(payout.transactionBuilderFile.transactions).toHaveLength(1);
+  });
+
+  test("concurrent settlements of a late failure release it once", async () => {
+    const late = await lateExecution("fail-race", "failure");
+    const outcomes = await Promise.allSettled([late.settle(), late.settle()]);
+    const released = outcomes.filter(
+      (outcome) => outcome.status === "fulfilled" && outcome.value.kind === "released",
+    );
+    expect(released).toHaveLength(1);
+    // The other found the effect already settled, or lost the row lock and was refused.
+    for (const outcome of outcomes) {
+      if (outcome.status === "fulfilled") {
+        expect(["released", "not_bound"]).toContain(outcome.value.kind);
+      } else {
+        expect(outcome.reason).toMatchObject({ reason: "effect-conflict" });
+      }
+    }
+    expect(await leg("fail-race")).toEqual({ reserved: "0", spent: "0" });
+    expect(await failures(late.effectId)).toMatchObject([{ state: "reverted", failed_events: 1 }]);
+  });
+
+  test("an orphaned or unreadable late failure keeps its reservation", async () => {
+    const orphaned = await lateExecution("fail-orphan", "failure");
+    const closed = await drawing("fail-orphan");
+    chain.orphan(orphaned.block);
+    expect(await orphaned.settle()).toEqual({
+      kind: "reconciliation_required",
+      reason: "safe_execution_receipt_not_canonical",
+    });
+    expect(await leg("fail-orphan")).toEqual({ reserved: "1000000", spent: "0" });
+    expect(await failures(orphaned.effectId)).toMatchObject([
+      { state: "reconciliation_required", failed_events: 0 },
+    ]);
+    expect(await drawing("fail-orphan")).toEqual(closed);
+
+    const unreadable = await lateExecution("fail-unreadable", "failure");
+    chain.blocksUnreadable(true);
+    try {
+      await expect(unreadable.settle()).rejects.toMatchObject({ reason: "rpc_unavailable" });
+    } finally {
+      chain.blocksUnreadable(false);
+    }
+    expect(await leg("fail-unreadable")).toEqual({ reserved: "1000000", spent: "0" });
+    expect(await failures(unreadable.effectId)).toMatchObject([
+      { state: "confirming", failed_events: 0 },
+    ]);
   });
 });
