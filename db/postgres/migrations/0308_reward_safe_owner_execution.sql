@@ -30,7 +30,9 @@ ALTER TABLE reward_chain_effects
 
 -- The EOA branch is the 0055 expression unchanged. A Safe effect has no nonce or
 -- signed bytes in any state, fixes its calldata once prepared, and gains its
--- execution evidence only when reconciliation finds a matching execution.
+-- execution evidence only when reconciliation finds a matching execution. A CHECK
+-- passes when its expression is NULL and a regex on NULL is NULL, so the Safe
+-- branch states IS NOT NULL explicitly wherever it also matches a pattern.
 ALTER TABLE reward_chain_effects
   DROP CONSTRAINT reward_chain_effect_prepared_shape,
   ADD CONSTRAINT reward_chain_effect_prepared_shape CHECK (
@@ -74,14 +76,16 @@ ALTER TABLE reward_chain_effects
           AND safe_executor_address IS NULL AND safe_execution_outcome IS NULL
           AND safe_execution_log_index IS NULL)
         OR (state = 'prepared'
-          AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
-          AND calldata_hash ~ '^[0-9a-f]{64}$' AND prepared_at IS NOT NULL
+          AND calldata IS NOT NULL AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
+          AND calldata_hash IS NOT NULL AND calldata_hash ~ '^[0-9a-f]{64}$'
+          AND prepared_at IS NOT NULL
           AND safe_nonce IS NULL AND safe_transaction_hash IS NULL
           AND safe_executor_address IS NULL AND safe_execution_outcome IS NULL
           AND safe_execution_log_index IS NULL)
         OR (state IN ('confirming', 'confirmed', 'reverted', 'reconciliation_required')
-          AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
-          AND calldata_hash ~ '^[0-9a-f]{64}$' AND prepared_at IS NOT NULL
+          AND calldata IS NOT NULL AND calldata ~ '^0x[0-9a-f]{8}([0-9a-f]{2})*$'
+          AND calldata_hash IS NOT NULL AND calldata_hash ~ '^[0-9a-f]{64}$'
+          AND prepared_at IS NOT NULL
           AND safe_nonce IS NOT NULL AND safe_transaction_hash IS NOT NULL
           AND safe_executor_address IS NOT NULL AND safe_execution_outcome IS NOT NULL
           AND safe_execution_log_index IS NOT NULL)))
@@ -140,8 +144,8 @@ BEGIN
     END IF;
     SELECT nonce_authority INTO authority FROM reward_signer_nonces
      WHERE chain_id = NEW.chain_id AND signer_address = NEW.signer_address FOR SHARE;
-    IF authority IS DISTINCT FROM CASE NEW.execution_mode
-         WHEN 'safe_owner_v1' THEN 'safe_owner_v1' ELSE 'eoa_pending_nonce' END THEN
+    IF authority IS DISTINCT FROM (CASE NEW.execution_mode
+         WHEN 'safe_owner_v1' THEN 'safe_owner_v1' ELSE 'eoa_pending_nonce' END) THEN
       RAISE EXCEPTION 'reward chain effect execution mode does not match its signer';
     END IF;
     IF NEW.replacement_of_effect_id IS NOT NULL THEN

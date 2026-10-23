@@ -79,11 +79,14 @@ legs.
 
 ## Zero shares at cutoff
 
-The drawing still proceeds through sweep. If the ticket wins, the winnings are
-claimed into the Safe and the drawing moves to `operational_hold` with reason
-`empty_entry_disposition_pending`. No allocation, rollover or refund is applied
-until the owner ratifies a disposition. A disposition is prospective: it never
-changes a drawing that was already settled.
+The drawing still proceeds through sweep, and a winning ticket is still claimed
+into the Safe. What happens to those winnings is part of the leg's frozen terms:
+the owner ratifies the empty-drawing disposition before the pool opens, it is
+included in the terms hash participants see, and it is never chosen or changed
+after participation. A leg without a ratified disposition cannot open. If a
+settled empty drawing ever lacks one, which opening rules out, its winnings stay
+in the Safe under `operational_hold` and no allocation, rollover or refund is
+applied to it.
 
 ## Funding
 

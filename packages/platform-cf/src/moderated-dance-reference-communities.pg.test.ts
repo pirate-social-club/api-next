@@ -215,7 +215,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
     let confined: Client | undefined;
     try {
       await db.query(`CREATE SCHEMA ${quote(schema)};SET search_path TO ${quote(schema)}`);
-      const all = await loadPostgresMigrations(),
+      const all = (await loadPostgresMigrations()).slice(0, 307),
         prefix = all.slice(0, 306);
       expect(prefix.at(-1)?.version).toBe("0306_moderated_dance_publication_views.sql");
       await runPostgresMigrations({
