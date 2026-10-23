@@ -19205,11 +19205,24 @@ CREATE FUNCTION guard_reward_safe_call_preparation() RETURNS trigger
     SET search_path FROM CURRENT
     AS $$
 DECLARE
+  lease_required BOOLEAN;
   operations_paused BOOLEAN;
+  lease_live BOOLEAN;
 BEGIN
+  SELECT required INTO lease_required FROM reward_operations_run_lease WHERE singleton;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
   SELECT paused INTO operations_paused FROM reward_operations_control
    WHERE singleton FOR SHARE;
   IF NOT FOUND OR operations_paused IS DISTINCT FROM FALSE THEN
+    RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
+  END IF;
+  IF lease_required IS DISTINCT FROM TRUE THEN RETURN NEW; END IF;
+  SELECT run_id IS NOT NULL AND clock_timestamp() < expires_at
+         AND clock_timestamp() < absolute_deadline
+    INTO lease_live FROM reward_operations_run_lease WHERE singleton FOR SHARE;
+  IF lease_live IS DISTINCT FROM TRUE THEN
     RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001';
   END IF;
   RETURN NEW;

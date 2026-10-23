@@ -74,6 +74,13 @@ still execute later, so a prepared effect only moves forward on an observed
 execution, and the pool drawing that needed it closes around it while the
 effect keeps its reservation.
 
+Preparing a Safe call hands the owner something new to execute, so the database
+admits it under the same authority as storing a newly signed EOA transaction: a
+running brake, and where a reward run lease is required, a live lease (migration
+0314). A lease that was never acquired, has expired or was released stops new
+calls. Observing and settling executions is never refused, so a call prepared
+under a live lease still settles after its run ends.
+
 The purchase, claim, approval and payout repositories keep their business
 confirmation steps (inventory, receipt evidence, leg spend, allocation, credit
 transitions). Only the sign and broadcast steps branch by mode.

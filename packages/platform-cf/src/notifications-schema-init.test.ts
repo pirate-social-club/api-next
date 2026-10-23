@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0313 set", () => {
-  expect(migrations).toHaveLength(313);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0314 set", () => {
+  expect(migrations).toHaveLength(314);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 313 }, (_, i) => i + 1),
+    Array.from({ length: 314 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -228,9 +228,13 @@ test("the actual checksum loader supplies the complete contiguous repository 000
     version: "0312_reward_ticket_first_pool.sql",
     checksum: "07b49f41ca0c5465ce8202f2e1d55284fe686d2624c88068e28473d8f96b6f6c",
   });
-  expect(migrations.at(-1)).toMatchObject({
+  expect(migrations[312]).toMatchObject({
     version: "0313_reward_leg_purchase_order_from_custody.sql",
     checksum: "6fe67b05c1821c91ba7938650462d3daaf0c0c172ac7583fd7804bb0494daf6c",
+  });
+  expect(migrations.at(-1)).toMatchObject({
+    version: "0314_reward_safe_preparation_lease.sql",
+    checksum: "993d034ab6454b94c70b532b7c034b3603dbc63629ae478f9811727ef8557998",
   });
 });
 

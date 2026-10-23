@@ -222,6 +222,85 @@ suite("owner-executed Safe reward chain effects", () => {
     await prepare(id, `0xa9059cbb${"44".repeat(64)}`, "4".repeat(64));
   });
 
+  const setPaused = async (paused: boolean) => {
+    const { revision } = (
+      await db.query<{ revision: string }>(
+        "SELECT revision::text FROM reward_operations_control WHERE singleton",
+      )
+    ).rows[0] ?? { revision: "" };
+    await db.query("SELECT set_reward_operations_paused_v1($1::bigint,$2,'safe_mode_lease')", [
+      revision,
+      paused,
+    ]);
+  };
+  /** Only a deployment that says so may change whether a lease is required. */
+  const setLeaseRequired = async (required: boolean) => {
+    await db.query("BEGIN");
+    await db.query("SET LOCAL pirate.reward_run_lease_requirement_change = 'deployment'");
+    await db.query("UPDATE reward_operations_run_lease SET required=$1 WHERE singleton", [
+      required,
+    ]);
+    await db.query("COMMIT");
+  };
+  /** A lease is acquired while paused; operations then resume under it. */
+  const acquireLease = async (runId: string) => {
+    await setPaused(true);
+    const { fence } = (
+      await db.query<{ fence: string }>(
+        "SELECT acquire_reward_run_lease_v1($1,60,600)::text AS fence",
+        [runId],
+      )
+    ).rows[0] ?? { fence: "" };
+    await setPaused(false);
+    return fence;
+  };
+  const callFor = (byte: string) => [`0xa9059cbb${byte.repeat(128)}`, byte.repeat(64)] as const;
+
+  test("where a run lease is required, only a live lease prepares a Safe call", async () => {
+    await setLeaseRequired(true);
+    try {
+      // Required, running, and no lease was ever acquired.
+      const missing = await effect("safe_owner_v1");
+      await expect(prepare(missing, ...callFor("5"))).rejects.toMatchObject({ code: "PR001" });
+
+      await acquireLease("safe-mode-live");
+      await prepare(missing, ...callFor("5"));
+
+      // The lease's time ran out while operations were still running.
+      await db.query(
+        `UPDATE reward_operations_run_lease
+            SET expires_at = clock_timestamp() - interval '1 second' WHERE singleton`,
+      );
+      const expired = await effect("safe_owner_v1");
+      await expect(prepare(expired, ...callFor("6"))).rejects.toMatchObject({ code: "PR001" });
+
+      const fence = await acquireLease("safe-mode-released");
+      await db.query("SELECT release_reward_run_lease_v1('safe-mode-released',$1::bigint)", [
+        fence,
+      ]);
+      const released = await effect("safe_owner_v1");
+      await expect(prepare(released, ...callFor("7"))).rejects.toMatchObject({ code: "PR001" });
+
+      // What the chain did is still recorded after the run stopped: the call prepared
+      // under the live lease is observed and settled without one.
+      await observe(missing, 60);
+      await settle(missing, "confirmed", "success");
+      expect(
+        (
+          await db.query<{ state: string }>(
+            "SELECT state FROM reward_chain_effects WHERE effect_id=$1",
+            [missing],
+          )
+        ).rows,
+      ).toEqual([{ state: "confirmed" }]);
+    } finally {
+      await setLeaseRequired(false);
+    }
+    // Where no lease is required, a running brake alone still prepares.
+    const unrequired = await effect("safe_owner_v1");
+    await prepare(unrequired, ...callFor("8"));
+  });
+
   test("the server-signed path keeps its signed-bytes shape and transitions", async () => {
     const id = await effect("eoa");
     await move(id, 2, "state='nonce_reserved', nonce=0");
