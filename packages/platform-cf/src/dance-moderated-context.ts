@@ -139,7 +139,7 @@ const verifyTerms = Effect.fn("ModeratedDanceContext.verifyTerms")(function* (
     ])) !== policy.rubricHash ||
     (yield* canonicalBodyHash(terms.safety_policy)) !== policy.safetyHash ||
     (yield* canonicalBodyHash([
-      "dance-body-normalization-v1",
+      "dance-body-normalization-v2",
       "6.1.4",
       terms.profile.normalizationWidth,
       terms.profile.normalizationHeight,
