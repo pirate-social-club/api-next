@@ -150,6 +150,7 @@ jobs:
   postgres17-namespace:
     name: postgres17-namespace
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         # Service images are pulled before steps, so Iron Proxy cannot observe
@@ -223,6 +224,7 @@ jobs:
   # by the aggregate gate; general-suite egress auditing remains unchanged.
   postgres17-recovery:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     services:
@@ -262,6 +264,7 @@ jobs:
 
   hns-regtest:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     services:
@@ -362,6 +365,7 @@ jobs:
   postgres17-general:
     name: postgres17-general-${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -552,6 +556,7 @@ jobs:
 
   postgres18-shape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         # The staging provider currently runs PostgreSQL 18.6. This exact
