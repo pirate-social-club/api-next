@@ -207,7 +207,8 @@ export function makeSafePoolPilotJob(
       }),
       authority: makeControlPlaneRewardRunAuthority(layer),
     });
-    const cutoff = makeMegapotTicketFirstCutoff({ layer });
+    // Every listing below is scoped to the admitted attestation before its limit.
+    const cutoff = makeMegapotTicketFirstCutoff({ layer, attestationId: deployment.attestationId });
     const fundingStore = makeControlPlaneRewardFundingStore(layer);
     const funding = makeRewardFundingCoordinator({ store: fundingStore, rpc, safePilot });
     const allocation = makeMegapotAllocationCoordinator({
@@ -233,19 +234,25 @@ export function makeSafePoolPilotJob(
           if (intent?.attestationId !== deployment.attestationId) return null;
           return yield* funding.reconcile(fundingEffectId);
         }),
-      closeUnexecutedPurchases: purchases.closeUnexecuted,
+      closeUnexecutedPurchases: (limit) =>
+        purchases.closeUnexecuted(deployment.attestationId, limit),
       loadLegs: (limit) => safeWork.loadLegs(custody, limit),
       preparePurchase: purchases.prepare,
       freezeDue: cutoff.freezeDue,
       loadDrawings: (statuses, limit) =>
-        work.loadDrawings({ statuses, purchaseOrder: "ticket_first_v1", limit }),
+        work.loadDrawings({
+          statuses,
+          purchaseOrder: "ticket_first_v1",
+          limit,
+          attestationId: deployment.attestationId,
+        }),
       publishCommitment: (value) => commitment.commit(drawing(value)),
       sweep: (value) => sweep.sweep(drawing(value)),
       settleClaim: (value) => claims.settle(drawing(value)),
       prepareClaim: (value) => claims.prepare(drawing(value)),
       allocate: (value) => allocation.allocate(drawing(value)),
       observeSolvency: () => solvency.observe(deployment.attestationId),
-      loadCredits: (limit) => work.loadCredits(limit, "ticket_first_v1"),
+      loadCredits: (limit) => work.loadCredits(limit, "ticket_first_v1", deployment.attestationId),
       preparePayout: payouts.prepare,
     });
     console.info(

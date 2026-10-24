@@ -275,11 +275,17 @@ export function makeRewardSafePurchaseCoordinator(
     return { kind: "confirmed" as const, ticketId, drawingId: settlement.drawingId };
   });
 
+  /** Close the attestation's unexecuted purchases; another attestation's are never read. */
   const closeUnexecuted = Effect.fn("RewardSafePurchaseCoordinator.closeUnexecuted")(function* (
+    attestationId: string,
     limit: number,
   ) {
     return yield* provide(
-      purchases.closeUnexecuted({ minimumEntrySeconds: options.minimumEntrySeconds, limit }),
+      purchases.closeUnexecuted({
+        attestationId,
+        minimumEntrySeconds: options.minimumEntrySeconds,
+        limit,
+      }),
     );
   });
 

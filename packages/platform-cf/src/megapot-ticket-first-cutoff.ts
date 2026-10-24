@@ -66,6 +66,8 @@ function sameBeneficiaries(left: readonly Beneficiary[], right: readonly Benefic
  */
 export function makeMegapotTicketFirstCutoff(options: {
   readonly layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+  /** Only drawings of this attestation's legs are selected, locked and frozen. */
+  readonly attestationId: string;
   readonly now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -104,8 +106,14 @@ export function makeMegapotTicketFirstCutoff(options: {
                       AND drawing.purchase_order='ticket_first_v1'
                       AND drawing.status='entry_open'
                       AND drawing.entry_cutoff_at <= $3::timestamptz
+                      AND leg.attestation_id=$4
                     FOR UPDATE OF drawing`,
-            values: [input.poolLegId, input.drawingId.toString(), input.frozenAt],
+            values: [
+              input.poolLegId,
+              input.drawingId.toString(),
+              input.frozenAt,
+              options.attestationId,
+            ],
             readonly: false,
           });
           if (current.rows.length !== 1) return yield* failed("cutoff-conflict");
@@ -269,9 +277,10 @@ export function makeMegapotTicketFirstCutoff(options: {
                   WHERE drawing.purchase_order='ticket_first_v1'
                     AND drawing.status='entry_open'
                     AND drawing.entry_cutoff_at <= $1::timestamptz
+                    AND leg.attestation_id=$3
                   ORDER BY drawing.entry_cutoff_at, drawing.pool_leg_id, drawing.drawing_id
                   LIMIT $2`,
-          values: [frozenAt, limit],
+          values: [frozenAt, limit, options.attestationId],
           readonly: true,
         });
         return yield* Effect.forEach(due.rows as Row[], (row) =>

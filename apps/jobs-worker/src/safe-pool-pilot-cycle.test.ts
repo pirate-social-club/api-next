@@ -201,9 +201,14 @@ describe("Safe pool pilot cycle", () => {
     ) => {
       fetches.length = 0;
       const statements: string[] = [];
+      const parameters = new Map<string, unknown[][]>();
       const published: string[] = [];
       const execute = (statement: ControlPlaneStatement) => {
         statements.push(statement.label);
+        parameters.set(statement.label, [
+          ...(parameters.get(statement.label) ?? []),
+          [...statement.values],
+        ]);
         const rows =
           statement.label === "megapot-drawing-observation.attestation.read" ? [row] : [];
         return Effect.succeed({ rows, rowCount: rows.length });
@@ -246,7 +251,7 @@ describe("Safe pool pilot cycle", () => {
         ),
       );
       const failure = exit._tag === "Success" ? exit.value : exit;
-      return { failure, statements, fetches: [...fetches], published };
+      return { failure, statements, parameters, fetches: [...fetches], published };
     };
     try {
       for (const [environment, productionEnabled, row] of [
@@ -277,6 +282,18 @@ describe("Safe pool pilot cycle", () => {
         const admitted = await cycle(environment, productionEnabled, row);
         expect(admitted.fetches.length).toBeGreaterThan(0);
         expect(admitted.statements.length).toBeGreaterThan(1);
+        // Every drawing, cutoff, closing and credit listing is bound to the admitted
+        // attestation, so another attestation's work is never selected.
+        for (const label of [
+          "megapot-ticket-first-cutoff.due.read",
+          "reward-safe-purchase.unexecuted.read",
+          "megapot-work.drawings.read",
+          "megapot-work.credits.read",
+        ]) {
+          const runs = admitted.parameters.get(label) ?? [];
+          expect(runs.length).toBeGreaterThan(0);
+          for (const values of runs) expect(values).toContain("megapot-safe-pilot");
+        }
       }
     } finally {
       globalThis.fetch = original;

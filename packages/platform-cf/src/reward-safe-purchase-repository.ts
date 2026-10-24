@@ -682,7 +682,11 @@ export function makeControlPlaneRewardSafePurchaseStore() {
      * window was still possible. The prepared call stays watched and keeps its
      * reservation: the owner may still execute it, and that execution is reconciled.
      */
-    closeUnexecuted: (input: { readonly minimumEntrySeconds: number; readonly limit: number }) =>
+    closeUnexecuted: (input: {
+      readonly attestationId: string;
+      readonly minimumEntrySeconds: number;
+      readonly limit: number;
+    }) =>
       mapped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
@@ -694,13 +698,15 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                          FROM megapot_pool_drawings drawing
                          JOIN reward_chain_effects effect
                            ON effect.effect_id=drawing.purchase_effect_id
+                         JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
                         WHERE drawing.purchase_order='ticket_first_v1'
                           AND drawing.status='ticket_pending' AND effect.state='prepared'
                           AND drawing.entry_cutoff_at - make_interval(secs => $1::integer)
                               <= clock_timestamp()
+                          AND leg.attestation_id=$3
                         ORDER BY drawing.entry_cutoff_at, drawing.pool_leg_id
                         LIMIT $2 FOR UPDATE OF drawing`,
-                values: [input.minimumEntrySeconds, input.limit],
+                values: [input.minimumEntrySeconds, input.limit, input.attestationId],
                 readonly: false,
               });
               for (const row of due.rows as Row[]) {

@@ -58,14 +58,18 @@ export class MegapotWorkStorageFailed extends Data.TaggedError("MegapotWorkStora
 export type MegapotPurchaseOrder = "commit_first" | "ticket_first_v1";
 
 export interface MegapotWorkStore {
+  /** With an attestation, only drawings of its legs are selected, before the limit. */
   readonly loadDrawings: (input: {
     readonly statuses: readonly MegapotDrawingWorkStatus[];
     readonly purchaseOrder: MegapotPurchaseOrder;
     readonly limit: number;
+    readonly attestationId?: string;
   }) => Effect.Effect<readonly MegapotDrawingWork[], MegapotWorkStorageFailed>;
+  /** With an attestation, only credits allocated from its legs are selected, before the limit. */
   readonly loadCredits: (
     limit: number,
     purchaseOrder: MegapotPurchaseOrder,
+    attestationId?: string,
   ) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
   readonly loadRefunds: (
     limit: number,
@@ -195,6 +199,7 @@ export function makeControlPlaneMegapotWorkRepository() {
       readonly statuses: readonly MegapotDrawingWorkStatus[];
       readonly purchaseOrder: MegapotPurchaseOrder;
       readonly limit: number;
+      readonly attestationId?: string;
     }) =>
       mapped(
         Effect.gen(function* () {
@@ -211,9 +216,10 @@ export function makeControlPlaneMegapotWorkRepository() {
                      JOIN megapot_drawing_observations observation
                        ON observation.observation_id=drawing.observation_id
                     WHERE drawing.status=ANY($1::text[]) AND drawing.purchase_order=$3
+                      AND ($4::text IS NULL OR leg.attestation_id=$4)
                     ORDER BY drawing.updated_at,drawing.pool_leg_id,drawing.drawing_id
                     LIMIT $2`,
-            values: [input.statuses, input.limit, input.purchaseOrder],
+            values: [input.statuses, input.limit, input.purchaseOrder, input.attestationId ?? null],
             readonly: true,
           });
           return yield* Effect.try({
@@ -223,7 +229,7 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
-    loadCredits: (limit: number, purchaseOrder: MegapotPurchaseOrder) =>
+    loadCredits: (limit: number, purchaseOrder: MegapotPurchaseOrder, attestationId?: string) =>
       mapped(
         Effect.gen(function* () {
           if (!validLimit(limit)) return yield* failed("invalid-row");
@@ -245,8 +251,14 @@ export function makeControlPlaneMegapotWorkRepository() {
                        JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
                       WHERE allocation.credit_id=credit.credit_id
                         AND leg.purchase_order='ticket_first_v1') = ($2='ticket_first_v1')
+                      AND ($3::text IS NULL OR EXISTS (
+                     SELECT 1 FROM megapot_allocations allocation
+                       JOIN megapot_allocation_batches batch
+                         ON batch.allocation_batch_id=allocation.allocation_batch_id
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+                      WHERE allocation.credit_id=credit.credit_id AND leg.attestation_id=$3))
                     ORDER BY credit.created_at,credit.credit_id LIMIT $1`,
-            values: [limit, purchaseOrder],
+            values: [limit, purchaseOrder, attestationId ?? null],
             readonly: true,
           });
           return yield* Effect.try({
@@ -515,7 +527,8 @@ export const makeControlPlaneMegapotWorkStore = (
     mapped(Effect.provide(layer)(effect));
   return {
     loadDrawings: (input) => provide(repository.loadDrawings(input)),
-    loadCredits: (limit, purchaseOrder) => provide(repository.loadCredits(limit, purchaseOrder)),
+    loadCredits: (limit, purchaseOrder, attestationId) =>
+      provide(repository.loadCredits(limit, purchaseOrder, attestationId)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
     loadPendingFunding: (input) => provide(repository.loadPendingFunding(input)),

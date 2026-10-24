@@ -24,6 +24,7 @@ import { makeControlPlaneMegapotCommitmentStore } from "./megapot-commitment-rep
 import { makeMegapotSweepCoordinator } from "./megapot-sweep-coordinator.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { makeMegapotTicketFirstCutoff } from "./megapot-ticket-first-cutoff.ts";
+import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeRewardFundingCoordinator } from "./reward-funding-coordinator.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
@@ -48,6 +49,8 @@ import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const PRODUCTION = { runtimeEnvironment: "production", productionEnabled: true } as const;
+/** Another environment's Safe attestation in the same database, never the pilot's work. */
+const OTHER_ATTESTATION = "megapot-base-sepolia-other-safe";
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 }
@@ -105,7 +108,10 @@ suite("ticket-first owner-executed Safe pools", () => {
   };
 
   /** An active ticket-first leg with its own offer, funded for ten tickets. */
-  const seedLeg = async (legId: string) => {
+  const seedLeg = async (
+    legId: string,
+    deployment = { attestationId: ATTESTATION, chainId: 8453, token: USDC },
+  ) => {
     await admin.query(
       `INSERT INTO song_reward_offers (offer_id, community_id, post_id, audio_revision,
        created_by_account_id, status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
@@ -124,13 +130,49 @@ suite("ticket-first owner-executed Safe pools", () => {
          empty_pool_policy, funding_source, funded_atomic, purchase_order, legal_activation_gate,
          activated_at)
        VALUES ($1,$6,'megapot_pool','active','account-owner',
-         'refund_to_funders_pro_rata',$2,clock_timestamp()-interval '1 day',8453,$3,6,1,
+         'refund_to_funders_pro_rata',$2,clock_timestamp()-interval '1 day',$7,$3,6,1,
          $4,300,'equal_v1','keccak_packed_v1',$5,1,ARRAY['study','karaoke'],7000,
          'no_purchase','leg_budget',10000000,'ticket_first_v1','production_approved',
          clock_timestamp())`,
-      [legId, hash("3"), USDC, PRICE.toString(), ATTESTATION, `offer-${legId}`],
+      [
+        legId,
+        hash("3"),
+        deployment.token,
+        PRICE.toString(),
+        deployment.attestationId,
+        `offer-${legId}`,
+        deployment.chainId,
+      ],
     );
   };
+  /**
+   * Copies a drawing onto another attestation's leg with triggers disabled, with the
+   * given columns overridden, as the work of an attestation the pilot is not admitted to.
+   */
+  const cloneDrawing = async (
+    fromLegId: string,
+    toLegId: string,
+    overrides: Readonly<Record<string, unknown>> = {},
+  ) => {
+    await admin.query("SET session_replication_role = replica");
+    await admin.query(
+      `INSERT INTO megapot_pool_drawings
+         SELECT (jsonb_populate_record(NULL::megapot_pool_drawings,
+                   to_jsonb(drawing) || $2::jsonb)).*
+           FROM megapot_pool_drawings drawing WHERE pool_leg_id=$1 AND drawing_id=212`,
+      [fromLegId, JSON.stringify({ pool_leg_id: toLegId, ...overrides })],
+    );
+    await admin.query("SET session_replication_role = origin");
+  };
+  const transitions = async (legId: string) =>
+    Number(
+      (
+        await admin.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM megapot_pool_drawing_transitions WHERE pool_leg_id=$1",
+          [legId],
+        )
+      ).rows[0]?.count,
+    );
 
   beforeAll(async () => {
     await admin.connect();
@@ -188,6 +230,35 @@ suite("ticket-first owner-executed Safe pools", () => {
     );
     for (const legId of ["tf-ok", "tf-fail", "tf-late", "tf-wrong", "tf-empty"]) {
       await seedLeg(legId);
+    }
+    await admin.query(
+      `INSERT INTO megapot_deployment_attestations (attestation_id, environment, chain_id,
+         jackpot_address, usdc_address, ticket_nft_address, custody_address, referrer_address,
+         source_tag, jackpot_code_hash, usdc_code_hash, ticket_nft_code_hash,
+         attestation_block_number, attestation_block_hash, abi_version, status, verified_at)
+       VALUES ($1,'staging',84532,$2,$3,$4,$5,$6,$7,$8,$9,$10,900,$11,'megapot_v2','active',
+         clock_timestamp())`,
+      [
+        OTHER_ATTESTATION,
+        address("1"),
+        address("2"),
+        address("3"),
+        address("4"),
+        address("5"),
+        SOURCE,
+        hash("7"),
+        hash("e"),
+        hash("f"),
+        hash("a"),
+      ],
+    );
+    // Its legs are on its own chain and token, as a staging attestation's must be.
+    for (const legId of ["tf-other-cutoff", "tf-other-close", "tf-another-work"]) {
+      await seedLeg(legId, {
+        attestationId: OTHER_ATTESTATION,
+        chainId: 84_532,
+        token: address("2"),
+      });
     }
     await admin.query("SET session_replication_role = origin");
   });
@@ -251,6 +322,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     await admin.query("SET session_replication_role = origin");
     const cutoff = makeMegapotTicketFirstCutoff({
       layer: makeDirectPostgresControlPlaneLayer(scoped),
+      attestationId: ATTESTATION,
       now: () => Date.now() + 3 * 3_600_000,
     });
     const frozen = await run(cutoff.freezeDue());
@@ -343,6 +415,27 @@ suite("ticket-first owner-executed Safe pools", () => {
       effectId: second.effectId,
     });
     expect(await drawing("tf-ok")).toMatchObject({ status: "claimed" });
+    // The pilot lists only its own attestation's drawings. Another attestation's claimed
+    // drawing, copied with tf-ok's timestamps on a leg that sorts first, comes first
+    // without the scope and never with it.
+    await cloneDrawing("tf-ok", "tf-another-work");
+    const workList = makeControlPlaneMegapotWorkStore(layer);
+    const claimed = (attestationId?: string) =>
+      run(
+        workList.loadDrawings({
+          statuses: ["claimed"],
+          purchaseOrder: "ticket_first_v1",
+          limit: 1,
+          ...(attestationId === undefined ? {} : { attestationId }),
+        }),
+      );
+    expect(await claimed()).toMatchObject([{ poolLegId: "tf-another-work" }]);
+    expect(await claimed(ATTESTATION)).toMatchObject([
+      { poolLegId: "tf-ok", attestationId: ATTESTATION },
+    ]);
+    expect(await claimed(OTHER_ATTESTATION)).toMatchObject([
+      { poolLegId: "tf-another-work", attestationId: OTHER_ATTESTATION },
+    ]);
     expect(
       (
         await admin.query(
@@ -442,6 +535,11 @@ suite("ticket-first owner-executed Safe pools", () => {
         safePilot: PRODUCTION,
       }).observe(ATTESTATION),
     );
+    // The pilot lists only credits allocated from its own attestation's legs.
+    expect(
+      [...(await run(workList.loadCredits(50, "ticket_first_v1", ATTESTATION)))].sort(),
+    ).toEqual(credits.map((credit) => credit.credit_id).sort());
+    expect(await run(workList.loadCredits(50, "ticket_first_v1", OTHER_ATTESTATION))).toEqual([]);
     const payouts = makeRewardSafePayoutCoordinator(options());
     for (const credit of credits) {
       const payout = await run(payouts.prepare(credit.credit_id));
@@ -497,12 +595,19 @@ suite("ticket-first owner-executed Safe pools", () => {
   test("an unexecuted purchase closes at its deadline and keeps its reservation", async () => {
     const prepared = await run(makeRewardSafePurchaseCoordinator(options()).prepare("tf-late"));
     if (prepared.kind !== "prepared") throw new Error("not prepared");
+    // Another attestation's unexecuted drawing, due first, is never read or closed.
+    await cloneDrawing("tf-late", "tf-other-close", {
+      entry_cutoff_at: "2026-01-01T00:00:00.000Z",
+    });
     const late = makeRewardSafePurchaseCoordinator(options(4 * 3_600));
-    expect(await run(late.closeUnexecuted(10))).toBe(1);
+    expect(await run(late.closeUnexecuted(ATTESTATION, 1))).toBe(1);
+    expect(await run(late.closeUnexecuted(ATTESTATION, 10))).toBe(0);
     expect(await drawing("tf-late")).toMatchObject({
       status: "closed_purchase_unavailable",
       terminal_reason: "safe_purchase_not_executed",
     });
+    expect(await drawing("tf-other-close")).toMatchObject({ status: "ticket_pending" });
+    expect(await transitions("tf-other-close")).toBe(0);
     expect(await leg("tf-late")).toEqual({ reserved: "1000000", spent: "0" });
     expect(
       (
@@ -626,16 +731,31 @@ suite("ticket-first owner-executed Safe pools", () => {
     chain.mine(2n);
     await scan();
     expect(await run(purchases.settle(prepared.effectId))).toMatchObject({ kind: "confirmed" });
-    const cutoff = makeMegapotTicketFirstCutoff({
-      layer: makeDirectPostgresControlPlaneLayer(scoped),
-      now: () => Date.now() + 3 * 3_600_000,
+    // Another attestation's open drawing, due first, is never selected or frozen.
+    await cloneDrawing("tf-empty", "tf-other-cutoff", {
+      entry_cutoff_at: "2026-01-01T00:00:00.000Z",
     });
-    await run(cutoff.freezeDue());
+    const cutoffFor = (attestationId: string) =>
+      makeMegapotTicketFirstCutoff({
+        layer: makeDirectPostgresControlPlaneLayer(scoped),
+        attestationId,
+        now: () => Date.now() + 3 * 3_600_000,
+      });
+    expect(await run(cutoffFor(ATTESTATION).freezeDue(1))).toEqual([
+      { poolLegId: "tf-empty", drawingId: 212n, status: "held" },
+    ]);
+    expect(await run(cutoffFor(ATTESTATION).freezeDue())).toEqual([]);
     expect(await drawing("tf-empty")).toMatchObject({
       status: "operational_hold",
       terminal_reason: "empty_ticketed_drawing",
       frozen_share_count: 0,
     });
+    expect(await drawing("tf-other-cutoff")).toMatchObject({ status: "entry_open" });
+    expect(await transitions("tf-other-cutoff")).toBe(0);
+    // The copy is real due work: its own attestation's cutoff takes it.
+    expect(await run(cutoffFor(OTHER_ATTESTATION).freezeDue())).toEqual([
+      { poolLegId: "tf-other-cutoff", drawingId: 212n, status: "held" },
+    ]);
   });
 
   test("a pool leg's purchase order follows its custody", async () => {

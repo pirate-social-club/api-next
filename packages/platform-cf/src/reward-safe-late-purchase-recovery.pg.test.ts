@@ -177,7 +177,9 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
     if (prepared.kind !== "prepared") throw new Error(`not prepared: ${prepared.kind}`);
     // A minimum entry window longer than the time left makes the deadline already past.
     expect(
-      await run(makeRewardSafePurchaseCoordinator(options(4 * 3_600)).closeUnexecuted(10)),
+      await run(
+        makeRewardSafePurchaseCoordinator(options(4 * 3_600)).closeUnexecuted(ATTESTATION, 10),
+      ),
     ).toBe(1);
     const ticketId = chain.execute(
       callOf(prepared.transactionBuilderFile),

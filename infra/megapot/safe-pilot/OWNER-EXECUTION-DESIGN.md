@@ -203,7 +203,9 @@ a staging attestation on Base Sepolia, and a development worker a test or stagin
 one. Both workers refuse `SAFE_POOL_PRODUCTION_ENABLED` outside production. The
 cycle stops after reading the attestation it is not admitted to, before any chain
 read, write or publication, and funding refuses another environment's leg before
-writing its intent. Production
+writing its intent. Every listing the cycle works from (cutoff, unexecuted purchases,
+drawings for commitment, sweep, claim and allocation, and credits) selects only the
+admitted attestation's work, before its limit. Production
 reward work still requires the run lease and an unpaused brake, and a production
 leg must carry `legal_activation_gate = 'production_approved'` to be active (see
 Production activation below).
