@@ -127,28 +127,47 @@ const SponsoredSendConfigFields = {
   PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: Config.boolean(
     "PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED",
   ).pipe(Config.withDefault(false)),
-  PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: Config.string(
-    "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT",
-  ).pipe(Config.withDefault("")),
-  PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: Config.string(
-    "PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT",
-  ).pipe(Config.withDefault("")),
-  PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: Config.string(
-    "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT",
-  ).pipe(Config.withDefault("")),
-  PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: Config.string("PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI").pipe(
+  // The seven limits in one text binding, so Send fits a Worker's 128-binding limit.
+  PRIVY_SPONSORED_SEND_LIMITS_JSON: Config.string("PRIVY_SPONSORED_SEND_LIMITS_JSON").pipe(
     Config.withDefault(""),
   ),
-  PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: Config.string(
-    "PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI",
-  ).pipe(Config.withDefault("")),
-  PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: Config.string(
-    "PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI",
-  ).pipe(Config.withDefault("")),
-  PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: Config.string(
-    "PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI",
-  ).pipe(Config.withDefault("")),
 } as const;
+
+const SPONSORED_SEND_LIMIT_KEYS = [
+  "account_daily_count",
+  "wallet_daily_count",
+  "platform_daily_count",
+  "gas_budget_wei",
+  "account_daily_gas_wei",
+  "wallet_daily_gas_wei",
+  "platform_daily_gas_wei",
+] as const;
+
+/** The seven limit strings in key order; all empty when the binding is unset. */
+function sponsoredSendLimitValues(json: string): readonly string[] {
+  if (json === "") return SPONSORED_SEND_LIMIT_KEYS.map(() => "");
+  let limits: unknown;
+  try {
+    limits = JSON.parse(json);
+  } catch {
+    throw new Error("invalid sponsored send configuration");
+  }
+  if (
+    typeof limits !== "object" ||
+    limits === null ||
+    Array.isArray(limits) ||
+    Object.keys(limits).length !== SPONSORED_SEND_LIMIT_KEYS.length
+  ) {
+    throw new Error("invalid sponsored send configuration");
+  }
+  return SPONSORED_SEND_LIMIT_KEYS.map((key) => {
+    const value = Reflect.get(limits, key);
+    if (!Object.hasOwn(limits, key) || typeof value !== "string" || value === "") {
+      throw new Error("invalid sponsored send configuration");
+    }
+    return value;
+  });
+}
 
 export type SponsoredSendConfigValue = Readonly<{
   perAccountUtcDay: number;
@@ -163,28 +182,15 @@ export type SponsoredSendConfigValue = Readonly<{
 /**
  * Sponsorship is off unless every limit is set. Production also needs
  * PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED, which is refused anywhere else.
+ * PRIVY_SPONSORED_SEND_LIMITS_JSON holds exactly the seven limit keys as strings.
  */
 export function parseSponsoredSendConfig(input: {
   readonly API_NEXT_ENV: AppEnvValue["API_NEXT_ENV"];
   readonly PRIVY_SPONSORED_SEND_ENABLED: boolean;
   readonly PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: boolean;
-  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: string;
-  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: string;
-  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: string;
-  readonly PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: string;
-  readonly PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: string;
-  readonly PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: string;
-  readonly PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: string;
+  readonly PRIVY_SPONSORED_SEND_LIMITS_JSON: string;
 }): SponsoredSendConfigValue | null {
-  const values = [
-    input.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT,
-    input.PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT,
-    input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT,
-    input.PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI,
-    input.PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI,
-    input.PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI,
-    input.PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI,
-  ];
+  const values = sponsoredSendLimitValues(input.PRIVY_SPONSORED_SEND_LIMITS_JSON);
   const production = input.API_NEXT_ENV === "production";
   if (
     !input.PRIVY_SPONSORED_SEND_ENABLED &&
