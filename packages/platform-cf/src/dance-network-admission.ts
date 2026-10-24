@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 import {
   DanceIntakeDiagnosticCode,
   DanceReviewServiceFailure,
@@ -13,9 +13,7 @@ import {
 } from "./dance-network-admission-model.ts";
 export interface DanceNetworkNamespace {
   readonly getByName: (name: string) => {
-    readonly admit: (
-      request: typeof DanceNetworkAdmissionRequest.Type,
-    ) => Promise<DanceNetworkAdmissionDecision>;
+    readonly admit: (request: typeof DanceNetworkAdmissionRequest.Type) => Promise<unknown>;
   };
 }
 export type DanceNetworkAdmission = (
@@ -23,6 +21,26 @@ export type DanceNetworkAdmission = (
 ) => Effect.Effect<void, RateLimited | DanceReviewServiceFailure>;
 const unavailable = (diagnosticCode: typeof DanceIntakeDiagnosticCode.Type) =>
   new DanceReviewServiceFailure({ reason: "unavailable", diagnosticCode });
+const parseDecision = Schema.decodeUnknownSync(DanceNetworkAdmissionDecision, {
+  onExcessProperty: "error",
+});
+
+function decodeDecision(raw: unknown) {
+  if (!Predicate.isObject(raw)) return parseDecision(raw);
+  const descriptors = Object.getOwnPropertyDescriptors(raw);
+  const disposer = descriptors[Symbol.dispose];
+  const dispose = disposer?.value;
+  if (disposer !== undefined && !Predicate.isFunction(dispose))
+    throw unavailable("dance_network_decision_decode");
+  // Workers RPC adds this lifecycle hook even to plain result objects. Preserve
+  // every other own property so unexpected decision fields still fail closed.
+  delete descriptors[Symbol.dispose];
+  try {
+    return parseDecision(Object.create(null, descriptors));
+  } finally {
+    if (Predicate.isFunction(dispose)) dispose.call(raw);
+  }
+}
 
 /** Lazy by design: committed command recovery must not require a live limiter,
  * address or key. Only the transport-owned edge address reaches this adapter. */
@@ -94,9 +112,7 @@ export function makeDanceNetworkAdmission(input: {
           .getByName(bucketName)
           .admit({ bucketName, commandDigest });
         stage = "dance_network_decision_decode";
-        const decision = Schema.decodeUnknownSync(DanceNetworkAdmissionDecision, {
-          onExcessProperty: "error",
-        })(raw);
+        const decision = decodeDecision(raw);
         signal.throwIfAborted();
         if (!decision.allowed)
           throw new RateLimited({
