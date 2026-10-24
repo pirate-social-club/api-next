@@ -13,7 +13,10 @@ import {
   prepareModeratedDanceTerms,
   selectModeratedDanceCue,
 } from "../../application/src/use-cases/dance/moderated-intake.ts";
-import { DanceReviewServiceFailure } from "../../application/src/use-cases/dance/moderator-review-services.ts";
+import {
+  type DanceIntakeDiagnosticCode,
+  DanceReviewServiceFailure,
+} from "../../application/src/use-cases/dance/moderator-review-services.ts";
 import {
   CreateModeratedDanceReferenceBody,
   ModeratedDanceCaptureOptions,
@@ -38,12 +41,18 @@ import {
   signingKey,
 } from "./r2-upload-signing.ts";
 
-const fail = (reason: DanceReviewServiceFailure["reason"]) =>
-  new DanceReviewServiceFailure({ reason });
+const fail = (
+  reason: DanceReviewServiceFailure["reason"],
+  diagnosticCode?: typeof DanceIntakeDiagnosticCode.Type,
+) =>
+  new DanceReviewServiceFailure({
+    reason,
+    ...(diagnosticCode === undefined ? {} : { diagnosticCode }),
+  });
 const parse = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value),
-    catch: () => fail("unavailable"),
+    catch: () => fail("unavailable", "dance_intake_decode"),
   });
 const call = Effect.fn("ModeratedDanceIntake.call")(function* (
   tx: Pick<ControlPlaneTransaction, "execute">,
@@ -73,8 +82,9 @@ function classify(error: unknown) {
     if (error.sqlState === "DRV05") return fail("revision_conflict");
     if (error.sqlState === "DRV06" && error.label === "dance.intake.capture-options")
       return fail("invalid_request");
+    return fail("unavailable", "dance_intake_database");
   }
-  return fail("unavailable");
+  return fail("unavailable", "dance_intake_unclassified");
 }
 const Refusal = Schema.Struct({ refusal: Schema.NonEmptyString });
 const replay = Schema.NullOr(
@@ -216,11 +226,13 @@ export function makeControlPlaneModeratedDanceIntakeStore(
             facts.songPostId !== body.song_post_id ||
             facts.choreographyId !== body.choreography_id ||
             facts.choreographyRevision !== body.choreography_revision ||
-            facts.policy.hash !== body.expected_policy_hash ||
-            input.signer === null ||
-            !facts.mediaReady
+            facts.policy.hash !== body.expected_policy_hash
           )
-            return yield* fail("unavailable");
+            return yield* fail("unavailable", "dance_intake_facts_mismatch");
+          if (input.signer === null)
+            return yield* fail("unavailable", "dance_intake_signer_unavailable");
+          if (!facts.mediaReady)
+            return yield* fail("unavailable", "dance_intake_media_unavailable");
           terms = yield* prepareModeratedDanceTerms(
             facts,
             { sessionId: id(), reviewId: id(), attemptId: id() },
