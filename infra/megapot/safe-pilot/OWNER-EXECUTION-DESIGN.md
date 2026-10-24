@@ -77,7 +77,7 @@ effect keeps its reservation.
 Preparing a Safe call hands the owner something new to execute, so the database
 admits it under the same authority as storing a newly signed EOA transaction: a
 running brake, and where a reward run lease is required, a live lease (migration
-0314). A lease that was never acquired, has expired or was released stops new
+0315). A lease that was never acquired, has expired or was released stops new
 calls. Observing and settling executions is never refused, so a call prepared
 under a live lease still settles after its run ends.
 
@@ -100,7 +100,7 @@ version reverses that, following the October 22 owner clarification:
 4. Sweep, winnings claim, `equal_v1` allocation, credits, participant Claim and
    payout follow the existing order.
 
-Migration 0312 adds that transition set for ticket-first drawings. Existing legs
+Migration 0313 adds that transition set for ticket-first drawings. Existing legs
 keep their order, and every work listing serves one purchase order, so the EOA
 cycle never touches a ticket-first pool.
 
@@ -125,7 +125,7 @@ The owner settles that case with `scripts/safe-pool-recover-late-purchase.ts`. I
 run re-verifies each held purchase through the same checks as settlement: the
 canonical receipt of the exact prepared call, a ticket for the intended drawing, and
 the Safe as its owner. With `--apply` it settles one purchase through the owner-only
-function `recover_late_safe_purchase_v1` (migration 0315), which refuses unless
+function `recover_late_safe_purchase_v1` (migration 0316), which refuses unless
 reward operations are paused at the stated brake revision and no run holds a live
 lease. It requires the effect version just assessed and the purchase held only as
 `safe_purchase_after_close` behind a drawing closed as `safe_purchase_not_executed`.
@@ -221,7 +221,7 @@ sponsored Wallet Send, which production serves only when
 `PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED` is set and then only for Base USDC.
 
 A leg is created through the offer API (`OpenSongRewardOffer`,
-`AddMegapotPoolLeg`) on the active attestation; migration 0313 makes it
+`AddMegapotPoolLeg`) on the active attestation; migration 0314 makes it
 ticket-first because its custody is the Safe. Its funder sends USDC from their own
 persona wallet into the Safe and submits the transfer (`ObserveMegapotPoolFunding`);
 the pilot cycle confirms it and the leg becomes active once it holds one ticket's
@@ -238,7 +238,7 @@ workers, register a Base Sepolia Safe with
 pilot variables in both workers, then open and fund a leg through the staging
 API. Onward Send already works on Base Sepolia. The workspace_owner authorized a
 throwaway Base Sepolia owner key for the test Safe on 2026-10-23. Applying
-migrations 0310 to 0313 to staging before this branch reaches main would fork
+migrations 0311 to 0314 to staging before this branch reaches main would fork
 staging's migration ledger from main.
 
 ### Production activation

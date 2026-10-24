@@ -310,11 +310,11 @@
     "0307_moderated_dance_reference_communities.sql": "de246a85b233c6620a872891de836ac96f15f6176b6d59feae32f58c362c5e24",
     "0308_moderated_dance_reference_queue.sql": "7fa7d6ec8261fc00c5afb0126f31a97bf72269ecf1f5eb1e86bd0fc998921eaa",
     "0309_moderated_dance_reference_recovery.sql": "c4a49efbcbd86df51919a5612fa24c919b5501a24dde9891d322d0776abc20bb",
-    "0310_reward_safe_owner_execution.sql": "53a24c879f52e2d724ff01f5889bd86cab0cf6cbf8ea22cbe3e6e47496a504df",
-    "0311_reward_safe_execution_scans.sql": "26885d9f07113b682978ef1ea5db397d13a07590e255e8b09f499ae00c76cc93",
-    "0312_reward_ticket_first_pool.sql": "07b49f41ca0c5465ce8202f2e1d55284fe686d2624c88068e28473d8f96b6f6c",
-    "0313_reward_leg_purchase_order_from_custody.sql": "6fe67b05c1821c91ba7938650462d3daaf0c0c172ac7583fd7804bb0494daf6c",
-    "0314_reward_safe_preparation_lease.sql": "993d034ab6454b94c70b532b7c034b3603dbc63629ae478f9811727ef8557998",
-    "0315_reward_safe_late_purchase_recovery.sql": "40c61d15a0e4e896621308bb52596757367d20cd580f2cb3a604d3c4f798dd1d"
+    "0311_reward_safe_owner_execution.sql": "53a24c879f52e2d724ff01f5889bd86cab0cf6cbf8ea22cbe3e6e47496a504df",
+    "0312_reward_safe_execution_scans.sql": "26885d9f07113b682978ef1ea5db397d13a07590e255e8b09f499ae00c76cc93",
+    "0313_reward_ticket_first_pool.sql": "07b49f41ca0c5465ce8202f2e1d55284fe686d2624c88068e28473d8f96b6f6c",
+    "0314_reward_leg_purchase_order_from_custody.sql": "6fe67b05c1821c91ba7938650462d3daaf0c0c172ac7583fd7804bb0494daf6c",
+    "0315_reward_safe_preparation_lease.sql": "993d034ab6454b94c70b532b7c034b3603dbc63629ae478f9811727ef8557998",
+    "0316_reward_safe_late_purchase_recovery.sql": "40c61d15a0e4e896621308bb52596757367d20cd580f2cb3a604d3c4f798dd1d"
   }
 }
