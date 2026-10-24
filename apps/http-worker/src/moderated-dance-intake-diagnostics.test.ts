@@ -1,9 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
-import { Effect, Layer, Schema } from "effect";
-import { ControlPlaneDb } from "../../../packages/application/src/ports.ts";
+import { Effect, Schema } from "effect";
 import { DanceReviewServiceFailure } from "../../../packages/application/src/use-cases/dance/moderator-review-services.ts";
 import { CreateModeratedDanceSessionBody } from "../../../packages/contracts/src/dance-moderated-intake.ts";
-import { makeControlPlaneModeratedDanceIntakeStore } from "../../../packages/platform-cf/src/dance-moderated-intake-repository.ts";
 import { makeModeratedDanceIntakeHandlers } from "./moderated-dance-intake-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
 
@@ -28,16 +26,16 @@ const serializedBody = JSON.stringify(
   Schema.decodeUnknownSync(CreateModeratedDanceSessionBody)(body),
 );
 function worker(failure: DanceReviewServiceFailure) {
-  const layer = Layer.succeed(ControlPlaneDb, {
-    execute: () => Effect.die(new Error("Unexpected diagnostic fixture database call")),
-    withTransaction: () => Effect.die(new Error("Unexpected diagnostic fixture transaction")),
-  });
-  const handlers = makeModeratedDanceIntakeHandlers((accountId) => ({
-    ...makeControlPlaneModeratedDanceIntakeStore(layer, accountId, {
-      signer: null,
-      admitNewCapture: () => Effect.void,
-    }),
-    command: () => Effect.fail(failure),
+  const denied = () => Effect.fail(failure);
+  const handlers = makeModeratedDanceIntakeHandlers(() => ({
+    command: denied,
+    getSession: denied,
+    uploadAccess: denied,
+    captureOptions: denied,
+    createReference: denied,
+    getReference: denied,
+    captureContext: denied,
+    ownerRubric: denied,
   }));
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
