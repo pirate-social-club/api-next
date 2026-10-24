@@ -240,8 +240,13 @@
         "SPACES_RECONCILIATION_ENABLED": "true",
         "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",
         "SPACES_RECONCILIATION_MEASUREMENT_REFERENCE": "bitcoin-mainnet-150-block-windows-2026-09-26",
-        // Prepared for the bounded staging pilot; coordinator admission and closeout are required.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // The EOA rewards lane stays off; the owner-executed Safe pool pilot replaces it
+        // on staging and never runs beside it. A pilot ticket confirmed with less than
+        // ten minutes before its entry cutoff opens no entries.
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "SAFE_POOL_PILOT_ENABLED": "true",
+        "SAFE_POOL_ATTESTATION_ID": "megapot-base-sepolia-v2-safe-pilot",
+        "SAFE_POOL_MINIMUM_ENTRY_SECONDS": "600",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
@@ -277,6 +282,8 @@
           "MEGAPOT_CUSTODY_PRIVATE_KEY",
           "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
           "MEGAPOT_GAS_TOPUP_PRIVATE_KEY",
+          "SAFE_POOL_RPC_URL",
+          "SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN",
           "SPACES_VERIFIER_ACCESS_CLIENT_ID",
           "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
           "SPACES_VERIFIER_BEARER_TOKEN"

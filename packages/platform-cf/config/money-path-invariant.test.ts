@@ -743,13 +743,15 @@ describe("deployed production money-path invariant", () => {
   test("executable guard: production sponsorship needs its own switch and sponsors Base USDC only", () => {
     const limits = {
       PRIVY_SPONSORED_SEND_ENABLED: true,
-      PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "3",
-      PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "3",
-      PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "100",
-      PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "1000",
-      PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "3000",
-      PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "3000",
-      PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "100000",
+      PRIVY_SPONSORED_SEND_LIMITS_JSON: JSON.stringify({
+        account_daily_count: "3",
+        wallet_daily_count: "3",
+        platform_daily_count: "100",
+        gas_budget_wei: "1000",
+        account_daily_gas_wei: "3000",
+        wallet_daily_gas_wei: "3000",
+        platform_daily_gas_wei: "100000",
+      }),
     };
     expect(() =>
       parseSponsoredSendConfig({
