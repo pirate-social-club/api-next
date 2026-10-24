@@ -107,6 +107,27 @@ describe("Dance network admission adapter", () => {
       reason: "unavailable",
     });
   });
+  test("retains a fixed failure stage without a failed RPC's private text or payload", async () => {
+    const privateText = "https://private.invalid/source?signature=fictional-secret";
+    const namespace: DanceNetworkNamespace = {
+      getByName: () => ({
+        admit: async () => {
+          throw Object.assign(new Error(privateText), {
+            address: "192.0.2.1",
+            token: "private-token",
+          });
+        },
+      }),
+    };
+    const failure = await Effect.runPromise(Effect.flip(fixture({ namespace }).admit("command")));
+    expect(failure).toMatchObject({ reason: "unavailable", diagnosticCode: "dance_network_rpc" });
+    expect(JSON.stringify(failure)).not.toMatch(
+      /private\.invalid|fictional-secret|192\.0\.2\.1|private-token/u,
+    );
+    await expect(
+      Effect.runPromise(fixture({ hmacKeyBase64: btoa("short") }).admit("command")),
+    ).rejects.toMatchObject({ reason: "unavailable", diagnosticCode: "dance_network_hmac_decode" });
+  });
   test("an RPC that never returns releases the caller within the two-second budget", async () => {
     const namespace: DanceNetworkNamespace = {
       getByName: () => ({ admit: () => new Promise(() => {}) }),
@@ -114,6 +135,7 @@ describe("Dance network admission adapter", () => {
     const started = performance.now();
     await expect(Effect.runPromise(fixture({ namespace }).admit("command"))).rejects.toMatchObject({
       reason: "unavailable",
+      diagnosticCode: "dance_network_deadline",
     });
     expect(performance.now() - started).toBeLessThan(3_500);
   });

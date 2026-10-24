@@ -575,10 +575,19 @@ describe("OpenAPI clean-break allowance", () => {
     ).toBeUndefined();
   });
 
-  test("keeps only the Megapot pool Base chain declarations active", async () => {
-    const repositoryPolicy = JSON.parse(
+  test("retires landed compatibility waivers from the active repository policy", async () => {
+    const active = JSON.parse(
       await Bun.file(
         new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+      ).text(),
+    );
+    expect(active).toEqual({ breakingChangeWaivers: [] });
+  });
+
+  test("preserves the historical Megapot pool Base chain declarations", async () => {
+    const repositoryPolicy = JSON.parse(
+      await Bun.file(
+        new URL("./fixtures/openapi-safe-base-chain-waivers-20261023.json", import.meta.url),
       ).text(),
     ) as BreakingChangePolicy;
     const unchanged = document([], []);

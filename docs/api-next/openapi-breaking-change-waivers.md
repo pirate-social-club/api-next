@@ -197,7 +197,7 @@ Git history and admit no later contract change.
 
 ## 2026-10-23 Megapot pool Base chain deprecation
 
-Status: candidate declaration on PR656, pending the workspace_owner's audit. The
+Status: landed in PR656 as `abe4431d3787b83c73cb1dc5fee956512397c24b`. The
 workspace_owner's October 23 decision 3 has the HTTP worker serve the offer,
 funding, Claim and credit routes for the owner-executed Safe pool pilot, which runs
 on Base. Megapot pool legs, pool funding and the public song pool projection
@@ -221,3 +221,9 @@ baseline. Asset bonus legs, winner sends and the admitted asset catalogue stay o
 pool, so Solid takes 0.134.0 before any Base pool opens. This adds no deployment,
 admission, credential or financial authority. Remove the four entries after PR656
 integrates normally.
+
+The four consumed entries are retired from the active policy after that protected
+merge. Their exact declarations remain in the historical fixture
+`scripts/fixtures/openapi-safe-base-chain-waivers-20261023.json`, with the existing
+exact-diff and obsolete-baseline checks retained. The active policy admits no
+later contract change through these declarations.
