@@ -1,6 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { runInDurableObject, env as testEnv } from "cloudflare:test";
+import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeDanceNetworkAdmission } from "../../packages/platform-cf/src/dance-network-admission.ts";
 import type { DanceNetworkRateLimiterDO } from "../../packages/platform-cf/src/dance-network-admission-do.ts";
 import { DANCE_NETWORK_DAY_MS } from "../../packages/platform-cf/src/dance-network-admission-model.ts";
 import { DANCE_NETWORK_CLEANUP_COORDINATOR } from "../../packages/platform-cf/src/dance-network-cleanup.ts";
@@ -16,6 +18,27 @@ beforeEach(async () => {
 });
 
 describe("Dance daily network SQLite admission", () => {
+  it("decodes the real limiter RPC response through the HTTP admission adapter", async () => {
+    const admission = makeDanceNetworkAdmission({
+      accountId: `account-${crypto.randomUUID()}`,
+      edgeClientIp: "192.0.2.1",
+      hmacKeyBase64: btoa(String.fromCharCode(...new Uint8Array(32).fill(42))),
+      namespace: {
+        getByName: (name) => ({
+          admit: async (request) => {
+            const result = await env.DANCE_NETWORK_RATE_LIMITER.getByName(name).admit(request);
+            expect(Object.getOwnPropertyDescriptor(result, Symbol.dispose)?.value).toBeTypeOf(
+              "function",
+            );
+            return result;
+          },
+        }),
+      },
+    });
+    const command = crypto.randomUUID();
+    await expect(Effect.runPromise(admission(command))).resolves.toBeUndefined();
+    await expect(Effect.runPromise(admission(command))).resolves.toBeUndefined();
+  });
   it("persists another cleanup attempt when erasure fails", async () => {
     const bucketName = bucket();
     const stub = env.DANCE_NETWORK_RATE_LIMITER.getByName(bucketName);
