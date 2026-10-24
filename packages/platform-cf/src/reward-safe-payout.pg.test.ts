@@ -1,7 +1,8 @@
 /**
  * PostgreSQL proof of owner-executed Safe payouts with a fake chain. The credit's
  * allocation lineage is seeded with triggers disabled; every payout step under test
- * runs with all triggers and constraints enforced.
+ * runs with all triggers and constraints enforced, as a login holding only the
+ * reviewed release runtime privileges.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
@@ -13,6 +14,7 @@ import {
   type Hex,
   parseAbi,
 } from "viem";
+import { runRuntimeRoleReleasePreflight } from "../../../scripts/runtime-role-release-preflight.ts";
 import type { MegapotReceiptLog, MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type {
   MegapotV2RpcClient,
@@ -23,6 +25,7 @@ import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { rewardSafeTransactionHash } from "./reward-safe-execution.ts";
 import { makeControlPlaneRewardSafeExecutionStore } from "./reward-safe-execution-repository.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
+import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url) {
@@ -217,13 +220,15 @@ function fakeChain() {
 suite("owner-executed Safe payouts", () => {
   const schema = `reward_safe_payout_${process.pid}_${Date.now()}`;
   const admin = new Client({ connectionString: url });
-  const scoped = `${url}${url?.includes("?") ? "&" : "?"}options=${encodeURIComponent(
-    `-c search_path=${schema}`,
-  )}`;
   const chain = fakeChain();
+  let runtime: Awaited<ReturnType<typeof makeReleaseRuntimeLogin>> | undefined;
+  const runtimeUrl = () => {
+    if (runtime === undefined) throw new Error("release runtime login not created");
+    return runtime.url;
+  };
   const coordinator = () =>
     makeRewardSafePayoutCoordinator({
-      layer: makeDirectPostgresControlPlaneLayer(scoped),
+      layer: makeDirectPostgresControlPlaneLayer(runtimeUrl()),
       rpc: chain.rpc,
       requiredConfirmations: 3,
       runtimeEnvironment: "production",
@@ -358,10 +363,12 @@ suite("owner-executed Safe payouts", () => {
       [ATTESTATION, SAFE, USDC, hash("2")],
     );
     await admin.query("SET session_replication_role = origin");
+    runtime = await makeReleaseRuntimeLogin(admin, url as string, schema);
   });
 
   afterAll(async () => {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await runtime?.drop();
     await admin.end();
   });
 
@@ -599,7 +606,7 @@ suite("owner-executed Safe payouts", () => {
 
   test("a scan whose snapshot missed a newly prepared call is refused", async () => {
     const store = makeControlPlaneRewardSafeExecutionStore();
-    const layer = makeDirectPostgresControlPlaneLayer(scoped);
+    const layer = makeDirectPostgresControlPlaneLayer(runtimeUrl());
     const state = await run(
       Effect.provide(layer)(store.loadScanState({ chainId: 8453, safeAddress: SAFE })),
     );
@@ -660,5 +667,63 @@ suite("owner-executed Safe payouts", () => {
     );
     const prepared = await run(payouts.prepare("credit-account-d"));
     expect(prepared.preparedBlockNumber).toBe(ahead);
+  });
+
+  test("the release runtime cannot delete, rewrite, retire or recover Safe custody state", async () => {
+    const login = new Client({ connectionString: runtimeUrl() });
+    await login.connect();
+    try {
+      expect((await login.query("SELECT current_user::text AS role")).rows).toEqual([
+        { role: runtime?.role },
+      ]);
+      for (const statement of [
+        "DELETE FROM reward_safe_execution_cursors",
+        "TRUNCATE reward_safe_execution_cursors",
+        "UPDATE reward_safe_unbound_executions SET reason = reason",
+        "DELETE FROM reward_safe_unbound_executions",
+        `SELECT recover_late_safe_purchase_v1(NULL::text, NULL::bigint, NULL::bigint,
+           NULL::numeric, NULL::integer, NULL::integer, NULL::bigint, NULL::text, NULL::text,
+           NULL::integer, NULL::numeric, NULL::numeric, NULL::timestamptz)`,
+        "UPDATE megapot_deployment_attestations SET status = 'retired', retired_at = now()",
+        "UPDATE reward_asset_whitelist SET status = 'retired'",
+      ]) {
+        await expect(login.query(statement)).rejects.toMatchObject({ code: "42501" });
+      }
+      // The lock column is granted, but its guard lets no update through.
+      await expect(
+        login.query("UPDATE megapot_deployment_attestations SET created_at = created_at"),
+      ).rejects.toThrow("Megapot deployment attestation only permits retirement");
+      await expect(
+        login.query("UPDATE reward_asset_whitelist SET created_at = created_at"),
+      ).rejects.toThrow("reward asset whitelist only permits retirement");
+    } finally {
+      await login.end();
+    }
+  });
+
+  test("the release gate accepts that login and refuses each excess privilege", async () => {
+    const gate = () =>
+      runRuntimeRoleReleasePreflight({
+        runtimeConnectionString: runtimeUrl(),
+        requireMainLedger: false,
+        schema,
+      });
+    expect(await gate()).toMatchObject({ ready: true, principal: runtime?.role });
+    const role = `"${runtime?.role}"`;
+    for (const [grant, refusal] of [
+      ["UPDATE ON reward_safe_unbound_executions", "reward_safe_unbound_executions: UPDATE"],
+      ["UPDATE (status) ON megapot_deployment_attestations", "attestations.status: UPDATE"],
+      ["UPDATE ON reward_asset_whitelist", "reward_asset_whitelist: UPDATE"],
+    ] as const) {
+      await admin.query(`GRANT ${grant} TO ${role}`);
+      try {
+        await expect(gate()).rejects.toThrow(refusal);
+      } finally {
+        await admin.query(`REVOKE ${grant} FROM ${role}`);
+      }
+    }
+    // Revoking the table-wide grant also removed the lock column; restore it.
+    await admin.query(`GRANT UPDATE (created_at) ON reward_asset_whitelist TO ${role}`);
+    expect(await gate()).toMatchObject({ ready: true });
   });
 });

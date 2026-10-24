@@ -116,6 +116,24 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
     VIDEO_WORKFLOW_SCRIPT_NAME: "",
     ZKPASSPORT_DOMAIN: new URL(isolatedOrigins.web).host,
   });
+  // The isolated stack rehearses the EOA lane, whose gas top-up bounds staging no
+  // longer declares, and never the staging Safe pool pilot or its sponsored Send.
+  if (kind === "http") {
+    Object.assign(config.vars, {
+      MEGAPOT_GAS_TOPUP_TARGET_WEI: "50000000000000",
+      MEGAPOT_GAS_TOPUP_MAX_WEI: "50000000000000",
+      MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "3",
+    });
+  }
+  for (const key of [
+    "SAFE_POOL_PILOT_ENABLED",
+    "SAFE_POOL_ATTESTATION_ID",
+    "SAFE_POOL_MINIMUM_ENTRY_SECONDS",
+    "PRIVY_SPONSORED_SEND_ENABLED",
+    "PRIVY_SPONSORED_SEND_LIMITS_JSON",
+  ]) {
+    delete config.vars[key];
+  }
   if (kind === "jobs") config.vars.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN = isolatedCommitmentOrigin;
   config.secrets = {
     required:

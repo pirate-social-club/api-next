@@ -272,7 +272,7 @@ describe("config system (000 §9)", () => {
     ).toThrow("invalid Megapot reward runtime posture");
   });
 
-  test("API enables staging rewards while keeping production rewards disabled", async () => {
+  test("API keeps the EOA rewards lane off on staging and production", async () => {
     const paths = [
       "../../../apps/http-worker/wrangler.jsonc",
       "../../../apps/jobs-worker/wrangler.jsonc",
@@ -287,7 +287,7 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");
@@ -568,7 +568,7 @@ describe("config system (000 §9)", () => {
     ]) {
       expect(production?.vars?.[name]).toBeUndefined();
     }
-    expect(staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    expect(staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
     expect(config.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
     expect(config.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     expect(staging?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
@@ -696,25 +696,28 @@ describe("Wallet sponsorship limits", () => {
     API_NEXT_ENV: "staging" as const,
     PRIVY_SPONSORED_SEND_ENABLED: true,
     PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: false,
-    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "3",
-    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "2",
-    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "100",
-    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "1000",
-    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "3000",
-    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "2000",
-    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "100000",
+    PRIVY_SPONSORED_SEND_LIMITS_JSON: JSON.stringify({
+      account_daily_count: "3",
+      wallet_daily_count: "2",
+      platform_daily_count: "100",
+      gas_budget_wei: "1000",
+      account_daily_gas_wei: "3000",
+      wallet_daily_gas_wei: "2000",
+      platform_daily_gas_wei: "100000",
+    }),
   };
   const off = {
     ...limits,
     PRIVY_SPONSORED_SEND_ENABLED: false,
-    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "",
-    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "",
-    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "",
-    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "",
-    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "",
-    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "",
-    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "",
+    PRIVY_SPONSORED_SEND_LIMITS_JSON: "",
   };
+  const withLimits = (change: Record<string, unknown>) => ({
+    ...limits,
+    PRIVY_SPONSORED_SEND_LIMITS_JSON: JSON.stringify({
+      ...JSON.parse(limits.PRIVY_SPONSORED_SEND_LIMITS_JSON),
+      ...change,
+    }),
+  });
 
   test("absent limits disable sponsorship in every environment", () => {
     expect(parseSponsoredSendConfig(off)).toBeNull();
@@ -738,6 +741,43 @@ describe("Wallet sponsorship limits", () => {
         PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: true,
       }),
     ).toThrow();
+  });
+
+  test("the limits binding holds exactly the seven limits, each a non-empty string", () => {
+    for (const malformed of ["not json", "[]", "null", "{}", '"3"']) {
+      expect(() =>
+        parseSponsoredSendConfig({ ...limits, PRIVY_SPONSORED_SEND_LIMITS_JSON: malformed }),
+      ).toThrow("invalid sponsored send configuration");
+    }
+    for (const change of [
+      { account_daily_count: 3 },
+      { wallet_daily_count: "" },
+      { platform_daily_gas_wei: null },
+      { extra: "1" },
+      { gas_budget_wei: "9000" },
+    ]) {
+      expect(() => parseSponsoredSendConfig(withLimits(change))).toThrow(
+        "invalid sponsored send configuration",
+      );
+    }
+    const { account_daily_count: _, ...missing } = JSON.parse(
+      limits.PRIVY_SPONSORED_SEND_LIMITS_JSON,
+    );
+    expect(() =>
+      parseSponsoredSendConfig({
+        ...limits,
+        PRIVY_SPONSORED_SEND_LIMITS_JSON: JSON.stringify(missing),
+      }),
+    ).toThrow("invalid sponsored send configuration");
+    expect(parseSponsoredSendConfig(limits)).toEqual({
+      perAccountUtcDay: 3,
+      perWalletUtcDay: 2,
+      platformUtcDay: 100,
+      gasBudgetPerSendWei: 1000n,
+      accountDailyGasBudgetWei: 3000n,
+      walletDailyGasBudgetWei: 2000n,
+      platformDailyGasBudgetWei: 100000n,
+    });
   });
 
   test("production sponsors Base USDC and every other environment Base Sepolia USDC", () => {

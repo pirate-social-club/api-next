@@ -312,15 +312,17 @@
         "STUDY_PROFILE_COVERAGE_ENABLED": "true",
         "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
-        // Prepared for the bounded staging pilot; coordinator admission and closeout are required.
-        "MEGAPOT_REWARDS_ENABLED": "true",
+        // The EOA rewards lane and its gas top-ups stay off; the owner-executed Safe pool
+        // pilot replaces them on staging. Its routes serve only its attestation, and
+        // credited winnings leave through the Palm-gated sponsored Send.
+        "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
-        "MEGAPOT_GAS_TOPUP_TARGET_WEI": "50000000000000",
-        "MEGAPOT_GAS_TOPUP_MAX_WEI": "50000000000000",
-        "MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT": "3",
-        "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "5000000000000000",
+        "SAFE_POOL_PILOT_ENABLED": "true",
+        "SAFE_POOL_ATTESTATION_ID": "megapot-base-sepolia-v2-safe-pilot",
+        "PRIVY_SPONSORED_SEND_ENABLED": "true",
+        "PRIVY_SPONSORED_SEND_LIMITS_JSON": "{\"account_daily_count\":\"3\",\"wallet_daily_count\":\"3\",\"platform_daily_count\":\"10\",\"gas_budget_wei\":\"200000000000000\",\"account_daily_gas_wei\":\"600000000000000\",\"wallet_daily_gas_wei\":\"600000000000000\",\"platform_daily_gas_wei\":\"2000000000000000\"}",
         "MEDIA_UPLOADS_ENABLED": "true",
         "VIDEO_SONG_REFERENCE_ENABLED": "true",
         "VIDEO_PCM_REFERENCE_GATE_ENABLED": "true",
@@ -419,6 +421,8 @@
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
           "MEGAPOT_V2_RPC_URL",
+          "SAFE_POOL_RPC_URL",
+          "PERSONA_WALLET_BASE_RPC_URL",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
           "AVATAR_R2_ACCESS_KEY_ID",
