@@ -44,7 +44,11 @@ import {
 const fail = (
   reason: DanceReviewServiceFailure["reason"],
   diagnosticCode?: typeof DanceIntakeDiagnosticCode.Type,
-) => new DanceReviewServiceFailure({ reason, diagnosticCode });
+) =>
+  new DanceReviewServiceFailure({
+    reason,
+    ...(diagnosticCode === undefined ? {} : { diagnosticCode }),
+  });
 const parse = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value),
