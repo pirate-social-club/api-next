@@ -10,6 +10,7 @@ import {
 } from "./reward-safe-command.ts";
 import {
   classifyRewardSafeExecution,
+  type RewardSafeAdmission,
   type RewardSafeCommand,
   type RewardSafeOuterTransaction,
   rewardSafeChainAdmitted,
@@ -30,16 +31,15 @@ export class RewardSafeSettlementFailed extends Data.TaggedError("RewardSafeSett
 export const rewardSafeFailed = (reason: RewardSafeSettlementFailed["reason"]) =>
   new RewardSafeSettlementFailed({ reason });
 
-export type RewardSafeRuntimeOptions = Readonly<{
-  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
-  rpc: MegapotV2RpcClient;
-  requiredConfirmations: number;
-  /** Production custody is refused unless the separate Safe pilot switch is on. */
-  productionEnabled: boolean;
-  maximumScanBlocks: number;
-  maximumScanLogs: number;
-  now?: () => number;
-}>;
+export type RewardSafeRuntimeOptions = RewardSafeAdmission &
+  Readonly<{
+    layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+    rpc: MegapotV2RpcClient;
+    requiredConfirmations: number;
+    maximumScanBlocks: number;
+    maximumScanLogs: number;
+    now?: () => number;
+  }>;
 
 export function assertRewardSafeRuntimeOptions(input: RewardSafeRuntimeOptions): void {
   if (
@@ -54,7 +54,7 @@ export function assertRewardSafeRuntimeOptions(input: RewardSafeRuntimeOptions):
   }
 }
 
-/** Safe custody runs on Base or, outside production, Base Sepolia; production needs its switch. */
+/** Safe custody runs only where this runtime's own environment admits the deployment. */
 export function admitRewardSafeDeployment(
   options: RewardSafeRuntimeOptions,
   deployment: { readonly environment: string; readonly chainId: number },
@@ -62,7 +62,12 @@ export function admitRewardSafeDeployment(
   if (deployment.chainId !== 8453 && deployment.chainId !== 84_532) {
     return Effect.fail(rewardSafeFailed("not_safe_chain"));
   }
-  return rewardSafeChainAdmitted({ ...deployment, productionEnabled: options.productionEnabled })
+  return rewardSafeChainAdmitted({
+    runtimeEnvironment: options.runtimeEnvironment,
+    productionEnabled: options.productionEnabled,
+    environment: deployment.environment,
+    chainId: deployment.chainId,
+  })
     ? Effect.void
     : Effect.fail(rewardSafeFailed("production_disabled"));
 }

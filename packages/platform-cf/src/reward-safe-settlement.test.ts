@@ -98,6 +98,7 @@ function chain(outcome: "success" | "failure", canonical: string | Error) {
           layer: Layer.empty as never,
           rpc,
           requiredConfirmations: 3,
+          runtimeEnvironment: "production",
           productionEnabled: true,
           maximumScanBlocks: 200,
           maximumScanLogs: 50,

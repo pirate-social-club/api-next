@@ -1,10 +1,35 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { makeHttpWorkerTestBindings } from "./composition.test-fixtures.ts";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
+// Every reward write and chain read runs in the handlers or through an RPC client built
+// after admission; counting both shows what a refused request never reached.
+const handlers = { ...(await import("./rewards-song-offer-handlers.ts")) };
+const megapotRpc = { ...(await import("@pirate/platform-cf/megapot-v2-rpc")) };
+const reached = { handlers: 0, rpcClients: 0 };
+mock.module("./rewards-song-offer-handlers.ts", () => ({
+  ...handlers,
+  makeSongRewardOfferHandlers: (
+    ...input: Parameters<typeof handlers.makeSongRewardOfferHandlers>
+  ) => {
+    reached.handlers += 1;
+    return handlers.makeSongRewardOfferHandlers(...input);
+  },
+}));
+mock.module("@pirate/platform-cf/megapot-v2-rpc", () => ({
+  ...megapotRpc,
+  makeMegapotV2RpcClient: (...input: Parameters<typeof megapotRpc.makeMegapotV2RpcClient>) => {
+    reached.rpcClients += 1;
+    return megapotRpc.makeMegapotV2RpcClient(...input);
+  },
+}));
 const { createProductionHttpWorker } = await import("./composition.ts");
+afterAll(() => {
+  mock.module("./rewards-song-offer-handlers.ts", () => handlers);
+  mock.module("@pirate/platform-cf/megapot-v2-rpc", () => megapotRpc);
+});
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && connectionString === undefined)
   throw new Error("Safe pool pilot routes require the PostgreSQL test connection");
@@ -25,6 +50,7 @@ suite("Safe pool pilot reward routes", () => {
     url.searchParams.set("options", "-c search_path=api_next");
     const connection = url.toString();
     const admin = new Client({ connectionString: connection });
+    const original = globalThis.fetch;
     try {
       await admin.connect();
       await admin.query("CREATE SCHEMA api_next");
@@ -70,45 +96,77 @@ suite("Safe pool pilot reward routes", () => {
       }
       await admin.query("SET session_replication_role = origin");
       const base = await makeHttpWorkerTestBindings(connection);
+      const fetches: string[] = [];
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        fetches.push(String(input));
+        throw new Error("no outbound request in this test");
+      }) as unknown as typeof fetch;
       const pool = async (overrides: Readonly<Record<string, string>>) => {
         const worker = await createProductionHttpWorker({
           ...base,
           API_NEXT_ENV: "staging",
           ...overrides,
         });
+        reached.handlers = 0;
+        reached.rpcClients = 0;
+        fetches.length = 0;
         const response = await worker.request(
           "https://worker.test/communities/community-1/posts/post-1/rewards/megapot-pool",
         );
-        return { status: response.status, body: (await response.json()) as unknown };
+        return {
+          status: response.status,
+          body: (await response.json()) as unknown,
+          reached: { ...reached, fetches: fetches.length },
+        };
       };
       const pilot = {
         SAFE_POOL_PILOT_ENABLED: "true",
         SAFE_POOL_RPC_URL: "https://base-rpc.test",
       };
       const unavailable = { status: 502, body: { error: { code: "provider_unavailable" } } };
-      const served = { status: 200, body: { pool: null } };
+      // A refused request built no handler or RPC client and made no outbound request.
+      const refused = { ...unavailable, reached: { handlers: 0, rpcClients: 0, fetches: 0 } };
+      const served = { status: 200, body: { pool: null }, reached: { handlers: 1, rpcClients: 1 } };
 
       // Neither reward lane: the routes stay mounted and unavailable.
       expect(await pool({})).toMatchObject(unavailable);
+      // A staging worker serves its own staging Safe and never a production one.
       expect(await pool({ ...pilot, SAFE_POOL_ATTESTATION_ID: "staging-safe" })).toMatchObject(
         served,
       );
       expect(await pool({ ...pilot, SAFE_POOL_ATTESTATION_ID: "missing" })).toMatchObject(
         unavailable,
       );
-      // A Base attestation recorded for production is admitted only behind the
-      // pilot's production switch.
       expect(await pool({ ...pilot, SAFE_POOL_ATTESTATION_ID: "production-safe" })).toMatchObject(
-        unavailable,
+        refused,
       );
+      // The production switch is refused outside production.
+      await expect(
+        pool({
+          ...pilot,
+          SAFE_POOL_ATTESTATION_ID: "production-safe",
+          SAFE_POOL_PRODUCTION_ENABLED: "true",
+        }),
+      ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+      // A production worker serves a production Safe only behind its switch, and never
+      // a staging rehearsal, switch or not.
+      const production = { ...pilot, API_NEXT_ENV: "production", MEGAPOT_CHAIN_ID: "8453" };
+      for (const overrides of [
+        { SAFE_POOL_ATTESTATION_ID: "production-safe" },
+        { SAFE_POOL_ATTESTATION_ID: "staging-safe" },
+        { SAFE_POOL_ATTESTATION_ID: "staging-safe", SAFE_POOL_PRODUCTION_ENABLED: "true" },
+      ]) {
+        expect(await pool({ ...production, ...overrides })).toMatchObject(refused);
+      }
       expect(
         await pool({
-          ...pilot,
+          ...production,
           SAFE_POOL_ATTESTATION_ID: "production-safe",
           SAFE_POOL_PRODUCTION_ENABLED: "true",
         }),
       ).toMatchObject(served);
     } finally {
+      globalThis.fetch = original;
       await admin.end();
       await control.query(`DROP DATABASE "${database}" WITH (FORCE)`);
       await control.end();

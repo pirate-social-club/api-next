@@ -14,6 +14,7 @@ import {
   deriveRewardFundingEffectId,
   makeRewardFundingCoordinator,
 } from "./reward-funding-coordinator.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 
 const address = (byte: string): Hex => `0x${byte.repeat(40)}`;
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}`;
@@ -280,7 +281,7 @@ describe("reward funding coordinator", () => {
       usdcCodeHash: hash("8"),
       ticketNftCodeHash: hash("9"),
     });
-    const plan = (safePilot?: { readonly productionEnabled: boolean }) => {
+    const plan = (safePilot?: RewardSafeAdmission) => {
       const store = {
         plan: (input: Parameters<RewardFundingStore["plan"]>[0]) =>
           Effect.succeed(intentFor(input)),
@@ -308,9 +309,17 @@ describe("reward funding coordinator", () => {
         }),
       );
     };
-    for (const safePilot of [undefined, { productionEnabled: false }]) {
+    for (const safePilot of [
+      undefined,
+      { runtimeEnvironment: "production", productionEnabled: false },
+      // Production custody is never funded from a staging or development worker.
+      { runtimeEnvironment: "staging", productionEnabled: true },
+      { runtimeEnvironment: "development", productionEnabled: false },
+    ] as const) {
       await expect(plan(safePilot)).rejects.toMatchObject({ reason: "production_disabled" });
     }
-    await expect(plan({ productionEnabled: true })).resolves.toMatchObject({ kind: "planned" });
+    await expect(
+      plan({ runtimeEnvironment: "production", productionEnabled: true }),
+    ).resolves.toMatchObject({ kind: "planned" });
   });
 });

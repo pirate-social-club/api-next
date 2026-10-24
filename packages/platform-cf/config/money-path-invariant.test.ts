@@ -236,7 +236,7 @@ const MONEY_PATH_POSTURES = [
     posture: "guarded_optional_secret_rpc",
     productionDeclaration: "forbidden",
     guard:
-      "The jobs and HTTP workers read this endpoint only when SAFE_POOL_PILOT_ENABLED is true, both refuse that together with MEGAPOT_REWARDS_ENABLED, and each admits a production Safe-custody attestation only when SAFE_POOL_PRODUCTION_ENABLED is also true; the Safe pilot only reads the chain and prepares calls for the owner's Safe, and the offer repository admits a production pool leg only on owner-executed Safe custody behind that switch",
+      "The jobs and HTTP workers read this endpoint only when SAFE_POOL_PILOT_ENABLED is true, both refuse that together with MEGAPOT_REWARDS_ENABLED, and each admits only a Safe-custody attestation of its own API_NEXT_ENV, a production one only when SAFE_POOL_PRODUCTION_ENABLED is also true, which both refuse outside production; the Safe pilot only reads the chain and prepares calls for the owner's Safe, and the offer repository admits a production pool leg only on owner-executed Safe custody behind that switch",
     evidenceLimitation:
       "The absence assertion covers checked-in declarations only and cannot prove that a remotely provisioned Worker secret is absent. Enabling the pilot in production is a separate owner decision that changes this posture. Nothing here validates the endpoint or its network.",
   },

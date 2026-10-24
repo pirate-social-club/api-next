@@ -1,4 +1,8 @@
-import { AlertCollector, ControlPlaneDb } from "@pirate/application";
+import {
+  AlertCollector,
+  ControlPlaneDb,
+  MegapotDrawingObservationRejected,
+} from "@pirate/application";
 import {
   type AlertSink,
   type MegapotCommitmentBucket,
@@ -23,6 +27,10 @@ import { makeMegapotTicketFirstCutoff } from "@pirate/platform-cf/megapot-ticket
 import { makeControlPlaneMegapotWorkStore } from "@pirate/platform-cf/megapot-work-repository";
 import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardSafeClaimCoordinator } from "@pirate/platform-cf/reward-safe-claim-coordinator";
+import {
+  type RewardSafeRuntimeEnvironment,
+  rewardSafeChainAdmitted,
+} from "@pirate/platform-cf/reward-safe-execution";
 import { makeRewardSafePayoutCoordinator } from "@pirate/platform-cf/reward-safe-payout-coordinator";
 import { makeRewardSafePurchaseCoordinator } from "@pirate/platform-cf/reward-safe-purchase-coordinator";
 import { makeRewardSafeExecutionScanner } from "@pirate/platform-cf/reward-safe-settlement";
@@ -49,11 +57,12 @@ import {
 } from "./safe-pool-pilot-cycle.ts";
 
 export type SafePoolPilotJobOptions = Readonly<{
-  environment: string;
+  /** The worker's own API_NEXT_ENV, which decides what Safe custody the cycle admits. */
+  environment: RewardSafeRuntimeEnvironment;
   attestationId: string;
   rpcUrl: string;
   requiredConfirmations: number;
-  /** The pilot's own production switch; staging runs without it. */
+  /** The pilot's own production switch, refused outside production. */
   productionEnabled: boolean;
   minimumEntrySeconds: number;
   observationTtlMs: number;
@@ -130,6 +139,21 @@ export function makeSafePoolPilotJob(
     const layer = Layer.succeed(ControlPlaneDb, db);
     const observations = makeControlPlaneMegapotDrawingObservationStore(layer);
     const deployment = yield* observations.loadCandidate(options.attestationId);
+    const safePilot = {
+      runtimeEnvironment: options.environment,
+      productionEnabled: options.productionEnabled,
+    };
+    // A deployment this worker's own environment does not admit gets no chain read,
+    // database write or publication from any step; each coordinator also refuses it.
+    if (
+      !rewardSafeChainAdmitted({
+        ...safePilot,
+        chainId: deployment.chainId,
+        environment: deployment.environment,
+      })
+    ) {
+      return yield* new MegapotDrawingObservationRejected({ reason: "production-disabled" });
+    }
     const rpc = makeMegapotAttestedRpc(
       deployment,
       options.rpcUrl,
@@ -138,12 +162,11 @@ export function makeSafePoolPilotJob(
     );
     const safe = { chainId: deployment.chainId, safeAddress: deployment.custodyAddress };
     const custody = { ...safe, attestationId: deployment.attestationId };
-    const safePilot = { productionEnabled: options.productionEnabled };
     const safeOptions = {
+      ...safePilot,
       layer,
       rpc,
       requiredConfirmations: options.requiredConfirmations,
-      productionEnabled: options.productionEnabled,
       maximumScanBlocks: SAFE_POOL_PILOT_SCAN_WINDOW_BLOCKS,
       maximumScanLogs: 200,
     };
@@ -173,7 +196,7 @@ export function makeSafePoolPilotJob(
       store: makeControlPlaneMegapotSweepStore(layer),
       rpc,
       requiredConfirmations: options.requiredConfirmations,
-      safeProductionEnabled: options.productionEnabled,
+      safePilot,
     });
     const commitment = makeMegapotCommitmentCoordinator({
       store: makeControlPlaneMegapotCommitmentStore(layer),

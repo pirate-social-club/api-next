@@ -792,6 +792,10 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
       // time; malformed endpoint configuration must still fail closed here.
       fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV);
     }
+    // The Safe pool pilot's production switch exists only in production.
+    if (config.SAFE_POOL_PRODUCTION_ENABLED && config.API_NEXT_ENV !== "production") {
+      throw new Error("invalid Safe pool pilot configuration");
+    }
     if (config.SAFE_POOL_PILOT_ENABLED) {
       // The Safe pool pilot serves the same reward routes, so it never runs beside
       // the EOA reward lane.
@@ -1765,7 +1769,10 @@ export async function createProductionHttpWorker(
       ? {
           attestationId: config.SAFE_POOL_ATTESTATION_ID,
           rpcUrl: config.SAFE_POOL_RPC_URL,
-          safePilot: { productionEnabled: config.SAFE_POOL_PRODUCTION_ENABLED },
+          safePilot: {
+            runtimeEnvironment: config.API_NEXT_ENV,
+            productionEnabled: config.SAFE_POOL_PRODUCTION_ENABLED,
+          },
         }
       : null;
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
@@ -1776,14 +1783,14 @@ export async function createProductionHttpWorker(
           const candidate = await Effect.runPromise(
             observationStore.loadCandidate(rewardRoutes.attestationId),
           );
-          // The pilot serves Base only behind its production switch, and Base Sepolia
-          // outside production.
+          // The pilot serves only the deployment this worker's own environment admits:
+          // Base behind the production switch in production, Base Sepolia elsewhere.
           if (
             safePilot !== undefined &&
             !rewardSafeChainAdmitted({
+              ...safePilot,
               chainId: candidate.chainId,
               environment: candidate.environment,
-              productionEnabled: safePilot.productionEnabled,
             })
           ) {
             throw new ProviderUnavailable({ message: "Reward services are unavailable" });

@@ -226,6 +226,7 @@ suite("owner-executed Safe payouts", () => {
       layer: makeDirectPostgresControlPlaneLayer(scoped),
       rpc: chain.rpc,
       requiredConfirmations: 3,
+      runtimeEnvironment: "production",
       productionEnabled: true,
       maximumScanBlocks: 500,
       maximumScanLogs: 50,

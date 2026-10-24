@@ -41,11 +41,13 @@ import {
   USDC,
 } from "./reward-safe-chain.pg-fixture.ts";
 import { makeRewardSafeClaimCoordinator } from "./reward-safe-claim-coordinator.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
 import { makeRewardSafePurchaseCoordinator } from "./reward-safe-purchase-coordinator.ts";
 import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
+const PRODUCTION = { runtimeEnvironment: "production", productionEnabled: true } as const;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required");
 }
@@ -62,7 +64,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     layer: makeDirectPostgresControlPlaneLayer(scoped),
     rpc: chain.rpc,
     requiredConfirmations: 3,
-    productionEnabled: true,
+    ...PRODUCTION,
     maximumScanBlocks: 500,
     maximumScanLogs: 50,
     minimumEntrySeconds,
@@ -279,20 +281,26 @@ suite("ticket-first owner-executed Safe pools", () => {
     });
     expect(await drawing("tf-ok")).toMatchObject({ status: "committed" });
 
-    const sweep = (safeProductionEnabled: boolean) =>
+    const sweep = (safePilot?: RewardSafeAdmission) =>
       run(
         makeMegapotSweepCoordinator({
           store: makeControlPlaneMegapotSweepStore(layer),
           rpc: chain.rpc,
           requiredConfirmations: 3,
-          safeProductionEnabled,
+          ...(safePilot === undefined ? {} : { safePilot }),
         }).sweep({ poolLegId: "tf-ok", drawingId: 212n }),
       );
-    await expect(sweep(false)).rejects.toMatchObject({ reason: "production_disabled" });
-    expect(await sweep(true)).toMatchObject({ kind: "drawing_pending" });
+    for (const refused of [
+      undefined,
+      { runtimeEnvironment: "production", productionEnabled: false },
+      { runtimeEnvironment: "staging", productionEnabled: true },
+    ] as const) {
+      await expect(sweep(refused)).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    expect(await sweep(PRODUCTION)).toMatchObject({ kind: "drawing_pending" });
     expect(await drawing("tf-ok")).toMatchObject({ status: "drawing_pending" });
     chain.settle(7n);
-    expect(await sweep(true)).toMatchObject({
+    expect(await sweep(PRODUCTION)).toMatchObject({
       kind: "complete",
       outcome: "winnings_detected",
       grossWinningsAtomic: 1_001n,
@@ -431,7 +439,7 @@ suite("ticket-first owner-executed Safe pools", () => {
         store: makeControlPlaneCustodySolvencyStore(layer),
         rpc: chain.rpc,
         requiredConfirmations: 3,
-        safePilot: { productionEnabled: true },
+        safePilot: PRODUCTION,
       }).observe(ATTESTATION),
     );
     const payouts = makeRewardSafePayoutCoordinator(options());
@@ -800,11 +808,11 @@ suite("ticket-first owner-executed Safe pools", () => {
     );
     await admin.query("SET session_replication_role = origin");
     const store = makeControlPlaneRewardFundingStore(makeDirectPostgresControlPlaneLayer(scoped));
-    const funding = (productionEnabled?: boolean) =>
+    const funding = (safePilot?: RewardSafeAdmission) =>
       makeRewardFundingCoordinator({
         store,
         rpc: chain.rpc,
-        ...(productionEnabled === undefined ? {} : { safePilot: { productionEnabled } }),
+        ...(safePilot === undefined ? {} : { safePilot }),
       });
     const request = {
       legId: "tf-funded",
@@ -814,16 +822,50 @@ suite("ticket-first owner-executed Safe pools", () => {
       requiredConfirmations: 3,
       idempotencyKey: "fund-tf-1",
     };
-    // An instance outside the pilot refuses production Safe custody.
-    await expect(run(funding().plan(request))).rejects.toMatchObject({
-      reason: "production_disabled",
-    });
-    const planned = await run(funding(true).plan(request));
+    const intents = async () =>
+      (
+        await admin.query(
+          `SELECT state, transaction_hash FROM song_reward_leg_funding_effects
+            WHERE leg_id='tf-funded'`,
+        )
+      ).rows;
+    // An instance outside the pilot, or a worker of another environment, refuses
+    // production Safe custody before writing anything.
+    const mismatched = [
+      undefined,
+      { runtimeEnvironment: "production", productionEnabled: false },
+      { runtimeEnvironment: "staging", productionEnabled: false },
+      { runtimeEnvironment: "staging", productionEnabled: true },
+      { runtimeEnvironment: "development", productionEnabled: false },
+    ] as const;
+    for (const refused of mismatched) {
+      await expect(run(funding(refused).plan(request))).rejects.toMatchObject({
+        _tag: "RewardFundingRejected",
+        reason: "funding-not-allowed",
+      });
+    }
+    expect(await intents()).toEqual([]);
+    const planned = await run(funding(PRODUCTION).plan(request));
     const transactionHash = chain.fund(sender, 5_000_000n);
     chain.mine(2n);
+    // Nor does one replay the planned intent or bind a transaction to it.
+    for (const refused of mismatched) {
+      await expect(run(funding(refused).plan(request))).rejects.toMatchObject({
+        reason: "production_disabled",
+      });
+      await expect(
+        run(
+          funding(refused).observe({
+            fundingEffectId: planned.intent.fundingEffectId,
+            transactionHash,
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    expect(await intents()).toEqual([{ state: "planned", transaction_hash: null }]);
     expect(
       await run(
-        funding(true).observe({
+        funding(PRODUCTION).observe({
           fundingEffectId: planned.intent.fundingEffectId,
           transactionHash,
         }),

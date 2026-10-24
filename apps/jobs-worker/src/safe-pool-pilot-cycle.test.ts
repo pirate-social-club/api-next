@@ -1,10 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
+import { AlertCollector, ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import type {
   MegapotDrawingWork,
   MegapotDrawingWorkStatus,
 } from "@pirate/platform-cf/megapot-work-repository";
+import type { RewardSafeRuntimeEnvironment } from "@pirate/platform-cf/reward-safe-execution";
 import { Data, Effect } from "effect";
-import { buildJobRegistry } from "./registry.ts";
+import { buildJobRegistry, JobContext } from "./registry.ts";
 import {
   runSafePoolPilotCycle,
   type SafePoolPilotRuntime,
@@ -164,4 +166,120 @@ describe("Safe pool pilot cycle", () => {
       Effect.runPromise(buildJobRegistry([job, { ...job, name: "megapot-rewards.cycle" }])),
     ).rejects.toMatchObject({ reason: "duplicate-table-writer" });
   });
+
+  test("runs no step for an attestation its worker's own environment does not admit", async () => {
+    const attestation = (environment: string, chainId: number) => ({
+      attestation_id: "megapot-safe-pilot",
+      environment,
+      chain_id: chainId,
+      jackpot_address: `0x${"1".repeat(40)}`,
+      usdc_address: `0x${"2".repeat(40)}`,
+      ticket_nft_address: `0x${"3".repeat(40)}`,
+      custody_address: `0x${"4".repeat(40)}`,
+      referrer_address: `0x${"5".repeat(40)}`,
+      source_tag: `0x${"6".repeat(64)}`,
+      jackpot_code_hash: `0x${"7".repeat(64)}`,
+      usdc_code_hash: `0x${"8".repeat(64)}`,
+      ticket_nft_code_hash: `0x${"9".repeat(64)}`,
+      attestation_block_number: "900",
+      attestation_block_hash: `0x${"a".repeat(64)}`,
+      verified_at: "2026-10-24T00:00:00.000Z",
+    });
+    const staging = attestation("staging", 84_532);
+    const production = attestation("production", 8453);
+    const fetches: string[] = [];
+    const original = globalThis.fetch;
+    // Every chain read goes through this, and fails without leaving the process.
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      fetches.push(String(input));
+      throw new Error("no chain in this test");
+    }) as unknown as typeof fetch;
+    const cycle = async (
+      environment: RewardSafeRuntimeEnvironment,
+      productionEnabled: boolean,
+      row: ReturnType<typeof attestation>,
+    ) => {
+      fetches.length = 0;
+      const statements: string[] = [];
+      const published: string[] = [];
+      const execute = (statement: ControlPlaneStatement) => {
+        statements.push(statement.label);
+        const rows =
+          statement.label === "megapot-drawing-observation.attestation.read" ? [row] : [];
+        return Effect.succeed({ rows, rowCount: rows.length });
+      };
+      const db = {
+        execute,
+        withTransaction: (use: (transaction: unknown) => unknown) => use({ execute }),
+      } as unknown as ControlPlaneDb["Service"];
+      const job = makeSafePoolPilotJob(
+        {},
+        {
+          environment,
+          attestationId: "megapot-safe-pilot",
+          rpcUrl: "https://rpc.example.invalid",
+          requiredConfirmations: 3,
+          productionEnabled,
+          minimumEntrySeconds: 3_600,
+          observationTtlMs: 60_000,
+          commitmentBucket: {
+            get: async () => null,
+            put: async (key: string) => {
+              published.push(key);
+              return null;
+            },
+          },
+          commitmentPublicOrigin: "https://commitments.example.invalid",
+        },
+      );
+      const exit = await Effect.runPromiseExit(
+        job.run.pipe(
+          Effect.provideService(ControlPlaneDb, db),
+          Effect.provideService(AlertCollector, { emit: () => Effect.void }),
+          Effect.provideService(JobContext, {
+            adapterSafety: { isProven: () => false, markAbortedOrFenced: () => undefined },
+            attemptId: "safe-pool-admission-test",
+            lease: () => ({ expiresAt: Date.now() + 60_000, generation: 1, owner: "test-owner" }),
+            owner: "test-owner",
+          }),
+          Effect.match({ onFailure: (error) => error, onSuccess: () => null }),
+        ),
+      );
+      const failure = exit._tag === "Success" ? exit.value : exit;
+      return { failure, statements, fetches: [...fetches], published };
+    };
+    try {
+      for (const [environment, productionEnabled, row] of [
+        // A production worker never runs a staging rehearsal, with its switch or without.
+        ["production", true, staging],
+        ["production", false, staging],
+        ["production", false, production],
+        // A staging or development worker never runs production custody.
+        ["staging", false, production],
+        ["staging", true, production],
+        ["development", true, attestation("test", 84_532)],
+      ] as const) {
+        const refused = await cycle(environment, productionEnabled, row);
+        expect(refused.failure).toMatchObject({
+          _tag: "MegapotDrawingObservationRejected",
+          reason: "production-disabled",
+        });
+        // Only the attestation itself was read: no chain call, write or publication.
+        expect(refused.statements).toEqual(["megapot-drawing-observation.attestation.read"]);
+        expect(refused.fetches).toEqual([]);
+        expect(refused.published).toEqual([]);
+      }
+      // The same harness sees the admitted cycles reach the chain.
+      for (const [environment, productionEnabled, row] of [
+        ["staging", false, staging],
+        ["production", true, production],
+      ] as const) {
+        const admitted = await cycle(environment, productionEnabled, row);
+        expect(admitted.fetches.length).toBeGreaterThan(0);
+        expect(admitted.statements.length).toBeGreaterThan(1);
+      }
+    } finally {
+      globalThis.fetch = original;
+    }
+  }, 60_000);
 });

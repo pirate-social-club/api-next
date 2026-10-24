@@ -11,7 +11,7 @@ import {
   validateMegapotUsdcFundingReceipt,
 } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
-import { rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
+import { type RewardSafeAdmission, rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 export class RewardFundingCoordinatorFailed extends Data.TaggedError(
   "RewardFundingCoordinatorFailed",
@@ -137,29 +137,30 @@ export function makeRewardFundingCoordinator(input: {
   readonly store: RewardFundingStore;
   readonly rpc: MegapotV2RpcClient;
   /**
-   * Set only by the Safe pilot cycle: that instance confirms funding into Safe custody
-   * on Base, with production behind the pilot's own switch, or on Base Sepolia outside
-   * production. Every other instance is limited to Base Sepolia outside production.
+   * Set only by the Safe pilot cycle: that instance confirms funding into the Safe
+   * custody its own environment admits. Every other instance is limited to Base
+   * Sepolia outside production.
    */
-  readonly safePilot?: { readonly productionEnabled: boolean };
+  readonly safePilot?: RewardSafeAdmission;
   readonly now?: () => number;
 }): RewardFundingCoordinator {
   const now = input.now ?? Date.now;
   const rpcEffect = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({ try: operation, catch: () => failed("receipt_evidence_invalid") });
 
+  const admitted = (deployment: { readonly environment: string; readonly chainId: number }) =>
+    input.safePilot === undefined
+      ? deployment.environment !== "production" && deployment.chainId === 84_532
+      : rewardSafeChainAdmitted({
+          ...input.safePilot,
+          chainId: deployment.chainId,
+          environment: deployment.environment,
+        });
+
   const attest = Effect.fn("RewardFundingCoordinator.attest")(function* (
     intent: RewardFundingIntent,
   ) {
-    const admitted =
-      input.safePilot === undefined
-        ? intent.environment !== "production" && intent.chainId === 84_532
-        : rewardSafeChainAdmitted({
-            chainId: intent.chainId,
-            environment: intent.environment,
-            productionEnabled: input.safePilot.productionEnabled,
-          });
-    if (!admitted) return yield* failed("production_disabled");
+    if (!admitted(intent)) return yield* failed("production_disabled");
     yield* rpcEffect(() => input.rpc.attestDeployment());
   });
 
@@ -244,8 +245,11 @@ export function makeRewardFundingCoordinator(input: {
   }) {
     const fundingEffectId = deriveRewardFundingEffectId(request);
     const existing = yield* input.store.find(fundingEffectId);
-    if (existing !== null) return result(existing);
-    const intent = yield* input.store.plan({ ...request, fundingEffectId });
+    if (existing !== null) {
+      if (!admitted(existing)) return yield* failed("production_disabled");
+      return result(existing);
+    }
+    const intent = yield* input.store.plan({ ...request, fundingEffectId, admit: admitted });
     yield* attest(intent);
     return result(intent);
   });
@@ -254,6 +258,9 @@ export function makeRewardFundingCoordinator(input: {
     readonly fundingEffectId: string;
     readonly transactionHash: string;
   }) {
+    // Nothing is bound to an intent whose deployment this instance does not admit.
+    const current = yield* input.store.find(request.fundingEffectId);
+    if (current !== null && !admitted(current)) return yield* failed("production_disabled");
     const intent = yield* input.store.bindTransaction(request);
     return yield* reconcileIntent(intent);
   });

@@ -380,6 +380,27 @@ describe("HTTP production composition", () => {
     }
   });
 
+  test("refuses the Safe pool production switch outside production", async () => {
+    const configured = await bindings();
+    const pilot = {
+      SAFE_POOL_PILOT_ENABLED: "true",
+      SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
+      SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
+    };
+    for (const environment of ["development", "staging"]) {
+      for (const lane of [{}, pilot]) {
+        await expect(
+          createProductionHttpWorker({
+            ...configured,
+            ...lane,
+            API_NEXT_ENV: environment,
+            SAFE_POOL_PRODUCTION_ENABLED: "true",
+          }),
+        ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+      }
+    }
+  });
+
   test("refuses the production sponsorship switch outside production", async () => {
     const configured = await bindings();
     await expect(

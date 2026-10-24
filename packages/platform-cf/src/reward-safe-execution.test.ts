@@ -11,6 +11,7 @@ import {
   classifyRewardSafeExecution,
   type RewardSafeCommand,
   type RewardSafeOuterTransaction,
+  type RewardSafeRuntimeEnvironment,
   rewardSafeChainAdmitted,
   rewardSafeTransactionHash,
   validateRewardSafeExecution,
@@ -257,13 +258,41 @@ test("refuses malformed execution calldata and malformed Safe events", () => {
   ).toThrow();
 });
 
-test("admits Base, production only under its switch, and Base Sepolia outside production", () => {
-  const admitted = (chainId: number, environment: string, productionEnabled: boolean) =>
-    rewardSafeChainAdmitted({ chainId, environment, productionEnabled });
-  expect(admitted(8453, "production", true)).toBe(true);
-  expect(admitted(8453, "production", false)).toBe(false);
-  expect(admitted(84_532, "staging", false)).toBe(true);
-  expect(admitted(84_532, "test", false)).toBe(true);
-  expect(admitted(84_532, "production", true)).toBe(false);
-  expect(admitted(1, "staging", true)).toBe(false);
+test("admits only what the runtime's own environment allows, whatever the deployment claims", () => {
+  // Every attestation the database can hold, plus shapes its constraint refuses.
+  const deployments = [
+    { environment: "production", chainId: 8453 },
+    { environment: "staging", chainId: 84_532 },
+    { environment: "test", chainId: 84_532 },
+    { environment: "staging", chainId: 8453 },
+    { environment: "test", chainId: 8453 },
+    { environment: "production", chainId: 84_532 },
+    { environment: "staging", chainId: 1 },
+  ] as const;
+  const admitted = (
+    runtimeEnvironment: RewardSafeRuntimeEnvironment,
+    productionEnabled: boolean,
+  ): string[] =>
+    deployments
+      .filter((deployment) =>
+        rewardSafeChainAdmitted({ runtimeEnvironment, productionEnabled, ...deployment }),
+      )
+      .map((deployment) => `${deployment.environment}:${deployment.chainId}`);
+  expect(admitted("production", true)).toEqual(["production:8453"]);
+  // A production worker without its switch admits nothing, a staging rehearsal included.
+  expect(admitted("production", false)).toEqual([]);
+  expect(admitted("staging", false)).toEqual(["staging:84532"]);
+  expect(admitted("development", false)).toEqual(["staging:84532", "test:84532"]);
+  // The switch is refused outside production, so a production attestation never runs there.
+  expect(admitted("staging", true)).toEqual([]);
+  expect(admitted("development", true)).toEqual([]);
+  // A runtime environment outside the three is refused.
+  expect(
+    rewardSafeChainAdmitted({
+      runtimeEnvironment: "test" as RewardSafeRuntimeEnvironment,
+      productionEnabled: false,
+      environment: "test",
+      chainId: 84_532,
+    }),
+  ).toBe(false);
 });

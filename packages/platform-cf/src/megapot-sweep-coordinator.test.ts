@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { deriveMegapotSweepId, makeMegapotSweepCoordinator } from "./megapot-sweep-coordinator.ts";
 import type { MegapotV2DrawingState } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 
 const hash = (byte: string) => `0x${byte.repeat(64)}`;
 const address = (byte: string) => `0x${byte.repeat(40)}`;
@@ -53,7 +54,7 @@ function harness(options: {
   readonly settled?: boolean;
   readonly owner?: string;
   readonly candidate?: Partial<MegapotSweepCandidate>;
-  readonly safeProductionEnabled?: boolean;
+  readonly safePilot?: RewardSafeAdmission;
 }) {
   const subject: MegapotSweepCandidate = { ...candidate, ...options.candidate };
   let stored: MegapotSweepResult | null = null;
@@ -128,9 +129,7 @@ function harness(options: {
       store,
       rpc,
       requiredConfirmations: 3,
-      ...(options.safeProductionEnabled === undefined
-        ? {}
-        : { safeProductionEnabled: options.safeProductionEnabled }),
+      ...(options.safePilot === undefined ? {} : { safePilot: options.safePilot }),
       now: () => Date.parse("2026-08-26T00:00:00.000Z"),
     }),
     pendingCalls: () => pendingCalls,
@@ -195,7 +194,7 @@ describe("Megapot sweep coordinator", () => {
     expect(testHarness.completeCalls()).toBe(0);
   });
 
-  test("admits production only for ticket-first Safe pools on Base under the pilot switch, and rehearsal on Base Sepolia", async () => {
+  test("admits ticket-first Safe pools only as the Safe pilot's own environment allows", async () => {
     const safePool = {
       purchaseOrder: "ticket_first_v1",
       drawingStatus: "committed",
@@ -206,27 +205,48 @@ describe("Megapot sweep coordinator", () => {
       Effect.runPromise(
         harness(options).coordinator.sweep({ poolLegId: candidate.poolLegId, drawingId: 101n }),
       );
+    const staging = { ...safePool, environment: "staging", chainId: 84_532 } as const;
+    const production = { runtimeEnvironment: "production", productionEnabled: true } as const;
     for (const refused of [
       { tierId: 7n, candidate: safePool },
-      { tierId: 7n, candidate: safePool, safeProductionEnabled: false },
-      { tierId: 7n, candidate: { ...safePool, chainId: 84_532 }, safeProductionEnabled: true },
+      { tierId: 7n, candidate: staging },
+      {
+        tierId: 7n,
+        candidate: safePool,
+        safePilot: { runtimeEnvironment: "production", productionEnabled: false },
+      },
+      { tierId: 7n, candidate: { ...safePool, chainId: 84_532 }, safePilot: production },
       {
         tierId: 7n,
         candidate: { ...safePool, purchaseOrder: "commit_first" },
-        safeProductionEnabled: true,
+        safePilot: production,
+      },
+      // A production worker never sweeps a staging rehearsal, and staging never production.
+      { tierId: 7n, candidate: staging, safePilot: production },
+      {
+        tierId: 7n,
+        candidate: safePool,
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: true },
+      },
+      // Base labelled staging is refused everywhere; the database cannot hold it.
+      {
+        tierId: 7n,
+        candidate: { ...safePool, environment: "staging" },
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: false },
       },
     ] as const) {
       await expect(sweep(refused)).rejects.toMatchObject({ reason: "production_disabled" });
     }
     await expect(
-      sweep({ tierId: 7n, candidate: safePool, safeProductionEnabled: true }),
+      sweep({ tierId: 7n, candidate: safePool, safePilot: production }),
     ).resolves.toMatchObject({ kind: "complete", outcome: "winnings_detected" });
-    await expect(
-      sweep({ tierId: 7n, candidate: { ...safePool, environment: "staging" } }),
-    ).resolves.toMatchObject({ kind: "complete" });
     // Staging rehearses a Safe pool on Base Sepolia.
     await expect(
-      sweep({ tierId: 7n, candidate: { ...safePool, environment: "staging", chainId: 84_532 } }),
+      sweep({
+        tierId: 7n,
+        candidate: staging,
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: false },
+      }),
     ).resolves.toMatchObject({ kind: "complete" });
   });
 });

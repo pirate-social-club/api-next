@@ -333,12 +333,16 @@ function makeMegapotOptions(
 
 /**
  * The Safe pool pilot shares its tables with the EOA rewards job, and the registry
- * allows one writer per table, so the two are never enabled together.
+ * allows one writer per table, so the two are never enabled together. Its production
+ * switch exists only in production.
  */
-function makeSafePoolPilotOptions(
+export function makeSafePoolPilotOptions(
   env: JobsWorkerEnv,
   config: JobsWorkerConfigValue,
 ): SafePoolPilotJobOptions | null {
+  if (config.SAFE_POOL_PRODUCTION_ENABLED && config.API_NEXT_ENV !== "production") {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
   if (!config.SAFE_POOL_PILOT_ENABLED) return null;
   const commitmentPublicOrigin = Redacted.value(config.SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN);
   let origin: URL;

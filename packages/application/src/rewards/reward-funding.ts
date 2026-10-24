@@ -63,6 +63,15 @@ export interface RewardFundingStore {
     readonly senderAddress: string;
     readonly expectedAmountAtomic: bigint;
     readonly requiredConfirmations: number;
+    /**
+     * Whether the calling runtime admits the leg's deployment; a leg it does not admit
+     * is refused as funding-not-allowed before anything is written, a replay included.
+     * The funding coordinator always passes it.
+     */
+    readonly admit?: (deployment: {
+      readonly environment: string;
+      readonly chainId: number;
+    }) => boolean;
   }) => Effect.Effect<RewardFundingIntent, RewardFundingFailure>;
   readonly find: (
     fundingEffectId: string,

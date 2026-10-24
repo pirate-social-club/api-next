@@ -102,7 +102,8 @@ const RewardGasTopupConfigFields = {
 /**
  * The owner-executed Safe pool pilot, read by the jobs worker's cycle and by the HTTP
  * worker's reward endpoints. Off unless set; production deployments also need
- * SAFE_POOL_PRODUCTION_ENABLED.
+ * SAFE_POOL_PRODUCTION_ENABLED, which both workers refuse outside production. Each
+ * worker admits only an attestation of its own API_NEXT_ENV.
  */
 const SafePoolPilotConfigFields = {
   SAFE_POOL_PILOT_ENABLED: Config.boolean("SAFE_POOL_PILOT_ENABLED").pipe(

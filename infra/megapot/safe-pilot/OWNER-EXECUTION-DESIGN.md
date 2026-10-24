@@ -194,7 +194,16 @@ Enabling it needs `SAFE_POOL_ATTESTATION_ID`, `SAFE_POOL_RPC_URL`,
 `SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN`, `SAFE_POOL_MINIMUM_ENTRY_SECONDS` (at least
 60) and the `MEGAPOT_COMMITMENTS` bucket, and production attestations also need
 `SAFE_POOL_PRODUCTION_ENABLED`. It shares tables with the EOA rewards job, so
-configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused. Production
+configuration with `MEGAPOT_REWARDS_ENABLED` also set is refused.
+
+Which attestation a worker may use is decided by the worker's own `API_NEXT_ENV`,
+never by the attestation. A production worker admits only a production attestation
+on Base, and only with `SAFE_POOL_PRODUCTION_ENABLED`. A staging worker admits only
+a staging attestation on Base Sepolia, and a development worker a test or staging
+one. Both workers refuse `SAFE_POOL_PRODUCTION_ENABLED` outside production. The
+cycle stops after reading the attestation it is not admitted to, before any chain
+read, write or publication, and funding refuses another environment's leg before
+writing its intent. Production
 reward work still requires the run lease and an unpaused brake, and a production
 leg must carry `legal_activation_gate = 'production_approved'` to be active (see
 Production activation below).
@@ -202,9 +211,9 @@ Production activation below).
 The HTTP worker serves the offer, funding, Claim and credit routes for the
 pilot's attestation when its own `SAFE_POOL_PILOT_ENABLED` is set, with
 `SAFE_POOL_ATTESTATION_ID` and `SAFE_POOL_RPC_URL`. It refuses that together with
-`MEGAPOT_REWARDS_ENABLED`, and serves a production attestation only when
-`SAFE_POOL_PRODUCTION_ENABLED` is also set; otherwise the routes stay mounted and
-answer that rewards are unavailable. In pilot mode it confirms funding into the
+`MEGAPOT_REWARDS_ENABLED`, and serves only an attestation its own environment admits,
+a production one only when `SAFE_POOL_PRODUCTION_ENABLED` is also set; otherwise the
+routes stay mounted and answer that rewards are unavailable. In pilot mode it confirms funding into the
 Safe and offers no gas top-ups or winner sends: winners send onward with the
 sponsored Wallet Send, which production serves only when
 `PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED` is set and then only for Base USDC.

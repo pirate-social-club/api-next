@@ -11,10 +11,13 @@
  * held asset whose winnings nobody is assigned, and its cost moves from reserved to
  * spent, once. The function refuses unless reward operations are paused at
  * --brake-revision and no run holds a live lease. The closed drawing never changes.
- * The command never signs or sends.
+ * The command never signs or sends. API_NEXT_ENV names the environment it runs for and
+ * decides which attestations it admits, as in the workers; the production switch is
+ * refused outside production.
  *
- *   SAFE_POOL_RPC_URL=... MEGAPOT_REQUIRED_CONFIRMATIONS=... \
- *   CONTROL_PLANE_POSTGRES_ADMIN_URL=... [SAFE_POOL_PRODUCTION_ENABLED=true] \
+ *   API_NEXT_ENV=production|staging|development SAFE_POOL_RPC_URL=... \
+ *   MEGAPOT_REQUIRED_CONFIRMATIONS=... CONTROL_PLANE_POSTGRES_ADMIN_URL=... \
+ *   [SAFE_POOL_PRODUCTION_ENABLED=true] \
  *     bun scripts/safe-pool-recover-late-purchase.ts --attestation <id> [--effect <id>]
  *     bun scripts/safe-pool-recover-late-purchase.ts --attestation <id> --effect <id> \
  *       --apply --brake-revision <n>
@@ -27,24 +30,46 @@ import {
   makeMegapotV2RpcClient,
 } from "../packages/platform-cf/src/megapot-v2-rpc.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src/postgres.ts";
+import {
+  type RewardSafeAdmission,
+  rewardSafeChainAdmitted,
+} from "../packages/platform-cf/src/reward-safe-execution.ts";
 import { makeRewardSafeLatePurchaseRecovery } from "../packages/platform-cf/src/reward-safe-late-purchase-recovery.ts";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 
-type RecoveryInput = Readonly<{
-  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
-  rpc: MegapotV2RpcClient;
-  attestationId: string;
-  requiredConfirmations: number;
-  productionEnabled: boolean;
-  now?: () => number;
-}>;
+type RecoveryInput = RewardSafeAdmission &
+  Readonly<{
+    layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+    rpc: MegapotV2RpcClient;
+    attestationId: string;
+    requiredConfirmations: number;
+    now?: () => number;
+  }>;
+
+/** This command's own runtime environment and production switch, never an attestation's. */
+export function recoveryAdmission(env: Readonly<Record<string, string | undefined>>) {
+  const runtimeEnvironment = env.API_NEXT_ENV;
+  if (
+    runtimeEnvironment !== "production" &&
+    runtimeEnvironment !== "staging" &&
+    runtimeEnvironment !== "development"
+  ) {
+    throw new Error("API_NEXT_ENV must be production, staging or development");
+  }
+  const productionEnabled = env.SAFE_POOL_PRODUCTION_ENABLED === "true";
+  if (productionEnabled && runtimeEnvironment !== "production") {
+    throw new Error("SAFE_POOL_PRODUCTION_ENABLED is refused outside production");
+  }
+  return { runtimeEnvironment, productionEnabled } satisfies RewardSafeAdmission;
+}
 
 function recovery(input: RecoveryInput) {
   return makeRewardSafeLatePurchaseRecovery({
+    runtimeEnvironment: input.runtimeEnvironment,
+    productionEnabled: input.productionEnabled,
     layer: input.layer,
     rpc: input.rpc,
     requiredConfirmations: input.requiredConfirmations,
-    productionEnabled: input.productionEnabled,
     maximumScanBlocks: 200,
     maximumScanLogs: 200,
     ...(input.now === undefined ? {} : { now: input.now }),
@@ -111,6 +136,7 @@ if (import.meta.main) {
         "usage: --attestation <id> [--effect <id>] | --attestation <id> --effect <id> --apply --brake-revision <n>",
       );
     }
+    const admission = recoveryAdmission(process.env);
     const rpcUrl = new URL(required("SAFE_POOL_RPC_URL"));
     if (rpcUrl.protocol !== "https:" || rpcUrl.username || rpcUrl.password) {
       throw new Error("SAFE_POOL_RPC_URL must be a credential-free HTTPS URL");
@@ -122,6 +148,16 @@ if (import.meta.main) {
     const deployment = await Effect.runPromise(
       makeControlPlaneMegapotDrawingObservationStore(layer).loadCandidate(attestationId),
     );
+    // Another environment's attestation is refused before any chain read.
+    if (
+      !rewardSafeChainAdmitted({
+        ...admission,
+        chainId: deployment.chainId,
+        environment: deployment.environment,
+      })
+    ) {
+      throw new Error("production_disabled");
+    }
     const rpc = makeMegapotV2RpcClient({
       rpcUrl: rpcUrl.toString(),
       attestation: {
@@ -140,13 +176,7 @@ if (import.meta.main) {
     });
     // The chain's contracts must still be the attested ones before any read counts.
     await rpc.attestDeployment();
-    const input = {
-      layer,
-      rpc,
-      attestationId,
-      requiredConfirmations,
-      productionEnabled: process.env.SAFE_POOL_PRODUCTION_ENABLED === "true",
-    };
+    const input = { ...admission, layer, rpc, attestationId, requiredConfirmations };
     if (!apply) {
       const assessed = await inspectLateSafePurchases({
         ...input,

@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { makeMegapotDrawingObserver } from "./megapot-drawing-observer.ts";
 import type { MegapotV2DeploymentAttestation, MegapotV2DrawingState } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
 const bytes32 = (byte: string): string => `0x${byte.repeat(64)}`;
@@ -185,11 +186,8 @@ describe("Megapot drawing observer", () => {
     expect(changedTickets.observationId).not.toBe(baseline.observationId);
   });
 
-  test("admits Safe custody chains only in a Safe pilot instance, production only under its switch", async () => {
-    const observe = (
-      authority: MegapotDrawingObserverCandidate,
-      safePilot?: { readonly productionEnabled: boolean },
-    ) =>
+  test("admits Safe custody only in a Safe pilot instance, as the worker's own environment allows", async () => {
+    const observe = (authority: MegapotDrawingObserverCandidate, safePilot?: RewardSafeAdmission) =>
       Effect.runPromise(
         makeMegapotDrawingObserver({
           store: {
@@ -203,26 +201,37 @@ describe("Megapot drawing observer", () => {
           ...(safePilot === undefined ? {} : { safePilot }),
         }).observe(authority.attestationId),
       );
-    const base = { ...candidate(), chainId: 8453 };
-    const production = { ...base, environment: "production" } as const;
+    const staging = candidate();
+    const production = { ...staging, chainId: 8453, environment: "production" } as const;
     for (const [authority, safePilot] of [
-      [base, undefined],
-      [production, { productionEnabled: false }],
+      [production, undefined],
+      [production, { runtimeEnvironment: "production", productionEnabled: false }],
+      // A production worker never runs another environment's rehearsal, switch or not.
+      [staging, { runtimeEnvironment: "production", productionEnabled: false }],
+      [staging, { runtimeEnvironment: "production", productionEnabled: true }],
+      // A staging worker never runs production custody.
+      [production, { runtimeEnvironment: "staging", productionEnabled: true }],
+      [production, { runtimeEnvironment: "staging", productionEnabled: false }],
+      [
+        { ...staging, chainId: 8453 },
+        { runtimeEnvironment: "staging", productionEnabled: false },
+      ],
     ] as const) {
       await expect(observe(authority, safePilot)).rejects.toMatchObject({
         reason: "production-disabled",
       });
     }
-    await expect(observe(base, { productionEnabled: false })).resolves.toMatchObject({
-      drawingId: 101n,
-    });
-    await expect(observe(production, { productionEnabled: true })).resolves.toMatchObject({
-      drawingId: 101n,
-    });
-    // Staging rehearses the Safe pilot on Base Sepolia.
-    await expect(observe(candidate(), { productionEnabled: false })).resolves.toMatchObject({
-      drawingId: 101n,
-    });
+    for (const [authority, safePilot] of [
+      [production, { runtimeEnvironment: "production", productionEnabled: true }],
+      // Staging rehearses the Safe pilot on Base Sepolia, and development tests it there.
+      [staging, { runtimeEnvironment: "staging", productionEnabled: false }],
+      [
+        { ...staging, environment: "test" },
+        { runtimeEnvironment: "development", productionEnabled: false },
+      ],
+    ] as const) {
+      await expect(observe(authority, safePilot)).resolves.toMatchObject({ drawingId: 101n });
+    }
   });
 
   test("rejects an RPC configured for a different deployment", async () => {

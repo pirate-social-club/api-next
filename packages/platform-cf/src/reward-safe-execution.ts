@@ -33,18 +33,32 @@ const safeTypes = {
   ],
 } as const;
 
+/** The admitting runtime's own API_NEXT_ENV, never the environment of what it admits. */
+export type RewardSafeRuntimeEnvironment = "development" | "staging" | "production";
+
+/** How a runtime admits Safe custody: its own environment and the pilot's production switch. */
+export type RewardSafeAdmission = Readonly<{
+  runtimeEnvironment: RewardSafeRuntimeEnvironment;
+  productionEnabled: boolean;
+}>;
+
 /**
- * Owner-executed Safe custody runs on Base, with production behind the pilot's own
- * switch, or on Base Sepolia outside production so that staging can rehearse it.
+ * Owner-executed Safe custody runs only where the runtime's own environment allows it.
+ * A production runtime admits a production deployment on Base, and only behind the
+ * pilot's switch. Staging admits staging on Base Sepolia, and development admits test
+ * or staging on Base Sepolia. The switch is refused outside production.
  */
-export function rewardSafeChainAdmitted(input: {
-  readonly chainId: number;
-  readonly environment: string;
-  readonly productionEnabled: boolean;
-}): boolean {
-  return input.chainId === 8453
-    ? input.environment !== "production" || input.productionEnabled
-    : input.chainId === 84_532 && input.environment !== "production";
+export function rewardSafeChainAdmitted(
+  input: RewardSafeAdmission & { readonly chainId: number; readonly environment: string },
+): boolean {
+  if (input.runtimeEnvironment === "production") {
+    return input.productionEnabled && input.environment === "production" && input.chainId === 8453;
+  }
+  if (input.productionEnabled || input.chainId !== 84_532) return false;
+  return input.runtimeEnvironment === "staging"
+    ? input.environment === "staging"
+    : input.runtimeEnvironment === "development" &&
+        (input.environment === "test" || input.environment === "staging");
 }
 
 /** The pilot pays execution gas outside the pool; native value and refunds are zero. */

@@ -26,6 +26,7 @@ import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "./megapot-v2-signer.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
 const hash = (byte: string): string => `0x${byte.repeat(64)}`;
@@ -471,7 +472,7 @@ describe("Megapot v2 Worker runtime adapters", () => {
     });
   });
 
-  test("observes Safe custody only in a Safe pilot instance, production under its switch", async () => {
+  test("observes Safe custody only in a Safe pilot instance, as the worker's own environment allows", async () => {
     const sepolia = attestation();
     const production = { ...sepolia, chainId: 8453, environment: "production" as const };
     // Every RPC read fails, so an admitted observation stops at deployment attestation.
@@ -483,10 +484,7 @@ describe("Megapot v2 Worker runtime adapters", () => {
         },
       },
     ) as MegapotV2RpcClient;
-    const observe = (
-      deployment: typeof sepolia,
-      safePilot?: { readonly productionEnabled: boolean },
-    ) => {
+    const observe = (deployment: typeof sepolia, safePilot?: RewardSafeAdmission) => {
       const store: CustodySolvencyStore = {
         listTokenAddresses: () => Effect.succeed([deployment.usdcAddress]),
         loadCandidate: () =>
@@ -505,18 +503,22 @@ describe("Megapot v2 Worker runtime adapters", () => {
     };
     for (const [deployment, safePilot] of [
       [production, undefined],
-      [production, { productionEnabled: false }],
+      [production, { runtimeEnvironment: "production", productionEnabled: false }],
+      [sepolia, { runtimeEnvironment: "production", productionEnabled: false }],
+      [sepolia, { runtimeEnvironment: "production", productionEnabled: true }],
+      [production, { runtimeEnvironment: "staging", productionEnabled: true }],
+      [production, { runtimeEnvironment: "development", productionEnabled: false }],
     ] as const) {
       await expect(observe(deployment, safePilot)).rejects.toMatchObject({
         reason: "production_disabled",
       });
     }
     // Admitted observations, production under its switch and the Base Sepolia rehearsal.
-    for (const [deployment, productionEnabled] of [
-      [production, true],
-      [sepolia, false],
+    for (const [deployment, safePilot] of [
+      [production, { runtimeEnvironment: "production", productionEnabled: true }],
+      [sepolia, { runtimeEnvironment: "staging", productionEnabled: false }],
     ] as const) {
-      await expect(observe(deployment, { productionEnabled })).rejects.toMatchObject({
+      await expect(observe(deployment, safePilot)).rejects.toMatchObject({
         reason: "observation_invalid",
         stage: "deployment_attestation",
       });

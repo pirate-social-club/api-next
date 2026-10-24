@@ -39,6 +39,14 @@ if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url) {
 const suite = url ? describe : describe.skip;
 /** An accepted participant credit from an earlier drawing, unrelated to the late ticket. */
 const CREDIT = 2_500_000n;
+/** The fixture's attestation is production on Base, admitted only by this runtime. */
+const PRODUCTION = { runtimeEnvironment: "production", productionEnabled: true } as const;
+const MISMATCHED = [
+  { runtimeEnvironment: "production", productionEnabled: false },
+  { runtimeEnvironment: "staging", productionEnabled: false },
+  { runtimeEnvironment: "staging", productionEnabled: true },
+  { runtimeEnvironment: "development", productionEnabled: false },
+] as const;
 
 /**
  * One schema and fake chain per suite. The Safe starts with `usdcBalance`, and an
@@ -56,7 +64,7 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
     layer: layer(),
     rpc: chain.rpc,
     requiredConfirmations: 3,
-    productionEnabled: true,
+    ...PRODUCTION,
     maximumScanBlocks: 500,
     maximumScanLogs: 50,
     minimumEntrySeconds,
@@ -66,7 +74,7 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
     rpc: chain.rpc,
     attestationId: ATTESTATION,
     requiredConfirmations: 3,
-    productionEnabled: true,
+    ...PRODUCTION,
   };
   const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
   const scan = () =>
@@ -77,7 +85,7 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
         store: makeControlPlaneCustodySolvencyStore(layer()),
         rpc: chain.rpc,
         requiredConfirmations: 3,
-        safePilot: { productionEnabled: true },
+        safePilot: PRODUCTION,
       }).observe(ATTESTATION),
     );
   const one = async <T>(text: string, values: unknown[] = []) =>
@@ -385,6 +393,13 @@ suite("late Safe purchase recovery", () => {
       }),
     ]);
     expect(await leg("late-ok")).toEqual({ reserved: "1000000", spent: "0" });
+    // The command admits only what its own environment allows: production custody needs
+    // a production runtime with the switch, whatever the attestation says.
+    for (const admission of MISMATCHED) {
+      await expect(
+        inspectLateSafePurchases({ ...recovery, ...admission, effectId: late.effectId }),
+      ).rejects.toMatchObject({ reason: "production_disabled" });
+    }
 
     // Refused while operations run, and against a brake revision that is not current.
     const running = await brakeRevision();
@@ -396,6 +411,17 @@ suite("late Safe purchase recovery", () => {
     await expect(recover(late.effectId, running)).rejects.toMatchObject({
       reason: "recovery-not-isolated",
     });
+    for (const admission of MISMATCHED) {
+      await expect(
+        recoverLateSafePurchase({
+          ...recovery,
+          ...admission,
+          effectId: late.effectId,
+          brakeRevision: paused,
+        }),
+      ).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    expect(await leg("late-ok")).toEqual({ reserved: "1000000", spent: "0" });
     expect(await recover(late.effectId, paused)).toMatchObject({
       kind: "recovered",
       effectId: late.effectId,
