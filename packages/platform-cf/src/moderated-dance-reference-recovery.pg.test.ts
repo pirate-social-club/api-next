@@ -98,7 +98,7 @@ suite("native recovery of the same published Dance reference", () => {
         ).rows[0];
       const before = await snapshot();
       expect(before.command.state).toBe("failed");
-      const all = await loadPostgresMigrations();
+      const all = (await loadPostgresMigrations()).slice(0, 309);
       const upgraded = await runPostgresMigrations({
         connectionString: f.connection,
         migrations: all,

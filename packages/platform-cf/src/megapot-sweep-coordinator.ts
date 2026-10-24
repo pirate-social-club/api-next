@@ -7,6 +7,7 @@ import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { MEGAPOT_REFERRAL_SPLIT_SCALE } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { type RewardSafeAdmission, rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 export class MegapotSweepCoordinatorFailed extends Data.TaggedError(
   "MegapotSweepCoordinatorFailed",
@@ -76,6 +77,8 @@ export function makeMegapotSweepCoordinator(input: {
   readonly store: MegapotSweepStore;
   readonly rpc: MegapotV2RpcClient;
   readonly requiredConfirmations: number;
+  /** Set only by the Safe pilot cycle, the one instance that sweeps ticket-first Safe pools. */
+  readonly safePilot?: RewardSafeAdmission;
   readonly now?: () => number;
 }): MegapotSweepCoordinator {
   if (!Number.isSafeInteger(input.requiredConfirmations) || input.requiredConfirmations < 1) {
@@ -96,9 +99,18 @@ export function makeMegapotSweepCoordinator(input: {
     const existing = yield* input.store.findResult(sweepId);
     if (existing !== null) return completed(existing);
     const candidate = yield* input.store.loadCandidate(command);
-    if (candidate.environment === "production" || candidate.chainId !== 84_532) {
-      return yield* failed("production_disabled");
-    }
+    // Ticket-first pools are owner-executed Safe pools, swept only where the Safe pilot
+    // admits them; every other pool is still limited to Base Sepolia outside production.
+    const admitted =
+      candidate.purchaseOrder === "ticket_first_v1"
+        ? input.safePilot !== undefined &&
+          rewardSafeChainAdmitted({
+            ...input.safePilot,
+            chainId: candidate.chainId,
+            environment: candidate.environment,
+          })
+        : candidate.environment !== "production" && candidate.chainId === 84_532;
+    if (!admitted) return yield* failed("production_disabled");
     yield* rpcEffect(() => input.rpc.attestDeployment()).pipe(
       Effect.mapError(() => failed("deployment_attestation_mismatch")),
     );

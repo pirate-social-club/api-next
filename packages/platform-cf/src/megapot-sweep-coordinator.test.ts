@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { deriveMegapotSweepId, makeMegapotSweepCoordinator } from "./megapot-sweep-coordinator.ts";
 import type { MegapotV2DrawingState } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 
 const hash = (byte: string) => `0x${byte.repeat(64)}`;
 const address = (byte: string) => `0x${byte.repeat(40)}`;
@@ -17,6 +18,7 @@ const candidate: MegapotSweepCandidate = {
   drawingId: 101n,
   drawingVersion: 7,
   drawingStatus: "tickets_confirmed",
+  purchaseOrder: "commit_first",
   attestationId: "megapot-base-sepolia-v2",
   environment: "staging",
   chainId: 84_532,
@@ -51,13 +53,16 @@ function harness(options: {
   readonly tierId: bigint;
   readonly settled?: boolean;
   readonly owner?: string;
+  readonly candidate?: Partial<MegapotSweepCandidate>;
+  readonly safePilot?: RewardSafeAdmission;
 }) {
+  const subject: MegapotSweepCandidate = { ...candidate, ...options.candidate };
   let stored: MegapotSweepResult | null = null;
   let pendingCalls = 0;
   let completeCalls = 0;
   let reviewCalls = 0;
   const store = {
-    loadCandidate: () => Effect.succeed(candidate),
+    loadCandidate: () => Effect.succeed(subject),
     findResult: () => Effect.succeed(stored),
     markDrawingPending: () => {
       pendingCalls += 1;
@@ -124,6 +129,7 @@ function harness(options: {
       store,
       rpc,
       requiredConfirmations: 3,
+      ...(options.safePilot === undefined ? {} : { safePilot: options.safePilot }),
       now: () => Date.parse("2026-08-26T00:00:00.000Z"),
     }),
     pendingCalls: () => pendingCalls,
@@ -186,5 +192,61 @@ describe("Megapot sweep coordinator", () => {
     });
     expect(testHarness.reviewCalls()).toBe(1);
     expect(testHarness.completeCalls()).toBe(0);
+  });
+
+  test("admits ticket-first Safe pools only as the Safe pilot's own environment allows", async () => {
+    const safePool = {
+      purchaseOrder: "ticket_first_v1",
+      drawingStatus: "committed",
+      environment: "production",
+      chainId: 8453,
+    } as const;
+    const sweep = (options: Parameters<typeof harness>[0]) =>
+      Effect.runPromise(
+        harness(options).coordinator.sweep({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      );
+    const staging = { ...safePool, environment: "staging", chainId: 84_532 } as const;
+    const production = { runtimeEnvironment: "production", productionEnabled: true } as const;
+    for (const refused of [
+      { tierId: 7n, candidate: safePool },
+      { tierId: 7n, candidate: staging },
+      {
+        tierId: 7n,
+        candidate: safePool,
+        safePilot: { runtimeEnvironment: "production", productionEnabled: false },
+      },
+      { tierId: 7n, candidate: { ...safePool, chainId: 84_532 }, safePilot: production },
+      {
+        tierId: 7n,
+        candidate: { ...safePool, purchaseOrder: "commit_first" },
+        safePilot: production,
+      },
+      // A production worker never sweeps a staging rehearsal, and staging never production.
+      { tierId: 7n, candidate: staging, safePilot: production },
+      {
+        tierId: 7n,
+        candidate: safePool,
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: true },
+      },
+      // Base labelled staging is refused everywhere; the database cannot hold it.
+      {
+        tierId: 7n,
+        candidate: { ...safePool, environment: "staging" },
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: false },
+      },
+    ] as const) {
+      await expect(sweep(refused)).rejects.toMatchObject({ reason: "production_disabled" });
+    }
+    await expect(
+      sweep({ tierId: 7n, candidate: safePool, safePilot: production }),
+    ).resolves.toMatchObject({ kind: "complete", outcome: "winnings_detected" });
+    // Staging rehearses a Safe pool on Base Sepolia.
+    await expect(
+      sweep({
+        tierId: 7n,
+        candidate: staging,
+        safePilot: { runtimeEnvironment: "staging", productionEnabled: false },
+      }),
+    ).resolves.toMatchObject({ kind: "complete" });
   });
 });

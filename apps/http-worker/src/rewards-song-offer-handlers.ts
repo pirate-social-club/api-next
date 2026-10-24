@@ -12,6 +12,7 @@ import {
   type RewardFundingStore,
   type RewardGasTopupFailure,
   type RewardGasTopupRequester,
+  type RewardLegalEligibilityLabel,
   type RewardProjectionFailure,
   type RewardProjectionStore,
   type RewardWinnerSendRecord,
@@ -52,6 +53,8 @@ export type SongRewardOfferHandlerServices = Readonly<{
   /** Null when the chain client cannot serve winner sends. */
   winnerSends?: RewardWinnerSendService | null;
   requiredConfirmations: number;
+  /** Production labels its empty legal-eligibility rules separately; see the offer service. */
+  legalEligibility?: RewardLegalEligibilityLabel;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
     referralPolicyHash: string;
@@ -327,7 +330,7 @@ const leg = (value: MegapotPoolLeg) => ({
   leg_id: value.legId,
   offer_id: value.offerId,
   status: value.status,
-  chain_id: value.chainId as 84_532,
+  chain_id: value.chainId as 84_532 | 8453,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
   custody_address: value.custodyAddress,
@@ -375,7 +378,7 @@ const funding = (value: RewardFundingIntent) => ({
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
   status: fundingStatus(value),
-  chain_id: value.chainId as 84_532,
+  chain_id: value.chainId as 84_532 | 8453,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
   sender_address: value.senderAddress,
@@ -457,7 +460,7 @@ const poolProjection = (value: PublicSongMegapotPoolProjection) => ({
   post_id: value.postId,
   offer_status: value.offerStatus,
   leg_status: value.legStatus,
-  chain_id: value.chainId as 84_532,
+  chain_id: value.chainId as 84_532 | 8453,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
   funded_atomic: value.fundedAtomic.toString(),
@@ -539,6 +542,9 @@ export function makeSongRewardOfferHandlers(
     funding: services.funding,
     requiredConfirmations: services.requiredConfirmations,
     externalFallbackPolicy: services.externalFallbackPolicy,
+    ...(services.legalEligibility === undefined
+      ? {}
+      : { legalEligibility: services.legalEligibility }),
   });
   const requireWinnerSends = (): RewardWinnerSendService => {
     const winnerSends = services.winnerSends ?? null;

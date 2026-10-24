@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import { sha256, toBytes } from "viem";
 import type { MegapotV2DeploymentAttestation } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { type RewardSafeAdmission, rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
 
@@ -116,6 +117,12 @@ export function makeMegapotDrawingObserver(input: {
   readonly store: MegapotDrawingObservationStore;
   readonly rpc: MegapotV2RpcClient;
   readonly observationTtlMs: number;
+  /**
+   * Set only by the Safe pilot cycle: that instance observes the Safe-custody
+   * deployments its own environment admits. Every other instance is limited to Base
+   * Sepolia outside production.
+   */
+  readonly safePilot?: RewardSafeAdmission;
   readonly now?: () => number;
 }): MegapotDrawingObserver {
   const now = input.now ?? Date.now;
@@ -128,9 +135,15 @@ export function makeMegapotDrawingObserver(input: {
         return yield* storage("invalid-row");
       }
       const candidate = yield* input.store.loadCandidate(attestationId);
-      if (candidate.environment === "production" || candidate.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-        return yield* rejected("production-disabled");
-      }
+      const admitted =
+        input.safePilot === undefined
+          ? candidate.environment !== "production" && candidate.chainId === BASE_SEPOLIA_CHAIN_ID
+          : rewardSafeChainAdmitted({
+              ...input.safePilot,
+              chainId: candidate.chainId,
+              environment: candidate.environment,
+            });
+      if (!admitted) return yield* rejected("production-disabled");
       const expectedDeployment = deployment(candidate);
       if (
         input.rpc.deployment === undefined ||

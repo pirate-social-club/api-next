@@ -138,7 +138,7 @@ function progressFromRow(row: Row): MegapotCommitmentProgress {
     snapshot: snapshotFromRow(row),
     payloadHash: text(row, "payload_hash"),
     signingKeyId: text(row, "signing_key_id"),
-    signature: text(row, "signature"),
+    signature: nullableText(row, "signature"),
     state,
     preparedAt: instant(row, "prepared_at"),
     publishedAt: nullableInstant(row, "published_at"),

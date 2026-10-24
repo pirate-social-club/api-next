@@ -9,6 +9,7 @@ import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { mediaProcessingPhysicalObjectKey } from "./media-immutable-object-key.ts";
 import { runBlockedQuery } from "./moderated-dance-authority.pg-fixture.ts";
 import { seedModeratedDanceIntake as seed } from "./moderated-dance-intake.pg-fixture.ts";
 import {
@@ -17,6 +18,9 @@ import {
   publishedModeratedDanceVideo,
 } from "./moderated-dance-reference.pg-fixture.ts";
 import { community } from "./video-publication.pg-fixture.ts";
+import { videoSourceCapabilityDigest } from "./video-source-capability.ts";
+import { makeVideoSourceGateway } from "./video-source-gateway.ts";
+import { makeVideoSourceGrantResolver } from "./video-source-grant-resolver.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && url === undefined)
@@ -150,6 +154,74 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
         expect(await reference.create()).toEqual(reference.receipt);
       }));
 
+  test("a canonical rendered reference reaches the strict source gateway by its physical key", async () =>
+    withFixture(async (f, db) => {
+      const video = await publishedModeratedDanceVideo(db, f.connection, f.facts.communityId);
+      const reference = await preparePublishedModeratedReference(db, f, video);
+      const capability = Buffer.alloc(32, 7).toString("base64url");
+      await db.query("SELECT issue_moderated_dance_reference_source_v1($1,'observer',$2)", [
+        reference.choreography,
+        await videoSourceCapabilityDigest(capability),
+      ]);
+      const master = (
+        await db.query(
+          "SELECT verified_object_key,verified_object_etag,master_byte_length FROM media_song_video_masters WHERE master_revision_id=$1",
+          [video.masterRevisionId],
+        )
+      ).rows[0];
+      const physicalKey = mediaProcessingPhysicalObjectKey(master.verified_object_key);
+      const object = {
+        key: physicalKey,
+        version: "binding-version-distinct-from-sealed-etag",
+        etag: master.verified_object_etag as string,
+        size: Number(master.master_byte_length),
+        checksums: { sha256: new Uint8Array(Buffer.from(video.masterSha256, "hex")).buffer },
+        httpMetadata: { contentType: "video/mp4" },
+      };
+      let observed = object;
+      const headed: string[] = [];
+      const gateway = makeVideoSourceGateway({
+        grants: makeVideoSourceGrantResolver(f.runtime),
+        bucket: {
+          head: async (key) => {
+            headed.push(key);
+            return key === physicalKey ? observed : null;
+          },
+          get: async (key, options) => {
+            expect(key).toBe(physicalKey);
+            expect(options.onlyIf.etagMatches).toBe(master.verified_object_etag);
+            expect(options.range).toEqual({ offset: 0, length: 4 });
+            return { ...object, body: new Blob([new Uint8Array([10, 11, 12, 13])]).stream() };
+          },
+        },
+        now: Date.now,
+      });
+      const url = `https://source.test/.well-known/pirate/video-source/v1/${capability}`;
+      const head = () => gateway(new Request(url, { method: "HEAD" }));
+      expect((await head()).status).toBe(200);
+      expect(headed).toEqual([physicalKey]);
+      const range = await gateway(new Request(url, { headers: { range: "bytes=0-3" } }));
+      expect(range.status).toBe(206);
+      expect(new Uint8Array(await range.arrayBuffer())).toEqual(new Uint8Array([10, 11, 12, 13]));
+      // Synthetic R2 observations exercise the real identity guard. Key translation
+      // must never admit different bytes, metadata or a subsequently hidden video.
+      for (const changed of [
+        { etag: "different" },
+        { size: object.size + 1 },
+        { httpMetadata: { contentType: "application/octet-stream" } },
+        { checksums: { sha256: new Uint8Array(32).buffer } },
+      ]) {
+        observed = { ...object, ...changed };
+        expect((await head()).status).toBe(409);
+      }
+      observed = object;
+      await db.query("UPDATE posts SET status='hidden' WHERE community_id=$1 AND post_id=$2", [
+        video.community,
+        video.postId,
+      ]);
+      expect((await head()).status).toBe(404);
+    }));
+
   test("a hidden video closes its original source and fresh publication; replay retains the original command", async () =>
     withFixture(async (f, db) => {
       const video = await publishedModeratedDanceVideo(db, f.connection, f.facts.communityId);
@@ -244,6 +316,141 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
         await third.end();
       }
     }));
+
+  test("actual0309->0310 upgrade preserves identity, receipts and confined source authority", async () => {
+    if (url === undefined) throw new Error("Isolated target required");
+    const db = new Client({ connectionString: url });
+    await db.connect();
+    const schema = `dance_key_upgrade_${process.pid}_${Date.now()}`;
+    const scoped = new URL(url);
+    scoped.searchParams.set("options", `-c search_path=${schema}`);
+    const role = `dance_key_reader_${process.pid}_${Date.now()}`;
+    const password = crypto.randomUUID();
+    let confined: Client | undefined;
+    try {
+      await db.query(`CREATE SCHEMA ${quote(schema)};SET search_path TO ${quote(schema)}`);
+      const all = await loadPostgresMigrations();
+      const prefix = all.slice(0, 309);
+      const target = all.slice(0, 310);
+      expect(target.at(-1)?.version).toBe("0310_moderated_dance_reference_physical_key.sql");
+      await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: prefix,
+        expectedLedger: [],
+      });
+      const f = await seed(db, scoped.toString());
+      const video = await publishedModeratedDanceVideo(db, f.connection, f.facts.communityId);
+      const reference = await preparePublishedModeratedReference(db, f, video);
+      const digest = "3".repeat(64);
+      await db.query("SELECT issue_moderated_dance_reference_source_v1($1,'observer',$2)", [
+        reference.choreography,
+        digest,
+      ]);
+      await db.query(
+        `CREATE ROLE ${quote(role)} LOGIN PASSWORD '${password}';GRANT USAGE ON SCHEMA ${quote(schema)} TO ${quote(role)}`,
+      );
+      await db.query("SELECT grant_moderated_dance_runtime_v1($1,'source_gateway')", [role]);
+      const authority = async () =>
+        (
+          await db.query(
+            "SELECT pg_get_userbyid(proowner) owner,proacl::text acl,proconfig::text config,prosecdef,provolatile FROM pg_proc WHERE oid='resolve_moderated_dance_reference_source_v1(text)'::regprocedure",
+          )
+        ).rows;
+      const snapshot = async () =>
+        (
+          await db.query(`SELECT
+        (SELECT jsonb_agg(to_jsonb(c) ORDER BY choreography_id) FROM dance_moderated_reference_commands_v1 c) commands,
+        (SELECT jsonb_agg(to_jsonb(r) ORDER BY idempotency_key) FROM dance_moderated_reference_receipts_v1 r) receipts,
+        (SELECT jsonb_agg(to_jsonb(g) ORDER BY capability_sha256) FROM dance_moderated_reference_sources_v1 g) grants,
+        (SELECT jsonb_agg(to_jsonb(m) ORDER BY master_revision_id) FROM media_song_video_masters m) masters`)
+        ).rows;
+      const beforeAuthority = await authority();
+      const before = await snapshot();
+      const login = new URL(scoped);
+      login.username = role;
+      login.password = password;
+      confined = new Client({ connectionString: login.toString() });
+      await confined.connect();
+      const reader = confined;
+      const resolve = () =>
+        reader.query("SELECT * FROM resolve_moderated_dance_reference_source_v1($1)", [digest]);
+      const old = (await resolve()).rows[0];
+      expect(old.physical_key.startsWith("media://immutable/")).toBe(true);
+      const result = await runPostgresMigrations({
+        connectionString: scoped.toString(),
+        migrations: target,
+        expectedLedger: prefix,
+      });
+      if (result.dryRun) throw new Error("Actual populated upgrade required");
+      expect(result.result.applied).toEqual(["0310_moderated_dance_reference_physical_key.sql"]);
+      expect(await authority()).toEqual(beforeAuthority);
+      expect(await snapshot()).toEqual(before);
+      const current = (await resolve()).rows[0];
+      expect(current).toEqual({
+        ...old,
+        physical_key: mediaProcessingPhysicalObjectKey(old.physical_key),
+      });
+      await expect(
+        confined.query("SELECT * FROM dance_moderated_reference_commands_v1"),
+      ).rejects.toMatchObject({ code: "42501" });
+      for (const key of [
+        "ordinary/key",
+        "media://immutable/",
+        "media://immutable//bad",
+        "media://immutable/../bad",
+        "media://immutable/a/../b",
+        "media://immutable/a\\b",
+        `media://immutable/${"x".repeat(769)}`,
+      ]) {
+        await db.query("BEGIN");
+        try {
+          // Isolated corrupt-history fixture only; production identity is never reset.
+          await db.query("SET LOCAL session_replication_role=replica");
+          await db.query(
+            "UPDATE media_song_video_masters SET verified_object_key=$1 WHERE master_revision_id=$2",
+            [key, video.masterRevisionId],
+          );
+          expect(
+            (
+              await db.query("SELECT * FROM resolve_moderated_dance_reference_source_v1($1)", [
+                digest,
+              ])
+            ).rows,
+          ).toEqual([]);
+        } finally {
+          await db.query("ROLLBACK");
+        }
+      }
+      for (const change of [
+        "UPDATE dance_moderated_reference_sources_v1 SET expires_at=clock_timestamp()-interval '1 second'",
+        "UPDATE dance_moderated_reference_sources_v1 SET revoked_at=clock_timestamp()",
+        "UPDATE dance_moderated_reference_sources_v1 SET work_token='wrong-token'",
+      ]) {
+        await db.query("BEGIN");
+        try {
+          await db.query("SET LOCAL session_replication_role=replica");
+          await db.query(change);
+          expect(
+            (
+              await db.query("SELECT * FROM resolve_moderated_dance_reference_source_v1($1)", [
+                digest,
+              ])
+            ).rows,
+          ).toEqual([]);
+        } finally {
+          await db.query("ROLLBACK");
+        }
+      }
+      expect(await snapshot()).toEqual(before);
+      expect(await reference.create()).toEqual(reference.receipt);
+    } finally {
+      await confined?.end();
+      await db.query(
+        `DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE;DROP ROLE IF EXISTS ${quote(role)}`,
+      );
+      await db.end();
+    }
+  }, 120000);
 
   test("actual0306->0308 upgrade preserves documents and bounds legacy queued work under confined roles", async () => {
     if (url === undefined) throw new Error("Isolated target required");

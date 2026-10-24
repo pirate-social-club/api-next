@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.134.0",
+  "sourceBranch": "feat/v1-safe-pilot-feasibility-20261022",
+  "sourceBase": "3e0e079027a616da5ec718a7feef9d8faec5e5fe",
+  "validatedSourceCommit": null,
+  "pullRequest": 656,
+  "wireContract": "Retains genuine133 operations. Megapot pool legs, pool funding and the public song pool projection admit chain_id 8453 beside 84532, for the owner-executed Safe pool pilot on Base. No other field, operation, status or error changes. Clients that accept only 84532 reject Base pilot pools.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.134.0.tgz",
+    "sha256": "e1309b8141a6c5c329538491a7a9a13e03c1c94818a0d665f86fdc7d1e35ff6e"
+  },
+  "validation": {
+    "status": "Candidate package. Final qualification evidence is recorded with the source checkpoint in the authoritative task record. Solid consumer intake and any Base pilot activation remain pending.",
+    "operationalBoundary": "No deployment, production grants, policy admission, provider operation, credential or financial activation. Genuine133 and all earlier artifacts remain immutable."
+  }
+}

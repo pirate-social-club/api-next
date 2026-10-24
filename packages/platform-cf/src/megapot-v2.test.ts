@@ -3,7 +3,9 @@ import { deriveMegapotTicket } from "@pirate/domain";
 import {
   encodeAbiParameters,
   encodeEventTopics,
+  encodeFunctionData,
   encodeFunctionResult,
+  getAddress,
   type Hex,
   parseAbi,
   parseAbiParameters,
@@ -38,6 +40,7 @@ import {
   validateMegapotUsdcTransferReceipt,
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
+import { type RewardSafeCommand, rewardSafeTransactionHash } from "./reward-safe-execution.ts";
 
 const JACKPOT = "0x465da3c859f193a3807386387bee941b2a4c3279";
 const NFT = "0x45084829ac63f9dc6a3d4981a46fa896f9180ecd";
@@ -116,6 +119,64 @@ function receipt(logs: readonly MegapotReceiptLog[]): MegapotTransactionReceipt 
     blockHash: BLOCK,
     blockNumber: 123n,
     logs,
+  };
+}
+
+function safeReceipt(target: string, data: Hex, logs: readonly MegapotReceiptLog[]) {
+  const abi = parseAbi([
+    "function execTransaction(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,bytes signatures) payable returns (bool)",
+    "event ExecutionSuccess(bytes32 indexed txHash,uint256 payment)",
+  ]);
+  const command: RewardSafeCommand = {
+    chainId: 8453,
+    safeAddress: CUSTODY,
+    nonce: 12n,
+    to: getAddress(target),
+    data,
+    operation: 0,
+    safeTxGas: 0n,
+  };
+  const safeReceiptValue: MegapotTransactionReceipt = {
+    ...receipt(logs),
+    chainId: 8453,
+    from: RECIPIENT,
+    to: CUSTODY,
+    logs: [
+      ...logs,
+      log({
+        address: CUSTODY,
+        topics: topics(
+          encodeEventTopics({
+            abi,
+            eventName: "ExecutionSuccess",
+            args: { txHash: rewardSafeTransactionHash(command) },
+          }),
+        ),
+        data: encodeAbiParameters([{ type: "uint256" }], [0n]),
+        logIndex: 100,
+      }),
+    ],
+  };
+  return {
+    deployment: { ...deployment, environment: "production" as const, chainId: 8453 },
+    receipt: safeReceiptValue,
+    safeExecution: {
+      command,
+      transaction: {
+        chainId: 8453,
+        hash: TX,
+        from: RECIPIENT,
+        to: CUSTODY,
+        value: 0n,
+        blockHash: BLOCK,
+        blockNumber: 123n,
+        input: encodeFunctionData({
+          abi,
+          functionName: "execTransaction",
+          args: [command.to, 0n, data, 0, 0n, 0n, 0n, EVM_ZERO_ADDRESS, EVM_ZERO_ADDRESS, "0x"],
+        }),
+      },
+    },
   };
 }
 
@@ -348,6 +409,21 @@ describe("Megapot v2 deployment and receipt evidence", () => {
       referralFeesAtomic: 500n,
       lpEarningsAtomic: 1_000n,
     });
+    const calldata = encodeMegapotBuyTickets({
+      tickets: [ticket],
+      recipient: CUSTODY,
+      referrers: [REFERRER],
+      referralSplit: [MEGAPOT_REFERRAL_SPLIT_SCALE],
+      source: SOURCE,
+    });
+    expect(
+      validateMegapotPurchaseReceipt({
+        ...safeReceipt(JACKPOT, calldata, purchaseLogs()),
+        drawingId: 8_327n,
+        source: SOURCE,
+        tickets: [ticket],
+      }).ticketIds,
+    ).toEqual([91n]);
   });
 
   test("proves the exact custody USDC allowance approval", () => {
@@ -383,6 +459,12 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         approvedAmountAtomic: 99_999n,
       }),
     ).toThrow("wrong-party");
+    expect(
+      validateMegapotUsdcApprovalReceipt({
+        ...safeReceipt(USDC, encodeMegapotUsdcApproval(JACKPOT, 100_000n), [approvalLog]),
+        approvedAmountAtomic: 100_000n,
+      }).approvedAmountAtomic,
+    ).toBe(100_000n);
   });
 
   test("proves one exact custody USDC payout transfer", () => {
@@ -419,6 +501,35 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         receipt: { ...receipt([transferLog]), to: USDC },
         recipient: RECIPIENT,
         amountAtomic: 900n,
+      }),
+    ).toThrow("wrong-party");
+    const safe = safeReceipt(USDC, encodeMegapotUsdcTransfer(RECIPIENT, 901n), [transferLog]);
+    expect(
+      validateMegapotUsdcTransferReceipt({ ...safe, recipient: RECIPIENT, amountAtomic: 901n })
+        .amountAtomic,
+    ).toBe(901n);
+    // A real Safe success must still bind the transfer to this credit's recipient and amount.
+    expect(() =>
+      validateMegapotUsdcTransferReceipt({
+        ...safeReceipt(USDC, encodeMegapotUsdcTransfer(REFERRER, 901n), [transferLog]),
+        recipient: RECIPIENT,
+        amountAtomic: 901n,
+      }),
+    ).toThrow("wrong-party");
+    expect(() =>
+      validateMegapotUsdcTransferReceipt({
+        ...safe,
+        receipt: { ...safe.receipt, logs: safe.receipt.logs.slice(-1) },
+        recipient: RECIPIENT,
+        amountAtomic: 901n,
+      }),
+    ).toThrow("missing-log");
+    expect(() =>
+      validateMegapotUsdcTransferReceipt({
+        deployment: safe.deployment,
+        receipt: safe.receipt,
+        recipient: RECIPIENT,
+        amountAtomic: 901n,
       }),
     ).toThrow("wrong-party");
   });
@@ -490,5 +601,15 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         expectedReferralAccrualAtomic: 100n,
       }),
     ).toThrow("missing-log");
+    expect(
+      validateMegapotClaimReceipt({
+        ...safeReceipt(JACKPOT, encodeMegapotClaimWinnings([91n]), claimLogs()),
+        drawingId: 8_327n,
+        ticketIds: [91n],
+        expectedGrossWinningsAtomic: 1_001n,
+        expectedNetWinningsAtomic: 901n,
+        expectedReferralAccrualAtomic: 100n,
+      }).netWinningsAtomic,
+    ).toBe(901n);
   });
 });

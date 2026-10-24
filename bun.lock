@@ -176,6 +176,7 @@
   "patchedDependencies": {
     "node-forge@1.4.0": "patches/node-forge@1.4.0.patch",
     "node-forge@github:remicolin/forge#17a11a6": "patches/node-forge-sdk-rsa-validation.patch",
+    "wrangler@4.123.0": "patches/wrangler@4.123.0.patch",
   },
   "overrides": {
     "axios": "1.20.0",

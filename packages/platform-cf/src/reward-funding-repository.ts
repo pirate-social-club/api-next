@@ -204,14 +204,21 @@ export function makeControlPlaneRewardFundingRepository() {
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             const replay = yield* readIntent(transaction, input.fundingEffectId);
-            if (replay !== null) return replay;
+            if (replay !== null) {
+              if (input.admit !== undefined && !input.admit(replay)) {
+                return yield* rejected("funding-not-allowed");
+              }
+              return replay;
+            }
             const authority = yield* transaction.execute<Row>({
               label: "reward-funding.authority.read",
               text: `SELECT leg.leg_id, leg.kind,
                             leg.funder_account_id AS frozen_funder_account_id,
                             leg.empty_pool_policy, leg.funding_source, leg.chain_id,
                             leg.token_address, leg.status, attestation.attestation_id,
-                            attestation.custody_address
+                            attestation.custody_address,
+                            attestation.environment AS attestation_environment,
+                            attestation.chain_id AS attestation_chain_id
                        FROM song_reward_offer_legs leg
                        JOIN reward_asset_whitelist asset
                          ON asset.chain_id=leg.chain_id AND asset.token_address=leg.token_address
@@ -246,6 +253,16 @@ export function makeControlPlaneRewardFundingRepository() {
             }
             if (authority.rows.length !== 1) return yield* storage("invalid-row");
             const row = authority.rows[0] as Row;
+            // Another environment's deployment is refused before anything is written.
+            if (
+              input.admit !== undefined &&
+              !input.admit({
+                environment: text(row, "attestation_environment"),
+                chainId: integer(row, "attestation_chain_id"),
+              })
+            ) {
+              return yield* rejected("funding-not-allowed");
+            }
             if (
               (text(row, "kind") === "megapot_pool" &&
                 text(row, "funding_source") !== "leg_budget") ||
@@ -315,6 +332,12 @@ export function makeControlPlaneRewardFundingRepository() {
             if (current.rows.length === 0) return yield* rejected("not-found");
             if (current.rows.length !== 1) return yield* storage("invalid-row");
             const row = current.rows[0] as Row;
+            // Another environment's intent is refused under its lock, before any write.
+            if (input.admit !== undefined) {
+              const locked = yield* readIntent(transaction, input.fundingEffectId);
+              if (locked === null) return yield* storage("invalid-row");
+              if (!input.admit(locked)) return yield* rejected("funding-not-allowed");
+            }
             const existingHash = nullableText(row, "transaction_hash");
             if (existingHash !== null && existingHash !== input.transactionHash) {
               return yield* rejected("effect-conflict");

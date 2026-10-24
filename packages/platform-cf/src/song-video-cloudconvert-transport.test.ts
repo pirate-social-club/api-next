@@ -70,6 +70,36 @@ describe("CloudConvert transport", () => {
     expect(JSON.stringify(observed)).not.toContain("private-key");
   });
 
+  test("retains the observed import DOWNLOAD_409 code after cleanup without its message", async () => {
+    const transport = makeSongVideoCloudConvertTransport({
+      apiKey: "private-key",
+      fetch: async () =>
+        json({
+          data: {
+            ...job,
+            status: "error",
+            tasks: [
+              {
+                name: "import-recording",
+                operation: "import/url",
+                status: "error",
+                code: "DOWNLOAD_409",
+                message: "Download failed: https://private.test/source?cap=secret-value",
+              },
+            ],
+          },
+        }),
+    });
+    const observed = await transport.showPrivateDance(job.id);
+    expect(observed.taskFailures).toEqual([
+      { task: "import-recording", code: "DOWNLOAD_409", reportedHttpStatus: null },
+    ]);
+    const retained = JSON.stringify(observed);
+    expect(retained).not.toContain("private.test");
+    expect(retained).not.toContain("secret-value");
+    expect(retained).not.toContain("private-key");
+  });
+
   test("an error without task detail remains a terminal private Dance error", async () => {
     const transport = makeSongVideoCloudConvertTransport({
       apiKey: "private-key",

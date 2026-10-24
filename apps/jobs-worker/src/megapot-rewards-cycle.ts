@@ -604,6 +604,7 @@ export function runMegapotRewardsCycle(input: {
     mark("frozen");
 
     const frozenDrawings = yield* input.work.loadDrawings({
+      purchaseOrder: "commit_first",
       statuses: ["cutoff_frozen"],
       limit,
     });
@@ -614,7 +615,11 @@ export function runMegapotRewardsCycle(input: {
     recordFailures(commitFailures);
     mark("committed");
 
-    const committedDrawings = yield* input.work.loadDrawings({ statuses: ["committed"], limit });
+    const committedDrawings = yield* input.work.loadDrawings({
+      purchaseOrder: "commit_first",
+      statuses: ["committed"],
+      limit,
+    });
     const [purchaseFailures, purchaseResults] = yield* partition(committedDrawings, (work) =>
       Effect.gen(function* () {
         const approval = yield* input.runtime.approve(work).pipe(
@@ -642,6 +647,7 @@ export function runMegapotRewardsCycle(input: {
     mark("purchased");
 
     const purchasedDrawings = yield* input.work.loadDrawings({
+      purchaseOrder: "commit_first",
       statuses: ["tickets_confirmed", "drawing_pending"],
       limit,
     });
@@ -650,6 +656,7 @@ export function runMegapotRewardsCycle(input: {
     mark("swept");
 
     const winningDrawings = yield* input.work.loadDrawings({
+      purchaseOrder: "commit_first",
       statuses: ["winnings_detected"],
       limit,
     });
@@ -657,7 +664,11 @@ export function runMegapotRewardsCycle(input: {
     recordFailures(claimFailures);
     mark("claimed");
 
-    const claimedDrawings = yield* input.work.loadDrawings({ statuses: ["claimed"], limit });
+    const claimedDrawings = yield* input.work.loadDrawings({
+      purchaseOrder: "commit_first",
+      statuses: ["claimed"],
+      limit,
+    });
     const [allocationFailures, allocated] = yield* partition(
       claimedDrawings,
       input.runtime.allocate,
@@ -675,7 +686,7 @@ export function runMegapotRewardsCycle(input: {
     recordFailures(refundFailures);
     mark("refunded");
 
-    const credits = yield* input.work.loadCredits(limit);
+    const credits = yield* input.work.loadCredits(limit, "commit_first");
     const [payoutFailures, paid] = yield* partition(credits, input.runtime.payout);
     recordFailures(payoutFailures);
     mark("paid");

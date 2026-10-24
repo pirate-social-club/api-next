@@ -42,6 +42,8 @@ const AssetPolicyVersion = Schema.NonEmptyString.check(
   ),
 );
 const NonNegativeAtomicAmount = Schema.String.check(Schema.isPattern(/^(?:0|[1-9][0-9]*)$/u));
+/** Megapot pools run on Base Sepolia, and on Base only for the owner-executed Safe pilot. */
+const MegapotPoolChainV1 = Schema.Literals([84_532, 8453]);
 const PositiveInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
@@ -125,7 +127,7 @@ export const MegapotPoolLegV1 = Schema.Struct({
   leg_id: Identifier,
   offer_id: Identifier,
   status: MegapotPoolLegStatusV1,
-  chain_id: Schema.Literal(84_532),
+  chain_id: MegapotPoolChainV1,
   token_address: Address,
   token_decimals: Schema.Literal(6),
   custody_address: Address,
@@ -148,7 +150,7 @@ export const MegapotFundingV1 = Schema.Struct({
   funding_effect_id: Identifier,
   leg_id: Identifier,
   status: MegapotFundingStatusV1,
-  chain_id: Schema.Literal(84_532),
+  chain_id: MegapotPoolChainV1,
   token_address: Address,
   token_decimals: Schema.Literal(6),
   sender_address: Address,
@@ -274,7 +276,7 @@ export const SongMegapotPoolProjectionV1 = Schema.Struct({
   post_id: Identifier,
   offer_status: SongRewardOfferStatusV1,
   leg_status: MegapotPoolLegStatusV1,
-  chain_id: Schema.Literal(84_532),
+  chain_id: MegapotPoolChainV1,
   token_address: Address,
   token_decimals: Schema.Literal(6),
   funded_atomic: NonNegativeAtomicAmount,

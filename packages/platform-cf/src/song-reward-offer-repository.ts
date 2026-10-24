@@ -342,7 +342,17 @@ const lockQualificationPolicies = Effect.fn("SongRewardOffer.lockQualificationPo
   }
 });
 
-export function makeControlPlaneSongRewardOfferRepository() {
+export type SongRewardOfferRepositoryOptions = Readonly<{
+  /**
+   * Set only by the HTTP worker's Safe pool pilot behind SAFE_POOL_PRODUCTION_ENABLED:
+   * admits production pool legs on owner-executed Safe custody.
+   */
+  safeProductionLegs?: boolean;
+}>;
+
+export function makeControlPlaneSongRewardOfferRepository(
+  options: SongRewardOfferRepositoryOptions = {},
+) {
   return {
     listAdmittedAssets: (input: Parameters<SongRewardOfferStore["listAdmittedAssets"]>[0]) =>
       Effect.gen(function* () {
@@ -517,7 +527,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                   evaluator: "scarce_reward_eligibility_v1",
                   provider: "very.web",
                   evidence_scope: "issuer_rp_scope",
-                  legal_eligibility: "test_staging_empty_v1",
+                  legal_eligibility: input.rewardPolicy.legal_eligibility.environment,
                 }),
                 JSON.stringify({ kind: "single_authority", authority_id: input.offerId }),
                 input.accountId,
@@ -640,7 +650,13 @@ export function makeControlPlaneSongRewardOfferRepository() {
                             revision.policy_hash AS owner_policy_hash,
                             attestation.attestation_id, attestation.environment,
                             attestation.chain_id, attestation.usdc_address,
-                            asset.decimals AS token_decimals, observation.drawing_id
+                            asset.decimals AS token_decimals, observation.drawing_id,
+                            EXISTS (
+                              SELECT 1 FROM reward_signer_nonces signer
+                               WHERE signer.chain_id=attestation.chain_id
+                                 AND signer.signer_address=attestation.custody_address
+                                 AND signer.nonce_authority='safe_owner_v1'
+                            ) AS safe_custody
                        FROM song_reward_offers offer
                        JOIN communities community ON community.community_id=offer.community_id
                          AND community.status='active'
@@ -682,7 +698,16 @@ export function makeControlPlaneSongRewardOfferRepository() {
             });
             if (authority.rows.length !== 1) return yield* rejected("not-found");
             const row = authority.rows[0] as Row;
-            if (text(row, "environment") === "production") {
+            // Production pool legs exist only for the owner-executed Safe pilot, without a
+            // funder fallback. Such a leg records Spec 015 section 13's production activation
+            // gate as approved, because the pilot's production switch is that activation.
+            const production = text(row, "environment") === "production";
+            if (
+              production &&
+              (options.safeProductionLegs !== true ||
+                row.safe_custody !== true ||
+                input.emptyPoolPolicy !== "no_purchase")
+            ) {
               return yield* rejected("fallback-policy-unavailable");
             }
             if (
@@ -716,7 +741,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                        owner_policy_kind,owner_policy_revision,owner_policy_hash
                      ) VALUES ($1,$2,'megapot_pool','draft',$3,'refund_to_funders_pro_rata',$4,
                        $5,$6,$7,$8,1,$9,$10,'equal_v1','keccak_packed_v1',$11,$12,$13,$14,
-                       $15,'leg_budget',$16,$17,$18,$19,$20,'test_only',$5,$5,
+                       $15,'leg_budget',$16,$17,$18,$19,$20,$23,$5,$5,
                        'frozen_policy',$21,$22)`,
               values: [
                 input.legId,
@@ -741,6 +766,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.referralDisclosedAt,
                 integer(row, "owner_policy_revision"),
                 text(row, "owner_policy_hash"),
+                production ? "production_approved" : "test_only",
               ],
               readonly: false,
             });
@@ -1017,8 +1043,9 @@ export function makeControlPlaneSongRewardOfferRepository() {
 
 export const makeControlPlaneSongRewardOfferStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: SongRewardOfferRepositoryOptions = {},
 ): SongRewardOfferStore => {
-  const repository = makeControlPlaneSongRewardOfferRepository();
+  const repository = makeControlPlaneSongRewardOfferRepository(options);
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     mapped(Effect.provide(layer)(effect));
   return {

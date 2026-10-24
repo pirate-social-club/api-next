@@ -256,6 +256,8 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
                          JOIN megapot_drawing_observations observation
                            ON observation.observation_id=$1
                         WHERE leg.kind='megapot_pool' AND leg.status='active'
+                          -- Ticket-first drawings are created by their Safe purchase.
+                          AND leg.purchase_order='commit_first'
                           AND offer.status='active'
                           AND leg.attestation_id=observation.attestation_id
                           AND observation.drawing_id >= leg.participation_starts_drawing_id

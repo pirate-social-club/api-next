@@ -16,7 +16,9 @@ export type MegapotSweepCandidate = Readonly<{
   poolLegId: string;
   drawingId: bigint;
   drawingVersion: number;
-  drawingStatus: "tickets_confirmed" | "drawing_pending";
+  /** A ticket-first drawing is ready to sweep once its commitment is published. */
+  drawingStatus: "tickets_confirmed" | "committed" | "drawing_pending";
+  purchaseOrder: "commit_first" | "ticket_first_v1";
   attestationId: string;
   environment: "test" | "staging" | "production";
   chainId: number;

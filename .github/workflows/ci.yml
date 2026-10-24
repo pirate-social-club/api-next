@@ -28,6 +28,9 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.14.0
       - name: Fence DNS resolver reactivation before egress audit
         run: |
           set -euo pipefail
@@ -60,6 +63,8 @@ jobs:
           tail -80 /var/log/iron-proxy.log || true
           exit 1
       - run: bun install --frozen-lockfile
+      - name: Verify the installed Wrangler bundled fetch backport
+        run: bun run verify:wrangler-fetch
       - name: Install pinned FFmpeg 6.1.1
         run: |
           set -euo pipefail

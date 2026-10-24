@@ -10,7 +10,9 @@ import {
   loadConfig,
   loadConfigFrom,
   parseRewardGasTopupConfig,
+  parseSponsoredSendConfig,
   secret,
+  sponsoredSendEligibleAsset,
 } from "./index.ts";
 
 describe("config system (000 §9)", () => {
@@ -686,5 +688,64 @@ describe("winner gas top-up limits", () => {
     expect(() =>
       parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "0" }),
     ).toThrow();
+  });
+});
+
+describe("Wallet sponsorship limits", () => {
+  const limits = {
+    API_NEXT_ENV: "staging" as const,
+    PRIVY_SPONSORED_SEND_ENABLED: true,
+    PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: false,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "3",
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "2",
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "100",
+    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "1000",
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "3000",
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "2000",
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "100000",
+  };
+  const off = {
+    ...limits,
+    PRIVY_SPONSORED_SEND_ENABLED: false,
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "",
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "",
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "",
+    PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "",
+    PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "",
+    PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "",
+    PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "",
+  };
+
+  test("absent limits disable sponsorship in every environment", () => {
+    expect(parseSponsoredSendConfig(off)).toBeNull();
+    expect(parseSponsoredSendConfig({ ...off, API_NEXT_ENV: "production" })).toBeNull();
+    expect(parseSponsoredSendConfig(limits)).toMatchObject({ perWalletUtcDay: 2 });
+  });
+
+  test("production sponsorship needs its own switch, which is refused elsewhere", () => {
+    const production = { ...limits, API_NEXT_ENV: "production" as const };
+    expect(() => parseSponsoredSendConfig(production)).toThrow();
+    expect(
+      parseSponsoredSendConfig({ ...production, PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: true }),
+    ).toMatchObject({ platformUtcDay: 100 });
+    expect(() =>
+      parseSponsoredSendConfig({ ...limits, PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: true }),
+    ).toThrow();
+    expect(() =>
+      parseSponsoredSendConfig({
+        ...off,
+        API_NEXT_ENV: "production",
+        PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: true,
+      }),
+    ).toThrow();
+  });
+
+  test("production sponsors Base USDC and every other environment Base Sepolia USDC", () => {
+    expect(sponsoredSendEligibleAsset("production").chainId).toBe(8453);
+    expect(sponsoredSendEligibleAsset("staging")).toEqual({
+      chainId: 84_532,
+      tokenAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+    });
+    expect(sponsoredSendEligibleAsset("development").chainId).toBe(84_532);
   });
 });

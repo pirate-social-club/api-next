@@ -1,0 +1,54 @@
+diff --git a/wrangler-dist/cli.js b/wrangler-dist/cli.js
+index 199f07e9bb9951c23a2c2ed927726580eb5afa2e..d31581acbd5cf682a455f4dc907b4c2031855cc6 100644
+--- a/wrangler-dist/cli.js
++++ b/wrangler-dist/cli.js
+@@ -25951,7 +25951,6 @@ var require_fetch = __commonJS({
+                 }
+               }
+               const location = headersList.get("location", true);
+-              this.body = new Readable13({ read: resume });
+               const willFollow = location && request4.redirect === "follow" && redirectStatusSet.has(status2);
+               const decoders = [];
+               if (request4.method !== "HEAD" && request4.method !== "CONNECT" && !nullBodyStatus.includes(status2) && !willFollow) {
+@@ -25959,7 +25958,7 @@ var require_fetch = __commonJS({
+                 const codings = contentEncoding ? contentEncoding.toLowerCase().split(",") : [];
+                 const maxContentEncodings = 5;
+                 if (codings.length > maxContentEncodings) {
+-                  reject(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
++                  this.abort(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
+                   return true;
+                 }
+                 for (let i7 = codings.length - 1; i7 >= 0; --i7) {
+@@ -25994,6 +25993,7 @@ var require_fetch = __commonJS({
+                   }
+                 }
+               }
++              this.body = new Readable13({ read: resume });
+               const onError = this.onError.bind(this);
+               resolve34({
+                 status: status2,
+@@ -230852,7 +230852,6 @@ ${pendingInterceptorsFormatter.format(pending)}`.trim());
+                 else headersList.append(nameStr, value.toString("latin1"), true);
+               }
+               const location = headersList.get("location", true);
+-              this.body = new Readable13({ read: resume$1 });
+               const willFollow = location && request$1.redirect === "follow" && redirectStatusSet.has(status2);
+               const decoders = [];
+               if (request$1.method !== "HEAD" && request$1.method !== "CONNECT" && !nullBodyStatus.includes(status2) && !willFollow) {
+@@ -230860,7 +230859,7 @@ ${pendingInterceptorsFormatter.format(pending)}`.trim());
+                 const codings = contentEncoding ? contentEncoding.toLowerCase().split(",") : [];
+                 const maxContentEncodings = 5;
+                 if (codings.length > maxContentEncodings) {
+-                  reject(/* @__PURE__ */ new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
++                  this.abort(/* @__PURE__ */ new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
+                   return true;
+                 }
+                 for (let i7 = codings.length - 1; i7 >= 0; --i7) {
+@@ -230887,6 +230886,7 @@ ${pendingInterceptorsFormatter.format(pending)}`.trim());
+                   }
+                 }
+               }
++              this.body = new Readable13({ read: resume$1 });
+               const onError$1 = this.onError.bind(this);
+               resolve$2({
+                 status: status2,

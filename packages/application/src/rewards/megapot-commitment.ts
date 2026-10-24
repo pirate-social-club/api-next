@@ -42,7 +42,8 @@ export type MegapotCommitmentProgress = Readonly<{
   snapshot: MegapotPublishedSnapshot;
   payloadHash: string;
   signingKeyId: string;
-  signature: string;
+  /** Null only for an unsigned owner-Safe commitment. */
+  signature: string | null;
   state: "prepared" | "published";
   preparedAt: string;
   publishedAt: string | null;
@@ -62,7 +63,7 @@ export interface MegapotCommitmentStore {
     readonly commitmentEffectId: string;
     readonly payloadHash: string;
     readonly signingKeyId: string;
-    readonly signature: string;
+    readonly signature: string | null;
     readonly preparedAt: string;
   }) => Effect.Effect<MegapotCommitmentProgress, MegapotCommitmentFailure>;
   readonly confirmPublished: (input: {

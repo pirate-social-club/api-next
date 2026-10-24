@@ -1,0 +1,15 @@
+{
+  "domain": "pirate.megapot-safe-custody-bootstrap.v1",
+  "attestation_id": "megapot-base-v2-safe-pilot",
+  "environment": "production",
+  "chain_id": 8453,
+  "jackpot_address": "0x3bae643002069dbcbcd62b1a4eb4c4a397d042a2",
+  "usdc_address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+  "ticket_nft_address": "0x48ffe35abb9f4780a4f1775c2ce1c46185b366e4",
+  "jackpot_code_hash": "0x597f3a8e9360fbfc2e623243507ee9e8a66609003078ffc33d9013cb0607002d",
+  "usdc_code_hash": "0xa6705a10bb756b5dea144591118be77d7af0c3eee3bf2dfe2583dcb0364fefab",
+  "ticket_nft_code_hash": "0xf08234474c8484705b2e855d9602b6e229359839fc7bad67c9157a9d5dd53ca8",
+  "safe_singleton_address": "0x41675c099f32341bf84bfc5382af534df5c7461a",
+  "safe_version": "1.4.1",
+  "abi_version": "megapot_v2"
+}

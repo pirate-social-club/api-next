@@ -483,6 +483,8 @@ TRUNCATE TABLE
   "reward_pool_cohort_members_v2",
   "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
+  "reward_safe_execution_cursors",
+  "reward_safe_unbound_executions",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",
   "reward_signer_nonces",

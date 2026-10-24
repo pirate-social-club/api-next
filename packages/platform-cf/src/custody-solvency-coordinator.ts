@@ -6,6 +6,7 @@ import type {
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { type MegapotV2RpcClient, MegapotV2RpcFailed } from "./megapot-v2-rpc.ts";
+import { type RewardSafeAdmission, rewardSafeChainAdmitted } from "./reward-safe-execution.ts";
 
 type CustodySolvencyRpcStage =
   | "deployment_attestation"
@@ -77,6 +78,12 @@ export function makeCustodySolvencyCoordinator(input: {
   readonly rpc: MegapotV2RpcClient;
   readonly requiredConfirmations: number;
   readonly ttlSeconds?: number;
+  /**
+   * Set only by the Safe pilot cycle: that instance observes the Safe custody its own
+   * environment admits. Every other instance is limited to Base Sepolia outside
+   * production.
+   */
+  readonly safePilot?: RewardSafeAdmission;
   readonly now?: () => number;
 }): CustodySolvencyCoordinator {
   const ttlSeconds = input.ttlSeconds ?? 900;
@@ -104,9 +111,15 @@ export function makeCustodySolvencyCoordinator(input: {
     observe: Effect.fn("CustodySolvencyCoordinator.observe")(
       function* (attestationId, tokenAddress) {
         const candidate = yield* input.store.loadCandidate(attestationId, tokenAddress);
-        if (candidate.environment === "production" || candidate.chainId !== 84_532) {
-          return yield* failed("production_disabled");
-        }
+        const admitted =
+          input.safePilot === undefined
+            ? candidate.environment !== "production" && candidate.chainId === 84_532
+            : rewardSafeChainAdmitted({
+                ...input.safePilot,
+                chainId: candidate.chainId,
+                environment: candidate.environment,
+              });
+        if (!admitted) return yield* failed("production_disabled");
         const attested = yield* rpcEffect("deployment_attestation", () =>
           input.rpc.attestDeployment(),
         );

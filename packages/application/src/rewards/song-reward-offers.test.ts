@@ -246,6 +246,47 @@ describe("song reward offer application service", () => {
     expect(fundingCalls).toHaveLength(1);
   });
 
+  test("labels a production offer's empty legal-eligibility rules as production", async () => {
+    const openCalls: { readonly rewardPolicy: unknown }[] = [];
+    const service = makeSongRewardOfferService({
+      store: {
+        listAdmittedAssets: unexpected,
+        fundingSender: unexpected,
+        qualificationPolicies: unexpected,
+        openOffer: (input) => {
+          openCalls.push(input);
+          return Effect.succeed({ offer, replayed: false });
+        },
+        addMegapotPoolLeg: unexpected,
+        addAssetBonusLeg: unexpected,
+        recordFundingObservation: unexpected,
+      },
+      requiredConfirmations: 3,
+      externalFallbackPolicy: null,
+      legalEligibility: "production_empty_v1",
+      funding: { plan: unexpected, observe: unexpected },
+    });
+    await Effect.runPromise(
+      service
+        .openOffer({
+          accountId: "account_1",
+          personaId: "persona_1",
+          communityId: "community_1",
+          postId: "post_1",
+          idempotencyKey: "open_production",
+          startsAt: now,
+          endsAt: offer.endsAt,
+        })
+        .pipe(...services(["action-open", "offer-open"])),
+    );
+    expect(openCalls[0]?.rewardPolicy).toMatchObject({
+      legal_eligibility: { age: null, geography: null, disclosure: null },
+    });
+    expect(openCalls[0]?.rewardPolicy).toMatchObject({
+      legal_eligibility: { environment: "production_empty_v1" },
+    });
+  });
+
   test("fails a fallback leg before persistence when disclosure policy is unresolved", async () => {
     const service = makeSongRewardOfferService({
       store: {
