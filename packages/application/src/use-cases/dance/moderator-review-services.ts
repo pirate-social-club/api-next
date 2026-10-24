@@ -1,4 +1,4 @@
-import { Data, Effect } from "effect";
+import { Data, Effect, Schema } from "effect";
 import {
   type DanceOwnerDetailV1,
   type DanceOwnerQueueV1,
@@ -23,7 +23,29 @@ import {
 } from "../../../../domain/src/dance/moderator-review.ts";
 import { canonicalBodyHash } from "../content/common.ts";
 
+/** Fixed server-only stages. No address, provider text or credential is retained. */
+export const DanceIntakeDiagnosticCode = Schema.Literals([
+  "dance_network_address_unavailable",
+  "dance_network_namespace_unavailable",
+  "dance_network_hmac_unavailable",
+  "dance_network_identity_invalid",
+  "dance_network_hmac_decode",
+  "dance_network_hmac_import",
+  "dance_network_clock_invalid",
+  "dance_network_digest",
+  "dance_network_rpc",
+  "dance_network_decision_decode",
+  "dance_network_deadline",
+  "dance_intake_decode",
+  "dance_intake_database",
+  "dance_intake_signer_unavailable",
+  "dance_intake_facts_mismatch",
+  "dance_intake_media_unavailable",
+  "dance_intake_unclassified",
+]);
+
 export class DanceReviewServiceFailure extends Data.TaggedError("DanceReviewServiceFailure")<{
+  readonly diagnosticCode?: typeof DanceIntakeDiagnosticCode.Type;
   readonly reason:
     | "invalid_request"
     | "not_found"

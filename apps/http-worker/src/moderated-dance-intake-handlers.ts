@@ -7,7 +7,10 @@ import {
   RateLimited,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
-import type { DanceReviewServiceFailure } from "../../../packages/application/src/use-cases/dance/moderator-review-services.ts";
+import {
+  DanceIntakeDiagnosticCode,
+  type DanceReviewServiceFailure,
+} from "../../../packages/application/src/use-cases/dance/moderator-review-services.ts";
 import { moderatedDanceContextRegistry } from "../../../packages/contracts/src/dance-moderated-context.ts";
 import {
   CreateModeratedDanceReference,
@@ -35,6 +38,10 @@ const mapped = (e: DanceReviewServiceFailure | RateLimited) =>
               message: "Capture changed; recover the original command or refresh status",
             })
           : new InternalError({
+              ...(e.diagnosticCode !== undefined &&
+              Schema.is(DanceIntakeDiagnosticCode)(e.diagnosticCode)
+                ? { cause: new Error(e.diagnosticCode) }
+                : {}),
               message:
                 e.reason === "outcome_unknown"
                   ? "Outcome unknown; recover the same command key"
