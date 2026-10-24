@@ -258,10 +258,12 @@ export function makeRewardFundingCoordinator(input: {
     readonly fundingEffectId: string;
     readonly transactionHash: string;
   }) {
-    // Nothing is bound to an intent whose deployment this instance does not admit.
+    // Nothing is bound to an intent whose deployment this instance does not admit. The
+    // binding transaction admits again under the intent's lock, so an intent inserted
+    // after this lookup is refused before its hash is written.
     const current = yield* input.store.find(request.fundingEffectId);
     if (current !== null && !admitted(current)) return yield* failed("production_disabled");
-    const intent = yield* input.store.bindTransaction(request);
+    const intent = yield* input.store.bindTransaction({ ...request, admit: admitted });
     return yield* reconcileIntent(intent);
   });
 

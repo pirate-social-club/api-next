@@ -79,6 +79,16 @@ export interface RewardFundingStore {
   readonly bindTransaction: (input: {
     readonly fundingEffectId: string;
     readonly transactionHash: string;
+    /**
+     * Whether the calling runtime admits the intent's deployment; checked under the
+     * intent's row lock, so an intent it does not admit is refused as
+     * funding-not-allowed before anything is written. The funding coordinator always
+     * passes it.
+     */
+    readonly admit?: (deployment: {
+      readonly environment: string;
+      readonly chainId: number;
+    }) => boolean;
   }) => Effect.Effect<RewardFundingIntent, RewardFundingFailure>;
   readonly confirm: (input: {
     readonly fundingEffectId: string;

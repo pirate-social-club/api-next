@@ -332,6 +332,12 @@ export function makeControlPlaneRewardFundingRepository() {
             if (current.rows.length === 0) return yield* rejected("not-found");
             if (current.rows.length !== 1) return yield* storage("invalid-row");
             const row = current.rows[0] as Row;
+            // Another environment's intent is refused under its lock, before any write.
+            if (input.admit !== undefined) {
+              const locked = yield* readIntent(transaction, input.fundingEffectId);
+              if (locked === null) return yield* storage("invalid-row");
+              if (!input.admit(locked)) return yield* rejected("funding-not-allowed");
+            }
             const existingHash = nullableText(row, "transaction_hash");
             if (existingHash !== null && existingHash !== input.transactionHash) {
               return yield* rejected("effect-conflict");

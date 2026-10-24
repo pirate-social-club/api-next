@@ -862,6 +862,37 @@ suite("ticket-first owner-executed Safe pools", () => {
         ),
       ).rejects.toMatchObject({ reason: "production_disabled" });
     }
+    // An intent its lookup did not see yet, as when another request inserts it after
+    // the lookup, is refused inside the binding transaction, with no chain read.
+    let rpcCalls = 0;
+    const countedRpc = new Proxy(chain.rpc, {
+      get: (target, key, receiver) => {
+        const value = Reflect.get(target, key, receiver);
+        return typeof value === "function"
+          ? (...input: unknown[]) => {
+              rpcCalls += 1;
+              return value.apply(target, input);
+            }
+          : value;
+      },
+    });
+    const unseen = (safePilot?: RewardSafeAdmission) =>
+      makeRewardFundingCoordinator({
+        store: { ...store, find: () => Effect.succeed(null) },
+        rpc: countedRpc,
+        ...(safePilot === undefined ? {} : { safePilot }),
+      });
+    for (const refused of mismatched) {
+      await expect(
+        run(
+          unseen(refused).observe({
+            fundingEffectId: planned.intent.fundingEffectId,
+            transactionHash,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "RewardFundingRejected", reason: "funding-not-allowed" });
+    }
+    expect(rpcCalls).toBe(0);
     expect(await intents()).toEqual([{ state: "planned", transaction_hash: null }]);
     expect(
       await run(
