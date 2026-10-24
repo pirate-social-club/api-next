@@ -128,6 +128,58 @@ describe("Dance network admission adapter", () => {
       Effect.runPromise(fixture({ hmacKeyBase64: btoa("short") }).admit("command")),
     ).rejects.toMatchObject({ reason: "unavailable", diagnosticCode: "dance_network_hmac_decode" });
   });
+  test("accepts the RPC disposer without relaxing decision fields and always disposes the result", async () => {
+    for (const kind of [
+      "allowed",
+      "limited",
+      "extra",
+      "hidden-extra",
+      "symbol-extra",
+      "invalid",
+    ] as const) {
+      let disposals = 0;
+      const decision =
+        kind === "limited"
+          ? { allowed: false, retryAfterSeconds: 12 }
+          : { allowed: true, retryAfterSeconds: kind === "invalid" ? 1 : 0 };
+      const raw = Object.defineProperty(decision, Symbol.dispose, {
+        value() {
+          disposals++;
+        },
+      });
+      if (kind === "extra") Object.defineProperty(raw, "extra", { value: true, enumerable: true });
+      if (kind === "hidden-extra") Object.defineProperty(raw, "extra", { value: true });
+      if (kind === "symbol-extra") Object.defineProperty(raw, Symbol("extra"), { value: true });
+      const admission = fixture({
+        namespace: { getByName: () => ({ admit: async () => raw }) },
+      }).admit;
+      if (kind === "allowed")
+        await expect(Effect.runPromise(admission("command"))).resolves.toBeUndefined();
+      else if (kind === "limited")
+        await expect(Effect.runPromise(admission("command"))).rejects.toMatchObject({
+          code: "rate_limited",
+          retry_after_seconds: 12,
+        });
+      else
+        await expect(Effect.runPromise(admission("command"))).rejects.toMatchObject({
+          reason: "unavailable",
+          diagnosticCode: "dance_network_decision_decode",
+        });
+      expect(disposals).toBe(1);
+    }
+  });
+  test("refuses malformed RPC disposal metadata", async () => {
+    const raw = Object.defineProperty({ allowed: true, retryAfterSeconds: 0 }, Symbol.dispose, {
+      value: "not-callable",
+    });
+    const admission = fixture({
+      namespace: { getByName: () => ({ admit: async () => raw }) },
+    }).admit;
+    await expect(Effect.runPromise(admission("command"))).rejects.toMatchObject({
+      reason: "unavailable",
+      diagnosticCode: "dance_network_decision_decode",
+    });
+  });
   test("an RPC that never returns releases the caller within the two-second budget", async () => {
     const namespace: DanceNetworkNamespace = {
       getByName: () => ({ admit: () => new Promise(() => {}) }),
