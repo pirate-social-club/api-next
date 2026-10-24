@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -145,24 +153,47 @@ test("an explicit token is used as given, never renewed, and reported when refus
 
 test("the provider client runs as an awaited child and timers keep firing meanwhile", async () => {
   const directory = mkdtempSync(join(tmpdir(), "rewards-provider-client-"));
+  let timer: ReturnType<typeof setInterval> | undefined;
   try {
     const client = join(directory, "client");
-    writeFileSync(client, "#!/bin/sh\nsleep 0.3\nexit 0\n");
+    const ready = join(directory, "ready");
+    const heartbeat = join(directory, "heartbeat");
+    // Success requires a parent timer to run after the child starts and before
+    // it exits. A synchronous child blocks that timer and exits unsuccessfully.
+    writeFileSync(
+      client,
+      `#!/bin/sh
+set -eu
+: > "$PROVIDER_READY"
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+  if [ -f "$PROVIDER_HEARTBEAT" ]; then exit 0; fi
+  sleep 0.01
+  attempt=$((attempt + 1))
+done
+exit 1
+`,
+    );
     chmodSync(client, 0o755);
-    let ticks = 0;
-    const timer = setInterval(() => {
-      ticks += 1;
-    }, 20);
-    const status = await runProviderClient({ wrangler: client });
-    clearInterval(timer);
+    timer = setInterval(() => {
+      if (existsSync(ready)) writeFileSync(heartbeat, "parent timer ran\n");
+    }, 10);
+    const status = await runProviderClient({
+      wrangler: client,
+      environment: {
+        PATH: process.env.PATH,
+        PROVIDER_READY: ready,
+        PROVIDER_HEARTBEAT: heartbeat,
+      },
+    });
     expect(status).toBe(0);
-    // A blocking child would have allowed none of these.
-    expect(ticks).toBeGreaterThan(5);
+    expect(readFileSync(heartbeat, "utf8")).toBe("parent timer ran\n");
     expect(await runProviderClient({ wrangler: join(directory, "absent") })).toBeNull();
   } finally {
+    clearInterval(timer);
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}, 10_000);
 
 // The installed provider client against synthetic credentials. It reaches the
 // provider, so it runs only when asked: REWARDS_E2E_REAL_PROVIDER_CLIENT=1.
