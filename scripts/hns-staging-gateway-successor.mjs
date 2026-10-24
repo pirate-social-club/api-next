@@ -131,13 +131,15 @@ export async function prepareStagingGatewaySuccessor({
           dns.stable_chain_delegation_snapshot_digest,
       "Retained health facts do not match the predecessor",
     );
-    const cap = Math.min(Date.parse(health.valid_until), Date.parse(inventory.expires_at));
+    // PostgreSQL timestamps are Date objects before the plan is serialized. Date.parse
+    // coerces them through toString and loses milliseconds, unlike the frozen strings.
+    const cap = Math.min(new Date(health.valid_until).getTime(), Date.parse(inventory.expires_at));
     const ttl = Math.floor((cap - deadline) / 1000) - 5;
     fail(
       Number.isSafeInteger(ttl) &&
         ttl > 0 &&
         ttl <= 604800 &&
-        Date.parse(health.checked_at) <= observed,
+        new Date(health.checked_at).getTime() <= observed,
       "Retained evidence cannot cover the execution window",
     );
     const generation = Number(dns.dns_zone_activation_generation) + 1;
@@ -371,7 +373,7 @@ export async function applyStagingGatewaySuccessor({
           "Successor app gateway mismatch",
         );
         fail(
-          Date.parse(after.health.valid_until) <= Date.parse(entry.health_deadline) &&
+          new Date(after.health.valid_until).getTime() <= Date.parse(entry.health_deadline) &&
             Date.parse(after.database_time) <= Date.parse(plan.execute_by),
           "Successor would extend evidence or exceed execution window",
         );

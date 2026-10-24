@@ -122,6 +122,25 @@ describe("staging gateway fingerprint successor", () => {
     }
   });
 
+  test("preserves native PostgreSQL timestamp precision across the frozen plan round trip", async () => {
+    const input = await fixture();
+    const deadline = "2026-10-25T11:59:59.106Z";
+    for (const state of input.states) {
+      state.health.valid_until = new Date(deadline);
+      state.health.checked_at = new Date(now);
+      state.inventory.published_at = new Date(state.inventory.published_at);
+      state.inventory.expires_at = new Date(state.inventory.expires_at);
+    }
+    const plan = await prepareStagingGatewaySuccessor(input);
+    const frozen = JSON.parse(JSON.stringify(plan));
+    const rebuilt = await prepareStagingGatewaySuccessor({
+      ...input,
+      states: frozen.entries.map((entry: { predecessor: unknown }) => entry.predecessor),
+    });
+    expect(rebuilt).toEqual(frozen);
+    for (const entry of plan.entries) expect(entry.health_deadline).toBe(deadline);
+  });
+
   test("refuses a broader manifest change and a different or stale readiness observation", async () => {
     const input = await fixture();
     for (const change of [
