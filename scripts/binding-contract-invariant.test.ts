@@ -597,7 +597,13 @@ describe("source-to-Wrangler binding contract", () => {
     expect(staging.vars.AVATAR_CLEANUP_ENABLED).toBe("true");
     expect(staging.vars.VIDEO_DELIVERY_ENABLED).toBe("true");
     expect(staging.vars.DATA_REGISTRATION_ENABLED).toBe("false");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(staging.vars.SAFE_POOL_PILOT_ENABLED).toBe("true");
+    expect(staging.vars.SAFE_POOL_ATTESTATION_ID).toBe("megapot-base-sepolia-v2-safe-pilot");
+    expect(staging.vars.SAFE_POOL_MINIMUM_ENTRY_SECONDS).toBe("600");
+    expect(staging.secrets).toEqual(
+      expect.arrayContaining(["SAFE_POOL_RPC_URL", "SAFE_POOL_COMMITMENT_PUBLIC_ORIGIN"]),
+    );
     expect(staging.secrets).toContain("MEGAPOT_GAS_TOPUP_PRIVATE_KEY");
     expect(staging.vars.SPACES_RECONCILIATION_ENABLED).toBe("true");
     expect(staging.vars.SPACES_RECONCILIATION_OVERDUE_SECONDS).toBe("259200");
@@ -664,13 +670,41 @@ describe("source-to-Wrangler binding contract", () => {
     expect(production.vars).not.toHaveProperty("HNS_AUTHORITY_HSD_AUTHORIZATION");
   });
 
-  test("prepares staging rewards with the existing gas top-up bounds", () => {
+  test("runs the Safe pool pilot on staging with sponsored Send and no EOA lane", () => {
     const staging = declaredEnvironment(configs.http, "staging");
-    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("true");
-    expect(staging.vars.MEGAPOT_GAS_TOPUP_TARGET_WEI).toBe("50000000000000");
-    expect(staging.vars.MEGAPOT_GAS_TOPUP_MAX_WEI).toBe("50000000000000");
-    expect(staging.vars.MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT).toBe("3");
-    expect(staging.vars.MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI).toBe("5000000000000000");
+    expect(staging.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    for (const name of [
+      "MEGAPOT_GAS_TOPUP_TARGET_WEI",
+      "MEGAPOT_GAS_TOPUP_MAX_WEI",
+      "MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT",
+      "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI",
+    ]) {
+      expect(staging.vars).not.toHaveProperty(name);
+    }
+    expect(staging.vars.SAFE_POOL_PILOT_ENABLED).toBe("true");
+    expect(staging.vars.SAFE_POOL_ATTESTATION_ID).toBe("megapot-base-sepolia-v2-safe-pilot");
+    expect(staging.vars.PRIVY_SPONSORED_SEND_ENABLED).toBe("true");
+    expect(JSON.parse(String(staging.vars.PRIVY_SPONSORED_SEND_LIMITS_JSON))).toEqual({
+      account_daily_count: "3",
+      wallet_daily_count: "3",
+      platform_daily_count: "10",
+      gas_budget_wei: "200000000000000",
+      account_daily_gas_wei: "600000000000000",
+      wallet_daily_gas_wei: "600000000000000",
+      platform_daily_gas_wei: "2000000000000000",
+    });
+    expect(staging.secrets).toEqual(
+      expect.arrayContaining(["SAFE_POOL_RPC_URL", "PERSONA_WALLET_BASE_RPC_URL"]),
+    );
+    const production = declaredEnvironment(configs.http, "production");
+    for (const name of [
+      "SAFE_POOL_PILOT_ENABLED",
+      "SAFE_POOL_PRODUCTION_ENABLED",
+      "PRIVY_SPONSORED_SEND_ENABLED",
+      "PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED",
+    ]) {
+      expect(production.vars).not.toHaveProperty(name);
+    }
   });
 
   test("enables Spaces only in staging, with verifier credentials as secrets", () => {
