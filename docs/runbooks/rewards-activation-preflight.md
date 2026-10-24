@@ -36,8 +36,10 @@ triggers and deferred transition checks run as the runtime, so whatever they rea
 or lock needs a grant too. The Safe payout, ticket-first and late-purchase recovery
 PostgreSQL suites therefore run their Jobs code as a login holding only the
 allowed entries of this list, through `reward-safe-runtime-role.pg-fixture.ts`; a
-denial there means the list is short. Each table listed for a lock is bounded by its
-own guard, which permits no write or only retirement or identity-preserving changes.
+denial there means the list is short. A lock needs UPDATE on only one column, so
+lock-only tables grant UPDATE on `created_at`, which their guards keep immutable, and
+the gate refuses table-wide UPDATE and any UPDATE of an attestation's or whitelisted
+asset's `status`; retirement stays an operator act.
 
 The isolated E2E database has the sponsorship migrations under old filenames
 0225 and 0226. Current main has them under 0226 and 0227. The ledger mismatch

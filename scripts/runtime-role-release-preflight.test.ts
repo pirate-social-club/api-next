@@ -16,6 +16,7 @@ import {
 
 const facts = RUNTIME_RELEASE_PRIVILEGES.map((requirement) => ({
   object: requirement.object,
+  column: requirement.column ?? null,
   privilege: requirement.privilege,
   expected: requirement.allowed,
   exists: true,
@@ -210,9 +211,10 @@ function reviewedMoneyTableRevocations(
 describe("runtime role release preflight", () => {
   test("covers direct table operations in reward, Megapot, custody and Wallet repositories", async () => {
     const covered = new Set(
-      RUNTIME_RELEASE_PRIVILEGES.filter((requirement) => requirement.allowed).map(
-        (requirement) => `${requirement.object}:${requirement.privilege}`,
-      ),
+      // A column grant covers no direct statement: it exists only so the runtime can lock.
+      RUNTIME_RELEASE_PRIVILEGES.filter(
+        (requirement) => requirement.allowed && requirement.column === undefined,
+      ).map((requirement) => `${requirement.object}:${requirement.privilege}`),
     );
     const schema = await Bun.file(new URL("../db/postgres/schema.sql", import.meta.url)).text();
     const tables = new Set(
@@ -291,6 +293,35 @@ describe("runtime role release preflight", () => {
     ]);
   });
 
+  test("refuses excess UPDATE on unbound Safe executions", () => {
+    const excess = facts.map((fact) =>
+      fact.object === "reward_safe_unbound_executions" && fact.privilege === "UPDATE"
+        ? { ...fact, allowed: true }
+        : fact,
+    );
+    expect(privilegeViolations(excess)).toEqual([
+      "reward_safe_unbound_executions: UPDATE mismatch",
+    ]);
+  });
+
+  test("lock-only tables allow the lock column and refuse retirement or table-wide UPDATE", () => {
+    const broken = facts.map((fact) =>
+      fact.object === "megapot_deployment_attestations" && fact.privilege === "UPDATE"
+        ? { ...fact, allowed: !fact.expected }
+        : fact.object === "reward_asset_whitelist" &&
+            fact.column === "status" &&
+            fact.privilege === "UPDATE"
+          ? { ...fact, allowed: true }
+          : fact,
+    );
+    expect(privilegeViolations(broken)).toEqual([
+      "megapot_deployment_attestations.created_at: UPDATE mismatch",
+      "megapot_deployment_attestations: UPDATE mismatch",
+      "megapot_deployment_attestations.status: UPDATE mismatch",
+      "reward_asset_whitelist.status: UPDATE mismatch",
+    ]);
+  });
+
   test("requires the exact migration filenames and checksums of the release source", () => {
     const plan = [
       { version: "0226_reward_sponsored_send_reservations.sql", checksum: "a" },
@@ -348,7 +379,7 @@ describe("destructive money-table inventory", () => {
     }
     const seen = new Set<string>();
     for (const requirement of RUNTIME_RELEASE_PRIVILEGES) {
-      const key = `${requirement.object}:${requirement.privilege}`;
+      const key = `${requirement.object}.${requirement.column ?? ""}:${requirement.privilege}`;
       expect(seen.has(key)).toBe(false);
       seen.add(key);
     }

@@ -35,8 +35,9 @@ export async function makeReleaseRuntimeLogin(admin: Client, url: string, schema
   for (const requirement of RUNTIME_RELEASE_PRIVILEGES) {
     if (!requirement.allowed) continue;
     const kind = requirement.privilege === "EXECUTE" ? "FUNCTION" : "TABLE";
+    const column = requirement.column === undefined ? "" : ` (${q(requirement.column)})`;
     await admin.query(
-      `GRANT ${requirement.privilege} ON ${kind} ${q(schema)}.${requirement.object} TO ${q(role)}`,
+      `GRANT ${requirement.privilege}${column} ON ${kind} ${q(schema)}.${requirement.object} TO ${q(role)}`,
     );
   }
   const login = new URL(url);

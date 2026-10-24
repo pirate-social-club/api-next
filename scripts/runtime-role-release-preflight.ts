@@ -11,9 +11,31 @@ import {
 type Privilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "EXECUTE";
 type Requirement = Readonly<{
   object: string;
+  /** A column privilege on the table, instead of the table-wide one. */
+  column?: string;
   privilege: Privilege;
   allowed: boolean;
 }>;
+
+/**
+ * Row locks need UPDATE on at least one column. Guard triggers running as the runtime
+ * take FOR SHARE locks on these, and the funding, solvency and ticket-first cutoff code
+ * locks some itself. UPDATE on created_at, which every one of their guards keeps
+ * immutable, allows the lock and no change. No runtime code updates these tables, so
+ * table-wide UPDATE is refused; persona wallet assignments are absent from this list
+ * because the persona repository updates them through the same role.
+ */
+const LOCK_ONLY_TABLES = [
+  "megapot_drawing_observations",
+  "custody_solvency_observations",
+  "megapot_deployment_attestations",
+  "megapot_ticket_purchase_effects",
+  "megapot_pool_shares",
+  "megapot_drawing_sweeps",
+  "megapot_sweep_ticket_evidence",
+  "reward_eligibility_decisions",
+  "reward_asset_whitelist",
+] as const;
 
 /** Keep allowed operations in sync with direct SQL in reward, Megapot, custody and Wallet repositories. */
 export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
@@ -155,6 +177,8 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "reward_safe_execution_cursors", privilege: "UPDATE", allowed: true },
   { object: "reward_safe_unbound_executions", privilege: "SELECT", allowed: true },
   { object: "reward_safe_unbound_executions", privilege: "INSERT", allowed: true },
+  // Unbound executions are kept for operator review and never rewritten.
+  { object: "reward_safe_unbound_executions", privilege: "UPDATE", allowed: false },
   { object: "reward_winner_send_attempts", privilege: "INSERT", allowed: true },
   { object: "reward_winner_send_attempts", privilege: "SELECT", allowed: true },
   { object: "reward_winner_send_outcomes", privilege: "INSERT", allowed: true },
@@ -184,21 +208,23 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "song_reward_offer_legs", privilege: "INSERT", allowed: true },
   { object: "song_reward_offers", privilege: "INSERT", allowed: true },
   { object: "custody_solvency_observations", privilege: "INSERT", allowed: true },
-  // Row locks need UPDATE. Guard triggers running as the runtime take FOR SHARE locks
-  // on these, and the funding, solvency and ticket-first cutoff code locks some itself.
-  // Each table's own guard bounds the write: observations, shares, sweep evidence and
-  // eligibility decisions are append-only, an attestation or whitelisted asset may only
-  // be retired, and wallet assignments, purchase effects and sweeps keep their identity.
-  { object: "megapot_drawing_observations", privilege: "UPDATE", allowed: true },
-  { object: "custody_solvency_observations", privilege: "UPDATE", allowed: true },
-  { object: "megapot_deployment_attestations", privilege: "UPDATE", allowed: true },
-  { object: "persona_wallet_assignments", privilege: "UPDATE", allowed: true },
-  { object: "megapot_ticket_purchase_effects", privilege: "UPDATE", allowed: true },
-  { object: "megapot_pool_shares", privilege: "UPDATE", allowed: true },
-  { object: "megapot_drawing_sweeps", privilege: "UPDATE", allowed: true },
-  { object: "megapot_sweep_ticket_evidence", privilege: "UPDATE", allowed: true },
-  { object: "reward_eligibility_decisions", privilege: "UPDATE", allowed: true },
-  { object: "reward_asset_whitelist", privilege: "UPDATE", allowed: true },
+  ...LOCK_ONLY_TABLES.flatMap((object) => [
+    { object, column: "created_at", privilege: "UPDATE" as const, allowed: true },
+    { object, privilege: "UPDATE" as const, allowed: false },
+  ]),
+  {
+    object: "persona_wallet_assignments",
+    column: "created_at",
+    privilege: "UPDATE",
+    allowed: true,
+  },
+  // Retiring an attestation or a whitelisted asset is an operator act.
+  ...["megapot_deployment_attestations", "reward_asset_whitelist"].map((object) => ({
+    object,
+    column: "status",
+    privilege: "UPDATE" as const,
+    allowed: false,
+  })),
   {
     object: "accept_megapot_participant_claim_v1(text,text)",
     privilege: "EXECUTE",
@@ -216,6 +242,7 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
 
 type PrivilegeFact = Readonly<{
   object: string;
+  column?: string | null;
   privilege: Privilege;
   expected: boolean;
   exists: boolean;
@@ -227,7 +254,11 @@ type LedgerRow = Readonly<{ version: string; checksum: string }>;
 export function privilegeViolations(facts: readonly PrivilegeFact[]): string[] {
   return facts.flatMap((fact) =>
     !fact.exists || fact.allowed !== fact.expected
-      ? [`${fact.object}: ${fact.privilege} ${fact.exists ? "mismatch" : "object missing"}`]
+      ? [
+          `${fact.object}${fact.column ? `.${fact.column}` : ""}: ${fact.privilege} ${
+            fact.exists ? "mismatch" : "object missing"
+          }`,
+        ]
       : [],
   );
 }
@@ -261,7 +292,10 @@ export async function runRuntimeRoleReleasePreflight(input: {
   runtimeConnectionString: string;
   adminConnectionString?: string;
   requireMainLedger: boolean;
+  /** Isolated PostgreSQL tests only; every release checks api_next. */
+  schema?: string;
 }) {
+  const schema = input.schema ?? "api_next";
   if (input.requireMainLedger && !input.adminConnectionString) {
     throw new Error("admin URL required for main-source ledger check");
   }
@@ -274,39 +308,57 @@ export async function runRuntimeRoleReleasePreflight(input: {
   try {
     await runtime.query("BEGIN READ ONLY");
     const identity = await runtime.query<{ principal: string; schema_usage: boolean }>(
-      "SELECT current_user AS principal, has_schema_privilege(current_user,'api_next','USAGE') AS schema_usage",
+      "SELECT current_user AS principal, has_schema_privilege(current_user,$1,'USAGE') AS schema_usage",
+      [schema],
     );
     principal = identity.rows[0]?.principal ?? "unknown";
     if (identity.rows.length !== 1 || !identity.rows[0]?.schema_usage) {
       throw new Error("runtime role lacks api_next schema USAGE");
     }
-    await assertRuntimeMoneyInventory(runtime);
+    await assertRuntimeMoneyInventory(runtime, schema);
 
     const tables = RUNTIME_RELEASE_PRIVILEGES.filter((item) => item.privilege !== "EXECUTE");
     const routines = RUNTIME_RELEASE_PRIVILEGES.filter((item) => item.privilege === "EXECUTE");
     const tableResult = await runtime.query<PrivilegeFact>(
-      `SELECT requirement.object, requirement.privilege, requirement.expected,
-              to_regclass(format('%I.%I','api_next',requirement.object)) IS NOT NULL AS exists,
-              COALESCE(has_table_privilege(current_user,
-                to_regclass(format('%I.%I','api_next',requirement.object)),
-                requirement.privilege),false) AS allowed
+      `SELECT requirement.object, requirement.column, requirement.privilege,
+              requirement.expected, target.attnum IS NOT NULL AS exists,
+              CASE
+                WHEN target.attnum IS NULL THEN false
+                WHEN requirement.column IS NULL
+                  THEN has_table_privilege(current_user, target.relid, requirement.privilege)
+                ELSE has_column_privilege(current_user, target.relid, target.attnum,
+                  requirement.privilege)
+              END AS allowed
          FROM jsonb_to_recordset($1::jsonb)
-           AS requirement(object text, privilege text, expected boolean)`,
+           AS requirement(object text, "column" text, privilege text, expected boolean)
+         LEFT JOIN LATERAL (
+           SELECT c.oid AS relid,
+                  CASE WHEN requirement.column IS NULL THEN 0::smallint ELSE a.attnum END
+                    AS attnum
+             FROM pg_class c
+             LEFT JOIN pg_attribute a
+               ON a.attrelid = c.oid AND a.attname = requirement.column AND a.attnum > 0
+              AND NOT a.attisdropped
+            WHERE c.oid = to_regclass(format('%I.%I', $2::text, requirement.object))
+         ) target ON true`,
       [
         JSON.stringify(
           tables.map((item) => ({
             object: item.object,
+            column: item.column ?? null,
             privilege: item.privilege,
             expected: item.allowed,
           })),
         ),
+        schema,
       ],
     );
     const routineResult = await runtime.query<PrivilegeFact>(
       `SELECT requirement.object, requirement.privilege, requirement.expected,
-              to_regprocedure('api_next.' || requirement.object) IS NOT NULL AS exists,
+              to_regprocedure(format('%I.', $2::text) || requirement.object) IS NOT NULL
+                AS exists,
               COALESCE(has_function_privilege(current_user,
-                to_regprocedure('api_next.' || requirement.object),
+                to_regprocedure(format('%I.', $2::text) || requirement.object),
                 requirement.privilege),false) AS allowed
          FROM jsonb_to_recordset($1::jsonb)
            AS requirement(object text, privilege text, expected boolean)`,
@@ -318,6 +370,7 @@ export async function runRuntimeRoleReleasePreflight(input: {
             expected: item.allowed,
           })),
         ),
+        schema,
       ],
     );
     facts = [...tableResult.rows, ...routineResult.rows];

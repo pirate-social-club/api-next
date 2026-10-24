@@ -63,12 +63,18 @@ export async function configureIsolatedRewardsRuntime(input: {
     await admin.query(
       `REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON api_next.schema_migrations FROM ${quotedRole}`,
     );
-    for (const requirement of RUNTIME_RELEASE_PRIVILEGES) {
+    // Denials first: revoking a table privilege also revokes its column grants.
+    const ordered = [
+      ...RUNTIME_RELEASE_PRIVILEGES.filter((requirement) => !requirement.allowed),
+      ...RUNTIME_RELEASE_PRIVILEGES.filter((requirement) => requirement.allowed),
+    ];
+    for (const requirement of ordered) {
       const command = requirement.allowed ? "GRANT" : "REVOKE";
       const direction = requirement.allowed ? "TO" : "FROM";
       const objectKind = requirement.privilege === "EXECUTE" ? "FUNCTION" : "TABLE";
+      const column = requirement.column === undefined ? "" : ` (${requirement.column})`;
       await admin.query(
-        `${command} ${requirement.privilege} ON ${objectKind} api_next.${requirement.object} ${direction} ${quotedRole}`,
+        `${command} ${requirement.privilege}${column} ON ${objectKind} api_next.${requirement.object} ${direction} ${quotedRole}`,
       );
     }
     // The isolated stack runs unattended, so it admits rewards work only under

@@ -14,6 +14,7 @@ import {
   type Hex,
   parseAbi,
 } from "viem";
+import { runRuntimeRoleReleasePreflight } from "../../../scripts/runtime-role-release-preflight.ts";
 import type { MegapotReceiptLog, MegapotTransactionReceipt } from "./megapot-v2.ts";
 import type {
   MegapotV2RpcClient,
@@ -668,7 +669,7 @@ suite("owner-executed Safe payouts", () => {
     expect(prepared.preparedBlockNumber).toBe(ahead);
   });
 
-  test("the release runtime cannot delete, rewrite or recover Safe custody state", async () => {
+  test("the release runtime cannot delete, rewrite, retire or recover Safe custody state", async () => {
     const login = new Client({ connectionString: runtimeUrl() });
     await login.connect();
     try {
@@ -683,11 +684,46 @@ suite("owner-executed Safe payouts", () => {
         `SELECT recover_late_safe_purchase_v1(NULL::text, NULL::bigint, NULL::bigint,
            NULL::numeric, NULL::integer, NULL::integer, NULL::bigint, NULL::text, NULL::text,
            NULL::integer, NULL::numeric, NULL::numeric, NULL::timestamptz)`,
+        "UPDATE megapot_deployment_attestations SET status = 'retired', retired_at = now()",
+        "UPDATE reward_asset_whitelist SET status = 'retired'",
       ]) {
         await expect(login.query(statement)).rejects.toMatchObject({ code: "42501" });
       }
+      // The lock column is granted, but its guard lets no update through.
+      await expect(
+        login.query("UPDATE megapot_deployment_attestations SET created_at = created_at"),
+      ).rejects.toThrow("Megapot deployment attestation only permits retirement");
+      await expect(
+        login.query("UPDATE reward_asset_whitelist SET created_at = created_at"),
+      ).rejects.toThrow("reward asset whitelist only permits retirement");
     } finally {
       await login.end();
     }
+  });
+
+  test("the release gate accepts that login and refuses each excess privilege", async () => {
+    const gate = () =>
+      runRuntimeRoleReleasePreflight({
+        runtimeConnectionString: runtimeUrl(),
+        requireMainLedger: false,
+        schema,
+      });
+    expect(await gate()).toMatchObject({ ready: true, principal: runtime?.role });
+    const role = `"${runtime?.role}"`;
+    for (const [grant, refusal] of [
+      ["UPDATE ON reward_safe_unbound_executions", "reward_safe_unbound_executions: UPDATE"],
+      ["UPDATE (status) ON megapot_deployment_attestations", "attestations.status: UPDATE"],
+      ["UPDATE ON reward_asset_whitelist", "reward_asset_whitelist: UPDATE"],
+    ] as const) {
+      await admin.query(`GRANT ${grant} TO ${role}`);
+      try {
+        await expect(gate()).rejects.toThrow(refusal);
+      } finally {
+        await admin.query(`REVOKE ${grant} FROM ${role}`);
+      }
+    }
+    // Revoking the table-wide grant also removed the lock column; restore it.
+    await admin.query(`GRANT UPDATE (created_at) ON reward_asset_whitelist TO ${role}`);
+    expect(await gate()).toMatchObject({ ready: true });
   });
 });
