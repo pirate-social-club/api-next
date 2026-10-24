@@ -30,6 +30,17 @@ calls still need manual review. Do not grant broad table writes merely to make t
 gate pass: keep claim writes inside the claim routine and keep DELETE denied
 on `wallet_sponsored_sends`.
 
+That inventory cannot see two kinds of requirements. A row lock (`FOR SHARE` or
+`FOR UPDATE`) needs UPDATE on the locked table, and SECURITY INVOKER guard
+triggers and deferred transition checks run as the runtime, so whatever they read
+or lock needs a grant too. The Safe payout, ticket-first and late-purchase recovery
+PostgreSQL suites therefore run their Jobs code as a login holding only the
+allowed entries of this list, through `reward-safe-runtime-role.pg-fixture.ts`; a
+denial there means the list is short. A lock needs UPDATE on only one column, so
+lock-only tables grant UPDATE on `created_at`, which their guards keep immutable, and
+the gate refuses table-wide UPDATE and any UPDATE of an attestation's or whitelisted
+asset's `status`; retirement stays an operator act.
+
 The isolated E2E database has the sponsorship migrations under old filenames
 0225 and 0226. Current main has them under 0226 and 0227. The ledger mismatch
 is intentional and this gate must refuse a current-main release there. Rebuild
