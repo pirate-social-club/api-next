@@ -102,7 +102,7 @@ function assetDeployment(candidate: TokenSendCandidate): MegapotV2DeploymentAtte
   return { ...deployment(candidate), usdcAddress: candidate.tokenAddress };
 }
 
-function canonicalReceipt(receipt: MegapotTransactionReceipt): string {
+export function canonicalReceipt(receipt: MegapotTransactionReceipt): string {
   return JSON.stringify({
     chainId: receipt.chainId,
     status: receipt.status,

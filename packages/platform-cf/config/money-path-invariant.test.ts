@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
-import { assertMegapotRewardRuntimePosture } from "./index.ts";
+import {
+  assertMegapotRewardRuntimePosture,
+  parseSponsoredSendConfig,
+  sponsoredSendEligibleAsset,
+} from "./index.ts";
 
 // Deployed production money-path invariant.
 //
@@ -222,9 +226,19 @@ const MONEY_PATH_POSTURES = [
     posture: "guarded_optional_secret_rpc",
     productionDeclaration: "forbidden",
     guard:
-      "parseSponsoredSendConfig rejects production sponsorship and only constructs the Wallet chain reader when all private sponsorship limits and this HTTPS RPC secret are configured",
+      "parseSponsoredSendConfig rejects production sponsorship unless PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED is also true, and only constructs the Wallet chain reader when all private sponsorship limits and this HTTPS RPC secret are configured; production sponsors Base mainnet USDC only",
     evidenceLimitation:
-      "This checks the production declaration is absent, not the live Cloudflare secret inventory or the endpoint's actual chain. Staging chain reads separately verify eth_chainId before balance and receipt use.",
+      "This checks the production declaration is absent, not the live Cloudflare secret inventory or the endpoint's actual chain. Chain reads verify eth_chainId before balance and receipt use. Enabling production sponsorship for the Safe pool pilot is a separate owner decision that changes this posture.",
+  },
+  {
+    kind: "secret_rpc_url",
+    name: "SAFE_POOL_RPC_URL",
+    posture: "guarded_optional_secret_rpc",
+    productionDeclaration: "forbidden",
+    guard:
+      "The jobs and HTTP workers read this endpoint only when SAFE_POOL_PILOT_ENABLED is true, both refuse that together with MEGAPOT_REWARDS_ENABLED, and each admits only a Safe-custody attestation of its own API_NEXT_ENV, a production one only when SAFE_POOL_PRODUCTION_ENABLED is also true, which both refuse outside production; the Safe pilot only reads the chain and prepares calls for the owner's Safe, and the offer repository admits a production pool leg only on owner-executed Safe custody behind that switch",
+    evidenceLimitation:
+      "The absence assertion covers checked-in declarations only and cannot prove that a remotely provisioned Worker secret is absent. Enabling the pilot in production is a separate owner decision that changes this posture. Nothing here validates the endpoint or its network.",
   },
 ] as const satisfies readonly MoneyPathEntry[];
 
@@ -709,6 +723,52 @@ describe("deployed production money-path invariant", () => {
         assertMegapotRewardRuntimePosture({ ...posture, MEGAPOT_REWARDS_ENABLED: true }),
       ).toThrow("invalid Megapot reward runtime posture");
     }
+  });
+
+  test("configuration assertion: no production config turns on the Safe pool pilot or its sponsorship", () => {
+    for (const name of [
+      "SAFE_POOL_PILOT_ENABLED",
+      "SAFE_POOL_PRODUCTION_ENABLED",
+      "PRIVY_SPONSORED_SEND_ENABLED",
+      "PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED",
+    ]) {
+      expect(
+        deployedProductionDeclarations
+          .filter((declaration) => declaration.name === name && declaration.value !== "false")
+          .map((declaration) => declaration.app),
+      ).toEqual([]);
+    }
+  });
+
+  test("executable guard: production sponsorship needs its own switch and sponsors Base USDC only", () => {
+    const limits = {
+      PRIVY_SPONSORED_SEND_ENABLED: true,
+      PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_COUNT: "3",
+      PRIVY_SPONSORED_SEND_WALLET_DAILY_COUNT: "3",
+      PRIVY_SPONSORED_SEND_PLATFORM_DAILY_COUNT: "100",
+      PRIVY_SPONSORED_SEND_GAS_BUDGET_WEI: "1000",
+      PRIVY_SPONSORED_SEND_ACCOUNT_DAILY_GAS_WEI: "3000",
+      PRIVY_SPONSORED_SEND_WALLET_DAILY_GAS_WEI: "3000",
+      PRIVY_SPONSORED_SEND_PLATFORM_DAILY_GAS_WEI: "100000",
+    };
+    expect(() =>
+      parseSponsoredSendConfig({
+        ...limits,
+        API_NEXT_ENV: "production",
+        PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: false,
+      }),
+    ).toThrow("invalid sponsored send configuration");
+    expect(
+      parseSponsoredSendConfig({
+        ...limits,
+        API_NEXT_ENV: "production",
+        PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: true,
+      }),
+    ).not.toBeNull();
+    expect(sponsoredSendEligibleAsset("production")).toEqual({
+      chainId: BASE_MAINNET_CHAIN_ID,
+      tokenAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    });
   });
 
   test("activation prerequisite: the Megapot attestation mismatch stays visible and unresolved", () => {

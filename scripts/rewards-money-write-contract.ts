@@ -36,6 +36,10 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_context_work_counters_v2",
   ],
   "0285_shared_song_qualification_consumers.sql": ["reward_activity_objective_captures_v2"],
+  "0312_reward_safe_execution_scans.sql": [
+    "reward_safe_execution_cursors",
+    "reward_safe_unbound_executions",
+  ],
 };
 
 export const REWARDS_MONEY_TABLES = [
@@ -98,6 +102,8 @@ export const REWARDS_MONEY_TABLES = [
   "reward_pool_cohort_members_v2",
   "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
+  "reward_safe_execution_cursors",
+  "reward_safe_unbound_executions",
   "reward_signer_nonces",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",

@@ -19,6 +19,7 @@ const { makeMegapotRewardsJob } = await import("./megapot-rewards.ts");
 const { makeStudySpokenAnswerRecoveryJob } = await import("./study-spoken-answer-recovery.ts");
 const { makeHnsRootHealthRenewalJob } = await import("./hns-root-health-renewal.ts");
 const { makeJobsWorkerDeclarations } = await import("./index.ts");
+const { makeSafePoolPilotJob } = await import("./safe-pool-pilot.ts");
 
 const options: MegapotRewardsJobOptions = {
   environment: "staging",
@@ -76,6 +77,50 @@ test("one serial writer owns the complete Account recovery/Megapot union alongsi
   expect(joint.writes).not.toContain("postgres:guest_participation_operations");
   expect(joint.reads).not.toContain("postgres:guest_study_spoken_checkpoints");
   expect(joint.requiresAdapterSafety).toBe(true);
+});
+
+test("the Safe pool pilot takes the financial step beside Account recovery", async () => {
+  const safePool = makeSafePoolPilotJob(
+    {},
+    {
+      environment: "production",
+      attestationId: "megapot-base-safe-pilot",
+      rpcUrl: "https://rpc.invalid/",
+      requiredConfirmations: 3,
+      productionEnabled: false,
+      minimumEntrySeconds: 3_600,
+      observationTtlMs: 300_000,
+      commitmentBucket: {} as MegapotRewardsJobOptions["commitmentBucket"],
+      commitmentPublicOrigin: "https://commitments.invalid",
+    },
+  );
+  const study = makeStudySpokenAnswerRecoveryJob({}, bucket);
+  // Both write reward legs and credits, so they cannot be separate writers.
+  await expect(Effect.runPromise(buildJobRegistry([study, safePool]))).rejects.toMatchObject({
+    reason: "duplicate-table-writer",
+  });
+  const declarations = makeJobsWorkerDeclarations(
+    {},
+    "https://rpc.invalid/",
+    { enabled: false },
+    "production",
+    null,
+    false,
+    registryBucket,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    safePool,
+  );
+  const registry = await Effect.runPromise(buildJobRegistry(declarations));
+  expect(registry.byName.has(study.name)).toBe(false);
+  const joint = registry.byName.get(safePool.name);
+  if (joint === undefined) throw new Error("Joint writer missing");
+  expect(joint.schedule).toBe("* * * * *");
+  expect(new Set(joint.writes)).toEqual(new Set([...study.writes, ...safePool.writes]));
 });
 
 test("financial work waits for an outstanding Account recovery stage to settle", async () => {

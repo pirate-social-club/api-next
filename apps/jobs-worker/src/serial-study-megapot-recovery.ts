@@ -70,7 +70,9 @@ export function makeSerialStudyMegapotRecoveryJob(
   funding?: Job,
 ): Job {
   if (
-    megapot.name !== "megapot-rewards.cycle" ||
+    // The financial step is the EOA rewards cycle or, where that is off, the Safe
+    // pool pilot; configuration never enables both.
+    (megapot.name !== "megapot-rewards.cycle" && megapot.name !== "safe-pool-pilot.cycle") ||
     megapot.schedule !== "* * * * *" ||
     megapot.timeout !== "50 seconds" ||
     (study === undefined && funding === undefined) ||

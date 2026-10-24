@@ -356,6 +356,61 @@ describe("HTTP production composition", () => {
     ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
   });
 
+  test("serves the reward routes for the Safe pool pilot only apart from the EOA lane", async () => {
+    const configured = await bindings();
+    const pilot = {
+      ...configured,
+      API_NEXT_ENV: "staging",
+      SAFE_POOL_PILOT_ENABLED: "true",
+      SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
+      SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
+    };
+    const worker = await createProductionHttpWorker(pilot);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    for (const invalid of [
+      { MEGAPOT_REWARDS_ENABLED: "true" },
+      { SAFE_POOL_ATTESTATION_ID: "" },
+      { SAFE_POOL_ATTESTATION_ID: " megapot-base-sepolia-safe-pilot" },
+      { SAFE_POOL_RPC_URL: "" },
+      { SAFE_POOL_RPC_URL: "http://base-sepolia-rpc.test" },
+    ]) {
+      await expect(createProductionHttpWorker({ ...pilot, ...invalid })).rejects.toThrow(
+        "HTTP worker configuration is incomplete or invalid",
+      );
+    }
+  });
+
+  test("refuses the Safe pool production switch outside production", async () => {
+    const configured = await bindings();
+    const pilot = {
+      SAFE_POOL_PILOT_ENABLED: "true",
+      SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
+      SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
+    };
+    for (const environment of ["development", "staging"]) {
+      for (const lane of [{}, pilot]) {
+        await expect(
+          createProductionHttpWorker({
+            ...configured,
+            ...lane,
+            API_NEXT_ENV: environment,
+            SAFE_POOL_PRODUCTION_ENABLED: "true",
+          }),
+        ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+      }
+    }
+  });
+
+  test("refuses the production sponsorship switch outside production", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        PRIVY_SPONSORED_SEND_PRODUCTION_ENABLED: "true",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
   test("keeps the Worker alive and contains a reward database transport failure", async () => {
     const configured = await bindings();
     const worker = await createProductionHttpWorker({

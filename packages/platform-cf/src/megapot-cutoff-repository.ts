@@ -104,6 +104,7 @@ const DUE_SELECT = `
        ORDER BY is_first_persona DESC, created_at, persona_id LIMIT 1
     ) fallback_persona ON true
    WHERE drawing.status='entry_open' AND drawing.entry_cutoff_at <= $1::timestamptz
+     AND drawing.purchase_order='commit_first'
    ORDER BY drawing.entry_cutoff_at, drawing.pool_leg_id, drawing.drawing_id
    LIMIT $2`;
 
@@ -301,7 +302,9 @@ export function makeControlPlaneMegapotCutoffRepository() {
                             ORDER BY is_first_persona DESC, created_at, persona_id LIMIT 1
                          ) fallback_persona ON true
                         WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
-                          AND drawing.status='entry_open' FOR UPDATE OF drawing, leg`,
+                          AND drawing.status='entry_open'
+                          AND drawing.purchase_order='commit_first'
+                        FOR UPDATE OF drawing, leg`,
                 values: [input.candidate.poolLegId, input.candidate.drawingId.toString()],
                 readonly: false,
               });

@@ -51,13 +51,25 @@ export class MegapotWorkStorageFailed extends Data.TaggedError("MegapotWorkStora
   readonly reason: "invalid-row" | "outcome-unknown" | "unavailable";
 }> {}
 
+/**
+ * Commit-first pools run in the EOA cycle; ticket-first pools are owner-executed Safe
+ * pools and run only in the Safe pilot cycle. Each listing serves exactly one of them.
+ */
+export type MegapotPurchaseOrder = "commit_first" | "ticket_first_v1";
+
 export interface MegapotWorkStore {
+  /** With an attestation, only drawings of its legs are selected, before the limit. */
   readonly loadDrawings: (input: {
     readonly statuses: readonly MegapotDrawingWorkStatus[];
+    readonly purchaseOrder: MegapotPurchaseOrder;
     readonly limit: number;
+    readonly attestationId?: string;
   }) => Effect.Effect<readonly MegapotDrawingWork[], MegapotWorkStorageFailed>;
+  /** With an attestation, only credits allocated from its legs are selected, before the limit. */
   readonly loadCredits: (
     limit: number,
+    purchaseOrder: MegapotPurchaseOrder,
+    attestationId?: string,
   ) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
   readonly loadRefunds: (
     limit: number,
@@ -185,7 +197,9 @@ export function makeControlPlaneMegapotWorkRepository() {
   return {
     loadDrawings: (input: {
       readonly statuses: readonly MegapotDrawingWorkStatus[];
+      readonly purchaseOrder: MegapotPurchaseOrder;
       readonly limit: number;
+      readonly attestationId?: string;
     }) =>
       mapped(
         Effect.gen(function* () {
@@ -201,10 +215,11 @@ export function makeControlPlaneMegapotWorkRepository() {
                      JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
                      JOIN megapot_drawing_observations observation
                        ON observation.observation_id=drawing.observation_id
-                    WHERE drawing.status=ANY($1::text[])
+                    WHERE drawing.status=ANY($1::text[]) AND drawing.purchase_order=$3
+                      AND ($4::text IS NULL OR leg.attestation_id=$4)
                     ORDER BY drawing.updated_at,drawing.pool_leg_id,drawing.drawing_id
                     LIMIT $2`,
-            values: [input.statuses, input.limit],
+            values: [input.statuses, input.limit, input.purchaseOrder, input.attestationId ?? null],
             readonly: true,
           });
           return yield* Effect.try({
@@ -214,7 +229,7 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
-    loadCredits: (limit: number) =>
+    loadCredits: (limit: number, purchaseOrder: MegapotPurchaseOrder, attestationId?: string) =>
       mapped(
         Effect.gen(function* () {
           if (!validLimit(limit)) return yield* failed("invalid-row");
@@ -222,14 +237,28 @@ export function makeControlPlaneMegapotWorkRepository() {
           const result = yield* db.execute<Row>({
             label: "megapot-work.credits.read",
             // Participant credits are paid only after an accepted claim
-            // (Spec 015 §5.2a); fallback and bonus credits are unchanged.
+            // (Spec 015 §5.2a); fallback and bonus credits are unchanged. A credit
+            // allocated from a ticket-first pool is paid from the owner's Safe.
             text: `SELECT credit.credit_id FROM reward_ledger_credits credit
                     WHERE credit.state='credited'
                       AND (credit.source_kind <> 'megapot_allocation' OR EXISTS (
                      SELECT 1 FROM megapot_participant_claims claim
                       WHERE claim.credit_id=credit.credit_id AND claim.status='accepted'))
+                      AND EXISTS (
+                     SELECT 1 FROM megapot_allocations allocation
+                       JOIN megapot_allocation_batches batch
+                         ON batch.allocation_batch_id=allocation.allocation_batch_id
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+                      WHERE allocation.credit_id=credit.credit_id
+                        AND leg.purchase_order='ticket_first_v1') = ($2='ticket_first_v1')
+                      AND ($3::text IS NULL OR EXISTS (
+                     SELECT 1 FROM megapot_allocations allocation
+                       JOIN megapot_allocation_batches batch
+                         ON batch.allocation_batch_id=allocation.allocation_batch_id
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=batch.pool_leg_id
+                      WHERE allocation.credit_id=credit.credit_id AND leg.attestation_id=$3))
                     ORDER BY credit.created_at,credit.credit_id LIMIT $1`,
-            values: [limit],
+            values: [limit, purchaseOrder, attestationId ?? null],
             readonly: true,
           });
           return yield* Effect.try({
@@ -262,6 +291,9 @@ export function makeControlPlaneMegapotWorkRepository() {
                       JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
                       JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
                      WHERE funding.state='confirmed' AND leg.funded_atomic > 0
+                       -- A ticket-first leg is funded into the owner's Safe and has no
+                       -- automated refund.
+                       AND leg.purchase_order='commit_first'
                        AND leg.status IN ('exhausted','ended')
                        AND (leg.funding_source='leg_budget' OR leg.kind='asset_bonus')
                        AND leg.reserved_atomic=0
@@ -310,11 +342,13 @@ export function makeControlPlaneMegapotWorkRepository() {
           const db = yield* ControlPlaneDb;
           const result = yield* db.execute<Row>({
             label: "megapot-work.chain-effects.read",
+            // These coordinators sign and broadcast. A Safe effect has no signed
+            // bytes and is reconciled only by matching the owner's execution.
             text: `SELECT effect_id,effect_kind FROM reward_chain_effects
                     WHERE effect_kind IN (
                       'usdc_approval','ticket_purchase','winnings_claim','reward_payout',
                       'reward_refund'
-                    ) AND state IN (
+                    ) AND execution_mode='eoa' AND state IN (
                       'nonce_reserved','prepared','broadcast_pending','confirming',
                       'reconciliation_required'
                     )
@@ -493,7 +527,8 @@ export const makeControlPlaneMegapotWorkStore = (
     mapped(Effect.provide(layer)(effect));
   return {
     loadDrawings: (input) => provide(repository.loadDrawings(input)),
-    loadCredits: (limit) => provide(repository.loadCredits(limit)),
+    loadCredits: (limit, purchaseOrder, attestationId) =>
+      provide(repository.loadCredits(limit, purchaseOrder, attestationId)),
     loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
     loadPendingFunding: (input) => provide(repository.loadPendingFunding(input)),

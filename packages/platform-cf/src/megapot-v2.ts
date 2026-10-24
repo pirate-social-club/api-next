@@ -10,6 +10,11 @@ import {
   parseAbi,
   toBytes,
 } from "viem";
+import {
+  type RewardSafeCommand,
+  type RewardSafeOuterTransaction,
+  validateRewardSafeExecution,
+} from "./reward-safe-execution.ts";
 
 const jackpotReadAbi = parseAbi([
   "function allowTicketPurchases() view returns (bool)",
@@ -534,25 +539,73 @@ export function decodeMegapotTicketOwner(data: Hex): string {
   return address(decodeFunctionResult({ abi: erc721Abi, functionName: "ownerOf", data }));
 }
 
+type SafeExecution = Readonly<{
+  command: RewardSafeCommand;
+  transaction: RewardSafeOuterTransaction;
+}>;
+
+function assertCustodyExecution(input: {
+  readonly deployment: MegapotV2DeploymentAttestation;
+  readonly receipt: MegapotTransactionReceipt;
+  readonly target: string;
+  readonly calldata: () => Hex;
+  readonly safeExecution: SafeExecution | undefined;
+}): void {
+  const { deployment, receipt, safeExecution } = input;
+  if (safeExecution === undefined) {
+    if (
+      receipt.to === null ||
+      !sameAddress(receipt.to, input.target) ||
+      !sameAddress(receipt.from, deployment.custodyAddress)
+    ) {
+      throw new MegapotV2EvidenceInvalid("wrong-party");
+    }
+    return;
+  }
+  const { command, transaction } = safeExecution;
+  if (
+    command.chainId !== deployment.chainId ||
+    !sameAddress(command.safeAddress, deployment.custodyAddress) ||
+    !sameAddress(command.to, input.target) ||
+    command.operation !== 0 ||
+    command.data.toLowerCase() !== input.calldata().toLowerCase()
+  ) {
+    throw new MegapotV2EvidenceInvalid("wrong-party");
+  }
+  try {
+    validateRewardSafeExecution({ command, transaction, receipt });
+  } catch {
+    throw new MegapotV2EvidenceInvalid("invalid-receipt");
+  }
+}
+
 export function validateMegapotPurchaseReceipt(input: {
   readonly deployment: MegapotV2DeploymentAttestation;
   readonly receipt: MegapotTransactionReceipt;
   readonly drawingId: bigint;
   readonly source: string;
   readonly tickets: readonly MegapotTicket[];
+  readonly safeExecution?: SafeExecution;
 }): MegapotPurchaseReceiptEvidence {
   const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
   const receipt = input.receipt;
   assertReceiptIdentity(receipt);
   if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
   if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
-  if (
-    receipt.to === null ||
-    !sameAddress(receipt.to, deployment.jackpotAddress) ||
-    !sameAddress(receipt.from, deployment.custodyAddress)
-  ) {
-    throw new MegapotV2EvidenceInvalid("wrong-party");
-  }
+  assertCustodyExecution({
+    deployment,
+    receipt,
+    target: deployment.jackpotAddress,
+    safeExecution: input.safeExecution,
+    calldata: () =>
+      encodeMegapotBuyTickets({
+        tickets: input.tickets,
+        recipient: deployment.custodyAddress,
+        referrers: [deployment.referrerAddress],
+        referralSplit: [MEGAPOT_REFERRAL_SPLIT_SCALE],
+        source: input.source,
+      }),
+  });
   if (input.tickets.length !== 1) throw new MegapotV2EvidenceInvalid("invalid-ticket");
   const expectedSource = hash(input.source);
   const purchaseEvents: Array<{ ticketId: bigint; logIndex: number }> = [];
@@ -664,20 +717,24 @@ export function validateMegapotUsdcApprovalReceipt(input: {
   readonly deployment: MegapotV2DeploymentAttestation;
   readonly receipt: MegapotTransactionReceipt;
   readonly approvedAmountAtomic: bigint;
+  readonly safeExecution?: SafeExecution;
 }): MegapotApprovalReceiptEvidence {
   const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
   const receipt = input.receipt;
   assertReceiptIdentity(receipt);
   if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
   if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
-  if (
-    receipt.to === null ||
-    !sameAddress(receipt.to, deployment.usdcAddress) ||
-    !sameAddress(receipt.from, deployment.custodyAddress) ||
-    input.approvedAmountAtomic < 1n
-  ) {
+  if (input.approvedAmountAtomic < 1n) {
     throw new MegapotV2EvidenceInvalid("wrong-party");
   }
+  assertCustodyExecution({
+    deployment,
+    receipt,
+    target: deployment.usdcAddress,
+    safeExecution: input.safeExecution,
+    calldata: () =>
+      encodeMegapotUsdcApproval(deployment.jackpotAddress, input.approvedAmountAtomic),
+  });
   const approvals: Array<{ logIndex: number; amountAtomic: bigint }> = [];
   for (const log of receipt.logs) {
     if (!sameAddress(log.address, deployment.usdcAddress)) continue;
@@ -719,6 +776,7 @@ export function validateMegapotUsdcTransferReceipt(input: {
   readonly receipt: MegapotTransactionReceipt;
   readonly recipient: string;
   readonly amountAtomic: bigint;
+  readonly safeExecution?: SafeExecution;
 }): MegapotUsdcTransferReceiptEvidence {
   const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
   const receipt = input.receipt;
@@ -726,14 +784,16 @@ export function validateMegapotUsdcTransferReceipt(input: {
   assertReceiptIdentity(receipt);
   if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
   if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
-  if (
-    receipt.to === null ||
-    !sameAddress(receipt.to, deployment.usdcAddress) ||
-    !sameAddress(receipt.from, deployment.custodyAddress) ||
-    input.amountAtomic <= 0n
-  ) {
+  if (input.amountAtomic <= 0n) {
     throw new MegapotV2EvidenceInvalid("wrong-party");
   }
+  assertCustodyExecution({
+    deployment,
+    receipt,
+    target: deployment.usdcAddress,
+    safeExecution: input.safeExecution,
+    calldata: () => encodeMegapotUsdcTransfer(recipient, input.amountAtomic),
+  });
   const transfers: Array<{ logIndex: number; amountAtomic: bigint }> = [];
   for (const log of receipt.logs) {
     if (!sameAddress(log.address, deployment.usdcAddress)) continue;
@@ -834,19 +894,20 @@ export function validateMegapotClaimReceipt(input: {
   readonly expectedGrossWinningsAtomic: bigint;
   readonly expectedNetWinningsAtomic: bigint;
   readonly expectedReferralAccrualAtomic: bigint;
+  readonly safeExecution?: SafeExecution;
 }): MegapotClaimReceiptEvidence {
   const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
   const receipt = input.receipt;
   assertReceiptIdentity(receipt);
   if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
   if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
-  if (
-    receipt.to === null ||
-    !sameAddress(receipt.to, deployment.jackpotAddress) ||
-    !sameAddress(receipt.from, deployment.custodyAddress)
-  ) {
-    throw new MegapotV2EvidenceInvalid("wrong-party");
-  }
+  assertCustodyExecution({
+    deployment,
+    receipt,
+    target: deployment.jackpotAddress,
+    safeExecution: input.safeExecution,
+    calldata: () => encodeMegapotClaimWinnings(input.ticketIds),
+  });
   const expected = new Set(input.ticketIds.map(String));
   if (expected.size === 0 || expected.size !== input.ticketIds.length) {
     throw new MegapotV2EvidenceInvalid("wrong-ticket");

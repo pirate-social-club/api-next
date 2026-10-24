@@ -1,3 +1,43 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "d85f3210427109c2a38a7fea81b0ed4be72450ac",
+      "operationId": "get_communitiesCommunityIdPostsPostIdRewardsMegapotPool",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/rewards/megapot-pool: enum value added: 8453 at pool.chain_id"
+      ],
+      "kind": "deprecation",
+      "reason": "Megapot pool chain transition for the owner-executed Safe pool pilot on Base (workspace_owner decision 3, 2026-10-23), declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-megapot-pool-base-chain-deprecation. Pool legs, pool funding and the public song pool projection admit chain_id 8453 beside 84532; client 0.134.0 accepts it. Existing Base Sepolia responses are unchanged; clients that accept only 84532 reject Base pilot pools, so Solid takes 0.134.0 before any Base pool opens. Remove after PR656 normal integration; no future-baseline allowance."
+    },
+    {
+      "baselineSha": "d85f3210427109c2a38a7fea81b0ed4be72450ac",
+      "operationId": "get_rewardOfferLegsLegIdFundingFundingEffectId",
+      "expectedViolations": [
+        "response GET /reward-offer-legs/{legId}/funding/{fundingEffectId}: enum value added: 8453 at funding.chain_id"
+      ],
+      "kind": "deprecation",
+      "reason": "Megapot pool chain transition for the owner-executed Safe pool pilot on Base (workspace_owner decision 3, 2026-10-23), declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-megapot-pool-base-chain-deprecation. Pool legs, pool funding and the public song pool projection admit chain_id 8453 beside 84532; client 0.134.0 accepts it. Existing Base Sepolia responses are unchanged; clients that accept only 84532 reject Base pilot pools, so Solid takes 0.134.0 before any Base pool opens. Remove after PR656 normal integration; no future-baseline allowance."
+    },
+    {
+      "baselineSha": "d85f3210427109c2a38a7fea81b0ed4be72450ac",
+      "operationId": "post_rewardOfferLegsLegIdFundingFundingEffectIdObservations",
+      "expectedViolations": [
+        "response POST /reward-offer-legs/{legId}/funding/{fundingEffectId}/observations: enum value added: 8453 at funding.chain_id"
+      ],
+      "kind": "deprecation",
+      "reason": "Megapot pool chain transition for the owner-executed Safe pool pilot on Base (workspace_owner decision 3, 2026-10-23), declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-megapot-pool-base-chain-deprecation. Pool legs, pool funding and the public song pool projection admit chain_id 8453 beside 84532; client 0.134.0 accepts it. Existing Base Sepolia responses are unchanged; clients that accept only 84532 reject Base pilot pools, so Solid takes 0.134.0 before any Base pool opens. Remove after PR656 normal integration; no future-baseline allowance."
+    },
+    {
+      "baselineSha": "d85f3210427109c2a38a7fea81b0ed4be72450ac",
+      "operationId": "post_rewardOffersOfferIdMegapotPoolLegs",
+      "expectedViolations": [
+        "response POST /reward-offers/{offerId}/megapot-pool-legs status 201: enum value added: 8453 at funding.chain_id",
+        "response POST /reward-offers/{offerId}/megapot-pool-legs status 201: enum value added: 8453 at leg.chain_id",
+        "response POST /reward-offers/{offerId}/megapot-pool-legs: enum value added: 8453 at funding.chain_id",
+        "response POST /reward-offers/{offerId}/megapot-pool-legs: enum value added: 8453 at leg.chain_id"
+      ],
+      "kind": "deprecation",
+      "reason": "Megapot pool chain transition for the owner-executed Safe pool pilot on Base (workspace_owner decision 3, 2026-10-23), declared in docs/api-next/openapi-breaking-change-waivers.md#2026-10-23-megapot-pool-base-chain-deprecation. Pool legs, pool funding and the public song pool projection admit chain_id 8453 beside 84532; client 0.134.0 accepts it. Existing Base Sepolia responses are unchanged; clients that accept only 84532 reject Base pilot pools, so Solid takes 0.134.0 before any Base pool opens. Remove after PR656 normal integration; no future-baseline allowance."
+    }
+  ]
 }

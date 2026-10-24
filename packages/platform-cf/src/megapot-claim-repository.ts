@@ -129,22 +129,31 @@ const CANDIDATE_SELECT = `
     JOIN megapot_deployment_attestations attestation
       ON attestation.attestation_id=ticket.attestation_id`;
 
-function loadCandidateIn(
+/**
+ * A drawing with a confirmed winning sweep and its custodied ticket. Commit-first
+ * drawings are claimed by the EOA cycle and ticket-first drawings by the owner's Safe.
+ */
+export function loadClaimCandidateIn(
   transaction: ControlPlaneTransaction,
-  input: { readonly poolLegId: string; readonly drawingId: bigint; readonly lock: boolean },
+  input: {
+    readonly poolLegId: string;
+    readonly drawingId: bigint;
+    readonly lock: boolean;
+    readonly purchaseOrder: "commit_first" | "ticket_first_v1";
+  },
 ): Effect.Effect<MegapotClaimCandidate, MegapotClaimFailure | ControlPlaneError> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "megapot-claim.candidate.read",
       text: `${CANDIDATE_SELECT}
               WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
-                AND drawing.status='winnings_detected'
+                AND drawing.status='winnings_detected' AND drawing.purchase_order=$3
                 AND sweep.state='complete' AND sweep_evidence.tier_id NOT IN (0,2)
                 AND sweep_evidence.gross_winnings_atomic > 0
                 AND sweep_evidence.net_winnings_atomic > 0
                 AND ticket.status='custodied'
               ${input.lock ? "FOR UPDATE OF drawing, ticket" : ""}`,
-      values: [input.poolLegId, input.drawingId.toString()],
+      values: [input.poolLegId, input.drawingId.toString(), input.purchaseOrder],
       readonly: !input.lock,
     });
     if (result.rows.length === 0) return yield* rejected("ticket-not-claimable");
@@ -456,10 +465,11 @@ function reserveNonceIn(
   input: Parameters<MegapotClaimStore["reserveNonce"]>[0],
 ) {
   return Effect.gen(function* () {
-    const candidate = yield* loadCandidateIn(transaction, {
+    const candidate = yield* loadClaimCandidateIn(transaction, {
       poolLegId: input.candidate.poolLegId,
       drawingId: input.candidate.drawingId,
       lock: true,
+      purchaseOrder: "commit_first",
     });
     if (!sameCandidate(candidate, input.candidate)) return yield* rejected("effect-conflict");
     const nonceResult = yield* transaction.execute<Row>({
@@ -635,6 +645,212 @@ function reserveNonceIn(
   });
 }
 
+/**
+ * Record a claim's validated receipt: the chain effect, claim detail, receipt
+ * evidence, referral revenue, ticket and drawing, inside the caller's transaction.
+ */
+export function confirmClaimIn(
+  transaction: ControlPlaneTransaction,
+  input: Parameters<MegapotClaimStore["confirm"]>[0],
+): Effect.Effect<void, MegapotClaimFailure | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "megapot-claim.confirm.read",
+      text: `SELECT effect.state, effect.version, effect.transaction_hash,
+                      claim.attestation_id, claim.ticket_id, claim.pool_leg_id,
+                      claim.drawing_id, claim.expected_gross_winnings_atomic,
+                      claim.expected_net_winnings_atomic,
+                      claim.expected_referral_accrual_atomic,
+                      claim.custody_balance_before_atomic,
+                      claim.referral_balance_before_atomic,
+                      COALESCE(leg.referral_allocation_version, 'platform_referral_v1')
+                        AS referral_allocation_version
+                 FROM reward_chain_effects effect
+                 JOIN megapot_claim_effects claim
+                   ON claim.claim_effect_id=effect.effect_id
+                 JOIN song_reward_offer_legs leg ON leg.leg_id=claim.pool_leg_id
+                WHERE effect.effect_id=$1 FOR UPDATE OF effect, leg`,
+      values: [input.effectId],
+      readonly: false,
+    });
+    if (result.rows.length !== 1) return yield* rejected("not-found");
+    const row = result.rows[0] as Row;
+    if (
+      !["broadcast_pending", "confirming", "reconciliation_required"].includes(
+        text(row, "state"),
+      ) ||
+      text(row, "transaction_hash") !== input.transactionHash ||
+      bigint(row, "expected_gross_winnings_atomic") !== input.grossWinningsAtomic ||
+      bigint(row, "expected_net_winnings_atomic") !== input.netWinningsAtomic ||
+      bigint(row, "expected_referral_accrual_atomic") !== input.referralAccrualAtomic ||
+      bigint(row, "custody_balance_before_atomic") + input.netWinningsAtomic !==
+        input.custodyBalanceAfterAtomic ||
+      bigint(row, "referral_balance_before_atomic") + input.referralAccrualAtomic !==
+        input.referralBalanceAfterAtomic
+    ) {
+      return yield* rejected("effect-conflict");
+    }
+    const version = integer(row, "version") + 1;
+    yield* transaction.execute({
+      label: "megapot-claim.confirm-transition.create",
+      text: `INSERT INTO reward_chain_effect_transitions (
+                 effect_id, target_version, event_type, event
+               ) VALUES ($1,$2,'receipt_confirmed',jsonb_build_object(
+                 'transaction_hash',$3::text,'received_atomic',$4::text
+               ))`,
+      values: [input.effectId, version, input.transactionHash, input.netWinningsAtomic.toString()],
+      readonly: false,
+    });
+    const confirmed = yield* transaction.execute({
+      label: "megapot-claim.effect.confirm",
+      text: `UPDATE reward_chain_effects
+                  SET state='confirmed', version=$2, settled_amount_atomic=$3,
+                      receipt_status='success', receipt_block_number=$4,
+                      receipt_block_hash=$5, receipt_hash=$6,
+                      confirmations=$7, confirmed_at=$8,
+                      failure_class=NULL, failure_reason=NULL,
+                      updated_at=clock_timestamp()
+                WHERE effect_id=$1`,
+      values: [
+        input.effectId,
+        version,
+        input.netWinningsAtomic.toString(),
+        input.blockNumber.toString(),
+        input.blockHash,
+        input.receiptHash,
+        input.confirmations,
+        input.confirmedAt,
+      ],
+      readonly: false,
+    });
+    if (confirmed.rowCount !== 1) return yield* rejected("effect-conflict");
+    yield* transaction.execute({
+      label: "megapot-claim.detail.observe",
+      text: `UPDATE megapot_claim_effects
+                  SET received_atomic=$2, referral_accrual_atomic=$3,
+                      claim_log_index=$4, burn_log_index=$5,
+                      referral_log_index=$6, transfer_log_index=$7
+                WHERE claim_effect_id=$1 AND received_atomic IS NULL`,
+      values: [
+        input.effectId,
+        input.netWinningsAtomic.toString(),
+        input.referralAccrualAtomic.toString(),
+        input.claimLogIndex,
+        input.burnLogIndex,
+        input.referralLogIndex,
+        input.transferLogIndex,
+      ],
+      readonly: false,
+    });
+    yield* transaction.execute({
+      label: "megapot-claim.receipt-evidence.create",
+      text: `INSERT INTO megapot_claim_receipt_evidence (
+                 claim_effect_id, attestation_id, ticket_id, transaction_hash,
+                 claim_log_index, burn_log_index, referral_log_index,
+                 transfer_log_index, gross_winnings_atomic,
+                 referral_accrual_atomic, net_winnings_atomic,
+                 custody_balance_before_atomic, custody_balance_after_atomic,
+                 referral_balance_before_atomic, referral_balance_after_atomic,
+                 block_number, block_hash, receipt_hash, confirmations, confirmed_at
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+      values: [
+        input.effectId,
+        text(row, "attestation_id"),
+        bigint(row, "ticket_id").toString(),
+        input.transactionHash,
+        input.claimLogIndex,
+        input.burnLogIndex,
+        input.referralLogIndex,
+        input.transferLogIndex,
+        input.grossWinningsAtomic.toString(),
+        input.referralAccrualAtomic.toString(),
+        input.netWinningsAtomic.toString(),
+        bigint(row, "custody_balance_before_atomic").toString(),
+        input.custodyBalanceAfterAtomic.toString(),
+        bigint(row, "referral_balance_before_atomic").toString(),
+        input.referralBalanceAfterAtomic.toString(),
+        input.blockNumber.toString(),
+        input.blockHash,
+        input.receiptHash,
+        input.confirmations,
+        input.confirmedAt,
+      ],
+      readonly: false,
+    });
+    if (input.referralAccrualAtomic > 0n) {
+      yield* transaction.execute({
+        label: "megapot-claim.referral-revenue.create",
+        text: `INSERT INTO platform_referral_revenue_ledger (
+                   revenue_entry_id, attestation_id, pool_leg_id, drawing_id,
+                   ticket_id, revenue_kind, amount_atomic,
+                   allocation_policy_version, observation_hash
+                 ) VALUES ($1,$2,$3,$4,$5,'win_share',$6,$7,$8)`,
+        values: [
+          `claim-referral:${input.effectId}`,
+          text(row, "attestation_id"),
+          text(row, "pool_leg_id"),
+          bigint(row, "drawing_id").toString(),
+          bigint(row, "ticket_id").toString(),
+          input.referralAccrualAtomic.toString(),
+          text(row, "referral_allocation_version"),
+          input.receiptHash,
+        ],
+        readonly: false,
+      });
+    }
+    const ticket = yield* transaction.execute({
+      label: "megapot-claim.ticket.confirm",
+      text: `UPDATE megapot_ticket_inventory
+                  SET status='claimed', claimed_transaction_hash=$3,
+                      terminal_at=$4, updated_at=clock_timestamp()
+                WHERE attestation_id=$1 AND ticket_id=$2 AND status='claim_pending'`,
+      values: [
+        text(row, "attestation_id"),
+        bigint(row, "ticket_id").toString(),
+        input.transactionHash,
+        input.confirmedAt,
+      ],
+      readonly: false,
+    });
+    if (ticket.rowCount !== 1) return yield* rejected("ticket-not-claimable");
+    const drawingResult = yield* transaction.execute<Row>({
+      label: "megapot-claim.drawing-confirm.read",
+      text: `SELECT version FROM megapot_pool_drawings
+                WHERE pool_leg_id=$1 AND drawing_id=$2
+                  AND status='claim_pending' AND claim_effect_id=$3 FOR UPDATE`,
+      values: [text(row, "pool_leg_id"), bigint(row, "drawing_id").toString(), input.effectId],
+      readonly: false,
+    });
+    if (drawingResult.rows.length !== 1) return yield* rejected("effect-conflict");
+    const drawingVersion = integer(drawingResult.rows[0] as Row, "version") + 1;
+    yield* transaction.execute({
+      label: "megapot-claim.drawing-confirm-transition.create",
+      text: `INSERT INTO megapot_pool_drawing_transitions (
+                 pool_leg_id, drawing_id, target_version, event_type, event
+               ) VALUES ($1,$2,$3,'claimed',jsonb_build_object(
+                 'claim_effect_id',$4::text,'received_atomic',$5::text
+               ))`,
+      values: [
+        text(row, "pool_leg_id"),
+        bigint(row, "drawing_id").toString(),
+        drawingVersion,
+        input.effectId,
+        input.netWinningsAtomic.toString(),
+      ],
+      readonly: false,
+    });
+    const drawing = yield* transaction.execute({
+      label: "megapot-claim.drawing.confirm",
+      text: `UPDATE megapot_pool_drawings
+                  SET status='claimed', version=$3, updated_at=clock_timestamp()
+                WHERE pool_leg_id=$1 AND drawing_id=$2 AND status='claim_pending'`,
+      values: [text(row, "pool_leg_id"), bigint(row, "drawing_id").toString(), drawingVersion],
+      readonly: false,
+    });
+    if (drawing.rowCount !== 1) return yield* rejected("effect-conflict");
+  });
+}
+
 export function makeControlPlaneMegapotClaimRepository() {
   return {
     findProgress: (effectId: string) =>
@@ -656,7 +872,11 @@ export function makeControlPlaneMegapotClaimRepository() {
     loadCandidate: (input: Parameters<MegapotClaimStore["loadCandidate"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        return yield* loadCandidateIn(db, { ...input, lock: false });
+        return yield* loadClaimCandidateIn(db, {
+          ...input,
+          lock: false,
+          purchaseOrder: "commit_first",
+        });
       }).pipe(mapped),
     requireReview: (input: Parameters<MegapotClaimStore["requireReview"]>[0]) =>
       Effect.gen(function* () {
@@ -829,217 +1049,7 @@ export function makeControlPlaneMegapotClaimRepository() {
     confirm: (input: Parameters<MegapotClaimStore["confirm"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
-        yield* db.withTransaction((transaction) =>
-          Effect.gen(function* () {
-            const result = yield* transaction.execute<Row>({
-              label: "megapot-claim.confirm.read",
-              text: `SELECT effect.state, effect.version, effect.transaction_hash,
-                            claim.attestation_id, claim.ticket_id, claim.pool_leg_id,
-                            claim.drawing_id, claim.expected_gross_winnings_atomic,
-                            claim.expected_net_winnings_atomic,
-                            claim.expected_referral_accrual_atomic,
-                            claim.custody_balance_before_atomic,
-                            claim.referral_balance_before_atomic,
-                            COALESCE(leg.referral_allocation_version, 'platform_referral_v1')
-                              AS referral_allocation_version
-                       FROM reward_chain_effects effect
-                       JOIN megapot_claim_effects claim
-                         ON claim.claim_effect_id=effect.effect_id
-                       JOIN song_reward_offer_legs leg ON leg.leg_id=claim.pool_leg_id
-                      WHERE effect.effect_id=$1 FOR UPDATE OF effect, leg`,
-              values: [input.effectId],
-              readonly: false,
-            });
-            if (result.rows.length !== 1) return yield* rejected("not-found");
-            const row = result.rows[0] as Row;
-            if (
-              !["broadcast_pending", "confirming", "reconciliation_required"].includes(
-                text(row, "state"),
-              ) ||
-              text(row, "transaction_hash") !== input.transactionHash ||
-              bigint(row, "expected_gross_winnings_atomic") !== input.grossWinningsAtomic ||
-              bigint(row, "expected_net_winnings_atomic") !== input.netWinningsAtomic ||
-              bigint(row, "expected_referral_accrual_atomic") !== input.referralAccrualAtomic ||
-              bigint(row, "custody_balance_before_atomic") + input.netWinningsAtomic !==
-                input.custodyBalanceAfterAtomic ||
-              bigint(row, "referral_balance_before_atomic") + input.referralAccrualAtomic !==
-                input.referralBalanceAfterAtomic
-            ) {
-              return yield* rejected("effect-conflict");
-            }
-            const version = integer(row, "version") + 1;
-            yield* transaction.execute({
-              label: "megapot-claim.confirm-transition.create",
-              text: `INSERT INTO reward_chain_effect_transitions (
-                       effect_id, target_version, event_type, event
-                     ) VALUES ($1,$2,'receipt_confirmed',jsonb_build_object(
-                       'transaction_hash',$3::text,'received_atomic',$4::text
-                     ))`,
-              values: [
-                input.effectId,
-                version,
-                input.transactionHash,
-                input.netWinningsAtomic.toString(),
-              ],
-              readonly: false,
-            });
-            const confirmed = yield* transaction.execute({
-              label: "megapot-claim.effect.confirm",
-              text: `UPDATE reward_chain_effects
-                        SET state='confirmed', version=$2, settled_amount_atomic=$3,
-                            receipt_status='success', receipt_block_number=$4,
-                            receipt_block_hash=$5, receipt_hash=$6,
-                            confirmations=$7, confirmed_at=$8,
-                            failure_class=NULL, failure_reason=NULL,
-                            updated_at=clock_timestamp()
-                      WHERE effect_id=$1`,
-              values: [
-                input.effectId,
-                version,
-                input.netWinningsAtomic.toString(),
-                input.blockNumber.toString(),
-                input.blockHash,
-                input.receiptHash,
-                input.confirmations,
-                input.confirmedAt,
-              ],
-              readonly: false,
-            });
-            if (confirmed.rowCount !== 1) return yield* rejected("effect-conflict");
-            yield* transaction.execute({
-              label: "megapot-claim.detail.observe",
-              text: `UPDATE megapot_claim_effects
-                        SET received_atomic=$2, referral_accrual_atomic=$3,
-                            claim_log_index=$4, burn_log_index=$5,
-                            referral_log_index=$6, transfer_log_index=$7
-                      WHERE claim_effect_id=$1 AND received_atomic IS NULL`,
-              values: [
-                input.effectId,
-                input.netWinningsAtomic.toString(),
-                input.referralAccrualAtomic.toString(),
-                input.claimLogIndex,
-                input.burnLogIndex,
-                input.referralLogIndex,
-                input.transferLogIndex,
-              ],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "megapot-claim.receipt-evidence.create",
-              text: `INSERT INTO megapot_claim_receipt_evidence (
-                       claim_effect_id, attestation_id, ticket_id, transaction_hash,
-                       claim_log_index, burn_log_index, referral_log_index,
-                       transfer_log_index, gross_winnings_atomic,
-                       referral_accrual_atomic, net_winnings_atomic,
-                       custody_balance_before_atomic, custody_balance_after_atomic,
-                       referral_balance_before_atomic, referral_balance_after_atomic,
-                       block_number, block_hash, receipt_hash, confirmations, confirmed_at
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
-              values: [
-                input.effectId,
-                text(row, "attestation_id"),
-                bigint(row, "ticket_id").toString(),
-                input.transactionHash,
-                input.claimLogIndex,
-                input.burnLogIndex,
-                input.referralLogIndex,
-                input.transferLogIndex,
-                input.grossWinningsAtomic.toString(),
-                input.referralAccrualAtomic.toString(),
-                input.netWinningsAtomic.toString(),
-                bigint(row, "custody_balance_before_atomic").toString(),
-                input.custodyBalanceAfterAtomic.toString(),
-                bigint(row, "referral_balance_before_atomic").toString(),
-                input.referralBalanceAfterAtomic.toString(),
-                input.blockNumber.toString(),
-                input.blockHash,
-                input.receiptHash,
-                input.confirmations,
-                input.confirmedAt,
-              ],
-              readonly: false,
-            });
-            if (input.referralAccrualAtomic > 0n) {
-              yield* transaction.execute({
-                label: "megapot-claim.referral-revenue.create",
-                text: `INSERT INTO platform_referral_revenue_ledger (
-                         revenue_entry_id, attestation_id, pool_leg_id, drawing_id,
-                         ticket_id, revenue_kind, amount_atomic,
-                         allocation_policy_version, observation_hash
-                       ) VALUES ($1,$2,$3,$4,$5,'win_share',$6,$7,$8)`,
-                values: [
-                  `claim-referral:${input.effectId}`,
-                  text(row, "attestation_id"),
-                  text(row, "pool_leg_id"),
-                  bigint(row, "drawing_id").toString(),
-                  bigint(row, "ticket_id").toString(),
-                  input.referralAccrualAtomic.toString(),
-                  text(row, "referral_allocation_version"),
-                  input.receiptHash,
-                ],
-                readonly: false,
-              });
-            }
-            const ticket = yield* transaction.execute({
-              label: "megapot-claim.ticket.confirm",
-              text: `UPDATE megapot_ticket_inventory
-                        SET status='claimed', claimed_transaction_hash=$3,
-                            terminal_at=$4, updated_at=clock_timestamp()
-                      WHERE attestation_id=$1 AND ticket_id=$2 AND status='claim_pending'`,
-              values: [
-                text(row, "attestation_id"),
-                bigint(row, "ticket_id").toString(),
-                input.transactionHash,
-                input.confirmedAt,
-              ],
-              readonly: false,
-            });
-            if (ticket.rowCount !== 1) return yield* rejected("ticket-not-claimable");
-            const drawingResult = yield* transaction.execute<Row>({
-              label: "megapot-claim.drawing-confirm.read",
-              text: `SELECT version FROM megapot_pool_drawings
-                      WHERE pool_leg_id=$1 AND drawing_id=$2
-                        AND status='claim_pending' AND claim_effect_id=$3 FOR UPDATE`,
-              values: [
-                text(row, "pool_leg_id"),
-                bigint(row, "drawing_id").toString(),
-                input.effectId,
-              ],
-              readonly: false,
-            });
-            if (drawingResult.rows.length !== 1) return yield* rejected("effect-conflict");
-            const drawingVersion = integer(drawingResult.rows[0] as Row, "version") + 1;
-            yield* transaction.execute({
-              label: "megapot-claim.drawing-confirm-transition.create",
-              text: `INSERT INTO megapot_pool_drawing_transitions (
-                       pool_leg_id, drawing_id, target_version, event_type, event
-                     ) VALUES ($1,$2,$3,'claimed',jsonb_build_object(
-                       'claim_effect_id',$4::text,'received_atomic',$5::text
-                     ))`,
-              values: [
-                text(row, "pool_leg_id"),
-                bigint(row, "drawing_id").toString(),
-                drawingVersion,
-                input.effectId,
-                input.netWinningsAtomic.toString(),
-              ],
-              readonly: false,
-            });
-            const drawing = yield* transaction.execute({
-              label: "megapot-claim.drawing.confirm",
-              text: `UPDATE megapot_pool_drawings
-                        SET status='claimed', version=$3, updated_at=clock_timestamp()
-                      WHERE pool_leg_id=$1 AND drawing_id=$2 AND status='claim_pending'`,
-              values: [
-                text(row, "pool_leg_id"),
-                bigint(row, "drawing_id").toString(),
-                drawingVersion,
-              ],
-              readonly: false,
-            });
-            if (drawing.rowCount !== 1) return yield* rejected("effect-conflict");
-          }),
-        );
+        yield* db.withTransaction((transaction) => confirmClaimIn(transaction, input));
       }).pipe(mapped),
   };
 }

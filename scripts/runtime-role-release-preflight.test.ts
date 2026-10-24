@@ -36,6 +36,7 @@ function reviewedMoneyTableRevocations(
     "0279_reward_principal_seals_v2.sql": "principal_acl",
     "0284_shared_song_megapot_production.sql": "acl",
     "0285_shared_song_qualification_consumers.sql": "acl",
+    "0312_reward_safe_execution_scans.sql": "acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -63,7 +64,10 @@ function reviewedMoneyTableRevocations(
     requirePart(`EXECUTE format('${command}',${binding});`, message, source);
   };
   let tables: string[];
-  if (migration === "0284_shared_song_megapot_production.sql") {
+  if (
+    migration === "0284_shared_song_megapot_production.sql" ||
+    migration === "0312_reward_safe_execution_scans.sql"
+  ) {
     const tableAcl = body.split(/FOR\s+fn\s+IN\s+SELECT/u)[0] ?? "";
     tables = names(/relname\s*=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\]\)/u.exec(tableAcl)?.[1]);
     requirePart(
@@ -389,7 +393,7 @@ describe("destructive money-table inventory", () => {
       ).toThrow("money table coverage mismatch");
       const literalNonce = migration.startsWith("0277_");
       const literalObjective = migration.startsWith("0285_");
-      const contextArray = migration.startsWith("0284_");
+      const contextArray = migration.startsWith("0284_") || migration.startsWith("0312_");
       const missingTable = literalNonce
         ? sql.replace(`c.oid='${first}'::regclass`, "c.oid=NULL")
         : literalObjective
