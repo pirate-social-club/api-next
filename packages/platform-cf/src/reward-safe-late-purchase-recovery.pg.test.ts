@@ -2,7 +2,8 @@
  * PostgreSQL proof of the owner procedure for Safe purchases executed after their
  * ticket-first drawing closed, with a fake chain. Leg, observation and credit lineage
  * rows are seeded with triggers disabled; every purchase, settlement, solvency, payout
- * and recovery step under test runs with all triggers enforced.
+ * and recovery step under test runs with all triggers enforced. Jobs steps run as a
+ * login holding only the reviewed release runtime privileges; recovery is the owner's.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
@@ -30,6 +31,7 @@ import {
 } from "./reward-safe-chain.pg-fixture.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
 import { makeRewardSafePurchaseCoordinator } from "./reward-safe-purchase-coordinator.ts";
+import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.ts";
 import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -59,7 +61,11 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
     `-c search_path=${schema}`,
   )}`;
   const chain = fakeSafeChain({ usdcBalance, purchaseSpends: true });
-  const layer = () => makeDirectPostgresControlPlaneLayer(scoped);
+  let runtime: Awaited<ReturnType<typeof makeReleaseRuntimeLogin>> | undefined;
+  const layer = () => {
+    if (runtime === undefined) throw new Error("release runtime login not created");
+    return makeDirectPostgresControlPlaneLayer(runtime.url);
+  };
   const options = (minimumEntrySeconds = 600) => ({
     layer: layer(),
     rpc: chain.rpc,
@@ -70,7 +76,7 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
     minimumEntrySeconds,
   });
   const recovery = {
-    layer: layer(),
+    layer: makeDirectPostgresControlPlaneLayer(scoped),
     rpc: chain.rpc,
     attestationId: ATTESTATION,
     requiredConfirmations: 3,
@@ -306,10 +312,12 @@ function lateSafePurchaseFixture(prefix: string, usdcBalance: bigint) {
       [address("b")],
     );
     await admin.query("SET session_replication_role = origin");
+    runtime = await makeReleaseRuntimeLogin(admin, url as string, schema);
   });
 
   afterAll(async () => {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await runtime?.drop();
     await admin.end();
   });
 

@@ -72,6 +72,9 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "reward_chain_effects", privilege: "INSERT", allowed: true },
   { object: "reward_chain_effects", privilege: "UPDATE", allowed: true },
   { object: "reward_chain_effect_transitions", privilege: "INSERT", allowed: true },
+  // Deferred transition checks run as the runtime at commit and read these.
+  { object: "reward_chain_effect_transitions", privilege: "SELECT", allowed: true },
+  { object: "megapot_pool_drawing_transitions", privilege: "SELECT", allowed: true },
   { object: "reward_signer_nonces", privilege: "SELECT", allowed: true },
   { object: "reward_signer_nonces", privilege: "INSERT", allowed: true },
   { object: "reward_signer_nonces", privilege: "UPDATE", allowed: true },
@@ -181,6 +184,21 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "song_reward_offer_legs", privilege: "INSERT", allowed: true },
   { object: "song_reward_offers", privilege: "INSERT", allowed: true },
   { object: "custody_solvency_observations", privilege: "INSERT", allowed: true },
+  // Row locks need UPDATE. Guard triggers running as the runtime take FOR SHARE locks
+  // on these, and the funding, solvency and ticket-first cutoff code locks some itself.
+  // Each table's own guard bounds the write: observations, shares, sweep evidence and
+  // eligibility decisions are append-only, an attestation or whitelisted asset may only
+  // be retired, and wallet assignments, purchase effects and sweeps keep their identity.
+  { object: "megapot_drawing_observations", privilege: "UPDATE", allowed: true },
+  { object: "custody_solvency_observations", privilege: "UPDATE", allowed: true },
+  { object: "megapot_deployment_attestations", privilege: "UPDATE", allowed: true },
+  { object: "persona_wallet_assignments", privilege: "UPDATE", allowed: true },
+  { object: "megapot_ticket_purchase_effects", privilege: "UPDATE", allowed: true },
+  { object: "megapot_pool_shares", privilege: "UPDATE", allowed: true },
+  { object: "megapot_drawing_sweeps", privilege: "UPDATE", allowed: true },
+  { object: "megapot_sweep_ticket_evidence", privilege: "UPDATE", allowed: true },
+  { object: "reward_eligibility_decisions", privilege: "UPDATE", allowed: true },
+  { object: "reward_asset_whitelist", privilege: "UPDATE", allowed: true },
   {
     object: "accept_megapot_participant_claim_v1(text,text)",
     privilege: "EXECUTE",

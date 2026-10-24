@@ -1,7 +1,8 @@
 /**
  * PostgreSQL proof of owner-executed Safe payouts with a fake chain. The credit's
  * allocation lineage is seeded with triggers disabled; every payout step under test
- * runs with all triggers and constraints enforced.
+ * runs with all triggers and constraints enforced, as a login holding only the
+ * reviewed release runtime privileges.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
@@ -23,6 +24,7 @@ import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { rewardSafeTransactionHash } from "./reward-safe-execution.ts";
 import { makeControlPlaneRewardSafeExecutionStore } from "./reward-safe-execution-repository.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
+import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1" && !url) {
@@ -217,13 +219,15 @@ function fakeChain() {
 suite("owner-executed Safe payouts", () => {
   const schema = `reward_safe_payout_${process.pid}_${Date.now()}`;
   const admin = new Client({ connectionString: url });
-  const scoped = `${url}${url?.includes("?") ? "&" : "?"}options=${encodeURIComponent(
-    `-c search_path=${schema}`,
-  )}`;
   const chain = fakeChain();
+  let runtime: Awaited<ReturnType<typeof makeReleaseRuntimeLogin>> | undefined;
+  const runtimeUrl = () => {
+    if (runtime === undefined) throw new Error("release runtime login not created");
+    return runtime.url;
+  };
   const coordinator = () =>
     makeRewardSafePayoutCoordinator({
-      layer: makeDirectPostgresControlPlaneLayer(scoped),
+      layer: makeDirectPostgresControlPlaneLayer(runtimeUrl()),
       rpc: chain.rpc,
       requiredConfirmations: 3,
       runtimeEnvironment: "production",
@@ -358,10 +362,12 @@ suite("owner-executed Safe payouts", () => {
       [ATTESTATION, SAFE, USDC, hash("2")],
     );
     await admin.query("SET session_replication_role = origin");
+    runtime = await makeReleaseRuntimeLogin(admin, url as string, schema);
   });
 
   afterAll(async () => {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await runtime?.drop();
     await admin.end();
   });
 
@@ -599,7 +605,7 @@ suite("owner-executed Safe payouts", () => {
 
   test("a scan whose snapshot missed a newly prepared call is refused", async () => {
     const store = makeControlPlaneRewardSafeExecutionStore();
-    const layer = makeDirectPostgresControlPlaneLayer(scoped);
+    const layer = makeDirectPostgresControlPlaneLayer(runtimeUrl());
     const state = await run(
       Effect.provide(layer)(store.loadScanState({ chainId: 8453, safeAddress: SAFE })),
     );
@@ -660,5 +666,28 @@ suite("owner-executed Safe payouts", () => {
     );
     const prepared = await run(payouts.prepare("credit-account-d"));
     expect(prepared.preparedBlockNumber).toBe(ahead);
+  });
+
+  test("the release runtime cannot delete, rewrite or recover Safe custody state", async () => {
+    const login = new Client({ connectionString: runtimeUrl() });
+    await login.connect();
+    try {
+      expect((await login.query("SELECT current_user::text AS role")).rows).toEqual([
+        { role: runtime?.role },
+      ]);
+      for (const statement of [
+        "DELETE FROM reward_safe_execution_cursors",
+        "TRUNCATE reward_safe_execution_cursors",
+        "UPDATE reward_safe_unbound_executions SET reason = reason",
+        "DELETE FROM reward_safe_unbound_executions",
+        `SELECT recover_late_safe_purchase_v1(NULL::text, NULL::bigint, NULL::bigint,
+           NULL::numeric, NULL::integer, NULL::integer, NULL::bigint, NULL::text, NULL::text,
+           NULL::integer, NULL::numeric, NULL::numeric, NULL::timestamptz)`,
+      ]) {
+        await expect(login.query(statement)).rejects.toMatchObject({ code: "42501" });
+      }
+    } finally {
+      await login.end();
+    }
   });
 });

@@ -45,6 +45,7 @@ import { makeRewardSafeClaimCoordinator } from "./reward-safe-claim-coordinator.
 import type { RewardSafeAdmission } from "./reward-safe-execution.ts";
 import { makeRewardSafePayoutCoordinator } from "./reward-safe-payout-coordinator.ts";
 import { makeRewardSafePurchaseCoordinator } from "./reward-safe-purchase-coordinator.ts";
+import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.ts";
 import { makeRewardSafeExecutionScanner } from "./reward-safe-settlement.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -63,8 +64,15 @@ suite("ticket-first owner-executed Safe pools", () => {
     `-c search_path=${schema}`,
   )}`;
   const chain = fakeSafeChain();
+  // Jobs code runs as a login holding only the reviewed release runtime privileges;
+  // seeding, assertions and the operator's call export use the owner connection.
+  let runtime: Awaited<ReturnType<typeof makeReleaseRuntimeLogin>> | undefined;
+  const runtimeUrl = () => {
+    if (runtime === undefined) throw new Error("release runtime login not created");
+    return runtime.url;
+  };
   const options = (minimumEntrySeconds = 600) => ({
-    layer: makeDirectPostgresControlPlaneLayer(scoped),
+    layer: makeDirectPostgresControlPlaneLayer(runtimeUrl()),
     rpc: chain.rpc,
     requiredConfirmations: 3,
     ...PRODUCTION,
@@ -261,10 +269,12 @@ suite("ticket-first owner-executed Safe pools", () => {
       });
     }
     await admin.query("SET session_replication_role = origin");
+    runtime = await makeReleaseRuntimeLogin(admin, url as string, schema);
   });
 
   afterAll(async () => {
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await runtime?.drop();
     await admin.end();
   });
 
@@ -321,7 +331,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     }
     await admin.query("SET session_replication_role = origin");
     const cutoff = makeMegapotTicketFirstCutoff({
-      layer: makeDirectPostgresControlPlaneLayer(scoped),
+      layer: makeDirectPostgresControlPlaneLayer(runtimeUrl()),
       attestationId: ATTESTATION,
       now: () => Date.now() + 3 * 3_600_000,
     });
@@ -334,7 +344,7 @@ suite("ticket-first owner-executed Safe pools", () => {
       frozen_share_count: 2,
     });
 
-    const layer = makeDirectPostgresControlPlaneLayer(scoped);
+    const layer = makeDirectPostgresControlPlaneLayer(runtimeUrl());
     const commitment = makeMegapotCommitmentCoordinator({
       store: makeControlPlaneMegapotCommitmentStore(layer),
       signer: megapotUnsignedOwnerSafeSigner,
@@ -737,7 +747,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     });
     const cutoffFor = (attestationId: string) =>
       makeMegapotTicketFirstCutoff({
-        layer: makeDirectPostgresControlPlaneLayer(scoped),
+        layer: makeDirectPostgresControlPlaneLayer(runtimeUrl()),
         attestationId,
         now: () => Date.now() + 3 * 3_600_000,
       });
@@ -927,7 +937,9 @@ suite("ticket-first owner-executed Safe pools", () => {
       [hash("3"), USDC, PRICE.toString(), ATTESTATION],
     );
     await admin.query("SET session_replication_role = origin");
-    const store = makeControlPlaneRewardFundingStore(makeDirectPostgresControlPlaneLayer(scoped));
+    const store = makeControlPlaneRewardFundingStore(
+      makeDirectPostgresControlPlaneLayer(runtimeUrl()),
+    );
     const funding = (safePilot?: RewardSafeAdmission) =>
       makeRewardFundingCoordinator({
         store,
