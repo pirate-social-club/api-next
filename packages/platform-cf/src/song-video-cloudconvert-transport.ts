@@ -156,6 +156,7 @@ function privateDanceObservation(value: unknown): CloudConvertPrivateDanceObserv
       "OPEN_FAILED",
       "FILE_NOT_FOUND",
       "DOWNLOAD_FAILED",
+      "DOWNLOAD_409",
       "INVALID_DATA",
       "CONVERSION_FAILED",
       "COMMAND_FAILED",

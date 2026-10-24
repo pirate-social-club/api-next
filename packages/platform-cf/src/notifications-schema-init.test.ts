@@ -216,6 +216,10 @@ test("the actual checksum loader supplies the complete contiguous repository 000
     version: "0309_moderated_dance_reference_recovery.sql",
     checksum: "c4a49efbcbd86df51919a5612fa24c919b5501a24dde9891d322d0776abc20bb",
   });
+  expect(migrations[309]).toMatchObject({
+    version: "0310_moderated_dance_reference_physical_key.sql",
+    checksum: "c1e166c3804026db46c565ba915cbb2f739475206f49a9ece32418ec17de16fd",
+  });
   expect(migrations[310]).toMatchObject({
     version: "0311_reward_safe_owner_execution.sql",
     checksum: "53a24c879f52e2d724ff01f5889bd86cab0cf6cbf8ea22cbe3e6e47496a504df",
