@@ -252,6 +252,7 @@ import {
   type R2VideoMultipartControl,
 } from "@pirate/platform-cf/video-multipart-r2";
 import { makeControlPlaneVideoOutcomeStore } from "@pirate/platform-cf/video-outcome-repository";
+import { makeControlPlaneVideoPostRemovalStore } from "@pirate/platform-cf/video-post-removal-repository";
 import { makeControlPlaneVideoPublicationStore } from "@pirate/platform-cf/video-publication-repository";
 import {
   issueWalletSendVerificationIntent,
@@ -371,6 +372,7 @@ import { makeVerificationHandlers } from "./verification-handlers.ts";
 import { assertVerificationRegistryOverride } from "./verification-registry-override.ts";
 import { makeVideoAccessHandlers, type VideoAccessBindings } from "./video-access-composition.ts";
 import { makeVideoOutcomeHandlers } from "./video-outcome-handlers.ts";
+import { makeVideoPostRemovalHandler } from "./video-post-removal-handler.ts";
 import { makeWalletSponsoredSendHandlers } from "./wallet-sponsored-send-handlers.ts";
 
 export interface HttpWorkerBindings
@@ -2054,6 +2056,9 @@ export async function createProductionHttpWorker(
       ...studyV2Handlers,
       ...studyGenerationHandlers,
       ...learnerAudioHandlers,
+      DeleteVideoPost: makeVideoPostRemovalHandler(
+        makeControlPlaneVideoPostRemovalStore(controlPlane),
+      ),
       ...hnsEdgeStatusHandlers,
       ...handleSalesHandlers,
       ...handleNationalityAuthoringHandlers,

@@ -55,6 +55,8 @@
     "./video/enrichment-dispatch": "./src/video/enrichment-dispatch.ts",
     "./video/thumbnail-enrichment": "./src/video/thumbnail-enrichment.ts",
     "./video/stage-facts": "./src/video/stage-facts.ts",
+    "./video/post-removal": "./src/video/post-removal.ts",
+    "./use-cases/video-post-removal": "./src/use-cases/video-post-removal.ts",
     "./video/playback-access": "./src/video/playback-access.ts",
     "./video/access-authorization": "./src/video/access-authorization.ts",
     "./video/poster-access": "./src/video/poster-access.ts",

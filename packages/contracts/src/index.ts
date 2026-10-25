@@ -69,3 +69,4 @@ export * from "./v1.ts";
 export * from "./verification.ts";
 export * from "./video-access.ts";
 export * from "./video-outcomes.ts";
+export * from "./video-post-removal.ts";
