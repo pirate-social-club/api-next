@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.135.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "becda5f11be5a068e8805e078b2972c5a8f9a710",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Retains genuine134 operations and adds browser-session-only DeleteVideoPost: DELETE /posts/:postId/video, no request body, returning object video_post_deletion, community_id, post_id and status deleted. The authenticated account must own the published, hidden, removed or already-deleted video Post. Repeating the immutable target returns the same removal receipt. Non-video and other-author targets are not found; unpublished videos conflict. Normal Origin and CSRF protections apply. This removes the public Post and new access authority; it does not promise immediate erasure of provider assets or revocation of previously issued Stream grants.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.135.0.tgz",
+    "sha256": "a4b7e6283b1faa576a06c5579aee8c643e7090ccdbccfdf906a2075211c5fe6c"
+  },
+  "validation": {
+    "status": "Candidate package. Final qualification and independent review are recorded with the source checkpoint in the authoritative task record. Solid intake and staging acceptance remain pending.",
+    "operationalBoundary": "No migration, live grant change, deployment, credential, production or financial activation. Genuine134 and all earlier artifacts remain immutable."
+  }
+}

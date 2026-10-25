@@ -155,6 +155,14 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "platform_sponsorship_budgets", privilege: "SELECT", allowed: true },
   { object: "platform_sponsorship_budgets", privilege: "UPDATE", allowed: true },
   { object: "posts", privilege: "SELECT", allowed: true },
+  // Existing serving privileges used by author video removal and its triggers.
+  // This preflight verifies them; it never grants or expands a deployed role.
+  { object: "posts", privilege: "UPDATE", allowed: true },
+  { object: "users", privilege: "SELECT", allowed: true },
+  { object: "users", privilege: "UPDATE", allowed: true },
+  { object: "home_feed_projection", privilege: "SELECT", allowed: true },
+  { object: "home_feed_projection", privilege: "DELETE", allowed: true },
+  { object: "media_post_submissions", privilege: "SELECT", allowed: true },
   { object: "reward_activity_availability_observations", privilege: "SELECT", allowed: true },
   { object: "reward_eligibility_decisions", privilege: "SELECT", allowed: true },
   { object: "reward_erc20_transfer_receipt_evidence", privilege: "INSERT", allowed: true },

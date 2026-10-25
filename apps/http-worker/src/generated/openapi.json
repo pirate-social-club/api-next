@@ -209361,6 +209361,410 @@
         ]
       }
     },
+    "/posts/{postId}/video": {
+      "delete": {
+        "operationId": "delete_postsPostIdVideo",
+        "parameters": [
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 512
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "video_post_deletion"
+                      ]
+                    },
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "post_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "deleted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "community_id",
+                    "post_id",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "InternalError",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
     "/communities/{communityId}/posts/{postId}/study/sessions": {
       "post": {
         "operationId": "post_communitiesCommunityIdPostsPostIdStudySessions",

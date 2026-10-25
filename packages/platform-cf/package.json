@@ -114,6 +114,7 @@
     "./video-source-gateway": "./src/video-source-gateway.ts",
     "./video-poster-stream": "./src/video-poster-stream.ts",
     "./video-multipart-r2": "./src/video-multipart-r2.ts",
+    "./video-post-removal-repository": "./src/video-post-removal-repository.ts",
     "./video-publication-repository": "./src/video-publication-repository.ts",
     "./song-video-interval-repository": "./src/song-video-interval-repository.ts",
     "./song-video-worker-render": "./src/song-video-worker-render.ts",

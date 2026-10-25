@@ -174,6 +174,7 @@ import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
 import { ClaimVideoOutcome } from "./video-outcomes.ts";
+import { DeleteVideoPost } from "./video-post-removal.ts";
 import {
   CreateWalletSponsoredSend,
   GetWalletSponsoredSend,
@@ -281,6 +282,7 @@ export const registry = {
   SubmitDanceSessionForGrading,
   GetDanceSession,
   DeleteMyLearnerAudio,
+  DeleteVideoPost,
   StartStudySession,
   GetStudySession,
   SubmitStudyAnswer,
