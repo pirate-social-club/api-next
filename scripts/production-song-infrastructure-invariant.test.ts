@@ -248,7 +248,7 @@ describe("narrow production v1 song infrastructure", () => {
     expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("identify-eu-west-1.acrcloud.com");
   });
 
-  test("prepares wildcard upload-ingress CORS with only PUT and Content-Type", async () => {
+  test("admits conditional PUT uploads while preserving the ingress CORS boundary", async () => {
     const policy = JSON.parse(
       await Bun.file("infra/cloudflare/song-production/media-ingress-production-cors.json").text(),
     ) as { rules: readonly JsonRecord[] };
@@ -257,7 +257,7 @@ describe("narrow production v1 song infrastructure", () => {
         allowed: {
           origins: ["*"],
           methods: ["PUT"],
-          headers: ["Content-Type"],
+          headers: ["Content-Type", "If-None-Match"],
         },
         exposeHeaders: ["ETag"],
         maxAgeSeconds: 3600,
