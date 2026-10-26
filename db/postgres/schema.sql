@@ -37465,6 +37465,9 @@ DECLARE
   credited_total NUMERIC(78, 0);
   credited_count BIGINT;
 BEGIN
+  IF TG_RELID NOT IN ('song_reward_offer_legs'::regclass, 'song_reward_bundle_claim_legs'::regclass) THEN
+    RAISE EXCEPTION 'trusted asset bonus accounting relation required' USING ERRCODE='42501';
+  END IF;
   target_leg_id := NEW.leg_id;
   SELECT * INTO leg_record FROM song_reward_offer_legs WHERE leg_id = target_leg_id;
   IF leg_record.kind <> 'asset_bonus' THEN

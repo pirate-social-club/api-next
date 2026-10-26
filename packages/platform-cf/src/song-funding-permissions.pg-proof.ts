@@ -16,6 +16,7 @@ import { withDanceServingPermissionFixture } from "./dance-serving-permissions.p
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneRewardRunAuthority } from "./reward-operations-control.ts";
 import { makeControlPlaneSharedSongContextProducer } from "./shared-song-megapot-production.ts";
+import { proveExistingAccountingTriggerRefusal } from "./song-funding-accounting.pg-proof.ts";
 import { proveProspectiveSongFunding } from "./song-funding-prospective.pg-proof.ts";
 import { seedSongContributionFixture } from "./song-megapot-contribution.pg-fixture.ts";
 import {
@@ -72,7 +73,7 @@ export async function proveSongFundingPermissions(url: string) {
       await expect(
         runSongFundingPermissionsPreflight(http.url, "http", f.schema),
       ).rejects.toThrow();
-      await f.upgrade();
+      await proveExistingAccountingTriggerRefusal(jobs.url, f.upgrade);
       const expectedDefinitions = definitionBefore.map((row) => ({
         ...row,
         prosrc: row.prosrc
@@ -89,6 +90,13 @@ export async function proveSongFundingPermissions(url: string) {
       expect(await accountingSnapshot()).toEqual(
         accountingBefore.map((row) => ({
           ...row,
+          prosrc: row.prosrc.replace(
+            "BEGIN\n",
+            "BEGIN\n" +
+              "  IF TG_RELID NOT IN ('song_reward_offer_legs'::regclass, 'song_reward_bundle_claim_legs'::regclass) THEN\n" +
+              "    RAISE EXCEPTION 'trusted asset bonus accounting relation required' USING ERRCODE='42501';\n" +
+              "  END IF;\n",
+          ),
           prosecdef: true,
           proconfig: [`search_path=pg_catalog, ${f.schema}, pg_temp`],
         })),

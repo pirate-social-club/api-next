@@ -254,7 +254,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations.at(-1)).toMatchObject({
     version: "0319_song_funding_trusted_paths.sql",
-    checksum: "53c940247a2c86502ef996e773370c0b872ce816667c02ea3bcddb2fa66fb387",
+    checksum: "8990a79b8d54ab1a30bdc2d453e79cee74e34764d9d618a16c0a56ecd40053b5",
   });
 });
 

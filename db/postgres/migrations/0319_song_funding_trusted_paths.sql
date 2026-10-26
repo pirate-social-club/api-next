@@ -3,7 +3,8 @@
 -- replacements also lost their trusted paths; restore them without new grants,
 -- roles, policies, captured terms or flags. The deferred accounting invariant
 -- also needs owner-only read authority at COMMIT on PostgreSQL17. Keep its
--- body unchanged, pin its path and remove PUBLIC attachment authority.
+-- accounting checks, fence its two real relations before reading NEW, pin its
+-- path and remove PUBLIC attachment authority.
 CREATE OR REPLACE FUNCTION read_song_contribution_context_v2(i JSONB,persona TEXT) RETURNS JSONB
 LANGUAGE plpgsql STABLE SECURITY DEFINER AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2;
@@ -87,8 +88,36 @@ END $funding_paths$;
 
 -- Deferred constraint triggers on PostgreSQL17 run after the funding function
 -- has restored its caller. Check the unchanged invariant as its trusted owner,
--- without exposing raw accounting tables to either funding login. PUBLIC must
--- not be able to attach this definer to an attacker-controlled table.
+-- without exposing raw accounting tables to either funding login. Reject even
+-- a trigger attached before this migration before coercing untrusted NEW data.
+-- PUBLIC must not be able to attach it to another table after this migration.
+CREATE OR REPLACE FUNCTION validate_asset_bonus_leg_accounting() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  target_leg_id TEXT;
+  leg_record song_reward_offer_legs%ROWTYPE;
+  credited_total NUMERIC(78, 0);
+  credited_count BIGINT;
+BEGIN
+  IF TG_RELID NOT IN ('song_reward_offer_legs'::regclass, 'song_reward_bundle_claim_legs'::regclass) THEN
+    RAISE EXCEPTION 'trusted asset bonus accounting relation required' USING ERRCODE='42501';
+  END IF;
+  target_leg_id := NEW.leg_id;
+  SELECT * INTO leg_record FROM song_reward_offer_legs WHERE leg_id = target_leg_id;
+  IF leg_record.kind <> 'asset_bonus' THEN
+    RETURN NULL;
+  END IF;
+  SELECT COALESCE(sum(amount_atomic), 0), count(*)
+    INTO credited_total, credited_count
+    FROM song_reward_bundle_claim_legs
+   WHERE leg_id = target_leg_id AND state = 'credited';
+  IF leg_record.fulfilled_atomic <> credited_total
+     OR credited_count > leg_record.max_claims THEN
+    RAISE EXCEPTION 'asset bonus leg accounting is not exact';
+  END IF;
+  RETURN NULL;
+END
+$$;
 DO $funding_accounting$
 DECLARE trusted TEXT:=current_schema();
 BEGIN

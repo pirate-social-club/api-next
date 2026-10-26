@@ -26,8 +26,10 @@ The context-reader body change is limited to the persona alias. Its owner and
 ACL, and the locked admission function's body, owner and ACL, are preserved.
 The existing deferred asset-bonus accounting trigger also needs owner read
 authority when PostgreSQL 17 runs it at COMMIT. Migration 319 preserves that
-invariant's body, owner and private ACL, makes it a trusted-path definer, and
-revokes PUBLIC execution so untrusted callers cannot attach it to another table.
+invariant's accounting checks, owner and private ACL and makes it a trusted-path
+definer. It checks the exact two trusted relation identities before reading NEW,
+so a trigger attached before migration cannot supply attacker-defined coercion.
+It also revokes PUBLIC execution to prevent new untrusted attachments.
 Neither funding login receives direct execution or raw accounting-table access.
 Previously applied migration files and their hashes remain unchanged.
 
