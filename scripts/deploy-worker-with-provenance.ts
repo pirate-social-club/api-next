@@ -9,6 +9,7 @@ import {
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import { parseJsonc } from "./secret-drift-audit.ts";
 import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
+import { prepareSongFundingBindingAdmission } from "./song-funding-binding-admission.ts";
 import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 import {
   type PrepareStagingBindingGuard,
@@ -368,6 +369,7 @@ export async function deployWorkerWithProvenance(
   stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
   telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
   servingFunctionGuard: typeof withServingFunctionPrivilegesDeployment = withServingFunctionPrivilegesDeployment,
+  fundingBindingGuard: typeof prepareSongFundingBindingAdmission = prepareSongFundingBindingAdmission,
 ): Promise<WorkerDeploymentReceipt> {
   const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
@@ -419,6 +421,16 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
+  const fundingGuard = await fundingBindingGuard(
+    repositoryRoot,
+    configPath,
+    input.environment,
+    sourceSha,
+  );
+  if (fundingGuard)
+    writeDiagnostic(
+      `${JSON.stringify({ song_funding_binding_admission: fundingGuard.receipt })}\n`,
+    );
   const disabledRewards = bindingGuard?.disabledRewards;
   assertStagingRewardsPreservation(configPath, input.environment, disabledRewards);
   const deployed = await servingFunctionGuard(repositoryRoot, configPath, () =>
@@ -438,6 +450,7 @@ export async function deployWorkerWithProvenance(
               if (current.sourceSha !== sourceSha)
                 throw Error("deployment source changed before upload");
             }
+            await fundingGuard?.recheck();
             if (signal?.aborted)
               throw Error("reward shutdown control connection lost before deploy");
             return runner(
@@ -486,6 +499,12 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "post-deploy version listing"),
   );
   const version = findDeployedVersion(before, after, message);
+  if (fundingGuard) {
+    const readback = await fundingGuard.readback();
+    if (!readback.evidence.some((row) => row.version_id === version.id))
+      throw Error("New funding Worker version is not serving");
+    writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);
+  }
   if (guardedHnsStagingHttp) {
     const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
     if (serving.exitCode !== 0) {

@@ -26,6 +26,7 @@ import {
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "@pirate/platform-cf/megapot-v2-signer";
+import type { HyperdriveConnection, PostgresClientFactory } from "@pirate/platform-cf/postgres";
 import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardPayoutCoordinator } from "@pirate/platform-cf/reward-payout-coordinator";
 import { makeControlPlaneRewardPayoutStore } from "@pirate/platform-cf/reward-payout-repository";
@@ -34,11 +35,29 @@ import { makeControlPlaneRewardRefundStore } from "@pirate/platform-cf/reward-re
 import { Effect, type Layer } from "effect";
 import { makeControlPlaneSharedSongContextProducer } from "../../../packages/platform-cf/src/shared-song-megapot-production.ts";
 import {
+  makeSongFundingConnection,
+  type SongFundingLane,
+} from "../../../packages/platform-cf/src/song-funding-connection.ts";
+import {
   makeControlPlaneRewardFundingObserver,
   makeControlPlaneSongFundingRecoveryStore,
 } from "../../../packages/platform-cf/src/song-megapot-contribution-repository.ts";
 import { makeSongFundingRecoveryRouting } from "./megapot-rewards-routing.ts";
 import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.ts";
+
+export function makeBoundedSongFundingConnection(
+  binding: unknown,
+  general: HyperdriveConnection,
+  lane: SongFundingLane,
+  clientFactory?: PostgresClientFactory,
+) {
+  return makeSongFundingConnection(binding, general, lane, {
+    statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+    connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+    closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+    ...(clientFactory === undefined ? {} : { clientFactory }),
+  });
+}
 
 /** Real V2 read-only-provider composition. The serving entrypoint selects this
  * only when Rewards is enabled; no custody signing key enters this runtime. */
@@ -96,6 +115,9 @@ export function makeSongFundingRecoveryRuntime(input: {
 
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
 import {
+  MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
   MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
   observeMegapotDrawingForCycle,
 } from "./megapot-rewards-cycle.ts";
