@@ -396,12 +396,15 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
               ],
             );
           };
-          await finish(cleanups[0], true);
-          await finish(cleanups[1], true);
-          await finish(cleanups[2], false);
+          const [firstCleanup, secondCleanup, thirdCleanup] = cleanups;
+          if (!firstCleanup || !secondCleanup || !thirdCleanup)
+            throw new Error("Expected three owned cleanup targets");
+          await finish(firstCleanup, true);
+          await finish(secondCleanup, true);
+          await finish(thirdCleanup, false);
           await admin.query("SELECT record_moderated_dance_maintenance_v1()");
           expect(await state()).toEqual({ state: "claimed", completed_at: null });
-          await finish(cleanups[2], true);
+          await finish(thirdCleanup, true);
           await admin.query("SELECT record_moderated_dance_maintenance_v1()");
           if (claimedProvider) {
             expect(await state()).toEqual({ state: "claimed", completed_at: null });
