@@ -52,6 +52,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/reward-operations-control.pg.test.ts",
   "scripts/megapot-golden-adopted-pool.pg.test.ts",
   "scripts/register-safe-pool-custody.pg.test.ts",
+  "scripts/provision-shared-song-pot.pg.test.ts",
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
   "apps/http-worker/src/reward-safe-pilot-routes.pg.test.ts",
