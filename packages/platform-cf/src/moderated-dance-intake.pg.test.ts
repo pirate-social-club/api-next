@@ -6,6 +6,7 @@ import {
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
 import { seedModeratedDanceIntake as seed } from "./moderated-dance-intake.pg-fixture.ts";
+import { moderatedDanceReplayDigests } from "./moderated-dance-normalization.ts";
 
 // These native cases use the maintained baseline and fictional bootstrap inputs.
 // They make no provider request, upload or real-recording acceptance claim.
@@ -221,7 +222,7 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
         ),
       ).rejects.toMatchObject({ reason: "invalid_request" });
     }));
-  test("known-ID unknown probe observes processing/completion without restoring a START grant or charging work twice", async () =>
+  test("known-ID unknown probe recovers once and persists the complete normalized body without restoring provider grants", async () =>
     withFixture(async (f, admin) => {
       await f.ready();
       const first = await Effect.runPromise(f.store.command(f.create)),
@@ -411,5 +412,100 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
           )
         ).rows[0],
       ).toEqual(before);
+      // Exercise the real persistence function after the real intake/probe
+      // transitions. Storage/provider inputs remain explicitly fictional.
+      expect(
+        (
+          await admin.query("SELECT claim_moderated_dance_normalization_v1($1,$2) packet", [
+            uploadId,
+            work.token,
+          ])
+        ).rows[0]?.packet,
+      ).toBe(true);
+      await admin.query("SELECT attach_moderated_dance_provider_v1($1,$2,$3,$4)", [
+        uploadId,
+        work.token,
+        "original-normalization-job",
+        work.providerTag,
+      ]);
+      const frames = [0, 1, 2].map((index) => ({
+        index,
+        sha256: String(index + 6).repeat(64),
+        timestampMs: [
+          0,
+          Math.floor(session.body_start_ms / 2),
+          Math.floor((session.body_start_ms + session.body_end_ms) / 2),
+        ][index],
+        identity: {
+          key: `moderated-dance/derived/${uploadId}/frame-${index}.jpg`,
+          version: "fixture-v1",
+          etag: "fixture-etag",
+          size: 4,
+        },
+      }));
+      const replay = await moderatedDanceReplayDigests({
+        scope: f.facts.profile.replayScope,
+        sourceSha256: "a".repeat(64),
+        frames: Array.from(
+          {
+            length: Math.ceil(
+              ((session.body_end_ms - session.body_start_ms) * f.facts.profile.normalizationFps) /
+                1000,
+            ),
+          },
+          () => "c".repeat(64),
+        ),
+        keys: f.replayKeys,
+      });
+      const normalize = (selectedFrames: unknown) =>
+        admin.query(
+          "SELECT persist_moderated_dance_normalization_v1($1,$2,$3::jsonb,$4::jsonb) packet",
+          [uploadId, work.token, JSON.stringify(selectedFrames), JSON.stringify(replay.claims)],
+        );
+      // This raw source deliberately matches the seeded public reference:
+      // persistence must finish while retaining the blocked integrity result.
+      expect((await normalize(frames)).rows[0]?.packet).toEqual({ integrity: "blocked" });
+      expect(
+        (
+          await admin.query(
+            "SELECT frame_index::INTEGER,timestamp_ms::INTEGER FROM dance_moderated_frame_artifacts_v1 WHERE upload_id=$1 ORDER BY frame_index",
+            [uploadId],
+          )
+        ).rows,
+      ).toEqual(
+        frames.map((frame) => ({ frame_index: frame.index, timestamp_ms: frame.timestampMs })),
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT state,normalized_digest,normalization_hash FROM dance_moderated_uploads_v1 WHERE upload_id=$1",
+            [uploadId],
+          )
+        ).rows[0],
+      ).toEqual({
+        state: "sealed",
+        normalized_digest: replay.claims.find((c) => c.kind === "body")?.digest,
+        normalization_hash: session.normalization_hash,
+      });
+      await expect(normalize([frames[0], frames[0], frames[2]])).rejects.toMatchObject({
+        code: "DRV05",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT proconfig FROM pg_proc WHERE oid='persist_moderated_dance_normalization_v1(text,text,jsonb,jsonb)'::regprocedure",
+          )
+        ).rows[0]?.proconfig,
+      ).toContain(
+        `search_path=${(await admin.query("SELECT current_schema() schema")).rows[0]?.schema}, pg_catalog, pg_temp`,
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::INTEGER n FROM dance_moderated_provider_calls_v1 WHERE upload_id=$1",
+            [uploadId],
+          )
+        ).rows[0]?.n,
+      ).toBe(0);
     }));
 });
