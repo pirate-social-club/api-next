@@ -12,7 +12,8 @@ const unobserved = (key: string) => ({ key, version: null, etag: null, size: nul
 
 function fixture(kind: "ingress" | "original" | "derived" = "ingress") {
   const objects = new Map<string, Head>();
-  const puts: string[] = [],
+  const heads: string[] = [],
+    puts: string[] = [],
     outcomes: unknown[] = [],
     queries: string[] = [];
   let revision = 0,
@@ -30,7 +31,10 @@ function fixture(kind: "ingress" | "original" | "derived" = "ingress") {
         }
       : unobserved(kind === "ingress" ? ingressKey : `moderated-dance/originals/${upload}/source`);
   const bucket: Bucket = {
-    head: async (key) => objects.get(key) ?? null,
+    head: async (key) => {
+      heads.push(key);
+      return objects.get(key) ?? null;
+    },
     put: async (key, value, options) => {
       puts.push(key);
       if (raceWriter) {
@@ -109,6 +113,7 @@ function fixture(kind: "ingress" | "original" | "derived" = "ingress") {
       randomId: () => token,
     }),
     objects,
+    heads,
     puts,
     outcomes,
     queries,
@@ -124,6 +129,22 @@ function fixture(kind: "ingress" | "original" | "derived" = "ingress") {
       raceWriter = true;
     },
   };
+}
+
+function normalizedDerivedFixture() {
+  const f = fixture("derived");
+  const frames = [0, 1, 2].map((index) => {
+    const identity = {
+      key: `moderated-dance/derived/${upload}/frame-${index}.jpg`,
+      version: `source-v${index}`,
+      etag: `source-etag-${index}`,
+      size: 100 + index,
+    };
+    f.objects.set(identity.key, identity);
+    return { index, sha256: "a".repeat(64), timestampMs: index * 1000, identity };
+  });
+  Object.assign(f.identity, { frames });
+  return { ...f, frames };
 }
 
 describe("actual private maintenance with an offline driver and conditional object store", () => {
@@ -177,6 +198,57 @@ describe("actual private maintenance with an offline driver and conditional obje
       expect(f.puts).toHaveLength(kind === "derived" ? 3 : 1);
       expect(f.outcomes).toEqual([expect.objectContaining({ outcome: "owned_payload_fenced" })]);
     }
+  });
+  test("fences all three persisted normalized frames with the producer's complete metadata", async () => {
+    const f = normalizedDerivedFixture();
+    await f.processor.run();
+    expect(f.puts).toEqual(f.frames.map((frame) => frame.identity.key));
+    expect(f.outcomes).toEqual([expect.objectContaining({ outcome: "owned_payload_fenced" })]);
+    for (const frame of f.frames)
+      expect(f.objects.get(frame.identity.key)?.customMetadata?.privateDanceErasureFence).toBe(
+        token,
+      );
+    expect(f.queries).toContain("SELECT record_moderated_dance_maintenance_v1() AS packet");
+  });
+  test("normalized frames never regain a write grant after a lost cleanup claim COMMIT", async () => {
+    const f = normalizedDerivedFixture();
+    f.loseClaimCommit();
+    await expect(f.processor.run()).rejects.toMatchObject({
+      _tag: "ControlPlaneTransactionOutcomeUnknown",
+      phase: "commit",
+    });
+    expect(f.heads).toHaveLength(0);
+    expect(f.puts).toHaveLength(0);
+    await f.processor.run();
+    expect(f.heads).toHaveLength(3);
+    expect(f.puts).toHaveLength(0);
+    expect(f.outcomes).toEqual([expect.objectContaining({ outcome: "unknown" })]);
+  });
+  test("fences a mixed set of normalized proofs and preregistered frame identities", async () => {
+    const f = normalizedDerivedFixture();
+    Object.assign(f.identity, {
+      frames: f.frames.map((frame) =>
+        frame.index === 1 ? { identity: unobserved(frame.identity.key) } : frame,
+      ),
+    });
+    await f.processor.run();
+    expect(f.puts).toHaveLength(3);
+    expect(f.outcomes).toEqual([expect.objectContaining({ outcome: "owned_payload_fenced" })]);
+  });
+  test.each([
+    { index: "0" },
+    { sha256: "invalid" },
+    { timestampMs: -1 },
+    { unexpected: "refused" },
+  ])("refuses malformed or undeclared normalized metadata before storage: %j", async (change) => {
+    const f = normalizedDerivedFixture(),
+      first = f.frames[0];
+    if (!first) throw new Error("normalized fixture frame missing");
+    Object.assign(first, change);
+    await expect(f.processor.run()).rejects.toMatchObject({ name: "SchemaError" });
+    expect(f.heads).toHaveLength(0);
+    expect(f.puts).toHaveLength(0);
+    expect(f.outcomes).toHaveLength(0);
   });
   test("scope substitution cannot write or claim completion", async () => {
     const f = fixture();
