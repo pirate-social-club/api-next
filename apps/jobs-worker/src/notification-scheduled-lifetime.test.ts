@@ -131,6 +131,7 @@ for (const enabled of [false, true])
     };
     const env = {
       CONTROL_PLANE: { connectionString: "unused-test-transport" },
+      SONG_FUNDING_JOBS: { connectionString: "unused-funding-test-transport" },
       CRON_LOCK: { getByName: () => stub },
       CF_VERSION_METADATA: { id: "scheduled-fixture", tag: "", timestamp: "2026-10-16T00:00:00Z" },
       API_NEXT_ENV: "development",

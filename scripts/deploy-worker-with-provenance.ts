@@ -500,7 +500,7 @@ export async function deployWorkerWithProvenance(
   );
   const version = findDeployedVersion(before, after, message);
   if (fundingGuard) {
-    const readback = await fundingGuard.readback();
+    const readback = await fundingGuard.readback(version.id);
     if (!readback.evidence.some((row) => row.version_id === version.id))
       throw Error("New funding Worker version is not serving");
     writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);

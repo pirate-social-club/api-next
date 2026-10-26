@@ -1,119 +1,11 @@
 import { expect, test } from "bun:test";
 import {
-  assertFundingOrigin,
-  prepareSongFundingBindingAdmission,
-} from "./song-funding-binding-admission.ts";
+  makeSongFundingAdmissionFixture as fixture,
+  funding,
+} from "./song-funding-binding-admission.fixture.ts";
+import { assertFundingOrigin } from "./song-funding-binding-admission.ts";
 import { songFundingRequirements } from "./song-funding-permission-contract.ts";
 import { assertSongFundingPrivileges } from "./song-funding-permissions-preflight.ts";
-import type { CandidateBindings } from "./worker-binding-drift.ts";
-
-const general = {
-  scheme: "postgres",
-  host: "branch.invalid",
-  port: 5432,
-  database: "postgres",
-  user: "dance",
-};
-const funding = { ...general, user: "funding" };
-function fixture(purpose: "http" | "jobs" = "http") {
-  let cacheDisabled = true;
-  let alias = false,
-    drift = false,
-    serving = "old";
-  const checked: string[] = [];
-  const candidate: { -readonly [K in keyof CandidateBindings]: CandidateBindings[K] } = {
-    worker_name: "fixture",
-    required_secrets: [],
-    runtime: {},
-    bindings: [
-      { name: "CONTROL_PLANE", type: "hyperdrive", id: "general" },
-      {
-        name: purpose === "http" ? "SONG_FUNDING_COMMANDS" : "SONG_FUNDING_JOBS",
-        type: "hyperdrive",
-        id: "funding",
-      },
-      { name: "MEGAPOT_REWARDS_ENABLED", type: "plain_text", text: "false" },
-      { name: "SAFE_POOL_PILOT_ENABLED", type: "plain_text", text: "true" },
-    ],
-  };
-  const dependencies = {
-    candidate: async () => candidate,
-    account: async () => "08a4c22cf52e2ecae883e36f80a33f4a",
-    api: async (path: string): Promise<unknown> => {
-      if (path.endsWith("/deployments"))
-        return {
-          deployments: [
-            {
-              created_on: "2026-10-26T10:00:00Z",
-              versions: [{ version_id: drift ? crypto.randomUUID() : serving, percentage: 100 }],
-            },
-          ],
-        };
-      if (path.includes("/versions/"))
-        return {
-          id: serving,
-          resources: {
-            bindings:
-              serving === "old"
-                ? candidate.bindings.filter(
-                    (b) =>
-                      b.name !==
-                      (purpose === "http" ? "SONG_FUNDING_COMMANDS" : "SONG_FUNDING_JOBS"),
-                  )
-                : candidate.bindings,
-          },
-        };
-      return {
-        id: path.split("/").at(-1),
-        caching: { disabled: cacheDisabled },
-        origin: path.endsWith("/general") || alias ? general : funding,
-      };
-    },
-    identity: async (url: string) => {
-      const user = new URL(url).username;
-      return { role: user, session: user, database: "postgres" };
-    },
-    dancePermissions: async (url: string) => {
-      checked.push("dance");
-      return new URL(url).username;
-    },
-    fundingPermissions: async (url: string) => {
-      checked.push("funding");
-      return new URL(url).username;
-    },
-    environment: {
-      CONTROL_PLANE_POSTGRES_RUNTIME_URL: "postgres://dance@branch.invalid/postgres",
-      SONG_FUNDING_JOBS_POSTGRES_URL: "postgres://funding@branch.invalid/postgres",
-      SONG_FUNDING_COMMANDS_POSTGRES_URL: "postgres://funding@branch.invalid/postgres",
-    },
-  };
-  const run = () =>
-    prepareSongFundingBindingAdmission(
-      process.cwd(),
-      purpose === "http" ? "apps/http-worker/wrangler.jsonc" : "apps/jobs-worker/wrangler.jsonc",
-      "staging",
-      "a".repeat(40),
-      dependencies,
-    );
-  return {
-    run,
-    candidate,
-    dependencies,
-    checked,
-    cache: () => {
-      cacheDisabled = false;
-    },
-    alias: () => {
-      alias = true;
-    },
-    drift: () => {
-      drift = true;
-    },
-    deploy: () => {
-      serving = "new";
-    },
-  };
-}
 
 test("candidate and every serving version are tied to distinct actual origins, permission logins and traffic fences", async () => {
   const f = fixture();
@@ -123,7 +15,7 @@ test("candidate and every serving version are tied to distinct actual origins, p
   expect(f.checked).toEqual(["dance", "funding", "dance"]);
   await guard.recheck();
   f.deploy();
-  const after = await guard.readback();
+  const after = await guard.readback("new");
   expect(after.evidence.filter((r) => r.version_id === "new")).toHaveLength(2);
   await expect(guard.recheck()).rejects.toThrow("changed before upload");
 });
@@ -178,6 +70,53 @@ test("binding evidence cannot substitute a different database, host, user or ses
   expect(() => assertFundingOrigin(url, funding, { ...identity, session: "admin" })).toThrow();
 });
 
+test("managed PostgreSQL binds the full external branch username to its actual SQL role", async () => {
+  const host = "aws-fixture.pg.psdb.cloud",
+    user = "pscale_api_funding.branch1";
+  const origin = { ...funding, host, user };
+  assertFundingOrigin(`postgres://${user}@${host}/postgres`, origin, {
+    role: "pscale_api_funding",
+    session: "pscale_api_funding",
+    database: "postgres",
+  });
+  expect(() =>
+    assertFundingOrigin(`postgres://pscale_api_funding.branch2@${host}/postgres`, origin, {
+      role: "pscale_api_funding",
+      session: "pscale_api_funding",
+      database: "postgres",
+    }),
+  ).toThrow();
+  for (const mismatch of [false, true]) {
+    const f = fixture(),
+      api = f.dependencies.api;
+    f.dependencies.api = async (path: string) => {
+      const value = await api(path);
+      if (!path.includes("/hyperdrive/configs/")) return value;
+      const row = value as { id: string; caching: { disabled: boolean } };
+      const baseRole = path.endsWith("/general") ? "pscale_api_dance" : "pscale_api_funding";
+      const branch = path.endsWith("/funding") && mismatch ? "branch2" : "branch1";
+      return { ...row, origin: { ...funding, host, user: `${baseRole}.${branch}` } };
+    };
+    const role = (url: string) => new URL(url).username.split(".")[0] ?? "";
+    f.dependencies.identity = async (url) => ({
+      role: role(url),
+      session: role(url),
+      database: "postgres",
+    });
+    f.dependencies.dancePermissions = async (url) => role(url);
+    f.dependencies.fundingPermissions = async (url) => role(url);
+    f.dependencies.environment.CONTROL_PLANE_POSTGRES_RUNTIME_URL = `postgres://pscale_api_dance.branch1@${host}/postgres`;
+    f.dependencies.environment.SONG_FUNDING_COMMANDS_POSTGRES_URL = `postgres://pscale_api_funding.${mismatch ? "branch2" : "branch1"}@${host}/postgres`;
+    if (mismatch) await expect(f.run()).rejects.toThrow("same database");
+    else
+      expect(
+        (await f.run())?.receipt.evidence
+          .filter((r) => r.binding === "SONG_FUNDING_COMMANDS")
+          .map((r) => r.role),
+      ).toEqual(["pscale_api_funding"]);
+  }
+});
+
 test("purpose contract refuses elevated, inherited, public, raw or wrong-purpose authority", () => {
   for (const purpose of ["http", "jobs"] as const) {
     const rows = songFundingRequirements(purpose).map((r) => ({
@@ -225,4 +164,28 @@ test("Jobs admission binds the Jobs capability rather than the HTTP command cred
     guard = await f.run();
   expect(guard?.receipt.evidence.filter((r) => r.binding === "SONG_FUNDING_JOBS")).toHaveLength(1);
   expect(guard?.receipt.evidence.some((r) => r.binding === "SONG_FUNDING_COMMANDS")).toBe(false);
+});
+
+test("new serving versions must retain exact admitted funding/general IDs and lane posture", async () => {
+  for (const fault of ["missing", "funding_id", "general_id", "lane", "foreign_legacy"] as const) {
+    const f = fixture(),
+      guard = await f.run();
+    if (!guard) throw Error("Funding guard required");
+    f.deploy();
+    const changed = f.candidate.bindings.flatMap((b) => {
+      if (fault === "missing" && b.name === "SONG_FUNDING_COMMANDS") return [];
+      if (fault === "funding_id" && b.name === "SONG_FUNDING_COMMANDS")
+        return [{ ...b, id: "unreviewed" }];
+      if (fault === "general_id" && b.name === "CONTROL_PLANE") return [{ ...b, id: "unreviewed" }];
+      if (fault === "lane" && b.name === "SAFE_POOL_PILOT_ENABLED")
+        return [{ ...b, text: "false" }];
+      return [b];
+    });
+    f.deployed(
+      fault === "foreign_legacy"
+        ? changed.filter((b) => b.name !== "SONG_FUNDING_COMMANDS")
+        : changed,
+    );
+    await expect(guard.readback("new")).rejects.toThrow();
+  }
 });

@@ -5,6 +5,7 @@
     "scripts/song-funding-permissions-preflight.ts",
     "scripts/song-funding-binding-admission.ts",
     "scripts/song-funding-binding-admission.test.ts",
+    "scripts/song-funding-deployment.test.ts",
     "scripts/dance-serving-grant-plan.ts",
     "scripts/dance-serving-permissions.test.ts",
     "scripts/notifications-video-managed-runner.ts",

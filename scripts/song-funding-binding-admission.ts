@@ -60,19 +60,29 @@ async function databaseIdentity(url: string) {
   }
 }
 
+/** PlanetScale authenticates role-id.branch-id, while SQL exposes role-id.
+ * https://planetscale.com/blog/one-postgres-cluster-many-apps */
+function databasePrincipal(origin: Origin) {
+  if (!origin.host.endsWith(".pg.psdb.cloud")) return { role: origin.user, branch: null };
+  const match = /^(pscale_api_[a-z0-9]+)\.([a-z0-9]+)$/.exec(origin.user);
+  if (!match?.[1] || !match[2]) throw Error("Managed PostgreSQL principal is not branch-bound");
+  return { role: match[1], branch: match[2] };
+}
+
 export function assertFundingOrigin(
   url: string,
   origin: Origin,
   identity: Record<string, unknown>,
 ) {
   const parsed = new URL(url);
+  const principal = databasePrincipal(origin);
   if (
     parsed.hostname !== origin.host ||
     Number(parsed.port || 5432) !== origin.port ||
     decodeURIComponent(parsed.pathname.slice(1)) !== origin.database ||
     decodeURIComponent(parsed.username) !== origin.user ||
-    identity.role !== origin.user ||
-    identity.session !== origin.user ||
+    identity.role !== principal.role ||
+    identity.session !== principal.role ||
     identity.database !== origin.database
   )
     throw Error("Database permission evidence does not match the actual Hyperdrive origin");
@@ -134,7 +144,23 @@ export async function prepareSongFundingBindingAdmission(
     throw Error("Funding binding admission requires the target account");
   const base = "";
   const worker = `${base}/workers/scripts/${encodeURIComponent(candidate.worker_name)}`;
-  const collect = async () => {
+  const fundingProjection = (set: CandidateBindings["bindings"]) => {
+    const keys = new Set([
+      "CONTROL_PLANE",
+      name,
+      "API_NEXT_ENV",
+      "MEGAPOT_REWARDS_ENABLED",
+      "MEGAPOT_ATTESTATION_ID",
+      "SAFE_POOL_PILOT_ENABLED",
+      "SAFE_POOL_PRODUCTION_ENABLED",
+      "SAFE_POOL_ATTESTATION_ID",
+    ]);
+    return set
+      .filter((binding) => keys.has(binding.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+  const admittedProjection = digest(fundingProjection(candidate.bindings));
+  const collect = async (expectedVersion?: string, legacyVersions?: ReadonlySet<string>) => {
     const current = await dependencies.candidate(root, configPath, environment);
     if ((await dependencies.account(root, configPath, environment)) !== account)
       throw Error("Funding target account changed");
@@ -158,6 +184,13 @@ export async function prepareSongFundingBindingAdmission(
         ...allocation,
         bindings: bindings(object(version.resources, "version resources").bindings),
       });
+    }
+    if (expectedVersion !== undefined) {
+      const deployed = inventories.find((row) => row.version_id === expectedVersion);
+      if (!deployed || digest(fundingProjection(deployed.bindings)) !== admittedProjection)
+        throw Error(
+          "New funding Worker bindings or lane posture differ from the admitted candidate",
+        );
     }
     const origins = new Map<string, Origin>();
     const resolveOrigin = async (set: CandidateBindings["bindings"], key: string) => {
@@ -186,15 +219,22 @@ export async function prepareSongFundingBindingAdmission(
       // An older serving version remains on its unchanged Dance contract. The
       // new candidate may add capability, but never repoint its general role.
       const keys = hasFunding ? ["CONTROL_PLANE", name] : ["CONTROL_PLANE"];
-      if (!hasFunding && inventory.version_id.startsWith("candidate:"))
-        throw Error("Dedicated funding binding missing");
+      if (
+        !hasFunding &&
+        (inventory.version_id.startsWith("candidate:") ||
+          inventory.version_id === expectedVersion ||
+          (legacyVersions !== undefined && !legacyVersions.has(inventory.version_id)))
+      )
+        throw Error("Dedicated funding binding missing from a new version");
       for (const key of keys) {
         const resolved =
           key === "CONTROL_PLANE" ? general : await resolveOrigin(inventory.bindings, key);
         if (
           key !== "CONTROL_PLANE" &&
           (resolved.id === general.id ||
-            resolved.origin.user === general.origin.user ||
+            databasePrincipal(resolved.origin).role === databasePrincipal(general.origin).role ||
+            databasePrincipal(resolved.origin).branch !==
+              databasePrincipal(general.origin).branch ||
             resolved.origin.host !== general.origin.host ||
             resolved.origin.database !== general.origin.database ||
             resolved.origin.port !== general.origin.port)
@@ -210,13 +250,15 @@ export async function prepareSongFundingBindingAdmission(
           key === "CONTROL_PLANE"
             ? await dependencies.dancePermissions(url, configPath as DanceServingConsumer)
             : await dependencies.fundingPermissions(url, purpose);
-        if (role !== resolved.origin.user) throw Error("Permission principal changed");
+        if (role !== databasePrincipal(resolved.origin).role)
+          throw Error("Permission principal changed");
         evidence.push({
           version_id: inventory.version_id,
           percentage: inventory.percentage,
           binding: key,
           hyperdrive_id: resolved.id,
           origin: resolved.origin,
+          branch_id: databasePrincipal(resolved.origin).branch,
           role,
         });
       }
@@ -232,12 +274,15 @@ export async function prepareSongFundingBindingAdmission(
     };
   };
   const receipt = await collect();
+  const legacyVersions = new Set(
+    receipt.evidence.map((row) => row.version_id).filter((id) => !id.startsWith("candidate:")),
+  );
   return {
     receipt,
     recheck: async () => {
-      if (digest(await collect()) !== digest(receipt))
+      if (digest(await collect(undefined, legacyVersions)) !== digest(receipt))
         throw Error("Funding binding admission changed before upload");
     },
-    readback: collect,
+    readback: (expectedVersion: string) => collect(expectedVersion, legacyVersions),
   };
 }

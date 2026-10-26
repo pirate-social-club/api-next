@@ -59,9 +59,13 @@ rechecks them immediately before upload, and reads them back afterward. It
 reads the effective candidate, every traffic-bearing version and the actual
 Hyperdrive origins. Each checked SQL connection must match its binding's host,
 port, database and current/session principal. An unrelated passing database URL
-cannot qualify a binding. A changed candidate or traffic allocation refuses
-admission. An older version without the new binding still has to pass its
-unchanged Dance contract.
+cannot qualify a binding. For managed PlanetScale PostgreSQL, the external
+role-and-branch username must match exactly; SQL must expose its documented
+base role, and both connections must name the same branch. A changed candidate
+or traffic allocation refuses admission. An older version without the new binding still has to pass its
+unchanged Dance contract and must have been present before deployment. The new
+version must match the admitted candidate's general/funding binding IDs and
+effective lane, environment, production switch and attestation posture.
 
 The deployment environment supplies `CONTROL_PLANE_POSTGRES_RUNTIME_URL` and
 the corresponding `SONG_FUNDING_COMMANDS_POSTGRES_URL` or
