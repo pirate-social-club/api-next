@@ -15,6 +15,7 @@ import { runDanceServingPermissionsPreflight } from "../../../scripts/dance-serv
 import { withDanceServingPermissionFixture } from "./dance-serving-permissions.pg-fixture.ts";
 import { makeControlPlaneNotificationDeliveryStore } from "./notification-delivery-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { proveSongFundingPermissions } from "./song-funding-permissions.pg-proof.ts";
 import { makeVideoSourceGrantResolver } from "./video-source-grant-resolver.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -24,6 +25,11 @@ const suite = url ? describe : describe.skip;
 setDefaultTimeout(30000);
 
 suite("native source-bound Dance serving permission plan", () => {
+  test("distinct Funding purposes coexist with all four unchanged Dance identities through318to319", async () => {
+    if (!url) throw Error("Disposable native target required");
+    await proveSongFundingPermissions(url);
+  }, 120_000);
+
   test("actual migration ACLs and purpose bindings admit all four consumers without raw data or erasure authority", async () => {
     if (!url) throw Error("Disposable native target required");
     await withDanceServingPermissionFixture(url, async (f) => {

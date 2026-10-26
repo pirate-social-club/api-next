@@ -25131,6 +25131,7 @@ END $$;
 
 CREATE FUNCTION lock_song_contribution_context_v2(i jsonb, h text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2; p reward_funding_profiles_v2;
   w reward_funding_schedule_witnesses_v2; counters JSONB; work JSONB; leg TEXT; principal JSONB; paused BOOLEAN;
@@ -25168,6 +25169,18 @@ BEGIN
     'reserved',coalesce((SELECT sum(amount_atomic) FROM reward_contribution_reservations_v2 WHERE pool_leg_id=leg AND disposition='held'),0)::TEXT) INTO principal;
   RETURN jsonb_build_object('snapshot',to_jsonb(snap),'slot',to_jsonb(slot),'profile',to_jsonb(p),'witness',to_jsonb(w),'counts',counters,'work',work,'principal',principal);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='lock_song_contribution_context_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, h text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION lock_song_owner_policy_head_v1(input_community_id text, input_post_id text) RETURNS TABLE(owner_account_id text, audio_revision bigint, current_policy_revision bigint, current_policy_hash text)
     LANGUAGE sql STRICT SECURITY DEFINER
@@ -26513,7 +26526,7 @@ BEGIN
  OR work.observation_token IS DISTINCT FROM p_token OR work.state NOT IN('claimed','unknown') OR work.provider_job_id IS NULL
  OR work.provider_deadline<=now_at OR jsonb_array_length(p_frames) IS DISTINCT FROM 3
  OR jsonb_array_length(p_claims) IS DISTINCT FROM 2*jsonb_array_length(profile->'replayCompatibleEpochs')
- OR (SELECT count(DISTINCT frame->>'index') FROM jsonb_array_elements(p_frames) frame)<>3 THEN RAISE EXCEPTION 'normalization authority unavailable' USING ERRCODE='DRV05'; END IF;
+ OR (SELECT count(DISTINCT sample.value->>'index') FROM jsonb_array_elements(p_frames) AS sample(value))<>3 THEN RAISE EXCEPTION 'normalization authority unavailable' USING ERRCODE='DRV05'; END IF;
  IF (SELECT count(DISTINCT (c->>'epoch',c->>'kind')) FROM jsonb_array_elements(p_claims) c)<>jsonb_array_length(p_claims)
  OR EXISTS(SELECT 1 FROM jsonb_array_elements(p_claims) c WHERE (jsonb_typeof(c->'digest')='string' AND c->>'digest'~'^[a-f0-9]{64}$'
  AND c->>'kind' IN('raw','body') AND profile->'replayCompatibleEpochs' ? (c->>'epoch')) IS NOT TRUE) THEN
@@ -31334,16 +31347,17 @@ $baseline_function_path$;
 
 CREATE FUNCTION read_song_contribution_context_v2(i jsonb, persona text) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2;
   p reward_funding_profiles_v2; w reward_funding_schedule_witnesses_v2;
   refusal TEXT; funded NUMERIC; reserved NUMERIC; paused BOOLEAN; owned BOOLEAN; fallback_target JSONB; fallback_audio BIGINT;
 BEGIN
   IF NOT can_account_access_activity_song(i->>'accountId',i->>'communityId',i->>'postId') OR NOT EXISTS(
-    SELECT 1 FROM personas p JOIN persona_community_bindings b USING(persona_id,account_id)
-      JOIN users u ON u.user_id=p.account_id AND u.status='active'
-    WHERE p.account_id=i->>'accountId' AND p.persona_id=persona AND b.community_id=i->>'communityId'
-      AND p.status IN('active','pending_wallet')) THEN
+    SELECT 1 FROM personas owned_persona JOIN persona_community_bindings b USING(persona_id,account_id)
+      JOIN users u ON u.user_id=owned_persona.account_id AND u.status='active'
+    WHERE owned_persona.account_id=i->>'accountId' AND owned_persona.persona_id=persona AND b.community_id=i->>'communityId'
+      AND owned_persona.status IN('active','pending_wallet')) THEN
     RAISE EXCEPTION 'private owned funding context required' USING ERRCODE='PCV02'; END IF;
   SELECT s.* INTO snap FROM reward_funding_leg_snapshots_v2 s JOIN reward_song_slots_v2 l USING(slot_id)
     WHERE l.community_id=i->>'communityId' AND l.post_id=i->>'postId'
@@ -31402,6 +31416,18 @@ BEGIN
     'target',coalesce(slot.target,snap.context->'target'),'persona_id',persona,'reason',refusal,
     'retry_after_seconds',NULL,'own_recovery_href',NULL);
 END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_song_contribution_context_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, persona text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION readable_notification_source_v1(p_recipient text, p_fact text) RETURNS TABLE(community_id text, post_id text, comment_id text, parent_comment_id text, occurred_at timestamp with time zone)
     LANGUAGE sql STABLE
@@ -31903,6 +31929,24 @@ CREATE FUNCTION record_moderated_dance_maintenance_v1() RETURNS void
 DECLARE lease_ms BIGINT; now_at TIMESTAMPTZ:=clock_timestamp();
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() OR NOT dance_review_worker_authorized_v1() THEN RAISE EXCEPTION 'maintenance purposes unavailable' USING ERRCODE='DRV02'; END IF;
+ -- Expired pre-review work cannot dispatch again. Retire its capacity debt
+ -- only after every owned fence and registered provider effect is complete.
+ -- This sweep also covers sessions terminal before this migration; it never
+ -- edits captured terms, deadlines, grants, usage or provider-purpose history.
+ UPDATE dance_moderated_processing_v1 processing SET state='failed',completed_at=now_at,observation_until=NULL
+ FROM dance_moderated_uploads_v1 upload JOIN dance_moderated_sessions_v1 session USING(session_id)
+ WHERE processing.upload_id=upload.upload_id AND session.state='terminal' AND session.expires_at<=now_at
+ AND processing.state IN('claimed','unknown') AND processing.completed_at IS NULL
+ AND processing.provider_deadline<=now_at AND (processing.observation_until IS NULL OR processing.observation_until<=now_at)
+ AND NOT EXISTS(SELECT 1 FROM dance_moderated_reviews_v1 review WHERE review.session_id=session.session_id)
+ AND (SELECT count(*) FROM dance_moderated_media_dispositions_v1 disposition WHERE disposition.upload_id=upload.upload_id
+  AND disposition.kind IN('ingress','original','derived') AND disposition.state='completed')=3
+ -- No inner claim means no provider dispatch was authorized. A legacy row
+ -- with a consumed inner claim still needs registered, completed custody.
+ AND (EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state='completed')
+  OR processing.probe_phase='unclaimed' AND processing.probe_attempt IS NULL
+   AND processing.normalization_claimed_at IS NULL AND processing.provider_job_id IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state<>'completed');
  IF EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect
   LEFT JOIN dance_moderated_processing_v1 processing ON processing.upload_id=effect.upload_id
   LEFT JOIN dance_moderated_uploads_v1 upload ON upload.upload_id=effect.upload_id
@@ -37412,7 +37456,8 @@ END;
 $$;
 
 CREATE FUNCTION validate_asset_bonus_leg_accounting() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   target_leg_id TEXT;
@@ -37420,6 +37465,9 @@ DECLARE
   credited_total NUMERIC(78, 0);
   credited_count BIGINT;
 BEGIN
+  IF TG_RELID NOT IN ('song_reward_offer_legs'::regclass, 'song_reward_bundle_claim_legs'::regclass) THEN
+    RAISE EXCEPTION 'trusted asset bonus accounting relation required' USING ERRCODE='42501';
+  END IF;
   target_leg_id := NEW.leg_id;
   SELECT * INTO leg_record FROM song_reward_offer_legs WHERE leg_id = target_leg_id;
   IF leg_record.kind <> 'asset_bonus' THEN
@@ -37436,6 +37484,18 @@ BEGIN
   RETURN NULL;
 END
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_asset_bonus_leg_accounting'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_community_canonical_route_reference() RETURNS trigger
     LANGUAGE plpgsql

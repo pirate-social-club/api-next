@@ -1,4 +1,8 @@
-import type { SongFundingContextFacts } from "../../application/src/rewards/song-megapot-context.ts";
+import { Effect } from "effect";
+import {
+  buildSongMegapotFundingContext,
+  type SongFundingContextFacts,
+} from "../../application/src/rewards/song-megapot-context.ts";
 import type * as C from "../../contracts/src/rewards-song-contributions-v2.ts";
 
 const h = "a".repeat(64);
@@ -138,4 +142,11 @@ export function songFundingContextFixture(): SongFundingContextFacts {
     remainingEffects: 5,
     pendingAccountSlots: 4,
   };
+}
+
+export function readySongFundingContextFixture(accountId: string) {
+  const facts = songFundingContextFixture();
+  return Effect.runPromise(
+    buildSongMegapotFundingContext({ ...facts, actor: { ...facts.actor, account_id: accountId } }),
+  );
 }

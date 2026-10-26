@@ -47,10 +47,19 @@ const Original = Schema.Union([
   }),
 ]);
 const Derived = Schema.Struct({
-  frames: Schema.Array(Schema.Struct({ identity: Identity })).check(
-    Schema.isMinLength(3),
-    Schema.isMaxLength(3),
-  ),
+  // Unwritten keys carry only identity. Normalization persists the complete
+  // frame proof; declare its metadata while retaining strict excess checks.
+  frames: Schema.Array(
+    Schema.Union([
+      Schema.Struct({ identity: Identity }),
+      Schema.Struct({
+        index: Schema.Int,
+        sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+        timestampMs: NumberId,
+        identity: Schema.Struct({ key: Id, version: Id, etag: Id, size: NumberId }),
+      }),
+    ]),
+  ).check(Schema.isMinLength(3), Schema.isMaxLength(3)),
 });
 
 const ERASURE_FENCE = '{"version":"private-dance-erasure-fence-v1"}';

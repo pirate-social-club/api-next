@@ -37,6 +37,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
+import { songFundingLane } from "../../../packages/platform-cf/src/song-funding-connection.ts";
 import { type AvatarCleanupBuckets, makeAvatarCleanupJob } from "./avatar-cleanup.ts";
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
@@ -67,7 +68,10 @@ import {
   MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
-import { makeSongFundingRecoveryRuntime } from "./megapot-rewards-runtime.ts";
+import {
+  makeBoundedSongFundingConnection,
+  makeSongFundingRecoveryRuntime,
+} from "./megapot-rewards-runtime.ts";
 import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
@@ -154,6 +158,7 @@ export interface JobsWorkerEnv
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   readonly CONTROL_PLANE?: HyperdriveConnection;
+  readonly SONG_FUNDING_JOBS?: HyperdriveConnection;
   readonly LEARNER_AUDIO?: R2Bucket;
   readonly AVATAR_INGRESS?: R2Bucket;
   readonly AVATAR_SEALED?: R2Bucket;
@@ -944,23 +949,23 @@ export default {
       config.API_NEXT_ENV,
     );
     const safePool = makeSafePoolPilotOptions(env, config);
-    // Contributions fund pools in either lane, so their recovery runs with either.
-    const songFundingRecovery = config.MEGAPOT_REWARDS_ENABLED
-      ? makeSongFundingRecoveryRuntime({
-          controlPlane: megapot?.boundedControlPlane,
-          rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
-          environment: config.API_NEXT_ENV,
-          now: () => new Date().toISOString(),
-        })
-      : safePool === null
+    const lane = songFundingLane(config);
+    const songFundingRecovery =
+      lane === null
         ? undefined
         : makeSongFundingRecoveryRuntime({
-            controlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
-              statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
-              connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
-              closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
-            }),
-            rpcUrl: safePool.rpcUrl,
+            controlPlane: makeBoundedSongFundingConnection(
+              env.SONG_FUNDING_JOBS,
+              env.CONTROL_PLANE,
+              lane,
+            ),
+            rpcUrl:
+              lane === "eoa"
+                ? fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV)
+                : (safePool?.rpcUrl ??
+                  (() => {
+                    throw Error("Safe funding runtime required");
+                  })()),
             environment: config.API_NEXT_ENV,
             now: () => new Date().toISOString(),
           });

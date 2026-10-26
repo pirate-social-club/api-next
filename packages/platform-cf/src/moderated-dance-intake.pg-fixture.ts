@@ -13,6 +13,7 @@ export async function seedModeratedDanceIntake(
   runtimeRevision?: string,
   options: Readonly<{
     publicReplay?: boolean;
+    profile?: Partial<ReturnType<typeof moderatedDanceIntakeFacts>["profile"]>;
     safetyRevision?: string;
     transferWithinMs?: number;
     maximumProviderCalls?: number;
@@ -31,13 +32,16 @@ export async function seedModeratedDanceIntake(
       runtimeRevision === undefined
         ? facts
         : { ...facts, profile: { ...facts.profile, mediaRuntimeRevision: runtimeRevision } },
-    f =
-      options.maximumProviderCalls === undefined
-        ? selected
-        : {
-            ...selected,
-            profile: { ...selected.profile, maximumProviderCalls: options.maximumProviderCalls },
-          },
+    f = {
+      ...selected,
+      profile: {
+        ...selected.profile,
+        ...options.profile,
+        ...(options.maximumProviderCalls === undefined
+          ? {}
+          : { maximumProviderCalls: options.maximumProviderCalls }),
+      },
+    },
     now = Date.now(),
     hash = "a".repeat(64);
   const disposition =
