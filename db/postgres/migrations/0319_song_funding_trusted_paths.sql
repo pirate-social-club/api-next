@@ -1,7 +1,9 @@
 -- Repair the context reader persona alias that collided with its local profile
 -- record. Preserve all authorization, terms and lifecycle checks. The two284
 -- replacements also lost their trusted paths; restore them without new grants,
--- roles, policies, captured terms, flags or financial authority.
+-- roles, policies, captured terms or flags. The deferred accounting invariant
+-- also needs owner-only read authority at COMMIT on PostgreSQL17. Keep its
+-- body unchanged, pin its path and remove PUBLIC attachment authority.
 CREATE OR REPLACE FUNCTION read_song_contribution_context_v2(i JSONB,persona TEXT) RETURNS JSONB
 LANGUAGE plpgsql STABLE SECURITY DEFINER AS $$
 DECLARE snap reward_funding_leg_snapshots_v2; slot reward_song_slots_v2;
@@ -82,3 +84,14 @@ BEGIN
   EXECUTE format('ALTER FUNCTION %I.%s SET search_path TO pg_catalog,%I,pg_temp',trusted,signature,trusted);
  END LOOP;
 END $funding_paths$;
+
+-- Deferred constraint triggers on PostgreSQL17 run after the funding function
+-- has restored its caller. Check the unchanged invariant as its trusted owner,
+-- without exposing raw accounting tables to either funding login. PUBLIC must
+-- not be able to attach this definer to an attacker-controlled table.
+DO $funding_accounting$
+DECLARE trusted TEXT:=current_schema();
+BEGIN
+ EXECUTE format('ALTER FUNCTION %I.validate_asset_bonus_leg_accounting() SECURITY DEFINER SET search_path TO pg_catalog,%I,pg_temp',trusted,trusted);
+ EXECUTE format('REVOKE ALL ON FUNCTION %I.validate_asset_bonus_leg_accounting() FROM PUBLIC',trusted);
+END $funding_accounting$;

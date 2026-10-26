@@ -37456,7 +37456,8 @@ END;
 $$;
 
 CREATE FUNCTION validate_asset_bonus_leg_accounting() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   target_leg_id TEXT;
@@ -37480,6 +37481,18 @@ BEGIN
   RETURN NULL;
 END
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_asset_bonus_leg_accounting'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_community_canonical_route_reference() RETURNS trigger
     LANGUAGE plpgsql

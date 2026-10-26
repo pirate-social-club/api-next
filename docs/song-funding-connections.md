@@ -21,9 +21,14 @@ pause and live run-lease checks remain in their owning boundaries.
 
 Migration 319 fixes the context reader's persona alias collision with its local
 profile record and restores the trusted paths lost by two migration 284
-replacements. It changes no role, grant, policy, captured term or runtime flag.
+replacements. It adds no runtime grant or role and changes no policy, captured term or runtime flag.
 The context-reader body change is limited to the persona alias. Its owner and
 ACL, and the locked admission function's body, owner and ACL, are preserved.
+The existing deferred asset-bonus accounting trigger also needs owner read
+authority when PostgreSQL 17 runs it at COMMIT. Migration 319 preserves that
+invariant's body, owner and private ACL, makes it a trusted-path definer, and
+revokes PUBLIC execution so untrusted callers cannot attach it to another table.
+Neither funding login receives direct execution or raw accounting-table access.
 Previously applied migration files and their hashes remain unchanged.
 
 ## Permission and resource preparation

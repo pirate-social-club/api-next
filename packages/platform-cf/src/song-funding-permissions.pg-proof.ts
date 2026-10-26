@@ -54,6 +54,16 @@ export async function proveSongFundingPermissions(url: string) {
           )
         ).rows;
       const definitionBefore = await definitionSnapshot();
+      const accountingSnapshot = async () =>
+        (
+          await f.owner.query(`SELECT oid,proowner,prosrc,prosecdef,proconfig,
+          (SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.grantee,a.privilege_type),'[]'::jsonb)
+           FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+           WHERE a.grantee<>0) private_acl
+          FROM pg_proc p WHERE p.oid='validate_asset_bonus_leg_accounting()'::regprocedure`)
+        ).rows;
+      const accountingBefore = await accountingSnapshot();
+      expect(accountingBefore[0].prosecdef).toBe(false);
       const missing = await f.owner.query(
         "SELECT proname FROM pg_proc WHERE pronamespace=current_schema()::regnamespace AND proname=ANY($1::text[]) AND proconfig IS NULL ORDER BY proname",
         [paths],
@@ -76,6 +86,26 @@ export async function proveSongFundingPermissions(url: string) {
           ),
       }));
       expect(await definitionSnapshot()).toEqual(expectedDefinitions);
+      expect(await accountingSnapshot()).toEqual(
+        accountingBefore.map((row) => ({
+          ...row,
+          prosecdef: true,
+          proconfig: [`search_path=pg_catalog, ${f.schema}, pg_temp`],
+        })),
+      );
+      expect(
+        (
+          await f.owner.query(
+            `SELECT
+        has_function_privilege($1,'validate_asset_bonus_leg_accounting()','EXECUTE') http,
+        has_function_privilege($2,'validate_asset_bonus_leg_accounting()','EXECUTE') jobs,
+        EXISTS(SELECT 1 FROM pg_proc p,
+          LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+          WHERE p.oid='validate_asset_bonus_leg_accounting()'::regprocedure AND a.grantee=0 AND a.privilege_type='EXECUTE') public`,
+            [http.role, jobs.role],
+          )
+        ).rows,
+      ).toEqual([{ http: false, jobs: false, public: false }]);
       expect(await runSongFundingPermissionsPreflight(http.url, "http", f.schema)).toBe(http.role);
       expect(await runSongFundingPermissionsPreflight(jobs.url, "jobs", f.schema)).toBe(jobs.role);
       await expect(
@@ -215,6 +245,11 @@ export async function proveSongFundingPermissions(url: string) {
           wrong.query("SELECT reserve_reward_funding_wallet_nonce_v2('{}')"),
         ).rejects.toMatchObject({ code: "42501" });
         await expect(wrong.query("SELECT * FROM users")).rejects.toMatchObject({ code: "42501" });
+        await wrong.query("CREATE TEMP TABLE purpose_accounting_attachment(leg_id TEXT)");
+        await expect(
+          wrong.query(`CREATE TRIGGER purpose_accounting_attachment BEFORE INSERT ON
+            purpose_accounting_attachment FOR EACH ROW EXECUTE FUNCTION validate_asset_bonus_leg_accounting()`),
+        ).rejects.toMatchObject({ code: "42501" });
       } finally {
         await wrong.end();
       }
