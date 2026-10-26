@@ -31903,6 +31903,20 @@ CREATE FUNCTION record_moderated_dance_maintenance_v1() RETURNS void
 DECLARE lease_ms BIGINT; now_at TIMESTAMPTZ:=clock_timestamp();
 BEGIN
  IF NOT moderated_dance_media_runtime_v1() OR NOT dance_review_worker_authorized_v1() THEN RAISE EXCEPTION 'maintenance purposes unavailable' USING ERRCODE='DRV02'; END IF;
+ -- Expired pre-review work cannot dispatch again. Retire its capacity debt
+ -- only after every owned fence and registered provider effect is complete.
+ -- This sweep also covers sessions terminal before this migration; it never
+ -- edits captured terms, deadlines, grants, usage or provider-purpose history.
+ UPDATE dance_moderated_processing_v1 processing SET state='failed',completed_at=now_at,observation_until=NULL
+ FROM dance_moderated_uploads_v1 upload JOIN dance_moderated_sessions_v1 session USING(session_id)
+ WHERE processing.upload_id=upload.upload_id AND session.state='terminal' AND session.expires_at<=now_at
+ AND processing.state IN('claimed','unknown') AND processing.completed_at IS NULL
+ AND processing.provider_deadline<=now_at AND (processing.observation_until IS NULL OR processing.observation_until<=now_at)
+ AND NOT EXISTS(SELECT 1 FROM dance_moderated_reviews_v1 review WHERE review.session_id=session.session_id)
+ AND (SELECT count(*) FROM dance_moderated_media_dispositions_v1 disposition WHERE disposition.upload_id=upload.upload_id
+  AND disposition.kind IN('ingress','original','derived') AND disposition.state='completed')=3
+ AND EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state='completed')
+ AND NOT EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state<>'completed');
  IF EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect
   LEFT JOIN dance_moderated_processing_v1 processing ON processing.upload_id=effect.upload_id
   LEFT JOIN dance_moderated_uploads_v1 upload ON upload.upload_id=effect.upload_id
