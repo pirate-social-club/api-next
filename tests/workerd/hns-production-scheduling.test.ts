@@ -116,6 +116,9 @@ describe("production HNS renewal scheduling", () => {
         MEGAPOT_CHAIN_ID: "84532",
         ...(rewardsEnabled === "true"
           ? {
+              SONG_FUNDING_JOBS: {
+                connectionString: "postgres://funding:unused@127.0.0.1:1/unused",
+              },
               MEGAPOT_V2_RPC_URL: "https://rpc.invalid/",
               MEGAPOT_CUSTODY_PRIVATE_KEY: `0x${"11".repeat(32)}`,
               MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: "https://commitments.invalid",

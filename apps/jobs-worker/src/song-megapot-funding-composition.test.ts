@@ -7,7 +7,10 @@ import {
   RewardOperationsPaused,
 } from "@pirate/application";
 import { Effect, Layer } from "effect";
-import { makeSongFundingRecoveryRuntime } from "./megapot-rewards-runtime.ts";
+import {
+  makeBoundedSongFundingConnection,
+  makeSongFundingRecoveryRuntime,
+} from "./megapot-rewards-runtime.ts";
 import { buildJobRegistry, JobContext, SONG_FUNDING_RECOVERY_WRITES } from "./registry.ts";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
@@ -80,6 +83,45 @@ function fixture() {
 }
 
 describe("serving Funding observer/recovery composition", () => {
+  test("both selected lanes use only the dedicated bounded Jobs connection for authority, context and recovery", async () => {
+    const general = { connectionString: "postgres://dance@fixture.invalid/db" };
+    const funding = { connectionString: "postgres://funding_jobs@fixture.invalid/db" };
+    for (const lane of ["safe", "eoa"] as const) {
+      const calls: string[] = [];
+      const layer = makeBoundedSongFundingConnection(funding, general, lane, (url, config) => {
+        expect(url).toBe(funding.connectionString);
+        expect(config.connectionTimeoutMillis).toBe(3000);
+        expect(config.statement_timeout).toBe(2000);
+        return {
+          connect: async () => {},
+          end: async () => {},
+          query: async ({ text }) => {
+            calls.push(text);
+            const rows = text.includes("claim_next_shared_song_context_v2")
+              ? [{ packet: null }]
+              : [];
+            return { rows, rowCount: rows.length };
+          },
+        };
+      });
+      const runtime = makeSongFundingRecoveryRuntime({
+        controlPlane: layer,
+        rpcUrl: "https://offline.invalid/no-provider",
+        environment: "staging",
+        now: () => new Date().toISOString(),
+      });
+      await Effect.runPromise(runtime.run({ enabled: true, limit: 1, ensure: runtime.ensure }));
+      expect(calls.filter((s) => s.includes("require_reward_run_authority_v1"))).toHaveLength(2);
+      expect(calls.filter((s) => s.includes("claim_next_shared_song_context_v2"))).toHaveLength(1);
+      expect(calls.filter((s) => s.includes("list_song_funding_work_v2"))).toHaveLength(1);
+      expect(() => makeBoundedSongFundingConnection(undefined, general, lane)).toThrow(
+        "Dedicated song funding",
+      );
+      expect(() => makeBoundedSongFundingConnection(general, general, lane)).toThrow(
+        "Dedicated song funding",
+      );
+    }
+  });
   test("missing bounded database composition refuses rather than disabling recovery or using an unbounded fallback", () => {
     expect(() =>
       makeSongFundingRecoveryRuntime({

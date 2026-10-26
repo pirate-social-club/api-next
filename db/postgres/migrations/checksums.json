@@ -318,6 +318,7 @@
     "0315_reward_safe_preparation_lease.sql": "993d034ab6454b94c70b532b7c034b3603dbc63629ae478f9811727ef8557998",
     "0316_reward_safe_late_purchase_recovery.sql": "40c61d15a0e4e896621308bb52596757367d20cd580f2cb3a604d3c4f798dd1d",
     "0317_moderated_dance_normalization_frame_alias.sql": "2192dc0000d95b57eb601a84ce22eab65c6bb26bb25d013155920a2ac8592a32",
-    "0318_moderated_dance_settled_processing_capacity.sql": "b11bab8c84d8e59988a900d90e973fc008baa66cc77122d997fbfcca68d31d22"
+    "0318_moderated_dance_settled_processing_capacity.sql": "b11bab8c84d8e59988a900d90e973fc008baa66cc77122d997fbfcca68d31d22",
+    "0319_song_funding_trusted_paths.sql": "8990a79b8d54ab1a30bdc2d453e79cee74e34764d9d618a16c0a56ecd40053b5"
   }
 }
