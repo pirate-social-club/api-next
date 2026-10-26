@@ -35,6 +35,8 @@ const DISCLOSURE = "shared-song-safe-pilot-staging-disclosure-v1";
 const ACCEPTED_BY = "workspace_owner";
 // One Megapot ticket on Base Sepolia costs 0.01 test USDC.
 const TICKET_ATOMIC = "10000";
+export const ENTRY_CUTOFF_SECONDS = 120;
+const PURCHASE_LEAD_SECONDS = 900;
 const KINDS = {
   study: "study_session_first_pass_v2",
   karaoke: "karaoke_qualification_v2",
@@ -220,8 +222,11 @@ export async function buildSharedSongProvisioning(input: SharedSongProvisioningI
     }),
     finalityPolicyId: "base-sepolia-three-confirmations",
     cadenceSeconds: "1800",
-    entryCutoffSeconds: 120,
-    purchaseLeadSeconds: 300,
+    entryCutoffSeconds: ENTRY_CUTOFF_SECONDS,
+    // The Safe purchase is prepared only while SAFE_POOL_MINIMUM_ENTRY_SECONDS (600 on
+    // staging) of entry time remain before the cutoff. Funding therefore closes earlier,
+    // leaving time for the transfer's confirmations, the scan and leg activation.
+    purchaseLeadSeconds: PURCHASE_LEAD_SECONDS,
     maximumContextAttempts: 50,
     contextLeaseMs: 60_000,
     maximumContextWorkPerAccount: 200,

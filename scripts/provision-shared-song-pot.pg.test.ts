@@ -11,6 +11,7 @@ import { makeControlPlaneSongContributionPorts } from "../packages/platform-cf/s
 import {
   applySharedSongProvisioning,
   buildSharedSongProvisioning,
+  ENTRY_CUTOFF_SECONDS,
   readSharedSongProvisioningInput,
   SHARED_SONG_ATTESTATION,
 } from "./provision-shared-song-pot.ts";
@@ -202,7 +203,8 @@ suite("shared-song pot provisioning", () => {
     await expect(applySharedSongProvisioning(admin, rows)).rejects.toThrow();
 
     const now = Date.now();
-    drawingTime = BigInt(Math.floor(now / 1000) + 20 * 60);
+    // Sixteen minutes out, funding could not reach the Safe purchase in time.
+    drawingTime = BigInt(Math.floor(now / 1000) + 16 * 60);
     const headTimestamp = BigInt(Math.floor(now / 1000) - 2);
     const head = { blockNumber: 1_000n, blockHash: hex("e"), blockTimestamp: headTimestamp };
     const producer = makeControlPlaneSharedSongContextProducer({
@@ -225,9 +227,23 @@ suite("shared-song pot provisioning", () => {
           readNativeBalance: async () => 10n ** 15n,
         }) as never,
     });
-    await Effect.runPromise(
-      producer.run({ enabled: true, ensure: () => Effect.void }) as Effect.Effect<void, unknown>,
-    );
+    const produce = () =>
+      Effect.runPromise(
+        producer.run({ enabled: true, ensure: () => Effect.void }) as Effect.Effect<void, unknown>,
+      );
+    await produce();
+    expect(
+      (
+        await admin.query(
+          `SELECT w.last_error, (SELECT count(*)::int FROM reward_funding_leg_snapshots_v2 s
+              WHERE s.slot_id=w.slot_id) AS snapshots
+             FROM reward_song_context_work_v2 w`,
+        )
+      ).rows,
+    ).toEqual([{ last_error: "capacity_exhausted", snapshots: 0 }]);
+
+    drawingTime = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+    await produce();
     const snapshots = (
       await admin.query(
         `SELECT profile_id, refusal, context FROM reward_funding_leg_snapshots_v2 WHERE slot_id=$1`,
@@ -243,6 +259,11 @@ suite("shared-song pot provisioning", () => {
     const [snapshot] = snapshots;
     expect(snapshot.profile_id).toBe(rows.profile.profile_id);
     expect(snapshot.context.readiness).toBe("ready");
+    // Funding closes early enough that the Safe purchase still has the staging minimum
+    // entry time before the cutoff, plus three minutes for confirmations and the scan.
+    expect(Date.parse(snapshot.context.context_expires_at)).toBeLessThanOrEqual(
+      Number(drawingTime) * 1000 - (ENTRY_CUTOFF_SECONDS + 600 + 180) * 1000,
+    );
     expect(snapshot.context.quote.prospective_terms.planned_drawing_ids).toEqual([
       CURRENT_DRAWING.toString(),
     ]);
