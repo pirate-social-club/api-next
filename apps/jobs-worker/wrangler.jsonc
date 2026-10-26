@@ -165,6 +165,12 @@
           // Staging-only Hyperdrive; never reuse the production resource.
           "id": "8cb7658a0f7143359c1becfec6a15c23",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        },
+        {
+          "binding": "SONG_FUNDING_JOBS",
+          // Staging Safe-pilot funding login only; caching disabled. Never the Dance principal.
+          "id": "0a6177f0b1304899a4c6295e84693772",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
       "workflows": [
