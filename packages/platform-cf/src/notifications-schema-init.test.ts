@@ -250,7 +250,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations.at(-1)).toMatchObject({
     version: "0318_moderated_dance_settled_processing_capacity.sql",
-    checksum: "856033ceebfbb69260f8e1d65b10dedd16250bad5cff467003455924cf90dd9f",
+    checksum: "b11bab8c84d8e59988a900d90e973fc008baa66cc77122d997fbfcca68d31d22",
   });
 });
 

@@ -31915,7 +31915,11 @@ BEGIN
  AND NOT EXISTS(SELECT 1 FROM dance_moderated_reviews_v1 review WHERE review.session_id=session.session_id)
  AND (SELECT count(*) FROM dance_moderated_media_dispositions_v1 disposition WHERE disposition.upload_id=upload.upload_id
   AND disposition.kind IN('ingress','original','derived') AND disposition.state='completed')=3
- AND EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state='completed')
+ -- No inner claim means no provider dispatch was authorized. A legacy row
+ -- with a consumed inner claim still needs registered, completed custody.
+ AND (EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state='completed')
+  OR processing.probe_phase='unclaimed' AND processing.probe_attempt IS NULL
+   AND processing.normalization_claimed_at IS NULL AND processing.provider_job_id IS NULL)
  AND NOT EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect WHERE effect.upload_id=upload.upload_id AND effect.state<>'completed');
  IF EXISTS(SELECT 1 FROM dance_moderated_provider_effects_v1 effect
   LEFT JOIN dance_moderated_processing_v1 processing ON processing.upload_id=effect.upload_id

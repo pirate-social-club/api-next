@@ -223,215 +223,245 @@ suite("private moderated Dance intake on the maintained generated baseline", () 
         ),
       ).rejects.toMatchObject({ reason: "invalid_request" });
     }));
-  test("expired work releases capacity only after every owned fence and provider disposition completes", async () =>
-    withFixture(
-      async (f, admin) => {
-        await f.ready();
-        const first = await Effect.runPromise(f.store.command(f.create)),
-          session = first.session;
-        const shared = {
-          version: "dance-moderated-intake-v1",
-          community_id: session.community_id,
-          session_id: session.session_id,
-          terms_hash: session.terms_hash,
-        } as const;
-        await Effect.runPromise(
-          f.store.command({
-            ...shared,
-            operation: "consent",
-            idempotency_key: "capacity-consent",
-            consent_version: session.consent_version,
-            consent_hash: session.consent_hash,
-            retention_hash: session.retention_hash,
-          }),
-        );
-        const reserved = await Effect.runPromise(
-          f.store.command({
-            ...shared,
-            operation: "reserve",
-            idempotency_key: "capacity-reserve",
-            content_type: "video/mp4",
-            size_bytes: 1000,
-            duration_ms: session.body_end_ms,
-          }),
-        );
-        const upload = reserved.session.upload_id;
-        expect(upload).not.toBeNull();
-        await Effect.runPromise(
-          f.store.command({
-            ...shared,
-            operation: "finalize",
-            idempotency_key: "capacity-finalize",
-            upload_id: upload,
-          }),
-        );
-        const claim = async (token: string) =>
-          (
-            await admin.query("SELECT claim_moderated_dance_media_v1($1,$2,$3,$4::jsonb) packet", [
-              token,
-              f.facts.profile.mediaRuntimeRevision,
-              f.facts.profile.safetyProviderRevision,
-              JSON.stringify(f.facts.profile.replayCompatibleEpochs),
-            ])
-          ).rows[0]?.packet;
-        const seal = await claim("capacity-seal");
-        const ingress = (
-          await admin.query(
-            "SELECT private_object_key FROM dance_moderated_uploads_v1 WHERE upload_id=$1",
-            [upload],
-          )
-        ).rows[0]?.private_object_key;
-        await Bun.sleep(2);
-        // Fictional verified storage/provider observations in an isolated SQL test.
-        await admin.query("SELECT persist_moderated_dance_seal_v1($1,$2,$3::jsonb)", [
-          upload,
-          seal.token,
-          JSON.stringify({
-            outcome: "sealed",
-            immutable_ref: `private-dance://${upload}/source`,
-            destination_ref: `moderated-dance/originals/${upload}/source`,
-            etag: "capacity-etag",
-            version: "capacity-version",
-            size_bytes: 1000,
-            canonical_sha256: "c".repeat(64),
-            firstStoredAtMs: Date.now(),
-            ingress_identity: {
-              key: ingress,
-              version: "capacity-ingress-version",
-              etag: "capacity-ingress-etag",
-              size: 1000,
-            },
-          }),
-        ]);
-        const work = await claim("capacity-work");
-        expect(work).toMatchObject({ action: "dispatch", uploadId: upload });
-        const probe = (
-          await admin.query("SELECT claim_moderated_dance_probe_v1($1,$2) packet", [
-            upload,
-            work.token,
-          ])
-        ).rows[0]?.packet;
-        await admin.query("SELECT persist_moderated_dance_probe_v1($1,$2,$3::jsonb)", [
-          upload,
-          work.token,
-          JSON.stringify({
-            status: "submitted",
-            attempt: {
-              ...probe.attempt,
-              providerJobId: "capacity-probe-job",
-              providerJobPhase: "allocated",
-            },
-          }),
-        ]);
-        const state = async () =>
-          (
+  for (const claimedProvider of [true, false]) {
+    test(`expired work releases capacity with ${claimedProvider ? "settled provider work" : "no inner provider claim"}`, async () =>
+      withFixture(
+        async (f, admin) => {
+          await f.ready();
+          const first = await Effect.runPromise(f.store.command(f.create)),
+            session = first.session;
+          const shared = {
+            version: "dance-moderated-intake-v1",
+            community_id: session.community_id,
+            session_id: session.session_id,
+            terms_hash: session.terms_hash,
+          } as const;
+          await Effect.runPromise(
+            f.store.command({
+              ...shared,
+              operation: "consent",
+              idempotency_key: "capacity-consent",
+              consent_version: session.consent_version,
+              consent_hash: session.consent_hash,
+              retention_hash: session.retention_hash,
+            }),
+          );
+          const reserved = await Effect.runPromise(
+            f.store.command({
+              ...shared,
+              operation: "reserve",
+              idempotency_key: "capacity-reserve",
+              content_type: "video/mp4",
+              size_bytes: 1000,
+              duration_ms: session.body_end_ms,
+            }),
+          );
+          const upload = reserved.session.upload_id;
+          expect(upload).not.toBeNull();
+          await Effect.runPromise(
+            f.store.command({
+              ...shared,
+              operation: "finalize",
+              idempotency_key: "capacity-finalize",
+              upload_id: upload,
+            }),
+          );
+          const claim = async (token: string) =>
+            (
+              await admin.query(
+                "SELECT claim_moderated_dance_media_v1($1,$2,$3,$4::jsonb) packet",
+                [
+                  token,
+                  f.facts.profile.mediaRuntimeRevision,
+                  f.facts.profile.safetyProviderRevision,
+                  JSON.stringify(f.facts.profile.replayCompatibleEpochs),
+                ],
+              )
+            ).rows[0]?.packet;
+          const seal = await claim("capacity-seal");
+          const ingress = (
             await admin.query(
-              "SELECT state,completed_at FROM dance_moderated_processing_v1 WHERE upload_id=$1",
+              "SELECT private_object_key FROM dance_moderated_uploads_v1 WHERE upload_id=$1",
               [upload],
             )
-          ).rows[0];
-        await f.ready();
-        expect(await state()).toEqual({ state: "claimed", completed_at: null });
-        // Let the admitted short fixture window expire; do not edit captured clocks.
-        await Bun.sleep(Math.max(0, session.expires_at_ms - Date.now()) + 30);
-        const cleanups = [];
-        for (let index = 0; index < 3; index++) {
-          const packet = (
-            await admin.query("SELECT claim_moderated_dance_owned_cleanup_v1($1) packet", [
-              `capacity-cleanup-${index}`,
-            ])
-          ).rows[0]?.packet;
-          expect(packet).toMatchObject({ uploadId: upload, delivery: "fresh_grant" });
-          cleanups.push(packet);
-        }
-        expect(
-          (
-            await admin.query("SELECT state FROM dance_moderated_sessions_v1 WHERE session_id=$1", [
-              session.session_id,
-            ])
-          ).rows,
-        ).toEqual([{ state: "terminal" }]);
-        const finish = async (packet: (typeof cleanups)[number], complete: boolean) => {
-          const keys =
-            packet.kind === "derived"
-              ? packet.identity.frames.map(
-                  (frame: { identity: { key: string } }) => frame.identity.key,
-                )
-              : [packet.identity.destination_ref ?? packet.identity.key];
-          await admin.query("SELECT finish_moderated_dance_owned_cleanup_v1($1,$2,$3,$4::jsonb)", [
+          ).rows[0]?.private_object_key;
+          await Bun.sleep(2);
+          // Fictional verified storage/provider observations in an isolated SQL test.
+          await admin.query("SELECT persist_moderated_dance_seal_v1($1,$2,$3::jsonb)", [
             upload,
-            packet.kind,
-            packet.token,
+            seal.token,
             JSON.stringify({
-              outcome: complete ? "owned_payload_fenced" : "unknown",
-              observations: complete
-                ? keys.map((key: string) => ({
-                    key,
-                    outcome: "payload_fenced",
-                    version: "cleanup-version",
-                    etag: "cleanup-etag",
-                  }))
-                : [],
+              outcome: "sealed",
+              immutable_ref: `private-dance://${upload}/source`,
+              destination_ref: `moderated-dance/originals/${upload}/source`,
+              etag: "capacity-etag",
+              version: "capacity-version",
+              size_bytes: 1000,
+              canonical_sha256: "c".repeat(64),
+              firstStoredAtMs: Date.now(),
+              ingress_identity: {
+                key: ingress,
+                version: "capacity-ingress-version",
+                etag: "capacity-ingress-etag",
+                size: 1000,
+              },
             }),
           ]);
-        };
-        await finish(cleanups[0], true);
-        await finish(cleanups[1], true);
-        await finish(cleanups[2], false);
-        await admin.query("SELECT record_moderated_dance_maintenance_v1()");
-        expect(await state()).toEqual({ state: "claimed", completed_at: null });
-        await finish(cleanups[2], true);
-        await admin.query("SELECT record_moderated_dance_maintenance_v1()");
-        expect(await state()).toEqual({ state: "claimed", completed_at: null });
-        const provider = (
-          await admin.query(
-            "SELECT claim_moderated_dance_provider_cleanup_v1('capacity-provider-cleanup') packet",
-          )
-        ).rows[0]?.packet;
-        expect(provider).toMatchObject({ provider: "cloudconvert", jobId: "capacity-probe-job" });
-        await admin.query("SELECT finish_moderated_dance_provider_cleanup_v1($1,$2,$3::jsonb)", [
-          provider.effectId,
-          provider.token,
-          JSON.stringify({ outcome: "deleted", jobId: provider.jobId, tag: provider.tag }),
-        ]);
-        await f.ready();
-        const second = await Effect.runPromise(
-          f.store.command({ ...f.create, idempotency_key: "capacity-after-disposal" }),
-        );
-        expect(second.session.state).toBe("created");
-        expect(second.session.session_id).not.toBe(session.session_id);
-        expect(await state()).toEqual({ state: "failed", completed_at: expect.any(Date) });
-        expect(
-          (
+          const work = await claim("capacity-work");
+          expect(work).toMatchObject({ action: "dispatch", uploadId: upload });
+          if (claimedProvider) {
+            const probe = (
+              await admin.query("SELECT claim_moderated_dance_probe_v1($1,$2) packet", [
+                upload,
+                work.token,
+              ])
+            ).rows[0]?.packet;
+            await admin.query("SELECT persist_moderated_dance_probe_v1($1,$2,$3::jsonb)", [
+              upload,
+              work.token,
+              JSON.stringify({
+                status: "submitted",
+                attempt: {
+                  ...probe.attempt,
+                  providerJobId: "capacity-probe-job",
+                  providerJobPhase: "allocated",
+                },
+              }),
+            ]);
+          }
+          const state = async () =>
+            (
+              await admin.query(
+                "SELECT state,completed_at FROM dance_moderated_processing_v1 WHERE upload_id=$1",
+                [upload],
+              )
+            ).rows[0];
+          await f.ready();
+          expect(await state()).toEqual({ state: "claimed", completed_at: null });
+          // Let the admitted short fixture window expire; do not edit captured clocks.
+          await Bun.sleep(Math.max(0, session.expires_at_ms - Date.now()) + 30);
+          const cleanups: (
+            | {
+                kind: "derived";
+                token: string;
+                identity: { frames: { identity: { key: string } }[] };
+              }
+            | {
+                kind: "ingress" | "original";
+                token: string;
+                identity: { destination_ref?: string; key: string };
+              }
+          )[] = [];
+          for (let index = 0; index < 3; index++) {
+            const packet = (
+              await admin.query("SELECT claim_moderated_dance_owned_cleanup_v1($1) packet", [
+                `capacity-cleanup-${index}`,
+              ])
+            ).rows[0]?.packet;
+            expect(packet).toMatchObject({ uploadId: upload, delivery: "fresh_grant" });
+            cleanups.push(packet);
+          }
+          expect(
+            (
+              await admin.query(
+                "SELECT state FROM dance_moderated_sessions_v1 WHERE session_id=$1",
+                [session.session_id],
+              )
+            ).rows,
+          ).toEqual([{ state: "terminal" }]);
+          const finish = async (packet: (typeof cleanups)[number], complete: boolean) => {
+            const keys =
+              packet.kind === "derived"
+                ? packet.identity.frames.map(
+                    (frame: { identity: { key: string } }) => frame.identity.key,
+                  )
+                : [packet.identity.destination_ref ?? packet.identity.key];
             await admin.query(
-              "SELECT charged_calls FROM dance_moderated_processing_v1 WHERE upload_id=$1",
-              [upload],
-            )
-          ).rows,
-        ).toEqual([{ charged_calls: "6" }]);
-        expect(
-          (
+              "SELECT finish_moderated_dance_owned_cleanup_v1($1,$2,$3,$4::jsonb)",
+              [
+                upload,
+                packet.kind,
+                packet.token,
+                JSON.stringify({
+                  outcome: complete ? "owned_payload_fenced" : "unknown",
+                  observations: complete
+                    ? keys.map((key: string) => ({
+                        key,
+                        outcome: "payload_fenced",
+                        version: "cleanup-version",
+                        etag: "cleanup-etag",
+                      }))
+                    : [],
+                }),
+              ],
+            );
+          };
+          await finish(cleanups[0], true);
+          await finish(cleanups[1], true);
+          await finish(cleanups[2], false);
+          await admin.query("SELECT record_moderated_dance_maintenance_v1()");
+          expect(await state()).toEqual({ state: "claimed", completed_at: null });
+          await finish(cleanups[2], true);
+          await admin.query("SELECT record_moderated_dance_maintenance_v1()");
+          if (claimedProvider) {
+            expect(await state()).toEqual({ state: "claimed", completed_at: null });
+            const provider = (
+              await admin.query(
+                "SELECT claim_moderated_dance_provider_cleanup_v1('capacity-provider-cleanup') packet",
+              )
+            ).rows[0]?.packet;
+            expect(provider).toMatchObject({
+              provider: "cloudconvert",
+              jobId: "capacity-probe-job",
+            });
             await admin.query(
-              "SELECT count(*)::INTEGER n FROM dance_moderated_provider_effects_v1 WHERE upload_id=$1",
-              [upload],
-            )
-          ).rows[0]?.n,
-        ).toBe(1);
-      },
-      {
-        profile: {
-          mediaRuntimeRevision: "dance-moderated-media-v2",
-          maximumPendingMediaPerAccount: 1,
-          maximumPendingMediaGlobal: 1,
-          sessionTtlMs: 3000,
-          uploadTtlMs: 2000,
-          presignTtlSeconds: 1,
-          providerWaitMs: 1000,
-          readinessLeaseMs: 1000,
-          workLeaseMs: 500,
+              "SELECT finish_moderated_dance_provider_cleanup_v1($1,$2,$3::jsonb)",
+              [
+                provider.effectId,
+                provider.token,
+                JSON.stringify({ outcome: "deleted", jobId: provider.jobId, tag: provider.tag }),
+              ],
+            );
+          }
+          await f.ready();
+          const second = await Effect.runPromise(
+            f.store.command({ ...f.create, idempotency_key: "capacity-after-disposal" }),
+          );
+          expect(second.session.state).toBe("created");
+          expect(second.session.session_id).not.toBe(session.session_id);
+          expect(await state()).toEqual({ state: "failed", completed_at: expect.any(Date) });
+          expect(
+            (
+              await admin.query(
+                "SELECT charged_calls FROM dance_moderated_processing_v1 WHERE upload_id=$1",
+                [upload],
+              )
+            ).rows,
+          ).toEqual([{ charged_calls: "6" }]);
+          expect(
+            (
+              await admin.query(
+                "SELECT count(*)::INTEGER n FROM dance_moderated_provider_effects_v1 WHERE upload_id=$1",
+                [upload],
+              )
+            ).rows[0]?.n,
+          ).toBe(claimedProvider ? 1 : 0);
         },
-      },
-    ));
+        {
+          profile: {
+            mediaRuntimeRevision: "dance-moderated-media-v2",
+            maximumPendingMediaPerAccount: 1,
+            maximumPendingMediaGlobal: 1,
+            sessionTtlMs: 3000,
+            uploadTtlMs: 2000,
+            presignTtlSeconds: 1,
+            providerWaitMs: 1000,
+            readinessLeaseMs: 1000,
+            workLeaseMs: 500,
+          },
+        },
+      ));
+  }
 
   test("known-ID unknown probe recovers once and persists the complete normalized body without restoring provider grants", async () =>
     withFixture(async (f, admin) => {
