@@ -1,9 +1,7 @@
 import { expect, mock, test } from "bun:test";
-import { Effect } from "effect";
-import { buildSongMegapotFundingContext } from "../../../packages/application/src/rewards/song-megapot-context.ts";
 import { makeSessionCryptoFromEnv } from "../../../packages/platform-cf/src/session-crypto.ts";
 import { moderatedDanceContextFixture } from "../../../packages/testing/src/moderated-dance-context-fixture.ts";
-import { songFundingContextFixture } from "../../../packages/testing/src/song-funding-context-fixture.ts";
+import { readySongFundingContextFixture } from "../../../packages/testing/src/song-funding-context-fixture.ts";
 import { makeHttpWorkerTestBindings } from "./composition.test-fixtures.ts";
 
 mock.module("cloudflare:workers", () => ({ DurableObject: class DurableObject {} }));
@@ -15,10 +13,7 @@ test("serving HTTP composition isolates Funding reads from Dance and propagates 
   const account = danceFixture.actor.accountId;
   const crypto = await makeSessionCryptoFromEnv(base);
   const token = await crypto.sign({ sub: account, scope: String(base.PIRATE_APP_JWT_SCOPE) });
-  const facts = songFundingContextFixture();
-  const context = await Effect.runPromise(
-    buildSongMegapotFundingContext({ ...facts, actor: { ...facts.actor, account_id: account } }),
-  );
+  const context = await readySongFundingContextFixture(account);
   for (const lane of ["safe", "eoa", "off"] as const) {
     const calls: { url: string; text: string }[] = [];
     const worker = await createProductionHttpWorker(
