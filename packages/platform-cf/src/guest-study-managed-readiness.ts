@@ -4,7 +4,7 @@ import type {
   ControlPlaneError,
   ControlPlaneTransaction,
 } from "@pirate/application";
-import { Effect, type Layer, Schema } from "effect";
+import { Cause, Effect, type Layer, Schema } from "effect";
 import { boundedLearnerAudioTransaction } from "./bounded-audio-transaction.ts";
 import { guestStudyReadinessCandidate as candidate } from "./guest-study-readiness-candidate.ts";
 import {
@@ -97,11 +97,38 @@ const CatalogueBoundary = Schema.Struct({
 const Ledger = Schema.Struct({ version: Schema.String, checksum: Schema.String });
 class ReadinessRefused extends Error {
   readonly name = "GuestStudyManagedReadinessRefused";
-  constructor() {
+  constructor(
+    readonly reason: "policy" | "timeout" | ControlPlaneError["_tag"] = "policy",
+    readonly operation: string | null = null,
+    readonly sqlState: string | null = null,
+  ) {
     super("Managed Guest Study readiness unavailable");
   }
 }
 const refuse = () => new ReadinessRefused();
+// Preserve only closed classifications and source-owned operation labels. Never
+// attach a driver cause, message, constraint, connection or inspected row.
+const diagnose = (error: ReadinessRefused | ControlPlaneError | Cause.TimeoutError) => {
+  if (error instanceof ReadinessRefused) return error;
+  if (Cause.isTimeoutError(error)) return new ReadinessRefused("timeout");
+  if (error._tag === "ControlPlaneAcquireFailed")
+    return new ReadinessRefused(error._tag, error.phase);
+  if (error._tag === "ControlPlaneTransactionOutcomeUnknown")
+    return new ReadinessRefused(error._tag, error.phase);
+  const operation =
+    /^(guest-readiness\.(ledger|native-phase|native-frames|native-bodies|(learning|publicRead|cron|observer)\.(identity|roles|catalogue-boundary|acl))|learner-audio\.limits\.(set|verify))$/u.test(
+      error.label,
+    )
+      ? error.label
+      : null;
+  const sqlState =
+    error._tag === "ControlPlaneStatementFailed" &&
+    error.sqlState !== null &&
+    /^[A-Z0-9]{5}$/u.test(error.sqlState)
+      ? error.sqlState
+      : null;
+  return new ReadinessRefused(error._tag, operation, sqlState);
+};
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   value: unknown,
@@ -215,7 +242,7 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
       });
     }
     yield* Effect.gen(function* () {
-      return yield* boundedLearnerAudioTransaction((tx) =>
+      const nativeFrames = yield* boundedLearnerAudioTransaction((tx) =>
         Effect.gen(function* () {
           const ledger = yield* rows(tx, "guest-readiness.ledger", ledgerSql(quoted));
           yield* Effect.try({
@@ -296,7 +323,14 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
             },
             catch: refuse,
           });
-          for (const { profile, identity } of principals) {
+          return nativeFrames;
+        }),
+      );
+      // Metadata and each principal's audit are independent readonly work units.
+      // Keep the native3s bound on each, within the same overall8s inspection.
+      for (const { profile, identity } of principals) {
+        yield* boundedLearnerAudioTransaction((tx) =>
+          Effect.gen(function* () {
             const unsafe = yield* rows(tx, `guest-readiness.${profile}.roles`, rolesSql, [
               identity.role_oid,
               schema,
@@ -389,9 +423,9 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
               },
               catch: refuse,
             });
-          }
-        }),
-      );
+          }),
+        );
+      }
     }).pipe(Effect.provide(bindings.observer));
     return Object.freeze({
       candidateHead: candidate.source_head,
@@ -411,11 +445,6 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
      * each owning native-read transaction retains existing3s/250ms/2s bounds.
      */
     verify: () =>
-      Effect.runPromise(
-        verify().pipe(
-          Effect.timeout("8 seconds"),
-          Effect.catch(() => Effect.fail(refuse())),
-        ),
-      ),
+      Effect.runPromise(verify().pipe(Effect.timeout("8 seconds"), Effect.mapError(diagnose))),
   });
 }

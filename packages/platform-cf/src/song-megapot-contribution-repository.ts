@@ -965,6 +965,10 @@ export type SongFundingWork = Readonly<{
   hint: { readonly instructionHash: string; readonly transactionHash: string } | null;
   nextBlock: string | null;
 }>;
+type SongFundingCandidate = Pick<
+  SongFundingWork,
+  "workId" | "state" | "source" | "hint" | "nextBlock"
+>;
 const workPacketSchema = Schema.Struct({
   workId: C.IdV2,
   token: C.IdV2,
@@ -994,6 +998,17 @@ const workPacketSchema = Schema.Struct({
   attestationBlock: C.UIntV2,
   attestationBlockHash: C.TxHashV2,
 });
+const workCandidateSchema = Schema.Struct({
+  ...workPacketSchema.fields,
+  token: Schema.NullOr(C.IdV2),
+  payload: Schema.Struct({
+    ...workPacketSchema.fields.payload.fields,
+    attempts: C.RevisionV2,
+    status: Schema.optional(Schema.String),
+    leaseToken: Schema.optional(C.IdV2),
+    leaseUntil: Schema.optional(Schema.NullOr(C.InstantV2)),
+  }),
+});
 
 /** Real finite work/canonical-principal repository. No provider is called here;
  * callback, unknown-commit and original shared-wallet authority are unchanged. */
@@ -1004,7 +1019,11 @@ export function makeControlPlaneSongFundingRecoveryStore(
     mapStorage(effect.pipe(Effect.provide(layer)));
   const finish = (
     work: SongFundingWork,
-    result: { complete: boolean; nextBlock: string | null; error: string | null },
+    result: {
+      complete: boolean;
+      nextBlock: string | null;
+      error: string | null;
+    },
   ) =>
     provided(
       Effect.gen(function* () {
@@ -1020,17 +1039,44 @@ export function makeControlPlaneSongFundingRecoveryStore(
       }),
     );
   return {
-    list: (limit: number) =>
+    list: (limit: number, cursor = 0) =>
       provided(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
-          const r = yield* db.execute<{ id: unknown }>({
+          const r = yield* db.execute<{ packet: unknown }>({
             label: "song-funding.work.list",
-            text: "SELECT list_song_funding_work_v2($1) AS id",
-            values: [limit],
+            text: "SELECT list_song_funding_candidates_v2($1,$2) AS packet",
+            values: [limit, cursor],
             readonly: true,
           });
-          return yield* Effect.forEach(r.rows, (row) => decodeRow(C.IdV2, row.id));
+          return yield* Effect.forEach(r.rows, (row) =>
+            Effect.gen(function* () {
+              const p = yield* decodeRow(workCandidateSchema, row.packet);
+              const deployment = yield* Effect.try({
+                try: () =>
+                  validateMegapotV2DeploymentAttestation(
+                    p.deployment as Parameters<typeof validateMegapotV2DeploymentAttestation>[0],
+                  ),
+                catch: () => new SongContributionFailure({ code: "attestation_unavailable" }),
+              });
+              return {
+                workId: p.workId,
+                state: p.state,
+                source: {
+                  profileId: p.profileId,
+                  profileHash: p.profileHash,
+                  validUntil: p.validUntil,
+                  policy: p.policy,
+                  noncePolicy: p.noncePolicy,
+                  deployment,
+                  attestationBlock: p.attestationBlock,
+                  attestationBlockHash: p.attestationBlockHash,
+                },
+                hint: p.payload.hint,
+                nextBlock: p.payload.result?.nextBlock ?? null,
+              } satisfies SongFundingCandidate;
+            }),
+          );
         }),
       ),
     claim: (id: string, token: string) =>

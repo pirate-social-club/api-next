@@ -18,8 +18,6 @@ export async function seedActivitySong(
   admin: Client,
   options?: { readonly accountAlreadyBorn?: boolean },
 ): Promise<void> {
-  const lyrics = LYRIC_LINES.join("\n");
-  const lineHashes = await Promise.all(LYRIC_LINES.map((line) => digest(line)));
   if (options?.accountAlreadyBorn !== true)
     await admin.query("INSERT INTO users (user_id) VALUES ($1)", [AUTHOR_ID]);
   await admin.query(
@@ -49,6 +47,39 @@ export async function seedActivitySong(
     [COMMUNITY_ID, POST_ID, AUTHOR_ID, AUTHOR_PERSONA_ID],
   );
   await admin.query("UPDATE posts SET content_rating='general' WHERE post_id=$1", [POST_ID]);
+  await seedActivitySongMaterials(admin, {
+    communityId: COMMUNITY_ID,
+    postId: POST_ID,
+    authorId: AUTHOR_ID,
+    personaId: AUTHOR_PERSONA_ID,
+    submissionId: SUBMISSION_ID,
+    operationId: OPERATION_ID,
+  });
+}
+
+/** Reuses the ordinary Study content bank for an already published fixture song. */
+export async function seedActivitySongMaterials(
+  admin: Client,
+  identity: {
+    communityId: string;
+    postId: string;
+    authorId: string;
+    personaId: string;
+    submissionId: string;
+    operationId: string;
+    publicationAlreadyExists?: boolean;
+  },
+) {
+  const {
+    communityId: COMMUNITY_ID,
+    postId: POST_ID,
+    authorId: AUTHOR_ID,
+    personaId: AUTHOR_PERSONA_ID,
+    submissionId: SUBMISSION_ID,
+    operationId: OPERATION_ID,
+  } = identity;
+  const lyrics = LYRIC_LINES.join("\n");
+  const lineHashes = await Promise.all(LYRIC_LINES.map((line) => digest(line)));
   await admin.query(
     `INSERT INTO media_post_submissions (
        submission_id, community_id, actor_user_id, operation_id, idempotency_key,
@@ -74,8 +105,14 @@ export async function seedActivitySong(
       LYRICS_REVISION,
     ],
   );
-  await admin.query(
-    `INSERT INTO media_publication_projections (
+  if (identity.publicationAlreadyExists) {
+    await admin.query(
+      "UPDATE media_publication_projections SET primary_language_bcp47='en',lyrics_text=$2,audio_asset_ref='audio-ref' WHERE submission_id=$1",
+      [SUBMISSION_ID, lyrics],
+    );
+  } else {
+    await admin.query(
+      `INSERT INTO media_publication_projections (
        submission_id, community_id, actor_user_id, operation_id, post_id,
        creation_revision, audio_revision, analysis_revision, decision_revision,
        canonical_audio_sha256, title, audio_asset_ref, language_status,
@@ -85,19 +122,20 @@ export async function seedActivitySong(
      ) VALUES ($1,$2,$3,$4,$5,1,$6,$6,1,$7,'Composed song','audio-ref',
        'ready','en','not_explicit','ready','registered','not_required',
        clock_timestamp(),$8,'ready',$9,$10)`,
-    [
-      SUBMISSION_ID,
-      COMMUNITY_ID,
-      AUTHOR_ID,
-      OPERATION_ID,
-      POST_ID,
-      AUDIO_REVISION,
-      CANONICAL_AUDIO_SHA256,
-      AUTHOR_PERSONA_ID,
-      LYRICS_REVISION,
-      lyrics,
-    ],
-  );
+      [
+        SUBMISSION_ID,
+        COMMUNITY_ID,
+        AUTHOR_ID,
+        OPERATION_ID,
+        POST_ID,
+        AUDIO_REVISION,
+        CANONICAL_AUDIO_SHA256,
+        AUTHOR_PERSONA_ID,
+        LYRICS_REVISION,
+        lyrics,
+      ],
+    );
+  }
   await insertSongStemPairFixture(admin, {
     submissionId: SUBMISSION_ID,
     communityId: COMMUNITY_ID,

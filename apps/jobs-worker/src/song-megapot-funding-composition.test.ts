@@ -113,7 +113,7 @@ describe("serving Funding observer/recovery composition", () => {
       await Effect.runPromise(runtime.run({ enabled: true, limit: 1, ensure: runtime.ensure }));
       expect(calls.filter((s) => s.includes("require_reward_run_authority_v1"))).toHaveLength(2);
       expect(calls.filter((s) => s.includes("claim_next_shared_song_context_v2"))).toHaveLength(1);
-      expect(calls.filter((s) => s.includes("list_song_funding_work_v2"))).toHaveLength(1);
+      expect(calls.filter((s) => s.includes("list_song_funding_candidates_v2"))).toHaveLength(1);
       expect(() => makeBoundedSongFundingConnection(undefined, general, lane)).toThrow(
         "Dedicated song funding",
       );

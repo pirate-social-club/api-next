@@ -20,7 +20,7 @@ import {
 type Store = ReturnType<typeof makeControlPlaneSongFundingRecoveryStore>;
 export function makeSongMegapotFundingRecovery(input: {
   readonly store: Store;
-  readonly rpcFor: (work: SongFundingWork) => MegapotV2FullRpcClient;
+  readonly rpcFor: (work: Pick<SongFundingWork, "source" | "state">) => MegapotV2FullRpcClient;
   readonly now: () => string;
   readonly observe: (
     work: SongFundingWork,
@@ -32,7 +32,7 @@ export function makeSongMegapotFundingRecovery(input: {
     const rpc = input.rpcFor(work),
       i = work.state.receipt.instruction,
       p = work.workPolicy;
-    // Provider calls occur only after claim committed, with no DB transaction open.
+    // Bounded discovery occurs after claim committed, with no DB transaction open.
     const current = yield* makeCurrentFundingRecoveryEvidence(rpc, input.now)(
       work.state,
       work.source,
@@ -59,7 +59,7 @@ export function makeSongMegapotFundingRecovery(input: {
     const finalized = yield* read(() => rpc.readFinalizedHead());
     const anchor = BigInt(work.state.receipt.reservation.valid_from_block_exclusive) + 1n;
     const cursor = work.nextBlock === null ? anchor : BigInt(work.nextBlock);
-    const from = cursor < anchor || cursor > finalized.blockNumber ? anchor : cursor;
+    const from = cursor < anchor ? anchor : cursor;
     const to =
       from + BigInt(p.maximumBlocks) - 1n < finalized.blockNumber
         ? from + BigInt(p.maximumBlocks) - 1n
@@ -93,6 +93,7 @@ export function makeSongMegapotFundingRecovery(input: {
         work.source.attestationBlockHash,
       ),
     });
+    const nextBlock = from <= to ? to + 1n : from;
     for (const hash of candidates) {
       const tx = yield* read(() => rpc.readTransaction(hash));
       if (tx === null || tx.from !== i.from || tx.nonce !== BigInt(i.nonce)) continue;
@@ -109,7 +110,7 @@ export function makeSongMegapotFundingRecovery(input: {
     }
     return {
       complete: false,
-      nextBlock: (to < finalized.blockNumber ? to + 1n : anchor).toString(),
+      nextBlock: nextBlock.toString(),
       error: null,
     };
   });
@@ -121,10 +122,40 @@ export function makeSongMegapotFundingRecovery(input: {
     }) {
       if (!options.enabled) return;
       yield* options.ensure();
-      const ids = yield* input.store.list(options.limit);
-      for (const id of ids) {
+      const candidates = yield* input.store.list(
+        options.limit,
+        Math.floor(Date.parse(input.now()) / 60_000),
+      );
+      for (const candidate of candidates) {
         yield* options.ensure();
-        const work = yield* input.store.claim(id, crypto.randomUUID());
+        // A bounded readiness read cannot accept principal or mint signing authority.
+        // Waiting for a known block to finalize is not another discovery attempt.
+        if (candidate.nextBlock !== null) {
+          const ready = yield* Effect.tryPromise({
+            try: async () => {
+              const rpc = input.rpcFor(candidate);
+              const finalized = await rpc.readFinalizedHead();
+              if (finalized.blockNumber < BigInt(candidate.nextBlock ?? "0")) return false;
+              if (candidate.hint !== null) {
+                const tx = await rpc.readTransaction(candidate.hint.transactionHash);
+                const i = candidate.state.receipt.instruction;
+                if (
+                  tx !== null &&
+                  tx.chainId === i.chain_id &&
+                  tx.from === i.from &&
+                  tx.nonce.toString() === i.nonce &&
+                  tx.blockNumber !== null &&
+                  tx.blockNumber > finalized.blockNumber
+                )
+                  return false;
+              }
+              return true;
+            },
+            catch: () => new SongContributionFailure({ code: "outcome_unknown" }),
+          });
+          if (!ready) continue;
+        }
+        const work = yield* input.store.claim(candidate.workId, crypto.randomUUID());
         if (work === null) continue;
         const result = yield* process(work).pipe(
           Effect.catch(

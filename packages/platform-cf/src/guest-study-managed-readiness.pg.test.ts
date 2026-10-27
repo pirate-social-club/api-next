@@ -17,12 +17,65 @@ import {
 } from "./guest-study-managed-readiness.pg-fixture.ts";
 import { makeGuestStudyManagedReadiness } from "./guest-study-managed-readiness.ts";
 import { guestStudyReadinessCandidate as candidate } from "./guest-study-readiness-candidate.ts";
+import { aclSql } from "./guest-study-readiness-sql.ts";
 import { makeControlPlaneOwnerStudyMutations } from "./owner-study-mutations.ts";
 import { bytesBase64Url, origin } from "./owner-study-starter.pg-fixture.ts";
 import { makeControlPlaneOwnerStudyStarter } from "./owner-study-starter.ts";
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientFactory } from "./postgres.ts";
 
 const pgTest = pgUrl ? test : test.skip;
+
+pgTest("each LOGIN ACL audit retains its native bounds during cumulative catalogue latency", () =>
+  readinessFixture(async (f) => {
+    const before = await fingerprint(f);
+    const auditTransactions: number[] = [];
+    let nextTransaction = 0;
+    const clientFactory: PostgresClientFactory = (_url, config) => {
+      const client = new Client(config);
+      client.on("error", () => {});
+      let transaction = 0;
+      return {
+        connection: client.connection,
+        connect: () => client.connect(),
+        end: () => client.end(),
+        query: async ({ text, values }) => {
+          if (text.startsWith("BEGIN")) transaction = ++nextTransaction;
+          if (text === aclSql) {
+            auditTransactions.push(transaction);
+            // Real PostgreSQL execution under the existing2s statement and3s
+            // transaction limits; four ordinary audits exceed one transaction.
+            await client.query("SELECT pg_sleep(0.8)");
+          }
+          const result = await client.query({
+            text,
+            values: values === undefined ? [] : [...values],
+          });
+          if (text.includes("current_setting('transaction_timeout') AS transaction"))
+            expect(result.rows).toEqual([
+              { transaction: "3s", lock: "250ms", statement: "2s", idle: "2s" },
+            ]);
+          return result;
+        },
+      };
+    };
+    const inspector = makeGuestStudyManagedReadiness({
+      ...f.bindings,
+      observer: f.principals.observer.runtime({ clientFactory }),
+    });
+    const admitted = await inspector.verify();
+    expect(admitted.identities.map(({ profile }) => profile).sort()).toEqual([
+      "cron",
+      "learning",
+      "observer",
+      "publicRead",
+    ]);
+    expect(auditTransactions).toHaveLength(4);
+    expect(new Set(auditTransactions).size).toBe(4);
+    expect(await fingerprint(f)).toEqual(before);
+    expect(f.ioCalls()).toBe(0);
+  }),
+);
+
 const refused = async (inspector: ReturnType<typeof makeGuestStudyManagedReadiness>) => {
   await expect(inspector.verify()).rejects.toThrow("Managed Guest Study readiness unavailable");
 };

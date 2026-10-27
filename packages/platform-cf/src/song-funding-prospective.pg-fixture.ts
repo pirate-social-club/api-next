@@ -11,7 +11,11 @@ import {
 /** Fictional admitted SQL prerequisites only. Bootstrap suppresses unrelated
  * producer triggers; actual context/policy/pot/contribution writes keep every
  * trigger and constraint enabled. No provider or managed resource is used. */
-export async function seedProspectiveSongFundingFixture(admin: Client, successor = false) {
+export async function seedProspectiveSongFundingFixture(
+  admin: Client,
+  successor = false,
+  options?: { currentStudy?: boolean; environment?: "test" | "staging" },
+) {
   const h = "a".repeat(64),
     start = Date.now(),
     iso = (n: number) => new Date(start + n).toISOString();
@@ -54,13 +58,34 @@ export async function seedProspectiveSongFundingFixture(admin: Client, successor
         (b) => b.activity === activity,
       );
       if (!doc || !binding) throw Error("Qualification fixture required");
+      if (activity === "study" && options?.currentStudy) {
+        const actual = (
+          await admin.query(
+            "SELECT policy_kind,policy_document FROM qualification_policy_versions WHERE qualification_policy_version_id='study_session_first_pass_v2@1'",
+          )
+        ).rows[0];
+        if (!actual) throw Error("Current Study policy required");
+        doc.policy_id = "study_session_first_pass_v2@1";
+        doc.kind = actual.policy_kind;
+        doc.document = actual.policy_document;
+        doc.policy_hash = await Effect.runPromise(
+          canonicalBodyHash([
+            "pirate.shared-song-qualification-policy.v1",
+            doc.policy_id,
+            activity,
+            doc.kind,
+            doc.document,
+          ]),
+        );
+      }
       const id = doc.policy_id,
         kind = doc.kind,
         hash = doc.policy_hash;
-      await admin.query(
-        "INSERT INTO qualification_policy_versions(qualification_policy_version_id,activity_key,policy_kind,policy_document) VALUES($1,$2,$3,$4::jsonb)",
-        [id, activity, kind, JSON.stringify(doc.document)],
-      );
+      if (!(activity === "study" && options?.currentStudy))
+        await admin.query(
+          "INSERT INTO qualification_policy_versions(qualification_policy_version_id,activity_key,policy_kind,policy_document) VALUES($1,$2,$3,$4::jsonb)",
+          [id, activity, kind, JSON.stringify(doc.document)],
+        );
       await admin.query(
         "UPDATE activity_registry SET status='active',producer_version='purpose-fixture',current_policy_version_id=$2 WHERE activity_key=$1",
         [activity, id],
@@ -161,8 +186,8 @@ export async function seedProspectiveSongFundingFixture(admin: Client, successor
       [iso(86400000)],
     );
     await admin.query(
-      "INSERT INTO reward_asset_whitelist(chain_id,token_address,decimals,symbol,asset_kind,environment,status,policy_version,activated_at,plain_erc20_verified_at) VALUES(84532,$1,6,'USDC','settlement_usdc','test','active','purpose-fixture',now(),now())",
-      [`0x${"22".repeat(20)}`],
+      "INSERT INTO reward_asset_whitelist(chain_id,token_address,decimals,symbol,asset_kind,environment,status,policy_version,activated_at,plain_erc20_verified_at) VALUES(84532,$1,6,'USDC','settlement_usdc',$2,'active','purpose-fixture',now(),now())",
+      [`0x${"22".repeat(20)}`, options?.environment ?? "test"],
     );
     await admin.query("COMMIT");
   } catch (error) {

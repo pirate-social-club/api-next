@@ -13,7 +13,10 @@ const json = (v: unknown) =>
   JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x));
 const digest = (s: string) => Effect.runPromise(digestFundingPreimageV2(s));
 
-export async function seedSongContributionFixture(admin: Client) {
+export async function seedSongContributionFixture(
+  admin: Client,
+  options?: { accountsAlreadyBorn?: boolean; environment?: "test" | "staging" },
+) {
   let terms: C.TermsV2;
   let target: C.CommittedTargetV2;
   let start: number;
@@ -81,14 +84,21 @@ export async function seedSongContributionFixture(admin: Client) {
   await admin.query("BEGIN; SET LOCAL session_replication_role=replica");
   try {
     for (const [index, a] of ["a", "b"].entries()) {
-      await admin.query("INSERT INTO users(user_id) VALUES($1)", [a]);
+      if (!options?.accountsAlreadyBorn)
+        await admin.query("INSERT INTO users(user_id) VALUES($1)", [a]);
       await admin.query("INSERT INTO personas(persona_id,account_id) VALUES($1,$2)", [
         `persona-${a}`,
         a,
       ]);
       await admin.query(
         "INSERT INTO persona_wallet_assignments(assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,address,status,reservation_idempotency_key,assigned_at,created_at,updated_at) VALUES($1,$2,$3,'evm',$4,$5,'active',$1,now(),now(),now())",
-        [`wallet-${a}`, `persona-${a}`, a, index, sender(a)],
+        [
+          `wallet-${a}`,
+          `persona-${a}`,
+          a,
+          index + (options?.accountsAlreadyBorn ? 1 : 0),
+          sender(a),
+        ],
       );
       await admin.query(
         "INSERT INTO persona_community_bindings(persona_id,account_id,community_id,binding_source) VALUES($1,$2,'community','activity_participation')",
@@ -145,7 +155,7 @@ export async function seedSongContributionFixture(admin: Client) {
     policy_hash: await digest(C.cancellationPolicyPreimageV2(recoveryPolicy)),
   };
   await admin.query(
-    "INSERT INTO megapot_deployment_attestations(attestation_id,environment,chain_id,jackpot_address,usdc_address,ticket_nft_address,custody_address,referrer_address,source_tag,jackpot_code_hash,usdc_code_hash,ticket_nft_code_hash,attestation_block_number,attestation_block_hash,abi_version,status,verified_at) VALUES('attestation','test',84532,$1,$2,$3,$4,$5,$6,$6,$6,$6,1,$6,'megapot_v2','active',$7)",
+    "INSERT INTO megapot_deployment_attestations(attestation_id,environment,chain_id,jackpot_address,usdc_address,ticket_nft_address,custody_address,referrer_address,source_tag,jackpot_code_hash,usdc_code_hash,ticket_nft_code_hash,attestation_block_number,attestation_block_hash,abi_version,status,verified_at) VALUES('attestation',$8,84532,$1,$2,$3,$4,$5,$6,$6,$6,$6,1,$6,'megapot_v2','active',$7)",
     [
       `0x${"55".repeat(20)}`,
       token,
@@ -154,6 +164,7 @@ export async function seedSongContributionFixture(admin: Client) {
       `0x${"77".repeat(20)}`,
       `0x${h}`,
       iso(-60_000),
+      options?.environment ?? "test",
     ],
   );
   const capacity = {
@@ -200,7 +211,7 @@ export async function seedSongContributionFixture(admin: Client) {
       community_id: "community",
       persona_id: `persona-${a}`,
       wallet_assignment_id: `wallet-${a}`,
-      wallet_index: a === "a" ? 0 : 1,
+      wallet_index: (a === "a" ? 0 : 1) + (options?.accountsAlreadyBorn ? 1 : 0),
       sender_address: sender(a),
     };
     const schedule: C.ScheduleWitnessV2 = {
