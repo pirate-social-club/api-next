@@ -73,7 +73,38 @@ export async function proveSongFundingPermissions(url: string) {
       await expect(
         runSongFundingPermissionsPreflight(http.url, "http", f.schema),
       ).rejects.toThrow();
-      await proveExistingAccountingTriggerRefusal(jobs.url, f.upgrade);
+      const signingEntrypoints = [
+        "read_owned_song_contribution_current_v2",
+        "load_song_contribution_recovery_v2",
+      ];
+      const signingAcl = async () =>
+        (
+          await f.owner.query(
+            "SELECT oid,proowner,proacl FROM pg_proc WHERE pronamespace=current_schema()::regnamespace AND proname=ANY($1::text[]) ORDER BY oid",
+            [signingEntrypoints],
+          )
+        ).rows;
+      const signingBefore = await signingAcl();
+      await f.owner.query(
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} GRANT EXECUTE ON FUNCTIONS TO ${f.quote(http.role)}`,
+      );
+      try {
+        await proveExistingAccountingTriggerRefusal(jobs.url, f.upgrade);
+      } finally {
+        await f.owner.query(
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} REVOKE EXECUTE ON FUNCTIONS FROM ${f.quote(http.role)}`,
+        );
+      }
+      expect(await signingAcl()).toEqual(signingBefore);
+      for (const role of [http.role, jobs.role])
+        expect(
+          (
+            await f.owner.query(
+              "SELECT has_function_privilege($1,'song_contribution_signing_refusal_v2(jsonb,timestamp with time zone)','EXECUTE') allowed",
+              [role],
+            )
+          ).rows,
+        ).toEqual([{ allowed: false }]);
       const expectedDefinitions = definitionBefore.map((row) => ({
         ...row,
         prosrc: row.prosrc

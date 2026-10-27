@@ -640,15 +640,19 @@ suite(
       const work = claims.find((x) => x !== null);
       if (work === undefined || work === null) throw new Error("Missing actual work lease");
       const now = () => new Date().toISOString();
+      const observedHead = {
+        blockNumber: 20n,
+        blockHash: `0x${h}`,
+        blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
+      };
       const rpc = {
         deployment: work.source.deployment,
         attestDeploymentAt: async () => {},
-        readHead: async () => ({
-          blockNumber: 20n,
-          blockHash: `0x${h}`,
-          blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
-        }),
-        readBlock: async () => ({ blockNumber: 1n, blockHash: `0x${h}` }),
+        readHead: async () => observedHead,
+        readBlock: async (height: bigint) =>
+          height === observedHead.blockNumber
+            ? observedHead
+            : { blockNumber: 1n, blockHash: `0x${h}` },
         readTransactionCount: async () => 4n,
         readPendingNonce: async () => 4n,
       } as unknown as MegapotV2FullRpcClient;

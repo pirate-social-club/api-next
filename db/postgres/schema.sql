@@ -24521,6 +24521,7 @@ BEGIN
     WHERE wa.assignment_id=c.state->'owner'->>'wallet_assignment_id' AND wa.account_id=c.account_id AND wa.persona_id=c.state->'owner'->>'persona_id' AND wa.address=c.state->'owner'->>'sender_address'
       AND wa.status='active' AND v.status='active' AND b.community_id=c.community_id) INTO owned;
   SELECT x.paused INTO paused FROM reward_operations_control x WHERE singleton FOR SHARE;
+  PERFORM 1 FROM reward_operations_run_lease WHERE singleton FOR SHARE;
   SELECT count(*)=3 INTO available FROM reward_funding_work_envelopes_v2 WHERE profile_id=c.profile_id AND valid_until>clock_timestamp()
     AND (scope,scope_key) IN (('account',c.account_id),('leg',c.pool_leg_id),('global','funding')) AND reserved>=1;
   until_at:=least(p.valid_until,(p.recovery_policy->>'valid_until')::TIMESTAMPTZ);
@@ -24545,7 +24546,7 @@ BEGIN
     'attestationId',instr->>'attestation_id','attestationHash',instr->>'attestation_hash',
     'attestationValidUntil',to_char(until_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'originalWalletStillOwned',owned,'boundedWorkAvailable',available,
-    'currentSigningRefusal',CASE WHEN paused IS DISTINCT FROM FALSE THEN 'paused' WHEN NOT p.accepted OR p.valid_until<=clock_timestamp() THEN 'policy_unavailable' ELSE s.recovery_authority->>'currentSigningRefusal' END);
+    'currentSigningRefusal',song_contribution_signing_refusal_v2(i,clock_timestamp()));
 END $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -30700,7 +30701,7 @@ DECLARE c song_megapot_contributions_v2; s JSONB; r JSONB; instr JSONB;
   incoming reward_incoming_receipts_v2; reservation reward_contribution_reservations_v2;
   late reward_late_principal_liabilities_v2; seal TEXT; claims JSONB:='[]'; g JSONB;
   cancel JSONB; nonce_status TEXT; category TEXT; current_state TEXT; actions JSONB;
-  updated TIMESTAMPTZ; plan_state TEXT;
+  updated TIMESTAMPTZ; plan_state TEXT; refusal TEXT;
 BEGIN
   SELECT * INTO c FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId'
     AND community_id=i->>'communityId' AND post_id=i->>'postId' AND contribution_id=i->>'contributionId';
@@ -30739,6 +30740,20 @@ BEGIN
   -- A consumed purpose remains claimed after its dispatch deadline expires.
   actions:=CASE WHEN nonce_status='consumed_transfer' THEN '["start_fresh_contribution"]'::JSONB
     ELSE '["observe_original","recover_original","wait"]'::JSONB END;
+  refusal:=song_contribution_signing_refusal_v2(i,statement_timestamp());
+  -- The wallet rechecks this projection after claiming. A pause followed by
+  -- unpause cannot revive that held grant's permanently shortened interval.
+  IF refusal IS NULL AND nonce_status='unresolved' AND
+    ((s->>'effectiveDeadline')::TIMESTAMPTZ<=statement_timestamp()
+      OR (instr->>'expires_at')::TIMESTAMPTZ<=statement_timestamp()) THEN
+    refusal:='instruction_expired';
+  END IF;
+  IF refusal IS NULL AND nonce_status='unresolved' AND NOT (s->>'nonceFinalized')::BOOLEAN
+    AND s->'fundingGrant'='null'::JSONB AND s->'cancellationGrant'='null'::JSONB
+    AND (s->>'effectiveDeadline')::TIMESTAMPTZ>statement_timestamp()
+    AND (instr->>'expires_at')::TIMESTAMPTZ>statement_timestamp() THEN
+    actions:=actions||'["claim_funding_submission"]'::JSONB;
+  END IF;
   updated:=greatest(c.created_at,incoming.created_at,
     (SELECT max(created_at) FROM song_megapot_contribution_commands_v2 WHERE contribution_id=c.contribution_id),
     CASE WHEN current_state='expired_reconciling' THEN (s->>'effectiveDeadline')::TIMESTAMPTZ END);
@@ -30753,7 +30768,7 @@ BEGIN
     'refund_paid_atomic',coalesce(late.paid_atomic,0)::TEXT,
     'reservation_capacity_state',CASE reservation.disposition WHEN 'held' THEN 'reserved'
       WHEN 'converted' THEN 'consumed_by_pool_credit' ELSE 'released_after_nonce_consumed' END,
-    'cohort_seal_id',seal,'allowed_actions',actions,'pause_reason',NULL,
+    'cohort_seal_id',seal,'allowed_actions',actions,'pause_reason',refusal,
     'updated_at',to_char(updated AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'submissions',claims,'command_receipt',r,'cancellation',jsonb_build_object(
       'object','contribution_cancellation_preparation_state','state',plan_state,
@@ -36829,6 +36844,60 @@ BEGIN
     WHERE n.nspname=target_schema AND p.proname='shared_song_qualification_templates_ready_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_template text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION song_contribution_signing_refusal_v2(i jsonb, observed_at timestamp with time zone) RETURNS text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE c song_megapot_contributions_v2; instr JSONB; p reward_funding_profiles_v2;
+  snap reward_funding_leg_snapshots_v2; brake BOOLEAN; run reward_operations_run_lease;
+BEGIN
+  SELECT * INTO c FROM song_megapot_contributions_v2 WHERE contribution_id=i->>'contributionId'
+    AND account_id=i->>'accountId' AND community_id=i->>'communityId' AND post_id=i->>'postId';
+  IF NOT FOUND THEN RETURN 'not_found'; END IF;
+  instr:=c.state->'receipt'->'instruction';
+  SELECT paused INTO brake FROM reward_operations_control WHERE singleton;
+  SELECT * INTO run FROM reward_operations_run_lease WHERE singleton;
+  IF brake IS DISTINCT FROM FALSE OR run.required IS NULL OR (run.required AND
+    (run.run_id IS NOT NULL AND run.expires_at>observed_at
+      AND run.absolute_deadline>observed_at) IS NOT TRUE) THEN RETURN 'paused'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM persona_wallet_assignments wa
+    JOIN personas v USING(persona_id,account_id)
+    JOIN persona_community_bindings b USING(persona_id,account_id)
+    JOIN users u ON u.user_id=wa.account_id
+    WHERE wa.assignment_id=instr->>'wallet_assignment_id' AND wa.account_id=c.account_id
+      AND wa.persona_id=c.state->'owner'->>'persona_id' AND wa.address=instr->>'from'
+      AND wa.status='active' AND v.status='active' AND u.status='active' AND b.community_id=c.community_id)
+    THEN RETURN 'persona_not_owned'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM reward_wallet_nonce_leases l WHERE l.lease_id=c.nonce_lease_id
+    AND l.source='song_funding_v2' AND l.owner_id=c.contribution_id
+    AND l.command_id=c.state->'receipt'->>'command_id' AND l.request_hash=c.state->'receipt'->>'request_hash'
+    AND l.account_id=c.account_id AND l.persona_id=c.state->'owner'->>'persona_id'
+    AND l.wallet_assignment_id=instr->>'wallet_assignment_id' AND l.chain_id=(instr->>'chain_id')::BIGINT
+    AND l.sender_address=instr->>'from' AND l.nonce=(instr->>'nonce')::BIGINT)
+    THEN RETURN 'lifecycle_changed'; END IF;
+  SELECT * INTO STRICT p FROM reward_funding_profiles_v2 WHERE profile_id=c.profile_id;
+  SELECT * INTO STRICT snap FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=c.snapshot_id;
+  IF NOT p.accepted OR least(p.valid_until,(p.recovery_policy->>'valid_until')::TIMESTAMPTZ)<=observed_at THEN RETURN 'policy_unavailable'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM megapot_deployment_attestations a
+    WHERE a.attestation_id=instr->>'attestation_id' AND a.status='active' AND a.retired_at IS NULL
+      AND a.verified_at<=observed_at AND a.chain_id=(instr->>'chain_id')::BIGINT
+      AND a.usdc_address=instr->>'to_token' AND a.custody_address=instr->>'recipient_custody')
+    THEN RETURN 'attestation_unavailable'; END IF;
+  RETURN snap.recovery_authority->>'currentSigningRefusal';
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='song_contribution_signing_refusal_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, observed_at timestamp with time zone';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
