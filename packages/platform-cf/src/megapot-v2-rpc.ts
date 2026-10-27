@@ -136,6 +136,16 @@ export type MegapotV2RpcClientOptions = Readonly<{
   rpcUrl: string;
   /** Synchronous best-effort observer; its failure cannot change RPC semantics. */
   onReceiptRead?: (observation: MegapotReceiptReadObservation) => void;
+  /** Closed failure codes only, without URLs, parameters or response text. */
+  onRpcFailure?: (
+    observation: Readonly<{
+      method: string;
+      reason: MegapotV2RpcFailed["reason"];
+      httpStatus: number | null;
+      providerCode: number | null;
+      transportFailure: "subrequest_limit" | "timeout" | "other" | null;
+    }>,
+  ) => void;
   attestation: MegapotV2DeploymentAttestation;
   fetcher?: Fetcher;
   timeoutMs?: number;
@@ -478,6 +488,9 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     const id = `megapot:${requestSequence}:${method}`;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let httpStatus: number | null = null;
+    let providerCode: number | null = null;
+    let transportFailure: "subrequest_limit" | "timeout" | "other" | null = null;
     try {
       let response: Response;
       try {
@@ -490,9 +503,22 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
             signal: controller.signal,
           });
         });
-      } catch {
+      } catch (error) {
+        transportFailure = controller.signal.aborted ? "timeout" : "other";
+        try {
+          if (
+            !controller.signal.aborted &&
+            error instanceof Error &&
+            /too many subrequests|subrequest.*limit|limit.*subrequest/i.test(error.message)
+          ) {
+            transportFailure = "subrequest_limit";
+          }
+        } catch {
+          // Exception details are neither trusted nor retained.
+        }
         throw new MegapotV2RpcFailed(controller.signal.aborted ? "timeout" : "unavailable");
       }
+      httpStatus = response.status;
       if (!response.ok) {
         throw new MegapotV2RpcFailed(response.status === 404 ? "not-found" : "unavailable");
       }
@@ -508,10 +534,31 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
         throw new MegapotV2RpcFailed("invalid-response");
       }
       if (envelope.error !== undefined) {
+        if (
+          typeof envelope.error === "object" &&
+          envelope.error !== null &&
+          "code" in envelope.error
+        ) {
+          const code = envelope.error.code;
+          if (typeof code === "number" && Number.isSafeInteger(code)) providerCode = code;
+        }
         throw new MegapotV2RpcFailed("provider-error", findMegapotV2ClaimRevert(envelope.error));
       }
       if (!("result" in envelope)) throw new MegapotV2RpcFailed("invalid-response");
       return envelope.result;
+    } catch (error) {
+      try {
+        options.onRpcFailure?.({
+          method,
+          reason: error instanceof MegapotV2RpcFailed ? error.reason : "unavailable",
+          httpStatus,
+          providerCode,
+          transportFailure,
+        });
+      } catch {
+        // An observer cannot change the original RPC result.
+      }
+      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

@@ -98,6 +98,9 @@ export function makeSongFundingRecoveryRuntime(input: {
         rpcUrl: input.rpcUrl,
         attestation: deployment,
         timeoutMs: MEGAPOT_REWARDS_FUNDING_RPC_TIMEOUT_MS,
+        onRpcFailure: (failure) => {
+          console.warn(JSON.stringify({ event: "shared-song.context.rpc_failure", ...failure }));
+        },
       });
     },
   });
