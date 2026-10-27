@@ -28,6 +28,8 @@ const encode = (value: unknown) =>
  * packets. These tests never construct a provider client, socket or SQL server. */
 async function fixture(
   options: {
+    claims?: number;
+    providerDelayMs?: number;
     drift?: boolean;
     advance?: boolean;
     nowMs?: number;
@@ -172,15 +174,34 @@ async function fixture(
     failures: string[] = [];
   let depth = 0,
     heads = 0,
-    pendingReads = 0;
+    pendingReads = 0,
+    claims = 0;
+  const reads = { active: 0, peak: 0 };
   const balanceBlocks: Array<bigint | undefined> = [];
   const execute: ControlPlaneTransaction["execute"] = <Row>(s: ControlPlaneStatement) =>
     Effect.sync(() => {
       statements.push(s);
       trace.push(s.label);
       let packet: unknown = null;
-      if (s.label === "shared-song.context.claim") packet = work;
-      else if (s.label === "shared-song.context.persist")
+      if (s.label === "shared-song.context.claim") {
+        claims++;
+        if (claims <= (options.claims ?? Number.POSITIVE_INFINITY)) {
+          packet =
+            options.claims === undefined
+              ? work
+              : {
+                  ...work,
+                  workId: `work-${claims}`,
+                  facts: {
+                    ...work.facts,
+                    actor: {
+                      ...work.facts.actor,
+                      wallet_assignment_id: `${work.facts.actor.wallet_assignment_id}-${claims}`,
+                    },
+                  },
+                };
+        }
+      } else if (s.label === "shared-song.context.persist")
         contexts.push(JSON.parse(String(s.values[2])));
       else if (s.label === "shared-song.context.finish-unavailable")
         failures.push(String(s.values[2]));
@@ -218,8 +239,16 @@ async function fixture(
   const rpcRead = async <A>(name: string, value: A) => {
     expect(depth).toBe(0);
     trace.push(`rpc:${name}`);
-    if (options.providerUnknown) throw new Error("Fictional unknown read");
-    return value;
+    reads.active++;
+    reads.peak = Math.max(reads.peak, reads.active);
+    try {
+      if (options.providerDelayMs)
+        await new Promise((resolve) => setTimeout(resolve, options.providerDelayMs));
+      if (options.providerUnknown) throw new Error("Fictional unknown read");
+      return value;
+    } finally {
+      reads.active--;
+    }
   };
   const producer = makeControlPlaneSharedSongContextProducer({
     runtime: Layer.succeed(ControlPlaneDb, db),
@@ -283,10 +312,70 @@ async function fixture(
       },
     }),
   });
-  return { producer, contexts, failures, statements, trace, balanceBlocks };
+  return { producer, contexts, failures, statements, trace, balanceBlocks, reads };
 }
 const options = { enabled: true, ensure: () => Effect.void };
 describe("actual shared-song background context producer", () => {
+  test("six active pairs receive fresh quotes in one bounded pass", async () => {
+    const f = await fixture({ successor: true, claims: 6, providerDelayMs: 1 });
+    await Effect.runPromise(f.producer.run({ ...options, limit: 6 }));
+    expect(f.failures).toEqual([]);
+    expect(f.contexts).toHaveLength(6);
+    const contexts = f.contexts.map((x) => Schema.decodeUnknownSync(C.ContextReadyV2)(x));
+    expect(new Set(contexts.map((x) => x.actor.wallet_assignment_id)).size).toBe(6);
+    expect(contexts.every((x) => Date.parse(x.context_expires_at) > 1000)).toBe(true);
+    expect(f.statements.filter((s) => s.label === "shared-song.context.claim")).toHaveLength(6);
+    expect(f.trace.lastIndexOf("shared-song.context.claim")).toBeLessThan(
+      f.trace.findIndex((x) => x.startsWith("rpc:")),
+    );
+    expect(f.reads.peak).toBe(3);
+  });
+  test("a partial queue stops at null and unavailable observations do not replay work", async () => {
+    const f = await fixture({ claims: 3, providerUnknown: true });
+    await Effect.runPromise(f.producer.run({ ...options, limit: 6 }));
+    expect(f.contexts).toEqual([]);
+    expect(f.failures).toEqual(["outcome_unknown", "outcome_unknown", "outcome_unknown"]);
+    expect(f.statements.filter((s) => s.label === "shared-song.context.claim")).toHaveLength(4);
+  });
+  test("a pause during batch claims stops before provider reads and retains charged work", async () => {
+    const f = await fixture({ claims: 6 });
+    let checks = 0;
+    await expect(
+      Effect.runPromise(
+        f.producer.run({
+          enabled: true,
+          limit: 6,
+          ensure: () =>
+            Effect.sync(() => {
+              if (++checks === 2) throw Error("paused");
+            }),
+        }),
+      ),
+    ).rejects.toThrow("paused");
+    expect(f.statements.map((s) => s.label)).toEqual(["shared-song.context.claim"]);
+    expect(f.trace.some((x) => x.startsWith("rpc:"))).toBe(false);
+    expect(f.contexts).toEqual([]);
+  });
+  test("unknown snapshot commit aborts the batch without replay or a compensating failure write", async () => {
+    const f = await fixture({ claims: 6, unknownCommit: true });
+    await expect(Effect.runPromise(f.producer.run({ ...options, limit: 6 }))).rejects.toMatchObject(
+      { phase: "commit" },
+    );
+    expect(f.statements.filter((s) => s.label === "shared-song.context.claim")).toHaveLength(6);
+    expect(f.contexts.length).toBeGreaterThan(0);
+    expect(f.contexts.length).toBeLessThanOrEqual(3);
+    expect(f.failures).toEqual([]);
+  });
+  test("batch size is finite and disabled processing still claims nothing", async () => {
+    for (const limit of [0, 7, 1.5, Number.POSITIVE_INFINITY]) {
+      const f = await fixture();
+      await expect(Effect.runPromise(f.producer.run({ ...options, limit }))).rejects.toThrow();
+      expect(f.statements).toEqual([]);
+    }
+    const f = await fixture();
+    await Effect.runPromise(f.producer.run({ ...options, enabled: false, limit: 6 }));
+    expect(f.statements).toEqual([]);
+  });
   test("the opt-in successor quote selects only one conditional future ID with a full funding window", async () => {
     const f = await fixture({ successor: true });
     await Effect.runPromise(f.producer.run(options));

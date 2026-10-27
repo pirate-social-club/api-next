@@ -158,25 +158,25 @@ describe("serving Funding observer/recovery composition", () => {
     await run();
     expect(f.labels).toEqual([
       "reward-run-authority.require",
-      "shared-song.context.claim",
-      "reward-run-authority.require",
       "song-funding.work.list",
       "reward-run-authority.require",
       "shared-song.context.claim",
       "reward-run-authority.require",
       "song-funding.work.list",
+      "reward-run-authority.require",
+      "shared-song.context.claim",
     ]);
     f.pause();
     await expect(run()).rejects.toBeInstanceOf(RewardOperationsPaused);
     expect(f.labels).toEqual([
       "reward-run-authority.require",
-      "shared-song.context.claim",
-      "reward-run-authority.require",
       "song-funding.work.list",
       "reward-run-authority.require",
       "shared-song.context.claim",
       "reward-run-authority.require",
       "song-funding.work.list",
+      "reward-run-authority.require",
+      "shared-song.context.claim",
       "reward-run-authority.require",
     ]);
   });

@@ -110,8 +110,9 @@ export function makeSongFundingRecoveryRuntime(input: {
       options: Parameters<typeof runtime.run>[0],
     ) {
       if (!options.enabled) return;
-      yield* contexts.run({ enabled: true, ensure: options.ensure });
+      // Existing receipt/finality recovery takes priority over prospective quotes.
       yield* runtime.run(options);
+      yield* contexts.run({ enabled: true, ensure: options.ensure, limit: 6 });
     }),
   };
 }
