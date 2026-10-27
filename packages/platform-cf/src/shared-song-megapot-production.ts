@@ -551,39 +551,54 @@ export function makeControlPlaneSharedSongContextProducer(input: {
     run: Effect.fn("SharedSongContext.run")(function* (options: {
       enabled: boolean;
       ensure: () => Effect.Effect<void, unknown>;
+      limit?: number;
     }) {
       if (!options.enabled) return;
-      yield* options.ensure();
-      const raw = yield* txCall(
-        "shared-song.context.claim",
-        "SELECT claim_next_shared_song_context_v2($1) AS packet",
-        [crypto.randomUUID()],
-      );
-      if (raw === null) return;
-      const work = yield* decode(Candidate, raw);
-      yield* produce(work).pipe(
-        Effect.catch(
-          Effect.fn("SharedSongContext.retainFailure")(function* (error: unknown) {
-            // A failed COMMIT has unknown outcome. Do not repeat provider reads,
-            // allocation, the transaction callback or its already-consumed attempt.
-            if (
-              error instanceof ControlPlaneTransactionOutcomeUnknown ||
-              (error instanceof ControlPlaneOperationTimedOut &&
-                error.outcomeCertainty === "unknown")
-            )
-              return yield* Effect.fail(error);
-            const code = error instanceof SongContributionFailure ? error.code : "outcome_unknown";
-            const recorded = yield* Effect.exit(
-              txCall(
-                "shared-song.context.finish-unavailable",
-                "SELECT finish_shared_song_context_failure_v2($1,$2,$3) AS packet",
-                [work.workId, work.token, code],
-              ),
-            );
-            if (Exit.isFailure(recorded))
-              return yield* Effect.failCause(Cause.combine(Cause.fail(error), recorded.cause));
-          }),
-        ),
+      const limit = options.limit ?? 1;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 6)
+        throw Error("Context batch limit must be an integer from 1 to 6");
+      const candidates: Candidate[] = [];
+      // Claims remain serialized and individually charged/fenced. Only provider
+      // reads and their independent snapshot transactions may overlap.
+      for (let index = 0; index < limit; index++) {
+        yield* options.ensure();
+        const raw = yield* txCall(
+          "shared-song.context.claim",
+          "SELECT claim_next_shared_song_context_v2($1) AS packet",
+          [crypto.randomUUID()],
+        );
+        if (raw === null) break;
+        candidates.push(yield* decode(Candidate, raw));
+      }
+      yield* Effect.forEach(
+        candidates,
+        (work) =>
+          produce(work).pipe(
+            Effect.catch(
+              Effect.fn("SharedSongContext.retainFailure")(function* (error: unknown) {
+                // A failed COMMIT has unknown outcome. Do not repeat provider reads,
+                // allocation, the transaction callback or its already-consumed attempt.
+                if (
+                  error instanceof ControlPlaneTransactionOutcomeUnknown ||
+                  (error instanceof ControlPlaneOperationTimedOut &&
+                    error.outcomeCertainty === "unknown")
+                )
+                  return yield* Effect.fail(error);
+                const code =
+                  error instanceof SongContributionFailure ? error.code : "outcome_unknown";
+                const recorded = yield* Effect.exit(
+                  txCall(
+                    "shared-song.context.finish-unavailable",
+                    "SELECT finish_shared_song_context_failure_v2($1,$2,$3) AS packet",
+                    [work.workId, work.token, code],
+                  ),
+                );
+                if (Exit.isFailure(recorded))
+                  return yield* Effect.failCause(Cause.combine(Cause.fail(error), recorded.cause));
+              }),
+            ),
+          ),
+        { concurrency: 3, discard: true },
       );
     }),
   };
