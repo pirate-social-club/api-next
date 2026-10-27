@@ -636,6 +636,38 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
             ])
           ).rows[0]?.ok,
         ).toBe(true);
+      // Keep the disposable account quota exhausted from the original enqueue
+      // bucket through the work deadline, including a rollover before this fill.
+      // Existing charges only increase; production clocks and limits stay real.
+      const filled = await db.query(
+        `INSERT INTO dance_moderated_provider_usage_v1
+         SELECT $1,bucket,$2::bigint,$3::numeric FROM generate_series(
+          (SELECT floor(extract(epoch FROM min(created_at))*1000)::bigint/$2::bigint*$2::bigint
+           FROM dance_moderated_reference_commands_v1 WHERE choreography_id=ANY($4::text[])),
+          (SELECT floor(extract(epoch FROM max(worker_deadline))*1000)::bigint/$2::bigint*$2::bigint
+           FROM dance_moderated_reference_commands_v1 WHERE choreography_id=ANY($4::text[])),
+          $2::bigint) AS bucket
+         ON CONFLICT(scope,window_start_ms,window_ms) DO UPDATE
+          SET charged_microunits=EXCLUDED.charged_microunits
+         RETURNING charged_microunits::text AS charged`,
+        [
+          `account:${q.first.video.actor}`,
+          f.facts.profile.windowMs,
+          f.facts.profile.maximumAccountProviderSpendPerWindow,
+          [q.first.choreography, q.second.choreography],
+        ],
+      );
+      expect(filled.rows.length).toBeGreaterThan(1);
+      for (const row of filled.rows)
+        expect(row.charged).toBe(String(f.facts.profile.maximumAccountProviderSpendPerWindow));
+      const usage = async () =>
+        (
+          await db.query(
+            "SELECT window_start_ms::text,window_ms::text,charged_microunits::text FROM dance_moderated_provider_usage_v1 WHERE scope=$1 ORDER BY window_start_ms,window_ms",
+            [`account:${q.first.video.actor}`],
+          )
+        ).rows;
+      const before = await usage();
       // Put the still-pending second command first in the due order. Its
       // account reservation is exhausted; the first command already owns one.
       await db.query(
@@ -651,14 +683,7 @@ suite("native canonical-song and ordinary-reference community ownership", () => 
       expect((await q.state(q.second.choreography)).observation_until.getTime()).toBeGreaterThan(
         Date.now(),
       );
-      expect(
-        (
-          await db.query(
-            "SELECT sum(charged_microunits)::text charged FROM dance_moderated_provider_usage_v1 WHERE scope=$1",
-            [`account:${q.first.video.actor}`],
-          )
-        ).rows[0]?.charged,
-      ).toBe(String(f.facts.profile.maximumAccountProviderSpendPerWindow));
+      expect(await usage()).toEqual(before);
     }));
 
   test("expired queued work closes without external grants or changing its historical receipt", async () =>
