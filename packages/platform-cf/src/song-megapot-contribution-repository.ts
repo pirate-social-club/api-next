@@ -772,6 +772,30 @@ export function makeControlPlaneSongContributionReadPorts(
         "song-contribution.current.read",
         "SELECT read_owned_song_contribution_current_v2($1::jsonb) AS packet",
         [json({ ...scope, accountId })],
+      ).pipe(
+        Effect.flatMap((packet) =>
+          Effect.gen(function* () {
+            if (packet === null) return null;
+            const result = yield* decodeRow(
+              Schema.Struct({ accountId: C.IdV2, current: C.CurrentStateV2 }),
+              packet,
+            );
+            if (runtime.rewardsEnabled) return result;
+            return {
+              ...result,
+              current: {
+                ...result.current,
+                pause_reason: "paused" as const,
+                allowed_actions: result.current.allowed_actions.filter(
+                  (action) =>
+                    action !== "claim_funding_submission" &&
+                    action !== "prepare_nonce_cancellation" &&
+                    action !== "claim_nonce_cancellation",
+                ),
+              },
+            };
+          }),
+        ),
       ),
     command: (scope, accountId, operation, key) =>
       read(

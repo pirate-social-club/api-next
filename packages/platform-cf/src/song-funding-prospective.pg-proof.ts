@@ -154,6 +154,122 @@ export async function proveProspectiveSongFunding(input: {
       generation: "1",
     },
   ]);
+  // Exercise the exact website boundary: create -> private projection -> claim
+  // under the dedicated HTTP role, before the Jobs principal acceptance proof.
+  const ownScope = { ...scope, contributionId: receipt.contribution_id };
+  const current = async () =>
+    Schema.decodeUnknownSync(Schema.Struct({ accountId: C.IdV2, current: C.CurrentStateV2 }))(
+      await Effect.runPromise(reads.current(ownScope, "b")),
+    ).current;
+  const immutableBeforeRead = await snapshot();
+  const available = await current();
+  expect(available.allowed_actions).toContain("claim_funding_submission");
+  expect(available.allowed_actions).not.toContain("prepare_nonce_cancellation");
+  expect(available.pause_reason).toBeNull();
+  expect(await snapshot()).toEqual(immutableBeforeRead);
+  expect(await Effect.runPromise(reads.current(ownScope, "foreign"))).toBeNull();
+  expect(
+    await Effect.runPromise(reads.current({ ...ownScope, postId: "foreign" }, "b")),
+  ).toBeNull();
+  const disabledReads = makeControlPlaneSongContributionReadPorts(http, auth, {
+    rewardsEnabled: false,
+  });
+  const disabled = Schema.decodeUnknownSync(
+    Schema.Struct({ accountId: C.IdV2, current: C.CurrentStateV2 }),
+  )(await Effect.runPromise(disabledReads.current(ownScope, "b"))).current;
+  expect(disabled.allowed_actions).not.toContain("claim_funding_submission");
+  expect(disabled.pause_reason).toBe("paused");
+  expect(disabled.command_receipt).toEqual(receipt);
+  expect(disabled.allowed_actions).toContain("recover_original");
+  const role = decodeURIComponent(new URL(input.http).username);
+  const identity = JSON.stringify({ ...ownScope, accountId: "b" });
+  // Fixture-only transactions change one guard at a time. SET LOCAL ROLE makes
+  // the read use the same narrow privileges, and rollback restores each fixture.
+  for (const sql of [
+    "SELECT set_reward_operations_paused_v1(revision,true,'fixture pause') FROM reward_operations_control WHERE singleton",
+    "SELECT set_config('pirate.reward_run_lease_requirement_change','deployment',true); UPDATE reward_operations_run_lease SET required=true,run_id='expired-fixture',acquired_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()-interval '1 second',absolute_deadline=clock_timestamp()+interval '1 hour' WHERE singleton",
+    "UPDATE reward_funding_profiles_v2 SET accepted=false",
+    "UPDATE megapot_deployment_attestations SET status='retired',retired_at=clock_timestamp()",
+    "UPDATE persona_wallet_assignments SET status='tombstoned',tombstoned_at=clock_timestamp() WHERE account_id='b'",
+    "SELECT set_reward_operations_paused_v1(revision,true,'fixture past pause') FROM reward_operations_control WHERE singleton; SELECT set_reward_operations_paused_v1(revision,false,'fixture unpause') FROM reward_operations_control WHERE singleton",
+    "UPDATE song_megapot_contributions_v2 SET state=jsonb_set(state,'{effectiveDeadline}',to_jsonb(to_char(clock_timestamp()-interval '1 second','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))) WHERE account_id='b'",
+  ]) {
+    await input.admin.query("BEGIN");
+    try {
+      // These isolated negative fixtures represent immutable rows that were
+      // admitted with unavailable policy or expired authority, not runtime edits.
+      const fixtureOnly =
+        sql.startsWith("UPDATE reward_funding_profiles") ||
+        sql.startsWith("UPDATE persona_wallet_assignments") ||
+        sql.startsWith("UPDATE song_megapot_contributions");
+      if (fixtureOnly) await input.admin.query("SET LOCAL session_replication_role=replica");
+      await input.admin.query(sql);
+      if (fixtureOnly) await input.admin.query("SET LOCAL session_replication_role=origin");
+      await input.admin.query(`SET LOCAL ROLE "${role.replaceAll('"', '""')}"`);
+      const projected = (
+        await input.admin.query(
+          "SELECT read_owned_song_contribution_current_v2($1::jsonb) packet",
+          [identity],
+        )
+      ).rows[0].packet.current;
+      expect(projected.allowed_actions).not.toContain("claim_funding_submission");
+      expect(projected.command_receipt).toEqual(receipt);
+    } finally {
+      await input.admin.query("ROLLBACK");
+    }
+  }
+  const claim: C.SubmissionClaimRequestV2 = {
+    idempotency_key: "purpose_original_claim_0001",
+    expected_state_revision: available.revision,
+    instruction_hash: receipt.instruction.instruction_hash,
+    purpose: "funding_transfer" as const,
+    client_instance_id: "purpose_client_0001",
+    submission_attempt_id: "purpose_attempt_0001",
+  };
+  const claimed = await Effect.runPromise(
+    service.execute("ClaimSongMegapotContributionSubmissionV2", ownScope, claim),
+  );
+  expect(claimed).toMatchObject({
+    receipt: { purpose: "funding_transfer" },
+    delivery: { kind: "fresh_grant" },
+  });
+  expect((await current()).allowed_actions).not.toContain("claim_funding_submission");
+  expect(
+    await Effect.runPromise(
+      service.execute("ClaimSongMegapotContributionSubmissionV2", ownScope, claim),
+    ),
+  ).toMatchObject({ delivery: { kind: "recovery_only" } });
+  await expect(
+    Effect.runPromise(
+      service.execute("ClaimSongMegapotContributionSubmissionV2", ownScope, {
+        ...claim,
+        idempotency_key: "purpose_original_claim_0002",
+        expected_state_revision: (await current()).revision,
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "submission_already_claimed" });
+  await input.admin.query("BEGIN");
+  try {
+    await input.admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,true,'claimed pause') FROM reward_operations_control WHERE singleton",
+    );
+    await input.admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,false,'claimed unpause') FROM reward_operations_control WHERE singleton",
+    );
+    await input.admin.query(`SET LOCAL ROLE "${role.replaceAll('"', '""')}"`);
+    const invalidated = (
+      await input.admin.query("SELECT read_owned_song_contribution_current_v2($1::jsonb) packet", [
+        identity,
+      ])
+    ).rows[0].packet.current;
+    expect(invalidated.pause_reason).toBe("instruction_expired");
+    expect(invalidated.state).toBe("expired_reconciling");
+    expect(invalidated.submissions).toHaveLength(1);
+    expect(invalidated.submissions[0].state).toBe("claimed");
+    expect(invalidated.command_receipt).toEqual(receipt);
+  } finally {
+    await input.admin.query("ROLLBACK");
+  }
   const now = new Date().toISOString();
   await Effect.runPromise(
     Effect.gen(function* () {
