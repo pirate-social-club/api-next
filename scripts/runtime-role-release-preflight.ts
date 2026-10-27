@@ -62,6 +62,8 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     allowed: false,
   },
   { object: "guard_reward_http_admission()", privilege: "EXECUTE", allowed: false },
+  { object: "load_shared_song_frozen_plan_v2(text)", privilege: "EXECUTE", allowed: true },
+  { object: "guard_shared_song_frozen_purchase_v2()", privilege: "EXECUTE", allowed: false },
   // Acquiring, renewing and releasing a run lease are operator acts. Automation
   // may only pause on expiry and ask whether it still has authority.
   ...[

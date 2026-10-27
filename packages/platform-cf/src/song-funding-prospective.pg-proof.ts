@@ -314,4 +314,5 @@ export async function proveProspectiveSongFunding(input: {
       )
     ).rows,
   ).toEqual([{ funded_atomic: "2000000", status: "active" }]);
+  return { receipt, context, start, postId };
 }
