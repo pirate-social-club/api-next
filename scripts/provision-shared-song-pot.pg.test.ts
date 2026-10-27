@@ -7,7 +7,15 @@ import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src
 import { makeReleaseRuntimeLogin } from "../packages/platform-cf/src/reward-safe-runtime-role.pg-fixture.ts";
 import { seedSong } from "../packages/platform-cf/src/rewards-song-offers.pg-fixture.ts";
 import { makeControlPlaneSharedSongContextProducer } from "../packages/platform-cf/src/shared-song-megapot-production.ts";
+import {
+  SHARED_SONG_SUCCESSOR_RULE,
+  SHARED_SONG_SUCCESSOR_RULE_ID,
+} from "../packages/platform-cf/src/shared-song-successor-schedule.ts";
 import { makeControlPlaneSongContributionPorts } from "../packages/platform-cf/src/song-megapot-contribution-repository.ts";
+import {
+  applySharedSongSuccessorTemplate,
+  readSharedSongSuccessorTemplate,
+} from "./admit-shared-song-successor.ts";
 import {
   applySharedSongProvisioning,
   buildSharedSongProvisioning,
@@ -87,13 +95,13 @@ suite("shared-song pot provisioning", () => {
          clock_timestamp())`,
       [
         SHARED_SONG_ATTESTATION,
-        `0x${"2".repeat(40)}`,
+        SHARED_SONG_SUCCESSOR_RULE.jackpotAddress,
         `0x${"1".repeat(40)}`,
         `0x${"3".repeat(40)}`,
         SAFE,
         `0x${"4".repeat(40)}`,
         hex("6"),
-        hex("7"),
+        SHARED_SONG_SUCCESSOR_RULE.jackpotCodeHash,
         hex("8"),
         hex("9"),
         ATTESTATION_BLOCK.toString(),
@@ -333,5 +341,106 @@ suite("shared-song pot provisioning", () => {
         offer_status: "active",
       },
     ]);
+  }, 60_000);
+
+  test("a reviewed successor replaces only the admission pointer while all original financial state stays byte-equivalent", async () => {
+    const financial = async () => {
+      const tables = [
+        "reward_funding_profiles_v2",
+        "reward_funding_work_envelopes_v2",
+        "reward_context_work_counters_v2",
+        "reward_funding_account_counters_v2",
+        "reward_song_slots_v2",
+        "song_megapot_contributions_v2",
+        "song_reward_offers",
+        "song_reward_offer_legs",
+      ];
+      const rows = [];
+      for (const table of tables)
+        rows.push(
+          (
+            await admin.query(
+              `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) data FROM ${table} t`,
+            )
+          ).rows[0].data,
+        );
+      return rows;
+    };
+    const before = await financial();
+    await admin.query("BEGIN READ ONLY");
+    const plan = await readSharedSongSuccessorTemplate(admin, communityId);
+    await admin.query("ROLLBACK");
+    const old = (
+      await admin.query(
+        "SELECT to_jsonb(t) data FROM reward_shared_song_templates_v2 t WHERE template_hash=$1",
+        [plan.predecessorHash],
+      )
+    ).rows[0].data;
+    const revision = async () =>
+      Number(
+        (await admin.query("SELECT revision::text FROM reward_operations_control WHERE singleton"))
+          .rows[0].revision,
+      );
+    const input = {
+      communityId,
+      expectedAdmissionHash: plan.expectedAdmissionHash,
+      expectedTemplateHash: plan.template.template_hash,
+      expectedBrakeRevision: await revision(),
+    };
+    await expect(applySharedSongSuccessorTemplate(admin, input)).rejects.toThrow(
+      "exact paused brake",
+    );
+    await admin.query(
+      "SELECT set_reward_operations_paused_v1(revision,TRUE,'successor_fixture') FROM reward_operations_control WHERE singleton",
+    );
+    input.expectedBrakeRevision = await revision();
+    await expect(
+      applySharedSongSuccessorTemplate(admin, { ...input, expectedTemplateHash: "f".repeat(64) }),
+    ).rejects.toThrow("reviewed template/admission changed");
+    await expect(
+      applySharedSongSuccessorTemplate(admin, {
+        ...input,
+        expectedBrakeRevision: input.expectedBrakeRevision - 1,
+      }),
+    ).rejects.toThrow("exact paused brake");
+    await admin.query("SELECT acquire_reward_run_lease_v1('successor-template-fixture',30,60)");
+    await expect(applySharedSongSuccessorTemplate(admin, input)).rejects.toThrow(
+      "exact paused brake",
+    );
+    await admin.query(
+      "SELECT release_reward_run_lease_v1(run_id,fence) FROM reward_operations_run_lease WHERE singleton",
+    );
+    expect(await financial()).toEqual(before);
+    const applied = await applySharedSongSuccessorTemplate(admin, input);
+    expect(applied).toEqual(plan);
+    expect(applied.template.operational_profile.scheduleRuleId).toBe(SHARED_SONG_SUCCESSOR_RULE_ID);
+    expect(applied.template.qualification_templates).toEqual(old.qualification_templates);
+    expect(applied.template.profile_id).toBe(old.profile_id);
+    expect(applied.template.valid_until).toBe(new Date(old.valid_until).toISOString());
+    expect(await financial()).toEqual(before);
+    expect(
+      (
+        await admin.query(
+          "SELECT to_jsonb(t) data FROM reward_shared_song_templates_v2 t WHERE template_hash=$1",
+          [plan.predecessorHash],
+        )
+      ).rows[0].data,
+    ).toEqual(old);
+    expect(
+      (
+        await admin.query(
+          "SELECT template_id,admission_hash FROM reward_shared_song_template_admissions_v2 WHERE community_id=$1",
+          [communityId],
+        )
+      ).rows[0],
+    ).toEqual({
+      template_id: plan.template.template_id,
+      admission_hash: plan.admission.admission_hash,
+    });
+    await expect(applySharedSongSuccessorTemplate(admin, input)).rejects.toThrow();
+    expect(await financial()).toEqual(before);
+    expect(
+      (await admin.query("SELECT count(*)::int n FROM reward_shared_song_templates_v2")).rows[0].n,
+    ).toBe(2);
   }, 60_000);
 });

@@ -37,6 +37,7 @@ export const SONG_FUNDING_FUNCTIONS = {
     "list_song_funding_work_v2(integer)",
     "load_owned_song_contribution_v2(jsonb)",
     "persist_shared_song_context_v2(text,text,jsonb,jsonb,jsonb,boolean)",
+    "load_shared_song_frozen_plan_v2(text)",
     "record_song_recovery_evidence_v2(text,text,jsonb)",
     "require_song_funding_work_lease_v2(text,text)",
     "require_reward_run_authority_v1()",

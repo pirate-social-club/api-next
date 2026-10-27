@@ -1,10 +1,17 @@
+import { Effect } from "effect";
 import type { Client } from "pg";
+import { canonicalBodyHash } from "../../application/src/use-cases/content/common.ts";
 import { sharedSongParticipantFixture } from "../../testing/src/shared-song-participant-fixture.ts";
+import {
+  SHARED_SONG_SUCCESSOR_PRICE_RULE,
+  SHARED_SONG_SUCCESSOR_RULE,
+  SHARED_SONG_SUCCESSOR_RULE_ID,
+} from "./shared-song-successor-schedule.ts";
 
 /** Fictional admitted SQL prerequisites only. Bootstrap suppresses unrelated
  * producer triggers; actual context/policy/pot/contribution writes keep every
  * trigger and constraint enabled. No provider or managed resource is used. */
-export async function seedProspectiveSongFundingFixture(admin: Client) {
+export async function seedProspectiveSongFundingFixture(admin: Client, successor = false) {
   const h = "a".repeat(64),
     start = Date.now(),
     iso = (n: number) => new Date(start + n).toISOString();
@@ -12,6 +19,19 @@ export async function seedProspectiveSongFundingFixture(admin: Client) {
   const packet = await sharedSongParticipantFixture(new Date());
   await admin.query("BEGIN; SET LOCAL session_replication_role=replica");
   try {
+    if (successor) {
+      // Select the fictional prerequisite profile before any actual protocol
+      // command. The normal producer/Create/credit/purchase retain all guards.
+      await admin.query(
+        `UPDATE reward_funding_profiles_v2 SET capacity_profile=capacity_profile||
+          '{"maxDrawings":1,"reservationMs":60000,"safetyMarginMs":30000,"maximumWitnessAgeMs":120000,"priceCeilingAtomic":"10000","minimumAtomic":"10000"}'::jsonb,
+          nonce_policy=jsonb_set(nonce_policy,'{maxAgeMs}','120000') WHERE profile_id='profile'`,
+      );
+      await admin.query(
+        "UPDATE megapot_deployment_attestations SET jackpot_address=$1,jackpot_code_hash=$2 WHERE attestation_id='attestation'",
+        [SHARED_SONG_SUCCESSOR_RULE.jackpotAddress, SHARED_SONG_SUCCESSOR_RULE.jackpotCodeHash],
+      );
+    }
     await admin.query(
       "INSERT INTO communities(community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES('community','Purpose fixture','active','b',now(),now())",
     );
@@ -100,6 +120,20 @@ export async function seedProspectiveSongFundingFixture(admin: Client) {
       legalActivationGate: "test_only",
       initializedDrawingIds: ["101", "102", "103", "104", "105", "106"],
     };
+    if (successor)
+      Object.assign(operations, {
+        scheduleRuleId: SHARED_SONG_SUCCESSOR_RULE_ID,
+        scheduleRuleHash: await Effect.runPromise(
+          canonicalBodyHash(["pirate.shared-song-schedule-rule.v2", SHARED_SONG_SUCCESSOR_RULE]),
+        ),
+        priceRuleHash: await Effect.runPromise(
+          canonicalBodyHash(["pirate.shared-song-price-rule.v2", SHARED_SONG_SUCCESSOR_PRICE_RULE]),
+        ),
+        cadenceSeconds: "1800",
+        entryCutoffSeconds: 120,
+        purchaseLeadSeconds: 900,
+        initializedDrawingIds: [],
+      });
     await admin.query(
       "INSERT INTO reward_shared_song_templates_v2(template_id,community_id,profile_id,template_hash,attestation_id,reward_policy,compiled_plan,qualification_templates,operational_profile,accepted_by,accepted_receipt_hash,valid_from,valid_until) VALUES('purpose-template','community','profile',$1,'attestation',$2,'{}',$3,$4,'fixture-operator',$1,$5,$6)",
       [

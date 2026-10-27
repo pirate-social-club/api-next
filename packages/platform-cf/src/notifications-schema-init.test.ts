@@ -262,7 +262,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations.at(-1)).toMatchObject({
     version: "0322_shared_song_frozen_purchase.sql",
-    checksum: "e69466dcf087b0743a5ce4b799ac00bfa4574c1fbd2c6b247a74f5dc31ba98be",
+    checksum: "9934a098b4a7fa0962f94ea8e850f99edd38bec720f9a301a8b76d0b3922ac9e",
   });
 });
 

@@ -80,7 +80,8 @@ BEGIN
   'load_shared_song_reward_template_v2(text,text)','instantiate_shared_song_reward_policy_v2(jsonb,text,text,text,jsonb,text)',
   'bind_initial_shared_song_pot_v2(jsonb,text,jsonb)','read_shared_song_megapot_summary_v2(text,text,text)']
  WHEN 'context_worker' THEN ARRAY['claim_next_shared_song_context_v2(text)',
-  'persist_shared_song_context_v2(text,text,jsonb,jsonb,jsonb,boolean)','finish_shared_song_context_failure_v2(text,text,text)']
+  'persist_shared_song_context_v2(text,text,jsonb,jsonb,jsonb,boolean)','finish_shared_song_context_failure_v2(text,text,text)',
+  'load_shared_song_frozen_plan_v2(text)']
  WHEN 'safe_purchase' THEN ARRAY['load_shared_song_frozen_plan_v2(text)'] END;
  IF allowed IS NULL THEN RAISE EXCEPTION 'explicit funding purpose required' USING ERRCODE='42501'; END IF;
  FOREACH signature IN ARRAY allowed LOOP

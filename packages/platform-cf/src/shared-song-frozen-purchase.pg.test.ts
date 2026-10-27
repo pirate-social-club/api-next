@@ -24,6 +24,7 @@ import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.t
 import { sha256Hex } from "./reward-safe-settlement.ts";
 import { loadFrozenSharedSongDrawing } from "./shared-song-frozen-plan.ts";
 import { verifyPreparedSafeCall } from "./shared-song-prepared-purchase.ts";
+import { SHARED_SONG_SUCCESSOR_RULE } from "./shared-song-successor-schedule.ts";
 import { proveProspectiveSongFunding } from "./song-funding-prospective.pg-proof.ts";
 import { seedSongContributionFixture } from "./song-megapot-contribution.pg-fixture.ts";
 
@@ -33,7 +34,7 @@ const h = `0x${"a".repeat(64)}`;
 const custody = `0x${"33".repeat(20)}`;
 
 pgTest(
-  "shared-song purchases bind the original real contribution and roll back every drift refusal",
+  "conditional successor purchases bind the original real contribution and roll back every drift refusal",
   async () => {
     if (!url) throw Error("Disposable PostgreSQL URL required");
     await withDanceServingPermissionFixture(url, async (f) => {
@@ -62,22 +63,33 @@ pgTest(
         owner: f.owner,
         http: http.url,
         jobs: jobs.url,
+        successor: true,
       });
       const legId = funded.receipt.target.pool_leg_id;
       const row = funded.context.schedule.rows[0];
       if (!row) throw Error("Original planned drawing required");
       const drawId = BigInt(row.drawing_id),
-        originalTime = BigInt(Date.parse(row.drawing_time) / 1000);
+        originalTime = BigInt(Date.parse(row.drawing_time) / 1000),
+        originalPrice = BigInt(row.price_atomic);
+      expect(row.initialized).toBe(false);
+      expect(row.proof_kind).toBe("attested_recurrence");
+      const jobsOriginal = await Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* loadFrozenSharedSongDrawing(yield* ControlPlaneDb, legId, drawId);
+        }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(jobs.url))),
+      );
+      expect(jobsOriginal?.drawingId).toBe(drawId.toString());
+      expect(jobsOriginal?.proofKind).toBe("attested_recurrence");
       const deployment: MegapotV2DeploymentAttestation = {
         attestationId: "attestation",
         environment: "test",
         chainId: 84532,
-        jackpotAddress: `0x${"55".repeat(20)}`,
+        jackpotAddress: SHARED_SONG_SUCCESSOR_RULE.jackpotAddress,
         ticketNftAddress: `0x${"66".repeat(20)}`,
         usdcAddress: `0x${"22".repeat(20)}`,
         custodyAddress: custody,
         referrerAddress: `0x${"77".repeat(20)}`,
-        jackpotCodeHash: h,
+        jackpotCodeHash: SHARED_SONG_SUCCESSOR_RULE.jackpotCodeHash,
         ticketNftCodeHash: h,
         usdcCodeHash: h,
       };
@@ -99,8 +111,8 @@ pgTest(
             "a".repeat(64),
           ],
         );
-      await observation("frozen-good", originalTime, 1_000_000n);
-      await observation("frozen-drift", originalTime - 1n, 999_999n, 60);
+      await observation("frozen-good", originalTime, originalPrice);
+      await observation("frozen-drift", originalTime - 1n, originalPrice - 1n, 60);
       const runtime = await makeReleaseRuntimeLogin(f.admin, url, f.schema);
       try {
         const layer = makeDirectPostgresControlPlaneLayer(runtime.url);
@@ -110,6 +122,7 @@ pgTest(
           }).pipe(Effect.provide(layer)),
         );
         expect(original?.drawingTimeMs).toBe(Number(originalTime) * 1000);
+        expect(original?.proofKind).toBe("attested_recurrence");
         const denied = new Client({ connectionString: runtime.url });
         await denied.connect();
         try {
@@ -121,7 +134,7 @@ pgTest(
         }
         let currentId = drawId,
           time = originalTime,
-          price = 1_000_000n,
+          price = originalPrice,
           drift = false,
           age = 0;
         const base = fakeSafeChain().rpc;
@@ -174,6 +187,11 @@ pgTest(
             )
           ).rows[0];
         const before = await counts();
+        currentId = drawId - 1n;
+        expect(
+          await Effect.runPromise(makeRewardSafePurchaseCoordinator(options).prepare(legId)),
+        ).toEqual({ kind: "drawing_changed" });
+        expect(await counts()).toEqual(before);
         for (const mutation of [
           "id",
           "early",
@@ -185,7 +203,7 @@ pgTest(
         ] as const) {
           currentId = mutation === "id" ? drawId + 1n : drawId;
           time = originalTime + (mutation === "early" ? -1n : mutation === "late" ? 1n : 0n);
-          price = 1_000_000n + (mutation === "cheaper" ? -1n : mutation === "dearer" ? 1n : 0n);
+          price = originalPrice + (mutation === "cheaper" ? -1n : mutation === "dearer" ? 1n : 0n);
           drift = mutation === "reorg";
           age = mutation === "stale" ? 121 : 0;
           const attempt = Effect.runPromise(
@@ -198,7 +216,7 @@ pgTest(
         }
         currentId = drawId;
         time = originalTime;
-        price = 1_000_000n;
+        price = originalPrice;
         drift = false;
         age = 0;
         // A hostile/raw insertion that substitutes a different observation must
@@ -453,6 +471,18 @@ pgTest(
             )
           ).rows[0],
         ).toEqual({ allowed: true, raw: false });
+        const context = await f.makeRole();
+        await f.owner.query("SELECT grant_shared_song_funding_runtime_v2($1,'context_worker')", [
+          context.role,
+        ]);
+        expect(
+          (
+            await f.owner.query(
+              "SELECT has_function_privilege($1,'load_shared_song_frozen_plan_v2(text)','EXECUTE') allowed,has_table_privilege($1,'reward_funding_leg_snapshots_v2','SELECT') raw,has_function_privilege($1,'guard_shared_song_frozen_purchase_v2()','EXECUTE') trigger_allowed",
+              [context.role],
+            )
+          ).rows[0],
+        ).toEqual({ allowed: true, raw: false, trigger_allowed: false });
         const functions = (
           await f.owner.query(
             "SELECT proname,prosecdef,proconfig FROM pg_proc WHERE oid=ANY($1::text[]::regprocedure[])",
