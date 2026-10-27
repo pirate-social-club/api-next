@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ControlPlaneDb, type ControlPlaneStatement } from "@pirate/application";
 import { deriveMegapotTicket } from "@pirate/domain";
 import { Effect, Layer } from "effect";
 import { Client } from "pg";
 import { hexToBytes } from "viem";
+import { exportSafePoolCalls } from "../../../scripts/safe-pool-export-calls.ts";
 import { withDanceServingPermissionFixture } from "./dance-serving-permissions.pg-fixture.ts";
 import { deriveMegapotPurchaseEffectId } from "./megapot-purchase-coordinator.ts";
 import {
@@ -19,15 +23,16 @@ import { makeControlPlaneRewardSafePurchaseStore } from "./reward-safe-purchase-
 import { makeReleaseRuntimeLogin } from "./reward-safe-runtime-role.pg-fixture.ts";
 import { sha256Hex } from "./reward-safe-settlement.ts";
 import { loadFrozenSharedSongDrawing } from "./shared-song-frozen-plan.ts";
+import { verifyPreparedSafeCall } from "./shared-song-prepared-purchase.ts";
 import { proveProspectiveSongFunding } from "./song-funding-prospective.pg-proof.ts";
 import { seedSongContributionFixture } from "./song-megapot-contribution.pg-fixture.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
-const suite = url ? test : test.skip;
+const pgTest = url ? test : test.skip;
 const h = `0x${"a".repeat(64)}`;
 const custody = `0x${"33".repeat(20)}`;
 
-suite(
+pgTest(
   "shared-song purchases bind the original real contribution and roll back every drift refusal",
   async () => {
     if (!url) throw Error("Disposable PostgreSQL URL required");
@@ -309,6 +314,101 @@ suite(
         );
         expect(prepared).toMatchObject({ kind: "prepared", drawingId: drawId });
         expect((await counts()).drawings).toBe(1);
+        if (prepared.kind !== "prepared") throw Error("Expected prepared call");
+        const call = { effectId: prepared.effectId, to: deployment.jackpotAddress, data: calldata };
+        const check = (overrides: Partial<Parameters<typeof verifyPreparedSafeCall>[0]> = {}) =>
+          Effect.runPromise(
+            verifyPreparedSafeCall({
+              attestationId: "attestation",
+              call,
+              rpcFor: () => rpc,
+              minimumEntrySeconds: 600,
+              ...overrides,
+            }).pipe(Effect.provide(layer)),
+          );
+        expect(await check()).toEqual({ executeBeforeMs: candidate.purchaseDeadlineAtMs });
+        expect(await check({ call: { ...call, data: "0x" } })).toBeNull();
+        expect(await check({ rpcFor: undefined })).toBeNull();
+        currentId = drawId + 1n;
+        expect(await check()).toBeNull();
+        currentId = drawId;
+        const deadline = candidate.purchaseDeadlineAtMs;
+        const lateHead = {
+          blockNumber: 2000n,
+          blockHash: `0x${"c".repeat(64)}`,
+          blockTimestamp: BigInt(deadline / 1000),
+        };
+        const lateRpc = {
+          ...rpc,
+          attestDeploymentAt: async () => {},
+          readCurrentDrawingId: async () => drawId,
+          readHead: async () => lateHead,
+          readBlock: async () => lateHead,
+        };
+        expect(await check({ rpcFor: () => lateRpc, now: () => deadline })).toBeNull();
+        const directory = await mkdtemp(join(tmpdir(), "shared-frozen-export-"));
+        try {
+          const files = await exportSafePoolCalls({
+            attestationId: "attestation",
+            outDirectory: join(directory, "valid"),
+            layer,
+            rpcFor: () => rpc,
+            minimumEntrySeconds: 600,
+          });
+          expect(files).toHaveLength(1);
+          await expect(
+            exportSafePoolCalls({
+              attestationId: "attestation",
+              outDirectory: join(directory, "missing-proof"),
+              layer,
+            }),
+          ).rejects.toMatchObject({ reason: "prepared_call_not_current" });
+          await expect(
+            exportSafePoolCalls({
+              attestationId: "attestation",
+              outDirectory: join(directory, "expired"),
+              layer,
+              rpcFor: () => lateRpc,
+              minimumEntrySeconds: 600,
+              now: () => deadline,
+            }),
+          ).rejects.toMatchObject({ reason: "prepared_call_not_current" });
+          let heldDuringRpc = false;
+          const holdingRpc = {
+            ...rpc,
+            readCurrentDrawingId: async () => {
+              await Effect.runPromise(
+                store
+                  .holdDrawing({ effectId: prepared.effectId, reason: "fixture_operational_hold" })
+                  .pipe(Effect.provide(layer)),
+              );
+              heldDuringRpc = true;
+              return drawId;
+            },
+          };
+          expect(await check({ rpcFor: () => holdingRpc })).toBeNull();
+          expect(heldDuringRpc).toBe(true);
+          expect(
+            (
+              await f.owner.query("SELECT state FROM reward_chain_effects WHERE effect_id=$1", [
+                prepared.effectId,
+              ])
+            ).rows[0].state,
+          ).toBe("prepared");
+          expect(await check()).toBeNull();
+          await expect(
+            exportSafePoolCalls({
+              attestationId: "attestation",
+              outDirectory: join(directory, "held"),
+              layer,
+              rpcFor: () => rpc,
+              minimumEntrySeconds: 600,
+            }),
+          ).rejects.toMatchObject({ reason: "prepared_call_not_current" });
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+        expect((await counts()).drawings).toBe(1);
       } finally {
         await runtime.drop();
       }
@@ -317,7 +417,7 @@ suite(
   60000,
 );
 
-suite(
+pgTest(
   "frozen-plan migration strips hostile defaults and grants only its explicit read purpose",
   async () => {
     if (!url) throw Error("Disposable PostgreSQL URL required");
