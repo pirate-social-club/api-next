@@ -242,7 +242,7 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
       });
     }
     yield* Effect.gen(function* () {
-      return yield* boundedLearnerAudioTransaction((tx) =>
+      const nativeFrames = yield* boundedLearnerAudioTransaction((tx) =>
         Effect.gen(function* () {
           const ledger = yield* rows(tx, "guest-readiness.ledger", ledgerSql(quoted));
           yield* Effect.try({
@@ -323,7 +323,14 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
             },
             catch: refuse,
           });
-          for (const { profile, identity } of principals) {
+          return nativeFrames;
+        }),
+      );
+      // Metadata and each principal's audit are independent readonly work units.
+      // Keep the native3s bound on each, within the same overall8s inspection.
+      for (const { profile, identity } of principals) {
+        yield* boundedLearnerAudioTransaction((tx) =>
+          Effect.gen(function* () {
             const unsafe = yield* rows(tx, `guest-readiness.${profile}.roles`, rolesSql, [
               identity.role_oid,
               schema,
@@ -416,9 +423,9 @@ export function makeGuestStudyManagedReadiness(bindings: GuestStudyReadinessBind
               },
               catch: refuse,
             });
-          }
-        }),
-      );
+          }),
+        );
+      }
     }).pipe(Effect.provide(bindings.observer));
     return Object.freeze({
       candidateHead: candidate.source_head,
