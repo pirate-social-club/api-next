@@ -217,7 +217,7 @@ suite("shared-song pot provisioning", () => {
           readHead: async () => head,
           readBlock: async (blockNumber: bigint) => ({
             blockNumber,
-            blockHash: blockNumber === ATTESTATION_BLOCK ? ATTESTATION_BLOCK_HASH : hex("f"),
+            blockHash: blockNumber === ATTESTATION_BLOCK ? ATTESTATION_BLOCK_HASH : head.blockHash,
             blockTimestamp: headTimestamp,
           }),
           readCurrentDrawingId: async () => CURRENT_DRAWING,

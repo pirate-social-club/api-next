@@ -22,4 +22,23 @@ describe("native balance reader", () => {
       "invalid native balance response",
     );
   });
+
+  test("pins an exact block and refuses negative heights before sending RPC", async () => {
+    const calls: Array<readonly unknown[]> = [];
+    const rpc = async (_method: string, params: readonly unknown[]) => {
+      calls.push(params);
+      return "0x2a";
+    };
+    const account = `0x${"b".repeat(40)}`;
+    expect(await readNativeBalance(rpc, account, 100n)).toBe(42n);
+    expect(await readNativeBalance(rpc, account, 0n)).toBe(42n);
+    expect(calls).toEqual([
+      [account, "0x64"],
+      [account, "0x0"],
+    ]);
+    await expect(readNativeBalance(rpc, account, -1n)).rejects.toThrow(
+      "invalid native balance block",
+    );
+    expect(calls).toHaveLength(2);
+  });
 });

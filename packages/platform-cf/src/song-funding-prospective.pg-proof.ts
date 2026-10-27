@@ -25,6 +25,7 @@ export async function proveProspectiveSongFunding(input: {
     jobs = makeDirectPostgresControlPlaneLayer(input.jobs),
     http = makeDirectPostgresControlPlaneLayer(input.http);
   const authority = makeControlPlaneRewardRunAuthority(jobs);
+  const headTimestamp = BigInt(Math.floor(Date.now() / 1000));
   const producer = makeControlPlaneSharedSongContextProducer({
     runtime: jobs,
     now: () => new Date().toISOString(),
@@ -34,9 +35,13 @@ export async function proveProspectiveSongFunding(input: {
       readHead: async () => ({
         blockNumber: 20n,
         blockHash: `0x${h}`,
-        blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
+        blockTimestamp: headTimestamp,
       }),
-      readBlock: async (blockNumber) => ({ blockNumber, blockHash: `0x${h}` }),
+      readBlock: async (blockNumber) => ({
+        blockNumber,
+        blockHash: `0x${h}`,
+        blockTimestamp: headTimestamp,
+      }),
       readTransactionCount: async () => 7n,
       readPendingNonce: async () => 7n,
       readNativeBalance: async () => 1000000000000000000n,
