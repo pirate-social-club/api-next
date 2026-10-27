@@ -19,8 +19,9 @@ export async function proveProspectiveSongFunding(input: {
   owner: Client;
   http: string;
   jobs: string;
+  successor?: boolean;
 }) {
-  const { start, postId } = await seedProspectiveSongFundingFixture(input.admin);
+  const { start, postId } = await seedProspectiveSongFundingFixture(input.admin, input.successor);
   const h = "a".repeat(64),
     jobs = makeDirectPostgresControlPlaneLayer(input.jobs),
     http = makeDirectPostgresControlPlaneLayer(input.http);
@@ -45,16 +46,18 @@ export async function proveProspectiveSongFunding(input: {
       readTransactionCount: async () => 7n,
       readPendingNonce: async () => 7n,
       readNativeBalance: async () => 1000000000000000000n,
-      readCurrentDrawingId: async () => 101n,
+      readCurrentDrawingId: async () => (input.successor ? 100n : 101n),
+      readDrawingRecurrence: async () => ({ durationSeconds: 1800n, ticketPrice: 10000n }),
       readDrawing: async (id) => ({
         prizePool: 0n,
-        ticketPrice: 1000000n,
+        ticketPrice: input.successor ? 10000n : 1000000n,
         edgePerTicket: 0n,
         referralWinShare: 0n,
         referralFee: 0n,
         globalTicketsBought: 0n,
         lpEarnings: 0n,
-        drawingTime: BigInt(Math.floor(start / 1000)) + (id - 100n) * 3600n,
+        drawingTime:
+          BigInt(Math.floor(start / 1000)) + (input.successor ? 1800n : (id - 100n) * 3600n),
         winningTicket: 0n,
         ballMax: 1,
         bonusballMax: 1,
@@ -79,7 +82,7 @@ export async function proveProspectiveSongFunding(input: {
     version: 2,
     idempotency_key: "purpose_initial_pot_0001",
     persona_id: "persona-b",
-    funding_amount_atomic: "2000000",
+    funding_amount_atomic: context.limits.maximum_atomic,
     expected_context_hash: context.context_hash,
     expected_lifecycle_revision: context.lifecycle_revision,
     context_version: ref.version,
@@ -313,5 +316,6 @@ export async function proveProspectiveSongFunding(input: {
         [receipt.target.pool_leg_id],
       )
     ).rows,
-  ).toEqual([{ funded_atomic: "2000000", status: "active" }]);
+  ).toEqual([{ funded_atomic: receipt.instruction.amount_atomic, status: "active" }]);
+  return { receipt, context, start, postId };
 }

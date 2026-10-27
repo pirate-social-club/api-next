@@ -69,6 +69,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/song-funding-cancellation.pg.test.ts",
   "packages/platform-cf/src/song-contribution-refusals.pg.test.ts",
   "packages/platform-cf/src/shared-song-megapot-participation.pg.test.ts",
+  "packages/platform-cf/src/shared-song-frozen-purchase.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send-palm.pg.test.ts",
   "packages/platform-cf/src/wallet-sponsored-send.pg.test.ts",
   "packages/platform-cf/src/wallet-send-palm.pg.test.ts",

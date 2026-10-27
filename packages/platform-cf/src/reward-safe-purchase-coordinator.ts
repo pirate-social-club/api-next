@@ -21,6 +21,7 @@ import {
   rewardSafeFailed,
   sha256Hex,
 } from "./reward-safe-settlement.ts";
+import { verifyCurrentFrozenSharedSongDrawing } from "./shared-song-frozen-plan.ts";
 
 /**
  * Ticket-first purchases for owner-executed Safe pools. Pirate prepares the drawing's
@@ -173,6 +174,23 @@ export function makeRewardSafePurchaseCoordinator(
     // The owner sets the Safe's Jackpot allowance once; Pirate never spends without it.
     if (allowance < candidate.ticketPriceAtomic) return { kind: "allowance_insufficient" as const };
     if (balance < candidate.ticketPriceAtomic) return { kind: "balance_insufficient" as const };
+    if (candidate.frozenDrawing !== null) {
+      const verified = yield* verifyCurrentFrozenSharedSongDrawing({
+        rpc: options.rpc,
+        deployment: candidate.deployment,
+        head,
+        plan: candidate.frozenDrawing,
+        entryCutoffSeconds: candidate.entryCutoffSeconds,
+        minimumEntrySeconds: options.minimumEntrySeconds,
+        now,
+      });
+      if (
+        verified === null ||
+        verified.drawing.ballMax !== candidate.ballMax ||
+        verified.drawing.bonusballMax !== candidate.bonusballMax
+      )
+        return { kind: "drawing_changed" as const };
+    }
     // The scan must reach the owner's execution before the purchase deadline, or a real
     // ticket ends in reconciliation, as drawing 11161 did in the October 23 rehearsal.
     // It needs the cycles to catch up to the settled head, then one more to bind.
@@ -186,8 +204,7 @@ export function makeRewardSafePurchaseCoordinator(
     const lagBlocks = cursor === null || settledHead < cursor ? 0n : settledHead - cursor + 1n;
     const perCycle = BigInt(scanBlocksPerCycle);
     const cycles = (lagBlocks + perCycle - 1n) / perCycle + 1n;
-    const purchaseDeadline =
-      Date.parse(candidate.entryCutoffAt) - options.minimumEntrySeconds * 1_000;
+    const purchaseDeadline = candidate.purchaseDeadlineAtMs;
     if (now() + Number(cycles) * PILOT_CYCLE_MS >= purchaseDeadline) {
       return { kind: "scan_lagging" as const };
     }
@@ -200,6 +217,8 @@ export function makeRewardSafePurchaseCoordinator(
         calldata: call.data,
         calldataHash,
         headBlockNumber: head.blockNumber,
+        minimumEntrySeconds: options.minimumEntrySeconds,
+        scanAllowanceMs: Number(cycles) * PILOT_CYCLE_MS,
       }),
     );
     return {
@@ -212,7 +231,7 @@ export function makeRewardSafePurchaseCoordinator(
         safeAddress: candidate.deployment.custodyAddress,
         call,
         name: `Pirate ticket ${candidate.legId} drawing ${candidate.drawingId}`,
-        description: `One Megapot ticket for drawing ${candidate.drawingId}; execute before ${candidate.entryCutoffAt}`,
+        description: `One Megapot ticket for drawing ${candidate.drawingId}; execute before ${new Date(purchaseDeadline).toISOString()}`,
         createdAtMs: now(),
       }),
     };

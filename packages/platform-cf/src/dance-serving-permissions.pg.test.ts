@@ -25,7 +25,7 @@ const suite = url ? describe : describe.skip;
 setDefaultTimeout(30000);
 
 suite("native source-bound Dance serving permission plan", () => {
-  test("distinct Funding purposes coexist with all four unchanged Dance identities through318to319", async () => {
+  test("distinct Funding purposes coexist with all four unchanged Dance identities through migrations 318 to 322", async () => {
     if (!url) throw Error("Disposable native target required");
     await proveSongFundingPermissions(url);
   }, 120_000);
