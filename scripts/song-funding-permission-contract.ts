@@ -56,6 +56,7 @@ export function songFundingRequirements(purpose: SongFundingPurpose) {
     "acquire_reward_run_lease_v1(text,integer,integer)",
     "renew_reward_run_lease_v1(text,bigint,integer)",
     "release_reward_run_lease_v1(text,bigint)",
+    "recover_song_funding_cancellation_v2(jsonb,bigint,bigint)",
   ]);
   return [...all].sort().map((name) => ({ name, execute: positive.has(name) }));
 }

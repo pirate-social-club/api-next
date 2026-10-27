@@ -24,6 +24,7 @@ export const SONG_FUNDING_RECOVERY_READS = [
   "postgres:reward_shared_song_template_admissions_v2",
   "postgres:reward_funding_profiles_v2",
   "postgres:reward_wallet_nonce_leases",
+  "postgres:reward_funding_cancellation_proofs_v2",
   "postgres:megapot_deployment_attestations",
   "postgres:song_megapot_contribution_commands_v2",
   "postgres:persona_wallet_assignments",

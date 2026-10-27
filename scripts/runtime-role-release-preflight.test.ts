@@ -38,6 +38,7 @@ function reviewedMoneyTableRevocations(
     "0284_shared_song_megapot_production.sql": "acl",
     "0285_shared_song_qualification_consumers.sql": "acl",
     "0312_reward_safe_execution_scans.sql": "acl",
+    "0321_song_funding_cancellation_recovery.sql": "cancellation_table_acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -95,7 +96,10 @@ function reviewedMoneyTableRevocations(
       "item.oid::regclass,pg_get_userbyid(recipient.grantee)",
       "inherited revocation missing",
     );
-  } else if (migration === "0285_shared_song_qualification_consumers.sql") {
+  } else if (
+    migration === "0285_shared_song_qualification_consumers.sql" ||
+    migration === "0321_song_funding_cancellation_recovery.sql"
+  ) {
     const tableAcl = body.slice(body.indexOf("owned_table:="));
     const table = /owned_table:='([a-z][a-z0-9_]*)'::REGCLASS;/u.exec(tableAcl)?.[1];
     tables = table ? [table] : [];
@@ -423,7 +427,7 @@ describe("destructive money-table inventory", () => {
         ),
       ).toThrow("money table coverage mismatch");
       const literalNonce = migration.startsWith("0277_");
-      const literalObjective = migration.startsWith("0285_");
+      const literalObjective = migration.startsWith("0285_") || migration.startsWith("0321_");
       const contextArray = migration.startsWith("0284_") || migration.startsWith("0312_");
       const missingTable = literalNonce
         ? sql.replace(`c.oid='${first}'::regclass`, "c.oid=NULL")

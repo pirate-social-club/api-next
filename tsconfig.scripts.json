@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "scripts/recover-song-funding-cancellation.ts",
+    "scripts/recover-song-funding-cancellation.test.ts",
     "scripts/song-funding-permission-contract.ts",
     "scripts/song-funding-permissions-preflight.ts",
     "scripts/song-funding-binding-admission.ts",

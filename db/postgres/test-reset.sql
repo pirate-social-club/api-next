@@ -462,6 +462,7 @@ TRUNCATE TABLE
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_funding_account_counters_v2",
+  "reward_funding_cancellation_proofs_v2",
   "reward_funding_leg_snapshots_v2",
   "reward_funding_profiles_v2",
   "reward_funding_scan_checkpoints_v2",
