@@ -39,6 +39,7 @@ export const reusablePostgresTestSuites = [
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
 export const freshSchemaPostgresTestSuites = [
+  "apps/jobs-worker/src/song-megapot-funding-recovery.pg.test.ts",
   "packages/platform-cf/src/video-post-removal.pg.test.ts",
   "tests/postgres/notifications-hardening.pg.test.ts",
   "packages/platform-cf/src/activity-completion-repository.pg.test.ts",

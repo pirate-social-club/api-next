@@ -162,6 +162,21 @@ export async function proveSongFundingPermissions(url: string) {
         runSongFundingPermissionsPreflight(jobs.url, "jobs", f.schema),
       ).rejects.toMatchObject({
         cause: {
+          name: "list_song_funding_candidates_v2(integer,bigint)",
+          expected: true,
+          can_execute: false,
+          raw_access: false,
+          public_execute: false,
+        },
+      });
+      await f.owner.query(
+        "SELECT bind_reward_contribution_purpose_v2($1,'funding_recovery_jobs')",
+        [jobs.role],
+      );
+      await expect(
+        runSongFundingPermissionsPreflight(jobs.url, "jobs", f.schema),
+      ).rejects.toMatchObject({
+        cause: {
           name: "load_shared_song_frozen_plan_v2(text)",
           expected: true,
           can_execute: false,

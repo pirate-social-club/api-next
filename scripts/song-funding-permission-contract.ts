@@ -35,6 +35,7 @@ export const SONG_FUNDING_FUNCTIONS = {
     "finish_song_funding_work_v2(text,text,jsonb)",
     "invalidate_song_recovery_evidence_v2(text,text,text)",
     "list_song_funding_work_v2(integer)",
+    "list_song_funding_candidates_v2(integer,bigint)",
     "load_owned_song_contribution_v2(jsonb)",
     "persist_shared_song_context_v2(text,text,jsonb,jsonb,jsonb,boolean)",
     "load_shared_song_frozen_plan_v2(text)",

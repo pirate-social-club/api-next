@@ -3720,7 +3720,7 @@ BEGIN
       'load_reward_funding_wallet_nonce_owner_v2(jsonb)','record_song_contribution_refusal_v2(jsonb,text,text)'];
     WHEN 'incoming_observer' THEN allowed:=ARRAY['load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
     WHEN 'funding_recovery_jobs' THEN allowed:=ARRAY[
-      'invalidate_song_recovery_evidence_v2(text,text,text)','require_song_funding_work_lease_v2(text,text)','list_song_funding_work_v2(integer)','claim_song_funding_work_v2(text,text)',
+      'invalidate_song_recovery_evidence_v2(text,text,text)','require_song_funding_work_lease_v2(text,text)','list_song_funding_work_v2(integer)','list_song_funding_candidates_v2(integer,bigint)','claim_song_funding_work_v2(text,text)',
       'record_song_recovery_evidence_v2(text,text,jsonb)','finish_song_funding_work_v2(text,text,jsonb)',
       'load_owned_song_contribution_v2(jsonb)','accept_reward_funding_principal_v2(jsonb)'];
     WHEN 'cohort_evidence' THEN allowed:=ARRAY['record_reward_pool_cohort_v2(text,text,text,jsonb)'];
@@ -24211,6 +24211,35 @@ CREATE FUNCTION list_post_comment_children_v1(p_viewer text, p_post text, p_pare
      'next_cursor',CASE WHEN (SELECT count(*) FROM page)>20 THEN
        (SELECT comment_id FROM shown ORDER BY CASE WHEN newest_roots THEN created_at END,CASE WHEN newest_roots THEN comment_id END,created_at DESC,comment_id DESC LIMIT 1) ELSE NULL END)) END
 $$;
+
+CREATE FUNCTION list_song_funding_candidates_v2(n integer, cursor bigint DEFAULT 0) RETURNS SETOF jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF (n BETWEEN 1 AND 1000 AND cursor BETWEEN 0 AND 9007199254740991) IS NOT TRUE THEN
+  RAISE EXCEPTION 'bounded candidate limit and cursor required' USING ERRCODE='PCV07'; END IF;
+ RETURN QUERY SELECT song_funding_work_packet_v2(w)
+ FROM reward_funding_work_envelopes_v2 w JOIN reward_funding_profiles_v2 p USING(profile_id)
+ WHERE w.scope='reconciliation' AND p.accepted AND p.valid_until>clock_timestamp()
+  AND p.policy->'reconciliation' IS NOT NULL
+  AND coalesce(w.payload->>'status','pending') NOT IN ('complete','exhausted')
+  AND (w.payload->>'leaseUntil' IS NULL OR (w.payload->>'leaseUntil')::TIMESTAMPTZ<=clock_timestamp())
+ -- Rotate each scheduled minute: waiting work cannot monopolize a bounded batch.
+ ORDER BY mod(row_number() OVER(ORDER BY w.work_id)-1+cursor,count(*) OVER()) LIMIT n;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='list_song_funding_candidates_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='n integer, cursor bigint DEFAULT 0';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION list_song_funding_work_v2(n integer) RETURNS SETOF text
     LANGUAGE plpgsql SECURITY DEFINER
