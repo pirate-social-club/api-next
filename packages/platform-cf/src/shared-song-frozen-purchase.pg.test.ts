@@ -137,7 +137,7 @@ pgTest(
           price = originalPrice,
           drift = false,
           age = 0;
-        const base = fakeSafeChain().rpc;
+        const base = fakeSafeChain({ deployment }).rpc;
         const pinnedSeconds = BigInt(Math.floor(Date.now() / 1000));
         const head = () => ({
           blockNumber: 1000n,
