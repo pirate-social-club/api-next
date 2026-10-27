@@ -39,6 +39,10 @@ import {
 import { readNativeBalance as readNativeBalanceRpc } from "./native-balance.ts";
 
 const safeNonceAbi = parseAbi(["function nonce() view returns (uint256)"]);
+const drawingRecurrenceAbi = parseAbi([
+  "function drawingDurationInSeconds() view returns (uint256)",
+  "function ticketPrice() view returns (uint256)",
+]);
 const safeExecutionSuccessTopic = toEventSelector("ExecutionSuccess(bytes32,uint256)");
 const safeExecutionFailureTopic = toEventSelector("ExecutionFailure(bytes32,uint256)");
 
@@ -214,6 +218,12 @@ export interface MegapotV2RpcClient {
   }>;
   readonly readTicketPurchasesAllowed: () => Promise<boolean>;
   readonly readCurrentDrawingId: (blockNumber?: bigint) => Promise<bigint>;
+  /** Mutable settings at one explicit block, not a promise of a future drawing.
+   * Present on the production adapter; initialized-only test doubles may omit it. */
+  readonly readDrawingRecurrence?: (blockNumber: bigint) => Promise<{
+    readonly durationSeconds: bigint;
+    readonly ticketPrice: bigint;
+  }>;
   readonly readDrawing: (drawingId: bigint, blockNumber?: bigint) => Promise<MegapotV2DrawingState>;
   readonly readDrawingTierPayouts: (
     drawingId: bigint,
@@ -712,6 +722,27 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       decodeMegapotCurrentDrawingId(
         await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId(), blockNumber),
       ),
+    readDrawingRecurrence: async (blockNumber) => {
+      if (typeof blockNumber !== "bigint" || blockNumber < 0n)
+        throw new MegapotV2RpcFailed("invalid-config");
+      const readSetting = async (functionName: "drawingDurationInSeconds" | "ticketPrice") =>
+        decodeFunctionResult({
+          abi: drawingRecurrenceAbi,
+          functionName,
+          data: await ethCall(
+            attestation.jackpotAddress,
+            encodeFunctionData({ abi: drawingRecurrenceAbi, functionName }),
+            blockNumber,
+          ),
+        });
+      const [durationSeconds, ticketPrice] = await Promise.all([
+        readSetting("drawingDurationInSeconds"),
+        readSetting("ticketPrice"),
+      ]);
+      if (durationSeconds <= 0n || ticketPrice <= 0n)
+        throw new MegapotV2RpcFailed("invalid-response");
+      return { durationSeconds, ticketPrice };
+    },
     readDrawing: async (drawingId, blockNumber) =>
       decodeMegapotDrawingState(
         await ethCall(

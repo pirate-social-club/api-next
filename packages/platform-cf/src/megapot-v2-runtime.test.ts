@@ -40,6 +40,8 @@ const code = {
 const readAbi = parseAbi([
   "function allowTicketPurchases() view returns (bool)",
   "function currentDrawingId() view returns (uint256)",
+  "function drawingDurationInSeconds() view returns (uint256)",
+  "function ticketPrice() view returns (uint256)",
   "function jackpotNFT() view returns (address)",
   "function usdc() view returns (address)",
   "function getDrawingState(uint256 _drawingId) view returns ((uint256 prizePool, uint256 ticketPrice, uint256 edgePerTicket, uint256 referralWinShare, uint256 referralFee, uint256 globalTicketsBought, uint256 lpEarnings, uint256 drawingTime, uint256 winningTicket, uint8 ballMax, uint8 bonusballMax, address payoutCalculator, bool jackpotLock))",
@@ -123,6 +125,94 @@ function attestationFetcher(options?: {
 }
 
 describe("Megapot v2 Worker runtime adapters", () => {
+  test("recurrence reads refuse missing or invalid pinned heights before any request", async () => {
+    let requests = 0;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async () => {
+        requests++;
+        throw Error("Unexpected unpinned request");
+      },
+    });
+    const read = client.readDrawingRecurrence;
+    if (read === undefined) throw Error("Missing production read");
+    for (const height of [undefined, null, -1n, 100, "100"])
+      await expect(Reflect.apply(read, client, [height])).rejects.toMatchObject({
+        reason: "invalid-config",
+      });
+    expect(requests).toBe(0);
+  });
+
+  test("reads both mutable drawing settings at the same explicit block", async () => {
+    const requests: Array<{ method: string; params: unknown[] }> = [];
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (_url, init) => {
+        const request = JSON.parse(String(init?.body));
+        requests.push(request);
+        const data = request.params[0].data;
+        const duration =
+          data ===
+          encodeFunctionData({
+            abi: readAbi,
+            functionName: "drawingDurationInSeconds",
+          });
+        if (!duration && data !== encodeFunctionData({ abi: readAbi, functionName: "ticketPrice" }))
+          throw Error("Unexpected setting read");
+        return Response.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: encodeFunctionResult({
+            abi: readAbi,
+            functionName: duration ? "drawingDurationInSeconds" : "ticketPrice",
+            result: duration ? 1800n : 10_000n,
+          }),
+        });
+      },
+    });
+    if (client.readDrawingRecurrence === undefined) throw Error("Missing production read");
+    await expect(client.readDrawingRecurrence(100n)).resolves.toEqual({
+      durationSeconds: 1800n,
+      ticketPrice: 10_000n,
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests.every((r) => r.method === "eth_call" && r.params[1] === "0x64")).toBe(true);
+  });
+
+  test("zero duration or price cannot become recurrence evidence", async () => {
+    for (const zeroField of ["drawingDurationInSeconds", "ticketPrice"] as const) {
+      const client = makeMegapotV2RpcClient({
+        rpcUrl: "https://base-sepolia.example.invalid",
+        attestation: attestation(),
+        fetcher: async (_url, init) => {
+          const request = JSON.parse(String(init?.body));
+          const duration =
+            request.params[0].data ===
+            encodeFunctionData({
+              abi: readAbi,
+              functionName: "drawingDurationInSeconds",
+            });
+          const functionName = duration ? "drawingDurationInSeconds" : "ticketPrice";
+          return Response.json({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: encodeFunctionResult({
+              abi: readAbi,
+              functionName,
+              result: functionName === zeroField ? 0n : 1800n,
+            }),
+          });
+        },
+      });
+      if (client.readDrawingRecurrence === undefined) throw Error("Missing production read");
+      await expect(client.readDrawingRecurrence(100n)).rejects.toMatchObject({
+        reason: "invalid-response",
+      });
+    }
+  });
+
   test("derives and decodes typed v2 claim reverts through nested provider errors", async () => {
     const noTickets = encodeMegapotV2ClaimRevert("no_tickets_to_claim");
     const notOwner = encodeMegapotV2ClaimRevert("not_ticket_owner");
