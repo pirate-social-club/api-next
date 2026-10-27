@@ -145,6 +145,34 @@ export async function proveSongFundingPermissions(url: string) {
           )
         ).rows,
       ).toEqual([{ http: false, jobs: false, public: false }]);
+      // Migration 322 keeps its new private reader unbound for existing roles,
+      // including under hostile defaults. The owner explicitly admits that
+      // supporting read purpose before the upgraded Jobs runtime can serve.
+      const frozenReaderPrivileges = async () =>
+        (
+          await f.owner.query(
+            `SELECT
+        has_function_privilege($1,'load_shared_song_frozen_plan_v2(text)','EXECUTE') http,
+        has_function_privilege($2,'load_shared_song_frozen_plan_v2(text)','EXECUTE') jobs`,
+            [http.role, jobs.role],
+          )
+        ).rows;
+      expect(await frozenReaderPrivileges()).toEqual([{ http: false, jobs: false }]);
+      await expect(
+        runSongFundingPermissionsPreflight(jobs.url, "jobs", f.schema),
+      ).rejects.toMatchObject({
+        cause: {
+          name: "load_shared_song_frozen_plan_v2(text)",
+          expected: true,
+          can_execute: false,
+          raw_access: false,
+          public_execute: false,
+        },
+      });
+      await f.owner.query("SELECT grant_shared_song_funding_runtime_v2($1,'context_worker')", [
+        jobs.role,
+      ]);
+      expect(await frozenReaderPrivileges()).toEqual([{ http: false, jobs: true }]);
       expect(await runSongFundingPermissionsPreflight(http.url, "http", f.schema)).toBe(http.role);
       expect(await runSongFundingPermissionsPreflight(jobs.url, "jobs", f.schema)).toBe(jobs.role);
       await expect(
