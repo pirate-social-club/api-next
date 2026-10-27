@@ -521,3 +521,61 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     expect(f.accepted).toEqual([]);
   });
 });
+
+describe("terminal funding work", () => {
+  test("a finalized closed cancellation performs no RPC or processing claim", async () => {
+    const f = await fixture();
+    Object.assign(f.work.state, {
+      fundingState: "nonce_closed_no_principal",
+      nonceFinalized: true,
+    });
+    Object.assign(f.work, { nextBlock: "10" });
+    Object.assign(f.rpc, {
+      readFinalizedHead: async () => {
+        throw Error("closed work must not read the chain");
+      },
+    });
+    await f.run();
+    expect(f.calls).toEqual(["list"]);
+    expect(f.workCharges()).toBe(0);
+    expect(f.accepted).toEqual([]);
+  });
+
+  test.each([
+    { fundingState: "nonce_closed_no_principal", nonceFinalized: false },
+    { fundingState: "confirming", nonceFinalized: true },
+  ])("does not discard work without the complete terminal state: %j", async (state) => {
+    const f = await fixture();
+    Object.assign(f.work.state, state);
+    await f.run();
+    expect(f.workCharges()).toBe(1);
+  });
+
+  test("a closed cancellation cannot block a later active candidate", async () => {
+    const f = await fixture(),
+      listed = f.store.list,
+      claim = f.store.claim;
+    const closed = {
+      ...f.work,
+      workId: "closed",
+      nextBlock: "10",
+      state: {
+        ...f.work.state,
+        fundingState: "nonce_closed_no_principal" as const,
+        nonceFinalized: true,
+      },
+    };
+    const ids: string[] = [];
+    Object.assign(f.store, {
+      list: (limit: number, cursor: number) =>
+        listed(limit, cursor).pipe(Effect.map((items) => [closed, ...items])),
+      claim: (id: string, token: string) => {
+        ids.push(id);
+        return claim(id, token);
+      },
+    });
+    await f.run();
+    expect(ids).toEqual([f.work.workId]);
+    expect(f.workCharges()).toBe(1);
+  });
+});

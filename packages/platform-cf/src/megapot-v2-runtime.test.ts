@@ -888,3 +888,101 @@ describe("Megapot v2 Worker runtime adapters", () => {
     });
   });
 });
+
+describe("RPC failure diagnostics", () => {
+  const secret = "credential-must-not-be-logged";
+  test.each([
+    {
+      kind: "http",
+      reason: "unavailable",
+      httpStatus: 429,
+      providerCode: null,
+      transportFailure: null,
+    },
+    {
+      kind: "provider",
+      reason: "provider-error",
+      httpStatus: 200,
+      providerCode: -32005,
+      transportFailure: null,
+    },
+    {
+      kind: "invalid-code",
+      reason: "provider-error",
+      httpStatus: 200,
+      providerCode: null,
+      transportFailure: null,
+    },
+    {
+      kind: "limit",
+      reason: "unavailable",
+      httpStatus: null,
+      providerCode: null,
+      transportFailure: "subrequest_limit",
+    },
+    {
+      kind: "unsafe-error",
+      reason: "unavailable",
+      httpStatus: null,
+      providerCode: null,
+      transportFailure: "other",
+    },
+  ])("retains closed failure metadata without provider secrets: $kind", async (scenario) => {
+    const observations: unknown[] = [];
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: `https://rpc.example.invalid/${secret}`,
+      attestation: attestation(),
+      onRpcFailure: (observation) => {
+        observations.push(observation);
+      },
+      fetcher: async (_url, init) => {
+        if (scenario.kind === "unsafe-error") {
+          const error = new Error();
+          Object.defineProperty(error, "message", {
+            get: () => {
+              throw Error(secret);
+            },
+          });
+          throw error;
+        }
+        if (scenario.kind === "limit") throw new Error(`Too many subrequests. ${secret}`);
+        if (scenario.kind === "http") return new Response(secret, { status: 429 });
+        const request = JSON.parse(String(init?.body));
+        return Response.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: scenario.kind === "invalid-code" ? secret : -32005,
+            message: secret,
+          },
+        });
+      },
+    });
+    await expect(client.readHead()).rejects.toMatchObject({ reason: scenario.reason });
+    expect(observations).toEqual([
+      {
+        method: "eth_getBlockByNumber",
+        reason: scenario.reason,
+        httpStatus: scenario.httpStatus,
+        providerCode: scenario.providerCode,
+        transportFailure: scenario.transportFailure,
+      },
+    ]);
+    expect(JSON.stringify(observations)).not.toContain(secret);
+  });
+
+  test("observer failure cannot replace the original RPC failure", async () => {
+    let called = 0;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://rpc.example.invalid",
+      attestation: attestation(),
+      onRpcFailure: () => {
+        called++;
+        throw Error("observer failed");
+      },
+      fetcher: async () => new Response("unavailable", { status: 503 }),
+    });
+    await expect(client.readHead()).rejects.toMatchObject({ reason: "unavailable" });
+    expect(called).toBe(1);
+  });
+});

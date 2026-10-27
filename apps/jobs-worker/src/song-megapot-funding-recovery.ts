@@ -128,6 +128,13 @@ export function makeSongMegapotFundingRecovery(input: {
       );
       for (const candidate of candidates) {
         yield* options.ensure();
+        // Owner completion finalized cancellation and released the reservation.
+        // Preserve its history without another chain read or processing claim.
+        if (
+          candidate.state.nonceFinalized &&
+          candidate.state.fundingState === "nonce_closed_no_principal"
+        )
+          continue;
         // A bounded readiness read cannot accept principal or mint signing authority.
         // Waiting for a known block to finalize is not another discovery attempt.
         if (candidate.nextBlock !== null) {
