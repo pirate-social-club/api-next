@@ -56,6 +56,16 @@ function log(overrides: Readonly<Record<string, unknown>> = {}) {
 
 const range = { safe: SAFE, fromBlock: 90n, toBlock: 110n, maximumBlocks: 50, maximumLogs: 10 };
 
+test("forwards the snapshot block to native balance RPC and preserves latest by default", async () => {
+  const { rpc, requests } = client(() => "0x2a");
+  expect(await rpc.readNativeBalance(SAFE, 100n)).toBe(42n);
+  expect(await rpc.readNativeBalance(SAFE)).toBe(42n);
+  expect(requests.map(({ method, params }) => ({ method, params }))).toEqual([
+    { method: "eth_getBalance", params: [SAFE, "0x64"] },
+    { method: "eth_getBalance", params: [SAFE, "latest"] },
+  ]);
+});
+
 test("reads both Safe execution events in one bounded topic query", async () => {
   const { rpc, requests } = client(() => [
     log(),

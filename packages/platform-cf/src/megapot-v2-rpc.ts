@@ -230,7 +230,7 @@ export interface MegapotV2RpcClient {
     account: string,
     blockNumber?: bigint,
   ) => Promise<bigint>;
-  readonly readNativeBalance: (account: string) => Promise<bigint>;
+  readonly readNativeBalance: (account: string, blockNumber?: bigint) => Promise<bigint>;
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
   readonly readTicketOwner: (ticketId: bigint, blockNumber?: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
@@ -753,7 +753,8 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
           blockNumber,
         ),
       ),
-    readNativeBalance: (account) => readNativeBalanceRpc(rpc, canonicalAddress(account)),
+    readNativeBalance: (account, blockNumber) =>
+      readNativeBalanceRpc(rpc, canonicalAddress(account), blockNumber),
     readUsdcAllowance: async (owner, spender) =>
       decodeMegapotUsdcAllowance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcAllowance(owner, spender)),

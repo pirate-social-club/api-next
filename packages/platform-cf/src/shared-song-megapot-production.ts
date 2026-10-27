@@ -270,9 +270,16 @@ export function makeControlPlaneSharedSongContextProducer(input: {
         reservedCostAtomic: BigInt(existing?.reservedCostAtomic ?? "0"),
       });
     }
-    const nativeGas = yield* read(() => rpc.readNativeBalance(actor.sender_address));
-    const refundNativeGas = yield* read(() => rpc.readNativeBalance(deployment.custodyAddress));
-    const after = yield* read(() => rpc.readHead());
+    const nativeGas = yield* read(() =>
+      rpc.readNativeBalance(actor.sender_address, head.blockNumber),
+    );
+    const refundNativeGas = yield* read(() =>
+      rpc.readNativeBalance(deployment.custodyAddress, head.blockNumber),
+    );
+    const pendingAfter = yield* read(() => rpc.readPendingNonce(actor.sender_address));
+    // A new head is normal while these bounded reads run. Re-read the pinned
+    // height to reject a replaced snapshot block without requiring a quiet chain.
+    const after = yield* read(() => rpc.readBlock(head.blockNumber));
     const now = yield* decode(C.InstantV2, input.now()),
       observed = Date.parse(now),
       headMs = Number(head.blockTimestamp * 1000n);
@@ -285,6 +292,7 @@ export function makeControlPlaneSharedSongContextProducer(input: {
       observed - headMs > work.noncePolicy.maxAgeMs
     )
       return yield* unavailable("observation_stale");
+    if (pendingAfter !== confirmed) return yield* unavailable("wallet_nonce_busy");
     if (
       nativeGas < BigInt(work.operations.inboundRequiredGasWei) ||
       refundNativeGas < BigInt(work.operations.refundEnvelopeMinimumWei)

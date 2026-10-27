@@ -22,6 +22,10 @@ const encode = (value: unknown) =>
 async function fixture(
   options: {
     drift?: boolean;
+    advance?: boolean;
+    nowMs?: number;
+    pendingAfter?: bigint;
+    gas?: bigint;
     providerUnknown?: boolean;
     unknownCommit?: boolean;
     pending?: bigint;
@@ -105,7 +109,9 @@ async function fixture(
     contexts: unknown[] = [],
     failures: string[] = [];
   let depth = 0,
-    heads = 0;
+    heads = 0,
+    pendingReads = 0;
+  const balanceBlocks: Array<bigint | undefined> = [];
   const execute: ControlPlaneTransaction["execute"] = <Row>(s: ControlPlaneStatement) =>
     Effect.sync(() => {
       statements.push(s);
@@ -154,18 +160,24 @@ async function fixture(
   };
   const producer = makeControlPlaneSharedSongContextProducer({
     runtime: Layer.succeed(ControlPlaneDb, db),
-    now: () => new Date(1000).toISOString(),
+    now: () => new Date(options.nowMs ?? 1000).toISOString(),
     rpcFor: () => ({
       deployment,
       attestDeploymentAt: () => rpcRead("attest", undefined),
-      readHead: () =>
-        rpcRead("head", {
-          blockNumber: 100n,
-          blockHash: `0x${options.drift && ++heads > 1 ? "b".repeat(64) : h}`,
+      readHead: () => {
+        const advanced = options.advance && ++heads > 1;
+        return rpcRead("head", {
+          blockNumber: advanced ? 101n : 100n,
+          blockHash: `0x${advanced ? "b".repeat(64) : h}`,
+          blockTimestamp: advanced ? 2n : 1n,
+        });
+      },
+      readBlock: (blockNumber) =>
+        rpcRead(`anchor:${blockNumber}`, {
+          blockNumber,
+          blockHash: `0x${options.drift && blockNumber === 100n ? "b".repeat(64) : h}`,
           blockTimestamp: 1n,
         }),
-      readBlock: (blockNumber) =>
-        rpcRead("anchor", { blockNumber, blockHash: `0x${h}`, blockTimestamp: 1n }),
       readCurrentDrawingId: () => rpcRead("current", 42n),
       readDrawing: (id) => {
         const state: MegapotV2DrawingState = {
@@ -186,11 +198,18 @@ async function fixture(
         return rpcRead(`drawing:${id}`, state);
       },
       readTransactionCount: () => rpcRead("confirmed-nonce", 4n),
-      readPendingNonce: () => rpcRead("pending-nonce", options.pending ?? 4n),
-      readNativeBalance: (account) => rpcRead(`gas:${account}`, 100n),
+      readPendingNonce: () =>
+        rpcRead(
+          "pending-nonce",
+          ++pendingReads > 1 ? (options.pendingAfter ?? 4n) : (options.pending ?? 4n),
+        ),
+      readNativeBalance: (account, blockNumber) => {
+        balanceBlocks.push(blockNumber);
+        return rpcRead(`gas:${account}`, options.gas ?? 100n);
+      },
     }),
   });
-  return { producer, contexts, failures, statements, trace };
+  return { producer, contexts, failures, statements, trace, balanceBlocks };
 }
 const options = { enabled: true, ensure: () => Effect.void };
 describe("actual shared-song background context producer", () => {
@@ -227,10 +246,24 @@ describe("actual shared-song background context producer", () => {
       ),
     ).toBe(false);
   });
-  test("pending nonce mismatch and changed canonical head cannot create a ready context", async () => {
+  test("a normal head advance preserves the pinned snapshot within its age limit", async () => {
+    const f = await fixture({ advance: true, nowMs: 2000 });
+    await Effect.runPromise(f.producer.run(options));
+    expect(f.contexts).toHaveLength(1);
+    expect(f.failures).toEqual([]);
+    expect(f.trace.filter((name) => name === "rpc:head")).toHaveLength(1);
+    expect(f.trace).toContain("rpc:anchor:100");
+    expect(f.balanceBlocks).toEqual([100n, 100n]);
+    expect(f.trace.indexOf("rpc:anchor:100")).toBeGreaterThan(f.trace.indexOf("rpc:drawing:43"));
+  });
+  test("nonce changes, a replaced snapshot block, invalid age and insufficient gas refuse a ready context", async () => {
     for (const [fixtureOptions, code] of [
       [{ pending: 5n }, "wallet_nonce_busy"],
+      [{ pendingAfter: 5n }, "wallet_nonce_busy"],
       [{ drift: true }, "observation_stale"],
+      [{ nowMs: 3001 }, "observation_stale"],
+      [{ nowMs: 999 }, "observation_stale"],
+      [{ gas: 0n }, "gas_budget_unavailable"],
     ] as const) {
       const f = await fixture(fixtureOptions);
       await Effect.runPromise(f.producer.run(options));
