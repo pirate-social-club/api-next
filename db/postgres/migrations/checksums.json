@@ -328,6 +328,6 @@
     "0325_reward_single_funder_ticket_first.sql": "b7593eb2d0686fe7141d4bd9b3c6fcd6c8bc1af0334447398497c7f334693d6d",
     "0326_reward_joint_cycle_fairness.sql": "c182b124392f311f513844e93a04af70131739da7cd6f6a82d96b3a266a74932",
     "0327_reward_safe_treasury_disposition.sql": "39cdcc53149be886ffdbb91aef2969be3a838f43cdde36c2d3607ad48bbb12b6",
-    "0328_shared_song_context_claim_eligibility.sql": "457241b02643ee2a69c3c714f2a7832522b3f2858e47c1375e649beef4af9329"
+    "0328_shared_song_context_claim_eligibility.sql": "f42e4bf833272dea288845c28d361f31a0f46b391f65d9f2aa94f5f61d78c73b"
   }
 }

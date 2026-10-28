@@ -3,7 +3,9 @@
 -- attempt. Previously an exhausted account raised on its oldest candidate, the
 -- rollback kept that candidate oldest, and every later batch failed before any
 -- eligible account could be quoted. The counter update and its raise remain as
--- the guard against a concurrent charge. Ownership and grants are unchanged.
+-- the guard against a concurrent charge, now with its own SQLSTATE PCV13 so
+-- the claim loop can tell it from configuration errors, which remain PCV04.
+-- Ownership and grants are unchanged.
 CREATE OR REPLACE FUNCTION claim_next_shared_song_context_v2(p_token TEXT) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE candidate RECORD; work reward_song_context_work_v2; slot reward_song_slots_v2;
  t reward_shared_song_templates_v2; profile reward_funding_profiles_v2; deployment megapot_deployment_attestations;
@@ -93,7 +95,8 @@ BEGIN
  WHERE reward_context_work_counters_v2.maximum_units=excluded.maximum_units
    AND reward_context_work_counters_v2.used_units+excluded.used_units<=reward_context_work_counters_v2.maximum_units;
  GET DIAGNOSTICS affected=ROW_COUNT;
- IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV04'; END IF;
+ -- PCV13 is only this concurrent-charge refusal. Configuration errors stay PCV04.
+ IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV13'; END IF;
  actor:=jsonb_build_object('account_id',wallet.account_id,'persona_id',wallet.persona_id,'community_id',slot.community_id,
    'wallet_assignment_id',wallet.assignment_id,'wallet_index',wallet.hd_wallet_index,'sender_address',wallet.address);
  target:=coalesce(slot.target,jsonb_build_object('kind','empty','community_id',slot.community_id,'post_id',slot.post_id,

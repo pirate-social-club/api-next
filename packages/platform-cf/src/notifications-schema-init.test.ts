@@ -286,7 +286,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations[327]).toMatchObject({
     version: "0328_shared_song_context_claim_eligibility.sql",
-    checksum: "457241b02643ee2a69c3c714f2a7832522b3f2858e47c1375e649beef4af9329",
+    checksum: "f42e4bf833272dea288845c28d361f31a0f46b391f65d9f2aa94f5f61d78c73b",
   });
 });
 

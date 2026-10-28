@@ -358,7 +358,7 @@ describe("actual shared-song background context producer", () => {
     const f = await fixture({
       successor: true,
       claims: 6,
-      claimFailure: { at: 3, sqlState: "PCV04" },
+      claimFailure: { at: 3, sqlState: "PCV13" },
     });
     await Effect.runPromise(f.producer.run({ ...options, limit: 6 }));
     expect(f.statements.filter((s) => s.label === "shared-song.context.claim")).toHaveLength(3);
@@ -367,7 +367,9 @@ describe("actual shared-song background context producer", () => {
   });
   test("an uncertain or non-budget claim failure still fails the batch before production", async () => {
     for (const claimFailure of [
-      { at: 3, sqlState: "PCV04", outcomeCertainty: "unknown" as const },
+      { at: 3, sqlState: "PCV13", outcomeCertainty: "unknown" as const },
+      // A PCV04 template configuration error must stay loud, not end the batch.
+      { at: 3, sqlState: "PCV04" },
       { at: 3, sqlState: "PCV05" },
       { at: 1, sqlState: null as unknown as string },
     ]) {

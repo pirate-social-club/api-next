@@ -5773,7 +5773,8 @@ BEGIN
  WHERE reward_context_work_counters_v2.maximum_units=excluded.maximum_units
    AND reward_context_work_counters_v2.used_units+excluded.used_units<=reward_context_work_counters_v2.maximum_units;
  GET DIAGNOSTICS affected=ROW_COUNT;
- IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV04'; END IF;
+ -- PCV13 is only this concurrent-charge refusal. Configuration errors stay PCV04.
+ IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV13'; END IF;
  actor:=jsonb_build_object('account_id',wallet.account_id,'persona_id',wallet.persona_id,'community_id',slot.community_id,
    'wallet_assignment_id',wallet.assignment_id,'wallet_index',wallet.hd_wallet_index,'sender_address',wallet.address);
  target:=coalesce(slot.target,jsonb_build_object('kind','empty','community_id',slot.community_id,'post_id',slot.post_id,

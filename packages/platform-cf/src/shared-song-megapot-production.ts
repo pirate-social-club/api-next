@@ -42,14 +42,15 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
     try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value),
     catch: () => unavailable("policy_unavailable"),
   });
-/** Only a certain counter refusal from the claim itself ends a batch quietly. */
+/** Only a certain counter refusal from the claim itself ends a batch quietly.
+ * Migration 0328 reserves PCV13 for that refusal; PCV04 configuration errors stay loud. */
 const isCertainContextBudgetRefusal = (cause: Cause.Cause<unknown>) =>
   cause.reasons.length > 0 &&
   cause.reasons.every(
     (reason) =>
       Cause.isFailReason(reason) &&
       reason.error instanceof ControlPlaneStatementFailed &&
-      reason.error.sqlState === "PCV04" &&
+      reason.error.sqlState === "PCV13" &&
       reason.error.outcomeCertainty !== "unknown",
   );
 const stringify = (value: unknown) =>
