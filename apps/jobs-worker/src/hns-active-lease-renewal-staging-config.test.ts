@@ -17,7 +17,7 @@ const read = (path: string) =>
 const jobs = read("../wrangler.jsonc");
 const verifier = read("../../hns-owner-verifier/wrangler.jsonc");
 
-test("the shipped staging bindings compose one challenge-free renewal writer with the deployed provider pin", () => {
+test("the shipped staging bindings compose one challenge-free renewal writer with the declared verifier pin", () => {
   const staging = jobs.env.staging;
   const provider = verifier.env.staging;
   if (staging === undefined || provider === undefined)
@@ -42,7 +42,8 @@ test("the shipped staging bindings compose one challenge-free renewal writer wit
   const renewal = makeHnsActiveLeaseRenewalJob(bindings, "staging", {});
   expect(renewal).not.toBeNull();
   expect(renewal?.schedule).toBe("*/5 * * * *");
-  // One hour admits twelve five-minute turns; it is below the actual provider lease.
+  // Up to twelve scheduled polls across eligible roots fit this lead; the
+  // existing three-attempt-per-binding-generation bound remains in force.
   expect(Number(staging.vars.HNS_ROUTE_RENEWAL_LEAD_SECONDS)).toBe(3600);
   expect(Number(staging.vars.HNS_ROUTE_RENEWAL_LEAD_SECONDS)).toBeLessThan(
     Number(provider.vars.HNS_EVIDENCE_TTL_SECONDS),

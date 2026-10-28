@@ -84,8 +84,9 @@ challenge, sign a transaction or broadcast one.
 After recovery and adoption, the coordinated guarded staging Jobs release
 enables challenge-free active-lease renewal with the existing staging verifier
 service and its `hns-owner-staging-mainnet-v1` configuration pin. The legacy
-challenge writer remains disabled. A one-hour lead admits twelve turns at the
-existing five-minute cadence. Check the eligible-root inventory and provider
+challenge writer remains disabled. A one-hour lead admits up to twelve scheduled
+polls across eligible roots at the existing five-minute cadence; the existing
+three-attempt-per-binding-generation bound remains. Check the eligible-root inventory and provider
 pin before activation, then verify a real renewal and its alert/readback path.
 Do not deploy this enabled Jobs configuration while manual recovery or adoption
 is incomplete. Production configuration remains unchanged.
