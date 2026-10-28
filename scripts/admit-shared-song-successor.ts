@@ -50,7 +50,7 @@ const named = (domain: string, value: unknown) =>
 type Query = Pick<Client, "query">;
 const ownerRole = "workspace_owner";
 
-type TemplateChange = "successor_schedule" | "single_funder_terms";
+type TemplateChange = "successor_schedule" | "single_funder_terms" | "safe_treasury_terms";
 
 export async function buildSharedSongSuccessorTemplate(
   raw: unknown,
@@ -92,7 +92,7 @@ export async function buildSharedSongSuccessorTemplate(
   )
     throw Error("accepted predecessor template/profile/deployment unavailable");
   if (
-    change === "single_funder_terms" &&
+    change !== "successor_schedule" &&
     (!previous.template_id.startsWith("shared-song-safe-pilot-staging-") ||
       previous.operational_profile.scheduleRuleId !== SHARED_SONG_SUCCESSOR_RULE_ID ||
       [
@@ -107,27 +107,35 @@ export async function buildSharedSongSuccessorTemplate(
   const body = {
     ...previous,
     template_id:
-      change === "single_funder_terms"
-        ? "shared-song-safe-pilot-staging-single-funder-template-v1"
-        : `shared-song-safe-pilot-staging-successor-template-v${generation}`,
+      change === "safe_treasury_terms"
+        ? "shared-song-safe-pilot-staging-treasury-template-v1"
+        : change === "single_funder_terms"
+          ? "shared-song-safe-pilot-staging-single-funder-template-v1"
+          : `shared-song-safe-pilot-staging-successor-template-v${generation}`,
     operational_profile:
-      change === "single_funder_terms"
+      change === "safe_treasury_terms"
         ? {
             ...previous.operational_profile,
-            emptyBehavior: "single_funder_ticket_first_v1",
-            disclosureVersion: "shared-song-safe-pilot-staging-single-funder-disclosure-v1",
+            emptyBehavior: "safe_treasury_ticket_first_v1",
+            disclosureVersion: "shared-song-safe-pilot-staging-treasury-disclosure-v1",
           }
-        : {
-            ...previous.operational_profile,
-            disclosureVersion: `shared-song-safe-pilot-staging-successor-disclosure-v${generation}`,
-            scheduleRuleId: SHARED_SONG_SUCCESSOR_RULE_ID,
-            scheduleRuleHash: await named("pirate.shared-song-schedule-rule.v2", rule),
-            priceRuleHash: await named(
-              "pirate.shared-song-price-rule.v2",
-              SHARED_SONG_SUCCESSOR_PRICE_RULE,
-            ),
-            initializedDrawingIds: [],
-          },
+        : change === "single_funder_terms"
+          ? {
+              ...previous.operational_profile,
+              emptyBehavior: "single_funder_ticket_first_v1",
+              disclosureVersion: "shared-song-safe-pilot-staging-single-funder-disclosure-v1",
+            }
+          : {
+              ...previous.operational_profile,
+              disclosureVersion: `shared-song-safe-pilot-staging-successor-disclosure-v${generation}`,
+              scheduleRuleId: SHARED_SONG_SUCCESSOR_RULE_ID,
+              scheduleRuleHash: await named("pirate.shared-song-schedule-rule.v2", rule),
+              priceRuleHash: await named(
+                "pirate.shared-song-price-rule.v2",
+                SHARED_SONG_SUCCESSOR_PRICE_RULE,
+              ),
+              initializedDrawingIds: [],
+            },
   };
   const templateHash = await named("pirate.shared-song-reward-template.v1", body);
   const admissionBody = {
@@ -298,11 +306,14 @@ if (import.meta.main) {
       community: { type: "string" },
       apply: { type: "boolean", default: false },
       "single-funder-terms": { type: "boolean", default: false },
+      "safe-treasury-terms": { type: "boolean", default: false },
       "expected-admission-hash": { type: "string" },
       "expected-template-hash": { type: "string" },
       "expected-brake-revision": { type: "string" },
     },
   });
+  if (values["safe-treasury-terms"] && values["single-funder-terms"])
+    throw Error("select one terms change");
   if (!["staging", "development"].includes(process.env.API_NEXT_ENV ?? ""))
     throw Error("staging/development only");
   const url = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL?.trim();
@@ -322,7 +333,11 @@ if (import.meta.main) {
         expectedAdmissionHash: values["expected-admission-hash"] ?? "",
         expectedTemplateHash: values["expected-template-hash"] ?? "",
         expectedBrakeRevision: Number(values["expected-brake-revision"]),
-        change: values["single-funder-terms"] ? "single_funder_terms" : "successor_schedule",
+        change: values["safe-treasury-terms"]
+          ? "safe_treasury_terms"
+          : values["single-funder-terms"]
+            ? "single_funder_terms"
+            : "successor_schedule",
       });
     else {
       await db.query("BEGIN READ ONLY");
@@ -331,7 +346,11 @@ if (import.meta.main) {
           db,
           values.community,
           false,
-          values["single-funder-terms"] ? "single_funder_terms" : "successor_schedule",
+          values["safe-treasury-terms"]
+            ? "safe_treasury_terms"
+            : values["single-funder-terms"]
+              ? "single_funder_terms"
+              : "successor_schedule",
         );
       } finally {
         await db.query("ROLLBACK");

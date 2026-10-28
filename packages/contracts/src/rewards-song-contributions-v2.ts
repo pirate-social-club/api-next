@@ -295,7 +295,12 @@ export const ProspectiveTermsV2 = Schema.Struct({
   reward_policy_template_hash: HashV2,
   start_rule: Schema.Literal("allocation_linearization_time"),
   budget_source: Schema.Literal("leg_budget"),
-  empty_behavior: Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+  empty_behavior: Schema.Literals([
+    "no_purchase",
+    "single_funder_ticket_first_v1",
+    "safe_treasury_ticket_first_v1",
+  ]),
+  empty_winnings_recipient: Schema.optionalKey(AddressV2),
   eligible_activities: Schema.Tuple([
     Schema.Literal("study"),
     Schema.Literal("karaoke"),
@@ -323,7 +328,18 @@ export const ProspectiveTermsV2 = Schema.Struct({
   planned_schedule_hash: HashV2,
   ticket_price_ceiling_atomic: AtomicV2,
   disclosure_version: IdV2,
-});
+}).check(
+  Schema.makeFilter((value) =>
+    value.empty_behavior === "safe_treasury_ticket_first_v1"
+      ? value.empty_winnings_recipient !== undefined &&
+        value.empty_winnings_recipient !== "0x0000000000000000000000000000000000000000"
+        ? undefined
+        : "Treasury recipient required"
+      : value.empty_winnings_recipient === undefined
+        ? undefined
+        : "Unexpected treasury recipient",
+  ),
+);
 export type ProspectiveTermsV2 = typeof ProspectiveTermsV2.Type;
 
 export const EmptyQuoteV2 = Schema.Struct({
@@ -374,7 +390,12 @@ export const TermsV2 = Schema.Struct({
   funding_policy_revision: RevisionV2,
   funding_policy_hash: HashV2,
   budget_source: Schema.Literal("leg_budget"),
-  empty_behavior: Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+  empty_behavior: Schema.Literals([
+    "no_purchase",
+    "single_funder_ticket_first_v1",
+    "safe_treasury_ticket_first_v1",
+  ]),
+  empty_winnings_recipient: Schema.optionalKey(AddressV2),
   eligible_activities: Schema.Tuple([
     Schema.Literal("study"),
     Schema.Literal("karaoke"),
@@ -407,7 +428,18 @@ export const TermsV2 = Schema.Struct({
   qualification_bindings_hash: HashV2,
   planned_drawing_ids: Schema.Array(UIntV2).check(Schema.isMinLength(1), Schema.isMaxLength(30)),
   planned_schedule_hash: HashV2,
-});
+}).check(
+  Schema.makeFilter((value) =>
+    value.empty_behavior === "safe_treasury_ticket_first_v1"
+      ? value.empty_winnings_recipient !== undefined &&
+        value.empty_winnings_recipient !== "0x0000000000000000000000000000000000000000"
+        ? undefined
+        : "Treasury recipient required"
+      : value.empty_winnings_recipient === undefined
+        ? undefined
+        : "Unexpected treasury recipient",
+  ),
+);
 export type TermsV2 = typeof TermsV2.Type;
 
 export const ExistingQuoteV2 = Schema.Struct({
@@ -1262,6 +1294,9 @@ export function projectProspectiveTerms(value: ProspectiveTermsV2): unknown {
     ["start_rule", value.start_rule],
     ["budget_source", value.budget_source],
     ["empty_behavior", value.empty_behavior],
+    ...(value.empty_winnings_recipient === undefined
+      ? []
+      : [["empty_winnings_recipient", value.empty_winnings_recipient]]),
     ["eligible_activities", value.eligible_activities],
     ["dance_scope", value.dance_scope],
     [
@@ -1288,6 +1323,9 @@ export function projectTerms(value: TermsV2): unknown {
     ["funding_policy_hash", value.funding_policy_hash],
     ["budget_source", value.budget_source],
     ["empty_behavior", value.empty_behavior],
+    ...(value.empty_winnings_recipient === undefined
+      ? []
+      : [["empty_winnings_recipient", value.empty_winnings_recipient]]),
     ["eligible_activities", value.eligible_activities],
     ["dance_scope", value.dance_scope],
     ["starts_at", value.starts_at],
@@ -1403,6 +1441,9 @@ export function prospectiveTermsPreimageV2(value: ProspectiveTermsV2): string {
     ["start_rule", v.start_rule],
     ["budget_source", v.budget_source],
     ["empty_behavior", v.empty_behavior],
+    ...(v.empty_winnings_recipient === undefined
+      ? []
+      : [["empty_winnings_recipient", v.empty_winnings_recipient]]),
     ["eligible_activities", v.eligible_activities],
     ["dance_scope", v.dance_scope],
     [
@@ -1428,6 +1469,9 @@ export function committedTermsPreimageV2(value: TermsV2): string {
     ["funding_policy_hash", v.funding_policy_hash],
     ["budget_source", v.budget_source],
     ["empty_behavior", v.empty_behavior],
+    ...(v.empty_winnings_recipient === undefined
+      ? []
+      : [["empty_winnings_recipient", v.empty_winnings_recipient]]),
     ["eligible_activities", v.eligible_activities],
     ["dance_scope", v.dance_scope],
     ["starts_at", v.starts_at],

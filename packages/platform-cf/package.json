@@ -260,7 +260,8 @@
     "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts",
     "./reward-safe-refund-coordinator": "./src/reward-safe-refund-coordinator.ts",
     "./reward-safe-refund-repository": "./src/reward-safe-refund-repository.ts",
-    "./reward-offer-terminal-repository": "./src/reward-offer-terminal-repository.ts"
+    "./reward-offer-terminal-repository": "./src/reward-offer-terminal-repository.ts",
+    "./safe-treasury-allocation": "./src/safe-treasury-allocation.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

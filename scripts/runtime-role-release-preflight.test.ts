@@ -41,6 +41,7 @@ function reviewedMoneyTableRevocations(
     "0321_song_funding_cancellation_recovery.sql": "cancellation_table_acl",
     "0324_reward_safe_receipt_refunds.sql": "acl",
     "0326_reward_joint_cycle_fairness.sql": "acl",
+    "0327_reward_safe_treasury_disposition.sql": "acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -102,7 +103,8 @@ function reviewedMoneyTableRevocations(
   } else if (
     migration === "0285_shared_song_qualification_consumers.sql" ||
     migration === "0321_song_funding_cancellation_recovery.sql" ||
-    migration === "0326_reward_joint_cycle_fairness.sql"
+    migration === "0326_reward_joint_cycle_fairness.sql" ||
+    migration === "0327_reward_safe_treasury_disposition.sql"
   ) {
     const tableAcl = body.slice(body.indexOf("owned_table:="));
     const table = /owned_table:='([a-z][a-z0-9_]*)'::REGCLASS;/u.exec(tableAcl)?.[1];
@@ -434,7 +436,8 @@ describe("destructive money-table inventory", () => {
       const literalObjective =
         migration.startsWith("0285_") ||
         migration.startsWith("0321_") ||
-        migration.startsWith("0326_");
+        migration.startsWith("0326_") ||
+        migration.startsWith("0327_");
       const contextArray =
         migration.startsWith("0284_") ||
         migration.startsWith("0312_") ||
