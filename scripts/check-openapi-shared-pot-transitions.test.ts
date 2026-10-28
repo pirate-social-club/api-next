@@ -17,7 +17,10 @@ test("retires landed compatibility waivers from the active repository policy", a
   expect(
     active.breakingChangeWaivers.every(
       (entry: { baselineSha: string }) =>
-        entry.baselineSha !== "926e2b876c56111f0975c4a62b6db7c4595a4463",
+        ![
+          "926e2b876c56111f0975c4a62b6db7c4595a4463",
+          "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+        ].includes(entry.baselineSha),
     ),
   ).toBe(true);
 });
@@ -70,7 +73,7 @@ test("single-funder declaration admits exactly seven enums and no later baseline
 test("treasury transition admits only seven enums and seven closed recipient fields at its exact baseline", () => {
   const policy: BreakingChangePolicy = JSON.parse(
     readFileSync(
-      new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+      new URL("./fixtures/openapi-safe-treasury-waivers-20261028.json", import.meta.url),
       "utf8",
     ),
   );
