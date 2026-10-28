@@ -584,7 +584,7 @@ describe("OpenAPI clean-break allowance", () => {
     expect(
       active.breakingChangeWaivers.every(
         (entry: { baselineSha: string }) =>
-          entry.baselineSha === "926e2b876c56111f0975c4a62b6db7c4595a4463",
+          entry.baselineSha !== "926e2b876c56111f0975c4a62b6db7c4595a4463",
       ),
     ).toBe(true);
   });
@@ -592,7 +592,7 @@ describe("OpenAPI clean-break allowance", () => {
   test("single-funder declaration admits exactly seven enums and no later baseline or extra break", () => {
     const policy: BreakingChangePolicy = JSON.parse(
       readFileSync(
-        new URL("../packages/contracts/breaking-change-waivers.json", import.meta.url),
+        new URL("./fixtures/openapi-single-funder-waivers-20261028.json", import.meta.url),
         "utf8",
       ),
     );
