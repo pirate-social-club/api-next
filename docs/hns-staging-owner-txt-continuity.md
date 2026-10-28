@@ -80,3 +80,12 @@ all serving selectors, the unchanged zone, new chain reference and ordinary
 renewal afterward. Wallet broadcast reconciliation, fresh operational readiness
 and exact source review remain prerequisites; this command does not start a
 challenge, sign a transaction or broadcast one.
+
+After recovery and adoption, the coordinated guarded staging Jobs release
+enables challenge-free active-lease renewal with the existing staging verifier
+service and its `hns-owner-staging-mainnet-v1` configuration pin. The legacy
+challenge writer remains disabled. A one-hour lead admits twelve turns at the
+existing five-minute cadence. Check the eligible-root inventory and provider
+pin before activation, then verify a real renewal and its alert/readback path.
+Do not deploy this enabled Jobs configuration while manual recovery or adoption
+is incomplete. Production configuration remains unchanged.
