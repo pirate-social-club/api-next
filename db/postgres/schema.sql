@@ -3539,6 +3539,7 @@ CREATE FUNCTION bind_initial_shared_song_pot_v2(p_identity jsonb, p_snapshot tex
 <<binding>>
 DECLARE snapshot reward_funding_leg_snapshots_v2; slot reward_song_slots_v2; template JSONB;
  r JSONB:=p_state->'receipt'; terms JSONB:=r->'committed_terms'; target JSONB:=r->'target'; prospectus JSONB;
+ profile reward_funding_profiles_v2;
  asset reward_asset_whitelist; policy_head song_owner_policies; transition_at TIMESTAMPTZ;
 BEGIN
  SELECT * INTO STRICT snapshot FROM reward_funding_leg_snapshots_v2 WHERE snapshot_id=p_snapshot;
@@ -3579,6 +3580,20 @@ BEGIN
  IF NOT EXISTS(SELECT 1 FROM policy_versions WHERE policy_version_id='shared-policy:'||(target->>'offer_id')
     AND policy_hash=terms->>'reward_policy_hash' AND community_id=slot.community_id) THEN
    RAISE EXCEPTION 'instantiated shared policy required' USING ERRCODE='PCV05'; END IF;
+ IF terms->>'empty_behavior' IS DISTINCT FROM prospectus->>'empty_behavior'
+   OR terms->>'empty_behavior' IS DISTINCT FROM coalesce(template->'operational_profile'->>'emptyBehavior','no_purchase') THEN
+   RAISE EXCEPTION 'frozen empty-drawing disposition mismatch' USING ERRCODE='PCV06'; END IF;
+ IF terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN
+   SELECT * INTO STRICT profile FROM reward_funding_profiles_v2 WHERE profile_id=terms->>'profile_id';
+   IF (profile.policy->>'maxActiveAccount')::BIGINT IS DISTINCT FROM 1
+     OR (profile.policy->>'maxActiveAccountLeg')::BIGINT IS DISTINCT FROM 1
+     OR (profile.policy->>'maxLegLiabilities')::BIGINT IS DISTINCT FROM 1
+     OR (profile.policy->>'maxAdmittedLeg')::BIGINT IS DISTINCT FROM 1
+     OR (profile.policy->>'maxAdmittedAccountLeg')::BIGINT IS DISTINCT FROM 1
+     OR (profile.capacity_profile->>'maxDrawings')::BIGINT IS DISTINCT FROM 1
+     OR jsonb_array_length(terms->'planned_drawing_ids')<>1 THEN
+     RAISE EXCEPTION 'single-funder ticket-first profile required' USING ERRCODE='PCV06'; END IF;
+ END IF;
  INSERT INTO song_reward_offers(offer_id,community_id,post_id,audio_revision,created_by_account_id,status,starts_at,ends_at,
    owner_policy_snapshot,terms_hash,reward_policy_version_id,created_at,updated_at)
  VALUES(target->>'offer_id',slot.community_id,slot.post_id,(target->>'audio_revision')::BIGINT,p_identity->>'accountId','draft',
@@ -3588,13 +3603,19 @@ BEGIN
  INSERT INTO song_reward_offer_legs(leg_id,offer_id,kind,status,funder_account_id,refund_policy,leg_terms_hash,participation_starts_at,
    chain_id,token_address,token_decimals,tickets_per_drawing,max_ticket_price_atomic,entry_cutoff_seconds,beneficiary_algorithm_version,
    ticket_selection_version,attestation_id,participation_starts_drawing_id,eligible_activities,min_score_bps,empty_pool_policy,funding_source,
-   legal_activation_gate,owner_policy_kind,owner_policy_revision,owner_policy_hash,qualification_family_v2,shared_song_terms_v2)
+   legal_activation_gate,owner_policy_kind,owner_policy_revision,owner_policy_hash,qualification_family_v2,shared_song_terms_v2,
+   fallback_beneficiary_account_id,fallback_payout_persona_id,referral_allocation_version,referral_policy_hash,referral_disclosed_at)
  VALUES(target->>'pool_leg_id',target->>'offer_id','megapot_pool','draft',p_identity->>'accountId','refund_to_funders_pro_rata',
    '0x'||(terms->>'terms_hash'),(terms->>'starts_at')::TIMESTAMPTZ,(r->'instruction'->>'chain_id')::BIGINT,
    r->'instruction'->>'to_token',asset.decimals,1,(terms->>'ticket_price_ceiling_atomic')::NUMERIC,
    (template->'operational_profile'->>'entryCutoffSeconds')::INTEGER,'equal_v1','keccak_packed_v1',r->'instruction'->>'attestation_id',
-   (terms->>'first_drawing_id')::NUMERIC,ARRAY['study','karaoke','dance'],NULL,'no_purchase','leg_budget',
-   template->'operational_profile'->>'legalActivationGate','frozen_policy',policy_head.current_policy_revision,policy_head.current_policy_hash,'shared_song',terms);
+   (terms->>'first_drawing_id')::NUMERIC,ARRAY['study','karaoke','dance'],NULL,CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN 'funder_fallback' ELSE 'no_purchase' END,'leg_budget',
+   template->'operational_profile'->>'legalActivationGate','frozen_policy',policy_head.current_policy_revision,policy_head.current_policy_hash,'shared_song',terms,
+   CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN p_identity->>'accountId' END,
+   CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN p_state->'owner'->>'persona_id' END,
+   CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN 'net_to_single_funder_v1' END,
+   CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN terms->>'terms_hash' END,
+   CASE WHEN terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN (terms->>'starts_at')::TIMESTAMPTZ END);
  transition_at:=clock_timestamp();
  UPDATE song_reward_offers SET status='active',updated_at=transition_at WHERE offer_id=target->>'offer_id';
  UPDATE song_reward_offer_legs SET status='funding',updated_at=transition_at WHERE leg_id=target->>'pool_leg_id';
@@ -3612,7 +3633,7 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='bind_initial_shared_song_pot_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_identity jsonb, p_snapshot text, p_state jsonb';
-  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
@@ -18656,6 +18677,7 @@ DECLARE
   attestation_record megapot_deployment_attestations%ROWTYPE;
   payout_record reward_payout_effects%ROWTYPE;
   refund_record reward_refund_effects%ROWTYPE;
+  safe_refund reward_safe_refunds_v1%ROWTYPE;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'reward ERC20 transfer receipt evidence is append-only';
@@ -18694,7 +18716,16 @@ BEGIN
   ELSIF NEW.transfer_purpose = 'reward_refund' THEN
     SELECT * INTO refund_record FROM reward_refund_effects
      WHERE refund_effect_id = NEW.effect_id;
-    IF refund_record.attestation_id <> NEW.attestation_id
+    IF refund_record.refund_effect_id IS NULL THEN
+      SELECT r.* INTO safe_refund FROM reward_safe_refund_attempts_v1 attempt
+        JOIN reward_safe_refunds_v1 r USING(refund_id) WHERE attempt.effect_id=NEW.effect_id;
+      IF safe_refund.refund_id IS NULL OR chain_record.execution_mode<>'safe_owner_v1'
+        OR safe_refund.attestation_id IS DISTINCT FROM NEW.attestation_id
+        OR safe_refund.original_sender IS DISTINCT FROM NEW.recipient_address
+        OR safe_refund.amount_atomic IS DISTINCT FROM NEW.amount_atomic THEN
+        RAISE EXCEPTION 'Safe refund receipt does not match original receipt obligation';
+      END IF;
+    ELSIF refund_record.attestation_id <> NEW.attestation_id
        OR refund_record.destination_address <> NEW.recipient_address
        OR refund_record.amount_atomic <> NEW.amount_atomic THEN
       RAISE EXCEPTION 'reward refund receipt does not match refund reservation';
@@ -19032,6 +19063,7 @@ BEGIN
     FROM song_reward_offer_legs
    WHERE (funding_source='leg_budget' OR kind='asset_bonus')
      AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+  live_pending_refund := live_pending_refund + reward_unpaid_late_principal_atomic_v2(credit_record.chain_id,credit_record.token_address);
   SELECT COALESCE(sum(funded_atomic + winnings_credited_atomic
       - spent_atomic - withdrawn_atomic), 0) INTO live_shared_sponsorship
     FROM platform_sponsorship_budgets
@@ -19132,6 +19164,7 @@ BEGIN
     FROM song_reward_offer_legs
    WHERE (funding_source='leg_budget' OR kind='asset_bonus')
      AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+  live_pending_refund := live_pending_refund + reward_unpaid_late_principal_atomic_v2(leg_record.chain_id,leg_record.token_address);
   SELECT COALESCE(sum(funded_atomic+winnings_credited_atomic
       -spent_atomic-withdrawn_atomic), 0) INTO live_shared_sponsorship
     FROM platform_sponsorship_budgets
@@ -20061,7 +20094,7 @@ BEGIN
          AND NEW.legal_activation_gate <> 'production_approved' THEN
         RAISE EXCEPTION 'production Megapot pool activation is not legally approved';
       END IF;
-      IF NEW.empty_pool_policy = 'funder_fallback'
+      IF NEW.empty_pool_policy = 'funder_fallback' AND NEW.purchase_order='commit_first'
          AND NEW.funding_source = 'leg_budget' THEN
         IF NOT EXISTS (
           SELECT 1 FROM posts post
@@ -20126,6 +20159,10 @@ BEGIN
         JOIN reward_erc20_transfer_receipt_evidence receipt
           ON receipt.effect_id=refund.refund_effect_id
        WHERE refund.leg_id=NEW.leg_id AND receipt.transfer_purpose='reward_refund';
+      confirmed_refund_total:=confirmed_refund_total+coalesce((
+        SELECT sum(r.amount_atomic) FROM reward_safe_refunds_v1 r
+        JOIN reward_safe_refund_completions_v1 done USING(refund_id)
+        WHERE r.pool_leg_id=NEW.leg_id AND r.category='unspent_budget'),0);
       IF NEW.refunded_atomic <> confirmed_refund_total THEN
         RAISE EXCEPTION 'song reward offer leg refund accounting requires exact receipts';
       END IF;
@@ -21401,6 +21438,34 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION guard_ticket_first_funder_snapshot_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE leg song_reward_offer_legs;
+BEGIN
+ IF NEW.purchase_order='ticket_first_v1' AND NEW.fallback_beneficiary THEN
+   SELECT * INTO STRICT leg FROM song_reward_offer_legs WHERE leg_id=NEW.pool_leg_id;
+   IF leg.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'single_funder_ticket_first_v1'
+     OR leg.empty_pool_policy<>'funder_fallback' OR leg.fallback_beneficiary_account_id IS DISTINCT FROM leg.funder_account_id
+     OR leg.fallback_payout_persona_id IS NULL OR NEW.frozen_share_count<>0 THEN
+     RAISE EXCEPTION 'ticket-first funder snapshot requires frozen prospective terms'; END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_ticket_first_funder_snapshot_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_unresolved_rating_hold_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -27928,6 +27993,71 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION prepare_reward_safe_refund_v1(p_refund text, p_effect text, p_head bigint) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE r reward_safe_refunds_v1; a megapot_deployment_attestations;
+  s custody_solvency_observations; data TEXT; hash TEXT; first_block BIGINT; owed NUMERIC;
+BEGIN
+  SELECT * INTO STRICT r FROM reward_safe_refunds_v1 WHERE refund_id=p_refund FOR UPDATE;
+  SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=r.attestation_id;
+  IF p_head IS NULL OR p_head<0 OR p_effect IS NULL OR btrim(p_effect)=''
+    OR EXISTS(SELECT 1 FROM reward_safe_refund_completions_v1 WHERE refund_id=p_refund)
+    OR EXISTS(SELECT 1 FROM reward_safe_refund_attempts_v1 attempt JOIN reward_chain_effects e USING(effect_id)
+      WHERE attempt.refund_id=p_refund AND e.state<>'reverted') THEN
+    RAISE EXCEPTION 'refund already reserved or completed';
+  END IF;
+  SELECT * INTO s FROM custody_solvency_observations
+    WHERE attestation_id=r.attestation_id AND token_address=a.usdc_address
+    ORDER BY block_number DESC,observation_id DESC LIMIT 1 FOR SHARE;
+  SELECT
+    coalesce((SELECT sum(funded_atomic-spent_atomic-fulfilled_atomic-refunded_atomic)
+      FROM song_reward_offer_legs WHERE (funding_source='leg_budget' OR kind='asset_bonus')
+      AND chain_id=a.chain_id AND token_address=a.usdc_address),0)
+    +coalesce((SELECT sum(amount_atomic-paid_atomic) FROM reward_ledger_credits
+      WHERE state<>'sent' AND chain_id=a.chain_id AND token_address=a.usdc_address),0)
+    +coalesce((SELECT sum(funded_atomic+winnings_credited_atomic-spent_atomic-withdrawn_atomic)
+      FROM platform_sponsorship_budgets WHERE chain_id=a.chain_id AND token_address=a.usdc_address),0)
+    +reward_unpaid_late_principal_atomic_v2(a.chain_id,a.usdc_address) INTO owed;
+  IF s.observation_id IS NULL OR s.custody_address<>a.custody_address OR s.chain_id<>a.chain_id
+    OR s.expires_at<=clock_timestamp() OR NOT s.solvent OR s.balance_atomic<owed
+    OR EXISTS(SELECT 1 FROM reward_chain_effects e WHERE e.chain_id=a.chain_id
+      AND e.signer_address=a.custody_address AND e.state='confirmed'
+      AND e.receipt_block_number>s.block_number) THEN
+    RAISE EXCEPTION 'fresh solvent custody required';
+  END IF;
+  data:=reward_safe_refund_calldata_v1(r.original_sender,r.amount_atomic);
+  hash:=encode(sha256(decode(substr(data,3),'hex')),'hex');
+  INSERT INTO reward_safe_execution_cursors(chain_id,safe_address,next_block_number)
+    VALUES(a.chain_id,a.custody_address,p_head) ON CONFLICT DO NOTHING;
+  SELECT greatest(next_block_number,p_head+1) INTO first_block FROM reward_safe_execution_cursors
+    WHERE chain_id=a.chain_id AND safe_address=a.custody_address FOR UPDATE;
+  INSERT INTO reward_chain_effects(effect_id,effect_kind,state,chain_id,signer_address,
+    target_address,reserved_amount_atomic,execution_mode)
+  VALUES(p_effect,'reward_refund','planned',a.chain_id,a.custody_address,a.usdc_address,r.amount_atomic,'safe_owner_v1');
+  INSERT INTO reward_chain_effect_transitions(effect_id,target_version,event_type,event)
+  VALUES(p_effect,2,'safe_call_prepared',jsonb_build_object('calldata_hash',hash,'safe_prepared_block_number',first_block::TEXT));
+  UPDATE reward_chain_effects SET state='prepared',version=2,calldata=data,calldata_hash=hash,
+    prepared_at=clock_timestamp(),safe_prepared_block_number=first_block,updated_at=clock_timestamp()
+    WHERE effect_id=p_effect;
+  INSERT INTO reward_safe_refund_attempts_v1(effect_id,refund_id,solvency_observation_id)
+    VALUES(p_effect,p_refund,s.observation_id);
+  RETURN jsonb_build_object('effectId',p_effect,'data',data,'preparedBlockNumber',first_block::TEXT);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='prepare_reward_safe_refund_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_refund text, p_effect text, p_head bigint';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION preserve_learning_source_identity_v1() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path FROM CURRENT
@@ -30839,6 +30969,7 @@ DECLARE c song_megapot_contributions_v2; s JSONB; r JSONB; instr JSONB;
   completed reward_funding_cancellation_proofs_v2; late reward_late_principal_liabilities_v2; seal TEXT; claims JSONB:='[]'; g JSONB;
   cancel JSONB; nonce_status TEXT; category TEXT; current_state TEXT; actions JSONB;
   updated TIMESTAMPTZ; plan_state TEXT; refusal TEXT;
+  refund_paid NUMERIC:=0; refund_pending BOOLEAN:=FALSE; refund_updated TIMESTAMPTZ;
 BEGIN
   SELECT * INTO c FROM song_megapot_contributions_v2 WHERE account_id=i->>'accountId'
     AND community_id=i->>'communityId' AND post_id=i->>'postId' AND contribution_id=i->>'contributionId';
@@ -30858,6 +30989,16 @@ BEGIN
     ELSE CASE WHEN completed.proof_id IS NOT NULL THEN 'no_principal' ELSE 'unresolved' END END;
   current_state:=CASE WHEN s->>'fundingState'='nonce_closed_no_principal' AND incoming.receipt_id IS NULL AND completed.proof_id IS NULL
     THEN 'manual_reconciliation_required' ELSE s->>'fundingState' END;
+  SELECT coalesce(sum(refund.amount_atomic),0),max(done.created_at) INTO refund_paid,refund_updated
+    FROM reward_safe_refunds_v1 refund JOIN reward_safe_refund_completions_v1 done USING(refund_id)
+    WHERE refund.contribution_id=c.contribution_id;
+  SELECT EXISTS(SELECT 1 FROM reward_safe_refunds_v1 refund
+    JOIN reward_safe_refund_attempts_v1 attempt USING(refund_id)
+    JOIN reward_chain_effects effect USING(effect_id)
+    WHERE refund.contribution_id=c.contribution_id AND effect.state IN ('prepared','confirming','reconciliation_required'))
+    INTO refund_pending;
+  IF refund_paid>0 THEN current_state:='refunded';
+  ELSIF refund_pending THEN current_state:='refund_pending'; END IF;
   IF reservation.disposition='closed' AND incoming.receipt_id IS NULL AND (completed.proof_id IS NULL OR reservation.closure_proof_id IS DISTINCT FROM completed.proof_id) THEN
     RAISE EXCEPTION 'closed reservation lacks accepted nonce disposition' USING ERRCODE='PCV10';
   END IF;
@@ -30892,7 +31033,7 @@ BEGIN
     AND (instr->>'expires_at')::TIMESTAMPTZ>statement_timestamp() THEN
     actions:=actions||'["claim_funding_submission"]'::JSONB;
   END IF;
-  updated:=greatest(c.created_at,incoming.created_at,completed.created_at,
+  updated:=greatest(c.created_at,incoming.created_at,completed.created_at,refund_updated,
     (SELECT max(created_at) FROM song_megapot_contribution_commands_v2 WHERE contribution_id=c.contribution_id),
     CASE WHEN current_state='expired_reconciling' THEN (s->>'effectiveDeadline')::TIMESTAMPTZ END);
   RETURN jsonb_build_object('accountId',c.account_id,'current',jsonb_build_object(
@@ -30902,8 +31043,8 @@ BEGIN
     'original_sender',instr->>'from','terms_hash',r->>'terms_hash','instruction_hash',instr->>'instruction_hash',
     'receipt_evidence',incoming.evidence->'evidence',
     'pool_credit_atomic',CASE WHEN incoming.category='pool_principal' THEN incoming.amount_atomic::TEXT ELSE '0' END,
-    'late_principal_owed_atomic',coalesce(late.amount_atomic-late.paid_atomic,0)::TEXT,
-    'refund_paid_atomic',coalesce(late.paid_atomic,0)::TEXT,
+    'late_principal_owed_atomic',CASE WHEN late.receipt_id IS NULL THEN '0' ELSE (late.amount_atomic-refund_paid)::TEXT END,
+    'refund_paid_atomic',refund_paid::TEXT,
     'reservation_capacity_state',CASE reservation.disposition WHEN 'held' THEN 'reserved'
       WHEN 'converted' THEN 'consumed_by_pool_credit' ELSE 'released_after_nonce_consumed' END,
     'cohort_seal_id',seal,'allowed_actions',actions,'pause_reason',refusal,
@@ -36291,6 +36432,82 @@ CREATE FUNCTION reward_leg_accepts_qualification(leg_id_input text, activity_inp
     FROM song_reward_offer_legs leg WHERE leg.leg_id = leg_id_input), false)
 $$;
 
+CREATE FUNCTION reward_offer_has_unfinalized_contribution_v2(p_offer text) RETURNS boolean
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT EXISTS(SELECT 1 FROM song_reward_offer_legs leg
+    JOIN song_megapot_contributions_v2 c ON c.pool_leg_id=leg.leg_id
+    WHERE leg.offer_id=p_offer AND (c.state->>'nonceFinalized')::BOOLEAN IS DISTINCT FROM TRUE)
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reward_offer_has_unfinalized_contribution_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_offer text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION reward_safe_refund_calldata_v1(p_sender text, p_amount numeric) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE n NUMERIC:=p_amount; digits TEXT:='';
+BEGIN
+  IF p_sender IS NULL OR p_sender !~ '^0x[a-f0-9]{40}$' OR n IS NULL OR n<>trunc(n)
+    OR n<=0 OR n>=power(2::NUMERIC,256) THEN RAISE EXCEPTION 'invalid refund transfer'; END IF;
+  WHILE n>0 LOOP
+    digits:=substr('0123456789abcdef',mod(n,16)::INTEGER+1,1)||digits;
+    n:=div(n,16);
+  END LOOP;
+  RETURN '0xa9059cbb'||lpad(substr(p_sender,3),64,'0')||lpad(digits,64,'0');
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reward_safe_refund_calldata_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_sender text, p_amount numeric';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION reward_unpaid_late_principal_atomic_v2(p_chain bigint, p_token text) RETURNS numeric
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+  SELECT coalesce(sum(l.amount_atomic),0)
+  FROM reward_late_principal_liabilities_v2 l
+  JOIN song_megapot_contributions_v2 c USING(contribution_id)
+  WHERE (c.state->'receipt'->'instruction'->>'chain_id')::BIGINT=p_chain
+    AND c.state->'receipt'->'instruction'->>'to_token'=p_token
+    AND NOT EXISTS (
+      SELECT 1 FROM reward_safe_refunds_v1 r
+      JOIN reward_safe_refund_completions_v1 done USING(refund_id)
+      WHERE r.receipt_id=l.receipt_id AND r.category='late_principal'
+    )
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='reward_unpaid_late_principal_atomic_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_chain bigint, p_token text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION reward_wallet_nonce_context_v2(p_chain bigint, p_sender text, p_own_winner text) RETURNS TABLE(highest_nonce bigint, blocked_reason text)
     LANGUAGE sql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -36575,6 +36792,69 @@ BEGIN
   RETURN QUERY SELECT eligible_count, inserted_count, database_now;
 END;
 $$;
+
+CREATE FUNCTION seal_reward_safe_refunds_v1(p_attestation text, p_limit integer) RETURNS integer
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE item RECORD; amount NUMERIC; count_added INTEGER:=0;
+BEGIN
+  IF p_limit IS NULL OR p_limit<1 OR p_limit>100 THEN RAISE EXCEPTION 'invalid refund limit'; END IF;
+  FOR item IN
+    SELECT r.receipt_id,r.category,r.amount_atomic,r.sender_address,c.contribution_id,
+      c.account_id,c.pool_leg_id,l.status,l.funded_atomic,l.spent_atomic,l.fulfilled_atomic,
+      l.refunded_atomic,l.reserved_atomic,l.refund_policy,o.status AS offer_status
+    FROM reward_incoming_receipts_v2 r
+    JOIN song_megapot_contributions_v2 c USING(contribution_id)
+    JOIN song_reward_offer_legs l ON l.leg_id=c.pool_leg_id
+    JOIN song_reward_offers o ON o.offer_id=l.offer_id
+    WHERE l.attestation_id=p_attestation AND l.purchase_order='ticket_first_v1'
+      AND l.qualification_family_v2='shared_song'
+      AND NOT EXISTS(SELECT 1 FROM reward_safe_refunds_v1 f WHERE f.receipt_id=r.receipt_id)
+      AND (r.category='late_principal' OR (l.status IN ('exhausted','ended')
+        AND l.funded_atomic-l.spent_atomic-l.fulfilled_atomic-l.refunded_atomic>0))
+    ORDER BY r.created_at,r.receipt_id LIMIT p_limit FOR UPDATE OF l,c SKIP LOCKED
+  LOOP
+    IF item.category='late_principal' THEN
+      SELECT amount_atomic INTO amount FROM reward_late_principal_liabilities_v2
+        WHERE receipt_id=item.receipt_id AND original_sender=item.sender_address;
+      IF amount IS DISTINCT FROM item.amount_atomic THEN RAISE EXCEPTION 'late refund provenance mismatch'; END IF;
+    ELSE
+      IF item.offer_status NOT IN ('exhausted','expired','ended')
+        OR item.reserved_atomic<>0 OR item.refund_policy<>'refund_to_funders_pro_rata'
+        OR item.funded_atomic<>item.amount_atomic
+        OR EXISTS(SELECT 1 FROM song_megapot_contributions_v2 c
+          WHERE c.pool_leg_id=item.pool_leg_id AND NOT (c.state->>'nonceFinalized')::BOOLEAN)
+        OR (SELECT count(*) FROM reward_incoming_receipts_v2 r
+          JOIN song_megapot_contributions_v2 c USING(contribution_id)
+          WHERE c.pool_leg_id=item.pool_leg_id AND r.category='pool_principal')<>1
+        OR EXISTS(SELECT 1 FROM megapot_pool_drawings d WHERE d.pool_leg_id=item.pool_leg_id
+          AND d.status NOT IN ('no_win','credited','closed_purchase_unavailable'))
+      THEN CONTINUE; END IF;
+      amount:=item.funded_atomic-item.spent_atomic-item.fulfilled_atomic-item.refunded_atomic;
+      IF amount<=0 THEN CONTINUE; END IF;
+    END IF;
+    INSERT INTO reward_safe_refunds_v1(refund_id,receipt_id,contribution_id,pool_leg_id,
+      attestation_id,category,account_id,original_sender,amount_atomic)
+    VALUES('safe-refund:'||item.receipt_id,item.receipt_id,item.contribution_id,item.pool_leg_id,
+      p_attestation,CASE item.category WHEN 'late_principal' THEN 'late_principal' ELSE 'unspent_budget' END,
+      item.account_id,item.sender_address,amount);
+    count_added:=count_added+1;
+  END LOOP;
+  RETURN count_added;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='seal_reward_safe_refunds_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_attestation text, p_limit integer';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION seed_hns_lifecycle_readiness_cutover_probe_v1() RETURNS text
     LANGUAGE plpgsql SECURITY DEFINER
@@ -37049,6 +37329,68 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION settle_reward_safe_refund_v1(p jsonb) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE e reward_chain_effects; r reward_safe_refunds_v1; a megapot_deployment_attestations;
+  receipt reward_erc20_transfer_receipt_evidence; next_version BIGINT;
+BEGIN
+  SELECT refund.* INTO STRICT r FROM reward_safe_refund_attempts_v1 attempt
+    JOIN reward_safe_refunds_v1 refund USING(refund_id) WHERE attempt.effect_id=p->>'effectId' FOR UPDATE OF refund;
+  SELECT * INTO STRICT e FROM reward_chain_effects WHERE effect_id=p->>'effectId' FOR UPDATE;
+  SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=r.attestation_id;
+  IF e.state IN ('confirmed','reverted') THEN
+    IF e.transaction_hash IS DISTINCT FROM p->>'transactionHash'
+      OR e.receipt_block_hash IS DISTINCT FROM p->>'blockHash'
+      OR e.receipt_hash IS DISTINCT FROM p->>'receiptHash' THEN RAISE EXCEPTION 'refund settlement replay conflict'; END IF;
+    RETURN;
+  END IF;
+  IF e.execution_mode<>'safe_owner_v1' OR e.effect_kind<>'reward_refund'
+    OR e.state NOT IN ('confirming','reconciliation_required')
+    OR e.transaction_hash IS DISTINCT FROM p->>'transactionHash'
+    OR e.safe_execution_outcome IS DISTINCT FROM p->>'outcome'
+    OR e.safe_execution_outcome NOT IN ('success','failure')
+    OR EXISTS(SELECT 1 FROM reward_safe_refund_completions_v1 WHERE refund_id=r.refund_id)
+    OR (p->>'confirmations')::INTEGER<1 THEN RAISE EXCEPTION 'refund execution mismatch'; END IF;
+  next_version:=e.version+1;
+  INSERT INTO reward_chain_effect_transitions(effect_id,target_version,event_type,event)
+    VALUES(e.effect_id,next_version,CASE e.safe_execution_outcome WHEN 'success' THEN 'receipt_confirmed' ELSE 'safe_execution_failed' END,p);
+  UPDATE reward_chain_effects SET state=CASE e.safe_execution_outcome WHEN 'success' THEN 'confirmed' ELSE 'reverted' END,
+    version=next_version,receipt_status='success',receipt_block_number=(p->>'blockNumber')::BIGINT,
+    receipt_block_hash=p->>'blockHash',receipt_hash=p->>'receiptHash',confirmations=(p->>'confirmations')::INTEGER,
+    confirmed_at=(p->>'confirmedAt')::TIMESTAMPTZ,
+    settled_amount_atomic=CASE e.safe_execution_outcome WHEN 'success' THEN r.amount_atomic ELSE NULL END,
+    failure_class=NULL,failure_reason=NULL,
+    updated_at=clock_timestamp() WHERE effect_id=e.effect_id;
+  IF e.safe_execution_outcome='failure' THEN RETURN; END IF;
+  INSERT INTO reward_erc20_transfer_receipt_evidence(effect_id,attestation_id,transfer_purpose,
+    token_address,sender_address,recipient_address,amount_atomic,transaction_hash,transfer_log_index,
+    custody_balance_after_atomic,block_number,block_hash,receipt_hash,confirmations,confirmed_at)
+  VALUES(e.effect_id,a.attestation_id,'reward_refund',a.usdc_address,a.custody_address,r.original_sender,
+    r.amount_atomic,e.transaction_hash,(p->>'transferLogIndex')::INTEGER,(p->>'custodyBalanceAfterAtomic')::NUMERIC,
+    (p->>'blockNumber')::BIGINT,p->>'blockHash',p->>'receiptHash',(p->>'confirmations')::INTEGER,(p->>'confirmedAt')::TIMESTAMPTZ);
+  INSERT INTO reward_safe_refund_completions_v1(refund_id,effect_id) VALUES(r.refund_id,e.effect_id);
+  IF r.category='unspent_budget' THEN
+    UPDATE song_reward_offer_legs SET refunded_atomic=refunded_atomic+r.amount_atomic,updated_at=clock_timestamp()
+      WHERE leg_id=r.pool_leg_id AND status IN ('exhausted','ended') AND reserved_atomic=0
+        AND funded_atomic-spent_atomic-fulfilled_atomic-refunded_atomic>=r.amount_atomic;
+    IF NOT FOUND THEN RAISE EXCEPTION 'refund leg accounting conflict'; END IF;
+  END IF;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='settle_reward_safe_refund_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION shared_song_accepts_qualification_v2(p_leg text, p_qualification text) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -37412,6 +37754,32 @@ BEGIN
  INSERT INTO video_alias_audit_runs_v1(run_id,plan_sha256,mode,upper_created_at,upper_post_id,complete)
  VALUES(p_run,p_plan,p_mode,upper_row.created_at,upper_row.post_id,upper_row.post_id IS NULL);
 END $$;
+
+CREATE FUNCTION take_reward_joint_cycle_turn_v1() RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE first_work TEXT;
+BEGIN
+  SELECT next_work INTO STRICT first_work FROM reward_joint_cycle_turn_v1
+    WHERE singleton FOR UPDATE;
+  UPDATE reward_joint_cycle_turn_v1 SET
+    next_work=CASE first_work WHEN 'financial' THEN 'funding' ELSE 'financial' END,
+    revision=revision+1 WHERE singleton;
+  RETURN first_work;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='take_reward_joint_cycle_turn_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION track_handle_authored_content_footprint_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -42716,7 +43084,8 @@ END
 $$;
 
 CREATE FUNCTION validate_megapot_fallback_cutoff() RETURNS trigger
-    LANGUAGE plpgsql
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   leg_record song_reward_offer_legs%ROWTYPE;
@@ -42733,6 +43102,18 @@ BEGIN
     RETURN NULL;
   END IF;
   SELECT * INTO leg_record FROM song_reward_offer_legs WHERE leg_id = NEW.pool_leg_id;
+  IF NEW.purchase_order='ticket_first_v1' THEN
+    IF leg_record.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'single_funder_ticket_first_v1'
+      OR NEW.frozen_share_count<>0 OR leg_record.fallback_beneficiary_account_id IS DISTINCT FROM leg_record.funder_account_id
+      OR (SELECT count(*) FROM song_megapot_contributions_v2 c
+        JOIN reward_incoming_receipts_v2 r USING(contribution_id)
+        WHERE c.pool_leg_id=NEW.pool_leg_id AND r.category='pool_principal'
+          AND c.account_id=leg_record.fallback_beneficiary_account_id
+          AND c.state->'owner'->>'persona_id'=leg_record.fallback_payout_persona_id
+          AND (c.state->>'nonceFinalized')::BOOLEAN AND r.amount_atomic=leg_record.funded_atomic)<>1 THEN
+      RAISE EXCEPTION 'ticket-first fallback requires its single original funder'; END IF;
+    RETURN NULL;
+  END IF;
   SELECT * INTO offer_record FROM song_reward_offers WHERE offer_id = leg_record.offer_id;
   SELECT * INTO evidence_record FROM megapot_fallback_cutoff_evidence
    WHERE pool_leg_id = NEW.pool_leg_id AND drawing_id = NEW.drawing_id;
@@ -42799,6 +43180,18 @@ BEGIN
   RETURN NULL;
 END
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_megapot_fallback_cutoff'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_megapot_pool_drawing_transition() RETURNS trigger
     LANGUAGE plpgsql
@@ -52500,7 +52893,7 @@ CREATE TABLE megapot_pool_drawings (
     terminal_at timestamp with time zone,
     purchase_order text DEFAULT 'commit_first'::text NOT NULL,
     CONSTRAINT megapot_pool_drawing_effect_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'cutoff_frozen'::text, 'closed_purchase_unavailable'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))))),
-    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((purchase_order = 'commit_first'::text) AND (((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR ((status <> ALL (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count > 0) AND (fallback_beneficiary = false) AND (cutoff_frozen_at IS NOT NULL)))))),
+    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((purchase_order = 'commit_first'::text) AND (((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR ((status <> ALL (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (((frozen_share_count > 0) AND (fallback_beneficiary = false)) OR ((frozen_share_count = 0) AND (fallback_beneficiary = true))) AND (cutoff_frozen_at IS NOT NULL)))))),
     CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))))),
     CONSTRAINT megapot_pool_drawing_reservation CHECK (((actual_ticket_cost_atomic <= reserved_ticket_cost_atomic) AND (reserved_ticket_cost_atomic <= ticket_price_ceiling_atomic) AND (net_winnings_atomic <= gross_winnings_atomic))),
     CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (snapshot_id IS NOT NULL)))))),
@@ -54072,6 +54465,15 @@ CREATE TABLE reward_incoming_receipts_v2 (
     CONSTRAINT reward_incoming_receipts_v2_transfer_log_index_check CHECK ((transfer_log_index >= 0))
 );
 
+CREATE TABLE reward_joint_cycle_turn_v1 (
+    singleton boolean DEFAULT true NOT NULL,
+    next_work text NOT NULL,
+    revision bigint NOT NULL,
+    CONSTRAINT reward_joint_cycle_turn_v1_next_work_check CHECK ((next_work = ANY (ARRAY['financial'::text, 'funding'::text]))),
+    CONSTRAINT reward_joint_cycle_turn_v1_revision_check CHECK ((revision > 0)),
+    CONSTRAINT reward_joint_cycle_turn_v1_singleton_check CHECK (singleton)
+);
+
 CREATE TABLE reward_late_principal_liabilities_v2 (
     receipt_id text NOT NULL,
     contribution_id text NOT NULL,
@@ -54260,6 +54662,35 @@ CREATE TABLE reward_safe_execution_cursors (
     CONSTRAINT reward_safe_execution_cursors_chain_id_check CHECK ((chain_id > 0)),
     CONSTRAINT reward_safe_execution_cursors_next_block_number_check CHECK ((next_block_number >= 0)),
     CONSTRAINT reward_safe_execution_cursors_safe_address_check CHECK ((safe_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
+CREATE TABLE reward_safe_refund_attempts_v1 (
+    effect_id text NOT NULL,
+    refund_id text NOT NULL,
+    solvency_observation_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE reward_safe_refund_completions_v1 (
+    refund_id text NOT NULL,
+    effect_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE reward_safe_refunds_v1 (
+    refund_id text NOT NULL,
+    receipt_id text NOT NULL,
+    contribution_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    attestation_id text NOT NULL,
+    category text NOT NULL,
+    account_id text NOT NULL,
+    original_sender text NOT NULL,
+    amount_atomic reward_funding_atomic_v2 NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_safe_refunds_v1_amount_atomic_check CHECK (((amount_atomic)::numeric > (0)::numeric)),
+    CONSTRAINT reward_safe_refunds_v1_category_check CHECK ((category = ANY (ARRAY['late_principal'::text, 'unspent_budget'::text]))),
+    CONSTRAINT reward_safe_refunds_v1_original_sender_check CHECK ((original_sender ~ '^0x[a-f0-9]{40}$'::text))
 );
 
 CREATE TABLE reward_safe_unbound_executions (
@@ -54688,10 +55119,10 @@ CREATE TABLE song_reward_offer_legs (
     qualification_family_v2 text DEFAULT 'numeric'::text NOT NULL,
     shared_song_terms_v2 jsonb,
     purchase_order text DEFAULT 'commit_first'::text NOT NULL,
-    CONSTRAINT shared_song_leg_family_v2 CHECK (((((qualification_family_v2 = 'numeric'::text) AND (shared_song_terms_v2 IS NULL)) OR ((qualification_family_v2 = 'shared_song'::text) AND (kind = 'megapot_pool'::text) AND (min_score_bps IS NULL) AND (empty_pool_policy = 'no_purchase'::text) AND (funding_source = 'leg_budget'::text) AND (eligible_activities = ARRAY['study'::text, 'karaoke'::text, 'dance'::text]) AND (jsonb_typeof(shared_song_terms_v2) = 'object'::text) AND ((shared_song_terms_v2 ->> 'version'::text) = 'shared-song-megapot-v2'::text) AND ((shared_song_terms_v2 ->> 'terms_hash'::text) = SUBSTRING(leg_terms_hash FROM 3)))) IS TRUE)),
+    CONSTRAINT shared_song_leg_family_v2 CHECK (((((qualification_family_v2 = 'numeric'::text) AND (shared_song_terms_v2 IS NULL)) OR ((qualification_family_v2 = 'shared_song'::text) AND (kind = 'megapot_pool'::text) AND (min_score_bps IS NULL) AND (funding_source = 'leg_budget'::text) AND (eligible_activities = ARRAY['study'::text, 'karaoke'::text, 'dance'::text]) AND (jsonb_typeof(shared_song_terms_v2) = 'object'::text) AND ((shared_song_terms_v2 ->> 'version'::text) = 'shared-song-megapot-v2'::text) AND ((shared_song_terms_v2 ->> 'terms_hash'::text) = SUBSTRING(leg_terms_hash FROM 3)) AND (((empty_pool_policy = 'no_purchase'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'no_purchase'::text)) OR ((purchase_order = 'ticket_first_v1'::text) AND (empty_pool_policy = 'funder_fallback'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text))))) IS TRUE)),
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
     CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
-    CONSTRAINT song_reward_leg_purchase_order_shape CHECK (((purchase_order = 'commit_first'::text) OR ((kind = 'megapot_pool'::text) AND (funding_source = 'leg_budget'::text) AND (empty_pool_policy = 'no_purchase'::text)))),
+    CONSTRAINT song_reward_leg_purchase_order_shape CHECK (((purchase_order = 'commit_first'::text) OR ((kind = 'megapot_pool'::text) AND (funding_source = 'leg_budget'::text) AND ((empty_pool_policy = 'no_purchase'::text) OR ((empty_pool_policy = 'funder_fallback'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text)))))),
     CONSTRAINT song_reward_leg_qualification_shape CHECK (((qualification_policies IS NULL) OR ((jsonb_typeof(qualification_policies) = 'array'::text) AND (((qualification_family_v2 = 'numeric'::text) AND ((jsonb_array_length(qualification_policies) >= 1) AND (jsonb_array_length(qualification_policies) <= 2))) OR ((qualification_family_v2 = 'shared_song'::text) AND (jsonb_array_length(qualification_policies) = 3)))))),
     CONSTRAINT song_reward_leg_terminal_shape CHECK ((((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'operational_hold'::text])) AND (participation_ends_at IS NULL)) OR ((status = ANY (ARRAY['exhausted'::text, 'ended'::text])) AND (participation_ends_at IS NOT NULL)))),
     CONSTRAINT song_reward_leg_time_order CHECK (((participation_ends_at IS NULL) OR (participation_ends_at > participation_starts_at))),
@@ -54715,7 +55146,7 @@ CREATE TABLE song_reward_offer_legs (
     CONSTRAINT song_reward_offer_legs_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'funding'::text, 'active'::text, 'paused'::text, 'exhausted'::text, 'ended'::text, 'operational_hold'::text]))),
     CONSTRAINT song_reward_offer_legs_token_address_check CHECK ((token_address ~ '^0x[0-9a-f]{40}$'::text)),
     CONSTRAINT song_reward_offer_legs_token_decimals_check CHECK (((token_decimals >= 0) AND (token_decimals <= 77))),
-    CONSTRAINT song_reward_pool_fallback_shape CHECK (((kind <> 'megapot_pool'::text) OR ((empty_pool_policy = 'no_purchase'::text) AND (funding_source = 'leg_budget'::text) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL)) OR ((empty_pool_policy = 'funder_fallback'::text) AND (fallback_beneficiary_account_id IS NOT NULL) AND (((funding_source = 'leg_budget'::text) AND (fallback_beneficiary_account_id = funder_account_id) AND (fallback_payout_persona_id IS NOT NULL) AND (min_score_bps = 7000) AND (referral_allocation_version IS NOT NULL) AND (btrim(referral_allocation_version) <> ''::text) AND (referral_policy_hash ~ '^[0-9a-f]{64}$'::text) AND (referral_disclosed_at IS NOT NULL)) OR ((funding_source = 'shared_sponsor_budget'::text) AND (fallback_payout_persona_id IS NULL) AND (funded_atomic = (0)::numeric) AND (reserved_atomic = (0)::numeric) AND (spent_atomic = (0)::numeric) AND (fulfilled_atomic = (0)::numeric) AND (refunded_atomic = (0)::numeric))))))
+    CONSTRAINT song_reward_pool_fallback_shape CHECK (((kind <> 'megapot_pool'::text) OR ((empty_pool_policy = 'no_purchase'::text) AND (funding_source = 'leg_budget'::text) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL)) OR ((empty_pool_policy = 'funder_fallback'::text) AND (fallback_beneficiary_account_id IS NOT NULL) AND (((funding_source = 'leg_budget'::text) AND (fallback_beneficiary_account_id = funder_account_id) AND (fallback_payout_persona_id IS NOT NULL) AND (min_score_bps = 7000) AND (referral_allocation_version IS NOT NULL) AND (btrim(referral_allocation_version) <> ''::text) AND (referral_policy_hash ~ '^[0-9a-f]{64}$'::text) AND (referral_disclosed_at IS NOT NULL)) OR ((funding_source = 'shared_sponsor_budget'::text) AND (fallback_payout_persona_id IS NULL) AND (funded_atomic = (0)::numeric) AND (reserved_atomic = (0)::numeric) AND (spent_atomic = (0)::numeric) AND (fulfilled_atomic = (0)::numeric) AND (refunded_atomic = (0)::numeric)))) OR ((purchase_order = 'ticket_first_v1'::text) AND (qualification_family_v2 = 'shared_song'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text) AND (empty_pool_policy = 'funder_fallback'::text) AND (funding_source = 'leg_budget'::text) AND (fallback_beneficiary_account_id = funder_account_id) AND (fallback_payout_persona_id IS NOT NULL) AND (min_score_bps IS NULL) AND (referral_allocation_version = 'net_to_single_funder_v1'::text) AND (referral_policy_hash = (shared_song_terms_v2 ->> 'terms_hash'::text)) AND (referral_disclosed_at IS NOT NULL))))
 );
 
 CREATE TABLE song_reward_offers (
@@ -56565,6 +56996,8 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@2', 
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_joint_cycle_turn_v1 VALUES (true, 'financial', 1);
 
 INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
 
@@ -59352,6 +59785,9 @@ ALTER TABLE ONLY reward_incoming_receipts_v2
 ALTER TABLE ONLY reward_incoming_receipts_v2
     ADD CONSTRAINT reward_incoming_receipts_v2_pkey PRIMARY KEY (receipt_id);
 
+ALTER TABLE ONLY reward_joint_cycle_turn_v1
+    ADD CONSTRAINT reward_joint_cycle_turn_v1_pkey PRIMARY KEY (singleton);
+
 ALTER TABLE ONLY reward_late_principal_liabilities_v2
     ADD CONSTRAINT reward_late_principal_liabilities_v2_contribution_id_key UNIQUE (contribution_id);
 
@@ -59405,6 +59841,24 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_safe_execution_cursors
     ADD CONSTRAINT reward_safe_execution_cursors_pkey PRIMARY KEY (chain_id, safe_address);
+
+ALTER TABLE ONLY reward_safe_refund_attempts_v1
+    ADD CONSTRAINT reward_safe_refund_attempts_v1_pkey PRIMARY KEY (effect_id);
+
+ALTER TABLE ONLY reward_safe_refund_completions_v1
+    ADD CONSTRAINT reward_safe_refund_completions_v1_effect_id_key UNIQUE (effect_id);
+
+ALTER TABLE ONLY reward_safe_refund_completions_v1
+    ADD CONSTRAINT reward_safe_refund_completions_v1_pkey PRIMARY KEY (refund_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_contribution_id_key UNIQUE (contribution_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_pkey PRIMARY KEY (refund_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_receipt_id_key UNIQUE (receipt_id);
 
 ALTER TABLE ONLY reward_safe_unbound_executions
     ADD CONSTRAINT reward_safe_unbound_executions_pkey PRIMARY KEY (chain_id, transaction_hash, log_index);
@@ -60546,6 +61000,8 @@ CREATE INDEX reward_gas_topup_work_idx ON reward_gas_topups USING btree (created
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
 
 CREATE INDEX reward_payout_effects_credit_idx ON reward_payout_effects USING btree (credit_id);
+
+CREATE INDEX reward_safe_refund_attempts_by_refund_v1 ON reward_safe_refund_attempts_v1 USING btree (refund_id);
 
 CREATE INDEX reward_sponsored_sends_account_day_idx ON wallet_sponsored_sends USING btree (account_id, created_at);
 
@@ -62163,6 +62619,18 @@ CREATE TRIGGER reward_safe_call_preparation_guard BEFORE UPDATE ON reward_chain_
 
 CREATE TRIGGER reward_safe_execution_cursors_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_safe_execution_cursors FOR EACH ROW EXECUTE FUNCTION guard_reward_safe_execution_cursor();
 
+CREATE TRIGGER reward_safe_refund_attempts_v1_append_only BEFORE DELETE OR UPDATE ON reward_safe_refund_attempts_v1 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_refund_attempts_v1_no_truncate BEFORE TRUNCATE ON reward_safe_refund_attempts_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_refund_completions_v1_append_only BEFORE DELETE OR UPDATE ON reward_safe_refund_completions_v1 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_refund_completions_v1_no_truncate BEFORE TRUNCATE ON reward_safe_refund_completions_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_refunds_v1_append_only BEFORE DELETE OR UPDATE ON reward_safe_refunds_v1 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_refunds_v1_no_truncate BEFORE TRUNCATE ON reward_safe_refunds_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
 CREATE TRIGGER reward_safe_unbound_executions_append_only BEFORE DELETE OR UPDATE ON reward_safe_unbound_executions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
@@ -62456,6 +62924,8 @@ CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPD
 CREATE TRIGGER text_publication_mode_update_guard BEFORE UPDATE OF publication_mode ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_publication_mode_update();
 
 CREATE TRIGGER text_submissions_unresolved_rating_hold BEFORE UPDATE OF status ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_unresolved_rating_hold_v1();
+
+CREATE TRIGGER ticket_first_funder_snapshot_guard BEFORE UPDATE ON megapot_pool_drawings FOR EACH ROW EXECUTE FUNCTION guard_ticket_first_funder_snapshot_v1();
 
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -65321,6 +65791,36 @@ ALTER TABLE ONLY reward_refund_effects
 
 ALTER TABLE ONLY reward_safe_execution_cursors
     ADD CONSTRAINT reward_safe_execution_cursors_chain_id_safe_address_fkey FOREIGN KEY (chain_id, safe_address) REFERENCES reward_signer_nonces(chain_id, signer_address);
+
+ALTER TABLE ONLY reward_safe_refund_attempts_v1
+    ADD CONSTRAINT reward_safe_refund_attempts_v1_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_chain_effects(effect_id);
+
+ALTER TABLE ONLY reward_safe_refund_attempts_v1
+    ADD CONSTRAINT reward_safe_refund_attempts_v1_refund_id_fkey FOREIGN KEY (refund_id) REFERENCES reward_safe_refunds_v1(refund_id);
+
+ALTER TABLE ONLY reward_safe_refund_attempts_v1
+    ADD CONSTRAINT reward_safe_refund_attempts_v1_solvency_observation_id_fkey FOREIGN KEY (solvency_observation_id) REFERENCES custody_solvency_observations(observation_id);
+
+ALTER TABLE ONLY reward_safe_refund_completions_v1
+    ADD CONSTRAINT reward_safe_refund_completions_v1_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES reward_erc20_transfer_receipt_evidence(effect_id);
+
+ALTER TABLE ONLY reward_safe_refund_completions_v1
+    ADD CONSTRAINT reward_safe_refund_completions_v1_refund_id_fkey FOREIGN KEY (refund_id) REFERENCES reward_safe_refunds_v1(refund_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_contribution_id_fkey FOREIGN KEY (contribution_id) REFERENCES song_megapot_contributions_v2(contribution_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_pool_leg_id_fkey FOREIGN KEY (pool_leg_id) REFERENCES song_reward_offer_legs(leg_id);
+
+ALTER TABLE ONLY reward_safe_refunds_v1
+    ADD CONSTRAINT reward_safe_refunds_v1_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES reward_incoming_receipts_v2(receipt_id);
 
 ALTER TABLE ONLY reward_safe_unbound_executions
     ADD CONSTRAINT reward_safe_unbound_executions_chain_id_safe_address_fkey FOREIGN KEY (chain_id, safe_address) REFERENCES reward_safe_execution_cursors(chain_id, safe_address);

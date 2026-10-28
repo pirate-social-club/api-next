@@ -39,8 +39,13 @@ export function makeGuestStudyRecoveryComposition(
 export function makeStudySourceRecoveryStages(
   runtime: Runtime,
   guest?: GuestStudyRecoveryComposition,
+  maximumAccountContinuations = 25,
 ): StudySourceRecoveryStages {
   const accountStore = makeControlledAccountStudyV2Store(runtime);
-  const account = makeControlledAccountSpokenRecovery(runtime, accountStore.finalize);
+  const account = makeControlledAccountSpokenRecovery(
+    runtime,
+    accountStore.finalize,
+    maximumAccountContinuations,
+  );
   return { account: account.recover(), ...(guest === undefined ? {} : { guest: guest() }) };
 }

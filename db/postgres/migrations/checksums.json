@@ -323,6 +323,9 @@
     "0320_song_contribution_funding_actions.sql": "e64c5cb408085dd24080140e549f9893e52680118b0ccfa7bb3cdb1c023a60a6",
     "0321_song_funding_cancellation_recovery.sql": "0ec262f883afa4a016682585348b7a087a67e4a1787e060257aca13f332214d3",
     "0322_shared_song_frozen_purchase.sql": "9934a098b4a7fa0962f94ea8e850f99edd38bec720f9a301a8b76d0b3922ac9e",
-    "0323_song_funding_finality_wait.sql": "eef223cab2f901eb7cb4ab5e21fe24f9f9a9a9abaf2634c65d1524b8513c3afc"
+    "0323_song_funding_finality_wait.sql": "eef223cab2f901eb7cb4ab5e21fe24f9f9a9a9abaf2634c65d1524b8513c3afc",
+    "0324_reward_safe_receipt_refunds.sql": "52cbecf2da55f8f124ef0da888721734e48dda964ff6907a6fd283427b7fa229",
+    "0325_reward_single_funder_ticket_first.sql": "b7593eb2d0686fe7141d4bd9b3c6fcd6c8bc1af0334447398497c7f334693d6d",
+    "0326_reward_joint_cycle_fairness.sql": "c182b124392f311f513844e93a04af70131739da7cd6f6a82d96b3a266a74932"
   }
 }

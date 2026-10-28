@@ -820,6 +820,7 @@ export function makeJobsWorkerDeclarations(
   guestStudyRecovery?: GuestStudyRecoveryComposition,
   songFundingRecovery?: ReturnType<typeof makeSongFundingRecoveryRuntime>,
   safePoolJob?: JobDeclaration<unknown, ControlPlaneDb | AlertCollector>,
+  jointRuntime?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
@@ -860,9 +861,16 @@ export function makeJobsWorkerDeclarations(
   const studyJob =
     learnerAudio === undefined
       ? undefined
-      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+      : makeStudySpokenAnswerRecoveryJob(
+          sink,
+          learnerAudio,
+          guestStudyRecovery,
+          megapotJob?.name === "safe-pool-pilot.cycle" ? 1 : 25,
+        );
   if (megapotJob !== undefined && (studyJob !== undefined || fundingJob !== undefined)) {
-    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob));
+    declarations.push(
+      makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob, jointRuntime),
+    );
   } else if (megapotJob !== undefined) declarations.push(megapotJob);
   else if (studyJob !== undefined) declarations.push(studyJob);
   if (megapotJob === undefined && fundingJob !== undefined) declarations.push(fundingJob);
@@ -990,6 +998,13 @@ export default {
       undefined,
       songFundingRecovery,
       safePool === null ? undefined : makeSafePoolPilotJob(sink, safePool),
+      safePool === null
+        ? undefined
+        : makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+            statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+            connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+            closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+          }),
     );
     const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
     if (renewal !== null) declarations.push(renewal);

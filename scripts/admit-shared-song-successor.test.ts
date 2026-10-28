@@ -40,6 +40,7 @@ async function fixture() {
     profileAccepted: true,
     profileValidUntil: source.valid_until,
     capacity: initial.profile.capacity_profile,
+    policy: initial.profile.policy,
     chainId: 84532,
     environment: "staging",
     jackpotAddress: SHARED_SONG_SUCCESSOR_RULE.jackpotAddress,
@@ -121,4 +122,35 @@ test("a lost template COMMIT remains unknown and never repeats either mutation",
   ).toHaveLength(1);
   expect(trace.filter((s) => s === "COMMIT")).toHaveLength(1);
   expect(trace.at(-1)).toBe("ROLLBACK");
+});
+
+test("single-funder disposition changes only future template terms and preserves the funded profile and work limits", async () => {
+  const raw = await fixture();
+  const successor = await buildSharedSongSuccessorTemplate(raw);
+  const { accepted_by: _role, accepted_receipt_hash: _receipt, ...source } = successor.template;
+  const current = { ...raw, source, admissionHash: successor.admission.admission_hash };
+  const before = structuredClone(current);
+  const plan = await buildSharedSongSuccessorTemplate(current, "single_funder_terms");
+  expect(current).toEqual(before);
+  expect(plan.template.profile_id).toBe(source.profile_id);
+  expect(plan.template.qualification_templates).toEqual(source.qualification_templates);
+  expect(plan.template.operational_profile).toEqual({
+    ...source.operational_profile,
+    emptyBehavior: "single_funder_ticket_first_v1",
+    disclosureVersion: "shared-song-safe-pilot-staging-single-funder-disclosure-v1",
+  });
+  for (const key of [
+    "maxActiveAccount",
+    "maxActiveAccountLeg",
+    "maxLegLiabilities",
+    "maxAdmittedLeg",
+    "maxAdmittedAccountLeg",
+  ]) {
+    await expect(
+      buildSharedSongSuccessorTemplate(
+        { ...current, policy: { ...current.policy, [key]: 2 } },
+        "single_funder_terms",
+      ),
+    ).rejects.toThrow("single-funder accepted successor profile required");
+  }
 });

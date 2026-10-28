@@ -24,7 +24,10 @@ import { makeMegapotDrawingObserver } from "@pirate/platform-cf/megapot-drawing-
 import { makeMegapotSweepCoordinator } from "@pirate/platform-cf/megapot-sweep-coordinator";
 import { makeControlPlaneMegapotSweepStore } from "@pirate/platform-cf/megapot-sweep-repository";
 import { makeMegapotTicketFirstCutoff } from "@pirate/platform-cf/megapot-ticket-first-cutoff";
+import type { MegapotV2DeploymentAttestation } from "@pirate/platform-cf/megapot-v2";
+import type { MegapotV2FullRpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneMegapotWorkStore } from "@pirate/platform-cf/megapot-work-repository";
+import { makeControlPlaneRewardOfferTerminalStore } from "@pirate/platform-cf/reward-offer-terminal-repository";
 import { makeControlPlaneRewardRunAuthority } from "@pirate/platform-cf/reward-operations-control";
 import { makeRewardSafeClaimCoordinator } from "@pirate/platform-cf/reward-safe-claim-coordinator";
 import {
@@ -33,6 +36,8 @@ import {
 } from "@pirate/platform-cf/reward-safe-execution";
 import { makeRewardSafePayoutCoordinator } from "@pirate/platform-cf/reward-safe-payout-coordinator";
 import { makeRewardSafePurchaseCoordinator } from "@pirate/platform-cf/reward-safe-purchase-coordinator";
+import { makeRewardSafeRefundCoordinator } from "@pirate/platform-cf/reward-safe-refund-coordinator";
+import { makeControlPlaneRewardSafeRefundStore } from "@pirate/platform-cf/reward-safe-refund-repository";
 import { makeRewardSafeExecutionScanner } from "@pirate/platform-cf/reward-safe-settlement";
 import { makeControlPlaneRewardSafeWorkStore } from "@pirate/platform-cf/reward-safe-work-repository";
 import { Effect, Layer } from "effect";
@@ -101,12 +106,21 @@ const SAFE_POOL_PILOT_READS = [
   "postgres:reward_payout_effects",
   "postgres:reward_erc20_transfer_receipt_evidence",
   "postgres:custody_solvency_observations",
+  "postgres:reward_safe_refunds_v1",
+  "postgres:reward_safe_refund_attempts_v1",
+  "postgres:reward_safe_refund_completions_v1",
+  "postgres:reward_incoming_receipts_v2",
+  "postgres:reward_late_principal_liabilities_v2",
+  "postgres:song_megapot_contributions_v2",
 ] as const satisfies readonly TableKey[];
 
 const SAFE_POOL_PILOT_WRITES = SAFE_POOL_PILOT_READS.filter(
   (table) =>
     table !== "postgres:megapot_deployment_attestations" &&
     table !== "postgres:megapot_pool_shares" &&
+    table !== "postgres:reward_incoming_receipts_v2" &&
+    table !== "postgres:reward_late_principal_liabilities_v2" &&
+    table !== "postgres:song_megapot_contributions_v2" &&
     table !== "postgres:reward_signer_nonces",
 ) satisfies readonly TableKey[];
 
@@ -132,6 +146,10 @@ const SAFE_POOL_PILOT_SEVERITY: SeverityMapping = {
 export function makeSafePoolPilotJob(
   sink: AlertSink,
   options: SafePoolPilotJobOptions,
+  dependencies?: Readonly<{
+    rpcFor: (deployment: MegapotV2DeploymentAttestation) => MegapotV2FullRpcClient;
+    now?: () => number;
+  }>,
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
     const db = yield* ControlPlaneDb;
@@ -154,12 +172,9 @@ export function makeSafePoolPilotJob(
     ) {
       return yield* new MegapotDrawingObservationRejected({ reason: "production-disabled" });
     }
-    const rpc = makeMegapotAttestedRpc(
-      deployment,
-      options.rpcUrl,
-      undefined,
-      SAFE_POOL_PILOT_RPC_TIMEOUT_MS,
-    );
+    const rpc =
+      dependencies?.rpcFor(deployment) ??
+      makeMegapotAttestedRpc(deployment, options.rpcUrl, undefined, SAFE_POOL_PILOT_RPC_TIMEOUT_MS);
     const safe = { chainId: deployment.chainId, safeAddress: deployment.custodyAddress };
     const custody = { ...safe, attestationId: deployment.attestationId };
     const safeOptions = {
@@ -177,6 +192,9 @@ export function makeSafePoolPilotJob(
     });
     const claims = makeRewardSafeClaimCoordinator(safeOptions);
     const payouts = makeRewardSafePayoutCoordinator(safeOptions);
+    const refunds = makeRewardSafeRefundCoordinator(safeOptions);
+    const refundStore = makeControlPlaneRewardSafeRefundStore(layer);
+    const terminal = makeControlPlaneRewardOfferTerminalStore(layer, deployment.attestationId);
     const scan = makeRewardSafeExecutionScanner(safeOptions);
     const work = makeControlPlaneMegapotWorkStore(layer);
     const safeWork = makeControlPlaneRewardSafeWorkStore(layer);
@@ -208,7 +226,11 @@ export function makeSafePoolPilotJob(
       authority: makeControlPlaneRewardRunAuthority(layer),
     });
     // Every listing below is scoped to the admitted attestation before its limit.
-    const cutoff = makeMegapotTicketFirstCutoff({ layer, attestationId: deployment.attestationId });
+    const cutoff = makeMegapotTicketFirstCutoff({
+      layer,
+      attestationId: deployment.attestationId,
+      ...(dependencies?.now === undefined ? {} : { now: dependencies.now }),
+    });
     const fundingStore = makeControlPlaneRewardFundingStore(layer);
     const funding = makeRewardFundingCoordinator({ store: fundingStore, rpc, safePilot });
     const allocation = makeMegapotAllocationCoordinator({
@@ -225,6 +247,7 @@ export function makeSafePoolPilotJob(
       loadBoundEffects: (limit) => safeWork.loadBoundEffects(custody, limit),
       settlePurchase: purchases.settle,
       settlePayout: payouts.settle,
+      settleRefund: refunds.settle,
       loadPendingFunding: (limit) =>
         work.loadPendingFunding({ limit, cursor: Math.floor(Date.now() / 60_000) }),
       // The listing covers every deployment; only the pilot's own funding is confirmed here.
@@ -251,6 +274,10 @@ export function makeSafePoolPilotJob(
       settleClaim: (value) => claims.settle(drawing(value)),
       prepareClaim: (value) => claims.prepare(drawing(value)),
       allocate: (value) => allocation.allocate(drawing(value)),
+      closeExpiredOffers: terminal.closeExpired,
+      sealRefunds: (limit) => refundStore.seal(deployment.attestationId, limit),
+      loadRefunds: (limit) => refundStore.loadPending(deployment.attestationId, limit),
+      prepareRefund: refunds.prepare,
       observeSolvency: () => solvency.observe(deployment.attestationId),
       loadCredits: (limit) => work.loadCredits(limit, "ticket_first_v1", deployment.attestationId),
       preparePayout: payouts.prepare,

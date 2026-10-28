@@ -442,5 +442,24 @@ suite("shared-song pot provisioning", () => {
     expect(
       (await admin.query("SELECT count(*)::int n FROM reward_shared_song_templates_v2")).rows[0].n,
     ).toBe(2);
+    const termsPlan = await readSharedSongSuccessorTemplate(
+      admin,
+      communityId,
+      false,
+      "single_funder_terms",
+    );
+    const adopted = await applySharedSongSuccessorTemplate(admin, {
+      communityId,
+      change: "single_funder_terms",
+      expectedBrakeRevision: await revision(),
+      expectedAdmissionHash: termsPlan.expectedAdmissionHash,
+      expectedTemplateHash: termsPlan.template.template_hash,
+    });
+    expect(adopted.template.operational_profile.emptyBehavior).toBe(
+      "single_funder_ticket_first_v1",
+    );
+    expect(adopted.template.operational_profile.scheduleRuleId).toBe(SHARED_SONG_SUCCESSOR_RULE_ID);
+    expect(adopted.template.profile_id).toBe(old.profile_id);
+    expect(await financial()).toEqual(before);
   }, 60_000);
 });

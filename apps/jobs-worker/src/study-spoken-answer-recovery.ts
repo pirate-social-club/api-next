@@ -146,12 +146,17 @@ export function makeStudySpokenAnswerRecoveryJob(
   sink: AlertSink,
   _registrationBucket: StudySpokenAnswerRecoveryBucket,
   guest?: GuestStudyRecoveryComposition,
+  maximumAccountContinuations = 25,
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.fn("StudySourceRecoveryJob.run")(function* () {
     const db = yield* ControlPlaneDb,
       collector = yield* AlertCollector;
     const summary = yield* runStudySourceRecoveryCycle(
-      makeStudySourceRecoveryStages(Layer.succeed(ControlPlaneDb, db), guest),
+      makeStudySourceRecoveryStages(
+        Layer.succeed(ControlPlaneDb, db),
+        guest,
+        maximumAccountContinuations,
+      ),
     );
     if (summary.account.fenced > 0)
       yield* collector.emit({

@@ -15,7 +15,11 @@ const digest = (s: string) => Effect.runPromise(digestFundingPreimageV2(s));
 
 export async function seedSongContributionFixture(
   admin: Client,
-  options?: { accountsAlreadyBorn?: boolean; environment?: "test" | "staging" },
+  options?: {
+    accountsAlreadyBorn?: boolean;
+    environment?: "test" | "staging";
+    singleFunderTicketFirst?: boolean;
+  },
 ) {
   let terms: C.TermsV2;
   let target: C.CommittedTargetV2;
@@ -126,11 +130,11 @@ export async function seedSongContributionFixture(
         maximumObservationAgeMs: 120_000,
       },
     },
-    maxActiveAccount: 4,
-    maxActiveAccountLeg: 4,
-    maxLegLiabilities: 10,
-    maxAdmittedLeg: 10,
-    maxAdmittedAccountLeg: 10,
+    maxActiveAccount: options?.singleFunderTicketFirst ? 1 : 4,
+    maxActiveAccountLeg: options?.singleFunderTicketFirst ? 1 : 4,
+    maxLegLiabilities: options?.singleFunderTicketFirst ? 1 : 10,
+    maxAdmittedLeg: options?.singleFunderTicketFirst ? 1 : 10,
+    maxAdmittedAccountLeg: options?.singleFunderTicketFirst ? 1 : 10,
     workPerInstruction: 10,
     economicsPolicyHash: h,
     gasPolicyHash: h,
@@ -168,7 +172,7 @@ export async function seedSongContributionFixture(
     ],
   );
   const capacity = {
-    maxDrawings: 6,
+    maxDrawings: options?.singleFunderTicketFirst ? 1 : 6,
     reservationMs: 60_000,
     safetyMarginMs: 1_000,
     maximumWitnessAgeMs: 120_000,

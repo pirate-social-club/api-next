@@ -4,7 +4,10 @@ import { Effect, Schema } from "effect";
 import { decodeEventLog, erc20Abi, type Hex } from "viem";
 import { makeSongMegapotContributions } from "../../../packages/application/src/rewards/song-megapot-contributions.ts";
 import * as C from "../../../packages/contracts/src/rewards-song-contributions-v2.ts";
-import { harness as studyHarness } from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
+import {
+  stopBeforeFinalize,
+  harness as studyHarness,
+} from "../../../packages/platform-cf/src/account-study-producer.pg-fixture.ts";
 import { seedVeryRewardEvidence } from "../../../packages/platform-cf/src/activity-participation-composed-identity.pg-fixture.ts";
 import { seedActivitySongMaterials } from "../../../packages/platform-cf/src/activity-participation-composed-song.pg-fixture.ts";
 import { makeCustodySolvencyCoordinator } from "../../../packages/platform-cf/src/custody-solvency-coordinator.ts";
@@ -29,6 +32,7 @@ import { fakeSafeChain } from "../../../packages/platform-cf/src/reward-safe-cha
 import { makeRewardSafeClaimCoordinator } from "../../../packages/platform-cf/src/reward-safe-claim-coordinator.ts";
 import { makeRewardSafePayoutCoordinator } from "../../../packages/platform-cf/src/reward-safe-payout-coordinator.ts";
 import { makeRewardSafePurchaseCoordinator } from "../../../packages/platform-cf/src/reward-safe-purchase-coordinator.ts";
+import { proveSafeReceiptRefund } from "../../../packages/platform-cf/src/reward-safe-refund.pg-proof.ts";
 import { makeReleaseRuntimeLogin } from "../../../packages/platform-cf/src/reward-safe-runtime-role.pg-fixture.ts";
 import { makeRewardSafeExecutionScanner } from "../../../packages/platform-cf/src/reward-safe-settlement.ts";
 import { SERVING_FUNCTION_EXECUTE_GRANTS } from "../../../packages/platform-cf/src/serving-function-privileges.ts";
@@ -43,6 +47,10 @@ import {
 } from "../../../packages/platform-cf/src/song-megapot-contribution-repository.ts";
 import { makeControlPlaneSponsoredSendStore } from "../../../packages/platform-cf/src/wallet-sponsored-send-repository.ts";
 import { makeWalletSponsoredSendService } from "../../../packages/platform-cf/src/wallet-sponsored-send-service.ts";
+import {
+  loseOneStudyCommitAcknowledgement,
+  makeSafeLifecycleJobProof,
+} from "./safe-lifecycle-job.pg-fixture.ts";
 import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -54,9 +62,41 @@ const h = "a".repeat(64),
   bh = `0x${h}`;
 const addr = (value: string) => `0x${value.repeat(40)}`;
 
-for (const tier of [7n, 2n])
+for (const scenario of [
+  "win",
+  "loss",
+  "empty_win",
+  "empty_loss",
+  "qualified_funder_policy",
+  "job_win",
+  "job_empty_win",
+  "job_late_recovery",
+  "job_commit_unknown",
+  "job_late_refund",
+  "timed_late_refund",
+  "job_unspent_refund",
+  "late_refund",
+  "unspent_refund",
+  "failed_purchase_refund",
+] as const) {
+  const throughJob = scenario.startsWith("job_");
+  const lateRefund = scenario.endsWith("late_refund");
+  const timedLateRefund = scenario === "timed_late_refund";
+  const empty = scenario.includes("empty_");
+  const lateRecovery = scenario === "job_late_recovery";
+  const funderWins = empty || lateRecovery;
+  const newTerms = throughJob || empty || scenario === "qualified_funder_policy";
+  const beneficiary = funderWins ? "b" : "a";
+  const beneficiaryWallet = addr(funderWins ? "4" : "1");
+  const tier =
+    scenario === "win" ||
+    scenario === "empty_win" ||
+    scenario === "qualified_funder_policy" ||
+    throughJob
+      ? 7n
+      : 2n;
   pgTest(
-    `Study funds a Safe ticket, qualifies and completes the ${tier === 7n ? "win, Claim, payout and Send" : "loss"} journey`,
+    `Safe contribution completes ${scenario}`,
     async () => {
       if (!url) throw Error("Postgres required");
       await withDanceServingPermissionFixture(url, async (f) => {
@@ -69,10 +109,12 @@ for (const tier of [7n, 2n])
         await birth("b");
         await seedSongContributionFixture(f.admin, {
           accountsAlreadyBorn: true,
+          singleFunderTicketFirst: newTerms,
           environment: "staging",
         });
         const { start, postId } = await seedProspectiveSongFundingFixture(f.admin, false, {
           currentStudy: true,
+          singleFunderTicketFirst: newTerms,
           environment: "staging",
         });
         await f.admin.query("BEGIN; SET LOCAL session_replication_role=replica");
@@ -205,9 +247,14 @@ for (const tier of [7n, 2n])
         // A chain timestamp has whole-second precision; inclusion must follow
         // the original millisecond terms start instead of predating it.
         await Bun.sleep(1000 - (Date.now() % 1000) + 10);
+        const receivedAtomic =
+          BigInt(receipt.instruction.amount_atomic) + (lateRefund && !timedLateRefund ? 1n : 0n);
         const payment = chain.fund(
           receipt.instruction.from,
-          BigInt(receipt.instruction.amount_atomic),
+          receivedAtomic,
+          timedLateRefund
+            ? BigInt(Math.ceil(Date.parse(receipt.instruction.expires_at) / 1000))
+            : undefined,
         );
         await run(
           service.execute("ObserveSongMegapotContributionV2", ownScope, {
@@ -218,7 +265,12 @@ for (const tier of [7n, 2n])
         );
         const funding = makeSongMegapotFundingRecovery({
           store: makeControlPlaneSongFundingRecoveryStore(jobsLayer),
-          now: () => new Date().toISOString(),
+          now: () =>
+            timedLateRefund
+              ? new Date(
+                  Math.ceil(Date.parse(receipt.instruction.expires_at) / 1000) * 1000 + 1000,
+                ).toISOString()
+              : new Date().toISOString(),
           rpcFor: () => rpc,
           observe: (work, tx, discover) =>
             makeControlPlaneRewardFundingObserver(jobsLayer, discover)(work, tx),
@@ -241,7 +293,11 @@ for (const tier of [7n, 2n])
             )
           ).rows,
         ).toEqual([
-          { funded_atomic: "1000000", status: "active", purchase_order: "ticket_first_v1" },
+          {
+            funded_atomic: lateRefund ? "0" : "1000000",
+            status: lateRefund ? "funding" : "active",
+            purchase_order: "ticket_first_v1",
+          },
         ]);
         const app = await makeReleaseRuntimeLogin(f.admin, url, f.schema);
         try {
@@ -256,48 +312,70 @@ for (const tier of [7n, 2n])
             maximumScanLogs: 50,
             minimumEntrySeconds: 60,
           };
-          const observed = makeControlPlaneMegapotDrawingObservationStore(layer);
-          const drawing = await rpc.readDrawing(101n);
-          await run(
-            observed.recordAndOpen({
-              observationId: "safe-study-drawing",
-              attestationId: "attestation",
-              chainId: 84532,
-              drawingId: 101n,
-              grossPrizePoolAtomic: drawing.prizePool,
-              globalTicketsBought: drawing.globalTicketsBought,
-              ticketPriceAtomic: drawing.ticketPrice,
-              drawingTime: new Date(Number(drawing.drawingTime) * 1000).toISOString(),
-              ballMax: 30,
-              bonusballMax: 10,
-              drawingLocked: false,
-              referralFeeWei: drawing.referralFee,
-              referralWinShareWei: drawing.referralWinShare,
-              blockNumber: chain.head(),
-              blockHash: (await rpc.readHead()).blockHash,
-              blockTimestamp: new Date().toISOString(),
-              confirmations: 1,
-              observedAt: new Date().toISOString(),
-              expiresAt: new Date(Date.now() + 120000).toISOString(),
-              rawStateHash: h,
-              legacyRawStateHash: h,
-            }),
-          );
-          const purchases = makeRewardSafePurchaseCoordinator(options);
-          const prepared = await run(purchases.prepare(legId));
-          if (prepared.kind !== "prepared") throw Error(`Purchase not ready: ${prepared.kind}`);
-          const call = prepared.transactionBuilderFile.transactions[0];
-          if (!call) throw Error("Missing purchase");
-          chain.execute({ to: call.to, data: call.data as Hex }, "success", 101n);
-          await run(
-            makeRewardSafeExecutionScanner(options)({
-              chainId: 84532,
-              safeAddress: deployment.custodyAddress,
-            }),
-          );
-          expect(await run(purchases.settle(prepared.effectId))).toMatchObject({
-            kind: "confirmed",
-          });
+          if (
+            scenario === "late_refund" ||
+            timedLateRefund ||
+            scenario === "unspent_refund" ||
+            scenario === "failed_purchase_refund"
+          ) {
+            await proveSafeReceiptRefund({
+              admin: f.admin,
+              owner: f.owner,
+              options,
+              chain,
+              receipt,
+              category: lateRefund ? "late_principal" : "unspent_budget",
+              receivedAtomic,
+              failedPurchase: scenario === "failed_purchase_refund",
+            });
+            return;
+          }
+          if (!throughJob) {
+            const observed = makeControlPlaneMegapotDrawingObservationStore(layer);
+            const drawing = await rpc.readDrawing(101n);
+            await run(
+              observed.recordAndOpen({
+                observationId: "safe-study-drawing",
+                attestationId: "attestation",
+                chainId: 84532,
+                drawingId: 101n,
+                grossPrizePoolAtomic: drawing.prizePool,
+                globalTicketsBought: drawing.globalTicketsBought,
+                ticketPriceAtomic: drawing.ticketPrice,
+                drawingTime: new Date(Number(drawing.drawingTime) * 1000).toISOString(),
+                ballMax: 30,
+                bonusballMax: 10,
+                drawingLocked: false,
+                referralFeeWei: drawing.referralFee,
+                referralWinShareWei: drawing.referralWinShare,
+                blockNumber: chain.head(),
+                blockHash: (await rpc.readHead()).blockHash,
+                blockTimestamp: new Date().toISOString(),
+                confirmations: 1,
+                observedAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 120000).toISOString(),
+                rawStateHash: h,
+                legacyRawStateHash: h,
+              }),
+            );
+          }
+          if (!throughJob) {
+            const purchases = makeRewardSafePurchaseCoordinator(options);
+            const prepared = await run(purchases.prepare(legId));
+            if (prepared.kind !== "prepared") throw Error(`Purchase not ready: ${prepared.kind}`);
+            const call = prepared.transactionBuilderFile.transactions[0];
+            if (!call) throw Error("Missing purchase");
+            chain.execute({ to: call.to, data: call.data as Hex }, "success", 101n);
+            await run(
+              makeRewardSafeExecutionScanner(options)({
+                chainId: 84532,
+                safeAddress: deployment.custodyAddress,
+              }),
+            );
+            expect(await run(purchases.settle(prepared.effectId))).toMatchObject({
+              kind: "confirmed",
+            });
+          }
           // Ordinary Study uses a non-owner role, its serving functions, and only
           // its domain tables in addition to the maintained financial privileges.
           for (const entry of SERVING_FUNCTION_EXECUTE_GRANTS)
@@ -378,38 +456,132 @@ for (const tier of [7n, 2n])
             "megapot_pool_drawings",
           ])
             await f.owner.query(`GRANT UPDATE ON ${f.quote(table)} TO ${f.quote(app.role)}`);
-          const drains: (() => Promise<unknown>)[] = [];
-          const study = studyHarness(
-            {
-              admin: f.admin,
-              role: app.role,
-              runtime: () => layer,
-              registerDrain: (drain) => drains.push(drain),
+          let jobClock = Date.now();
+          const job = makeSafeLifecycleJobProof({
+            layer,
+            rpc,
+            now: () => jobClock,
+            funding,
+            ensure: authority.ensure,
+            custody: {
+              attestationId: "attestation",
+              chainId: 84532,
+              safeAddress: deployment.custodyAddress,
             },
-            { put: async (_key, bytes) => ({ size: bytes.byteLength }) },
-            {},
-            undefined,
-            { accountId: "a", personaId: "persona-a", communityId: "community", postId },
-          );
-          let session = await study.start("safe-study");
-          for (let step = 0; session.status === "active" && step < 4; step++) {
-            const input = await study.input(session, `safe-study-card-${step}`);
-            const answer = await run(study.submit(input));
-            expect(answer.outcome).toBe("correct");
-            expect(await run(study.submit(input))).toEqual(answer);
-            session = answer.session;
+          });
+          if (scenario === "job_late_refund" || scenario === "job_unspent_refund") {
+            await proveSafeReceiptRefund({
+              admin: f.admin,
+              owner: f.owner,
+              options,
+              chain,
+              receipt,
+              category: lateRefund ? "late_principal" : "unspent_budget",
+              receivedAtomic,
+              job,
+            });
+            return;
           }
-          expect(session.status).toBe("completed");
-          expect(study.calls()).toBe(4);
-          await Promise.all(drains.map((drain) => drain()));
-          expect(
-            (
-              await f.owner.query(
-                "SELECT q.activity_key,q.score_bps,s.account_id FROM megapot_pool_shares s JOIN activity_qualifications q USING(qualification_id) WHERE s.pool_leg_id=$1",
-                [legId],
-              )
-            ).rows,
-          ).toEqual([{ activity_key: "study", score_bps: 10000, account_id: "a" }]);
+          if (throughJob) {
+            await job.tick();
+            const purchase = await job.prepared("ticket_purchase");
+            chain.execute(purchase, "success", 101n);
+            await job.tick();
+            expect(
+              (
+                await f.owner.query(
+                  "SELECT status FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=101",
+                  [legId],
+                )
+              ).rows,
+            ).toEqual([{ status: "entry_open" }]);
+          }
+          if (!empty) {
+            const drains: (() => Promise<unknown>)[] = [];
+            const study = studyHarness(
+              {
+                admin: f.admin,
+                role: app.role,
+                runtime: () => layer,
+                registerDrain: (drain) => drains.push(drain),
+              },
+              { put: async (_key, bytes) => ({ size: bytes.byteLength }) },
+              {},
+              undefined,
+              { accountId: "a", personaId: "persona-a", communityId: "community", postId },
+            );
+            let session = await study.start("safe-study");
+            for (let step = 0; session.status === "active" && step < 4; step++) {
+              const input = await study.input(session, `safe-study-card-${step}`);
+              if (throughJob && step === 3) {
+                await expect(
+                  run(study.submit(input, stopBeforeFinalize(study.protocol))),
+                ).rejects.toMatchObject({ reason: "unavailable" });
+                await Promise.all(drains.map((drain) => drain()));
+                expect(
+                  (
+                    await f.owner.query(
+                      "SELECT count(*)::int n FROM megapot_pool_shares WHERE pool_leg_id=$1",
+                      [legId],
+                    )
+                  ).rows,
+                ).toEqual([{ n: 0 }]);
+                if (lateRecovery) {
+                  // Move only the test clock boundary. Saved grading and all
+                  // qualification/share/settlement writes retain their guards.
+                  await f.admin.query("BEGIN; SET LOCAL session_replication_role=replica");
+                  try {
+                    await f.admin.query(
+                      "UPDATE megapot_pool_drawings SET entry_cutoff_at=clock_timestamp()-interval '1 millisecond' WHERE pool_leg_id=$1 AND drawing_id=101",
+                      [legId],
+                    );
+                    await f.admin.query("COMMIT");
+                  } catch (error) {
+                    await f.admin.query("ROLLBACK");
+                    throw error;
+                  }
+                  jobClock = Date.now();
+                }
+                if (scenario === "job_commit_unknown") {
+                  const before = (
+                    await f.owner.query("SELECT revision FROM reward_joint_cycle_turn_v1")
+                  ).rows;
+                  await expect(
+                    job.tick(loseOneStudyCommitAcknowledgement(layer)),
+                  ).rejects.toMatchObject({ reason: "outcome-unknown" });
+                  expect(
+                    (await f.owner.query("SELECT revision FROM reward_joint_cycle_turn_v1")).rows,
+                  ).toEqual(before);
+                  expect(
+                    (
+                      await f.owner.query(
+                        "SELECT count(*)::int n FROM megapot_pool_shares WHERE pool_leg_id=$1",
+                        [legId],
+                      )
+                    ).rows,
+                  ).toEqual([{ n: 1 }]);
+                }
+                await job.tick();
+              }
+              const answer = await run(study.submit(input));
+              expect(answer.outcome).toBe("correct");
+              expect(await run(study.submit(input))).toEqual(answer);
+              session = answer.session;
+            }
+            expect(session.status).toBe("completed");
+            expect(study.calls()).toBe(4);
+            await Promise.all(drains.map((drain) => drain()));
+            expect(
+              (
+                await f.owner.query(
+                  "SELECT q.activity_key,q.score_bps,s.account_id FROM megapot_pool_shares s JOIN activity_qualifications q USING(qualification_id) WHERE s.pool_leg_id=$1",
+                  [legId],
+                )
+              ).rows,
+            ).toEqual(
+              lateRecovery ? [] : [{ activity_key: "study", score_bps: 10000, account_id: "a" }],
+            );
+          }
           const safePilot = { runtimeEnvironment: "staging" as const, productionEnabled: false };
           const subject = { poolLegId: legId, drawingId: 101n };
           const cutoff = makeMegapotTicketFirstCutoff({
@@ -417,9 +589,22 @@ for (const tier of [7n, 2n])
             attestationId: "attestation",
             now: () => start + 2 * 3600000,
           });
-          expect(await run(cutoff.freezeDue())).toContainEqual(
-            expect.objectContaining({ poolLegId: legId, status: "cutoff_frozen" }),
-          );
+          if (throughJob) {
+            jobClock = start + 2 * 3600000;
+            await job.tick();
+          } else {
+            expect(await run(cutoff.freezeDue())).toContainEqual(
+              expect.objectContaining({ poolLegId: legId, status: "cutoff_frozen" }),
+            );
+          }
+          expect(
+            (
+              await f.owner.query(
+                "SELECT frozen_share_count,fallback_beneficiary FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=101",
+                [legId],
+              )
+            ).rows,
+          ).toEqual([{ frozen_share_count: funderWins ? 0 : 1, fallback_beneficiary: funderWins }]);
           const commitment = makeMegapotCommitmentCoordinator({
             store: makeControlPlaneMegapotCommitmentStore(layer),
             signer: megapotUnsignedOwnerSafeSigner,
@@ -431,10 +616,12 @@ for (const tier of [7n, 2n])
             },
             authority,
           });
-          expect(await run(commitment.commit(subject))).toMatchObject({
-            state: "published",
-            signature: null,
-          });
+          if (!throughJob) {
+            expect(await run(commitment.commit(subject))).toMatchObject({
+              state: "published",
+              signature: null,
+            });
+          }
           const sweep = makeMegapotSweepCoordinator({
             store: makeControlPlaneMegapotSweepStore(layer),
             rpc,
@@ -443,7 +630,17 @@ for (const tier of [7n, 2n])
           });
           expect(await run(sweep.sweep(subject))).toMatchObject({ kind: "drawing_pending" });
           chain.settle(tier);
-          const settled = await run(sweep.sweep(subject));
+          if (throughJob) await job.tick();
+          const settled = throughJob ? null : await run(sweep.sweep(subject));
+          if (throughJob)
+            expect(
+              (
+                await f.owner.query(
+                  "SELECT status FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=101",
+                  [legId],
+                )
+              ).rows,
+            ).toEqual([{ status: "winnings_detected" }]);
           const scan = () =>
             run(
               makeRewardSafeExecutionScanner(options)({
@@ -459,29 +656,32 @@ for (const tier of [7n, 2n])
             return { to: call.to, data: call.data as Hex };
           };
           if (tier === 2n) {
-            expect(settled).toMatchObject({
-              kind: "complete",
-              outcome: "no_win",
-              netWinningsAtomic: 0n,
-            });
+            if (!throughJob)
+              expect(settled).toMatchObject({
+                kind: "complete",
+                outcome: "no_win",
+                netWinningsAtomic: 0n,
+              });
             expect(
               (await f.owner.query("SELECT count(*)::int AS n FROM reward_ledger_credits")).rows,
             ).toEqual([{ n: 0 }]);
             expect(await rpc.readUsdcBalance(deployment.custodyAddress)).toBe(0n);
           } else {
-            expect(settled).toMatchObject({
-              kind: "complete",
-              outcome: "winnings_detected",
-              netWinningsAtomic: 901n,
-            });
+            if (!throughJob)
+              expect(settled).toMatchObject({
+                kind: "complete",
+                outcome: "winnings_detected",
+                netWinningsAtomic: 901n,
+              });
             const claims = makeRewardSafeClaimCoordinator(options);
             const claim = await run(claims.prepare(subject));
             if (claim.kind !== "prepared") throw Error(`Claim not ready: ${claim.kind}`);
             chain.execute(callOf(claim.transactionBuilderFile), "success");
-            await scan();
+            if (throughJob) await job.tick();
+            else await scan();
             expect(await run(claims.settle(subject))).toMatchObject({
               kind: "claimed",
-              netWinningsAtomic: 901n,
+              ...(throughJob ? { effectId: claim.effectId } : { netWinningsAtomic: 901n }),
             });
             expect(
               await run(makeRewardSafeClaimCoordinator(options).settle(subject)),
@@ -493,20 +693,24 @@ for (const tier of [7n, 2n])
             await run(allocation.allocate(subject));
             const credits = (
               await f.owner.query<{ credit_id: string; account_id: string; amount: string }>(
-                "SELECT credit_id,account_id,amount_atomic::text AS amount FROM reward_ledger_credits WHERE source_kind='megapot_allocation'",
+                "SELECT credit_id,account_id,amount_atomic::text AS amount FROM reward_ledger_credits WHERE source_kind IN ('megapot_allocation','external_fallback')",
               )
             ).rows;
             expect(credits).toHaveLength(1);
             const credit = credits[0];
             if (!credit) throw Error("Study credit missing");
-            expect(credit).toMatchObject({ account_id: "a", amount: "901" });
+            expect(credit).toMatchObject({ account_id: beneficiary, amount: "901" });
             // Only the external verification ceremony is a local prerequisite.
             // The participant Claim, solvency check and Safe payout execute normally.
-            await seedVeryRewardEvidence(f.admin, "a", "safe-study-claim");
+            await seedVeryRewardEvidence(f.admin, beneficiary, "safe-study-claim");
             const projection = makeControlPlaneRewardProjectionStore(layer);
-            expect(
-              await run(projection.claimCredit({ accountId: "a", creditId: credit.credit_id })),
-            ).toMatchObject({ outcome: "accepted" });
+            if (!funderWins) {
+              expect(
+                await run(
+                  projection.claimCredit({ accountId: beneficiary, creditId: credit.credit_id }),
+                ),
+              ).toMatchObject({ outcome: "accepted" });
+            }
             await run(
               makeCustodySolvencyCoordinator({
                 store: makeControlPlaneCustodySolvencyStore(layer),
@@ -516,14 +720,26 @@ for (const tier of [7n, 2n])
               }).observe("attestation"),
             );
             const payouts = makeRewardSafePayoutCoordinator(options);
-            const payout = await run(payouts.prepare(credit.credit_id));
-            chain.execute(callOf(payout.transactionBuilderFile), "success");
-            await scan();
-            expect(await run(payouts.settle(payout.effectId))).toMatchObject({ kind: "confirmed" });
+            let payout: { effectId: string };
+            if (throughJob) {
+              await job.tick();
+              const call = await job.prepared("reward_payout");
+              payout = call;
+              chain.execute(call, "success");
+              await job.tick();
+            } else {
+              const preparedPayout = await run(payouts.prepare(credit.credit_id));
+              payout = preparedPayout;
+              chain.execute(callOf(preparedPayout.transactionBuilderFile), "success");
+              await scan();
+              expect(await run(payouts.settle(payout.effectId))).toMatchObject({
+                kind: "confirmed",
+              });
+            }
             expect(
               await run(makeRewardSafePayoutCoordinator(options).settle(payout.effectId)),
             ).toMatchObject({ kind: "not_bound" });
-            expect(await rpc.readUsdcBalance(addr("1"))).toBe(901n);
+            expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(901n);
             let submissions = 0;
             let sendHash: string | null = null;
             let ids = 0;
@@ -582,7 +798,7 @@ for (const tier of [7n, 2n])
                 },
                 submit: async () => {
                   submissions++;
-                  sendHash = chain.transfer(addr("1"), addr("8"), 901n);
+                  sendHash = chain.transfer(beneficiaryWallet, addr("8"), 901n);
                   throw Error("Simulated response loss after provider acceptance");
                 },
                 findByReference: async (query) =>
@@ -599,8 +815,8 @@ for (const tier of [7n, 2n])
               });
             const sends = makeSends();
             const send = await sends.reserve({
-              accountId: "a",
-              personaId: "persona-a",
+              accountId: beneficiary,
+              personaId: `persona-${beneficiary}`,
               chainId: 84532,
               recipientAddress: addr("8"),
               amountAtomic: 901n,
@@ -609,7 +825,7 @@ for (const tier of [7n, 2n])
             expect(send.authorization).not.toBeNull();
             await expect(
               sends.submit({
-                accountId: "a",
+                accountId: beneficiary,
                 sendId: send.record.sendId,
                 signature: "YWJjZA==",
               }),
@@ -618,13 +834,18 @@ for (const tier of [7n, 2n])
             // Reference lookup and canonical chain proof resolve the held send.
             const restarted = makeSends();
             expect(
-              (await restarted.get({ accountId: "a", sendId: send.record.sendId })).record.status,
+              (await restarted.get({ accountId: beneficiary, sendId: send.record.sendId })).record
+                .status,
             ).toBe("confirmed");
             await expect(
-              sends.submit({ accountId: "a", sendId: send.record.sendId, signature: "YWJjZA==" }),
+              sends.submit({
+                accountId: beneficiary,
+                sendId: send.record.sendId,
+                signature: "YWJjZA==",
+              }),
             ).rejects.toThrow("conflict");
             expect(submissions).toBe(1);
-            expect(await rpc.readUsdcBalance(addr("1"))).toBe(0n);
+            expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(0n);
             expect(await rpc.readUsdcBalance(addr("8"))).toBe(901n);
             expect(await rpc.readUsdcBalance(deployment.custodyAddress)).toBe(0n);
             expect(
@@ -653,3 +874,4 @@ for (const tier of [7n, 2n])
     },
     90000,
   );
+}

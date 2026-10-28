@@ -100,11 +100,13 @@ export async function proveSongFundingPermissions(url: string) {
         expect(
           (
             await f.owner.query(
-              "SELECT has_function_privilege($1,'song_contribution_signing_refusal_v2(jsonb,timestamp with time zone)','EXECUTE') allowed",
+              `SELECT
+                has_function_privilege($1,'song_contribution_signing_refusal_v2(jsonb,timestamp with time zone)','EXECUTE') allowed,
+                has_function_privilege($1,'guard_ticket_first_funder_snapshot_v1()','EXECUTE') snapshot_trigger_allowed`,
               [role],
             )
           ).rows,
-        ).toEqual([{ allowed: false }]);
+        ).toEqual([{ allowed: false, snapshot_trigger_allowed: false }]);
       const expectedDefinitions = definitionBefore.map((row) => ({
         ...row,
         prosrc: row.prosrc

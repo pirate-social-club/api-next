@@ -261,11 +261,12 @@ export function makeControlPlaneCustodySolvencyRepository() {
                    FROM reward_ledger_credits
                   WHERE state <> 'sent' AND chain_id=$1 AND token_address=$2)
                   AS outstanding_credit_atomic,
-                (SELECT COALESCE(sum(funded_atomic-reserved_atomic-spent_atomic
+                ((SELECT COALESCE(sum(funded_atomic-reserved_atomic-spent_atomic
                     -fulfilled_atomic-refunded_atomic),0)::text
                    FROM song_reward_offer_legs
                   WHERE (funding_source='leg_budget' OR kind='asset_bonus')
-                    AND chain_id=$1 AND token_address=$2)
+                    AND chain_id=$1 AND token_address=$2)::numeric
+                  + reward_unpaid_late_principal_atomic_v2($1,$2))::text
                   AS pending_refund_atomic,
                 (SELECT COALESCE(sum(funded_atomic+winnings_credited_atomic
                     -spent_atomic-withdrawn_atomic),0)::text

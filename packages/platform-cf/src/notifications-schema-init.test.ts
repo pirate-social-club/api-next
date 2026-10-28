@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0323 set", () => {
-  expect(migrations).toHaveLength(323);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0326 set", () => {
+  expect(migrations).toHaveLength(326);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 323 }, (_, i) => i + 1),
+    Array.from({ length: 326 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -264,9 +264,21 @@ test("the actual checksum loader supplies the complete contiguous repository 000
     version: "0322_shared_song_frozen_purchase.sql",
     checksum: "9934a098b4a7fa0962f94ea8e850f99edd38bec720f9a301a8b76d0b3922ac9e",
   });
-  expect(migrations.at(-1)).toMatchObject({
+  expect(migrations[322]).toMatchObject({
     version: "0323_song_funding_finality_wait.sql",
     checksum: "eef223cab2f901eb7cb4ab5e21fe24f9f9a9a9abaf2634c65d1524b8513c3afc",
+  });
+  expect(migrations[323]).toMatchObject({
+    version: "0324_reward_safe_receipt_refunds.sql",
+    checksum: "52cbecf2da55f8f124ef0da888721734e48dda964ff6907a6fd283427b7fa229",
+  });
+  expect(migrations[324]).toMatchObject({
+    version: "0325_reward_single_funder_ticket_first.sql",
+    checksum: "b7593eb2d0686fe7141d4bd9b3c6fcd6c8bc1af0334447398497c7f334693d6d",
+  });
+  expect(migrations[325]).toMatchObject({
+    version: "0326_reward_joint_cycle_fairness.sql",
+    checksum: "c182b124392f311f513844e93a04af70131739da7cd6f6a82d96b3a266a74932",
   });
 });
 

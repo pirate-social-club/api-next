@@ -227,3 +227,13 @@ merge. Their exact declarations remain in the historical fixture
 `scripts/fixtures/openapi-safe-base-chain-waivers-20261023.json`, with the existing
 exact-diff and obsolete-baseline checks retained. The active policy admits no
 later contract change through these declarations.
+
+## 2026-10-28 Single-funder ticket-first terms transition
+
+The workspace_owner adopted the prospective single-funder rule and authorized its implementation and paired staging release on October28. New ticket-first pots return net empty-drawing winnings to the frozen single funder. Existing pots retain their original terms and holds. This is a real response-enum expansion: an older closed decoder rejects `single_funder_ticket_first_v1`.
+
+Six exact-baseline declarations cover seven response locations at main926e2b876c56111f0975c4a62b6db7c4595a4463: the Dance capture objective terms, original contribution command receipt, current contribution's command receipt, funding context's prospective and committed terms, participant terms and Create contribution receipt. The complete detector messages are recorded in the policy. No request, status, error, other enum, field, operation or later baseline is admitted. The detector and exact-set/obsolete-baseline safeguards are unchanged.
+
+Genuine client136 has archive SHA2565b565aff657fd7655f2bacca4704549c9e31305501aa01e407b6c702843b4cf5 and is consumed by Solid133. Existing responses retain their old values until new terms are admitted. Release the backend migrations and code while paused, release the paired frontend, verify a freshly loaded client, and only then admit the new immutable template and fund a fresh pot. Open tabs with older code must reload; their decoder refusal is not evidence of a completed payment and never permits replacing a saved command or journal.
+
+This declaration carries the adopted rule through the maintained compatibility process; it does not expand production or funding authority. Remove the consumed declarations after API684 integration. Historical artifacts and previous declarations remain unchanged.

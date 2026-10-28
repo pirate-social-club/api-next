@@ -908,7 +908,8 @@
                               "empty_behavior": {
                                 "type": "string",
                                 "enum": [
-                                  "no_purchase"
+                                  "no_purchase",
+                                  "single_funder_ticket_first_v1"
                                 ]
                               },
                               "eligible_activities": {
@@ -14329,7 +14330,8 @@
                             "empty_behavior": {
                               "type": "string",
                               "enum": [
-                                "no_purchase"
+                                "no_purchase",
+                                "single_funder_ticket_first_v1"
                               ]
                             },
                             "eligible_activities": {
@@ -18607,7 +18609,8 @@
                                     "empty_behavior": {
                                       "type": "string",
                                       "enum": [
-                                        "no_purchase"
+                                        "no_purchase",
+                                        "single_funder_ticket_first_v1"
                                       ]
                                     },
                                     "eligible_activities": {
@@ -18968,7 +18971,8 @@
                                     "empty_behavior": {
                                       "type": "string",
                                       "enum": [
-                                        "no_purchase"
+                                        "no_purchase",
+                                        "single_funder_ticket_first_v1"
                                       ]
                                     },
                                     "eligible_activities": {
@@ -22010,7 +22014,8 @@
                         "empty_behavior": {
                           "type": "string",
                           "enum": [
-                            "no_purchase"
+                            "no_purchase",
+                            "single_funder_ticket_first_v1"
                           ]
                         },
                         "eligible_activities": {
@@ -25147,7 +25152,8 @@
                             "empty_behavior": {
                               "type": "string",
                               "enum": [
-                                "no_purchase"
+                                "no_purchase",
+                                "single_funder_ticket_first_v1"
                               ]
                             },
                             "eligible_activities": {
@@ -28328,7 +28334,8 @@
                             "empty_behavior": {
                               "type": "string",
                               "enum": [
-                                "no_purchase"
+                                "no_purchase",
+                                "single_funder_ticket_first_v1"
                               ]
                             },
                             "eligible_activities": {
