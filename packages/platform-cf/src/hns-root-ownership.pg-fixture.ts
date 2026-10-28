@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { hnsControlIdentityDigest } from "@pirate/application/namespace-ownership";
+import { Sha256Hex } from "@pirate/domain/verification";
+import { Schema } from "effect";
 import type { Client } from "pg";
 
 const SHA_A = "a".repeat(64);
@@ -117,6 +120,22 @@ export async function seedSatisfiedOwnership(admin: Client): Promise<string> {
   const environment = ownerTxt ? "staging" : "test";
   const expiry = ownerTxt ? new Date(Date.now() + 15_000).toISOString() : expiresAt;
   const challengeHash = createHash("sha256").update("pirate-verification=challenge").digest("hex");
+  const controlIdentity = await hnsControlIdentityDigest({
+    ownership_source: "hns_parent_chain_txt",
+    txt_name: "newroot",
+    root_label: "newroot",
+    expected_txt_value: "pirate-verification=challenge",
+    chain_authority_digest: Schema.decodeUnknownSync(Sha256Hex)(SHA_A),
+  });
+  const observation = JSON.stringify(
+    ownerTxt
+      ? {
+          status: "verified",
+          control_identity_digest: controlIdentity,
+          chain_authority_digest: SHA_A,
+        }
+      : { status: "verified" },
+  );
   const resultHash = "d".repeat(64);
   await admin.query("BEGIN");
   try {
@@ -156,9 +175,17 @@ export async function seedSatisfiedOwnership(admin: Client): Promise<string> {
          'hns_parent_chain_txt','newroot',$5,TRUE,TRUE,TRUE,'hns-main',100,$2,1000,200,
          clock_timestamp()-interval '1 minute',$4::timestamptz,
          'provider-evidence-root-import',$2,$2,$2,
-         '{"status":"verified"}'::jsonb,'{"status":"verified"}'::bytea
+         $6::jsonb,$7::bytea
        )`,
-      [SHA_B, SHA_A, SHA_C, expiry, ownerTxt ? challengeHash : SHA_A],
+      [
+        SHA_B,
+        SHA_A,
+        SHA_C,
+        expiry,
+        ownerTxt ? challengeHash : SHA_A,
+        observation,
+        Buffer.from(observation),
+      ],
     );
     await admin.query(
       `INSERT INTO community_creation_ceremony_results (
@@ -210,8 +237,8 @@ export async function seedSatisfiedOwnership(admin: Client): Promise<string> {
       await admin.query(
         `INSERT INTO community_route_hns_control_identities
         (evidence_ref,ownership_source,root_label,txt_name,expected_txt_value_sha256,control_identity_digest,chain_authority_digest,provider_evidence_ref)
-        VALUES ('evidence-root-import','hns_parent_chain_txt','newroot','newroot',$1,$2,$2,'provider-evidence-root-import')`,
-        [challengeHash, SHA_A],
+        VALUES ('evidence-root-import','hns_parent_chain_txt','newroot','newroot',$1,$2,$3,'provider-evidence-root-import')`,
+        [challengeHash, controlIdentity, SHA_A],
       );
     }
     await admin.query("COMMIT");
